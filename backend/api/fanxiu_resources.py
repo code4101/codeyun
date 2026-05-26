@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from html import escape
 import json
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from backend.core.fanxiu_apk_static import (
@@ -41,6 +43,12 @@ from backend.core.fanxiu_apk_static import (
     build_fanxiu_resource_manifest_diff_report,
     build_fanxiu_resource_package_report,
     build_fanxiu_taptap_download_dat_package_probe,
+)
+from backend.core.fanxiu_audio_catalog import (
+    build_fanxiu_wwise_audio_catalog,
+    build_fanxiu_wwise_mp3_export,
+    load_fanxiu_wwise_mp3_manifest,
+    resolve_fanxiu_audio_media_path,
 )
 from backend.core.fanxiu_il2cpp_metadata import (
     build_fanxiu_il2cpp_gameplay_symbol_report,
@@ -162,6 +170,55 @@ from backend.core.fanxiu_doupotd_catalog import (
     build_fanxiu_doupotd_effect_gameplayer_summary_probe,
     build_fanxiu_doupotd_gameplayer_result_probe,
     build_fanxiu_doupotd_monster_drop_resolution_probe,
+    build_fanxiu_doupotd_pvp_report_global_lua_surface_probe,
+    build_fanxiu_doupotd_pvp_report_gap_probe,
+    build_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe,
+    build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe,
+    build_fanxiu_doupotd_pvp_report_netlogic_family_probe,
+    build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe,
+    build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
+    build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_delta_probe,
+    build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_scene_payload_probe,
+    build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe,
+    build_fanxiu_doupotd_pvp_report_shape_alias_probe,
     build_fanxiu_doupotd_reward_config_probe,
     build_fanxiu_doupotd_reward_result_resolution_probe,
     build_fanxiu_doupotd_catalog,
@@ -173,12 +230,18 @@ from backend.core.fanxiu_doupotd_catalog import (
     search_fanxiu_doupotd_partner_cards,
 )
 from backend.core.fanxiu_digitdoor_catalog import (
+    build_fanxiu_digitdoor_activity_end_probe,
     build_fanxiu_digitdoor_buff_class_formula_probe,
     build_fanxiu_digitdoor_buff_effect_usage_probe,
     build_fanxiu_digitdoor_catalog,
+    build_fanxiu_digitdoor_combat_attribute_consumer_probe,
     build_fanxiu_digitdoor_door_customized_type_semantics_probe,
     build_fanxiu_digitdoor_door_gain_buff_flow_probe,
     build_fanxiu_digitdoor_door_refresh_projection_probe,
+    build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe,
+    build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
+    build_fanxiu_digitdoor_gameplayer_settlement_probe,
+    build_fanxiu_digitdoor_info_snapshot_probe,
     build_fanxiu_digitdoor_monster_effect_class_flow_probe,
     build_fanxiu_digitdoor_monster_refresh_probe,
     build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe,
@@ -189,25 +252,41 @@ from backend.core.fanxiu_digitdoor_catalog import (
     build_fanxiu_digitdoor_monster_skill_buff_link_probe,
     build_fanxiu_digitdoor_monster_skill_timeline_probe,
     build_fanxiu_digitdoor_monster_skill_value_projection_probe,
+    build_fanxiu_digitdoor_partner_attribute_formatter_probe,
+    build_fanxiu_digitdoor_pvp_balance_probe,
+    build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe,
+    build_fanxiu_digitdoor_pvp_report_list_lifecycle_probe,
+    build_fanxiu_digitdoor_pvp_report_attr_snapshot_probe,
+    build_fanxiu_digitdoor_pvp_winreduce_gap_probe,
+    build_fanxiu_digitdoor_pvp_winner_projection_probe,
     build_fanxiu_digitdoor_reward_marker_ui_probe,
     build_fanxiu_digitdoor_reward_marker_semantics_probe,
     build_fanxiu_digitdoor_reward_result_resolution_probe,
+    build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_readyfight_partnerlist_probe,
     build_fanxiu_digitdoor_readyfight_request_levelid_probe,
     build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
+    build_fanxiu_digitdoor_report_gmbattle_probe,
+    build_fanxiu_digitdoor_runtime_packet_coverage_probe,
+    build_fanxiu_digitdoor_skip_level_probe,
     build_fanxiu_digitdoor_skill_enhance_application_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
+    build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_startgame_response_boundary_probe,
+    build_fanxiu_digitdoor_startgame_runtime_sample_probe,
     build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
+    build_fanxiu_digitdoor_unlock_state_probe,
+    build_fanxiu_digitdoor_uplevel_state_probe,
     get_fanxiu_digitdoor_character_card,
     get_fanxiu_digitdoor_enhance_group,
     get_fanxiu_digitdoor_level_config,
     search_fanxiu_digitdoor_character_cards,
     search_fanxiu_digitdoor_enhance_groups,
     search_fanxiu_digitdoor_level_configs,
+    build_fanxiu_pvp_report_family_reuse_probe,
 )
 from backend.core.fanxiu_activity_catalog import (
     get_fanxiu_activity_card,
@@ -266,6 +345,20 @@ from backend.core.fanxiu_resources import (
     list_fanxiu_unity_bundles,
     resolve_fanxiu_sprite_icon_path,
 )
+from backend.core.fanxiu_visual_catalog import (
+    build_fanxiu_static_visual_catalog,
+    load_fanxiu_static_visual_manifest,
+    resolve_fanxiu_visual_media_path,
+    search_fanxiu_static_visual_by_image,
+)
+from backend.core.fanxiu_asset_catalog import (
+    ASSET_PREVIEW_CACHE_VERSION,
+    build_fanxiu_static_asset_preview,
+    build_fanxiu_static_asset_catalog,
+    build_fanxiu_static_asset_preview_manifest,
+    load_fanxiu_static_asset_manifest,
+    resolve_fanxiu_static_asset_preview_media_path,
+)
 from backend.core.fanxiu_wiki import (
     build_fanxiu_wiki_catalog,
     get_fanxiu_wiki_text_entry,
@@ -303,6 +396,43 @@ class FanxiuUnityTextAssetExportRequest(FanxiuResourcePathRequest):
 class FanxiuWwiseExtractRequest(FanxiuResourcePathRequest):
     export_root: str | None = None
     max_entries: int | None = Field(default=None, ge=1, le=5000)
+
+
+class FanxiuStaticVisualCatalogRequest(BaseModel):
+    resource_root: str | None = None
+    apk_root: str | None = None
+    export_root: str | None = None
+    export_target_images: bool = True
+    include_apk_images: bool = True
+    build_usage_index: bool = True
+    max_export_images: int | None = Field(default=None, ge=0, le=20000)
+    max_usage_rows: int = Field(default=200000, ge=0, le=1000000)
+
+
+class FanxiuStaticAssetCatalogRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+    source_kinds: list[str] | None = None
+    max_files: int | None = Field(default=None, ge=0, le=100000)
+    verify_unity: bool = False
+    parse_unity_objects: bool = False
+    max_parse_files: int | None = Field(default=None, ge=0, le=100000)
+
+
+class FanxiuWwiseAudioCatalogRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuWwiseMp3ExportRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+    vgmstream_cli: str | None = None
+    ffmpeg_path: str | None = None
+    max_banks: int | None = Field(default=None, ge=0, le=10000)
+    max_entries: int | None = Field(default=None, ge=0, le=100000)
+    overwrite: bool = False
+    mp3_quality: int = Field(default=4, ge=0, le=9)
 
 
 class FanxiuApkStaticIndexRequest(BaseModel):
@@ -1055,6 +1185,225 @@ class FanxiuDoupoTDGamePlayerResultProbeRequest(BaseModel):
     export_root: str | None = None
 
 
+class FanxiuDoupoTDPvpReportGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportGlobalLuaSurfaceProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportScenePayloadProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportNativeSymbolGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportNativeLuaBridgeBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportNetLogicFamilyProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportLuaBindingBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportRawExportCoverageProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportShapeAliasProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportSenderAliasGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportRuntimeCoverageProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportFocusedCaptureReadinessProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportPcapStreamReadinessProbeRequest(BaseModel):
+    export_root: str | None = None
+    server_host: str | None = None
+    tshark_path: str | None = None
+
+
+class FanxiuDoupoTDPvpReportPcapDecodeMetadataProbeRequest(BaseModel):
+    export_root: str | None = None
+    server_host: str | None = None
+    text_assets: str | None = None
+    max_streams_per_capture: int = 4
+    tshark_path: str | None = None
+
+
+class FanxiuDoupoTDPvpReportPcapProtocolScopeProbeRequest(BaseModel):
+    export_root: str | None = None
+    server_host: str | None = None
+    text_assets: str | None = None
+    max_streams_per_capture: int = 4
+    tshark_path: str | None = None
+    use_existing_metadata: bool = True
+
+
+class FanxiuDoupoTDPvpReportPcapObservedSchemaCoverageProbeRequest(BaseModel):
+    export_root: str | None = None
+    server_host: str | None = None
+    text_assets: str | None = None
+    max_streams_per_capture: int = 4
+    tshark_path: str | None = None
+    use_existing_metadata: bool = True
+
+
+class FanxiuDoupoTDPvpReportPcapObservedLuaHandlerCoverageProbeRequest(BaseModel):
+    export_root: str | None = None
+    server_host: str | None = None
+    text_assets: str | None = None
+    max_streams_per_capture: int = 4
+    tshark_path: str | None = None
+    use_existing_metadata: bool = True
+    max_evidence_per_protocol: int = 16
+
+
+class FanxiuDoupoTDPcapObservedSmRewardResultChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmPracticeCollectChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmActivityRankSyncChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSyncTimeChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmNoticeChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedBlldSyncChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSelfSeatChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedLundaoRoleInfoChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedLundaoLastLeaveSeatChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedUnionVeinsUnionListChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSetClientDataChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedActivityBaseSyncChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedYunmengPkChallengeRecordChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSceneMapLifecycleChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedYunmengPkInfoSyncChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmFazeShowChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmAllBuffChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmSyncUnitChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmRestrictStatusChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmChangePeaceStateChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmIsCrossChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmCampFlagPanelChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmVeinsSelectSortChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmCrossBossInfoUpdateChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedSmPartnerArenaPlayInfoChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedLandContendInfoRoleChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedQuanFDrawSynChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPcapObservedVenisUnionSeatRoleChainProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportDecoderReadinessProbeRequest(BaseModel):
+    text_assets: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportTriggerLifecycleProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportTriggerBaseDynamicGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDPvpReportTriggerDeltaProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
 class FanxiuDoupoTDRewardConfigProbeRequest(BaseModel):
     tower_defense_config_dir: str | None = None
     lang_path: str | None = None
@@ -1114,6 +1463,11 @@ class FanxiuDigitDoorReadyFightSkillListShapeProbeRequest(BaseModel):
     export_root: str | None = None
 
 
+class FanxiuDigitDoorReadyFightCpp2IlConsumerProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
 class FanxiuDigitDoorReadyFightRuntimeSampleProbeRequest(BaseModel):
     export_root: str | None = None
 
@@ -1135,6 +1489,108 @@ class FanxiuDigitDoorStartGameResponseBoundaryProbeRequest(BaseModel):
 
 class FanxiuDigitDoorStartGameSkillVosShapeProbeRequest(BaseModel):
     digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorStartGameRuntimeSampleProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorStartGameCpp2IlConsumerProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPartnerAttributeFormatterProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorCombatAttributeConsumerProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorGamePlayerSettlementProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorGamePlayerRuntimeSampleProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorGamePlayerCpp2IlConsumerProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorInfoSnapshotProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorUpLevelStateProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorUnlockStateProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorSkipLevelProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorActivityEndProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReportGMBattleProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpBalanceProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpReportAttrSnapshotProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpReportAcceptanceGapProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpReportListLifecycleProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpWinreduceGapProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorPvpWinnerProjectionProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuPvpReportFamilyReuseProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorRuntimePacketCoverageProbeRequest(BaseModel):
     export_root: str | None = None
 
 
@@ -2063,6 +2519,512 @@ def post_fanxiu_wwise_extract_wems(req: FanxiuWwiseExtractRequest) -> dict[str, 
         export_root=req.export_root,
         max_entries=req.max_entries,
     )
+
+
+@router.post("/resources/visual/static-catalog")
+def post_fanxiu_static_visual_catalog(req: FanxiuStaticVisualCatalogRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_static_visual_catalog,
+        resource_root=req.resource_root,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+        export_target_images=req.export_target_images,
+        include_apk_images=req.include_apk_images,
+        build_usage_index=req.build_usage_index,
+        max_export_images=req.max_export_images,
+        max_usage_rows=req.max_usage_rows,
+    )
+
+
+@router.get("/resources/visual/manifest")
+def get_fanxiu_static_visual_manifest(
+    export_root: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    asset_group: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    try:
+        result = load_fanxiu_static_visual_manifest(
+            export_root=export_root,
+            query=query,
+            category=category,
+            asset_group=asset_group,
+            source_kind=source_kind,
+            limit=limit,
+            offset=offset,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for row in result["rows"]:
+        media_path = str(row.get("media_path") or "")
+        if not media_path:
+            continue
+        media_url = f"/api/fanxiu/resources/visual/media?path={quote(media_path, safe='')}"
+        if export_root:
+            media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+        row["media_url"] = media_url
+    return result
+
+
+@router.post("/resources/visual/similarity")
+async def post_fanxiu_static_visual_similarity(
+    export_root: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    asset_group: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    limit: int = Query(default=80, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    max_prefilter: int = Query(default=600, ge=20, le=5000),
+    image: UploadFile = File(...),
+) -> dict[str, Any]:
+    data = await image.read()
+    if len(data) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="上传图片过大，请使用 12MB 以内的图片")
+    try:
+        result = search_fanxiu_static_visual_by_image(
+            image_bytes=data,
+            export_root=export_root,
+            query=query,
+            category=category,
+            asset_group=asset_group,
+            source_kind=source_kind,
+            limit=limit,
+            offset=offset,
+            max_prefilter=max_prefilter,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for row in result["rows"]:
+        media_path = str(row.get("media_path") or "")
+        if not media_path:
+            continue
+        media_url = f"/api/fanxiu/resources/visual/media?path={quote(media_path, safe='')}"
+        if export_root:
+            media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+        row["media_url"] = media_url
+    return result
+
+
+@router.get("/resources/visual/media")
+def get_fanxiu_static_visual_media(
+    path: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> FileResponse:
+    try:
+        media_path = resolve_fanxiu_visual_media_path(path, export_root=export_root)
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(media_path)
+
+
+@router.post("/resources/asset/static-catalog")
+def post_fanxiu_static_asset_catalog(req: FanxiuStaticAssetCatalogRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_static_asset_catalog,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+        source_kinds=req.source_kinds,
+        max_files=req.max_files,
+        verify_unity=req.verify_unity,
+        parse_unity_objects=req.parse_unity_objects,
+        max_parse_files=req.max_parse_files,
+    )
+
+
+@router.get("/resources/asset/manifest")
+def get_fanxiu_static_asset_manifest(
+    resource_root: str | None = Query(default=None),
+    export_root: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    catalog_view: str | None = Query(default=None),
+    asset_group: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    try:
+        result = load_fanxiu_static_asset_manifest(
+            resource_root=resource_root,
+            export_root=export_root,
+            query=query,
+            catalog_view=catalog_view,
+            asset_group=asset_group,
+            source_kind=source_kind,
+            category=category,
+            limit=limit,
+            offset=offset,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for row in result["rows"]:
+        visual_paths = [
+            item.strip()
+            for item in str(row.get("semantic_visual_media_paths") or "").split("|")
+            if item.strip()
+        ]
+        if row.get("semantic_id"):
+            visual_urls = []
+            for visual_path in visual_paths[:18]:
+                media_url = f"/api/fanxiu/resources/visual/media?path={quote(visual_path, safe='')}"
+                if export_root:
+                    media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+                visual_urls.append(media_url)
+            row["semantic_visual_media_urls"] = visual_urls
+            if visual_urls:
+                row["preview_url"] = visual_urls[0]
+            continue
+        relative_path = str(row.get("relative_path") or "")
+        if not relative_path:
+            continue
+        preview_url = (
+            f"/api/fanxiu/resources/asset/preview?path={quote(relative_path, safe='')}"
+            f"&preview_v={quote(ASSET_PREVIEW_CACHE_VERSION, safe='')}"
+        )
+        preview_manifest_url = (
+            f"/api/fanxiu/resources/asset/preview-manifest?path={quote(relative_path, safe='')}"
+            f"&preview_v={quote(ASSET_PREVIEW_CACHE_VERSION, safe='')}"
+        )
+        if resource_root:
+            preview_url = f"{preview_url}&resource_root={quote(resource_root, safe='')}"
+            preview_manifest_url = f"{preview_manifest_url}&resource_root={quote(resource_root, safe='')}"
+        if export_root:
+            preview_url = f"{preview_url}&export_root={quote(export_root, safe='')}"
+            preview_manifest_url = f"{preview_manifest_url}&export_root={quote(export_root, safe='')}"
+        row["preview_url"] = preview_url
+        row["preview_manifest_url"] = preview_manifest_url
+    return result
+
+
+@router.get("/resources/asset/preview")
+def get_fanxiu_static_asset_preview(
+    path: str = Query(min_length=1),
+    resource_root: str | None = Query(default=None),
+    export_root: str | None = Query(default=None),
+    force: bool = Query(default=False),
+) -> FileResponse:
+    try:
+        result = build_fanxiu_static_asset_preview(
+            path,
+            resource_root=resource_root,
+            export_root=export_root,
+            force=force,
+        )
+        media_path = resolve_fanxiu_static_asset_preview_media_path(
+            str(result["preview_media_path"]),
+            export_root=export_root,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    media_type = "image/svg+xml" if media_path.suffix.lower() == ".svg" else "image/png"
+    return FileResponse(media_path, media_type=media_type)
+
+
+@router.get("/resources/asset/preview-manifest")
+def get_fanxiu_static_asset_preview_manifest(
+    path: str = Query(min_length=1),
+    resource_root: str | None = Query(default=None),
+    export_root: str | None = Query(default=None),
+    force: bool = Query(default=False),
+) -> dict[str, Any]:
+    try:
+        result = build_fanxiu_static_asset_preview_manifest(
+            path,
+            resource_root=resource_root,
+            export_root=export_root,
+            force=force,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    for item in result.get("items", []):
+        media_path = str(item.get("media_path") or "")
+        if not media_path:
+            continue
+        media_url = (
+            f"/api/fanxiu/resources/asset/preview-media?path={quote(media_path, safe='')}"
+            f"&preview_v={quote(ASSET_PREVIEW_CACHE_VERSION, safe='')}"
+        )
+        if export_root:
+            media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+        item["media_url"] = media_url
+    return result
+
+
+@router.get("/resources/asset/preview-media")
+def get_fanxiu_static_asset_preview_media(
+    path: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> FileResponse:
+    try:
+        media_path = resolve_fanxiu_static_asset_preview_media_path(path, export_root=export_root)
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    media_type = "image/svg+xml" if media_path.suffix.lower() == ".svg" else "image/png"
+    return FileResponse(media_path, media_type=media_type)
+
+
+@router.post("/resources/wwise/audio-catalog")
+def post_fanxiu_wwise_audio_catalog(req: FanxiuWwiseAudioCatalogRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_wwise_audio_catalog,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/wwise/mp3-export")
+def post_fanxiu_wwise_mp3_export(req: FanxiuWwiseMp3ExportRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_wwise_mp3_export,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+        vgmstream_cli=req.vgmstream_cli,
+        ffmpeg_path=req.ffmpeg_path,
+        max_banks=req.max_banks,
+        max_entries=req.max_entries,
+        overwrite=req.overwrite,
+        mp3_quality=req.mp3_quality,
+    )
+
+
+@router.get("/resources/wwise/mp3-manifest")
+def get_fanxiu_wwise_mp3_manifest(
+    export_root: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    try:
+        result = load_fanxiu_wwise_mp3_manifest(
+            export_root=export_root,
+            query=query,
+            kind=kind,
+            limit=limit,
+            offset=offset,
+        )
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    for row in result["rows"]:
+        relative_path = str(row.get("relative_mp3_path") or "")
+        if not relative_path:
+            continue
+        media_url = f"/api/fanxiu/resources/audio/media?path={quote(relative_path, safe='')}"
+        player_title = f"{str(row.get('source_bank') or '').rsplit('/', 1)[-1].replace('.bnk', '')} / {row.get('wem_id') or row.get('entry_index') or 'wem'}"
+        player_url = f"/api/fanxiu/resources/audio/player?path={quote(relative_path, safe='')}&title={quote(player_title, safe='')}"
+        if export_root:
+            media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+            player_url = f"{player_url}&export_root={quote(export_root, safe='')}"
+        row["media_url"] = media_url
+        row["player_url"] = player_url
+    return result
+
+
+@router.get("/resources/audio/media")
+def get_fanxiu_audio_media(
+    path: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> FileResponse:
+    try:
+        media_path = resolve_fanxiu_audio_media_path(path, export_root=export_root)
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(media_path, media_type="audio/mpeg")
+
+
+@router.get("/resources/audio/player", response_class=HTMLResponse)
+def get_fanxiu_audio_player(
+    path: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+    title: str | None = Query(default=None),
+) -> HTMLResponse:
+    try:
+        resolve_fanxiu_audio_media_path(path, export_root=export_root)
+    except FanxiuResourceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    media_url = f"/api/fanxiu/resources/audio/media?path={quote(path, safe='')}"
+    if export_root:
+        media_url = f"{media_url}&export_root={quote(export_root, safe='')}"
+    display_title = (title or path.rsplit("/", 1)[-1]).strip() or "Fanxiu audio"
+    html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(display_title)}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --fg: #f6f7fb;
+      --muted: #9aa4b2;
+      --line: #2a3240;
+      --accent: #27c2d4;
+      --accent-soft: rgba(39, 194, 212, 0.18);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 36px;
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #050608;
+    }}
+    main {{
+      width: min(1040px, 92vw);
+      display: grid;
+      gap: 18px;
+    }}
+    h1 {{
+      margin: 0;
+      overflow-wrap: anywhere;
+      font-size: clamp(22px, 4vw, 42px);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }}
+    .path {{
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }}
+    .player {{
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 18px;
+      align-items: center;
+      padding: 24px 28px;
+      background: #111722;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+    }}
+    button {{
+      width: 72px;
+      height: 72px;
+      border: 0;
+      border-radius: 50%;
+      color: #06262c;
+      font-size: 18px;
+      font-weight: 800;
+      background: var(--accent);
+      cursor: pointer;
+    }}
+    .timeline {{
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+    }}
+    .time-row {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      font-size: 18px;
+    }}
+    input[type="range"] {{
+      width: 100%;
+      height: 34px;
+      margin: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }}
+    .volume {{
+      width: 128px;
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .volume input[type="range"] {{
+      height: 24px;
+    }}
+    @media (max-width: 720px) {{
+      body {{ padding: 18px; }}
+      .player {{ grid-template-columns: 1fr; }}
+      button {{ width: 64px; height: 64px; }}
+      .volume {{ width: 100%; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escape(display_title)}</h1>
+    <div class="path">{escape(path)}</div>
+    <section class="player">
+      <button id="toggle" type="button">播放</button>
+      <div class="timeline">
+        <div class="time-row">
+          <span id="current">0:00</span>
+          <span id="duration">0:00</span>
+        </div>
+        <input id="progress" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+      </div>
+      <label class="volume">
+        音量
+        <input id="volume" type="range" min="0" max="1" value="1" step="0.01" aria-label="音量">
+      </label>
+      <audio id="audio" preload="metadata" src="{escape(media_url)}"></audio>
+    </section>
+  </main>
+  <script>
+    const audio = document.getElementById('audio');
+    const toggle = document.getElementById('toggle');
+    const progress = document.getElementById('progress');
+    const current = document.getElementById('current');
+    const duration = document.getElementById('duration');
+    const volume = document.getElementById('volume');
+
+    function fmt(value) {{
+      if (!Number.isFinite(value) || value < 0) return '0:00';
+      const minutes = Math.floor(value / 60);
+      const seconds = Math.floor(value % 60);
+      return `${{minutes}}:${{String(seconds).padStart(2, '0')}}`;
+    }}
+    function sync() {{
+      current.textContent = fmt(audio.currentTime);
+      duration.textContent = fmt(audio.duration);
+      progress.value = Number.isFinite(audio.duration) && audio.duration > 0
+        ? String(Math.round(audio.currentTime / audio.duration * 1000))
+        : '0';
+      toggle.textContent = audio.paused ? '播放' : '暂停';
+    }}
+    toggle.addEventListener('click', () => {{
+      if (audio.paused) audio.play();
+      else audio.pause();
+    }});
+    progress.addEventListener('input', () => {{
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {{
+        audio.currentTime = Number(progress.value) / 1000 * audio.duration;
+      }}
+    }});
+    volume.addEventListener('input', () => {{
+      audio.volume = Number(volume.value);
+    }});
+    window.addEventListener('keydown', event => {{
+      if (event.code !== 'Space') return;
+      event.preventDefault();
+      toggle.click();
+    }});
+    audio.addEventListener('loadedmetadata', sync);
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('play', sync);
+    audio.addEventListener('pause', sync);
+    audio.addEventListener('ended', sync);
+    sync();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
 
 
 @router.post("/resources/apk/static-index")
@@ -3490,6 +4452,17 @@ def post_fanxiu_digitdoor_readyfight_skilllist_shape_probe(
     )
 
 
+@router.post("/resources/digitdoor/readyfight-cpp2il-consumer-probe")
+def post_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe(
+    req: FanxiuDigitDoorReadyFightCpp2IlConsumerProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
 @router.post("/resources/digitdoor/readyfight-runtime-sample-probe")
 def post_fanxiu_digitdoor_readyfight_runtime_sample_probe(
     req: FanxiuDigitDoorReadyFightRuntimeSampleProbeRequest,
@@ -3540,6 +4513,234 @@ def post_fanxiu_digitdoor_startgame_skillvos_shape_probe(
     return _run_resource_operation(
         build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
         digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/startgame-runtime-sample-probe")
+def post_fanxiu_digitdoor_startgame_runtime_sample_probe(
+    req: FanxiuDigitDoorStartGameRuntimeSampleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_startgame_runtime_sample_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/startgame-cpp2il-consumer-probe")
+def post_fanxiu_digitdoor_startgame_cpp2il_consumer_probe(
+    req: FanxiuDigitDoorStartGameCpp2IlConsumerProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/partner-attribute-formatter-probe")
+def post_fanxiu_digitdoor_partner_attribute_formatter_probe(
+    req: FanxiuDigitDoorPartnerAttributeFormatterProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_partner_attribute_formatter_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/combat-attribute-consumer-probe")
+def post_fanxiu_digitdoor_combat_attribute_consumer_probe(
+    req: FanxiuDigitDoorCombatAttributeConsumerProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_combat_attribute_consumer_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/gameplayer-settlement-probe")
+def post_fanxiu_digitdoor_gameplayer_settlement_probe(
+    req: FanxiuDigitDoorGamePlayerSettlementProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_gameplayer_settlement_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/gameplayer-runtime-sample-probe")
+def post_fanxiu_digitdoor_gameplayer_runtime_sample_probe(
+    req: FanxiuDigitDoorGamePlayerRuntimeSampleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/gameplayer-cpp2il-consumer-probe")
+def post_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe(
+    req: FanxiuDigitDoorGamePlayerCpp2IlConsumerProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/info-snapshot-probe")
+def post_fanxiu_digitdoor_info_snapshot_probe(
+    req: FanxiuDigitDoorInfoSnapshotProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_info_snapshot_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/uplevel-state-probe")
+def post_fanxiu_digitdoor_uplevel_state_probe(
+    req: FanxiuDigitDoorUpLevelStateProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_uplevel_state_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/unlock-state-probe")
+def post_fanxiu_digitdoor_unlock_state_probe(
+    req: FanxiuDigitDoorUnlockStateProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_unlock_state_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/skip-level-probe")
+def post_fanxiu_digitdoor_skip_level_probe(
+    req: FanxiuDigitDoorSkipLevelProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_skip_level_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/activity-end-probe")
+def post_fanxiu_digitdoor_activity_end_probe(
+    req: FanxiuDigitDoorActivityEndProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_activity_end_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/report-gmbattle-probe")
+def post_fanxiu_digitdoor_report_gmbattle_probe(
+    req: FanxiuDigitDoorReportGMBattleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_report_gmbattle_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-balance-probe")
+def post_fanxiu_digitdoor_pvp_balance_probe(
+    req: FanxiuDigitDoorPvpBalanceProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_balance_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-report-attr-snapshot-probe")
+def post_fanxiu_digitdoor_pvp_report_attr_snapshot_probe(
+    req: FanxiuDigitDoorPvpReportAttrSnapshotProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_report_attr_snapshot_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-report-acceptance-gap-probe")
+def post_fanxiu_digitdoor_pvp_report_acceptance_gap_probe(
+    req: FanxiuDigitDoorPvpReportAcceptanceGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-report-list-lifecycle-probe")
+def post_fanxiu_digitdoor_pvp_report_list_lifecycle_probe(
+    req: FanxiuDigitDoorPvpReportListLifecycleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_report_list_lifecycle_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-winreduce-gap-probe")
+def post_fanxiu_digitdoor_pvp_winreduce_gap_probe(
+    req: FanxiuDigitDoorPvpWinreduceGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_winreduce_gap_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-winner-projection-probe")
+def post_fanxiu_digitdoor_pvp_winner_projection_probe(
+    req: FanxiuDigitDoorPvpWinnerProjectionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_pvp_winner_projection_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/pvp-report-family-reuse-probe")
+def post_fanxiu_pvp_report_family_reuse_probe(
+    req: FanxiuPvpReportFamilyReuseProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_pvp_report_family_reuse_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/runtime-packet-coverage-probe")
+def post_fanxiu_digitdoor_runtime_packet_coverage_probe(
+    req: FanxiuDigitDoorRuntimePacketCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_runtime_packet_coverage_probe,
         export_root=req.export_root,
     )
 
@@ -3838,6 +5039,519 @@ def post_fanxiu_doupotd_gameplayer_result_probe(
 ) -> dict[str, Any]:
     return _run_resource_operation(
         build_fanxiu_doupotd_gameplayer_result_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-gap-probe")
+def post_fanxiu_doupotd_pvp_report_gap_probe(
+    req: FanxiuDoupoTDPvpReportGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-global-lua-surface-probe")
+def post_fanxiu_doupotd_pvp_report_global_lua_surface_probe(
+    req: FanxiuDoupoTDPvpReportGlobalLuaSurfaceProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_global_lua_surface_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-scene-payload-probe")
+def post_fanxiu_doupotd_pvp_report_scene_payload_probe(
+    req: FanxiuDoupoTDPvpReportScenePayloadProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_scene_payload_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-native-symbol-gap-probe")
+def post_fanxiu_doupotd_pvp_report_native_symbol_gap_probe(
+    req: FanxiuDoupoTDPvpReportNativeSymbolGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-native-lua-bridge-boundary-probe")
+def post_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe(
+    req: FanxiuDoupoTDPvpReportNativeLuaBridgeBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-netlogic-family-probe")
+def post_fanxiu_doupotd_pvp_report_netlogic_family_probe(
+    req: FanxiuDoupoTDPvpReportNetLogicFamilyProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_netlogic_family_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-lua-binding-boundary-probe")
+def post_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe(
+    req: FanxiuDoupoTDPvpReportLuaBindingBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-raw-export-coverage-probe")
+def post_fanxiu_doupotd_pvp_report_raw_export_coverage_probe(
+    req: FanxiuDoupoTDPvpReportRawExportCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-shape-alias-probe")
+def post_fanxiu_doupotd_pvp_report_shape_alias_probe(
+    req: FanxiuDoupoTDPvpReportShapeAliasProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_shape_alias_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-sender-alias-gap-probe")
+def post_fanxiu_doupotd_pvp_report_sender_alias_gap_probe(
+    req: FanxiuDoupoTDPvpReportSenderAliasGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-runtime-coverage-probe")
+def post_fanxiu_doupotd_pvp_report_runtime_coverage_probe(
+    req: FanxiuDoupoTDPvpReportRuntimeCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-focused-capture-readiness-probe")
+def post_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe(
+    req: FanxiuDoupoTDPvpReportFocusedCaptureReadinessProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-pcap-stream-readiness-probe")
+def post_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe(
+    req: FanxiuDoupoTDPvpReportPcapStreamReadinessProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
+        export_root=req.export_root,
+        server_host=req.server_host,
+        tshark_path=req.tshark_path,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-pcap-decode-metadata-probe")
+def post_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(
+    req: FanxiuDoupoTDPvpReportPcapDecodeMetadataProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
+        export_root=req.export_root,
+        server_host=req.server_host,
+        text_assets=req.text_assets,
+        max_streams_per_capture=req.max_streams_per_capture,
+        tshark_path=req.tshark_path,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-pcap-protocol-scope-probe")
+def post_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe(
+    req: FanxiuDoupoTDPvpReportPcapProtocolScopeProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
+        export_root=req.export_root,
+        server_host=req.server_host,
+        text_assets=req.text_assets,
+        max_streams_per_capture=req.max_streams_per_capture,
+        tshark_path=req.tshark_path,
+        use_existing_metadata=req.use_existing_metadata,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-pcap-observed-schema-coverage-probe")
+def post_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe(
+    req: FanxiuDoupoTDPvpReportPcapObservedSchemaCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
+        export_root=req.export_root,
+        server_host=req.server_host,
+        text_assets=req.text_assets,
+        max_streams_per_capture=req.max_streams_per_capture,
+        tshark_path=req.tshark_path,
+        use_existing_metadata=req.use_existing_metadata,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-pcap-observed-lua-handler-coverage-probe")
+def post_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe(
+    req: FanxiuDoupoTDPvpReportPcapObservedLuaHandlerCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
+        export_root=req.export_root,
+        server_host=req.server_host,
+        text_assets=req.text_assets,
+        max_streams_per_capture=req.max_streams_per_capture,
+        tshark_path=req.tshark_path,
+        use_existing_metadata=req.use_existing_metadata,
+        max_evidence_per_protocol=req.max_evidence_per_protocol,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-reward-result-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmRewardResultChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-practice-collect-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmPracticeCollectChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-activity-rank-sync-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmActivityRankSyncChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sync-time-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sync_time_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSyncTimeChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-notice-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmNoticeChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-blld-sync-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe(
+    req: FanxiuDoupoTDPcapObservedBlldSyncChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-self-seat-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_self_seat_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSelfSeatChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-lundao-role-info-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe(
+    req: FanxiuDoupoTDPcapObservedLundaoRoleInfoChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-lundao-last-leave-seat-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe(
+    req: FanxiuDoupoTDPcapObservedLundaoLastLeaveSeatChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-union-veins-union-list-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe(
+    req: FanxiuDoupoTDPcapObservedUnionVeinsUnionListChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-set-client-data-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSetClientDataChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-activity-base-sync-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe(
+    req: FanxiuDoupoTDPcapObservedActivityBaseSyncChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-yunmengpk-challenge-record-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe(
+    req: FanxiuDoupoTDPcapObservedYunmengPkChallengeRecordChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-scene-map-lifecycle-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSceneMapLifecycleChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-yunmengpk-info-sync-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe(
+    req: FanxiuDoupoTDPcapObservedYunmengPkInfoSyncChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-faze-show-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmFazeShowChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-all-buff-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmAllBuffChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-sync-unit-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmSyncUnitChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-restrict-status-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmRestrictStatusChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-change-peace-state-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmChangePeaceStateChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-is-cross-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmIsCrossChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-camp-flag-panel-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmCampFlagPanelChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-veins-select-sort-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmVeinsSelectSortChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-cross-boss-info-update-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmCrossBossInfoUpdateChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-sm-partner-arena-play-info-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe(
+    req: FanxiuDoupoTDPcapObservedSmPartnerArenaPlayInfoChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-land-contend-info-role-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe(
+    req: FanxiuDoupoTDPcapObservedLandContendInfoRoleChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-quanf-draw-syn-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe(
+    req: FanxiuDoupoTDPcapObservedQuanFDrawSynChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pcap-observed-venis-union-seat-role-chain-probe")
+def post_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe(
+    req: FanxiuDoupoTDPcapObservedVenisUnionSeatRoleChainProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-decoder-readiness-probe")
+def post_fanxiu_doupotd_pvp_report_decoder_readiness_probe(
+    req: FanxiuDoupoTDPvpReportDecoderReadinessProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
+        text_assets=req.text_assets,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-trigger-lifecycle-probe")
+def post_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe(
+    req: FanxiuDoupoTDPvpReportTriggerLifecycleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-trigger-base-dynamic-gap-probe")
+def post_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe(
+    req: FanxiuDoupoTDPvpReportTriggerBaseDynamicGapProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/pvp-report-trigger-delta-probe")
+def post_fanxiu_doupotd_pvp_report_trigger_delta_probe(
+    req: FanxiuDoupoTDPvpReportTriggerDeltaProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_pvp_report_trigger_delta_probe,
         export_root=req.export_root,
     )
 

@@ -1,3 +1,7 @@
+import json
+from collections import defaultdict
+from pathlib import Path
+
 from backend.models import UserDevice
 
 
@@ -12,6 +16,37 @@ def _create_local_entry(client):
     )
     assert response.status_code == 200
     return response.json()["id"]
+
+
+def _rank_context_prediction_candidates(rime_dir, history: list[str], prefix: str) -> list[tuple[str, float]]:
+    index = defaultdict(lambda: defaultdict(list))
+    for name in ["context_prediction_hot.tsv", "context_prediction_context_hot.tsv"]:
+        path = rime_dir / name
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            fields = line.split("\t")
+            if len(fields) < 4:
+                continue
+            context, row_prefix, candidate, weight = fields[:4]
+            index[context][row_prefix].append((candidate, float(weight)))
+
+    scores = defaultdict(float)
+    context_weights = [10.0, 12.0, 14.0, 16.0]
+    for length in range(1, min(4, len(history)) + 1):
+        context = " ".join(history[-length:])
+        for candidate, weight in index.get(context, {}).get(prefix, []):
+            scores[candidate] += context_weights[length - 1] * weight
+    for candidate, weight in index.get("__global", {}).get(prefix, []):
+        scores[candidate] += (0.08 if history else 1.0) * weight
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _load_rime_context_prediction_cases() -> list[dict]:
+    path = Path(__file__).resolve().parents[1] / "fixtures" / "rime_context_prediction_cases.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_local_entry_reports_missing_rime_context_prediction(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -216,6 +251,72 @@ def test_local_entry_hot_index_keeps_manual_single_char_only(client, auth_user, 
     assert "__global\tliuchang\t流畅\t2\t输入历史" in hot_text
     assert "__global\tdan\t但\t10\t输入历史" not in hot_text
     assert "__global\tyue\t余额\t10\t输入历史" not in hot_text
+
+
+def test_local_entry_refreshes_compact_context_hot_index(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction_pending.tsv").write_text(
+        "__global\tsheji\t设计\t20\t输入历史\n"
+        "__global\tsheji\t涉及\t8\t输入历史\n"
+        "产品\tsheji\t设计\t3\t输入历史\n"
+        "范围\tsheji\t涉及\t2\t输入历史\n"
+        "这个\tsheji\t涉及\t1\t输入历史\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(f"/api/device-entries/{entry_id}/rime/context-prediction/tree/refresh")
+
+    assert response.status_code == 200
+    context_hot_text = (rime_dir / "context_prediction_context_hot.tsv").read_text(encoding="utf-8")
+    assert "__global\tsheji\t设计\t20\t输入历史" not in context_hot_text
+    assert "产品\tsheji\t设计\t3\t输入历史" in context_hot_text
+    assert "范围\tsheji\t涉及\t2\t输入历史" in context_hot_text
+    assert "这个\tsheji\t涉及\t1\t输入历史" in context_hot_text
+
+    context_response = client.get(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/tree",
+        params={"source": "context_hot"},
+    )
+    assert context_response.status_code == 200
+    context_payload = context_response.json()
+    assert context_payload["source"] == "context_prediction_context_hot.tsv"
+    assert context_payload["summary"]["row_count"] == 3
+
+
+def test_local_entry_context_prediction_learns_char_ngram_without_segmentation(
+    client,
+    auth_user,
+    test_device,
+    tmp_path,
+    monkeypatch,
+):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/articles",
+        json={
+            "title": "上下文预测样例",
+            "content": "\n".join(str(item["corpus"]) for item in _load_rime_context_prediction_cases()),
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    context_hot_text = (rime_dir / "context_prediction_context_hot.tsv").read_text(encoding="utf-8")
+    for case in _load_rime_context_prediction_cases():
+        for row in case.get("expected_rows", []):
+            assert f"{row['context']}\t{row['prefix']}\t{row['candidate']}\t" in context_hot_text
+
+    for case in _load_rime_context_prediction_cases():
+        ranked = _rank_context_prediction_candidates(rime_dir, case["history"], case["input"])
+        assert ranked, case["name"]
+        assert ranked[0][0] == case["expected_top"], case["name"]
 
 
 def test_local_entry_refreshes_rime_context_prediction_from_pending(client, auth_user, test_device, tmp_path, monkeypatch):

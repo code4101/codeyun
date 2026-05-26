@@ -81,7 +81,8 @@ const WEIGHT_COMPARE_STEP = 1;
 
 const indexSourceOptions: { value: RimeContextPredictionSource; label: string; title: string }[] = [
   { value: 'snapshot', label: '完整索引', title: '用于分析，包含前文片段、当前拼音和候选分布。' },
-  { value: 'hot', label: '实时索引', title: '小狼毫输入时加载的快速候选表。' },
+  { value: 'hot', label: '全局热索引', title: '小狼毫输入时加载的全局快速候选表。' },
+  { value: 'context_hot', label: '前文热索引', title: '小狼毫输入时加载的前文加权候选表。' },
   { value: 'seed', label: '手动规则', title: '人工固定的纠偏和置顶规则。' },
 ];
 
@@ -1729,7 +1730,7 @@ onBeforeUnmount(() => {
         <el-tooltip effect="light" placement="bottom-end">
           <template #content>
             <div class="rime-help">
-              这里读取每台设备自己的 Rime 用户目录；完整索引用于分析，实时索引用于小狼毫快速候选，手动规则用于固定纠偏。
+              这里读取每台设备自己的 Rime 用户目录；完整索引用于分析，全局热索引和前文热索引用于小狼毫快速候选，手动规则用于固定纠偏。
             </div>
           </template>
           <button type="button" class="rime-help-button" aria-label="小狼毫输入法说明">

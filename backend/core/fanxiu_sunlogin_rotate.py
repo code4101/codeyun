@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+from pyxllib.cv.rgbfmt import (
+    compare_bgr_pixel_tolerance,
+    normalize_for_saved_jpeg_match,
+    to_bgr_frame,
+)
 
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.sunlogin_rotate_preview import (
@@ -579,6 +584,7 @@ def stop_sunlogin_rotate_preview(timeout: float = 3.0) -> dict[str, Any]:
 def stream_sunlogin_rotate_mjpeg(
     *,
     title: str | None = None,
+    title_match: str = "contains",
     fps: float | None = None,
     quality: int = 80,
     mode: str | None = None,
@@ -606,6 +612,7 @@ def stream_sunlogin_rotate_mjpeg(
         fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
         refind_interval=1.0,
         quality=quality,
+        title_match=title_match,
         auto_dismiss_popup=auto_dismiss_popup,
         popup_check_interval=popup_check_interval,
     )
@@ -614,6 +621,7 @@ def stream_sunlogin_rotate_mjpeg(
 def capture_sunlogin_rotate_frame(
     *,
     title: str | None = None,
+    title_match: str = "contains",
     mode: str | None = None,
     area: str | None = None,
     crop: str | None = None,
@@ -626,12 +634,13 @@ def capture_sunlogin_rotate_frame(
     set_dpi_awareness()
 
     normalized_title = (title or get_target_title()).strip() or get_target_title()
-    target = find_window(normalized_title)
+    target = find_window(normalized_title, title_match)
     capturer = WindowCapture(
         target.hwnd,
         area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer"),
         mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
         normalized_title,
+        title_match,
         refind_interval=1.0,
     )
     frame = capturer.capture()
@@ -654,6 +663,7 @@ def capture_sunlogin_rotate_frame(
 def save_fanxiu_screenshot_frame(
     *,
     title: str | None = None,
+    title_match: str = "contains",
     mode: str | None = None,
     area: str | None = None,
     crop: str | None = None,
@@ -665,6 +675,7 @@ def save_fanxiu_screenshot_frame(
 ) -> dict[str, Any]:
     frame = capture_sunlogin_rotate_frame(
         title=title,
+        title_match=title_match,
         mode=mode,
         area=area,
         crop=crop,
@@ -722,15 +733,7 @@ def _normalize_match_box(box: dict[str, Any], width: int, height: int) -> dict[s
 
 
 def _ensure_bgr_frame(frame: Any):
-    import cv2
-
-    if frame is None:
-        raise ValueError("图片为空")
-    if frame.ndim == 2:
-        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    if frame.ndim == 3 and frame.shape[2] == 4:
-        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-    return frame[:, :, :3]
+    return to_bgr_frame(frame, source_format="auto")
 
 
 def _crop_frame_box(frame: Any, box: dict[str, Any]):
@@ -753,39 +756,43 @@ def _scale_box(box: dict[str, Any], source_width: int, source_height: int, targe
     )
 
 
-def _compare_frame_crops(reference_crop: Any, current_crop: Any) -> tuple[int, float]:
+def _compare_frame_crops(reference_crop: Any, current_crop: Any, pixel_tolerance: int = 5) -> tuple[int, float]:
+    return compare_bgr_pixel_tolerance(reference_crop, current_crop, pixel_tolerance)
+
+
+def _correlate_frame_crops(reference_crop: Any, current_crop: Any) -> tuple[int, float]:
     import cv2
-    import numpy as np
 
-    reference_crop = _ensure_bgr_frame(reference_crop)
-    current_crop = _ensure_bgr_frame(current_crop)
-    if reference_crop.size == 0 or current_crop.size == 0:
-        raise ValueError("匹配框裁剪结果为空")
+    template = _ensure_bgr_frame(reference_crop)
+    crop = _ensure_bgr_frame(current_crop)
+    if template.size == 0 or crop.size == 0:
+        raise ValueError("匹配图片为空")
+    if template.shape[:2] != crop.shape[:2]:
+        crop = cv2.resize(crop, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
 
-    ref_height, ref_width = reference_crop.shape[:2]
-    if current_crop.shape[:2] != (ref_height, ref_width):
-        current_crop = cv2.resize(current_crop, (ref_width, ref_height), interpolation=cv2.INTER_AREA)
-
-    ref = reference_crop.astype(np.float32)
-    cur = current_crop.astype(np.float32)
-    diff_score = 1.0 - float(np.mean(np.abs(ref - cur))) / 255.0
-
-    ref_gray = cv2.cvtColor(reference_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    cur_gray = cv2.cvtColor(current_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    ref_std = float(ref_gray.std())
-    cur_std = float(cur_gray.std())
-    if ref_std > 1e-6 and cur_std > 1e-6:
-        corr = float(np.mean(((ref_gray - ref_gray.mean()) / ref_std) * ((cur_gray - cur_gray.mean()) / cur_std)))
-        corr_score = (corr + 1.0) / 2.0
-        score = 0.7 * diff_score + 0.3 * corr_score
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    if float(template_gray.std()) > 1e-6 and float(crop_gray.std()) > 1e-6:
+        result = cv2.matchTemplate(crop_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_value, _, _ = cv2.minMaxLoc(result)
+        score = max(0.0, min(1.0, float(max_value)))
     else:
-        score = diff_score
-
-    score = max(0.0, min(1.0, score))
+        result = cv2.matchTemplate(crop_gray, template_gray, cv2.TM_SQDIFF_NORMED)
+        min_value, _, _, _ = cv2.minMaxLoc(result)
+        score = max(0.0, min(1.0, 1.0 - float(min_value)))
     return int(round(score * 100)), score
 
 
-def _match_template_frame(reference_crop: Any, current_frame: Any, current_box: dict[str, Any]) -> dict[str, Any]:
+def _jpeg_normalize_frame(frame: Any, quality: int) -> tuple[Any, bytes]:
+    return normalize_for_saved_jpeg_match(frame, quality=quality, source_format="auto", return_bytes=True)
+
+
+def _match_template_frame(
+    reference_crop: Any,
+    current_frame: Any,
+    current_box: dict[str, Any],
+    pixel_tolerance: int = 5,
+) -> dict[str, Any]:
     import cv2
     import numpy as np
 
@@ -828,7 +835,7 @@ def _match_template_frame(reference_crop: Any, current_frame: Any, current_box: 
         frame_height,
     )
     matched_crop = _crop_frame_box(frame, box)
-    crop_similarity, crop_score = _compare_frame_crops(template, matched_crop)
+    crop_similarity, crop_score = _compare_frame_crops(template, matched_crop, pixel_tolerance)
     return {
         "box": box,
         "similarity": int(round(score * 100)),
@@ -843,6 +850,7 @@ def match_fanxiu_screenshot_box_frame(
     filename: str,
     box: dict[str, Any],
     title: str | None = None,
+    title_match: str = "contains",
     mode: str | None = None,
     area: str | None = None,
     crop: str | None = None,
@@ -851,6 +859,7 @@ def match_fanxiu_screenshot_box_frame(
     fixed_width: int | None = None,
     fixed_height: int | None = None,
     quality: int = 82,
+    pixel_tolerance: int = 5,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
     reference_frame = _read_image_bgr(source_path)
@@ -862,6 +871,7 @@ def match_fanxiu_screenshot_box_frame(
 
     current_frame = capture_sunlogin_rotate_frame(
         title=title,
+        title_match=title_match,
         mode=mode,
         area=area,
         crop=crop,
@@ -870,14 +880,15 @@ def match_fanxiu_screenshot_box_frame(
         fixed_width=fixed_width,
         fixed_height=fixed_height,
     )
+    current_frame, data = _jpeg_normalize_frame(current_frame, quality)
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
-    similarity, score = _compare_frame_crops(reference_crop, current_crop)
-    template_match = _match_template_frame(reference_crop, current_frame, current_box)
+    fixed_similarity, fixed_score = _correlate_frame_crops(reference_crop, current_crop)
+    fixed_pixel_similarity, fixed_pixel_score = _compare_frame_crops(reference_crop, current_crop, pixel_tolerance)
+    template_match = _match_template_frame(reference_crop, current_frame, current_box, pixel_tolerance)
 
     output_dir = get_fanxiu_match_frame_dir()
-    data = encode_jpeg(current_frame, quality)
     with _MATCH_FRAME_LOCK:
         output_dir.mkdir(parents=True, exist_ok=True)
         index, output = _next_numbered_frame_path(output_dir)
@@ -893,10 +904,12 @@ def match_fanxiu_screenshot_box_frame(
         "match_filename": output.name,
         "path": os.fspath(output),
         "directory": os.fspath(output_dir),
-        "similarity": similarity,
-        "score": score,
-        "fixed_similarity": similarity,
-        "fixed_score": score,
+        "similarity": fixed_similarity,
+        "score": fixed_score,
+        "fixed_similarity": fixed_similarity,
+        "fixed_score": fixed_score,
+        "fixed_pixel_similarity": fixed_pixel_similarity,
+        "fixed_pixel_score": fixed_pixel_score,
         "template_similarity": template_match["similarity"],
         "template_score": template_match["score"],
         "template_crop_similarity": template_match["crop_similarity"],
@@ -908,6 +921,7 @@ def match_fanxiu_screenshot_box_frame(
         "source_height": source_height,
         "width": current_width,
         "height": current_height,
+        "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
     }
 
 
@@ -916,6 +930,7 @@ def click_sunlogin_rotate_processed_point(
     x: float,
     y: float,
     title: str | None = None,
+    title_match: str = "contains",
     mode: str | None = None,
     area: str | None = None,
     crop: str | None = None,
@@ -945,8 +960,8 @@ def click_sunlogin_rotate_processed_point(
     )
     resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
 
-    target = find_window(normalized_title)
-    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, refind_interval=1.0)
+    target = find_window(normalized_title, title_match)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
     raw_frame = capturer.capture()
     if raw_frame is None:
         raise RuntimeError("点击前截图失败，无法确认窗口坐标")
@@ -1003,6 +1018,7 @@ def drag_sunlogin_rotate_processed_points(
     end_y: float,
     duration_ms: int = 300,
     title: str | None = None,
+    title_match: str = "contains",
     mode: str | None = None,
     area: str | None = None,
     crop: str | None = None,
@@ -1032,8 +1048,8 @@ def drag_sunlogin_rotate_processed_points(
     )
     resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
 
-    target = find_window(normalized_title)
-    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, refind_interval=1.0)
+    target = find_window(normalized_title, title_match)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
     raw_frame = capturer.capture()
     if raw_frame is None:
         raise RuntimeError("拖拽前截图失败，无法确认窗口坐标")

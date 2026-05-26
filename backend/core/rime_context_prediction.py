@@ -21,6 +21,7 @@ from pypinyin import Style, lazy_pinyin
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"
 RUNTIME_FILE = "context_prediction_runtime.tsv"
 HOT_FILE = "context_prediction_hot.tsv"
+CONTEXT_HOT_FILE = "context_prediction_context_hot.tsv"
 COUNTS_FILE = "context_prediction_model_counts.tsv"
 SEED_FILE = "context_prediction.tsv"
 PENDING_FILE = "context_prediction_pending.tsv"
@@ -43,12 +44,19 @@ ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 RIME_LUA_FILE = "rime.lua"
 
-ARTICLE_EXTRACTOR_VERSION = 5
+ARTICLE_EXTRACTOR_VERSION = 7
 MAX_CONTEXT_TOKENS = 4
+MIN_CONTEXT_CHARS = 2
+MAX_CONTEXT_CHARS = 4
+MAX_CONTEXT_CANDIDATE_CHARS = 1
+CONTEXT_CHAR_NGRAM_WEIGHT = 0.35
 MAX_ARTICLE_CHARS = 1_000_000
 DEFAULT_TOPK_PER_KEY = 20
 DEFAULT_RUNTIME_ROW_LIMIT = 5000
 DEFAULT_HOT_MIN_WEIGHT = 1.0
+DEFAULT_CONTEXT_HOT_ROW_LIMIT = 15000
+DEFAULT_CONTEXT_HOT_PER_PREFIX = 4
+DEFAULT_CONTEXT_HOT_PER_CANDIDATE = 3
 DEFAULT_ENGLISH_LEARNED_ROW_LIMIT = 5000
 DEFAULT_HISTORY_ARTICLE_LIMIT = 20000
 DEFAULT_HISTORY_ARTICLE_PAGE_SIZE = 2000
@@ -321,6 +329,14 @@ def _prediction_source_fingerprint(rime_dir: Path) -> str:
         "runtime_limit": DEFAULT_RUNTIME_ROW_LIMIT,
         "hot_min_weight": DEFAULT_HOT_MIN_WEIGHT,
         "hot_file": HOT_FILE,
+        "context_hot_file": CONTEXT_HOT_FILE,
+        "context_hot_limit": DEFAULT_CONTEXT_HOT_ROW_LIMIT,
+        "context_hot_per_prefix": DEFAULT_CONTEXT_HOT_PER_PREFIX,
+        "context_hot_per_candidate": DEFAULT_CONTEXT_HOT_PER_CANDIDATE,
+        "min_context_chars": MIN_CONTEXT_CHARS,
+        "max_context_chars": MAX_CONTEXT_CHARS,
+        "max_context_candidate_chars": MAX_CONTEXT_CANDIDATE_CHARS,
+        "context_char_ngram_weight": CONTEXT_CHAR_NGRAM_WEIGHT,
         "files": {
             relative_path: _source_file_signature(rime_dir / relative_path)
             for relative_path in source_files
@@ -367,6 +383,7 @@ def _prediction_outputs_exist(rime_dir: Path) -> bool:
         (rime_dir / SNAPSHOT_FILE).exists()
         and (rime_dir / RUNTIME_FILE).exists()
         and (rime_dir / HOT_FILE).exists()
+        and (rime_dir / CONTEXT_HOT_FILE).exists()
     )
 
 
@@ -378,6 +395,7 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
             SNAPSHOT_FILE,
             RUNTIME_FILE,
             HOT_FILE,
+            CONTEXT_HOT_FILE,
             COUNTS_FILE,
             SEED_FILE,
             PENDING_FILE,
@@ -2722,6 +2740,41 @@ def _article_sentence_tokens(text: str) -> list[list[str]]:
     return sentences
 
 
+def _iter_cjk_sentence_chunks(text: str):
+    for sentence in _SENTENCE_SPLIT_RE.split(str(text or "")):
+        for chunk in _CJK_RE.findall(sentence):
+            if len(chunk) >= 2:
+                yield chunk
+
+
+def _context_char_variants(context: str) -> list[str]:
+    return [context]
+
+
+def _add_article_context_char_ngram_counts(
+    counts: dict[tuple[str, str, str], float],
+    text: str,
+) -> None:
+    for chunk in _iter_cjk_sentence_chunks(text):
+        for index in range(1, len(chunk)):
+            max_context_len = min(MAX_CONTEXT_CHARS, index)
+            max_candidate_len = min(MAX_CONTEXT_CANDIDATE_CHARS, len(chunk) - index)
+            for context_len in range(MIN_CONTEXT_CHARS, max_context_len + 1):
+                context = chunk[index - context_len : index]
+                if _is_bad_corpus_phrase(context):
+                    continue
+                for candidate_len in range(1, max_candidate_len + 1):
+                    candidate = chunk[index : index + candidate_len]
+                    if _is_bad_corpus_phrase(candidate):
+                        continue
+                    prefix = _token_to_pinyin(candidate)
+                    if not prefix:
+                        continue
+                    weight = CONTEXT_CHAR_NGRAM_WEIGHT * candidate_len
+                    for context_variant in _context_char_variants(context):
+                        counts[(context_variant, prefix, candidate)] += weight
+
+
 def _extract_article_contributions(article_id: str, text: str) -> list[dict[str, Any]]:
     counts: dict[tuple[str, str, str], float] = defaultdict(float)
     for tokens in _article_sentence_tokens(text):
@@ -2738,6 +2791,8 @@ def _extract_article_contributions(article_id: str, text: str) -> list[dict[str,
                 if _is_bad_corpus_phrase(context.replace(" ", "")):
                     continue
                 counts[(context, prefix, candidate)] += 1.0
+
+    _add_article_context_char_ngram_counts(counts, text)
 
     return [
         {
@@ -3237,6 +3292,131 @@ def _write_prediction_hot(rime_dir: Path, rows: list[tuple[str, str, str, float,
     return len(hot_rows)
 
 
+def _collect_context_hot_rows(
+    rows: list[tuple[str, str, str, float, str]],
+    *,
+    limit: int = DEFAULT_CONTEXT_HOT_ROW_LIMIT,
+    per_prefix: int = DEFAULT_CONTEXT_HOT_PER_PREFIX,
+    per_candidate: int = DEFAULT_CONTEXT_HOT_PER_CANDIDATE,
+) -> list[tuple[str, str, str, float, str]]:
+    """Keep a compact context index without letting global rows crowd it out."""
+
+    if limit <= 0 or per_prefix <= 0 or per_candidate <= 0:
+        return []
+
+    by_candidate: dict[tuple[str, str], list[tuple[str, str, str, float, str]]] = defaultdict(list)
+    for row in rows:
+        context, prefix, candidate, weight, _comment = row
+        if context == "__global" or float(weight or 0) <= 0:
+            continue
+        by_candidate[(prefix, candidate)].append(row)
+
+    candidate_top_rows: dict[tuple[str, str], list[tuple[str, str, str, float, str]]] = {}
+    by_prefix: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for candidate_key, group_rows in by_candidate.items():
+        prefix, _candidate = candidate_key
+        group_rows.sort(
+            key=lambda row: (
+                -float(row[3] or 0),
+                -_context_token_count(row[0]),
+                row[0],
+                row[1],
+                row[2],
+            )
+        )
+        candidate_top_rows[candidate_key] = group_rows[:per_candidate]
+        by_prefix[prefix].append(candidate_key)
+
+    selected: list[tuple[str, str, str, float, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add_row(row: tuple[str, str, str, float, str]) -> bool:
+        key = (row[0], row[1], row[2])
+        if key in seen:
+            return False
+        seen.add(key)
+        selected.append(row)
+        return True
+
+    prefix_order = sorted(
+        by_prefix,
+        key=lambda prefix: (
+            -max(float(row[3] or 0) for key in by_prefix[prefix] for row in candidate_top_rows.get(key, [])),
+            prefix,
+        ),
+    )
+    for prefix in prefix_order:
+        candidate_keys = sorted(
+            by_prefix[prefix],
+            key=lambda key: (
+                -float((candidate_top_rows.get(key) or [("", "", "", 0.0, "")])[0][3] or 0),
+                key[1],
+            ),
+        )
+        added_for_prefix = 0
+        for offset in range(per_candidate):
+            for candidate_key in candidate_keys:
+                rows_for_candidate = candidate_top_rows.get(candidate_key) or []
+                if offset >= len(rows_for_candidate):
+                    continue
+                if add_row(rows_for_candidate[offset]):
+                    added_for_prefix += 1
+                    if added_for_prefix >= per_prefix or len(selected) >= limit:
+                        break
+            if added_for_prefix >= per_prefix or len(selected) >= limit:
+                break
+        if len(selected) >= limit:
+            break
+
+    if len(selected) < limit:
+        remaining: list[tuple[str, str, str, float, str]] = []
+        for group_rows in candidate_top_rows.values():
+            remaining.extend(group_rows)
+        remaining.sort(
+            key=lambda row: (
+                -float(row[3] or 0),
+                row[1],
+                row[2],
+                -_context_token_count(row[0]),
+                row[0],
+            )
+        )
+        for row in remaining:
+            key = (row[0], row[1], row[2])
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+
+    selected.sort(key=lambda row: (row[0], row[1], -float(row[3] or 0), row[2]))
+    return selected
+
+
+def _write_prediction_context_hot(rime_dir: Path, rows: list[tuple[str, str, str, float, str]]) -> int:
+    context_rows = _collect_context_hot_rows(rows)
+    path = rime_dir / CONTEXT_HOT_FILE
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# context_key\tpinyin_prefix\tcandidate\tweight\tcomment\n")
+        for context, prefix, candidate, weight, comment in context_rows:
+            fh.write(
+                "\t".join(
+                    [
+                        _clean_tsv_field(context),
+                        _clean_tsv_field(prefix),
+                        _clean_tsv_field(candidate),
+                        _format_weight(weight),
+                        _clean_tsv_field(comment),
+                    ]
+                )
+                + "\n"
+            )
+    os.replace(tmp, path)
+    return len(context_rows)
+
+
 def rebuild_rime_context_prediction_snapshot(
     rime_dir: Path | None = None,
     *,
@@ -3333,12 +3513,14 @@ def rebuild_rime_context_prediction_snapshot(
     _write_prediction_snapshot(target_dir, output)
     runtime_rows = _write_prediction_runtime(target_dir, output)
     hot_rows = _write_prediction_hot(target_dir, output)
+    context_hot_rows = _write_prediction_context_hot(target_dir, output)
     english_result = refresh_rime_english_dictionary(target_dir)
     _write_refresh_meta(target_dir)
     return {
         "snapshot_rows": len(output),
         "runtime_rows": runtime_rows,
         "hot_rows": hot_rows,
+        "context_hot_rows": context_hot_rows,
         "enabled_article_count": len(enabled_ids),
         "refreshed_article_count": stale_article_count,
         **english_result,
@@ -3988,7 +4170,9 @@ def make_rime_context_weight_compare_unavailable(
 
 def _normalize_prediction_tree_source(source: str | None) -> str:
     value = str(source or "").strip().lower()
-    if value in {"snapshot", "hot", "seed"}:
+    if value in {"snapshot", "hot", "context_hot", "context-hot", "context", "seed"}:
+        if value in {"context-hot", "context"}:
+            return "context_hot"
         return value
     return "snapshot"
 
@@ -3996,6 +4180,8 @@ def _normalize_prediction_tree_source(source: str | None) -> str:
 def _prediction_tree_source_candidates(rime_dir: Path, source_kind: str) -> list[tuple[str, Path]]:
     if source_kind == "hot":
         return [(HOT_FILE, rime_dir / HOT_FILE)]
+    if source_kind == "context_hot":
+        return [(CONTEXT_HOT_FILE, rime_dir / CONTEXT_HOT_FILE)]
     if source_kind == "seed":
         return [(SEED_FILE, rime_dir / SEED_FILE)]
     return [

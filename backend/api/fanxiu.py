@@ -61,6 +61,13 @@ from backend.core.fanxiu_sunlogin_rotate import (
     write_fanxiu_screenshot_pre_label,
 )
 from backend.core.fanxiu_pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
+from backend.core.fanxiu_visual_macro_runtime import (
+    VisualMacroRuntimeCallbacks,
+    begin_visual_macro_run,
+    end_visual_macro_run,
+    run_fanxiu_visual_script,
+    stop_visual_macro_run,
+)
 from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
 from backend.core.fanxiu_inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
 from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
@@ -840,6 +847,7 @@ class FanxiuGameWindow2ClickRequest(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -855,6 +863,7 @@ class FanxiuGameWindow2ServiceClickRequest(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -874,6 +883,7 @@ class FanxiuGameWindow2DragRequest(BaseModel):
     end_y: float = Field(ge=0)
     duration_ms: int = Field(300, ge=50, le=3000)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -892,6 +902,7 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
     end_y: float = Field(ge=0)
     duration_ms: int = Field(300, ge=50, le=3000)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -906,6 +917,7 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
 class FanxiuGameWindow2SaveFrameRequest(BaseModel):
     entry_id: str
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -918,6 +930,7 @@ class FanxiuGameWindow2SaveFrameRequest(BaseModel):
 
 class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -940,7 +953,9 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     entry_id: str
     filename: str
     box: FanxiuGameWindow2MatchBox
+    pixel_tolerance: int = Field(5, ge=0, le=255)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -954,7 +969,9 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
 class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     filename: str
     box: FanxiuGameWindow2MatchBox
+    pixel_tolerance: int = Field(5, ge=0, le=255)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
     area: str = Field("client", pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -1004,6 +1021,30 @@ class FanxiuPseudoCodeCompileRequest(BaseModel):
 
 class FanxiuPseudoCodeStartRequest(BaseModel):
     timeout: int = Field(120, ge=5, le=1200)
+
+
+class FanxiuVisualScriptRunRequest(BaseModel):
+    entry_id: str
+    card_id: str
+    timeout: int = Field(0, ge=0)
+    tick_interval: float = Field(1.0, ge=0.1, le=10.0)
+    title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
+    quality: int = Field(82, ge=1, le=100)
+
+
+class FanxiuVisualScriptStopRequest(BaseModel):
+    entry_id: str
+    card_id: str
 
 
 class FanxiuPseudoCodeRunResponse(BaseModel):
@@ -4897,6 +4938,7 @@ def _remote_entry_headers(entry: UserDevice) -> dict[str, str]:
 def _game_window2_stream_params(
     *,
     title: Optional[str],
+    title_match: str,
     fps: float,
     quality: int,
     mode: str,
@@ -4911,6 +4953,7 @@ def _game_window2_stream_params(
 ) -> dict[str, Any]:
     return {
         "title": title or "",
+        "title_match": title_match,
         "fps": fps,
         "quality": quality,
         "mode": mode,
@@ -5016,6 +5059,7 @@ def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         return save_fanxiu_screenshot_frame(
             title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
             mode=payload.get("mode"),
             area=payload.get("area"),
             crop=payload.get("crop"),
@@ -5034,7 +5078,9 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
         return match_fanxiu_screenshot_box_frame(
             filename=payload["filename"],
             box=payload["box"],
+            pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
             title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
             mode=payload.get("mode"),
             area=payload.get("area"),
             crop=payload.get("crop"),
@@ -5299,7 +5345,7 @@ def _list_fanxiu_pseudocode_card_rows(session: Session, user_id: int) -> list[Fa
     return session.exec(
         select(FanxiuPseudoCodeCard)
         .where(FanxiuPseudoCodeCard.user_id == user_id)
-        .order_by(FanxiuPseudoCodeCard.scope.asc(), FanxiuPseudoCodeCard.order_index.asc(), FanxiuPseudoCodeCard.created_at.asc())
+        .order_by(FanxiuPseudoCodeCard.order_index.asc(), FanxiuPseudoCodeCard.created_at.asc())
     ).all()
 
 
@@ -5450,6 +5496,10 @@ def _run_fanxiu_pseudocode_operation(action: str, operation) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _visual_macro_run_key(user_id: int, entry_id: str, card_id: str) -> str:
+    return f"{user_id}:{entry_id}:{card_id}"
+
+
 @status_router.get("/game-window2/pseudocode-cards", response_model=FanxiuPseudoCodeCardListResponse)
 def list_fanxiu_game_window2_pseudocode_cards(
     current_user: User = Depends(get_current_active_user),
@@ -5561,6 +5611,69 @@ def start_fanxiu_game_window2_pseudocode(
     )
 
 
+@status_router.post("/game-window2/visual-script/run", response_model=FanxiuPseudoCodeRunResponse)
+def run_fanxiu_game_window2_visual_script(
+    req: FanxiuVisualScriptRunRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    rows = _list_fanxiu_pseudocode_card_rows(session, current_user.id)
+    cards = [_serialize_fanxiu_pseudocode_card(row) for row in rows]
+    base_payload = req.model_dump(
+        exclude_none=True,
+        exclude={"entry_id", "card_id", "timeout", "tick_interval"},
+    )
+
+    def run_match(payload: dict[str, Any]) -> dict[str, Any]:
+        return _match_game_window2_service(payload) if entry.mode == "local" else _match_remote_game_window2(entry, payload)
+
+    def run_click(payload: dict[str, Any]) -> dict[str, Any]:
+        return _click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload)
+
+    def run_drag(payload: dict[str, Any]) -> dict[str, Any]:
+        return _drag_game_window2_service(payload) if entry.mode == "local" else _drag_remote_game_window2(entry, payload)
+
+    run_key = _visual_macro_run_key(current_user.id, req.entry_id, req.card_id)
+    stop_event = begin_visual_macro_run(run_key)
+
+    def run_operation() -> dict[str, Any]:
+        try:
+            return run_fanxiu_visual_script(
+                cards,
+                selected_card_id=req.card_id,
+                base_payload=base_payload,
+                callbacks=VisualMacroRuntimeCallbacks(match=run_match, click=run_click, drag=run_drag),
+                timeout=req.timeout,
+                tick_interval=req.tick_interval,
+                stop_event=stop_event,
+            )
+        finally:
+            end_visual_macro_run(run_key, stop_event)
+
+    return _run_fanxiu_pseudocode_operation(
+        "执行",
+        run_operation,
+    )
+
+
+@status_router.post("/game-window2/visual-script/stop")
+def stop_fanxiu_game_window2_visual_script(
+    req: FanxiuVisualScriptStopRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    stopped = stop_visual_macro_run(_visual_macro_run_key(current_user.id, req.entry_id, req.card_id))
+    return {"ok": True, "stopped": stopped}
+
+
 @status_router.post("/game-window2/stream-token", response_model=FanxiuGameWindow2StreamTokenResponse)
 def create_fanxiu_game_window2_stream_token(
     req: FanxiuGameWindow2StreamTokenRequest,
@@ -5589,6 +5702,7 @@ def create_fanxiu_game_window2_stream_token(
 def stream_fanxiu_game_window2(
     token: str = Query(...),
     title: Optional[str] = Query(None),
+    title_match: str = Query("contains", pattern="^(contains|exact)$"),
     fps: float = Query(12.0, ge=1.0, le=30.0),
     quality: int = Query(82, ge=1, le=100),
     mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
@@ -5605,6 +5719,7 @@ def stream_fanxiu_game_window2(
     entry, _current_user = _decode_game_window2_stream_token(session, token)
     params = _game_window2_stream_params(
         title=title,
+        title_match=title_match,
         fps=fps,
         quality=quality,
         mode=mode,
@@ -5625,6 +5740,7 @@ def stream_fanxiu_game_window2(
 @status_router.get("/game-window2/service-stream")
 def stream_fanxiu_game_window2_service(
     title: Optional[str] = Query(None),
+    title_match: str = Query("contains", pattern="^(contains|exact)$"),
     fps: float = Query(12.0, ge=1.0, le=30.0),
     quality: int = Query(82, ge=1, le=100),
     mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
@@ -5640,6 +5756,7 @@ def stream_fanxiu_game_window2_service(
 ):
     params = _game_window2_stream_params(
         title=title,
+        title_match=title_match,
         fps=fps,
         quality=quality,
         mode=mode,

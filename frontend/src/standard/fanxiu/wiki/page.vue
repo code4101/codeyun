@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowRight, Refresh, Search } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Close, Refresh, Search, TopRight } from '@element-plus/icons-vue'
 
 import {
   buildFanxiuResourceHref,
@@ -39,9 +39,14 @@ import {
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuProtocolSemantics,
+  getFanxiuStaticAssetManifest,
+  getFanxiuStaticAssetPreviewManifest,
   getFanxiuResourceIconUrl,
+  getFanxiuStaticVisualManifest,
   getFanxiuWikiLinkIndex,
+  getFanxiuWwiseMp3Manifest,
   listFanxiuTcpBusinessEntries,
+  searchFanxiuStaticVisualByImage,
   searchFanxiuActivityCards,
   searchFanxiuDigitDoorCharacterCards,
   searchFanxiuDigitDoorEnhanceGroups,
@@ -138,11 +143,19 @@ import {
   type FanxiuProtocolSemanticFeature,
   type FanxiuProtocolSemanticResponse,
   type FanxiuProtocolSemanticRow,
+  type FanxiuStaticAssetManifestResponse,
+  type FanxiuStaticAssetManifestRow,
+  type FanxiuStaticAssetPreviewManifestResponse,
+  type FanxiuStaticAssetPreviewItem,
+  type FanxiuStaticVisualManifestResponse,
+  type FanxiuStaticVisualManifestRow,
   type FanxiuTcpBusinessEntry,
   type FanxiuTcpBusinessCategorySummary,
   type FanxiuTcpBusinessProtocolSample,
   type FanxiuTcpBusinessProtocolSummary,
   type FanxiuTimelineHint,
+  type FanxiuWwiseMp3ManifestResponse,
+  type FanxiuWwiseMp3ManifestRow,
 } from '@/api/fanxiu'
 
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
@@ -152,6 +165,9 @@ const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
 const WIKI_TABS = [
   { key: 'item', label: '道具' },
+  { key: 'visual', label: '图片' },
+  { key: 'asset', label: '素材' },
+  { key: 'audio', label: '音乐' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
   { key: 'lingjie', label: '灵界词条' },
@@ -164,6 +180,31 @@ const WIKI_TABS = [
   { key: 'protocol', label: '协议' },
 ] as const
 
+type WikiTab = typeof WIKI_TABS[number]['key']
+
+const AUXILIARY_TOP_TAB_KEY = 'reverse'
+const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
+  { key: 'visual', label: '图片' },
+  { key: 'asset', label: '素材' },
+  { key: 'audio', label: '音乐' },
+  { key: 'digitdoor', label: '数字门角色' },
+  { key: 'digitdoor_level', label: '数字门关卡' },
+  { key: 'digitdoor_enhance', label: '数字门强化' },
+  { key: 'doupotd', label: '斗破角色' },
+  { key: 'doupotd_reward', label: '斗破奖励' },
+  { key: 'protocol', label: '协议' },
+]
+const AUXILIARY_WIKI_TAB_KEYS = new Set<WikiTab>(AUXILIARY_WIKI_TABS.map(tab => tab.key))
+const TOP_WIKI_TABS = [
+  { key: 'item', label: '道具' },
+  { key: 'activity', label: '活动' },
+  { key: 'gongfa', label: '功法' },
+  { key: 'lingjie', label: '灵界词条' },
+  { key: 'packet', label: '抓包' },
+  { key: AUXILIARY_TOP_TAB_KEY, label: '逆向资料' },
+] as const
+type TopWikiTab = typeof TOP_WIKI_TABS[number]['key']
+
 const DEFAULT_PROTOCOL_FEATURES: FanxiuProtocolSemanticFeature[] = [
   { key: 'bluestarsea', title: 'BlueStarSea' },
   { key: 'blld', title: 'BLLD' },
@@ -171,6 +212,7 @@ const DEFAULT_PROTOCOL_FEATURES: FanxiuProtocolSemanticFeature[] = [
   { key: 'gongfa', title: 'Gongfa' },
 ]
 type SortMode = 'default' | 'time_asc' | 'time_desc'
+type StaticAssetCatalogView = 'semantic'
 const SORT_MODE_ORDER: SortMode[] = ['default', 'time_asc', 'time_desc']
 const SORT_MODE_LABELS: Record<SortMode, string> = {
   default: '默认',
@@ -179,6 +221,33 @@ const SORT_MODE_LABELS: Record<SortMode, string> = {
 }
 const PROGRESSION_ORDER = ['special_jie', 'renjie_jie', 'star', 'upgrade', 'gongfa_jie', 'lingjie_jie']
 const GONGFA_QUALITY_GRADE_ORDER = ['上品', '珍品', '绝品', '仙品', '神品', '圣品']
+const AUDIO_KIND_FILTER_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'bgm', label: 'BGM' },
+  { value: 'ambient', label: 'AMB' },
+  { value: 'ui', label: 'UI' },
+  { value: 'audio', label: '音效' },
+] as const
+const VISUAL_ASSET_GROUP_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'icon', label: '图标' },
+  { value: 'text', label: '标题' },
+  { value: 'image', label: '大图' },
+  { value: 'sprite', label: '切片' },
+  { value: 'apk', label: 'APK' },
+] as const
+const STATIC_ASSET_SEMANTIC_GROUP_OPTIONS = [
+  { value: '', label: '全部' },
+  { value: 'function', label: '功能' },
+  { value: 'item', label: '道具' },
+  { value: 'activity', label: '活动' },
+  { value: 'activity_gift', label: '礼包' },
+  { value: 'model', label: '模型' },
+  { value: 'monster', label: '怪物' },
+  { value: 'skill', label: '技能' },
+  { value: 'buff', label: 'Buff' },
+  { value: 'gongfa_skill', label: '功法技能' },
+] as const
 const PROGRESSION_LABELS: Record<string, string> = {
   gongfa_jie: '功法进阶',
   lingjie_jie: '灵界进阶',
@@ -237,6 +306,10 @@ type PageConfig = {
   activityKindFilter?: string
   activityTimeFilter?: string
   activityTypeFilter?: string
+  visualAssetGroupFilter?: string
+  staticAssetCatalogView?: StaticAssetCatalogView
+  staticAssetGroupFilter?: string
+  audioKindFilter?: string
   digitDoorStageFilter?: string
   protocolFeature?: string
   protocolRoleFilter?: string
@@ -249,7 +322,6 @@ type PageConfig = {
   expandedFacetRows?: Record<string, boolean>
 }
 
-type WikiTab = typeof WIKI_TABS[number]['key']
 type WikiLinkedItem = FanxiuGongfaLinkedItem | FanxiuLingjieFeatureItem
 type WikiLinkTarget = FanxiuResourceLinkTarget
 type PacketSampleTable = {
@@ -260,9 +332,22 @@ type PacketSampleTable = {
 }
 
 const activeTab = ref<WikiTab>('item')
+const selectedAuxiliaryTab = ref<WikiTab>('visual')
+const activeTopTab = computed<TopWikiTab>({
+  get() {
+    return isAuxiliaryWikiTab(activeTab.value) ? AUXILIARY_TOP_TAB_KEY : activeTab.value as TopWikiTab
+  },
+  set(value) {
+    activeTab.value = value === AUXILIARY_TOP_TAB_KEY ? selectedAuxiliaryTab.value : value as WikiTab
+  },
+})
+const showAuxiliaryTabs = computed(() => isAuxiliaryWikiTab(activeTab.value))
 const query = ref('')
 const searchHistory = ref<Record<WikiTab, string[]>>({
   item: [],
+  visual: [],
+  asset: [],
+  audio: [],
   activity: [],
   gongfa: [],
   lingjie: [],
@@ -284,6 +369,10 @@ const itemSubTypeFilter = ref('')
 const activityKindFilter = ref('')
 const activityTimeFilter = ref('')
 const activityTypeFilter = ref('')
+const visualAssetGroupFilter = ref('')
+const staticAssetCatalogView = ref<StaticAssetCatalogView>('semantic')
+const staticAssetGroupFilter = ref('')
+const audioKindFilter = ref('')
 const digitDoorStageFilter = ref('')
 const protocolFeature = ref('bluestarsea')
 const protocolRoleFilter = ref('')
@@ -295,6 +384,14 @@ const pageSize = ref(50)
 const total = ref(0)
 const stats = ref<FanxiuGongfaStats>({})
 const itemStats = ref<FanxiuItemStats>({})
+const visualManifest = ref<FanxiuStaticVisualManifestResponse | null>(null)
+const visualSimilarityFile = ref<File | null>(null)
+const visualSimilarityPreviewUrl = ref('')
+const visualSimilaritySourceName = ref('')
+const visualSimilarityPreviewList = computed(() => visualSimilarityPreviewUrl.value ? [visualSimilarityPreviewUrl.value] : [])
+const staticAssetManifest = ref<FanxiuStaticAssetManifestResponse | null>(null)
+const staticAssetPreviewManifest = ref<FanxiuStaticAssetPreviewManifestResponse | null>(null)
+const audioManifest = ref<FanxiuWwiseMp3ManifestResponse | null>(null)
 const activityStats = ref<FanxiuActivityStats>({})
 const lingjieStats = ref<FanxiuLingjieFeatureStats>({})
 const digitDoorStats = ref<FanxiuDigitDoorStats>({})
@@ -326,6 +423,9 @@ const itemFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const activityFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const gongfaItems = ref<FanxiuGongfaSearchItem[]>([])
 const itemItems = ref<FanxiuItemSearchItem[]>([])
+const visualItems = ref<FanxiuStaticVisualManifestRow[]>([])
+const staticAssetItems = ref<FanxiuStaticAssetManifestRow[]>([])
+const audioItems = ref<FanxiuWwiseMp3ManifestRow[]>([])
 const activityItems = ref<FanxiuActivitySearchItem[]>([])
 const lingjieItems = ref<FanxiuLingjieFeatureSearchItem[]>([])
 const digitDoorItems = ref<FanxiuDigitDoorCharacterSearchItem[]>([])
@@ -362,6 +462,7 @@ const contextMenu = ref({
 })
 const loadingList = ref(false)
 const loadingDetail = ref(false)
+const loadingStaticAssetPreview = ref(false)
 const loadingHomeMakeStaticDetail = ref(false)
 const loadingHomeMakeBuffParameterSemantics = ref(false)
 const loadingHomeMakeFormulaCatalog = ref(false)
@@ -384,6 +485,7 @@ const route = useRoute()
 const router = useRouter()
 let listRequestSeq = 0
 let detailRequestSeq = 0
+let staticAssetPreviewRequestSeq = 0
 let homeMakeStaticDetailRequestSeq = 0
 let homeMakeBuffParameterSemanticsRequestSeq = 0
 let homeMakeFormulaCatalogRequestSeq = 0
@@ -393,8 +495,13 @@ let applyingRouteState = false
 let internalTabNavigation = false
 let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
 
+function isAuxiliaryWikiTab(tab: WikiTab) {
+  return AUXILIARY_WIKI_TAB_KEYS.has(tab)
+}
+
 function normalizeWikiTab(value: unknown): WikiTab | null {
   const text = Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+  if (text === AUXILIARY_TOP_TAB_KEY) return selectedAuxiliaryTab.value
   return WIKI_TABS.some(tab => tab.key === text) ? text as WikiTab : null
 }
 
@@ -411,6 +518,9 @@ function applyRouteState() {
   let changed = false
   applyingRouteState = true
   try {
+    if (routeTab && isAuxiliaryWikiTab(routeTab)) {
+      selectedAuxiliaryTab.value = routeTab
+    }
     if (routeTab && activeTab.value !== routeTab) {
       activeTab.value = routeTab
       changed = true
@@ -469,8 +579,28 @@ function normalizeSortMode(value: unknown): SortMode {
   return text === 'time_asc' || text === 'time_desc' ? text : 'default'
 }
 
+function normalizeAudioKindFilter(value: unknown) {
+  const text = String(value ?? '').trim().toLowerCase()
+  if (text === 'amb') return 'ambient'
+  return AUDIO_KIND_FILTER_OPTIONS.some(option => option.value === text) ? text : ''
+}
+
+function normalizeVisualAssetGroupFilter(value: unknown) {
+  const text = String(value ?? '').trim().toLowerCase()
+  return VISUAL_ASSET_GROUP_OPTIONS.some(option => option.value === text) ? text : ''
+}
+
+function normalizeStaticAssetGroupFilter(value: unknown) {
+  const text = String(value ?? '').trim().toLowerCase()
+  return STATIC_ASSET_SEMANTIC_GROUP_OPTIONS.some(option => option.value === text) ? text : ''
+}
+
+function normalizeStaticAssetCatalogView(value: unknown): StaticAssetCatalogView {
+  return 'semantic'
+}
+
 function createEmptySearchHistory(): Record<WikiTab, string[]> {
-  return { item: [], activity: [], gongfa: [], lingjie: [], digitdoor: [], digitdoor_level: [], digitdoor_enhance: [], doupotd: [], doupotd_reward: [], protocol: [], packet: [] }
+  return Object.fromEntries(WIKI_TABS.map(tab => [tab.key, []])) as Record<WikiTab, string[]>
 }
 
 function normalizeSearchQuery(value: unknown) {
@@ -568,8 +698,10 @@ function loadPageConfig() {
     const raw = window.localStorage.getItem(PAGE_CONFIG_STORAGE_KEY)
     if (!raw) return
     const config = JSON.parse(raw) as PageConfig
-    if (WIKI_TABS.some(tab => tab.key === config.activeTab)) {
-      activeTab.value = config.activeTab
+    const configTab = normalizeWikiTab(config.activeTab)
+    if (configTab) {
+      activeTab.value = configTab
+      if (isAuxiliaryWikiTab(configTab)) selectedAuxiliaryTab.value = configTab
     }
     query.value = String(config.query ?? '')
     gongfaQualityGradeFilter.value = String(config.gongfaQualityGradeFilter ?? '')
@@ -581,6 +713,10 @@ function loadPageConfig() {
     activityKindFilter.value = String(config.activityKindFilter ?? '')
     activityTimeFilter.value = String(config.activityTimeFilter ?? '')
     activityTypeFilter.value = String(config.activityTypeFilter ?? '')
+    visualAssetGroupFilter.value = normalizeVisualAssetGroupFilter(config.visualAssetGroupFilter)
+    staticAssetCatalogView.value = normalizeStaticAssetCatalogView(config.staticAssetCatalogView)
+    staticAssetGroupFilter.value = normalizeStaticAssetGroupFilter(config.staticAssetGroupFilter)
+    audioKindFilter.value = normalizeAudioKindFilter(config.audioKindFilter)
     digitDoorStageFilter.value = String(config.digitDoorStageFilter ?? '')
     protocolFeature.value = String(config.protocolFeature ?? 'bluestarsea') || 'bluestarsea'
     protocolRoleFilter.value = String(config.protocolRoleFilter ?? '')
@@ -613,6 +749,10 @@ function persistPageConfig() {
       activityKindFilter: activityKindFilter.value,
       activityTimeFilter: activityTimeFilter.value,
       activityTypeFilter: activityTypeFilter.value,
+      visualAssetGroupFilter: visualAssetGroupFilter.value,
+      staticAssetCatalogView: staticAssetCatalogView.value,
+      staticAssetGroupFilter: staticAssetGroupFilter.value,
+      audioKindFilter: audioKindFilter.value,
       digitDoorStageFilter: digitDoorStageFilter.value,
       protocolFeature: protocolFeature.value,
       protocolRoleFilter: protocolRoleFilter.value,
@@ -638,6 +778,45 @@ const visibleSearchHistory = computed(() => {
   const needle = normalizeSearchQuery(query.value)
   const list = activeSearchHistory.value
   return needle ? list.filter(item => item.includes(needle)) : list
+})
+
+const visualAssetGroupQueryCounts = computed<Record<string, number>>(() => {
+  return visualManifest.value?.stats?.query_asset_groups ?? visualManifest.value?.stats?.asset_groups ?? {}
+})
+
+const visualAssetGroupFilterOptions = computed(() => {
+  const counts = visualAssetGroupQueryCounts.value
+  const allCount = visualManifest.value?.stats?.query_total ?? visualManifest.value?.filtered ?? visualManifest.value?.total ?? 0
+  return VISUAL_ASSET_GROUP_OPTIONS.map(option => ({
+    ...option,
+    count: option.value ? Number(counts[option.value] ?? 0) : Number(allCount),
+  }))
+})
+
+const staticAssetGroupQueryCounts = computed<Record<string, number>>(() => {
+  return staticAssetManifest.value?.stats?.query_asset_groups ?? staticAssetManifest.value?.stats?.asset_groups ?? {}
+})
+
+const staticAssetGroupFilterOptions = computed(() => {
+  const counts = staticAssetGroupQueryCounts.value
+  const allCount = staticAssetManifest.value?.stats?.query_total ?? staticAssetManifest.value?.filtered ?? staticAssetManifest.value?.total ?? 0
+  return STATIC_ASSET_SEMANTIC_GROUP_OPTIONS.map(option => ({
+    ...option,
+    count: option.value ? Number(counts[option.value] ?? 0) : Number(allCount),
+  }))
+})
+
+const audioKindQueryCounts = computed<Record<string, number>>(() => {
+  return audioManifest.value?.stats?.query_kinds ?? audioManifest.value?.stats?.kinds ?? {}
+})
+
+const audioKindFilterOptions = computed(() => {
+  const counts = audioKindQueryCounts.value
+  const allCount = audioManifest.value?.stats?.query_total ?? audioManifest.value?.total ?? 0
+  return AUDIO_KIND_FILTER_OPTIONS.map(option => ({
+    ...option,
+    count: option.value ? Number(counts[option.value] ?? 0) : Number(allCount),
+  }))
 })
 
 type FacetFilterMap = Record<string, string>
@@ -704,6 +883,15 @@ const selectedListItem = computed(() => {
   if (activeTab.value === 'item') {
     return itemItems.value.find(item => String(item.id) === selectedId.value) ?? null
   }
+  if (activeTab.value === 'visual') {
+    return visualItems.value.find(item => getVisualAssetKey(item) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'asset') {
+    return staticAssetItems.value.find(item => getStaticAssetKey(item) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'audio') {
+    return audioItems.value.find(item => getAudioAssetKey(item) === selectedId.value) ?? null
+  }
   if (activeTab.value === 'activity') {
     return activityItems.value.find(item => String(item.id) === selectedId.value) ?? null
   }
@@ -731,6 +919,33 @@ const selectedListItem = computed(() => {
   return gongfaItems.value.find(item => String(item.id) === selectedId.value) ?? null
 })
 
+const selectedVisualAsset = computed(() => visualItems.value.find(item => getVisualAssetKey(item) === selectedId.value) ?? null)
+const selectedStaticAsset = computed(() => staticAssetItems.value.find(item => getStaticAssetKey(item) === selectedId.value) ?? null)
+const selectedAudioAsset = computed(() => audioItems.value.find(item => getAudioAssetKey(item) === selectedId.value) ?? null)
+const selectedStaticAssetPreviewItems = computed(() => staticAssetPreviewManifest.value?.items ?? [])
+const selectedStaticAssetBusinessImages = computed<FanxiuStaticAssetPreviewItem[]>(() => {
+  const item = selectedStaticAsset.value
+  const urls = item?.semantic_visual_media_urls ?? []
+  const names = splitPipeText(item?.semantic_visual_names)
+  const paths = splitPipeText(item?.semantic_visual_media_paths)
+  return urls.map((url, index) => ({
+    name: names[index] || paths[index] || `业务图片 ${index + 1}`,
+    kind: 'business_image',
+    media_path: paths[index] || url,
+    media_url: url,
+    object_type: '业务图片',
+    is_original_image: true,
+  }))
+})
+const selectedStaticAssetOriginalImages = computed(() =>
+  selectedStaticAssetBusinessImages.value.length
+    ? selectedStaticAssetBusinessImages.value
+    : selectedStaticAssetPreviewItems.value.filter(item => item.is_original_image && item.media_url),
+)
+const selectedStaticAssetDerivedPreviews = computed(() =>
+  selectedStaticAssetPreviewItems.value.filter(item => !item.is_original_image && item.media_url),
+)
+
 const contextMenuStyle = computed(() => ({
   left: `${contextMenu.value.x}px`,
   top: `${contextMenu.value.y}px`,
@@ -739,6 +954,21 @@ const contextMenuStyle = computed(() => ({
 const selectedTerms = computed(() => {
   if (activeTab.value === 'item') {
     return selectedItem.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
+  }
+  if (activeTab.value === 'visual') {
+    const item = selectedVisualAsset.value
+    return uniqueLabels([item?.asset_group, item?.category, item?.source_kind, item?.atlas_key].filter(Boolean)).slice(0, 8)
+  }
+  if (activeTab.value === 'asset') {
+    const item = selectedStaticAsset.value
+    if (item?.semantic_id) {
+      return uniqueLabels([item.semantic_group, item.semantic_type, item.semantic_visual_categories, item.linked_asset_groups].filter(Boolean)).slice(0, 8)
+    }
+    return uniqueLabels([item?.asset_group, item?.source_kind, item?.category, item?.suffix].filter(Boolean)).slice(0, 8)
+  }
+  if (activeTab.value === 'audio') {
+    const item = selectedAudioAsset.value
+    return uniqueLabels([item?.kind, item?.encoding, item?.sample_rate ? `${item.sample_rate}Hz` : '', item?.channels ? `${item.channels}ch` : ''].filter(Boolean)).slice(0, 8)
   }
   if (activeTab.value === 'activity') {
     return selectedActivity.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
@@ -790,114 +1020,11 @@ const selectedTerms = computed(() => {
   return selectedCard.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
 })
 
-const objectStats = computed(() => {
-  if (activeTab.value === 'item') {
-    return [
-      { label: '道具', value: itemStats.value.item_count },
-      { label: '品质', value: itemStats.value.quality_count },
-      { label: '类型', value: itemStats.value.type_count },
-      { label: '子类', value: itemStats.value.sub_type_count },
-      { label: '时间线索', value: itemStats.value.item_with_time_hint_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'activity') {
-    const staleCount = Number(activityStats.value.stale_card_count)
-    return [
-      { label: '对象', value: activityStats.value.catalog_card_count },
-      ...(Number.isFinite(staleCount) && staleCount > 0
-        ? [
-            { label: '当前', value: activityStats.value.current_card_count },
-            { label: '旧版保留', value: activityStats.value.stale_card_count },
-          ]
-        : []),
-      { label: '活动', value: activityStats.value.activity_count },
-      { label: '轮换', value: activityStats.value.activity_loop_count },
-      { label: '首领', value: activityStats.value.activity_boss_count },
-      { label: '任务', value: activityStats.value.active_task_count },
-      { label: '礼包', value: activityStats.value.activity_gift_count },
-      { label: '签到', value: activityStats.value.activity_signin_count },
-      { label: '榜单奖励', value: activityStats.value.activity_list_reward_count },
-      { label: '时间线索', value: activityStats.value.activity_with_time_hint_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'lingjie') {
-    return [
-      { label: '功法', value: lingjieStats.value.gongfa_count },
-      { label: '词条组', value: lingjieStats.value.linked_feature_group_count },
-      { label: '道具', value: lingjieStats.value.linked_item_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'digitdoor') {
-    return [
-      { label: '角色', value: digitDoorStats.value.character_count },
-      { label: '技能', value: digitDoorStats.value.skill_show_count },
-      { label: '强化效果', value: digitDoorStats.value.skill_enhance_effect_count },
-      { label: '门效果', value: digitDoorStats.value.door_effect_count },
-      { label: 'Buff', value: digitDoorStats.value.buff_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'digitdoor_level') {
-    return [
-      { label: '关卡', value: digitDoorLevelStats.value.level_config_count },
-      { label: '章节', value: digitDoorLevelStats.value.pre_level_reward_count },
-      { label: '刷门点', value: digitDoorLevelStats.value.door_refresh_count },
-      { label: '门效果', value: digitDoorLevelStats.value.door_effect_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'digitdoor_enhance') {
-    return [
-      { label: '强化组', value: digitDoorEnhanceStats.value.skill_enhance_group_count },
-      { label: '强化', value: digitDoorEnhanceStats.value.enhance_count },
-      { label: '强化效果', value: digitDoorEnhanceStats.value.skill_enhance_effect_count },
-      { label: '门效果', value: digitDoorEnhanceStats.value.door_effect_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'doupotd') {
-    return [
-      { label: '角色', value: doupoTDStats.value.partner_count },
-      { label: '卡牌', value: doupoTDStats.value.compose_card_count },
-      { label: '技能', value: doupoTDStats.value.skill_show_count },
-      { label: '强化', value: doupoTDStats.value.strength_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'doupotd_reward') {
-    return [
-      { label: '关卡奖励', value: doupoTDRewardStats.value.level_reward_row_count },
-      { label: '章节预览', value: doupoTDRewardStats.value.prelevel_reward_row_count },
-      { label: '奖励项', value: doupoTDRewardStats.value.reward_item_row_count },
-      { label: '物品', value: doupoTDRewardStats.value.unique_reward_item_count },
-    ].filter(item => Number.isFinite(Number(item.value)))
-  }
-  if (activeTab.value === 'protocol') {
-    const counts = protocolCounts.value
-    return [
-      { label: '协议', value: protocolResponse.value?.title || protocolFeature.value },
-      { label: '行', value: counts?.filtered_rows },
-      { label: '总行', value: counts?.rows },
-      { label: '边', value: counts?.filtered_edges },
-      { label: '总边', value: counts?.edges },
-    ].filter(item => item.value !== undefined && item.value !== '')
-  }
-  if (activeTab.value === 'packet') {
-    if (isPacketWikiInitialLoading.value) {
-      return [{ label: '抓包', value: '加载中' }]
-    }
-    return [
-      { label: '样本', value: protocolBusinessCategoryCount.value },
-      { label: '大类', value: protocolBusinessCategories.value.length },
-    ]
-  }
-  const values = [
-    { label: '功法', value: stats.value.gongfa_count },
-    { label: '技能', value: stats.value.skill_count },
-    { label: '已关联', value: stats.value.linked_skill_count },
-    { label: '时间线索', value: stats.value.gongfa_with_time_hint_count },
-  ]
-  return values.filter(item => Number.isFinite(Number(item.value)))
-})
-
 const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
+  if (activeTab.value === 'visual') return '搜索图片 / 图标 / 背景 / atlas / sprite / 文件名'
+  if (activeTab.value === 'asset') return '搜索语义素材 / 小绿瓶 / 道具 / 活动 / 技能 / 模型'
+  if (activeTab.value === 'audio') return '搜索音乐 / BGM / WEM / bank / 文件名'
   if (activeTab.value === 'activity') return '搜索活动 / 奖励 / 条件 / ID'
   if (activeTab.value === 'lingjie') return '搜索灵界功法 / 道具 / 主词条 / 侧词条 / Feature'
   if (activeTab.value === 'digitdoor') return '搜索数字门角色 / 技能 / 门效果 / Buff'
@@ -913,6 +1040,9 @@ const searchPlaceholder = computed(() => {
 const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() => {
   if (
     activeTab.value === 'lingjie'
+    || activeTab.value === 'visual'
+    || activeTab.value === 'asset'
+    || activeTab.value === 'audio'
     || activeTab.value === 'digitdoor'
     || activeTab.value === 'digitdoor_level'
     || activeTab.value === 'digitdoor_enhance'
@@ -936,6 +1066,9 @@ const nextSortModeLabel = computed(() => {
 
 const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
+  if (activeTab.value === 'visual') return '图片'
+  if (activeTab.value === 'asset') return '素材'
+  if (activeTab.value === 'audio') return '音乐'
   if (activeTab.value === 'activity') return '活动'
   if (activeTab.value === 'lingjie') return '灵界词条'
   if (activeTab.value === 'digitdoor') return '数字门角色'
@@ -951,6 +1084,7 @@ const activeObjectLabel = computed(() => {
 const selectedProgressionSource = computed(() => {
   if (
     activeTab.value === 'lingjie'
+    || activeTab.value === 'asset'
     || activeTab.value === 'digitdoor'
     || activeTab.value === 'digitdoor_level'
     || activeTab.value === 'digitdoor_enhance'
@@ -1335,6 +1469,386 @@ function getObjectIconText(item: WikiObjectItem | null) {
 
 function getObjectIconUrl(item: WikiObjectItem | null) {
   return getFanxiuResourceIconUrl(item?.icon)
+}
+
+function getVisualAssetKey(item: FanxiuStaticVisualManifestRow | null | undefined) {
+  return String(item?.media_path || item?.absolute_media_path || item?.name || '')
+}
+
+function getStaticAssetKey(item: FanxiuStaticAssetManifestRow | null | undefined) {
+  return String(item?.asset_id || item?.relative_path || item?.name || '')
+}
+
+function getAudioAssetKey(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  return String(item?.relative_mp3_path || `${item?.source_bank || ''}:${item?.wem_id || ''}:${item?.entry_index || ''}`)
+}
+
+function getVisualCategoryLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    ability_icon: '能力',
+    apk_image: 'APK图片',
+    apk_icon: 'APK图标',
+    apk_logo: 'APK Logo',
+    apk_splash: 'APK启动图',
+    buff_icon: 'Buff',
+    fashion_icon: '外观',
+    head_portrait: '头像',
+    item_or_ui_icon: '图标',
+    logo: 'Logo',
+    sdk_ui: 'SDK',
+    skill_icon: '技能',
+    sprite: '切片',
+    taptap_ui: 'TapTap',
+    title_label: '标题',
+  }
+  const key = String(value || '').trim()
+  return labels[key] || key || '图像'
+}
+
+function getVisualAssetGroupLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    apk: 'APK',
+    icon: '图标',
+    image: '大图',
+    sprite: '切片',
+    text: '标题',
+  }
+  const key = String(value || '').trim()
+  return labels[key] || key || '图片'
+}
+
+function getVisualSourceKindLabel(value: string | null | undefined) {
+  const key = String(value || '').trim()
+  if (key === 'atlas_sprite') return 'Atlas'
+  if (key === 'apk_image') return 'APK'
+  return key || '资源'
+}
+
+function getVisualAssetMeta(item: FanxiuStaticVisualManifestRow | null | undefined) {
+  if (!item) return ''
+  return [
+    getVisualAssetGroupLabel(item.asset_group),
+    getVisualCategoryLabel(item.category),
+    getVisualSourceKindLabel(item.source_kind),
+    item.atlas_key,
+    item.width && item.height ? `${item.width}x${item.height}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getVisualAssetPreview(item: FanxiuStaticVisualManifestRow | null | undefined) {
+  return compactText(item?.source_path || item?.media_path || '', 108)
+}
+
+function getVisualSimilarityLabel(item: FanxiuStaticVisualManifestRow | null | undefined) {
+  const value = Number(item?.similarity_percent)
+  return Number.isFinite(value) ? `${value.toFixed(value >= 99.95 ? 0 : 1)}%` : ''
+}
+
+function getVisualSimilarityMeta(item: FanxiuStaticVisualManifestRow | null | undefined) {
+  if (!item || item.similarity_percent === undefined) return getVisualAssetMeta(item)
+  const distances = [
+    item.phash_distance !== undefined ? `p${item.phash_distance}` : '',
+    item.dhash_distance !== undefined && item.dhash_distance !== '' ? `d${item.dhash_distance}` : '',
+  ].filter(Boolean).join('/')
+  return [getVisualAssetMeta(item), getVisualSimilarityLabel(item), distances].filter(Boolean).join(' · ')
+}
+
+function getStaticAssetGroupLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    animation: '动画',
+    activity: '活动',
+    activity_gift: '活动礼包',
+    buff: 'Buff',
+    effect: '特效',
+    function: '功能',
+    gongfa_skill: '功法技能',
+    item: '道具',
+    model: '模型',
+    monster: '怪物',
+    scene: '场景',
+    skill: '技能',
+    ui: 'UI',
+  }
+  const key = String(value || '').trim()
+  return labels[key] || key || '素材'
+}
+
+function getStaticAssetSourceLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    animationclip: 'AnimationClip',
+    animatorcontroller: 'AnimatorController',
+    effect: 'Effect',
+    model: 'Model',
+    playable: 'Playable',
+    scenepart: 'ScenePart',
+    uieffect: 'UIEffect',
+    ui: 'UI',
+    wholescene: 'WholeScene',
+  }
+  const key = String(value || '').trim()
+  return labels[key] || key || '资源'
+}
+
+function getStaticAssetVisibleTypeLabel(item: FanxiuStaticAssetManifestRow | null | undefined) {
+  if (!item) return ''
+  const labels: Record<string, string> = {
+    animation_clip: 'AnimationClip',
+    animator_controller: 'AnimatorController',
+    asset_bundle: 'AssetBundle',
+    mesh_model: 'Mesh模型',
+    particle_effect: '粒子特效',
+    scene_prefab: '场景Prefab',
+    script_config: '脚本配置',
+    semantic_activity: '活动语义',
+    semantic_activity_gift: '礼包语义',
+    semantic_buff: 'Buff语义',
+    semantic_function: '功能语义',
+    semantic_gongfa_skill: '功法技能语义',
+    semantic_item: '道具语义',
+    semantic_model: '模型语义',
+    semantic_monster: '怪物语义',
+    semantic_skill: '技能语义',
+    skinned_mesh: '骨骼模型',
+    timeline_config: 'Timeline配置',
+    ui_prefab: 'UI Prefab',
+    unity_asset: 'Unity资源',
+  }
+  const key = String(item.visible_data_type || '').trim()
+  return labels[key] || item.unity_primary_type || key
+}
+
+function getStaticAssetMeta(item: FanxiuStaticAssetManifestRow | null | undefined) {
+  if (!item) return ''
+  if (item.semantic_id) {
+    return [
+      getStaticAssetGroupLabel(item.semantic_group || item.asset_group),
+      item.semantic_visual_count ? `${item.semantic_visual_count} 张图` : '',
+      item.semantic_variant_count && item.semantic_variant_count > 1 ? `${item.semantic_variant_count} 档` : '',
+      item.linked_asset_count ? `${item.linked_asset_count} 个资源` : '',
+      item.linked_asset_groups,
+    ].filter(Boolean).join(' · ')
+  }
+  return [
+    getStaticAssetVisibleTypeLabel(item),
+    getStaticAssetGroupLabel(item.asset_group),
+    getStaticAssetSourceLabel(item.source_kind),
+    item.category,
+    formatByteSize(item.bytes),
+  ].filter(Boolean).join(' · ')
+}
+
+function getStaticAssetPreview(item: FanxiuStaticAssetManifestRow | null | undefined) {
+  if (!item) return ''
+  if (item.semantic_id) {
+    return compactText(item.semantic_summary || item.semantic_visual_names || item.semantic_refs || item.linked_asset_names || '', 116)
+  }
+  const details = [
+    item.unity_object_types ? `对象 ${item.unity_object_types}` : '',
+    item.unity_named_objects ? item.unity_named_objects : '',
+    item.mesh_count ? `Mesh ${item.mesh_count}` : '',
+    item.material_count ? `材质 ${item.material_count}` : '',
+    item.texture_count ? `贴图 ${item.texture_count}` : '',
+    item.animation_count ? `动画 ${item.animation_count}` : '',
+    item.ui_gameobject_count ? `UI节点 ${item.ui_gameobject_count}` : '',
+  ].filter(Boolean).join(' · ')
+  return compactText(details || item.relative_path || '', 116)
+}
+
+function getStaticAssetPreviewItemTitle(item: FanxiuStaticAssetPreviewItem) {
+  return String(item.name || item.media_path || 'image')
+}
+
+function getStaticAssetPreviewItemMeta(item: FanxiuStaticAssetPreviewItem) {
+  return [
+    item.object_type,
+    item.width && item.height ? `${item.width}x${item.height}` : '',
+    item.path_id ? `PathID ${item.path_id}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getStaticAssetDerivedPreviewNote(item: FanxiuStaticAssetPreviewItem) {
+  if (item.kind === 'layout_svg') return '未提取到 Texture2D/Sprite 原图；这里是基于 RectTransform 的静态结构示意，不是原始截图。'
+  if (item.kind === 'summary_svg') return '未提取到可直接显示的原始图片；这里是 Unity 对象摘要示意。'
+  if (item.kind === 'error_svg') return '预览解析失败；这里显示错误摘要。'
+  return '该预览不是原始图片。'
+}
+
+function formatByteSize(value: string | number | null | undefined) {
+  const bytes = Number(value)
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+function formatAudioDuration(value: string | number | null | undefined) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 0) return ''
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds - minutes * 60
+  if (minutes <= 0) return `${rest.toFixed(rest >= 10 ? 1 : 2)}s`
+  return `${minutes}:${String(Math.floor(rest)).padStart(2, '0')}`
+}
+
+function getAudioAssetTitle(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  if (!item) return ''
+  const bank = String(item.source_bank || '').split(/[\\/]/).pop()?.replace(/\.bnk$/i, '') || 'audio'
+  return `${bank} / ${item.wem_id || item.entry_index || 'wem'}`
+}
+
+function getAudioAssetMeta(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  if (!item) return ''
+  return [
+    item.kind || 'audio',
+    formatAudioDuration(item.duration_seconds),
+    item.sample_rate ? `${item.sample_rate}Hz` : '',
+    item.channels ? `${item.channels}ch` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getAudioAssetPreview(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  if (!item) return ''
+  const size = formatByteSize(item.wem_size)
+  return [item.source_bank, item.encoding, size].filter(Boolean).join(' · ')
+}
+
+function getAudioIndependentPlayerUrl(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  const rawUrl = item?.player_url
+  if (!rawUrl || typeof window === 'undefined') return ''
+  try {
+    const url = new URL(rawUrl, window.location.origin)
+    if (url.pathname.startsWith('/api/') && url.port === '5173') {
+      url.port = '8000'
+    }
+    return url.href
+  } catch {
+    return String(rawUrl || '')
+  }
+}
+
+function getAudioIndependentMediaUrl(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  const rawUrl = item?.media_url
+  if (!rawUrl || typeof window === 'undefined') return ''
+  try {
+    const url = new URL(rawUrl, window.location.origin)
+    if (url.pathname.startsWith('/api/') && url.port === '5173') {
+      url.port = '8000'
+    }
+    return url.href
+  } catch {
+    return String(rawUrl || '')
+  }
+}
+
+function escapeStandalonePlayerText(value: unknown) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[char] || char))
+}
+
+function buildStandaloneAudioPlayerHtml(item: FanxiuWwiseMp3ManifestRow, mediaUrl: string) {
+  const title = getAudioAssetTitle(item)
+  const subtitle = getAudioAssetMeta(item)
+  const path = item.relative_mp3_path || item.source_bank || ''
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeStandalonePlayerText(title)}</title>
+  <style>
+    :root { color-scheme: dark; --fg: #f6f7fb; --muted: #9aa4b2; --line: #2a3240; --accent: #27c2d4; }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 36px;
+      color: var(--fg); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #050608;
+    }
+    main { width: min(1040px, 92vw); display: grid; gap: 16px; }
+    h1 { margin: 0; overflow-wrap: anywhere; font-size: clamp(22px, 4vw, 42px); line-height: 1.15; letter-spacing: 0; }
+    .meta, .path { overflow-wrap: anywhere; color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .player {
+      display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: center;
+      padding: 24px 28px; background: #111722; border: 1px solid var(--line); border-radius: 8px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+    }
+    button {
+      width: 72px; height: 72px; border: 0; border-radius: 50%; color: #06262c;
+      font-size: 18px; font-weight: 800; background: var(--accent); cursor: pointer;
+    }
+    .timeline { min-width: 0; display: grid; gap: 12px; }
+    .time-row { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 18px; }
+    input[type="range"] { width: 100%; height: 34px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+    .volume { width: 128px; display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
+    .volume input[type="range"] { height: 24px; }
+    @media (max-width: 720px) { body { padding: 18px; } .player { grid-template-columns: 1fr; } button { width: 64px; height: 64px; } .volume { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeStandalonePlayerText(title)}</h1>
+    <div class="meta">${escapeStandalonePlayerText(subtitle)}</div>
+    <div class="path">${escapeStandalonePlayerText(path)}</div>
+    <section class="player">
+      <button id="toggle" type="button">播放</button>
+      <div class="timeline">
+        <div class="time-row"><span id="current">0:00</span><span id="duration">0:00</span></div>
+        <input id="progress" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+      </div>
+      <label class="volume">音量<input id="volume" type="range" min="0" max="1" value="1" step="0.01" aria-label="音量"></label>
+      <audio id="audio" preload="metadata" src="${escapeStandalonePlayerText(mediaUrl)}"></audio>
+    </section>
+  </main>
+  <script>
+    const audio = document.getElementById('audio');
+    const toggle = document.getElementById('toggle');
+    const progress = document.getElementById('progress');
+    const current = document.getElementById('current');
+    const duration = document.getElementById('duration');
+    const volume = document.getElementById('volume');
+    function fmt(value) {
+      if (!Number.isFinite(value) || value < 0) return '0:00';
+      const minutes = Math.floor(value / 60);
+      const seconds = Math.floor(value % 60);
+      return minutes + ':' + String(seconds).padStart(2, '0');
+    }
+    function sync() {
+      current.textContent = fmt(audio.currentTime);
+      duration.textContent = fmt(audio.duration);
+      progress.value = Number.isFinite(audio.duration) && audio.duration > 0 ? String(Math.round(audio.currentTime / audio.duration * 1000)) : '0';
+      toggle.textContent = audio.paused ? '播放' : '暂停';
+    }
+    toggle.addEventListener('click', () => { if (audio.paused) audio.play(); else audio.pause(); });
+    progress.addEventListener('input', () => { if (Number.isFinite(audio.duration) && audio.duration > 0) audio.currentTime = Number(progress.value) / 1000 * audio.duration; });
+    volume.addEventListener('input', () => { audio.volume = Number(volume.value); });
+    window.addEventListener('keydown', event => { if (event.code !== 'Space') return; event.preventDefault(); toggle.click(); });
+    audio.addEventListener('loadedmetadata', sync);
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('play', sync);
+    audio.addEventListener('pause', sync);
+    audio.addEventListener('ended', sync);
+    sync();
+  <\/script>
+</body>
+</html>`
+}
+
+function openAudioIndependentPlayer(item: FanxiuWwiseMp3ManifestRow | null | undefined) {
+  if (!item || typeof window === 'undefined') return
+  const playerHref = getAudioIndependentPlayerUrl(item)
+  if (playerHref) {
+    window.open(playerHref, '_blank', 'noopener')
+    return
+  }
+  const mediaUrl = getAudioIndependentMediaUrl(item)
+  if (!mediaUrl) return
+  const html = buildStandaloneAudioPlayerHtml(item, mediaUrl)
+  const blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
+  window.open(blobUrl, '_blank', 'noopener')
 }
 
 function getLinkedItemId(item: WikiLinkedItem | null | undefined) {
@@ -2943,6 +3457,13 @@ function uniqueLabels(values: Array<unknown>) {
       .map(value => String(value ?? '').trim())
       .filter(Boolean),
   ))
+}
+
+function splitPipeText(value: unknown) {
+  return String(value ?? '')
+    .split('|')
+    .map(item => item.trim())
+    .filter(Boolean)
 }
 
 function formatCountLabel(value: unknown, label: string) {
@@ -4984,6 +5505,184 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
   }
 }
 
+async function loadVisualManifest(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const requestParams = {
+      query: visualSimilarityFile.value ? undefined : query.value,
+      asset_group: visualAssetGroupFilter.value || undefined,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    }
+    const response = visualSimilarityFile.value
+      ? await searchFanxiuStaticVisualByImage(visualSimilarityFile.value, { ...requestParams, max_prefilter: 800 })
+      : await getFanxiuStaticVisualManifest(requestParams)
+    if (requestSeq !== listRequestSeq) return
+    visualManifest.value = response
+    catalogPath.value = response.manifest_root
+    total.value = response.filtered
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.filtered, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadVisualManifest(options)
+      return
+    }
+
+    visualItems.value = response.rows
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    protocolResponse.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && response.rows.some(item => getVisualAssetKey(item) === selectedId.value)
+    if (keepSelected) return
+    selectedId.value = response.rows[0] ? getVisualAssetKey(response.rows[0]) : ''
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取图标图鉴失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadStaticAssetManifest(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  loadingDetail.value = false
+  staticAssetPreviewManifest.value = null
+  try {
+    const response = await getFanxiuStaticAssetManifest({
+      query: query.value,
+      catalog_view: staticAssetCatalogView.value,
+      asset_group: staticAssetGroupFilter.value || undefined,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    staticAssetManifest.value = response
+    catalogPath.value = response.manifest_root
+    total.value = response.filtered
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.filtered, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadStaticAssetManifest(options)
+      return
+    }
+
+    staticAssetItems.value = response.rows
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    protocolResponse.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && response.rows.some(item => getStaticAssetKey(item) === selectedId.value)
+    if (keepSelected) return
+    selectedId.value = response.rows[0] ? getStaticAssetKey(response.rows[0]) : ''
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取素材图鉴失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadStaticAssetPreviewManifest(item: FanxiuStaticAssetManifestRow | null | undefined) {
+  const requestSeq = ++staticAssetPreviewRequestSeq
+  staticAssetPreviewManifest.value = null
+  if (activeTab.value !== 'asset' || !item?.relative_path || item.semantic_id) {
+    loadingStaticAssetPreview.value = false
+    return
+  }
+  loadingStaticAssetPreview.value = true
+  try {
+    const response = await getFanxiuStaticAssetPreviewManifest({ path: item.relative_path })
+    if (requestSeq !== staticAssetPreviewRequestSeq) return
+    staticAssetPreviewManifest.value = response
+  } catch (error) {
+    if (requestSeq === staticAssetPreviewRequestSeq) {
+      console.warn('Failed to load Fanxiu static asset preview manifest:', error)
+    }
+  } finally {
+    if (requestSeq === staticAssetPreviewRequestSeq) {
+      loadingStaticAssetPreview.value = false
+    }
+  }
+}
+
+async function loadAudioManifest(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const response = await getFanxiuWwiseMp3Manifest({
+      query: query.value,
+      kind: audioKindFilter.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    audioManifest.value = response
+    catalogPath.value = response.manifest
+    total.value = response.filtered
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.filtered, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadAudioManifest(options)
+      return
+    }
+
+    audioItems.value = response.rows
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    protocolResponse.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && response.rows.some(item => getAudioAssetKey(item) === selectedId.value)
+    if (keepSelected) return
+    selectedId.value = response.rows[0] ? getAudioAssetKey(response.rows[0]) : ''
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取音乐图鉴失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
 async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
@@ -5512,6 +6211,15 @@ function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   if (activeTab.value === 'item') {
     return loadItemCards(options)
   }
+  if (activeTab.value === 'visual') {
+    return loadVisualManifest(options)
+  }
+  if (activeTab.value === 'asset') {
+    return loadStaticAssetManifest(options)
+  }
+  if (activeTab.value === 'audio') {
+    return loadAudioManifest(options)
+  }
   if (activeTab.value === 'activity') {
     return loadActivityCards(options)
   }
@@ -6015,6 +6723,7 @@ function openWikiObject(tab: WikiTab, objectId: string | number, options: { rese
   internalTabNavigation = true
   try {
     activeTab.value = tab
+    if (isAuxiliaryWikiTab(tab)) selectedAuxiliaryTab.value = tab
     selectedId.value = nextId
     page.value = 1
     if (options.resetListContext) {
@@ -6049,6 +6758,7 @@ function searchWikiObject(tab: WikiTab, text: string) {
   internalTabNavigation = true
   try {
     activeTab.value = tab
+    if (isAuxiliaryWikiTab(tab)) selectedAuxiliaryTab.value = tab
     selectedId.value = ''
     query.value = nextQuery
     page.value = 1
@@ -6067,7 +6777,9 @@ function getWikiTabFromTabElement(element: HTMLElement | null) {
   const idValue = element.id.startsWith('tab-') ? element.id.slice(4) : ''
   const controlsValue = element.getAttribute('aria-controls') ?? ''
   const paneValue = controlsValue.startsWith('pane-') ? controlsValue.slice(5) : ''
-  return normalizeWikiTab(idValue || paneValue)
+  const rawValue = idValue || paneValue
+  if (rawValue === AUXILIARY_TOP_TAB_KEY) return selectedAuxiliaryTab.value
+  return normalizeWikiTab(rawValue)
 }
 
 function buildWikiTabHref(tab: WikiTab) {
@@ -6149,6 +6861,10 @@ function selectObject(objectId: string | number) {
   if (activeTab.value === 'item') {
     return selectItem(objectId)
   }
+  if (activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio') {
+    selectedId.value = String(objectId)
+    return
+  }
   if (activeTab.value === 'activity') {
     return selectActivity(objectId)
   }
@@ -6178,6 +6894,56 @@ function reloadFromFirstPage() {
   loadCurrentCards()
 }
 
+function revokeVisualSimilarityPreview() {
+  if (!visualSimilarityPreviewUrl.value) return
+  URL.revokeObjectURL(visualSimilarityPreviewUrl.value)
+  visualSimilarityPreviewUrl.value = ''
+}
+
+function clearVisualSimilaritySearch(options: { reload?: boolean } = {}) {
+  const hadImage = Boolean(visualSimilarityFile.value)
+  visualSimilarityFile.value = null
+  visualSimilaritySourceName.value = ''
+  revokeVisualSimilarityPreview()
+  if (options.reload !== false && hadImage && activeTab.value === 'visual') {
+    reloadFromFirstPage()
+  }
+}
+
+function getClipboardImageExtension(type: string) {
+  const subtype = String(type || '').split('/')[1] || 'png'
+  return subtype === 'jpeg' ? 'jpg' : subtype
+}
+
+function applyVisualSimilarityImage(file: File) {
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('剪贴板里不是图片')
+    return
+  }
+  revokeVisualSimilarityPreview()
+  visualSimilarityFile.value = file
+  visualSimilaritySourceName.value = file.name
+  visualSimilarityPreviewUrl.value = URL.createObjectURL(file)
+  searchHistoryVisible.value = false
+  page.value = 1
+  loadCurrentCards()
+}
+
+function handleVisualSimilarityPaste(event: ClipboardEvent) {
+  if (activeTab.value !== 'visual') return
+  const items = event.clipboardData?.items
+  if (!items) return
+  for (const item of Array.from(items)) {
+    if (!item.type.startsWith('image/')) continue
+    const blob = item.getAsFile()
+    if (!blob) continue
+    event.preventDefault()
+    const file = new File([blob], `剪贴板截图.${getClipboardImageExtension(blob.type || item.type)}`, { type: blob.type || item.type })
+    applyVisualSimilarityImage(file)
+    return
+  }
+}
+
 function refreshCurrentCards() {
   if (activeTab.value === 'gongfa') {
     void loadHomeMakeBuffOverview({ force: true })
@@ -6186,12 +6952,18 @@ function refreshCurrentCards() {
 }
 
 function executeSearchFromFirstPage() {
+  if (activeTab.value === 'visual' && visualSimilarityFile.value) {
+    clearVisualSimilaritySearch({ reload: false })
+  }
   recordSearchHistory()
   reloadFromFirstPage()
   searchHistoryVisible.value = false
 }
 
 function handleQueryClear() {
+  if (activeTab.value === 'visual' && visualSimilarityFile.value) {
+    clearVisualSimilaritySearch({ reload: false })
+  }
   reloadFromFirstPage()
   void nextTick(() => openSearchHistory())
 }
@@ -6221,9 +6993,12 @@ function cycleSortMode() {
 
 function handleTabChange() {
   closeContextMenu()
+  if (isAuxiliaryWikiTab(activeTab.value)) {
+    selectedAuxiliaryTab.value = activeTab.value
+  }
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
@@ -6237,6 +7012,10 @@ function handleTabChange() {
   selectedDoupoTDPartner.value = null
   selectedDoupoTDReward.value = null
   loadCurrentCards()
+}
+
+function handleTopTabChange() {
+  handleTabChange()
 }
 
 function selectProtocolRow(row: FanxiuProtocolSemanticRow) {
@@ -6296,6 +7075,21 @@ function applyActivityTypeFilter(value: string) {
   reloadFromFirstPage()
 }
 
+function applyAudioKindFilter(value: string) {
+  audioKindFilter.value = normalizeAudioKindFilter(value)
+  reloadFromFirstPage()
+}
+
+function applyVisualAssetGroupFilter(value: string) {
+  visualAssetGroupFilter.value = normalizeVisualAssetGroupFilter(value)
+  reloadFromFirstPage()
+}
+
+function applyStaticAssetGroupFilter(value: string) {
+  staticAssetGroupFilter.value = normalizeStaticAssetGroupFilter(value)
+  reloadFromFirstPage()
+}
+
 function applyProtocolFeature(value: string) {
   protocolFeature.value = value || 'bluestarsea'
   protocolRoleFilter.value = ''
@@ -6325,6 +7119,10 @@ watch([
   activityKindFilter,
   activityTimeFilter,
   activityTypeFilter,
+  visualAssetGroupFilter,
+  staticAssetCatalogView,
+  staticAssetGroupFilter,
+  audioKindFilter,
   protocolFeature,
   protocolRoleFilter,
   protocolOperationFilter,
@@ -6333,7 +7131,19 @@ watch([
   pageSize,
   selectedId,
 ], persistPageConfig)
+watch(activeTab, tab => {
+  if (isAuxiliaryWikiTab(tab)) {
+    selectedAuxiliaryTab.value = tab
+  }
+  if (tab !== 'asset') {
+    staticAssetPreviewManifest.value = null
+    loadingStaticAssetPreview.value = false
+  }
+})
 watch([activeTab, selectedId], syncRouteState)
+watch(selectedStaticAsset, item => {
+  void loadStaticAssetPreviewManifest(item)
+})
 watch(
   () => [route.query.tab, route.query.id, route.query.q],
   () => {
@@ -6344,6 +7154,7 @@ watch(
 )
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalContextMenuKeydown)
+  window.addEventListener('paste', handleVisualSimilarityPaste)
   window.addEventListener('scroll', closeContextMenu, true)
   window.addEventListener('resize', closeContextMenu)
   loadPageConfig()
@@ -6355,8 +7166,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalContextMenuKeydown)
+  window.removeEventListener('paste', handleVisualSimilarityPaste)
   window.removeEventListener('scroll', closeContextMenu, true)
   window.removeEventListener('resize', closeContextMenu)
+  revokeVisualSimilarityPreview()
 })
 </script>
 
@@ -6366,17 +7179,26 @@ onBeforeUnmount(() => {
     <header class="page-header">
       <div>
         <h2>凡修图鉴</h2>
-        <div class="page-subline">
-          <span v-for="item in objectStats" :key="item.label">{{ item.label }} {{ item.value }}</span>
-          <span v-if="catalogPath">{{ catalogPath }}</span>
+        <div v-if="catalogPath" class="page-subline">
+          <span>{{ catalogPath }}</span>
         </div>
       </div>
       <el-button :icon="Refresh" :loading="loadingList || loadingHomeMakeBuffOverview" @click="refreshCurrentCards">刷新</el-button>
     </header>
 
     <div @click.capture="handleWikiTabHeaderClick" @contextmenu.capture="handleWikiTabHeaderContextMenu">
-      <el-tabs v-model="activeTab" class="wiki-tabs" @tab-change="handleTabChange">
-        <el-tab-pane v-for="tab in WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
+      <el-tabs v-model="activeTopTab" class="wiki-tabs" @tab-change="handleTopTabChange">
+        <el-tab-pane v-for="tab in TOP_WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
+      </el-tabs>
+    </div>
+
+    <div
+      v-if="showAuxiliaryTabs"
+      @click.capture="handleWikiTabHeaderClick"
+      @contextmenu.capture="handleWikiTabHeaderContextMenu"
+    >
+      <el-tabs v-model="activeTab" class="wiki-tabs wiki-secondary-tabs" @tab-change="handleTabChange">
+        <el-tab-pane v-for="tab in AUXILIARY_WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
       </el-tabs>
     </div>
 
@@ -6435,7 +7257,7 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-button
-        v-if="activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
+        v-if="activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -6444,7 +7266,85 @@ onBeforeUnmount(() => {
       <span class="result-count">{{ total }} 个对象</span>
     </div>
 
-    <div v-if="activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
+    <div v-if="activeTab === 'visual' && visualSimilarityFile" class="visual-similarity-strip">
+      <el-image
+        v-if="visualSimilarityPreviewUrl"
+        class="visual-similarity-thumb"
+        :src="visualSimilarityPreviewUrl"
+        :preview-src-list="visualSimilarityPreviewList"
+        fit="contain"
+        preview-teleported
+        hide-on-click-modal
+        title="点击放大"
+      />
+      <span>相似图：{{ visualSimilaritySourceName }}</span>
+      <small v-if="visualManifest?.stats?.prefiltered">候选 {{ visualManifest.stats.prefiltered }}</small>
+      <button type="button" title="恢复文本搜索" @click="clearVisualSimilaritySearch()">
+        <Close />
+      </button>
+    </div>
+
+    <div v-if="activeTab === 'visual'" class="facet-panel visual-asset-panel">
+      <div class="facet-row">
+        <span class="facet-label">类型</span>
+        <span class="facet-options">
+          <button
+            v-for="option in visualAssetGroupFilterOptions"
+            :key="option.value || 'all'"
+            class="facet-option"
+            :class="{ active: visualAssetGroupFilter === option.value }"
+            :disabled="option.value !== visualAssetGroupFilter && option.count <= 0"
+            type="button"
+            @click="applyVisualAssetGroupFilter(option.value)"
+          >
+            <span class="facet-option-label">{{ option.label }}</span>
+            <small>{{ option.count }}</small>
+          </button>
+        </span>
+      </div>
+    </div>
+
+    <div v-if="activeTab === 'asset'" class="facet-panel static-asset-panel">
+      <div class="facet-row">
+        <span class="facet-label">类型</span>
+        <span class="facet-options">
+          <button
+            v-for="option in staticAssetGroupFilterOptions"
+            :key="option.value || 'all'"
+            class="facet-option"
+            :class="{ active: staticAssetGroupFilter === option.value }"
+            :disabled="option.value !== staticAssetGroupFilter && option.count <= 0"
+            type="button"
+            @click="applyStaticAssetGroupFilter(option.value)"
+          >
+            <span class="facet-option-label">{{ option.label }}</span>
+            <small>{{ option.count }}</small>
+          </button>
+        </span>
+      </div>
+    </div>
+
+    <div v-if="activeTab === 'audio'" class="facet-panel audio-kind-panel">
+      <div class="facet-row">
+        <span class="facet-label">类型</span>
+        <span class="facet-options">
+          <button
+            v-for="option in audioKindFilterOptions"
+            :key="option.value || 'all'"
+            class="facet-option"
+            :class="{ active: audioKindFilter === option.value }"
+            :disabled="option.value !== audioKindFilter && option.count <= 0"
+            type="button"
+            @click="applyAudioKindFilter(option.value)"
+          >
+            <span class="facet-option-label">{{ option.label }}</span>
+            <small>{{ option.count }}</small>
+          </button>
+        </span>
+      </div>
+    </div>
+
+    <div v-if="activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div class="facet-row">
           <span class="facet-label">品阶</span>
@@ -7019,6 +7919,80 @@ onBeforeUnmount(() => {
             </button>
             <div v-if="!loadingList && !gongfaItems.length" class="empty-state">没有匹配功法</div>
           </template>
+          <template v-else-if="activeTab === 'visual'">
+            <button
+              v-for="item in visualItems"
+              :key="getVisualAssetKey(item)"
+              class="object-row visual-asset-row"
+              :class="{ selected: getVisualAssetKey(item) === selectedId }"
+              type="button"
+              @click="selectObject(getVisualAssetKey(item))"
+            >
+              <span class="object-row-icon visual-thumb">
+                <img
+                  v-if="item.media_url"
+                  :src="item.media_url"
+                  :alt="item.name"
+                  loading="lazy"
+                  @error="hideBrokenIcon"
+                >
+              </span>
+              <span class="object-row-main">
+                <span class="object-row-title">
+                  {{ item.name }}
+                  <small v-if="item.similarity_rank" class="similarity-rank">#{{ item.similarity_rank }}</small>
+                </span>
+                <span class="object-row-meta">{{ getVisualSimilarityMeta(item) }}</span>
+                <span class="object-row-preview">{{ getVisualAssetPreview(item) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !visualItems.length" class="empty-state">没有匹配图片</div>
+          </template>
+          <template v-else-if="activeTab === 'asset'">
+            <button
+              v-for="item in staticAssetItems"
+              :key="getStaticAssetKey(item)"
+              class="object-row static-asset-row"
+              :class="{ selected: getStaticAssetKey(item) === selectedId }"
+              type="button"
+              @click="selectObject(getStaticAssetKey(item))"
+            >
+              <span class="object-row-icon static-asset-thumb">
+                <img
+                  v-if="item.preview_url"
+                  :src="item.preview_url"
+                  :alt="item.name || item.stem"
+                  loading="lazy"
+                  @error="hideBrokenIcon"
+                >
+                <span v-else>{{ getStaticAssetGroupLabel(item.asset_group) }}</span>
+              </span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ item.name || item.stem }}</span>
+                <span class="object-row-meta">{{ getStaticAssetMeta(item) }}</span>
+                <span class="object-row-preview">{{ getStaticAssetPreview(item) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !staticAssetItems.length" class="empty-state">没有匹配素材</div>
+          </template>
+          <template v-else-if="activeTab === 'audio'">
+            <button
+              v-for="item in audioItems"
+              :key="getAudioAssetKey(item)"
+              class="object-row audio-asset-row"
+              :class="{ selected: getAudioAssetKey(item) === selectedId }"
+              type="button"
+              @click="selectObject(getAudioAssetKey(item))"
+            >
+              <span class="audio-row-badge">{{ item.kind || 'audio' }}</span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ getAudioAssetTitle(item) }}</span>
+                <span class="object-row-meta">{{ getAudioAssetMeta(item) }}</span>
+                <span class="object-row-preview">{{ getAudioAssetPreview(item) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !audioItems.length" class="empty-state">没有匹配音乐</div>
+          </template>
           <template v-else-if="activeTab === 'activity'">
             <button
               v-for="item in activityItems"
@@ -7276,7 +8250,349 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="object-detail" v-loading="loadingDetail">
-        <template v-if="activeTab === 'doupotd_reward' && selectedDoupoTDReward">
+        <template v-if="activeTab === 'visual' && selectedVisualAsset">
+          <section class="detail-head visual-detail-head">
+            <div class="visual-detail-preview">
+              <img
+                v-if="selectedVisualAsset.media_url"
+                :src="selectedVisualAsset.media_url"
+                :alt="selectedVisualAsset.name"
+              >
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedVisualAsset.name }}</h3>
+              <div class="detail-meta">
+                <span>{{ getVisualAssetMeta(selectedVisualAsset) }}</span>
+                <span v-if="selectedVisualAsset.path_id">PathID {{ selectedVisualAsset.path_id }}</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section class="object-section intro-section">
+            <h4>资源信息</h4>
+            <div class="asset-info-grid">
+              <div v-if="selectedVisualAsset.similarity_percent !== undefined">
+                <span>相似度</span>
+                <strong>{{ getVisualSimilarityLabel(selectedVisualAsset) }}</strong>
+              </div>
+              <div v-if="selectedVisualAsset.phash_distance !== undefined">
+                <span>哈希距离</span>
+                <strong>p{{ selectedVisualAsset.phash_distance }} / d{{ selectedVisualAsset.dhash_distance }}</strong>
+              </div>
+              <div>
+                <span>分类</span>
+                <strong>{{ getVisualCategoryLabel(selectedVisualAsset.category) }}</strong>
+              </div>
+              <div>
+                <span>来源</span>
+                <strong>{{ getVisualSourceKindLabel(selectedVisualAsset.source_kind) }}</strong>
+              </div>
+              <div>
+                <span>尺寸</span>
+                <strong>{{ selectedVisualAsset.width }} x {{ selectedVisualAsset.height }}</strong>
+              </div>
+              <div v-if="selectedVisualAsset.bytes">
+                <span>大小</span>
+                <strong>{{ formatByteSize(selectedVisualAsset.bytes) }}</strong>
+              </div>
+            </div>
+            <dl class="asset-path-list">
+              <div v-if="selectedVisualAsset.atlas_key">
+                <dt>Atlas</dt>
+                <dd>{{ selectedVisualAsset.atlas_key }}</dd>
+              </div>
+              <div v-if="selectedVisualAsset.source_path">
+                <dt>源路径</dt>
+                <dd>{{ selectedVisualAsset.source_path }}</dd>
+              </div>
+              <div>
+                <dt>图鉴路径</dt>
+                <dd>{{ selectedVisualAsset.media_path }}</dd>
+              </div>
+            </dl>
+          </section>
+        </template>
+
+        <template v-else-if="activeTab === 'asset' && selectedStaticAsset">
+          <section class="detail-head static-asset-detail-head">
+            <div :class="selectedStaticAsset.semantic_id ? 'static-asset-detail-badge' : 'static-asset-detail-preview'">
+              <img
+                v-if="!selectedStaticAsset.semantic_id && selectedStaticAsset.preview_url"
+                :src="selectedStaticAsset.preview_url"
+                :alt="selectedStaticAsset.name || selectedStaticAsset.stem"
+                loading="lazy"
+                @error="hideBrokenIcon"
+              >
+              <span v-else>{{ getStaticAssetGroupLabel(selectedStaticAsset.asset_group) }}</span>
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedStaticAsset.name || selectedStaticAsset.stem }}</h3>
+              <div class="detail-meta">
+                <span>{{ getStaticAssetMeta(selectedStaticAsset) }}</span>
+                <span v-if="selectedStaticAsset.detail_status">已有细节索引</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section
+            v-if="loadingStaticAssetPreview || selectedStaticAssetBusinessImages.length || selectedStaticAssetPreviewItems.length"
+            class="object-section intro-section static-asset-full-preview-section"
+          >
+            <h4>{{ selectedStaticAssetBusinessImages.length ? '业务图片' : (selectedStaticAssetOriginalImages.length ? '原始图片' : '预览') }}</h4>
+            <div v-if="loadingStaticAssetPreview" class="static-asset-preview-loading">加载预览...</div>
+            <div v-else-if="selectedStaticAssetOriginalImages.length" class="static-asset-original-list">
+              <figure
+                v-for="item in selectedStaticAssetOriginalImages"
+                :key="item.media_path"
+                class="static-asset-original-figure"
+              >
+                <a
+                  class="static-asset-original-image"
+                  :href="item.media_url"
+                  target="_blank"
+                  rel="noreferrer"
+                  :aria-label="`打开图片 ${getStaticAssetPreviewItemTitle(item)}`"
+                >
+                  <img
+                    :src="item.media_url"
+                    :alt="getStaticAssetPreviewItemTitle(item)"
+                    loading="lazy"
+                    @error="hideBrokenIcon"
+                  >
+                </a>
+                <figcaption class="static-asset-preview-caption">
+                  <strong>{{ getStaticAssetPreviewItemTitle(item) }}</strong>
+                  <span>{{ getStaticAssetPreviewItemMeta(item) }}</span>
+                </figcaption>
+              </figure>
+            </div>
+            <div v-else class="static-asset-derived-list">
+              <figure
+                v-for="item in selectedStaticAssetDerivedPreviews"
+                :key="item.media_path"
+                class="static-asset-derived-figure"
+              >
+                <p class="static-asset-derived-note">{{ getStaticAssetDerivedPreviewNote(item) }}</p>
+                <a
+                  class="static-asset-derived-preview"
+                  :href="item.media_url"
+                  target="_blank"
+                  rel="noreferrer"
+                  :aria-label="`打开预览 ${getStaticAssetPreviewItemTitle(item)}`"
+                >
+                  <img
+                    :src="item.media_url"
+                    :alt="getStaticAssetPreviewItemTitle(item)"
+                    loading="lazy"
+                    @error="hideBrokenIcon"
+                  >
+                </a>
+              </figure>
+            </div>
+          </section>
+
+          <section v-if="selectedStaticAsset.semantic_id" class="object-section intro-section">
+            <h4>语义归属</h4>
+            <div class="asset-info-grid">
+              <div>
+                <span>业务类型</span>
+                <strong>{{ getStaticAssetGroupLabel(selectedStaticAsset.semantic_group || selectedStaticAsset.asset_group) }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.linked_asset_count">
+                <span>关联资源</span>
+                <strong>{{ selectedStaticAsset.linked_asset_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.semantic_visual_count">
+                <span>业务图片</span>
+                <strong>{{ selectedStaticAsset.semantic_visual_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.semantic_variant_count && selectedStaticAsset.semantic_variant_count > 1">
+                <span>配置档位</span>
+                <strong>{{ selectedStaticAsset.semantic_variant_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.linked_asset_groups">
+                <span>资源分布</span>
+                <strong>{{ selectedStaticAsset.linked_asset_groups }}</strong>
+              </div>
+            </div>
+            <dl class="asset-path-list">
+              <div v-if="selectedStaticAsset.semantic_summary">
+                <dt>说明</dt>
+                <dd>{{ selectedStaticAsset.semantic_summary }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.semantic_refs">
+                <dt>配置引用</dt>
+                <dd>{{ selectedStaticAsset.semantic_refs }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.semantic_visual_names">
+                <dt>业务图片名</dt>
+                <dd>{{ selectedStaticAsset.semantic_visual_names }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.semantic_variant_refs">
+                <dt>配置档位</dt>
+                <dd>{{ selectedStaticAsset.semantic_variant_refs }}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section v-if="!selectedStaticAsset.semantic_id" class="object-section intro-section">
+            <h4>资源信息</h4>
+            <div class="asset-info-grid">
+              <div>
+                <span>类型</span>
+                <strong>{{ getStaticAssetGroupLabel(selectedStaticAsset.asset_group) }}</strong>
+              </div>
+              <div v-if="getStaticAssetVisibleTypeLabel(selectedStaticAsset)">
+                <span>对象类型</span>
+                <strong>{{ getStaticAssetVisibleTypeLabel(selectedStaticAsset) }}</strong>
+              </div>
+              <div>
+                <span>来源</span>
+                <strong>{{ getStaticAssetSourceLabel(selectedStaticAsset.source_kind) }}</strong>
+              </div>
+              <div>
+                <span>目录</span>
+                <strong>{{ selectedStaticAsset.category || '-' }}</strong>
+              </div>
+              <div>
+                <span>大小</span>
+                <strong>{{ formatByteSize(selectedStaticAsset.bytes) || '-' }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.mesh_count">
+                <span>Mesh</span>
+                <strong>{{ selectedStaticAsset.mesh_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.material_count">
+                <span>材质</span>
+                <strong>{{ selectedStaticAsset.material_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.texture_count">
+                <span>贴图</span>
+                <strong>{{ selectedStaticAsset.texture_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.animation_count">
+                <span>动画</span>
+                <strong>{{ selectedStaticAsset.animation_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.ui_gameobject_count">
+                <span>UI节点</span>
+                <strong>{{ selectedStaticAsset.ui_gameobject_count }}</strong>
+              </div>
+              <div v-if="selectedStaticAsset.unity_object_count">
+                <span>Unity对象</span>
+                <strong>{{ selectedStaticAsset.unity_object_count }}</strong>
+              </div>
+            </div>
+            <dl class="asset-path-list">
+              <div v-if="selectedStaticAsset.unity_object_types">
+                <dt>对象类型统计</dt>
+                <dd>{{ selectedStaticAsset.unity_object_types }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.unity_named_objects">
+                <dt>对象名称样本</dt>
+                <dd>{{ selectedStaticAsset.unity_named_objects }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.unity_script_names">
+                <dt>脚本样本</dt>
+                <dd>{{ selectedStaticAsset.unity_script_names }}</dd>
+              </div>
+              <div>
+                <dt>资源路径</dt>
+                <dd>{{ selectedStaticAsset.relative_path }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.unity_parse_status && selectedStaticAsset.unity_parse_status !== 'parsed'">
+                <dt>解析状态</dt>
+                <dd>{{ selectedStaticAsset.unity_parse_status }} {{ selectedStaticAsset.unity_parse_error || '' }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.hash_suffix">
+                <dt>Hash</dt>
+                <dd>{{ selectedStaticAsset.hash_suffix }}</dd>
+              </div>
+              <div v-if="selectedStaticAsset.mesh_vertices || selectedStaticAsset.mesh_faces">
+                <dt>Mesh统计</dt>
+                <dd>顶点 {{ selectedStaticAsset.mesh_vertices || 0 }} / 面 {{ selectedStaticAsset.mesh_faces || 0 }}</dd>
+              </div>
+            </dl>
+          </section>
+        </template>
+
+        <template v-else-if="activeTab === 'audio' && selectedAudioAsset">
+          <section class="detail-head audio-detail-head">
+            <div class="audio-detail-badge">MP3</div>
+            <div class="detail-title">
+              <h3>{{ getAudioAssetTitle(selectedAudioAsset) }}</h3>
+              <div class="detail-meta">
+                <span>{{ getAudioAssetMeta(selectedAudioAsset) }}</span>
+                <span v-if="selectedAudioAsset.wem_id">WEM {{ selectedAudioAsset.wem_id }}</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section class="object-section intro-section audio-player-section">
+            <div class="audio-player-toolbar">
+              <el-button
+                size="small"
+                :icon="TopRight"
+                :disabled="!selectedAudioAsset.media_url"
+                title="打开独立播放器"
+                @click="openAudioIndependentPlayer(selectedAudioAsset)"
+              >独立播放</el-button>
+            </div>
+            <audio
+              v-if="selectedAudioAsset.media_url"
+              :key="selectedAudioAsset.media_url"
+              controls
+              preload="metadata"
+              :src="selectedAudioAsset.media_url"
+            ></audio>
+            <div class="asset-info-grid">
+              <div>
+                <span>时长</span>
+                <strong>{{ formatAudioDuration(selectedAudioAsset.duration_seconds) || '-' }}</strong>
+              </div>
+              <div>
+                <span>采样率</span>
+                <strong>{{ selectedAudioAsset.sample_rate || '-' }}</strong>
+              </div>
+              <div>
+                <span>声道</span>
+                <strong>{{ selectedAudioAsset.channels || '-' }}</strong>
+              </div>
+              <div>
+                <span>WEM大小</span>
+                <strong>{{ formatByteSize(selectedAudioAsset.wem_size) || '-' }}</strong>
+              </div>
+            </div>
+            <dl class="asset-path-list">
+              <div>
+                <dt>Bank</dt>
+                <dd>{{ selectedAudioAsset.source_bank }}</dd>
+              </div>
+              <div>
+                <dt>MP3</dt>
+                <dd>{{ selectedAudioAsset.relative_mp3_path }}</dd>
+              </div>
+              <div v-if="selectedAudioAsset.encoding">
+                <dt>编码</dt>
+                <dd>{{ selectedAudioAsset.encoding }}</dd>
+              </div>
+            </dl>
+          </section>
+        </template>
+
+        <template v-else-if="activeTab === 'doupotd_reward' && selectedDoupoTDReward">
           <section class="detail-head reward-config-head">
             <div class="reward-config-detail-badge">
               {{ getDoupoTDRewardSourceShort(selectedDoupoTDReward.source_table) }}
@@ -9314,6 +10630,20 @@ onBeforeUnmount(() => {
   background: #dfe4ec;
 }
 
+.wiki-secondary-tabs {
+  padding-top: 5px;
+}
+
+.wiki-secondary-tabs :deep(.el-tabs__item) {
+  height: 34px;
+  line-height: 34px;
+  font-size: 13px;
+}
+
+.wiki-secondary-tabs :deep(.el-tabs__nav-wrap::after) {
+  background: #edf0f5;
+}
+
 .wiki-context-menu {
   position: fixed;
   z-index: 3200;
@@ -9352,6 +10682,64 @@ onBeforeUnmount(() => {
 
 .query-input {
   width: min(420px, 42vw);
+}
+
+.visual-similarity-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 8px;
+  padding: 5px 7px;
+  color: #344054;
+  background: #f6f9fc;
+  border: 1px solid #d8e2ef;
+}
+
+.visual-similarity-thumb {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid #e4e7ec;
+  cursor: zoom-in;
+}
+
+.visual-similarity-thumb :deep(.el-image__inner) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.visual-similarity-strip span {
+  min-width: 0;
+  max-width: min(360px, 50vw);
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.visual-similarity-strip small {
+  color: #667085;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.visual-similarity-strip button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #667085;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 
 .stage-filter-select {
@@ -9756,6 +11144,61 @@ onBeforeUnmount(() => {
   font-size: 22px;
 }
 
+.visual-thumb {
+  background: #ffffff;
+  border-color: #d0d5dd;
+  text-shadow: none;
+}
+
+.visual-thumb img {
+  object-fit: contain;
+  padding: 3px;
+  box-sizing: border-box;
+}
+
+.static-asset-thumb {
+  background: #fffdf4;
+  border-color: #d8c48c;
+  color: #344054;
+  text-shadow: none;
+  font-size: 11px;
+}
+
+.static-asset-thumb img {
+  object-fit: cover;
+  padding: 2px;
+  box-sizing: border-box;
+  background: #fffdf4;
+}
+
+.audio-asset-row,
+.static-asset-row,
+.reward-config-row {
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.audio-row-badge,
+.static-asset-badge {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #32615f;
+  background: #e8f3f1;
+  border: 1px solid #abcac5;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.static-asset-badge {
+  color: #344054;
+  background: #f2f4f7;
+  border-color: #cfd4dc;
+  text-transform: none;
+}
+
 .object-row-main {
   min-width: 0;
   display: grid;
@@ -9770,6 +11213,13 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.similarity-rank {
+  margin-left: 6px;
+  color: #2f9eaa;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .object-row-meta {
@@ -10189,6 +11639,151 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 12px rgba(24, 55, 98, 0.28), inset 0 0 22px rgba(255, 255, 255, 0.42);
 }
 
+.visual-detail-head {
+  align-items: flex-start;
+}
+
+.visual-detail-preview {
+  width: 128px;
+  height: 128px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  box-sizing: border-box;
+  background: #ffffff;
+  border: 1px solid #d0d5dd;
+  box-shadow: 0 8px 22px rgba(16, 24, 40, 0.08);
+}
+
+.visual-detail-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.audio-detail-badge,
+.static-asset-detail-badge {
+  width: 86px;
+  height: 86px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: #32615f;
+  background: #e8f3f1;
+  border: 1px solid #abcac5;
+  font-size: 22px;
+  font-weight: 850;
+}
+
+.static-asset-detail-badge {
+  color: #344054;
+  background: #f2f4f7;
+  border-color: #cfd4dc;
+  font-size: 18px;
+}
+
+.static-asset-detail-preview {
+  width: 176px;
+  height: 128px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #344054;
+  background: #fffdf4;
+  border: 1px solid #d8c48c;
+  font-size: 18px;
+  font-weight: 850;
+  box-shadow: 0 8px 22px rgba(92, 67, 11, 0.1);
+}
+
+.static-asset-detail-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.static-asset-full-preview-section {
+  padding: 16px 18px 18px;
+}
+
+.static-asset-preview-loading {
+  color: #8a7b61;
+  font-size: 13px;
+}
+
+.static-asset-original-list,
+.static-asset-derived-list {
+  display: grid;
+  gap: 16px;
+}
+
+.static-asset-original-figure,
+.static-asset-derived-figure {
+  min-width: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.static-asset-original-image,
+.static-asset-derived-preview {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  min-height: 180px;
+  box-sizing: border-box;
+  background: #fff;
+  border: 1px solid rgba(193, 164, 92, 0.42);
+}
+
+.static-asset-original-image img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(72vh, 760px);
+  height: auto;
+  object-fit: contain;
+}
+
+.static-asset-derived-preview {
+  padding: 12px;
+  background:
+    linear-gradient(45deg, rgba(0, 0, 0, 0.035) 25%, transparent 25%) 0 0 / 18px 18px,
+    linear-gradient(45deg, transparent 75%, rgba(0, 0, 0, 0.035) 75%) 0 0 / 18px 18px,
+    #fffef8;
+}
+
+.static-asset-derived-preview img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(72vh, 760px);
+  height: auto;
+  object-fit: contain;
+}
+
+.static-asset-preview-caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: #8a7b61;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.static-asset-preview-caption strong {
+  color: #344054;
+}
+
+.static-asset-derived-note {
+  margin: 0;
+  color: #8a7b61;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .detail-title {
   min-width: 0;
   display: grid;
@@ -10446,6 +12041,70 @@ onBeforeUnmount(() => {
 .intro-section h4 {
   color: #8a6b33;
   border-bottom-color: rgba(138, 107, 51, 0.36);
+}
+
+.asset-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.asset-info-grid div {
+  min-width: 0;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(193, 164, 92, 0.28);
+}
+
+.asset-info-grid span,
+.asset-path-list dt {
+  display: block;
+  color: #8a7b61;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.asset-info-grid strong {
+  display: block;
+  overflow: hidden;
+  color: #263244;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-path-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.asset-path-list div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.asset-path-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.audio-player-section audio {
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.audio-player-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .homemake-static-section {

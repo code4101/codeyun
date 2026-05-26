@@ -189,21 +189,21 @@
               <div class="code-panel-head">
                 <div class="code-panel-title">
                   <span>视觉宏</span>
-                  <el-popover trigger="click" placement="bottom-start" width="260">
+                  <el-popover trigger="click" placement="bottom-start" width="360">
                     <template #reference>
                       <el-button
                         circle
                         plain
                         size="small"
                         :icon="Setting"
-                        title="配置新视觉指令默认模板"
-                        aria-label="配置新视觉指令默认模板"
+                    title="配置新指令集默认模板"
+                    aria-label="配置新指令集默认模板"
                       />
                     </template>
                     <div class="visual-macro-config">
-                      <div class="visual-macro-config-title">新指令默认模板</div>
+                      <div class="visual-macro-config-title">新指令集默认模板</div>
                       <label class="visual-macro-config-row">
-                        <span>点击半径</span>
+                        <span>点击位置允许随机波动半径r</span>
                         <el-input-number
                           v-model="visualMacroDefaultPointRadius"
                           class="visual-number-input"
@@ -215,49 +215,69 @@
                         />
                       </label>
                       <label class="visual-macro-config-row">
-                        <span>图片相似度</span>
+                        <span>图像匹配相似度阈值</span>
                         <el-input-number
-                          v-model="visualMacroDefaultThreshold"
+                          :model-value="thresholdRatioToPercent(visualMacroDefaultThreshold)"
                           class="visual-number-input"
                           size="small"
-                          :min="0.5"
-                          :max="1"
-                          :step="0.01"
+                          :min="50"
+                          :max="100"
+                          :step="1"
+                          controls-position="right"
+                          @change="value => setVisualMacroDefaultThreshold(thresholdPercentToRatio(value))"
+                        >
+                          <template #suffix>%</template>
+                        </el-input-number>
+                      </label>
+                      <label class="visual-macro-config-row">
+                        <span>单通道像素容差</span>
+                        <el-input-number
+                          v-model="visualMacroDefaultPixelTolerance"
+                          class="visual-number-input"
+                          size="small"
+                          :min="0"
+                          :max="255"
+                          :step="1"
                           controls-position="right"
                         />
                       </label>
                     </div>
                   </el-popover>
                 </div>
-                <div class="code-panel-actions">
-                  <el-button size="small" :loading="pseudoCompileLoading" @click="compilePseudoCode">编译</el-button>
-                  <el-button size="small" type="primary" plain :loading="pseudoStartLoading" @click="startPseudoCode">启动</el-button>
-                </div>
               </div>
               <div class="code-scope-list">
-                <section v-for="scopeInfo in codeCardScopes" :key="scopeInfo.scope" class="code-scope">
+                <section class="code-scope">
                   <div class="code-scope-head">
-                    <span>{{ scopeInfo.label }}</span>
+                    <span>脚本</span>
                     <button
                       type="button"
                       class="code-add"
-                      :title="`新建${scopeInfo.label}`"
-                      :aria-label="`新建${scopeInfo.label}`"
-                      @click="addCodeCard(scopeInfo.scope)"
+                      title="新建脚本"
+                      aria-label="新建脚本"
+                      @click="addCodeCard"
                     >
                       +
                     </button>
                   </div>
-                  <div class="code-card-list">
+                  <div ref="codeCardListRef" class="code-card-list">
                     <section
-                      v-for="(card, index) in codeCardsByScope(scopeInfo.scope)"
+                      v-for="(card, index) in sortedCodeCards"
                       :key="card.id"
                       class="code-card"
                       :class="{ 'is-expanded': isCodeCardExpanded(card.id) }"
+                      :data-card-id="card.id"
                     >
                       <div v-if="isCodeCardExpanded(card.id)" class="code-card-head">
+                        <SortableOrderHandle
+                          class="code-card-order-handle"
+                          :index="index"
+                          :total="sortedCodeCards.length"
+                          size="sm"
+                          :pad="false"
+                        />
                         <el-input
                           v-model="card.title"
+                          class="code-card-title-input"
                           size="small"
                           placeholder="标题"
                           @input="scheduleCodeCardSave(card)"
@@ -272,12 +292,23 @@
                         >
                           ^
                         </button>
+                        <el-button
+                          class="code-card-run"
+                          :class="{ 'is-running': visualScriptRunningCardId === card.id }"
+                          :icon="visualScriptRunningCardId === card.id ? VideoPause : VideoPlay"
+                          text
+                          size="small"
+                          :disabled="Boolean(visualScriptRunningCardId) && visualScriptRunningCardId !== card.id"
+                          :title="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
+                          :aria-label="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
+                          @click.stop="visualScriptRunningCardId === card.id ? stopVisualScript(card) : runVisualScript(card)"
+                        />
                         <button
                           type="button"
                           class="code-card-record"
                           :class="{ 'is-recording': activeVisualMacroCardId === card.id }"
-                          :title="activeVisualMacroCardId === card.id ? '停止录制视觉指令' : '录制视觉指令'"
-                          :aria-label="activeVisualMacroCardId === card.id ? '停止录制视觉指令' : '录制视觉指令'"
+                          :title="activeVisualMacroCardId === card.id ? '停止录制指令集' : '录制指令集'"
+                          :aria-label="activeVisualMacroCardId === card.id ? '停止录制指令集' : '录制指令集'"
                           @click="toggleVisualMacroRecording(card.id)"
                         >
                           {{ activeVisualMacroCardId === card.id ? '停止录制' : '录制' }}
@@ -293,13 +324,31 @@
                         </button>
                       </div>
                       <div v-else class="code-card-summary-row">
+                        <SortableOrderHandle
+                          class="code-card-order-handle"
+                          :index="index"
+                          :total="sortedCodeCards.length"
+                          size="sm"
+                          :pad="false"
+                        />
                         <button
                           type="button"
                           class="code-card-title-button"
                           @click="toggleCodeCard(card.id)"
                         >
-                          <span>{{ codeCardTitle(card, scopeInfo.scope, index) }}</span>
+                          <span>{{ codeCardTitle(card) }}</span>
                         </button>
+                        <el-button
+                          class="code-card-run"
+                          :class="{ 'is-running': visualScriptRunningCardId === card.id }"
+                          :icon="visualScriptRunningCardId === card.id ? VideoPause : VideoPlay"
+                          text
+                          size="small"
+                          :disabled="Boolean(visualScriptRunningCardId) && visualScriptRunningCardId !== card.id"
+                          :title="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
+                          :aria-label="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
+                          @click.stop="visualScriptRunningCardId === card.id ? stopVisualScript(card) : runVisualScript(card)"
+                        />
                         <button
                           type="button"
                           class="code-card-delete"
@@ -312,123 +361,51 @@
                       </div>
                       <div v-if="isCodeCardExpanded(card.id)" class="visual-action-editor">
                         <div v-if="activeVisualMacroCardId === card.id" class="visual-recording-hint">
-                          {{ visualMacroCapturePending ? '正在保存点击前画面...' : '录制中：在左侧直播画面点击或拖拽，会追加一条视觉指令。' }}
+                          {{ visualMacroCapturePending ? '正在保存点击前画面...' : '录制中：在左侧直播画面点击或拖拽，会追加一组指令集。' }}
                         </div>
                         <div
-                          v-for="(instruction, instructionIndex) in visualInstructionsOf(card)"
-                          :key="instruction.id"
-                          class="visual-operation"
-                          :class="{ 'is-selected': selectedVisualInstructionKey === visualInstructionKey(card.id, instruction.id) }"
-                          @click="selectVisualInstructionFrame(card, instruction)"
+                          :ref="element => setVisualInstructionSetListRef(element, card.id)"
+                          class="visual-instruction-set-list"
+                          :data-card-id="card.id"
                         >
-                        <div class="visual-action-row">
-                          <span class="visual-operation-index">{{ instructionIndex + 1 }}</span>
-                          <el-select
-                            :model-value="instruction.action"
-                            class="visual-action-select"
-                            size="small"
-                            @change="value => updateVisualInstruction(card, instruction.id, { action: value as VisualActionKind })"
+                          <div
+                            v-for="(instructionSet, instructionSetIndex) in visualInstructionSetsOf(card)"
+                            :key="instructionSet.id"
+                            class="visual-instruction-set"
+                            :data-set-id="instructionSet.id"
+                            @contextmenu.prevent.stop="openVisualInstructionSetContextMenu($event, card, instructionSet)"
                           >
-                            <el-option label="点击" value="click" />
-                            <el-option label="拖拽" value="drag" />
-                            <el-option label="等待" value="wait" />
-                          </el-select>
-                          <el-select
-                            :model-value="instruction.target"
-                            class="visual-target-select"
-                            size="small"
-                            @change="value => updateVisualInstruction(card, instruction.id, { target: value as VisualTargetKind })"
-                          >
-                            <el-option label="图片" value="image" />
-                            <el-option label="文本" value="text" />
-                            <el-option label="无目标" value="none" />
-                          </el-select>
-                          <el-select
-                            v-if="instruction.target === 'image'"
-                            :model-value="instruction.scan"
-                            class="visual-scan-select"
-                            size="small"
-                            @change="value => updateVisualInstruction(card, instruction.id, { scan: value as VisualScanMode })"
-                          >
-                            <el-option label="固定位置" value="fixed" />
-                            <el-option label="范围搜索" value="range" />
-                            <el-option label="全图搜索" value="full" />
-                          </el-select>
-                          <button
-                            type="button"
-                            class="visual-operation-delete"
-                            title="删除视觉指令"
-                            aria-label="删除视觉指令"
-                            @click.stop="deleteVisualInstruction(card, instruction.id)"
-                          >
-                            -
-                          </button>
-                        </div>
-
-                        <div class="visual-action-row">
-                          <template v-if="instruction.target === 'text'">
-                            <el-input
-                              :model-value="instruction.text"
-                              class="visual-text-input"
-                              size="small"
-                              placeholder="识别文本"
-                              @input="value => updateVisualInstruction(card, instruction.id, { text: String(value) })"
-                              @blur="saveCodeCardNow(card)"
-                            />
-                            <el-select
-                              :model-value="instruction.textMatch"
-                              class="visual-scan-select"
-                              size="small"
-                              @change="value => updateVisualInstruction(card, instruction.id, { textMatch: value as VisualTextMatch })"
+                            <div
+                              v-if="firstInstructionOfSet(instructionSet)"
+                              :key="firstInstructionOfSet(instructionSet)?.id"
+                              class="visual-operation"
+                              :class="{ 'is-selected': selectedVisualInstructionSetKey === visualInstructionSetKey(card.id, instructionSet.id) }"
+                              @click.stop="selectVisualInstructionFrame(card, firstInstructionOfSet(instructionSet)!)"
                             >
-                              <el-option label="包含" value="contains" />
-                              <el-option label="精确" value="exact" />
-                              <el-option label="正则" value="regex" />
-                            </el-select>
-                          </template>
+                              <div class="visual-action-row">
+                                <SortableOrderHandle
+                                  :index="instructionSetIndex"
+                                  :total="visualInstructionSetsOf(card).length"
+                                  size="sm"
+                                  :pad="false"
+                                />
+                                <span
+                                  class="visual-summary-text"
+                                  :class="{ 'is-unique-title': isVisualInstructionSetLabelUnique(instructionSet) || (!instructionSet.label.trim() && isVisualInstructionLabelUnique(firstInstructionOfSet(instructionSet)!)) }"
+                                >
+                                  {{ visualInstructionSetDisplayTitle(instructionSet) }}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
                         </div>
-
-                        <div v-if="instruction.action !== 'click'" class="visual-action-row">
-                          <template v-if="instruction.action === 'wait'">
-                            <span class="visual-inline-label">条件</span>
-                            <el-select
-                              :model-value="instruction.condition"
-                              class="visual-scan-select"
-                              size="small"
-                              @change="value => updateVisualInstruction(card, instruction.id, { condition: value as VisualCondition })"
-                            >
-                              <el-option label="出现" value="appear" />
-                              <el-option label="消失" value="disappear" />
-                              <el-option label="稳定" value="stable" />
-                              <el-option label="变化" value="changed" />
-                            </el-select>
-                            <span class="visual-inline-label">超时</span>
-                            <el-input-number
-                              :model-value="instruction.timeout"
-                              class="visual-small-number-input"
-                              size="small"
-                              :min="0"
-                              :max="120"
-                              controls-position="right"
-                              @change="value => updateVisualInstruction(card, instruction.id, { timeout: Number(value) || 0 })"
-                            />
-                            <span class="visual-inline-label">秒</span>
-                          </template>
-                          <template v-else-if="instruction.action === 'drag'">
-                            <span class="visual-inline-label">从</span>
-                            <code>{{ visualPointText(instruction.point) }}</code>
-                            <span class="visual-inline-label">到</span>
-                            <code>{{ visualPointText(instruction.endPoint) }}</code>
-                          </template>
-                        </div>
-                        </div>
-                        <div v-if="!visualInstructionsOf(card).length" class="visual-empty">
-                          点击本动作右上角“录制”后，在直播画面点击或拖拽，会追加视觉指令。
+                        <div v-if="!visualInstructionSetsOf(card).length" class="visual-empty">
+                          点击本脚本右上角“录制”后，在直播画面点击或拖拽，会追加指令集。
                         </div>
                       </div>
                     </section>
-                    <div v-if="!codeCardsByScope(scopeInfo.scope).length && !codeCardsLoading" class="code-card-empty">
-                      {{ scopeInfo.emptyText }}
+                    <div v-if="!sortedCodeCards.length && !codeCardsLoading" class="code-card-empty">
+                      暂无脚本
                     </div>
                   </div>
                 </section>
@@ -461,7 +438,7 @@
             <div class="screenshot-head">
               <button type="button" class="screenshot-toggle" @click="toggleScreenshotPanel">
                 <span class="screenshot-caret">{{ screenshotPanelOpen ? '▼' : '▶' }}</span>
-                <span>指令截图</span>
+                <span>指令集详情</span>
               </button>
               <el-popover trigger="click" placement="right-start" width="260">
                 <template #reference>
@@ -469,7 +446,7 @@
                     type="button"
                     class="screenshot-help"
                     title="查看操作文档"
-                    aria-label="查看指令截图操作文档"
+                    aria-label="查看指令集详情操作文档"
                     @click.stop
                   >
                     ?
@@ -488,211 +465,532 @@
             </div>
             <div v-if="screenshotPanelOpen" class="screenshot-body">
               <div v-if="screenshotLoading && !screenshotImages.length" class="screenshot-empty">加载中</div>
-              <div v-else-if="!selectedScreenshotFilename" class="screenshot-empty">选择一条带帧的视觉指令</div>
-              <div v-else-if="!selectedScreenshotImage" class="screenshot-empty">未找到绑定截图</div>
-              <div v-if="selectedScreenshotImage" class="screenshot-editor">
-                <div
-                  ref="screenshotViewportRef"
-                  class="screenshot-preview"
-                  :class="screenshotViewportClasses"
-                  :style="screenshotCanvasStyle"
-                  @wheel="handleScreenshotWheel"
-                  @mousedown.capture="handleScreenshotViewportMouseDown"
-                >
-                  <div class="screenshot-workspace" :style="screenshotCanvasStyle">
-                    <div ref="screenshotImageWrapRef" class="screenshot-image-wrap" :style="screenshotContentStyle">
-                      <img
-                        v-if="screenshotImageUrl"
-                        ref="screenshotImageRef"
-                        class="screenshot-image"
-                        :src="screenshotImageUrl"
-                        :style="screenshotCanvasStyle"
-                        alt="截图"
-                        draggable="false"
-                        @load="handleScreenshotImageLoad"
-                        @error="handleScreenshotImageError"
-                      />
-                      <div v-else class="screenshot-image-placeholder">加载图片</div>
-                      <canvas
-                        ref="screenshotOverlayCanvasRef"
-                        class="screenshot-overlay-canvas"
-                        @pointerdown="handleScreenshotPointerDown"
-                        @pointermove="handleScreenshotPointerMove"
-                        @pointerup="handleScreenshotPointerUp"
-                        @pointerleave="handleScreenshotPointerLeave"
-                        @contextmenu.prevent="handleScreenshotContextMenu"
-                      />
+              <div v-else-if="!selectedRawVisualInstruction && !selectedScreenshotFilename" class="screenshot-empty">选择一组带帧的指令集</div>
+              <div v-else-if="selectedScreenshotFilename && !selectedScreenshotImage" class="screenshot-empty">未找到绑定截图</div>
+              <div v-if="selectedRawVisualInstruction || selectedScreenshotImage" class="screenshot-editor">
+                <div class="screenshot-preview-column">
+                  <div class="screenshot-detail-title">截图</div>
+                  <div v-if="selectedScreenshotGeometryText" class="screenshot-geometry-warning">
+                    <span>{{ selectedScreenshotGeometryText }}</span>
+                    <button
+                      type="button"
+                      class="screenshot-rebind-frame"
+                      :disabled="saveFrameLoading"
+                      @click="rebindSelectedVisualInstructionFrame"
+                    >
+                      重绑当前帧
+                    </button>
+                  </div>
+                  <div
+                    v-if="selectedScreenshotImage"
+                    ref="screenshotViewportRef"
+                    class="screenshot-preview"
+                    :class="screenshotViewportClasses"
+                    :style="screenshotCanvasStyle"
+                    @wheel="handleScreenshotWheel"
+                    @mousedown.capture="handleScreenshotViewportMouseDown"
+                  >
+                    <div class="screenshot-workspace" :style="screenshotCanvasStyle">
+                      <div ref="screenshotImageWrapRef" class="screenshot-image-wrap" :style="screenshotContentStyle">
+                        <img
+                          v-if="screenshotImageUrl"
+                          ref="screenshotImageRef"
+                          class="screenshot-image"
+                          :src="screenshotImageUrl"
+                          :style="screenshotCanvasStyle"
+                          alt="截图"
+                          draggable="false"
+                          @load="handleScreenshotImageLoad"
+                          @error="handleScreenshotImageError"
+                        />
+                        <div v-else class="screenshot-image-placeholder">加载图片</div>
+                        <canvas
+                          ref="screenshotOverlayCanvasRef"
+                          class="screenshot-overlay-canvas"
+                          @pointerdown="handleScreenshotPointerDown"
+                          @pointermove="handleScreenshotPointerMove"
+                          @pointerup="handleScreenshotPointerUp"
+                          @pointerleave="handleScreenshotPointerLeave"
+                          @contextmenu.prevent="handleScreenshotContextMenu"
+                        />
+                      </div>
                     </div>
                   </div>
+                  <div v-else class="screenshot-empty">未绑定截图</div>
                 </div>
 
                 <div class="screenshot-pre-panel" @contextmenu.prevent.stop="openScreenshotBoxListPanelContextMenu">
                   <div v-if="selectedVisualInstruction" class="screenshot-instruction-panel">
-                    <div class="screenshot-panel-title">{{ visualActionLabel(selectedVisualInstruction.action) }}</div>
-                    <div v-if="selectedVisualInstruction.action === 'click'" class="screenshot-instruction-metrics">
-                      <label class="screenshot-box-metric">
-                        <span>x</span>
-                        <el-input-number
-                          :model-value="selectedVisualInstruction.point?.x ?? 0"
-                          size="small"
-                          :controls="false"
-                          :step="1"
-                          @change="value => updateSelectedVisualInstructionPoint('point', 'x', value)"
-                        />
-                      </label>
-                      <label class="screenshot-box-metric">
-                        <span>y</span>
-                        <el-input-number
-                          :model-value="selectedVisualInstruction.point?.y ?? 0"
-                          size="small"
-                          :controls="false"
-                          :step="1"
-                          @change="value => updateSelectedVisualInstructionPoint('point', 'y', value)"
-                        />
-                      </label>
-                      <label class="screenshot-box-metric">
-                        <span>r</span>
-                        <el-input-number
-                          :model-value="selectedVisualInstruction.pointRadius"
-                          size="small"
-                          :controls="false"
-                          :step="1"
-                          @change="updateSelectedVisualInstructionRadius"
-                        />
-                      </label>
+                    <div v-if="selectedVisualInstructionSet" class="screenshot-config-group">
+                      <div class="screenshot-panel-title-row">
+                        <div class="screenshot-panel-title">指令集</div>
+                        <button
+                          type="button"
+                          class="instruction-sequence-add"
+                          title="添加指令"
+                          aria-label="添加指令"
+                          @click="selectedVisualInstructionSetContext && addInstructionToSet(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id)"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div class="screenshot-config-row">
+                        <label class="screenshot-box-metric">
+                          <span>名称</span>
+                          <input
+                            class="instruction-sequence-title instruction-set-title-input"
+                            :class="{ 'is-unique-title': isVisualInstructionSetLabelUnique(selectedVisualInstructionSet) && !isVisualInstructionSetLabelEditing(selectedVisualInstructionSet.id) }"
+                            :value="visualInstructionSetLabelInputValue(selectedVisualInstructionSet)"
+                            placeholder="指令集名称"
+                            @click.stop
+                            @mousedown.stop
+                            @keydown.stop
+                            @keyup.stop
+                            @compositionstart="beginVisualTitleComposition(`set:${selectedVisualInstructionSet.id}`)"
+                            @compositionend="event => selectedVisualInstructionSetContext && commitVisualInstructionSetLabelInput(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
+                            @input="event => selectedVisualInstructionSetContext && handleVisualInstructionSetLabelInput(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
+                            @focus="beginVisualInstructionSetLabelEdit(selectedVisualInstructionSet)"
+                            @keydown.enter.stop.prevent="event => selectedVisualInstructionSetContext && commitVisualInstructionSetLabelByEnter(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
+                            @blur="selectedVisualInstructionSetContext && commitVisualInstructionSetLabelDraft(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id)"
+                          />
+                        </label>
+                      </div>
+                      <div class="instruction-sequence">
+                        <div
+                          v-for="(instruction, index) in selectedVisualInstructionSet.instructions"
+                          :key="instruction.id"
+                          role="button"
+                          tabindex="0"
+                          class="instruction-sequence-row"
+                          :class="{ 'is-active': selectedVisualInstructionSetContext && selectedVisualInstructionKey === visualInstructionKey(selectedVisualInstructionSetContext.card.id, instruction.id) }"
+                          @click="selectVisualInstructionFromSelectedSet(instruction)"
+                          @keydown.enter.prevent="selectVisualInstructionFromSelectedSet(instruction)"
+                          @keydown.space.prevent="selectVisualInstructionFromSelectedSet(instruction)"
+                          >
+                            <span>{{ index + 1 }}</span>
+                            <input
+                              v-if="instruction.kind !== 'ref'"
+                              class="instruction-sequence-title"
+                              :class="{ 'is-unique-title': isVisualInstructionLabelUnique(instruction) && !isVisualInstructionTitleEditing(instruction.id) }"
+                              :value="visualInstructionTitleInputValue(instruction)"
+                              :placeholder="visualInstructionFallbackTitle(instruction)"
+                              @click.stop
+                              @mousedown.stop
+                              @keydown.stop
+                              @keyup.stop
+                              @compositionstart="beginVisualTitleComposition(`instruction:${instruction.id}`)"
+                              @compositionend="event => commitVisualInstructionTitleComposition(instruction, event)"
+                              @input="event => handleVisualInstructionTitleInput(instruction.id, event)"
+                              @focus="beginVisualInstructionTitleEdit(instruction)"
+                              @keydown.enter.stop.prevent="event => commitVisualInstructionTitleDraftByEnter(instruction, event)"
+                              @blur="commitVisualInstructionTitleDraft(instruction)"
+                            />
+                            <template v-if="instruction.kind === 'ref'">
+                              <span class="instruction-reference-title">调用：{{ instruction.refName || '未选择' }}</span>
+                            </template>
+                          <button
+                            type="button"
+                            class="instruction-sequence-delete"
+                            title="删除指令"
+                            aria-label="删除指令"
+                            @click.stop="selectedVisualInstructionSetContext && confirmDeleteVisualInstruction(selectedVisualInstructionSetContext.card, instruction)"
+                          >
+                            -
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <div v-else-if="selectedVisualInstruction.action === 'drag'" class="screenshot-drag-metrics">
-                      <div class="screenshot-instruction-metrics">
-                        <span class="screenshot-metric-group-label">从</span>
+                    <div class="screenshot-config-group">
+                      <div class="screenshot-config-row visual-call-config-row">
+                        <label class="screenshot-box-metric">
+                          <span class="visual-primary-label">类型</span>
+                          <el-select
+                            :model-value="selectedRawVisualInstruction?.kind ?? 'normal'"
+                            class="visual-target-kind-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstructionKind(value as VisualInstructionKind)"
+                          >
+                            <el-option label="普通" value="normal" />
+                            <el-option label="调用" value="ref" />
+                          </el-select>
+                        </label>
+                        <label v-if="selectedVisualReferenceInstruction" class="screenshot-box-metric">
+                          <span>目标</span>
+                          <el-select
+                            :model-value="selectedVisualReferenceInstruction.refTargetKind"
+                            class="visual-target-kind-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstructionReferenceTargetKind(value as VisualReferenceTargetKind)"
+                          >
+                            <el-option label="指令" value="instruction" />
+                            <el-option label="指令集" value="instructionSet" />
+                          </el-select>
+                        </label>
+                        <label v-if="selectedVisualReferenceInstruction" class="screenshot-box-metric">
+                          <span>调用</span>
+                          <el-select
+                            :model-value="selectedVisualReferenceInstruction.refName"
+                            class="visual-reference-select"
+                            size="small"
+                            filterable
+                            placeholder="选择唯一名称"
+                            @change="value => updateSelectedVisualInstructionReference(String(value))"
+                          >
+                            <el-option
+                              v-for="candidate in selectedVisualReferenceCandidates"
+                              :key="candidate.id"
+                              :label="candidate.name"
+                              :value="candidate.name"
+                            />
+                          </el-select>
+                        </label>
+                        <span v-if="selectedVisualReferenceInstruction" class="visual-reference-note">
+                          修改下方参数会影响所有调用
+                        </span>
+                      </div>
+                      <div class="screenshot-config-row">
+                        <label class="screenshot-box-metric">
+                          <span class="visual-primary-label">动作</span>
+                          <el-select
+                            :model-value="selectedVisualInstruction.action"
+                            class="visual-action-kind-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstruction({ action: value as VisualActionKind })"
+                          >
+                            <el-option label="等待点击" value="waitClick" />
+                            <el-option label="守护点击" value="guardClick" />
+                            <el-option label="点击" value="click" />
+                            <el-option label="拖拽" value="drag" />
+                            <el-option label="等待" value="wait" />
+                            <el-option label="查找" value="find" />
+                            <el-option label="批量查找" value="findAll" />
+                          </el-select>
+                        </label>
+                      </div>
+                      <div v-if="visualActionUsesPointer(selectedVisualInstruction.action)" class="pointer-config-table">
+                        <div class="pointer-config-row">
+                          <span class="screenshot-metric-group-label">起点</span>
+                          <label class="screenshot-box-metric">
+                            <span>x1</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.start?.x ?? 0"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerPoint('start', 'x', value)"
+                            />
+                          </label>
+                          <label class="screenshot-box-metric">
+                            <span>y1</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.start?.y ?? 0"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerPoint('start', 'y', value)"
+                            />
+                          </label>
+                          <label class="screenshot-box-metric">
+                            <span>r1</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.start?.r ?? visualMacroDefaultPointRadius"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerRadius('start', value)"
+                            />
+                          </label>
+                        </div>
+                        <div v-if="selectedVisualInstruction.action === 'drag'" class="pointer-config-row">
+                          <span class="screenshot-metric-group-label">终点</span>
+                          <label class="screenshot-box-metric">
+                            <span>x2</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.end?.x ?? 0"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerPoint('end', 'x', value)"
+                            />
+                          </label>
+                          <label class="screenshot-box-metric">
+                            <span>y2</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.end?.y ?? 0"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerPoint('end', 'y', value)"
+                            />
+                          </label>
+                          <label class="screenshot-box-metric">
+                            <span>r2</span>
+                            <el-input-number
+                              :model-value="selectedVisualInstruction.pointer.end?.r ?? visualMacroDefaultPointRadius"
+                              size="small"
+                              :controls="false"
+                              :step="1"
+                              @change="value => updateSelectedVisualInstructionPointerRadius('end', value)"
+                            />
+                          </label>
+                        </div>
+                        <label v-if="selectedVisualInstruction.action === 'drag'" class="screenshot-config-line">
+                          <span>拖拽时间ms</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.pointer.durationMs"
+                            class="screenshot-duration-input"
+                            size="small"
+                            :min="0"
+                            :max="5000"
+                            :step="50"
+                            controls-position="right"
+                            @change="value => updateSelectedVisualInstructionPointerDuration(value)"
+                          />
+                        </label>
+                      </div>
+                      <div v-else-if="selectedVisualInstruction.action === 'wait'" class="screenshot-config-row">
+                        <label class="screenshot-box-metric">
+                          <span>条件</span>
+                          <el-select
+                            :model-value="selectedVisualInstruction.condition"
+                            class="visual-scan-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstruction({ condition: value as VisualCondition })"
+                          >
+                            <el-option label="出现" value="appear" />
+                            <el-option label="消失" value="disappear" />
+                            <el-option label="稳定" value="stable" />
+                            <el-option label="变化" value="changed" />
+                          </el-select>
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>超时</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.timeout"
+                            class="visual-small-number-input"
+                            size="small"
+                            :min="0"
+                            :max="120"
+                            controls-position="right"
+                            @change="value => updateSelectedVisualInstruction({ timeout: Number(value) || 0 })"
+                          />
+                        </label>
+                        <span class="visual-inline-label">秒</span>
+                      </div>
+                    </div>
+
+                    <div class="screenshot-config-group">
+                      <div class="screenshot-config-row">
+                        <label class="screenshot-box-metric">
+                          <span class="visual-primary-label">对象</span>
+                          <el-select
+                            :model-value="selectedVisualInstruction.target"
+                            class="visual-target-kind-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstruction({ target: value as VisualTargetKind })"
+                          >
+                            <el-option label="图片" value="image" />
+                            <el-option label="文本" value="text" />
+                            <el-option label="坐标" value="coordinate" />
+                          </el-select>
+                        </label>
+                      </div>
+                      <label v-if="visualInstructionUsesTargetConfig(selectedVisualInstruction)" class="screenshot-config-line">
+                        <span>搜索范围</span>
+                        <el-select
+                          :model-value="selectedVisualInstruction.scan"
+                          class="visual-scan-select"
+                          size="small"
+                          @change="value => updateSelectedVisualInstructionScan(value as VisualScanMode)"
+                        >
+                          <el-option label="固定位置" value="fixed" />
+                          <el-option label="范围搜索" value="range" />
+                          <el-option label="全图搜索" value="full" />
+                        </el-select>
+                      </label>
+                      <div
+                        v-if="selectedVisualInstruction.scan === 'range'"
+                        class="visual-box-config"
+                        @focusin="activeVisualShapeRole = 'scan'"
+                        @pointerdown="activeVisualShapeRole = 'scan'"
+                      >
+                        <label class="screenshot-box-metric visual-box-mode-field">
+                          <span>搜索区域</span>
+                        </label>
                         <label class="screenshot-box-metric">
                           <span>x</span>
                           <el-input-number
-                            :model-value="selectedVisualInstruction.point?.x ?? 0"
+                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).x"
                             size="small"
                             :controls="false"
                             :step="1"
-                            @change="value => updateSelectedVisualInstructionPoint('point', 'x', value)"
+                            @change="value => updateSelectedVisualInstructionScanBoxMetric('x', value)"
                           />
                         </label>
                         <label class="screenshot-box-metric">
                           <span>y</span>
                           <el-input-number
-                            :model-value="selectedVisualInstruction.point?.y ?? 0"
+                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).y"
                             size="small"
                             :controls="false"
                             :step="1"
-                            @change="value => updateSelectedVisualInstructionPoint('point', 'y', value)"
-                          />
-                        </label>
-                      </div>
-                      <div class="screenshot-instruction-metrics">
-                        <span class="screenshot-metric-group-label">到</span>
-                        <label class="screenshot-box-metric">
-                          <span>x</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.endPoint?.x ?? 0"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionPoint('endPoint', 'x', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>y</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.endPoint?.y ?? 0"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionPoint('endPoint', 'y', value)"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <div v-if="selectedVisualInstruction.target === 'image'" class="screenshot-advanced-metrics">
-                      <label class="screenshot-box-metric">
-                        <span>相似度</span>
-                        <el-input-number
-                          :model-value="selectedVisualInstruction.threshold"
-                          size="small"
-                          :min="0.5"
-                          :max="1"
-                          :step="0.01"
-                          controls-position="right"
-                          @change="updateSelectedVisualInstructionThreshold"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  <div v-if="screenshotBoxes.length" class="screenshot-box-list">
-                    <div
-                      v-for="(box, index) in screenshotBoxes"
-                      :key="box.id"
-                      class="screenshot-box-row"
-                      :class="{ 'is-active': selectedScreenshotBoxId === box.id }"
-                      @click="selectScreenshotBox(box.id)"
-                      @contextmenu.prevent.stop="openScreenshotBoxListContextMenu($event, box.id)"
-                    >
-                      <div class="screenshot-box-main">
-                        <span class="screenshot-box-number">{{ index + 1 }}</span>
-                        <el-input
-                          v-model="box.name"
-                          class="screenshot-box-name"
-                          size="small"
-                          placeholder="名称"
-                          @focus="selectScreenshotBox(box.id)"
-                          @input="handleScreenshotBoxNameInput"
-                        />
-                      </div>
-                      <div class="screenshot-box-metrics">
-                        <label class="screenshot-box-metric">
-                          <span>x</span>
-                          <el-input-number
-                            :model-value="box.x"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @focus="selectScreenshotBox(box.id)"
-                            @change="value => updateScreenshotBoxMetric(box.id, 'x', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>y</span>
-                          <el-input-number
-                            :model-value="box.y"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @focus="selectScreenshotBox(box.id)"
-                            @change="value => updateScreenshotBoxMetric(box.id, 'y', value)"
+                            @change="value => updateSelectedVisualInstructionScanBoxMetric('y', value)"
                           />
                         </label>
                         <label class="screenshot-box-metric">
                           <span>w</span>
                           <el-input-number
-                            :model-value="box.w"
+                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).w"
                             size="small"
                             :controls="false"
                             :step="1"
-                            @focus="selectScreenshotBox(box.id)"
-                            @change="value => updateScreenshotBoxMetric(box.id, 'w', value)"
+                            @change="value => updateSelectedVisualInstructionScanBoxMetric('w', value)"
                           />
                         </label>
                         <label class="screenshot-box-metric">
                           <span>h</span>
                           <el-input-number
-                            :model-value="box.h"
+                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).h"
                             size="small"
                             :controls="false"
                             :step="1"
-                            @focus="selectScreenshotBox(box.id)"
-                            @change="value => updateScreenshotBoxMetric(box.id, 'h', value)"
+                            @change="value => updateSelectedVisualInstructionScanBoxMetric('h', value)"
                           />
                         </label>
                       </div>
+                      <label v-if="selectedVisualInstruction.target === 'text'" class="screenshot-config-line">
+                        <span>识别文本</span>
+                        <el-input
+                          :model-value="selectedVisualInstruction.text"
+                          class="visual-text-input"
+                          size="small"
+                          placeholder="文本"
+                          @input="value => updateSelectedVisualInstruction({ text: String(value) })"
+                          @blur="saveSelectedVisualInstructionCardNow"
+                        />
+                      </label>
+                      <label v-if="selectedVisualInstruction.target === 'text'" class="screenshot-config-line">
+                        <span>文本匹配</span>
+                        <el-select
+                          :model-value="selectedVisualInstruction.textMatch"
+                          class="visual-scan-select"
+                          size="small"
+                          @change="value => updateSelectedVisualInstruction({ textMatch: value as VisualTextMatch })"
+                        >
+                          <el-option label="包含" value="contains" />
+                          <el-option label="精确" value="exact" />
+                          <el-option label="正则" value="regex" />
+                        </el-select>
+                      </label>
+                      <div
+                        v-if="selectedVisualInstruction.target === 'image'"
+                        class="visual-box-config"
+                        @focusin="activeVisualShapeRole = 'target'"
+                        @pointerdown="activeVisualShapeRole = 'target'"
+                      >
+                        <label class="screenshot-box-metric visual-box-mode-field">
+                          <span>图片区域</span>
+                          <el-select
+                            :model-value="selectedVisualInstruction.imageBoxMode"
+                            class="visual-image-box-mode-select"
+                            size="small"
+                            @change="value => updateSelectedVisualInstructionImageBoxMode(value as VisualImageBoxMode)"
+                          >
+                            <el-option label="中心矩形" value="anchor" />
+                            <el-option label="手动画框" value="manual" />
+                          </el-select>
+                        </label>
+                        <label v-if="selectedVisualInstruction.imageBoxMode === 'manual'" class="screenshot-box-metric">
+                          <span>x</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.box?.x ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionBoxMetric('x', value)"
+                          />
+                        </label>
+                        <label v-if="selectedVisualInstruction.imageBoxMode === 'manual'" class="screenshot-box-metric">
+                          <span>y</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.box?.y ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionBoxMetric('y', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>w</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.box?.w ?? 50"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionBoxMetric('w', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>h</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.box?.h ?? 50"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionBoxMetric('h', value)"
+                          />
+                        </label>
+                      </div>
+                      <div v-if="selectedVisualInstruction.target === 'image'" class="visual-match-config">
+                        <label class="screenshot-config-line visual-threshold-line">
+                          <span>图像匹配相似度阈值</span>
+                          <el-input-number
+                            :model-value="thresholdRatioToPercent(selectedVisualInstruction.threshold)"
+                            class="screenshot-wide-number-input"
+                            size="small"
+                            :min="50"
+                            :max="100"
+                            :step="1"
+                            controls-position="right"
+                            @change="updateSelectedVisualInstructionThreshold"
+                          >
+                            <template #suffix>%</template>
+                          </el-input-number>
+                        </label>
+                        <label
+                          v-if="selectedVisualInstruction.scan === 'fixed'"
+                          class="screenshot-config-line"
+                        >
+                          <span>单通道像素容差</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.pixelTolerance"
+                            class="screenshot-wide-number-input"
+                            size="small"
+                            :min="0"
+                            :max="255"
+                            :step="1"
+                            controls-position="right"
+                            @change="updateSelectedVisualInstructionPixelTolerance"
+                          />
+                        </label>
+                      </div>
+                      <div v-if="selectedVisualInstruction.target === 'image'" class="visual-probe-line">
+                        <button
+                          type="button"
+                          class="visual-threshold-probe"
+                          :class="{ 'is-active': visualSimilarityProbeActive }"
+                          :disabled="visualSimilarityProbeLoading"
+                          @click="toggleVisualSimilarityProbe"
+                        >
+                          {{ visualSimilarityProbeActive ? '停止' : '检测' }}
+                        </button>
+                        <span v-if="visualSimilarityProbeText" class="visual-threshold-probe-result">
+                          {{ visualSimilarityProbeText }}
+                        </span>
+                      </div>
                     </div>
+
                   </div>
-                  <div v-else class="screenshot-empty">拖拽画框</div>
                 </div>
               </div>
             </div>
@@ -768,12 +1066,24 @@
           粘贴
         </button>
       </div>
+
+      <div
+        v-if="visualInstructionSetContextMenu.visible"
+        class="screenshot-box-menu visual-instruction-set-menu"
+        :style="{ left: `${visualInstructionSetContextMenu.x}px`, top: `${visualInstructionSetContextMenu.y}px` }"
+        @click.stop
+        @pointerdown.stop
+      >
+        <button type="button" class="is-danger" @click="confirmDeleteVisualInstructionSetFromContext">
+          删除指令集
+        </button>
+      </div>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
@@ -782,7 +1092,10 @@ import {
   Download,
   Refresh,
   Setting,
+  VideoPause,
+  VideoPlay,
 } from '@element-plus/icons-vue';
+import Sortable from 'sortablejs';
 import {
   clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
@@ -797,9 +1110,11 @@ import {
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
+  runFanxiuVisualScript,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
   startFanxiuPseudoCode,
+  stopFanxiuVisualScript,
   updateFanxiuPseudoCodeCard,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2MatchResponse,
@@ -816,7 +1131,9 @@ import {
   type RuntimeItem,
   type RuntimeStatusResponse,
 } from '@/api/runtime';
+import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
+import { useSortableList } from '@/utils/useSortableList';
 
 interface OverlayBox {
   id: string;
@@ -828,7 +1145,7 @@ interface OverlayBox {
 }
 
 type OverlayBoxMetric = 'x' | 'y' | 'w' | 'h';
-type VisualPointField = 'point' | 'endPoint';
+type VisualPointerPointField = 'start' | 'end';
 type VisualPointMetric = 'x' | 'y';
 
 interface DraftState {
@@ -866,9 +1183,11 @@ type WindowSceneKey = 'star-cloud-phone' | 'sunlogin' | 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
+type WindowTitleMatch = 'contains' | 'exact';
 
 interface WindowSceneDefaults {
   targetTitle: string;
+  titleMatch: WindowTitleMatch;
   cropText: string;
   captureArea: CaptureArea;
   trimBorderText: string;
@@ -896,26 +1215,34 @@ interface WindowScene {
 type CodeCard = FanxiuPseudoCodeCard;
 type PseudoOutputTab = 'log' | 'result';
 
-interface CodeCardScopeInfo {
-  scope: FanxiuPseudoCodeCardScope;
-  label: string;
-  emptyText: string;
-}
-
 interface LegacyCodeCard {
   title?: unknown;
   body?: unknown;
 }
 
-type VisualActionKind = 'click' | 'drag' | 'wait';
-type VisualTargetKind = 'image' | 'text' | 'none';
+type VisualActionKind = 'waitClick' | 'guardClick' | 'click' | 'drag' | 'wait' | 'find' | 'findAll';
+type VisualTargetKind = 'image' | 'text' | 'coordinate';
+type VisualInstructionKind = 'normal' | 'ref';
+type VisualReferenceTargetKind = 'instruction' | 'instructionSet';
 type VisualScanMode = 'fixed' | 'range' | 'full';
 type VisualTextMatch = 'contains' | 'exact' | 'regex';
 type VisualCondition = 'appear' | 'disappear' | 'stable' | 'changed';
+type VisualImageBoxMode = 'anchor' | 'manual';
+type VisualShapeRole = 'target' | 'scan';
 
 interface VisualPoint {
   x: number;
   y: number;
+}
+
+interface VisualPointerPoint extends VisualPoint {
+  r: number;
+}
+
+interface VisualPointer {
+  start: VisualPointerPoint | null;
+  end: VisualPointerPoint | null;
+  durationMs: number;
 }
 
 interface VisualBox {
@@ -928,16 +1255,23 @@ interface VisualBox {
 interface VisualMacroAction {
   version: 1;
   id: string;
+  setId: string;
+  kind: VisualInstructionKind;
+  refTargetKind: VisualReferenceTargetKind;
+  refId: string;
+  refName: string;
+  setLabel: string;
   action: VisualActionKind;
   target: VisualTargetKind;
   label: string;
   frame: string;
-  point: VisualPoint | null;
-  endPoint: VisualPoint | null;
-  pointRadius: number;
+  pointer: VisualPointer;
   box: VisualBox | null;
   scan: VisualScanMode;
+  scanBox: VisualBox | null;
+  imageBoxMode: VisualImageBoxMode;
   threshold: number;
+  pixelTolerance: number;
   text: string;
   textMatch: VisualTextMatch;
   condition: VisualCondition;
@@ -949,11 +1283,25 @@ interface VisualMacroProgram {
   operations: VisualMacroAction[];
 }
 
+interface VisualInstructionSet {
+  id: string;
+  label: string;
+  instructions: VisualMacroAction[];
+}
+
 interface ScreenshotBoxContextMenu {
   visible: boolean;
   x: number;
   y: number;
   boxId: string;
+}
+
+interface VisualInstructionSetContextMenu {
+  visible: boolean;
+  x: number;
+  y: number;
+  cardId: string;
+  setId: string;
 }
 
 interface CopiedScreenshotBox {
@@ -990,6 +1338,7 @@ const SCREENSHOT_SELECTION_STORAGE_PREFIX = 'fanxiu.gameWindow2.screenshotFilena
 const LEGACY_CODE_CARDS_STORAGE_KEY = 'fanxiu.gameWindow2.codeCards';
 const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defaultThreshold';
 const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
+const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPixelTolerance';
 const SCREENSHOT_MIN_ZOOM_PERCENT = 20;
 const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
 const SCREENSHOT_ZOOM_STEP = 10;
@@ -1003,16 +1352,13 @@ const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'control', label: '交互' },
   { value: 'off', label: '关闭' },
 ];
-const codeCardScopes: CodeCardScopeInfo[] = [
-  { scope: 'guard', label: '守护', emptyText: '暂无守护' },
-  { scope: 'action', label: '动作', emptyText: '暂无动作' },
-];
 const windowScenes: WindowScene[] = [
   {
     key: 'star-cloud-phone',
     label: '星星云手机',
     defaults: {
       targetTitle: '云手机',
+      titleMatch: 'contains',
       cropText: '0,0,0,0',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
@@ -1028,6 +1374,7 @@ const windowScenes: WindowScene[] = [
     label: '向日葵',
     defaults: {
       targetTitle: '1249152866',
+      titleMatch: 'contains',
       cropText: '0,49,4,4',
       trimBorderText: '0,0,0,0',
       captureArea: 'outer',
@@ -1042,7 +1389,8 @@ const windowScenes: WindowScene[] = [
     key: 'mumu',
     label: 'MuMu模拟器',
     defaults: {
-      targetTitle: 'MuMu模拟器',
+      targetTitle: 'Powered by MuMu模拟器',
+      titleMatch: 'contains',
       cropText: '0,60,0,0',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
@@ -1113,6 +1461,13 @@ const screenshotBoxListContextMenu = ref<ScreenshotBoxContextMenu>({
   y: 0,
   boxId: '',
 });
+const visualInstructionSetContextMenu = ref<VisualInstructionSetContextMenu>({
+  visible: false,
+  x: 0,
+  y: 0,
+  cardId: '',
+  setId: '',
+});
 const copiedScreenshotBox = ref<CopiedScreenshotBox | null>(null);
 const matchingBoxId = ref<string | null>(null);
 const matchResults = ref<MatchResult[]>([]);
@@ -1124,9 +1479,19 @@ const activeVisualMacroCardId = ref<string | null>(null);
 const visualMacroCapturePending = ref(false);
 const visualMacroDefaultThreshold = ref(0.88);
 const visualMacroDefaultPointRadius = ref(10);
+const visualMacroDefaultPixelTolerance = ref(5);
 const selectedVisualInstructionKey = ref('');
+const selectedVisualInstructionSetKey = ref('');
+const visualInstructionTitleDrafts = ref<Record<string, string>>({});
+const visualInstructionSetLabelDrafts = ref<Record<string, string>>({});
+const visualTitleComposingKeys = ref<Set<string>>(new Set());
+const activeVisualShapeRole = ref<VisualShapeRole>('target');
+const visualSimilarityProbeActive = ref(false);
+const visualSimilarityProbeLoading = ref(false);
+const visualSimilarityProbeText = ref('');
 const pseudoCompileLoading = ref(false);
 const pseudoStartLoading = ref(false);
+const visualScriptRunningCardId = ref('');
 const pseudoOutputTab = ref<PseudoOutputTab>('log');
 const pseudoExecutionLog = ref('尚未执行');
 const pseudoExecutionResult = ref('');
@@ -1158,10 +1523,15 @@ const livePanState = ref<ScreenshotPanState | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
 let screenshotSaveTimer: number | null = null;
+let visualSimilarityProbeTimer: number | null = null;
+let visualSimilarityProbeSeq = 0;
 let tokenRequestSeq = 0;
 let lastInputErrorAt = 0;
 let isApplyingWindowConfig = false;
 const codeCardSaveTimers = new Map<string, number>();
+const codeCardListRef = ref<HTMLElement | null>(null);
+const visualInstructionSetListRefs = new Map<string, HTMLElement>();
+const visualInstructionSetSortables = new Map<string, Sortable>();
 
 const selectedDevice = computed<Device | null>(() => (
   devices.value.find((device) => device.id === selectedEntryId.value) ?? null
@@ -1170,6 +1540,7 @@ const selectedWindowScene = computed(() => (
   windowScenes.find((scene) => scene.key === selectedWindowKey.value) ?? windowScenes[0]
 ));
 const targetTitle = computed(() => selectedWindowScene.value.defaults.targetTitle);
+const titleMatch = computed(() => selectedWindowScene.value.defaults.titleMatch);
 const cropText = computed(() => selectedWindowScene.value.defaults.cropText);
 const captureArea = computed(() => selectedWindowScene.value.defaults.captureArea);
 const serviceItem = computed<RuntimeItem | null>(() => (
@@ -1190,7 +1561,44 @@ const selectedVisualInstructionContext = computed(() => {
   }
   return null;
 });
-const selectedVisualInstruction = computed(() => selectedVisualInstructionContext.value?.instruction ?? null);
+const visualInstructionContextById = (instructionId: string) => {
+  for (const card of codeCards.value) {
+    for (const instruction of visualInstructionsOf(card)) {
+      if (instruction.id === instructionId) return { card, instruction };
+    }
+  }
+  return null;
+};
+const selectedRawVisualInstruction = computed(() => selectedVisualInstructionContext.value?.instruction ?? null);
+const selectedVisualReferenceInstruction = computed(() => (
+  selectedRawVisualInstruction.value?.kind === 'ref' ? selectedRawVisualInstruction.value : null
+));
+const selectedVisualReferenceCandidates = computed(() => (
+  selectedVisualReferenceInstruction.value?.refTargetKind === 'instructionSet'
+    ? visualInstructionSetReferenceCandidates.value
+    : visualInstructionReferenceCandidates.value
+));
+const selectedVisualEditInstruction = computed(() => {
+  const raw = selectedRawVisualInstruction.value;
+  if (!raw) return null;
+  return findVisualInstructionByReference(raw) ?? raw;
+});
+const selectedVisualEditInstructionContext = computed(() => (
+  selectedVisualEditInstruction.value ? visualInstructionContextById(selectedVisualEditInstruction.value.id) : null
+));
+const selectedVisualInstruction = computed(() => selectedVisualEditInstruction.value);
+const selectedVisualInstructionSetContext = computed(() => {
+  if (!selectedVisualInstructionSetKey.value) return null;
+  for (const card of codeCards.value) {
+    for (const instructionSet of visualInstructionSetsOf(card)) {
+      if (visualInstructionSetKey(card.id, instructionSet.id) === selectedVisualInstructionSetKey.value) {
+        return { card, instructionSet };
+      }
+    }
+  }
+  return null;
+});
+const selectedVisualInstructionSet = computed(() => selectedVisualInstructionSetContext.value?.instructionSet ?? null);
 const selectedScreenshotIndex = computed(() => (
   screenshotImages.value.findIndex((item) => item.filename === selectedScreenshotFilename.value)
 ));
@@ -1287,33 +1695,58 @@ const placeholderText = computed(() => {
 });
 const screenshotPanelSummary = computed(() => {
   if (!selectedEntryId.value) return '未选设备';
-  if (!selectedVisualInstructionKey.value) return '未选指令';
+  if (!selectedVisualInstructionSetKey.value) return '未选指令集';
   return selectedScreenshotFilename.value || '未绑定帧';
+});
+const selectedScreenshotGeometryText = computed(() => {
+  const image = selectedScreenshotImage.value;
+  if (!image || !naturalWidth.value || !naturalHeight.value) return '';
+  const width = image.width || screenshotNaturalWidth.value;
+  const height = image.height || screenshotNaturalHeight.value;
+  if (!width || !height) return '';
+  if (width === naturalWidth.value && height === naturalHeight.value) return '';
+  return `截图 ${formatFrameSize(width, height)} / 直播 ${formatFrameSize(naturalWidth.value, naturalHeight.value)}`;
 });
 const pseudoOutputText = computed(() => {
   if (pseudoOutputTab.value === 'result') return pseudoExecutionResult.value || '暂无结果';
   return pseudoExecutionLog.value || '暂无日志';
 });
 
-const defaultVisualAction = (overrides: Partial<VisualMacroAction> = {}): VisualMacroAction => ({
-  version: 1,
-  id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-  action: 'click',
-  target: 'image',
-  label: '',
-  frame: '',
-  point: null,
-  endPoint: null,
-  pointRadius: visualMacroDefaultPointRadius.value,
-  box: null,
-  scan: 'fixed',
-  threshold: visualMacroDefaultThreshold.value,
-  text: '',
-  textMatch: 'contains',
-  condition: 'appear',
-  timeout: 8,
-  ...overrides,
-});
+const createVisualId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const defaultVisualAction = (overrides: Partial<VisualMacroAction> = {}): VisualMacroAction => {
+  const id = overrides.id || createVisualId();
+  return {
+    version: 1,
+    kind: 'normal',
+    refTargetKind: 'instruction',
+    refId: '',
+    refName: '',
+    setLabel: '',
+    action: 'click',
+    target: 'image',
+    label: '',
+    frame: '',
+    pointer: {
+      start: null,
+      end: null,
+      durationMs: 0,
+    },
+    box: null,
+    scan: 'fixed',
+    scanBox: null,
+    imageBoxMode: 'anchor',
+    threshold: visualMacroDefaultThreshold.value,
+    pixelTolerance: visualMacroDefaultPixelTolerance.value,
+    text: '',
+    textMatch: 'contains',
+    condition: 'appear',
+    timeout: 8,
+    ...overrides,
+    id,
+    setId: overrides.setId || id,
+  };
+};
 
 const defaultVisualProgram = (operations: VisualMacroAction[] = []): VisualMacroProgram => ({
   version: 1,
@@ -1329,6 +1762,41 @@ const normalizeVisualPoint = (value: unknown): VisualPoint | null => {
   return { x, y };
 };
 
+const normalizeVisualPointerPoint = (value: unknown, fallbackRadius = visualMacroDefaultPointRadius.value): VisualPointerPoint | null => {
+  const point = normalizeVisualPoint(value);
+  if (!point) return null;
+  const item = value && typeof value === 'object' ? value as Partial<VisualPointerPoint> : {};
+  const radius = Number(item.r);
+  return {
+    ...point,
+    r: Number.isFinite(radius) ? Math.max(0, Math.round(radius)) : fallbackRadius,
+  };
+};
+
+const normalizeVisualPointer = (item: Partial<VisualMacroAction> & {
+  point?: unknown;
+  endPoint?: unknown;
+  pointRadius?: unknown;
+  timeout?: unknown;
+}): VisualPointer => {
+  const rawPointer = item.pointer && typeof item.pointer === 'object' ? item.pointer as Partial<VisualPointer> : {};
+  const legacyRadius = Number(item.pointRadius);
+  const fallbackRadius = Number.isFinite(legacyRadius)
+    ? Math.max(0, Math.round(legacyRadius))
+    : visualMacroDefaultPointRadius.value;
+  const timeout = Number(item.timeout);
+  const durationMs = Number(rawPointer.durationMs);
+  return {
+    start: normalizeVisualPointerPoint(rawPointer.start, fallbackRadius) ?? normalizeVisualPointerPoint(item.point, fallbackRadius),
+    end: normalizeVisualPointerPoint(rawPointer.end, fallbackRadius) ?? normalizeVisualPointerPoint(item.endPoint, fallbackRadius),
+    durationMs: Number.isFinite(durationMs)
+      ? Math.max(0, Math.round(durationMs))
+      : Number.isFinite(timeout)
+        ? Math.max(0, Math.round(timeout * 1000))
+        : 0,
+  };
+};
+
 const normalizeVisualBox = (value: unknown): VisualBox | null => {
   if (!value || typeof value !== 'object') return null;
   const item = value as Partial<VisualBox>;
@@ -1340,28 +1808,67 @@ const normalizeVisualBox = (value: unknown): VisualBox | null => {
   return { x, y, w, h };
 };
 
+const visualPointerPointFromBox = (box: VisualBox | null): VisualPointerPoint | null => {
+  if (!box) return null;
+  return {
+    x: Math.round(box.x + box.w / 2),
+    y: Math.round(box.y + box.h / 2),
+    r: visualMacroDefaultPointRadius.value,
+  };
+};
+
 const normalizeVisualAction = (raw: unknown): VisualMacroAction => {
   const item = raw && typeof raw === 'object' ? raw as Partial<VisualMacroAction> : {};
-  const action = ['click', 'drag', 'wait'].includes(String(item.action)) ? item.action as VisualActionKind : 'click';
-  const target = ['image', 'text', 'none'].includes(String(item.target)) ? item.target as VisualTargetKind : 'image';
+  const id = String(item.id || createVisualId());
+  const kind = String(item.kind) === 'ref' ? 'ref' : 'normal';
+  const refTargetKind = String(item.refTargetKind) === 'instructionSet' ? 'instructionSet' : 'instruction';
+  const action = ['waitClick', 'guardClick', 'click', 'drag', 'wait', 'find', 'findAll'].includes(String(item.action)) ? item.action as VisualActionKind : 'click';
+  const rawTarget = String(item.target);
+  const target = rawTarget === 'none'
+    ? 'coordinate'
+    : ['image', 'text', 'coordinate'].includes(rawTarget)
+      ? rawTarget as VisualTargetKind
+      : 'image';
   const scan = ['fixed', 'range', 'full'].includes(String(item.scan)) ? item.scan as VisualScanMode : 'fixed';
+  const imageBoxMode = ['anchor', 'manual'].includes(String(item.imageBoxMode)) ? item.imageBoxMode as VisualImageBoxMode : 'anchor';
   const textMatch = ['contains', 'exact', 'regex'].includes(String(item.textMatch)) ? item.textMatch as VisualTextMatch : 'contains';
   const condition = ['appear', 'disappear', 'stable', 'changed'].includes(String(item.condition)) ? item.condition as VisualCondition : 'appear';
   const threshold = Number(item.threshold);
+  const pixelTolerance = Number(item.pixelTolerance ?? (item as { pixel_tolerance?: unknown }).pixel_tolerance);
   const timeout = Number(item.timeout);
-  const pointRadius = Number(item.pointRadius);
+  const box = normalizeVisualBox(item.box);
+  const pointer = normalizeVisualPointer(item as Partial<VisualMacroAction> & {
+    point?: unknown;
+    endPoint?: unknown;
+    pointRadius?: unknown;
+    timeout?: unknown;
+  });
+  if (!pointer.start && visualActionUsesPointer(action)) {
+    pointer.start = visualPointerPointFromBox(box);
+  }
+  const rawLabel = String(item.label || '').trim();
+  const label = rawLabel && /^点击\d+$/.test(rawLabel) && action === 'waitClick' && target === 'image'
+    ? '等待点击 图片'
+    : rawLabel;
   return defaultVisualAction({
-    id: String(item.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    id,
+    setId: String(item.setId || id),
+    kind,
+    refTargetKind,
+    refId: String(item.refId || ''),
+    refName: String(item.refName || ''),
+    setLabel: String(item.setLabel || ''),
     action,
     target,
-    label: String(item.label || ''),
+    label,
     frame: String(item.frame || ''),
-    point: normalizeVisualPoint(item.point),
-    endPoint: normalizeVisualPoint(item.endPoint),
-    pointRadius: Number.isFinite(pointRadius) ? Math.max(0, Math.round(pointRadius)) : visualMacroDefaultPointRadius.value,
-    box: normalizeVisualBox(item.box),
+    pointer,
+    box,
     scan,
+    scanBox: normalizeVisualBox(item.scanBox),
+    imageBoxMode,
     threshold: Number.isFinite(threshold) ? clamp(threshold, 0.5, 1) : visualMacroDefaultThreshold.value,
+    pixelTolerance: Number.isFinite(pixelTolerance) ? clamp(Math.round(pixelTolerance), 0, 255) : visualMacroDefaultPixelTolerance.value,
     text: String(item.text || ''),
     textMatch,
     condition,
@@ -1382,6 +1889,14 @@ const setVisualMacroDefaultThreshold = (value: unknown, persist = true) => {
   }
 };
 
+const thresholdRatioToPercent = (value: number) => Math.round(clamp(Number(value) || 0, 0, 1) * 100);
+
+const thresholdPercentToRatio = (value: unknown) => {
+  const nextValue = Number(value);
+  if (!Number.isFinite(nextValue)) return visualMacroDefaultThreshold.value;
+  return clamp(Math.round(nextValue), 50, 100) / 100;
+};
+
 const setVisualMacroDefaultPointRadius = (value: unknown, persist = true) => {
   if (value === null || value === undefined || value === '') {
     visualMacroDefaultPointRadius.value = 10;
@@ -1392,6 +1907,19 @@ const setVisualMacroDefaultPointRadius = (value: unknown, persist = true) => {
   visualMacroDefaultPointRadius.value = Number.isFinite(nextValue) ? Math.max(0, nextValue) : 10;
   if (persist) {
     window.localStorage.setItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY, String(visualMacroDefaultPointRadius.value));
+  }
+};
+
+const setVisualMacroDefaultPixelTolerance = (value: unknown, persist = true) => {
+  if (value === null || value === undefined || value === '') {
+    visualMacroDefaultPixelTolerance.value = 5;
+    if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY, String(visualMacroDefaultPixelTolerance.value));
+    return;
+  }
+  const nextValue = Math.round(Number(value));
+  visualMacroDefaultPixelTolerance.value = Number.isFinite(nextValue) ? clamp(nextValue, 0, 255) : 5;
+  if (persist) {
+    window.localStorage.setItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY, String(visualMacroDefaultPixelTolerance.value));
   }
 };
 
@@ -1409,9 +1937,17 @@ const migrateVisualMacroDefaultPointRadius = (value: unknown) => {
   setVisualMacroDefaultPointRadius(nextValue);
 };
 
+const migrateVisualMacroDefaultPixelTolerance = (value: unknown) => {
+  if (window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY) !== null) return;
+  const nextValue = Number(value);
+  if (!Number.isFinite(nextValue)) return;
+  setVisualMacroDefaultPixelTolerance(nextValue);
+};
+
 const loadVisualMacroDefaults = () => {
   setVisualMacroDefaultThreshold(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY), false);
   setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
+  setVisualMacroDefaultPixelTolerance(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY), false);
 };
 
 const normalizeVisualProgram = (raw: unknown): VisualMacroProgram => {
@@ -1419,7 +1955,8 @@ const normalizeVisualProgram = (raw: unknown): VisualMacroProgram => {
   const item = raw as { defaultThreshold?: unknown; threshold?: unknown; operations?: unknown[] };
   const operations = Array.isArray(item.operations) ? item.operations.map(normalizeVisualAction) : [normalizeVisualAction(raw)];
   migrateVisualMacroDefaultThreshold(item.defaultThreshold ?? item.threshold ?? operations.find((operation) => operation.target === 'image')?.threshold);
-  migrateVisualMacroDefaultPointRadius(operations.find((operation) => operation.action === 'click')?.pointRadius);
+  migrateVisualMacroDefaultPointRadius(operations.find((operation) => operation.action === 'click')?.pointer.start?.r);
+  migrateVisualMacroDefaultPixelTolerance(operations.find((operation) => operation.target === 'image')?.pixelTolerance);
   return defaultVisualProgram(operations);
 };
 
@@ -1444,11 +1981,32 @@ const visualProgramOf = (card: CodeCard): VisualMacroProgram => {
 };
 
 const visualInstructionsOf = (card: CodeCard) => visualProgramOf(card).operations;
+
+const visualInstructionSetsOf = (card: CodeCard): VisualInstructionSet[] => {
+  const sets = new Map<string, VisualMacroAction[]>();
+  for (const instruction of visualInstructionsOf(card)) {
+    const setId = instruction.setId || instruction.id;
+    const instructions = sets.get(setId) ?? [];
+    instructions.push(instruction);
+    sets.set(setId, instructions);
+  }
+  return [...sets.entries()].map(([id, instructions]) => ({
+    id,
+    label: instructions.find((instruction) => instruction.setLabel.trim())?.setLabel.trim() ?? '',
+    instructions,
+  }));
+};
+
+const firstInstructionOfSet = (instructionSet: VisualInstructionSet) => instructionSet.instructions[0] ?? null;
+
 const visualInstructionKey = (cardId: string, instructionId: string) => `${cardId}:${instructionId}`;
+const visualInstructionSetKey = (cardId: string, setId: string) => `${cardId}:${setId}`;
 
 const selectVisualInstructionFrame = async (card: CodeCard, instruction: VisualMacroAction) => {
+  selectedVisualInstructionSetKey.value = visualInstructionSetKey(card.id, instruction.setId || instruction.id);
   selectedVisualInstructionKey.value = visualInstructionKey(card.id, instruction.id);
-  if (!instruction.frame) {
+  const displayInstruction = findVisualInstructionByReference(instruction) ?? instruction;
+  if (!displayInstruction.frame) {
     clearScreenshotSelection();
     return;
   }
@@ -1456,12 +2014,81 @@ const selectVisualInstructionFrame = async (card: CodeCard, instruction: VisualM
     screenshotPanelOpen.value = true;
     await nextTick();
   }
-  if (!screenshotLoaded.value || !screenshotImages.value.some((item) => item.filename === instruction.frame)) {
-    await loadScreenshotList(instruction.frame);
+  if (!screenshotLoaded.value || !screenshotImages.value.some((item) => item.filename === displayInstruction.frame)) {
+    await loadScreenshotList(displayInstruction.frame);
     return;
   }
-  await selectScreenshotImage(instruction.frame);
+  await selectScreenshotImage(displayInstruction.frame);
 };
+
+const selectVisualInstructionSetFrame = async (card: CodeCard, instructionSet: VisualInstructionSet) => {
+  selectedVisualInstructionSetKey.value = visualInstructionSetKey(card.id, instructionSet.id);
+  const selectedInstruction = instructionSet.instructions.find(
+    (instruction) => selectedVisualInstructionKey.value === visualInstructionKey(card.id, instruction.id),
+  ) ?? instructionSet.instructions[0];
+  if (!selectedInstruction) {
+    selectedVisualInstructionKey.value = '';
+    clearScreenshotSelection();
+    return;
+  }
+  await selectVisualInstructionFrame(card, selectedInstruction);
+};
+
+const selectVisualInstructionFromSelectedSet = (instruction: VisualMacroAction) => {
+  const context = selectedVisualInstructionSetContext.value;
+  if (!context) return;
+  void selectVisualInstructionFrame(context.card, instruction);
+};
+
+const compactVisualInstruction = (operation: VisualMacroAction) => {
+  const compact: Partial<VisualMacroAction> = {
+    version: operation.version,
+    id: operation.id,
+    setId: operation.setId,
+    kind: operation.kind,
+    refTargetKind: operation.refTargetKind,
+    refId: operation.refId,
+    refName: operation.refName,
+    setLabel: operation.setLabel,
+    action: operation.action,
+    target: operation.target,
+  };
+  const label = operation.label.trim();
+  if (label) compact.label = label;
+  if (operation.frame) compact.frame = operation.frame;
+  if (operation.pointer.start || operation.pointer.end || operation.pointer.durationMs) {
+    compact.pointer = {
+      start: operation.pointer.start,
+      end: operation.pointer.end,
+      durationMs: operation.pointer.durationMs,
+    };
+  }
+  if (operation.action === 'wait') {
+    compact.condition = operation.condition;
+    compact.timeout = operation.timeout;
+  }
+  if (operation.target === 'image') {
+    compact.scan = operation.scan;
+    if (operation.scan === 'range' && operation.scanBox) compact.scanBox = operation.scanBox;
+    compact.imageBoxMode = operation.imageBoxMode;
+    compact.threshold = operation.threshold;
+    compact.pixelTolerance = operation.pixelTolerance;
+    if (operation.box) compact.box = operation.box;
+  }
+  if (operation.target === 'text') {
+    compact.scan = operation.scan;
+    if (operation.scan === 'range' && operation.scanBox) compact.scanBox = operation.scanBox;
+    compact.text = operation.text;
+    compact.textMatch = operation.textMatch;
+    if (operation.box) compact.box = operation.box;
+  }
+  return compact;
+};
+
+const compactVisualProgram = (program: VisualMacroProgram) => ({
+  version: program.version,
+  operations: program.operations.map(compactVisualInstruction),
+});
 
 const serializeVisualProgram = (program: VisualMacroProgram) => {
   const lines = program.operations.flatMap((operation, index) => {
@@ -1474,7 +2101,7 @@ const serializeVisualProgram = (program: VisualMacroProgram) => {
       refText ? `   标注引用：${refText}` : '',
     ].filter(Boolean);
   });
-  return `${VISUAL_ACTION_MARKER_START}\n${JSON.stringify(program, null, 2)}\n${VISUAL_ACTION_MARKER_END}\n${lines.join('\n')}`;
+  return `${VISUAL_ACTION_MARKER_START}\n${JSON.stringify(compactVisualProgram(program), null, 2)}\n${VISUAL_ACTION_MARKER_END}\n${lines.join('\n')}`;
 };
 
 const visualFrameNo = (frame: string) => {
@@ -1483,15 +2110,25 @@ const visualFrameNo = (frame: string) => {
 };
 
 const visualActionLabel = (action: VisualActionKind) => ({
+  waitClick: '等待点击',
+  guardClick: '守护点击',
   click: '点击',
   drag: '拖拽',
   wait: '等待',
+  find: '查找',
+  findAll: '批量查找',
 }[action]);
+
+const visualActionUsesPointer = (action: VisualActionKind) => action === 'waitClick' || action === 'guardClick' || action === 'click' || action === 'drag';
+
+const visualInstructionUsesTargetConfig = (instruction: VisualMacroAction) => instruction.target === 'image' || instruction.target === 'text';
+
+const visualInstructionUsesShape = (instruction: VisualMacroAction) => visualInstructionUsesTargetConfig(instruction);
 
 const visualTargetLabel = (target: VisualTargetKind) => ({
   image: '图片',
   text: '文本',
-  none: '无目标',
+  coordinate: '坐标',
 }[target]);
 
 const visualConditionLabel = (condition: VisualCondition) => ({
@@ -1512,23 +2149,323 @@ const visualActionSummary = (action: VisualMacroAction) => {
     ? `文本「${action.text || action.label || '未填写'}」`
     : action.target === 'image'
       ? `图片「${action.frame || '未绑定帧'}」`
-      : '无目标';
+      : '坐标';
   if (action.action === 'wait') {
     return `等待 ${target} ${visualConditionLabel(action.condition)}`;
+  }
+  if (action.action === 'waitClick') {
+    return `等待点击 ${target}`;
+  }
+  if (action.action === 'guardClick') {
+    return `守护点击 ${target}`;
   }
   return `${visualActionLabel(action.action)} ${target}`;
 };
 
+const visualInstructionDisplayTitle = (action: VisualMacroAction) => (
+  action.kind === 'ref' ? `调用：${action.refName || '未选择'}` : action.label.trim() || visualInstructionFallbackTitle(action)
+);
+
+const visualInstructionSetDisplayTitle = (instructionSet: VisualInstructionSet) => (
+  instructionSet.label.trim() || (firstInstructionOfSet(instructionSet) ? visualInstructionDisplayTitle(firstInstructionOfSet(instructionSet)!) : '空指令集')
+);
+
+const isVisualInstructionSetLabelEditing = (setId: string) => Object.hasOwn(visualInstructionSetLabelDrafts.value, setId);
+
+const visualInstructionSetLabelInputValue = (instructionSet: VisualInstructionSet) => (
+  isVisualInstructionSetLabelEditing(instructionSet.id) ? visualInstructionSetLabelDrafts.value[instructionSet.id] : instructionSet.label
+);
+
+const isVisualInstructionTitleEditing = (instructionId: string) => Object.hasOwn(visualInstructionTitleDrafts.value, instructionId);
+
+const visualInstructionTitleInputValue = (instruction: VisualMacroAction) => (
+  isVisualInstructionTitleEditing(instruction.id) ? visualInstructionTitleDrafts.value[instruction.id] : instruction.label
+);
+
+const isVisualTitleComposing = (key: string) => visualTitleComposingKeys.value.has(key);
+
+const beginVisualTitleComposition = (key: string) => {
+  visualTitleComposingKeys.value = new Set([...visualTitleComposingKeys.value, key]);
+};
+
+const endVisualTitleComposition = (key: string) => {
+  if (!visualTitleComposingKeys.value.has(key)) return;
+  const nextKeys = new Set(visualTitleComposingKeys.value);
+  nextKeys.delete(key);
+  visualTitleComposingKeys.value = nextKeys;
+};
+
+const beginVisualInstructionTitleEdit = (instruction: VisualMacroAction) => {
+  selectVisualInstructionFromSelectedSet(instruction);
+  visualInstructionTitleDrafts.value = {
+    ...visualInstructionTitleDrafts.value,
+    [instruction.id]: instruction.label,
+  };
+};
+
+const beginVisualInstructionSetLabelEdit = (instructionSet: VisualInstructionSet) => {
+  visualInstructionSetLabelDrafts.value = {
+    ...visualInstructionSetLabelDrafts.value,
+    [instructionSet.id]: instructionSet.label,
+  };
+};
+
+const setVisualInstructionSetLabelDraft = (setId: string, value: string) => {
+  visualInstructionSetLabelDrafts.value = {
+    ...visualInstructionSetLabelDrafts.value,
+    [setId]: value,
+  };
+};
+
+const commitVisualInstructionSetLabelDraft = (card: CodeCard, setId: string) => {
+  if (!isVisualInstructionSetLabelEditing(setId)) return;
+  const nextLabel = visualInstructionSetLabelDrafts.value[setId] ?? '';
+  const { [setId]: _removed, ...rest } = visualInstructionSetLabelDrafts.value;
+  visualInstructionSetLabelDrafts.value = rest;
+  const currentLabel = visualInstructionSetsOf(card).find((instructionSet) => instructionSet.id === setId)?.label ?? '';
+  if (nextLabel === currentLabel) return;
+  updateVisualInstructionSetLabel(card, setId, nextLabel);
+};
+
+const commitVisualInstructionSetLabelByEnter = (card: CodeCard, setId: string, event: Event) => {
+  if ((event as KeyboardEvent).isComposing || isVisualTitleComposing(`set:${setId}`)) return;
+  commitVisualInstructionSetLabelDraft(card, setId);
+  (event.target as HTMLInputElement).blur();
+};
+
+const setVisualInstructionTitleDraft = (instructionId: string, value: string) => {
+  visualInstructionTitleDrafts.value = {
+    ...visualInstructionTitleDrafts.value,
+    [instructionId]: value,
+  };
+};
+
+const commitVisualInstructionTitleDraft = (instruction: VisualMacroAction) => {
+  if (!isVisualInstructionTitleEditing(instruction.id)) return;
+  const nextLabel = visualInstructionTitleDrafts.value[instruction.id] ?? '';
+  const { [instruction.id]: _removed, ...rest } = visualInstructionTitleDrafts.value;
+  visualInstructionTitleDrafts.value = rest;
+  if (nextLabel === instruction.label) return;
+  const context = visualInstructionContextById(instruction.id);
+  if (!context) return;
+  updateVisualInstruction(context.card, instruction.id, { label: nextLabel });
+};
+
+const commitVisualInstructionTitleDraftByEnter = (instruction: VisualMacroAction, event: Event) => {
+  if ((event as KeyboardEvent).isComposing || isVisualTitleComposing(`instruction:${instruction.id}`)) return;
+  commitVisualInstructionTitleDraft(instruction);
+  (event.target as HTMLInputElement).blur();
+};
+
+const handleVisualInstructionTitleInput = (instructionId: string, event: Event) => {
+  if (isVisualTitleComposing(`instruction:${instructionId}`)) return;
+  setVisualInstructionTitleDraft(instructionId, (event.target as HTMLInputElement).value);
+};
+
+const commitVisualInstructionTitleComposition = (instruction: VisualMacroAction, event: Event) => {
+  endVisualTitleComposition(`instruction:${instruction.id}`);
+  setVisualInstructionTitleDraft(instruction.id, (event.target as HTMLInputElement).value);
+};
+
+const isVisualInstructionLabelUnique = (instruction: VisualMacroAction) => {
+  if (instruction.kind === 'ref') return false;
+  const label = instruction.label.trim();
+  if (!label) return false;
+  let count = 0;
+  for (const card of codeCards.value) {
+    for (const item of visualInstructionsOf(card)) {
+      if (item.label.trim() === label) count += 1;
+      if (count > 1) return false;
+    }
+  }
+  return count === 1;
+};
+
+const isVisualInstructionSetLabelUnique = (instructionSet: VisualInstructionSet) => {
+  const label = instructionSet.label.trim();
+  if (!label) return false;
+  let count = 0;
+  for (const card of codeCards.value) {
+    for (const item of visualInstructionSetsOf(card)) {
+      if (item.label.trim() === label) count += 1;
+      if (count > 1) return false;
+    }
+  }
+  return count === 1;
+};
+
+const visualInstructionReferenceCandidates = computed(() => (
+  codeCards.value.flatMap((card) => (
+    visualInstructionsOf(card)
+      .filter((instruction) => instruction.kind !== 'ref' && isVisualInstructionLabelUnique(instruction))
+      .map((instruction) => ({
+        id: instruction.id,
+        name: instruction.label.trim(),
+        instruction,
+      }))
+  ))
+));
+
+const visualInstructionSetReferenceCandidates = computed(() => (
+  codeCards.value.flatMap((card) => (
+    visualInstructionSetsOf(card)
+      .filter((instructionSet) => isVisualInstructionSetLabelUnique(instructionSet))
+      .map((instructionSet) => ({
+        id: instructionSet.id,
+        name: instructionSet.label.trim(),
+        instructionSet,
+      }))
+  ))
+));
+
+const findVisualInstructionByReference = (instruction: VisualMacroAction) => {
+  if (instruction.kind !== 'ref') return null;
+  if (instruction.refTargetKind === 'instructionSet') {
+    const candidates = visualInstructionSetReferenceCandidates.value;
+    const instructionSet = candidates.find((item) => instruction.refId && item.id === instruction.refId)?.instructionSet
+      ?? candidates.find((item) => instruction.refName && item.name === instruction.refName)?.instructionSet
+      ?? null;
+    return instructionSet?.instructions[0] ?? null;
+  }
+  const candidates = visualInstructionReferenceCandidates.value;
+  return candidates.find((item) => instruction.refId && item.id === instruction.refId)?.instruction
+    ?? candidates.find((item) => instruction.refName && item.name === instruction.refName)?.instruction
+    ?? null;
+};
+
+
 const updateVisualInstruction = (card: CodeCard, operationId: string, patch: Partial<VisualMacroAction>) => {
   const program = visualProgramOf(card);
-  const operations = program.operations.map((operation) => (
-    operation.id === operationId ? normalizeVisualAction({ ...operation, ...patch, id: operation.id }) : operation
-  ));
+  const operations = program.operations.map((operation) => {
+    if (operation.id !== operationId) return operation;
+    const nextPointer = patch.pointer ? { ...operation.pointer, ...patch.pointer } : operation.pointer;
+    const previousFallbackTitle = visualInstructionFallbackTitle(operation);
+    const mergedOperation = {
+      ...operation,
+      ...patch,
+      pointer: nextPointer,
+    };
+    if ((patch.action || patch.target) && operation.label.trim() === previousFallbackTitle) {
+      mergedOperation.label = visualInstructionFallbackTitle(mergedOperation);
+    }
+    if (patch.target === 'image' && !mergedOperation.box) {
+      mergedOperation.box = mergedOperation.pointer.start ? buildDefaultImageBox(mergedOperation.pointer.start) : visualBoxOrDefault(mergedOperation);
+    }
+    if (patch.action && visualActionUsesPointer(patch.action) && !mergedOperation.pointer.start) {
+      mergedOperation.pointer = {
+        ...mergedOperation.pointer,
+        start: visualPointerPointFromBox(mergedOperation.box),
+      };
+    }
+    if (patch.action === 'waitClick' || patch.action === 'guardClick' || patch.action === 'click') {
+      return normalizeVisualAction({
+        ...mergedOperation,
+        id: operation.id,
+        pointer: { ...nextPointer, end: null, durationMs: 0 },
+      });
+    }
+    if (patch.action === 'drag') {
+      const fallbackEnd = nextPointer.end ?? (nextPointer.start ? { ...nextPointer.start } : null);
+      return normalizeVisualAction({
+        ...mergedOperation,
+        id: operation.id,
+        pointer: { ...nextPointer, end: fallbackEnd },
+      });
+    }
+    return normalizeVisualAction({ ...mergedOperation, id: operation.id });
+  });
   card.body = serializeVisualProgram(defaultVisualProgram(operations));
   scheduleCodeCardSave(card);
   if (selectedVisualInstructionKey.value === visualInstructionKey(card.id, operationId)) {
     void nextTick(drawScreenshotOverlay);
   }
+};
+
+const updateSelectedVisualInstruction = (patch: Partial<VisualMacroAction>) => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  updateVisualInstruction(context.card, context.instruction.id, patch);
+};
+
+const updateSelectedVisualInstructionKind = (kind: VisualInstructionKind) => {
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  if (kind === 'normal') {
+    updateVisualInstruction(context.card, context.instruction.id, {
+      kind: 'normal',
+      refTargetKind: 'instruction',
+      refId: '',
+      refName: '',
+    });
+    return;
+  }
+  const candidate = visualInstructionReferenceCandidates.value.find((item) => item.id !== context.instruction.id);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    kind: 'ref',
+    refTargetKind: 'instruction',
+    refId: candidate?.id ?? '',
+    refName: candidate?.name ?? '',
+  });
+};
+
+const updateSelectedVisualInstructionReferenceTargetKind = (refTargetKind: VisualReferenceTargetKind) => {
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  const candidate = refTargetKind === 'instructionSet'
+    ? visualInstructionSetReferenceCandidates.value.find((item) => item.id !== (context.instruction.setId || context.instruction.id))
+    : visualInstructionReferenceCandidates.value.find((item) => item.id !== context.instruction.id);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    kind: 'ref',
+    refTargetKind,
+    refId: candidate?.id ?? '',
+    refName: candidate?.name ?? '',
+  });
+};
+
+const updateSelectedVisualInstructionReference = (refName: string) => {
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  const refTargetKind = context.instruction.refTargetKind;
+  const candidate = refTargetKind === 'instructionSet'
+    ? visualInstructionSetReferenceCandidates.value.find((item) => item.name === refName)
+    : visualInstructionReferenceCandidates.value.find((item) => item.name === refName);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    kind: 'ref',
+    refTargetKind,
+    refId: candidate?.id ?? '',
+    refName,
+  });
+  void nextTick(() => {
+    const latest = selectedVisualInstructionContext.value;
+    if (latest) void selectVisualInstructionFrame(latest.card, latest.instruction);
+  });
+};
+
+const updateVisualInstructionSetLabel = (card: CodeCard, setId: string, setLabel: string) => {
+  const program = visualProgramOf(card);
+  const operations = program.operations.map((operation) => (
+    (operation.setId || operation.id) === setId
+      ? normalizeVisualAction({ ...operation, setLabel })
+      : operation
+  ));
+  card.body = serializeVisualProgram(defaultVisualProgram(operations));
+  scheduleCodeCardSave(card);
+};
+
+const handleVisualInstructionSetLabelInput = (card: CodeCard, setId: string, event: Event) => {
+  if (isVisualTitleComposing(`set:${setId}`)) return;
+  setVisualInstructionSetLabelDraft(setId, (event.target as HTMLInputElement).value);
+};
+
+const commitVisualInstructionSetLabelInput = (card: CodeCard, setId: string, event: Event) => {
+  endVisualTitleComposition(`set:${setId}`);
+  setVisualInstructionSetLabelDraft(setId, (event.target as HTMLInputElement).value);
+};
+
+const saveSelectedVisualInstructionCardNow = () => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  saveCodeCardNow(context.card);
 };
 
 const clampVisualPointValue = (metric: VisualPointMetric, value: number) => {
@@ -1537,57 +2474,350 @@ const clampVisualPointValue = (metric: VisualPointMetric, value: number) => {
   return Math.round(clamp(value, 0, Math.max(0, max - 1)));
 };
 
-const updateSelectedVisualInstructionPoint = (
-  field: VisualPointField,
+const visualPointerPointOrDefault = (point: VisualPointerPoint | null): VisualPointerPoint => ({
+  x: point?.x ?? 0,
+  y: point?.y ?? 0,
+  r: point?.r ?? visualMacroDefaultPointRadius.value,
+});
+
+const updateSelectedVisualInstructionPointerPoint = (
+  field: VisualPointerPointField,
   metric: VisualPointMetric,
   value: number | undefined,
 ) => {
   const nextValue = Math.round(Number(value));
   if (!Number.isFinite(nextValue)) return;
-  const context = selectedVisualInstructionContext.value;
+  const context = selectedVisualEditInstructionContext.value;
   if (!context) return;
-  const current = context.instruction[field] ?? { x: 0, y: 0 };
+  const current = visualPointerPointOrDefault(context.instruction.pointer[field]);
+  const nextPoint = {
+    ...current,
+    [metric]: clampVisualPointValue(metric, nextValue),
+  };
+  const nextPointer = {
+    ...context.instruction.pointer,
+    [field]: nextPoint,
+  };
+  const patch: Partial<VisualMacroAction> = { pointer: nextPointer };
+  if (field === 'start' && context.instruction.target === 'image' && context.instruction.imageBoxMode === 'anchor') {
+    const currentBox = visualBoxOrDefault(context.instruction);
+    patch.box = buildAnchoredVisualBox({
+      ...context.instruction,
+      pointer: nextPointer,
+    }, currentBox.w || 50, currentBox.h || currentBox.w || 50);
+  }
   updateVisualInstruction(context.card, context.instruction.id, {
-    [field]: {
-      ...current,
-      [metric]: clampVisualPointValue(metric, nextValue),
+    ...patch,
+  });
+};
+
+const updateSelectedVisualInstructionPointerRadius = (field: VisualPointerPointField, value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  const maxRadius = Math.max(screenshotNaturalWidth.value, screenshotNaturalHeight.value, 0);
+  const current = visualPointerPointOrDefault(context.instruction.pointer[field]);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    pointer: {
+      ...context.instruction.pointer,
+      [field]: {
+        ...current,
+        r: Math.round(clamp(nextValue, 0, maxRadius || Number.MAX_SAFE_INTEGER)),
+      },
     },
   });
 };
 
-const updateSelectedVisualInstructionRadius = (value: number | undefined) => {
+const updateSelectedVisualInstructionPointerDuration = (value: number | undefined) => {
   const nextValue = Math.round(Number(value));
   if (!Number.isFinite(nextValue)) return;
-  const context = selectedVisualInstructionContext.value;
+  const context = selectedVisualEditInstructionContext.value;
   if (!context) return;
-  const maxRadius = Math.max(screenshotNaturalWidth.value, screenshotNaturalHeight.value, 0);
   updateVisualInstruction(context.card, context.instruction.id, {
-    pointRadius: Math.round(clamp(nextValue, 0, maxRadius || Number.MAX_SAFE_INTEGER)),
+    pointer: {
+      ...context.instruction.pointer,
+      durationMs: Math.round(clamp(nextValue, 0, 5000)),
+    },
   });
 };
 
 const updateSelectedVisualInstructionThreshold = (value: number | undefined) => {
-  const nextValue = Number(value);
+  const nextValue = thresholdPercentToRatio(value);
   if (!Number.isFinite(nextValue)) return;
-  const context = selectedVisualInstructionContext.value;
+  const context = selectedVisualEditInstructionContext.value;
   if (!context) return;
   updateVisualInstruction(context.card, context.instruction.id, {
     threshold: clamp(nextValue, 0.5, 1),
   });
 };
 
+const updateSelectedVisualInstructionPixelTolerance = (value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  updateSelectedVisualInstruction({
+    pixelTolerance: clamp(nextValue, 0, 255),
+  });
+};
+
+const buildDefaultScanBox = (instruction: VisualMacroAction): VisualBox => {
+  const base = instruction.box ?? (instruction.pointer.start ? buildDefaultImageBox(instruction.pointer.start) : visualBoxOrDefault(instruction));
+  const padding = 80;
+  const maxWidth = Math.max(1, screenshotNaturalWidth.value || naturalWidth.value || base.x + base.w + padding);
+  const maxHeight = Math.max(1, screenshotNaturalHeight.value || naturalHeight.value || base.y + base.h + padding);
+  const x = Math.round(clamp(base.x - padding, 0, Math.max(0, maxWidth - 4)));
+  const y = Math.round(clamp(base.y - padding, 0, Math.max(0, maxHeight - 4)));
+  const right = clamp(base.x + base.w + padding, x + 4, maxWidth);
+  const bottom = clamp(base.y + base.h + padding, y + 4, maxHeight);
+  return {
+    x,
+    y,
+    w: Math.round(right - x),
+    h: Math.round(bottom - y),
+  };
+};
+
+const visualScanBoxOrDefault = (instruction: VisualMacroAction): VisualBox => (
+  instruction.scanBox ?? buildDefaultScanBox(instruction)
+);
+
+const updateSelectedVisualInstructionScan = (scan: VisualScanMode) => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  updateVisualInstruction(context.card, context.instruction.id, {
+    scan,
+    scanBox: scan === 'range' ? visualScanBoxOrDefault(context.instruction) : context.instruction.scanBox,
+  });
+  if (scan === 'range') activeVisualShapeRole.value = 'scan';
+};
+
+const updateSelectedVisualInstructionScanBox = (scanBox: VisualBox) => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  updateVisualInstruction(context.card, context.instruction.id, {
+    scan: 'range',
+    scanBox: clampVisualBox(scanBox),
+  });
+};
+
+const updateSelectedVisualInstructionScanBoxMetric = (metric: OverlayBoxMetric, value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  updateSelectedVisualInstructionScanBox({
+    ...visualScanBoxOrDefault(context.instruction),
+    [metric]: nextValue,
+  });
+};
+
+const visualBoxOrDefault = (instruction: VisualMacroAction): VisualBox => {
+  if (instruction.box) return instruction.box;
+  if (instruction.pointer.start) return buildDefaultImageBox(instruction.pointer.start);
+  return {
+    x: 0,
+    y: 0,
+    w: Math.min(50, Math.max(1, screenshotNaturalWidth.value || 50)),
+    h: Math.min(50, Math.max(1, screenshotNaturalHeight.value || 50)),
+  };
+};
+
+const clampVisualBox = (box: VisualBox): VisualBox => {
+  const maxWidth = screenshotNaturalWidth.value || Math.max(box.x + box.w, 50);
+  const maxHeight = screenshotNaturalHeight.value || Math.max(box.y + box.h, 50);
+  const x = Math.round(clamp(box.x, 0, Math.max(0, maxWidth - 4)));
+  const y = Math.round(clamp(box.y, 0, Math.max(0, maxHeight - 4)));
+  const w = Math.round(clamp(box.w, 4, Math.max(4, maxWidth - x)));
+  const h = Math.round(clamp(box.h, 4, Math.max(4, maxHeight - y)));
+  return { x, y, w, h };
+};
+
+const buildAnchoredVisualBox = (instruction: VisualMacroAction, width: number, height = width) => {
+  const start = instruction.pointer.start;
+  if (!start) return clampVisualBox({ ...visualBoxOrDefault(instruction), w: width, h: height });
+  const maxWidth = Math.max(1, screenshotNaturalWidth.value || naturalWidth.value || width);
+  const maxHeight = Math.max(1, screenshotNaturalHeight.value || naturalHeight.value || height);
+  const w = Math.round(clamp(width, 4, maxWidth));
+  const h = Math.round(clamp(height, 4, maxHeight));
+  return clampVisualBox({
+    x: Math.round(start.x - w / 2),
+    y: Math.round(start.y - h / 2),
+    w,
+    h,
+  });
+};
+
+const updateSelectedVisualInstructionBox = (box: VisualBox, imageBoxMode?: VisualImageBoxMode) => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  updateVisualInstruction(context.card, context.instruction.id, {
+    box: clampVisualBox(box),
+    ...(imageBoxMode ? { imageBoxMode } : {}),
+  });
+};
+
+const updateSelectedVisualInstructionBoxMetric = (metric: OverlayBoxMetric, value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  if (context.instruction.imageBoxMode === 'anchor') {
+    const current = visualBoxOrDefault(context.instruction);
+    const width = metric === 'w' ? nextValue : current.w;
+    const height = metric === 'h' ? nextValue : current.h;
+    updateSelectedVisualInstructionBox(buildAnchoredVisualBox(context.instruction, width, height));
+    return;
+  }
+  updateSelectedVisualInstructionBox({
+    ...visualBoxOrDefault(context.instruction),
+    [metric]: nextValue,
+  });
+};
+
+const updateSelectedVisualInstructionImageBoxMode = (imageBoxMode: VisualImageBoxMode) => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context) return;
+  const current = visualBoxOrDefault(context.instruction);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    imageBoxMode,
+    box: imageBoxMode === 'anchor'
+      ? buildAnchoredVisualBox(context.instruction, current.w || 50, current.h || current.w || 50)
+      : clampVisualBox(current),
+  });
+};
+
+const resetSelectedVisualInstructionBox = (size = 50) => {
+  const context = selectedVisualEditInstructionContext.value;
+  const point = context?.instruction.pointer.start;
+  if (!context || !point) return;
+  updateVisualInstruction(context.card, context.instruction.id, {
+    imageBoxMode: 'anchor',
+    box: buildDefaultImageBox(point, size),
+  });
+};
+
 const deleteVisualInstruction = (card: CodeCard, operationId: string) => {
   const program = visualProgramOf(card);
-  card.body = serializeVisualProgram(defaultVisualProgram(program.operations.filter((operation) => operation.id !== operationId)));
+  const deletedIndex = program.operations.findIndex((operation) => operation.id === operationId);
+  const deletedInstruction = deletedIndex >= 0 ? program.operations[deletedIndex] : null;
+  const operations = program.operations.filter((operation) => operation.id !== operationId);
+  card.body = serializeVisualProgram(defaultVisualProgram(operations));
   if (selectedVisualInstructionKey.value === visualInstructionKey(card.id, operationId)) {
-    selectedVisualInstructionKey.value = '';
-    clearScreenshotSelection();
+    const siblingInstructions = deletedInstruction
+      ? operations.filter((operation) => operation.setId === deletedInstruction.setId)
+      : [];
+    const fallbackInstruction = siblingInstructions[Math.max(0, Math.min(deletedIndex, siblingInstructions.length - 1))] ?? siblingInstructions[0] ?? null;
+    if (fallbackInstruction) {
+      selectedVisualInstructionSetKey.value = visualInstructionSetKey(card.id, fallbackInstruction.setId || fallbackInstruction.id);
+      selectedVisualInstructionKey.value = visualInstructionKey(card.id, fallbackInstruction.id);
+    } else {
+      selectedVisualInstructionKey.value = '';
+      selectedVisualInstructionSetKey.value = '';
+      clearScreenshotSelection();
+    }
   }
   scheduleCodeCardSave(card);
 };
 
+const confirmDeleteVisualInstruction = async (card: CodeCard, instruction: VisualMacroAction) => {
+  try {
+    await ElMessageBox.confirm(
+      `删除指令「${visualActionLabel(instruction.action)} ${visualTargetLabel(instruction.target)}」？`,
+      '删除指令',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      },
+    );
+  } catch {
+    return;
+  }
+  deleteVisualInstruction(card, instruction.id);
+};
+
+const deleteVisualInstructionSet = (card: CodeCard, setId: string) => {
+  const program = visualProgramOf(card);
+  const instructionSets = visualInstructionSetsOf(card);
+  const deletedIndex = instructionSets.findIndex((instructionSet) => instructionSet.id === setId);
+  if (deletedIndex < 0) return;
+  const deletedSet = instructionSets[deletedIndex];
+  const deletedInstructionIds = new Set(deletedSet.instructions.map((instruction) => instruction.id));
+  const operations = program.operations.filter((operation) => (operation.setId || operation.id) !== setId);
+  card.body = serializeVisualProgram(defaultVisualProgram(operations));
+
+  const deletedSetSelected = selectedVisualInstructionSetKey.value === visualInstructionSetKey(card.id, setId);
+  const deletedInstructionSelected = selectedVisualInstructionContext.value
+    ? deletedInstructionIds.has(selectedVisualInstructionContext.value.instruction.id)
+    : false;
+  if (deletedSetSelected || deletedInstructionSelected) {
+    const nextInstructionSets = visualInstructionSetsOf(card);
+    const fallbackSet = nextInstructionSets[Math.max(0, Math.min(deletedIndex, nextInstructionSets.length - 1))]
+      ?? nextInstructionSets[0]
+      ?? null;
+    const fallbackInstruction = fallbackSet?.instructions[0] ?? null;
+    if (fallbackSet && fallbackInstruction) {
+      selectedVisualInstructionSetKey.value = visualInstructionSetKey(card.id, fallbackSet.id);
+      selectedVisualInstructionKey.value = visualInstructionKey(card.id, fallbackInstruction.id);
+      void selectVisualInstructionFrame(card, fallbackInstruction);
+    } else {
+      selectedVisualInstructionSetKey.value = '';
+      selectedVisualInstructionKey.value = '';
+      clearScreenshotSelection();
+    }
+  }
+  scheduleCodeCardSave(card);
+};
+
+const confirmDeleteVisualInstructionSet = async (card: CodeCard, instructionSet: VisualInstructionSet) => {
+  const title = visualInstructionSetDisplayTitle(instructionSet);
+  const count = instructionSet.instructions.length;
+  try {
+    await ElMessageBox.confirm(
+      `删除指令集「${title}」？将删除其中 ${count} 条指令。`,
+      '删除指令集',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      },
+    );
+  } catch {
+    return;
+  }
+  deleteVisualInstructionSet(card, instructionSet.id);
+};
+
+const addInstructionToSet = (card: CodeCard, setId: string) => {
+  const program = visualProgramOf(card);
+  const firstInstruction = program.operations.find((operation) => operation.setId === setId);
+  const instruction = defaultVisualAction({
+    setId,
+    action: 'find',
+    target: firstInstruction?.target ?? 'image',
+    label: `查找 ${visualTargetLabel(firstInstruction?.target ?? 'image')}`,
+    frame: firstInstruction?.frame ?? '',
+    box: firstInstruction?.box ?? null,
+    pointer: firstInstruction?.pointer ?? {
+      start: null,
+      end: null,
+      durationMs: 0,
+    },
+  });
+  card.body = serializeVisualProgram(defaultVisualProgram([...program.operations, instruction]));
+  scheduleCodeCardSave(card);
+  selectedVisualInstructionSetKey.value = visualInstructionSetKey(card.id, setId);
+  selectedVisualInstructionKey.value = visualInstructionKey(card.id, instruction.id);
+};
+
 const visualPointText = (point: VisualPoint | null) => (
   point ? `${point.x},${point.y}` : '未设置'
+);
+
+const visualInstructionFallbackTitle = (action: VisualMacroAction) => (
+  `${visualActionLabel(action.action)} ${visualTargetLabel(action.target)}`
 );
 
 const normalizeLegacyCodeCards = (raw: unknown): Array<{ title: string; body: string }> => {
@@ -1609,13 +2839,129 @@ const sortCodeCards = (cards: CodeCard[]) => {
   ));
 };
 
-const codeCardsByScope = (scope: FanxiuPseudoCodeCardScope) => (
-  sortCodeCards(codeCards.value.filter((card) => card.scope === scope))
-);
+const sortedCodeCards = computed(() => sortCodeCards(codeCards.value));
 
-const nextCodeCardOrder = (scope: FanxiuPseudoCodeCardScope) => {
-  const scopedCards = codeCardsByScope(scope);
-  return scopedCards.length ? Math.max(...scopedCards.map((card) => card.order_index)) + 1 : 0;
+const reorderCodeCards = (oldIndex: number, newIndex: number) => {
+  const cards = sortedCodeCards.value;
+  if (oldIndex < 0 || newIndex < 0 || oldIndex >= cards.length || newIndex >= cards.length) return;
+  const nextCards = [...cards];
+  const [moved] = nextCards.splice(oldIndex, 1);
+  if (!moved) return;
+  nextCards.splice(newIndex, 0, moved);
+  const orderById = new Map(nextCards.map((card, index) => [card.id, index]));
+  codeCards.value = codeCards.value.map((card) => ({
+    ...card,
+    order_index: orderById.get(card.id) ?? card.order_index,
+  }));
+  nextCards.forEach((card, index) => {
+    if (card.order_index !== index) {
+      const nextCard = codeCards.value.find((item) => item.id === card.id);
+      if (nextCard) scheduleCodeCardSave(nextCard);
+    }
+  });
+};
+
+useSortableList({
+  listRef: codeCardListRef,
+  getDeps: () => [
+    sortedCodeCards.value.map((card) => card.id).join(','),
+    sortedCodeCards.value.length,
+  ] as const,
+  isEnabled: () => sortedCodeCards.value.length > 1,
+  handle: '.code-card-order-handle',
+  ghostClass: 'code-card-ghost',
+  onReorder: reorderCodeCards,
+});
+
+const setVisualInstructionSetListRef = (element: Element | ComponentPublicInstance | null, cardId: string) => {
+  if (!(element instanceof HTMLElement)) {
+    visualInstructionSetListRefs.delete(cardId);
+    return;
+  }
+  visualInstructionSetListRefs.set(cardId, element);
+};
+
+const reorderVisualInstructionSets = (card: CodeCard, oldIndex: number, newIndex: number) => {
+  const instructionSets = visualInstructionSetsOf(card);
+  if (oldIndex < 0 || newIndex < 0 || oldIndex >= instructionSets.length || newIndex >= instructionSets.length) return;
+  const nextSets = [...instructionSets];
+  const [moved] = nextSets.splice(oldIndex, 1);
+  if (!moved) return;
+  nextSets.splice(newIndex, 0, moved);
+  const operations = nextSets.flatMap((instructionSet) => instructionSet.instructions);
+  card.body = serializeVisualProgram(defaultVisualProgram(operations));
+  scheduleCodeCardSave(card);
+};
+
+const moveVisualInstructionSetAcrossCards = (
+  sourceCard: CodeCard,
+  targetCard: CodeCard,
+  sourceIndex: number,
+  targetIndex: number,
+) => {
+  const sourceSets = visualInstructionSetsOf(sourceCard);
+  const movedSet = sourceSets[sourceIndex];
+  if (!movedSet) return;
+
+  if (sourceCard.id === targetCard.id) {
+    reorderVisualInstructionSets(sourceCard, sourceIndex, targetIndex);
+    return;
+  }
+
+  const movedIds = new Set(movedSet.instructions.map((instruction) => instruction.id));
+  const selectedInstructionId = selectedVisualInstructionContext.value?.instruction.id || '';
+  const nextSourceOperations = visualInstructionsOf(sourceCard).filter((instruction) => !movedIds.has(instruction.id));
+  const targetSets = visualInstructionSetsOf(targetCard);
+  const nextTargetSets = [...targetSets];
+  nextTargetSets.splice(Math.max(0, Math.min(targetIndex, nextTargetSets.length)), 0, movedSet);
+
+  sourceCard.body = serializeVisualProgram(defaultVisualProgram(nextSourceOperations));
+  targetCard.body = serializeVisualProgram(defaultVisualProgram(nextTargetSets.flatMap((instructionSet) => instructionSet.instructions)));
+  scheduleCodeCardSave(sourceCard);
+  scheduleCodeCardSave(targetCard);
+
+  if (selectedVisualInstructionSetKey.value === visualInstructionSetKey(sourceCard.id, movedSet.id)) {
+    selectedVisualInstructionSetKey.value = visualInstructionSetKey(targetCard.id, movedSet.id);
+  }
+  if (selectedInstructionId && movedIds.has(selectedInstructionId)) {
+    selectedVisualInstructionKey.value = visualInstructionKey(targetCard.id, selectedInstructionId);
+  }
+};
+
+const destroyVisualInstructionSetSortables = () => {
+  visualInstructionSetSortables.forEach((sortable) => sortable.destroy());
+  visualInstructionSetSortables.clear();
+};
+
+const initVisualInstructionSetSortables = () => {
+  destroyVisualInstructionSetSortables();
+  sortedCodeCards.value.forEach((card) => {
+    if (!isCodeCardExpanded(card.id)) return;
+    const element = visualInstructionSetListRefs.get(card.id);
+    if (!element) return;
+    const sortable = Sortable.create(element, {
+      group: 'fanxiu-visual-instruction-sets',
+      handle: '.sortable-order-handle',
+      animation: 150,
+      ghostClass: 'visual-instruction-set-ghost',
+      onEnd: ({ from, to, oldIndex, newIndex }) => {
+        if (oldIndex == null || newIndex == null) return;
+        const sourceCardId = (from as HTMLElement).dataset.cardId || '';
+        const targetCardId = (to as HTMLElement).dataset.cardId || '';
+        if (!sourceCardId || !targetCardId) return;
+        if (sourceCardId === targetCardId && oldIndex === newIndex) return;
+        const sourceCard = codeCards.value.find((item) => item.id === sourceCardId);
+        const targetCard = codeCards.value.find((item) => item.id === targetCardId);
+        if (!sourceCard || !targetCard) return;
+        moveVisualInstructionSetAcrossCards(sourceCard, targetCard, oldIndex, newIndex);
+      },
+    });
+    visualInstructionSetSortables.set(card.id, sortable);
+  });
+};
+
+const nextCodeCardOrder = () => {
+  return sortedCodeCards.value.length ? Math.max(...sortedCodeCards.value.map((card) => card.order_index)) + 1 : 0;
 };
 
 const importLegacyCodeCards = async () => {
@@ -1633,7 +2979,7 @@ const importLegacyCodeCards = async () => {
     for (const [index, card] of legacyCards.entries()) {
       createdCards.push(await createFanxiuPseudoCodeCard({
         scope: 'action',
-        title: card.title || `动作${index + 1}`,
+        title: card.title || `脚本${index + 1}`,
         body: card.body,
         order_index: index,
       }));
@@ -1674,7 +3020,7 @@ const saveCodeCardNow = async (card: CodeCard) => {
   clearCodeCardSaveTimer(card.id);
   try {
     const savedCard = await updateFanxiuPseudoCodeCard(card.id, {
-      scope: card.scope,
+      scope: 'action',
       title: card.title,
       body: card.body,
       enabled: card.enabled,
@@ -1701,16 +3047,15 @@ const flushCodeCardSaves = async () => {
   await Promise.all(cards.map((card) => saveCodeCardNow(card)));
 };
 
-const addCodeCard = async (scope: FanxiuPseudoCodeCardScope) => {
-  const scopeInfo = codeCardScopes.find((item) => item.scope === scope);
-  const index = codeCardsByScope(scope).length + 1;
+const addCodeCard = async () => {
+  const index = sortedCodeCards.value.length + 1;
   try {
     const card = await createFanxiuPseudoCodeCard({
-      scope,
-      title: `${scopeInfo?.label ?? '动作'}${index}`,
+      scope: 'action',
+      title: `脚本${index}`,
       body: serializeVisualProgram(defaultVisualProgram()),
       enabled: true,
-      order_index: nextCodeCardOrder(scope),
+      order_index: nextCodeCardOrder(),
     });
     codeCards.value = sortCodeCards([...codeCards.value, card]);
   } catch (error) {
@@ -1722,7 +3067,7 @@ const deleteCodeCard = async (id: string) => {
   const card = codeCards.value.find((item) => item.id === id);
   if (!card) return;
   try {
-    await ElMessageBox.confirm(`删除 ${card.title.trim() || '未命名卡片'}？`, '删除伪代码卡片', {
+    await ElMessageBox.confirm(`删除 ${card.title.trim() || '未命名脚本'}？`, '删除脚本', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -1741,11 +3086,8 @@ const deleteCodeCard = async (id: string) => {
   }
 };
 
-const codeCardTitle = (card: CodeCard, scope: FanxiuPseudoCodeCardScope, index: number) => {
-  const scopeInfo = codeCardScopes.find((item) => item.scope === scope);
-  const instructionCount = visualInstructionsOf(card).length;
-  if (instructionCount) return `${index + 1}. ${card.title.trim() || `${scopeInfo?.label ?? '动作'}${index + 1}`} · ${instructionCount} 指令`;
-  return `${index + 1}. ${card.title.trim() || `${scopeInfo?.label ?? '卡片'}${index + 1}`}`;
+const codeCardTitle = (card: CodeCard) => {
+  return card.title.trim() || '未命名脚本';
 };
 
 const isCodeCardExpanded = (id: string) => expandedCodeCardIds.value.includes(id);
@@ -1808,12 +3150,75 @@ const startPseudoCode = async () => {
   }
 };
 
+const runVisualScript = async (card: CodeCard) => {
+  if (!selectedEntryId.value) {
+    ElMessage.warning('先选择设备');
+    return;
+  }
+  await flushCodeCardSaves();
+  visualScriptRunningCardId.value = card.id;
+  pseudoOutputTab.value = 'log';
+  pseudoExecutionLog.value = `执行中：${codeCardTitle(card)}`;
+  try {
+    const response = await runFanxiuVisualScript({
+      entry_id: selectedEntryId.value,
+      card_id: card.id,
+      timeout: 0,
+      tick_interval: 1,
+      title: targetTitle.value.trim(),
+      title_match: titleMatch.value,
+      mode: 'screen',
+      area: captureArea.value,
+      crop: cropText.value.trim(),
+      trim_border: trimBorderText.value.trim(),
+      rotate: rotateDegrees.value,
+      fixed_width: 0,
+      fixed_height: 0,
+      frame_width: naturalWidth.value || undefined,
+      frame_height: naturalHeight.value || undefined,
+      quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    });
+    applyPseudoCodeRunResponse('执行', response);
+    if (response.result) pseudoOutputTab.value = 'result';
+    if (response.status === 'stopped') {
+      ElMessage.info('脚本已停止');
+    } else {
+      ElMessage.success('脚本执行完成');
+    }
+  } catch (error) {
+    const message = getErrorMessage(error);
+    pseudoExecutionLog.value = `执行失败：${message}`;
+    ElMessage.error(message);
+  } finally {
+    visualScriptRunningCardId.value = '';
+  }
+};
+
+const stopVisualScript = async (card: CodeCard) => {
+  if (!selectedEntryId.value || visualScriptRunningCardId.value !== card.id) return;
+  pseudoOutputTab.value = 'log';
+  pseudoExecutionLog.value = `${pseudoExecutionLog.value || ''}\n停止中：${codeCardTitle(card)}`.trim();
+  try {
+    const response = await stopFanxiuVisualScript({
+      entry_id: selectedEntryId.value,
+      card_id: card.id,
+    });
+    if (!response.stopped) {
+      visualScriptRunningCardId.value = '';
+      ElMessage.info('当前没有运行中的脚本');
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  }
+};
+
 const streamUrl = computed(() => {
   if (windowViewMode.value === 'off') return '';
   if (!selectedEntryId.value || !streamToken.value) return '';
   const params = new URLSearchParams({
     token: streamToken.value,
     title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
     fps: String(fps.value),
     quality: String(quality.value),
     mode: 'screen',
@@ -2116,7 +3521,7 @@ const drawBox = (
   box: OverlayBox,
   displayWidth: number,
   displayHeight: number,
-  options: { active?: boolean; draft?: boolean } = {},
+  options: { active?: boolean; draft?: boolean; role?: VisualShapeRole } = {},
 ) => {
   if (!naturalWidth.value || !naturalHeight.value) return;
   const scaleX = displayWidth / naturalWidth.value;
@@ -2361,15 +3766,20 @@ const drawScreenshotBox = (
 
   ctx.save();
   ctx.lineWidth = options.active ? 2 : 1.5;
-  ctx.strokeStyle = options.draft ? '#e6a23c' : (options.active ? '#ff4d4f' : '#f97316');
-  ctx.fillStyle = options.active ? 'rgba(255, 77, 79, 0.12)' : 'rgba(249, 115, 22, 0.08)';
+  const scanRole = options.role === 'scan';
+  const activeColor = scanRole ? '#f97316' : '#ff4d4f';
+  const inactiveColor = scanRole ? '#fb923c' : '#f97316';
+  ctx.strokeStyle = options.draft ? '#e6a23c' : (options.active ? activeColor : inactiveColor);
+  ctx.fillStyle = scanRole
+    ? (options.active ? 'rgba(249, 115, 22, 0.1)' : 'rgba(251, 146, 60, 0.07)')
+    : (options.active ? 'rgba(255, 77, 79, 0.12)' : 'rgba(249, 115, 22, 0.08)');
   if (options.draft) ctx.setLineDash([6, 4]);
   ctx.fillRect(x, y, w, h);
   ctx.strokeRect(x, y, w, h);
   if (options.active && !options.draft) {
     const handleSize = 8;
     ctx.fillStyle = '#fff';
-    ctx.strokeStyle = '#ff4d4f';
+    ctx.strokeStyle = activeColor;
     ctx.lineWidth = 1.5;
     ctx.fillRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
     ctx.strokeRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
@@ -2397,14 +3807,13 @@ const screenshotDisplayRadius = (radius: number, displayWidth: number, displayHe
 
 const drawScreenshotClickPoint = (
   ctx: CanvasRenderingContext2D,
-  point: VisualPoint,
-  radius: number,
+  point: VisualPointerPoint,
   displayWidth: number,
   displayHeight: number,
 ) => {
   if (!screenshotNaturalWidth.value || !screenshotNaturalHeight.value) return;
   const p = screenshotDisplayPoint(point, displayWidth, displayHeight);
-  const displayRadius = screenshotDisplayRadius(radius, displayWidth, displayHeight);
+  const displayRadius = screenshotDisplayRadius(point.r, displayWidth, displayHeight);
   ctx.save();
   ctx.strokeStyle = '#2563eb';
   ctx.lineWidth = 2;
@@ -2427,8 +3836,8 @@ const drawScreenshotClickPoint = (
 
 const drawScreenshotDragPoints = (
   ctx: CanvasRenderingContext2D,
-  start: VisualPoint,
-  end: VisualPoint,
+  start: VisualPointerPoint,
+  end: VisualPointerPoint,
   displayWidth: number,
   displayHeight: number,
 ) => {
@@ -2456,6 +3865,8 @@ const drawScreenshotDragPoints = (
   ctx.arc(from.x, from.y, 5, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+  drawScreenshotClickPoint(ctx, start, displayWidth, displayHeight);
+  drawScreenshotClickPoint(ctx, end, displayWidth, displayHeight);
 };
 
 const drawSelectedVisualInstructionInput = (
@@ -2464,12 +3875,36 @@ const drawSelectedVisualInstructionInput = (
   displayHeight: number,
 ) => {
   const instruction = selectedVisualInstruction.value;
-  if (!instruction || instruction.frame !== selectedScreenshotFilename.value || !instruction.point) return;
-  if (instruction.action === 'drag' && instruction.endPoint) {
-    drawScreenshotDragPoints(ctx, instruction.point, instruction.endPoint, displayWidth, displayHeight);
+  if (!instruction || instruction.frame !== selectedScreenshotFilename.value) return;
+  if (instruction.target === 'image' && instruction.box) {
+    drawScreenshotBox(
+      ctx,
+      { id: instruction.id, name: '图片区域', ...instruction.box },
+      displayWidth,
+      displayHeight,
+      { active: activeVisualShapeRole.value === 'target', role: 'target' },
+    );
+  }
+  if (visualInstructionUsesTargetConfig(instruction) && instruction.scan === 'range') {
+    drawScreenshotBox(
+      ctx,
+      { id: `${instruction.id}:scan`, name: '搜索区域', ...visualScanBoxOrDefault(instruction) },
+      displayWidth,
+      displayHeight,
+      { active: activeVisualShapeRole.value === 'scan', role: 'scan' },
+    );
+  }
+  if (screenshotDraftBox.value) {
+    drawScreenshotBox(ctx, normalizeScreenshotBox(screenshotDraftBox.value), displayWidth, displayHeight, { draft: true });
+  }
+  if (!instruction.pointer.start) return;
+  if (instruction.action === 'drag' && instruction.pointer.end) {
+    drawScreenshotDragPoints(ctx, instruction.pointer.start, instruction.pointer.end, displayWidth, displayHeight);
     return;
   }
-  drawScreenshotClickPoint(ctx, instruction.point, instruction.pointRadius, displayWidth, displayHeight);
+  if (visualActionUsesPointer(instruction.action)) {
+    drawScreenshotClickPoint(ctx, instruction.pointer.start, displayWidth, displayHeight);
+  }
 };
 
 const drawScreenshotOverlay = () => {
@@ -2490,12 +3925,6 @@ const drawScreenshotOverlay = () => {
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  screenshotBoxes.value.forEach((box) => {
-    drawScreenshotBox(ctx, box, width, height, { active: selectedScreenshotBoxId.value === box.id });
-  });
-  if (screenshotDraftBox.value) {
-    drawScreenshotBox(ctx, normalizeScreenshotBox(screenshotDraftBox.value), width, height, { draft: true });
-  }
   drawSelectedVisualInstructionInput(ctx, width, height);
 };
 
@@ -2723,6 +4152,7 @@ const saveCurrentFrame = async () => {
     const result = await saveFanxiuGameWindow2Frame({
       entry_id: selectedEntryId.value,
       title: targetTitle.value.trim(),
+      title_match: titleMatch.value,
       mode: 'screen',
       area: captureArea.value,
       crop: cropText.value.trim(),
@@ -2747,6 +4177,7 @@ const captureVisualMacroFrame = async () => {
   const result = await saveFanxiuGameWindow2Frame({
     entry_id: selectedEntryId.value,
     title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
     mode: 'screen',
     area: captureArea.value,
     crop: cropText.value.trim(),
@@ -2762,17 +4193,74 @@ const captureVisualMacroFrame = async () => {
   return result;
 };
 
+const scaleVisualPointerPointToFrame = (
+  point: VisualPointerPoint | null,
+  scaleX: number,
+  scaleY: number,
+): VisualPointerPoint | null => {
+  if (!point) return null;
+  return {
+    ...point,
+    x: Math.round(point.x * scaleX),
+    y: Math.round(point.y * scaleY),
+  };
+};
+
+const scaleVisualBoxToFrame = (
+  box: VisualBox | null,
+  scaleX: number,
+  scaleY: number,
+): VisualBox | null => {
+  if (!box) return null;
+  return {
+    x: Math.round(box.x * scaleX),
+    y: Math.round(box.y * scaleY),
+    w: Math.max(1, Math.round(box.w * scaleX)),
+    h: Math.max(1, Math.round(box.h * scaleY)),
+  };
+};
+
+const rebindSelectedVisualInstructionFrame = async () => {
+  const context = selectedVisualEditInstructionContext.value;
+  if (!context || !selectedEntryId.value) return;
+  const sourceFilename = context.instruction.frame || selectedScreenshotFilename.value;
+  const { width: sourceWidth, height: sourceHeight } = selectedScreenshotSourceSize(sourceFilename);
+  saveFrameLoading.value = true;
+  try {
+    const result = await captureVisualMacroFrame();
+    const scaleX = sourceWidth > 0 ? result.width / sourceWidth : 1;
+    const scaleY = sourceHeight > 0 ? result.height / sourceHeight : 1;
+    updateVisualInstruction(context.card, context.instruction.id, {
+      frame: result.filename,
+      pointer: {
+        ...context.instruction.pointer,
+        start: scaleVisualPointerPointToFrame(context.instruction.pointer.start, scaleX, scaleY),
+        end: scaleVisualPointerPointToFrame(context.instruction.pointer.end, scaleX, scaleY),
+      },
+      box: scaleVisualBoxToFrame(context.instruction.box, scaleX, scaleY),
+      scanBox: scaleVisualBoxToFrame(context.instruction.scanBox, scaleX, scaleY),
+    });
+    await loadScreenshotList(result.filename);
+    ElMessage.success(`已重绑 ${result.filename}`);
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    saveFrameLoading.value = false;
+  }
+};
+
 const buildDefaultImageBox = (point: VisualPoint, size = 50): VisualBox => {
-  const half = Math.round(size / 2);
-  const maxWidth = Math.max(1, naturalWidth.value || size);
-  const maxHeight = Math.max(1, naturalHeight.value || size);
-  const x = Math.round(clamp(point.x - half, 0, Math.max(0, maxWidth - size)));
-  const y = Math.round(clamp(point.y - half, 0, Math.max(0, maxHeight - size)));
+  const width = Math.max(4, Math.round(size));
+  const height = Math.max(4, Math.round(size));
+  const maxWidth = Math.max(1, screenshotNaturalWidth.value || naturalWidth.value || width);
+  const maxHeight = Math.max(1, screenshotNaturalHeight.value || naturalHeight.value || height);
+  const x = Math.round(clamp(point.x - width / 2, 0, Math.max(0, maxWidth - width)));
+  const y = Math.round(clamp(point.y - height / 2, 0, Math.max(0, maxHeight - height)));
   return {
     x,
     y,
-    w: Math.min(size, maxWidth),
-    h: Math.min(size, maxHeight),
+    w: Math.min(width, maxWidth),
+    h: Math.min(height, maxHeight),
   };
 };
 
@@ -2787,20 +4275,26 @@ const appendVisualMacroAction = async (
   const card = codeCards.value.find((item) => item.id === cardId);
   if (!card) return;
   const program = visualProgramOf(card);
-  const index = program.operations.length + 1;
-  const visualAction = defaultVisualAction({
-    action,
-    target: action === 'drag' ? 'none' : 'image',
-    label: '',
+  const setId = createVisualId();
+  const nextAction = action === 'click' ? 'waitClick' : action;
+  const nextTarget: VisualTargetKind = action === 'drag' ? 'coordinate' : 'image';
+  const operationAction = defaultVisualAction({
+    setId,
+    action: nextAction,
+    target: nextTarget,
+    label: `${visualActionLabel(nextAction)} ${visualTargetLabel(nextTarget)}`,
     frame,
-    point,
-    endPoint,
+    pointer: {
+      start: point ? { ...point, r: visualMacroDefaultPointRadius.value } : null,
+      end: endPoint ? { ...endPoint, r: visualMacroDefaultPointRadius.value } : null,
+      durationMs: Math.round(Math.max(0, durationMs)),
+    },
     box: point ? buildDefaultImageBox(point) : null,
     timeout: action === 'drag' ? Math.round(clamp(durationMs / 1000, 0, 120)) : 8,
   });
-  card.body = serializeVisualProgram(defaultVisualProgram([...program.operations, visualAction]));
+  card.body = serializeVisualProgram(defaultVisualProgram([...program.operations, operationAction]));
   await saveCodeCardNow(card);
-  await selectVisualInstructionFrame(card, visualAction);
+  await selectVisualInstructionFrame(card, operationAction);
 };
 
 const recordVisualMacroInput = async (
@@ -2815,7 +4309,7 @@ const recordVisualMacroInput = async (
   try {
     const frame = await captureVisualMacroFrame();
     await appendVisualMacroAction(activeVisualMacroCardId.value, action, frame.filename, point, endPoint, durationMs);
-    ElMessage.success('已追加视觉指令');
+    ElMessage.success('已追加指令集');
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -2851,6 +4345,133 @@ const toMatchBoxPayload = (box: OverlayBox): FanxiuGameWindow2MatchBox => ({
   h: Math.round(box.h),
 });
 
+const selectedVisualInstructionMatchBox = (instruction = selectedVisualInstruction.value): OverlayBox | null => {
+  if (!instruction || instruction.target !== 'image') return null;
+  const box = instruction.box ?? visualBoxOrDefault(instruction);
+  return {
+    id: instruction.id,
+    name: '图片区域',
+    ...box,
+  };
+};
+
+const formatFrameSize = (width: number, height: number) => `${Math.round(height)}x${Math.round(width)}`;
+
+const selectedScreenshotSourceSize = (filename: string) => {
+  const item = screenshotImages.value.find((screenshot) => screenshot.filename === filename);
+  const width = item?.width || (filename === selectedScreenshotFilename.value ? screenshotNaturalWidth.value : 0);
+  const height = item?.height || (filename === selectedScreenshotFilename.value ? screenshotNaturalHeight.value : 0);
+  return { width, height };
+};
+
+const describeMatchGeometryIssue = (filename: string, box: OverlayBox) => {
+  const { width: sourceWidth, height: sourceHeight } = selectedScreenshotSourceSize(filename);
+  if (sourceWidth > 0 && sourceHeight > 0) {
+    if (box.x < 0 || box.y < 0 || box.x + box.w > sourceWidth || box.y + box.h > sourceHeight) {
+      return `标注越界 ${formatFrameSize(sourceWidth, sourceHeight)}`;
+    }
+    if (naturalWidth.value > 0 && naturalHeight.value > 0) {
+      const sourceRatio = sourceWidth / sourceHeight;
+      const currentRatio = naturalWidth.value / naturalHeight.value;
+      if (Math.abs(sourceRatio - currentRatio) > 0.05) {
+        return `画面比例不一致 ${formatFrameSize(sourceWidth, sourceHeight)}→${formatFrameSize(naturalWidth.value, naturalHeight.value)}`;
+      }
+    }
+  }
+  return '';
+};
+
+const matchFrameAspectMismatchText = (response: FanxiuGameWindow2MatchResponse) => {
+  if (!response.source_width || !response.source_height || !response.width || !response.height) return false;
+  const sourceRatio = response.source_width / response.source_height;
+  const currentRatio = response.width / response.height;
+  if (Math.abs(sourceRatio - currentRatio) <= 0.05) return '';
+  return `画面比例不一致 ${formatFrameSize(response.source_width, response.source_height)}→${formatFrameSize(response.width, response.height)}`;
+};
+
+const stopVisualSimilarityProbe = () => {
+  visualSimilarityProbeSeq += 1;
+  if (visualSimilarityProbeTimer) {
+    window.clearInterval(visualSimilarityProbeTimer);
+    visualSimilarityProbeTimer = null;
+  }
+  visualSimilarityProbeActive.value = false;
+  visualSimilarityProbeLoading.value = false;
+};
+
+const runVisualSimilarityProbeOnce = async () => {
+  const instruction = selectedVisualInstruction.value;
+  const instructionKey = selectedVisualInstructionKey.value;
+  const screenshotFilename = selectedScreenshotFilename.value;
+  const box = selectedVisualInstructionMatchBox(instruction);
+  const templateFilename = instruction?.frame || screenshotFilename;
+  if (!selectedEntryId.value || !instruction || !templateFilename || !box) {
+    visualSimilarityProbeText.value = '';
+    return;
+  }
+  const geometryIssue = describeMatchGeometryIssue(templateFilename, box);
+  if (geometryIssue) {
+    visualSimilarityProbeText.value = geometryIssue;
+    stopVisualSimilarityProbe();
+    return;
+  }
+  if (visualSimilarityProbeLoading.value) return;
+  const requestSeq = ++visualSimilarityProbeSeq;
+  visualSimilarityProbeLoading.value = true;
+  try {
+    const response = await matchFanxiuGameWindow2Screenshot({
+      entry_id: selectedEntryId.value,
+      filename: templateFilename,
+      box: toMatchBoxPayload(box),
+      pixel_tolerance: selectedVisualInstruction.value?.pixelTolerance ?? visualMacroDefaultPixelTolerance.value,
+      title: targetTitle.value.trim(),
+      title_match: titleMatch.value,
+      mode: 'screen',
+      area: captureArea.value,
+      crop: cropText.value.trim(),
+      trim_border: trimBorderText.value.trim(),
+      rotate: rotateDegrees.value,
+      fixed_width: 0,
+      fixed_height: 0,
+      quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    });
+    if (
+      requestSeq !== visualSimilarityProbeSeq
+      || instructionKey !== selectedVisualInstructionKey.value
+      || templateFilename !== (selectedVisualInstruction.value?.frame || selectedScreenshotFilename.value)
+    ) {
+      return;
+    }
+    const matchGeometryIssue = matchFrameAspectMismatchText(response);
+    if (matchGeometryIssue) {
+      visualSimilarityProbeText.value = matchGeometryIssue;
+      stopVisualSimilarityProbe();
+      return;
+    }
+    const similarity = instruction.scan === 'fixed'
+      ? response.fixed_similarity ?? response.similarity
+      : response.template_crop_similarity ?? response.template_similarity ?? response.similarity;
+    visualSimilarityProbeText.value = `${Math.round(Number(similarity) || 0)}%`;
+  } catch (error) {
+    visualSimilarityProbeText.value = getErrorMessage(error);
+    stopVisualSimilarityProbe();
+  } finally {
+    visualSimilarityProbeLoading.value = false;
+  }
+};
+
+const toggleVisualSimilarityProbe = () => {
+  if (visualSimilarityProbeActive.value) {
+    stopVisualSimilarityProbe();
+    return;
+  }
+  visualSimilarityProbeActive.value = true;
+  void runVisualSimilarityProbeOnce();
+  visualSimilarityProbeTimer = window.setInterval(() => {
+    void runVisualSimilarityProbeOnce();
+  }, 1200);
+};
+
 const appendMatchResult = (response: FanxiuGameWindow2MatchResponse, imageUrl: string) => {
   const item: MatchResult = {
     ...response,
@@ -2879,6 +4500,11 @@ const selectMatchEntry = (id: string) => {
 
 const runScreenshotBoxMatch = async (box: OverlayBox) => {
   if (!selectedEntryId.value || !selectedScreenshotFilename.value) return;
+  const geometryIssue = describeMatchGeometryIssue(selectedScreenshotFilename.value, box);
+  if (geometryIssue) {
+    ElMessage.warning(geometryIssue);
+    return;
+  }
   matchingBoxId.value = box.id;
   try {
     await flushScreenshotAutosave();
@@ -2886,7 +4512,9 @@ const runScreenshotBoxMatch = async (box: OverlayBox) => {
       entry_id: selectedEntryId.value,
       filename: selectedScreenshotFilename.value,
       box: toMatchBoxPayload(box),
+      pixel_tolerance: selectedVisualInstruction.value?.pixelTolerance ?? visualMacroDefaultPixelTolerance.value,
       title: targetTitle.value.trim(),
+      title_match: titleMatch.value,
       mode: 'screen',
       area: captureArea.value,
       crop: cropText.value.trim(),
@@ -2896,6 +4524,10 @@ const runScreenshotBoxMatch = async (box: OverlayBox) => {
       fixed_height: 0,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     });
+    const matchGeometryIssue = matchFrameAspectMismatchText(response);
+    if (matchGeometryIssue) {
+      ElMessage.warning(matchGeometryIssue);
+    }
     const blob = await getFanxiuGameWindow2MatchImage(selectedEntryId.value, response.match_filename);
     appendMatchResult(response, URL.createObjectURL(blob));
     await nextTick();
@@ -3017,11 +4649,10 @@ const loadScreenshotList = async (preferFilename = '') => {
     const payload = await listFanxiuGameWindow2Screenshots(selectedEntryId.value);
     screenshotImages.value = payload.items;
     screenshotLoaded.value = true;
-    const persistedFilename = loadPersistedScreenshotFilename();
+    const instructionFrame = selectedVisualInstruction.value?.frame || '';
     const targetFilename = preferFilename
-      || (screenshotImages.value.some((item) => item.filename === selectedScreenshotFilename.value) ? selectedScreenshotFilename.value : '')
-      || (screenshotImages.value.some((item) => item.filename === persistedFilename) ? persistedFilename : '')
-      || screenshotImages.value[0]?.filename
+      || (selectedVisualInstructionKey.value && screenshotImages.value.some((item) => item.filename === instructionFrame) ? instructionFrame : '')
+      || (selectedVisualInstructionKey.value && screenshotImages.value.some((item) => item.filename === selectedScreenshotFilename.value) ? selectedScreenshotFilename.value : '')
       || '';
     if (targetFilename) {
       await selectScreenshotImage(targetFilename, true);
@@ -3177,6 +4808,29 @@ const normalizeScreenshotBox = (box: OverlayBox): OverlayBox => {
   };
 };
 
+const visualBoxToOverlayBox = (instruction: VisualMacroAction, role: VisualShapeRole): OverlayBox | null => {
+  if (role === 'scan') {
+    if (!visualInstructionUsesTargetConfig(instruction) || instruction.scan !== 'range') return null;
+    return {
+      id: `${instruction.id}:scan`,
+      name: '搜索区域',
+      ...visualScanBoxOrDefault(instruction),
+    };
+  }
+  if (!instruction.box || instruction.target !== 'image') return null;
+  return {
+    id: instruction.id,
+    name: '图片区域',
+    ...instruction.box,
+  };
+};
+
+const selectedVisualInstructionEditableBox = () => {
+  const instruction = selectedVisualInstruction.value;
+  if (!instruction || instruction.frame !== selectedScreenshotFilename.value) return null;
+  return visualBoxToOverlayBox(instruction, activeVisualShapeRole.value);
+};
+
 const getScreenshotFramePoint = (event: PointerEvent | MouseEvent) => {
   const canvas = screenshotOverlayCanvasRef.value;
   if (!canvas || !screenshotNaturalWidth.value || !screenshotNaturalHeight.value) return null;
@@ -3199,6 +4853,10 @@ const findBoxAt = (x: number, y: number) => {
 };
 
 const findScreenshotBoxAt = (x: number, y: number) => {
+  const instructionBox = selectedVisualInstructionEditableBox();
+  if (instructionBox && x >= instructionBox.x && x <= instructionBox.x + instructionBox.w && y >= instructionBox.y && y <= instructionBox.y + instructionBox.h) {
+    return 0;
+  }
   for (let index = screenshotBoxes.value.length - 1; index >= 0; index -= 1) {
     const box = screenshotBoxes.value[index];
     if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
@@ -3216,8 +4874,10 @@ const findScreenshotResizeHandleAt = (x: number, y: number): { index: number; ha
   const toleranceX = 10 * screenshotNaturalWidth.value / rect.width;
   const toleranceY = 10 * screenshotNaturalHeight.value / rect.height;
 
-  for (let index = screenshotBoxes.value.length - 1; index >= 0; index -= 1) {
-    const box = screenshotBoxes.value[index];
+  const instructionBox = selectedVisualInstructionEditableBox();
+  const boxesToCheck = instructionBox ? [instructionBox] : screenshotBoxes.value;
+  for (let index = boxesToCheck.length - 1; index >= 0; index -= 1) {
+    const box = boxesToCheck[index];
     const corners: Array<{ handle: ScreenshotResizeHandle; x: number; y: number }> = [
       { handle: 'top-left', x: box.x, y: box.y },
       { handle: 'bottom-right', x: box.x + box.w, y: box.y + box.h },
@@ -3270,6 +4930,7 @@ const normalizeControlPoint = (point: { x: number; y: number }) => ({
 const buildRemoteInputPayloadBase = () => ({
   entry_id: selectedEntryId.value,
   title: targetTitle.value.trim(),
+  title_match: titleMatch.value,
   mode: 'screen' as const,
   area: captureArea.value,
   crop: cropText.value.trim(),
@@ -3518,9 +5179,44 @@ const closeScreenshotBoxListContextMenu = () => {
   };
 };
 
+const closeVisualInstructionSetContextMenu = () => {
+  if (!visualInstructionSetContextMenu.value.visible) return;
+  visualInstructionSetContextMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    cardId: '',
+    setId: '',
+  };
+};
+
 const closeScreenshotContextMenus = () => {
   closeScreenshotBoxContextMenu();
   closeScreenshotBoxListContextMenu();
+  closeVisualInstructionSetContextMenu();
+};
+
+const openVisualInstructionSetContextMenu = (event: MouseEvent, card: CodeCard, instructionSet: VisualInstructionSet) => {
+  event.preventDefault();
+  closeScreenshotBoxContextMenu();
+  closeScreenshotBoxListContextMenu();
+  visualInstructionSetContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    cardId: card.id,
+    setId: instructionSet.id,
+  };
+  void selectVisualInstructionSetFrame(card, instructionSet);
+};
+
+const confirmDeleteVisualInstructionSetFromContext = async () => {
+  const { cardId, setId } = visualInstructionSetContextMenu.value;
+  closeVisualInstructionSetContextMenu();
+  const card = codeCards.value.find((item) => item.id === cardId);
+  const instructionSet = card ? visualInstructionSetsOf(card).find((item) => item.id === setId) : null;
+  if (!card || !instructionSet) return;
+  await confirmDeleteVisualInstructionSet(card, instructionSet);
 };
 
 const openScreenshotBoxContextMenu = (event: MouseEvent, boxId: string) => {
@@ -3652,35 +5348,33 @@ const handleScreenshotPointerDown = (event: PointerEvent) => {
   closeScreenshotContextMenus();
   if (event.button !== 0) return;
   if (screenshotSpacePressed.value || screenshotPanState.value) return;
+  const instruction = selectedVisualInstruction.value;
+  if (!instruction || instruction.frame !== selectedScreenshotFilename.value || !visualInstructionUsesShape(instruction)) return;
+  if (activeVisualShapeRole.value === 'target' && instruction.target !== 'image') return;
+  if (activeVisualShapeRole.value === 'scan' && instruction.scan !== 'range') return;
   const point = getScreenshotFramePoint(event);
   if (!point) return;
+  event.preventDefault();
+  event.stopPropagation();
 
   const resizeHit = findScreenshotResizeHandleAt(point.x, point.y);
-  if (resizeHit) {
-    event.preventDefault();
-    setScreenshotCanvasCursor('nwse-resize');
-    const box = screenshotBoxes.value[resizeHit.index];
-    selectedScreenshotBoxId.value = box.id;
+  const box = selectedVisualInstructionEditableBox();
+  if (resizeHit && box) {
     screenshotResizeState.value = {
       pointerId: event.pointerId,
       boxId: box.id,
       handle: resizeHit.handle,
-      original: { ...box },
+      original: box,
     };
     screenshotOverlayCanvasRef.value?.setPointerCapture(event.pointerId);
-    drawScreenshotOverlay();
+    updateScreenshotCanvasCursor(event);
     return;
   }
 
-  const hitIndex = findScreenshotBoxAt(point.x, point.y);
-  if (hitIndex >= 0) {
-    setScreenshotCanvasCursor('pointer');
-    selectScreenshotBox(screenshotBoxes.value[hitIndex].id);
+  if (box && point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h) {
     return;
   }
 
-  setScreenshotCanvasCursor('crosshair');
-  selectedScreenshotBoxId.value = null;
   screenshotDraftState.value = {
     pointerId: event.pointerId,
     startX: point.x,
@@ -3704,23 +5398,35 @@ const handleScreenshotPointerMove = (event: PointerEvent) => {
     setScreenshotCanvasCursor('nwse-resize');
     const point = getScreenshotFramePoint(event);
     if (!point) return;
-    const box = screenshotBoxes.value.find((item) => item.id === resizeState.boxId);
-    if (!box) return;
     const original = resizeState.original;
+    let nextBox: VisualBox;
     if (resizeState.handle === 'top-left') {
       const right = original.x + original.w;
       const bottom = original.y + original.h;
       const nextX = clamp(point.x, 0, right - 4);
       const nextY = clamp(point.y, 0, bottom - 4);
-      box.x = Math.round(nextX);
-      box.y = Math.round(nextY);
-      box.w = Math.round(right - nextX);
-      box.h = Math.round(bottom - nextY);
+      nextBox = {
+        x: Math.round(nextX),
+        y: Math.round(nextY),
+        w: Math.round(right - nextX),
+        h: Math.round(bottom - nextY),
+      };
     } else {
       const nextRight = clamp(point.x, original.x + 4, screenshotNaturalWidth.value || Number.MAX_SAFE_INTEGER);
       const nextBottom = clamp(point.y, original.y + 4, screenshotNaturalHeight.value || Number.MAX_SAFE_INTEGER);
-      box.w = Math.round(nextRight - original.x);
-      box.h = Math.round(nextBottom - original.y);
+      nextBox = {
+        x: Math.round(original.x),
+        y: Math.round(original.y),
+        w: Math.round(nextRight - original.x),
+        h: Math.round(nextBottom - original.y),
+      };
+    }
+    if (selectedVisualInstruction.value && resizeState.boxId.startsWith(selectedVisualInstruction.value.id)) {
+      if (activeVisualShapeRole.value === 'scan') {
+        updateSelectedVisualInstructionScanBox(nextBox);
+      } else {
+      updateSelectedVisualInstructionBox(nextBox, 'manual');
+      }
     }
     drawScreenshotOverlay();
     return;
@@ -3755,13 +5461,16 @@ const finishScreenshotDraft = () => {
   }
 
   const nextBox = {
-    ...normalized,
-    id: `${selectedScreenshotFilename.value}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    name: '',
+    x: normalized.x,
+    y: normalized.y,
+    w: normalized.w,
+    h: normalized.h,
   };
-  screenshotBoxes.value.push(nextBox);
-  selectedScreenshotBoxId.value = nextBox.id;
-  markScreenshotDirty();
+  if (activeVisualShapeRole.value === 'scan') {
+    updateSelectedVisualInstructionScanBox(nextBox);
+  } else {
+    updateSelectedVisualInstructionBox(nextBox, 'manual');
+  }
   drawScreenshotOverlay();
 };
 
@@ -3770,7 +5479,6 @@ const finishScreenshotResize = (event: PointerEvent) => {
   if (!resizeState || resizeState.pointerId !== event.pointerId) return false;
   screenshotOverlayCanvasRef.value?.releasePointerCapture(event.pointerId);
   screenshotResizeState.value = null;
-  markScreenshotDirty();
   drawScreenshotOverlay();
   updateScreenshotCanvasCursor(event);
   return true;
@@ -3915,12 +5623,31 @@ watch(
   persistWindowConfig,
 );
 watch(displayScale, syncCanvasSoon);
-watch(selectedVisualInstructionKey, drawScreenshotOverlay);
+watch(selectedVisualInstructionKey, () => {
+  stopVisualSimilarityProbe();
+  visualSimilarityProbeSeq += 1;
+  visualSimilarityProbeText.value = '';
+  drawScreenshotOverlay();
+});
+watch(
+  () => [
+    expandedCodeCardIds.value.join(','),
+    sortedCodeCards.value.map((card) => `${card.id}:${visualInstructionSetsOf(card).map((instructionSet) => instructionSet.id).join(',')}`).join('|'),
+  ],
+  async () => {
+    await nextTick();
+    initVisualInstructionSetSortables();
+  },
+  { immediate: true },
+);
 watch(visualMacroDefaultThreshold, (value) => {
   setVisualMacroDefaultThreshold(value);
 });
 watch(visualMacroDefaultPointRadius, (value) => {
   setVisualMacroDefaultPointRadius(value);
+});
+watch(visualMacroDefaultPixelTolerance, (value) => {
+  setVisualMacroDefaultPixelTolerance(value);
 });
 
 onMounted(async () => {
@@ -3952,6 +5679,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPolling();
+  stopVisualSimilarityProbe();
+  destroyVisualInstructionSetSortables();
   if (screenshotDirty.value) void flushScreenshotAutosave();
   void flushCodeCardSaves();
   window.removeEventListener('keydown', handleKeydown);
@@ -4282,6 +6011,7 @@ onBeforeUnmount(() => {
 }
 
 .visual-macro-config-row span {
+  flex: none;
   white-space: nowrap;
 }
 
@@ -4308,6 +6038,7 @@ onBeforeUnmount(() => {
 
 .code-add,
 .code-card-collapse,
+.code-card-run,
 .code-card-record,
 .code-card-delete {
   width: 24px;
@@ -4345,18 +6076,49 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 
+.code-card-ghost {
+  opacity: 0.6;
+  background: #dbeafe;
+}
+
 .code-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px 68px 24px;
+  grid-template-columns: max-content minmax(0, 1fr) 24px 24px 68px 24px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .code-card-summary-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: max-content minmax(0, 1fr) 24px 24px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.code-card-title-input {
+  height: 24px;
+}
+
+.code-card-title-input :deep(.el-input__wrapper) {
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.code-card-title-input :deep(.el-input__inner) {
+  height: 24px;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 24px;
+}
+
+.code-card-title-input :deep(.el-input__wrapper.is-focus) {
+  padding: 0 6px;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px #93c5fd inset;
 }
 
 .code-card-title-button {
@@ -4383,6 +6145,17 @@ onBeforeUnmount(() => {
   color: #2563eb;
 }
 
+.code-card :deep(.sortable-order-handle) {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.code-card :deep(.sortable-order-handle:hover:not(:disabled)) {
+  background: #bae6fd;
+  color: #075985;
+}
+
 .code-card-collapse {
   color: #64748b;
   font-size: 14px;
@@ -4391,6 +6164,24 @@ onBeforeUnmount(() => {
 .code-card-collapse:hover {
   background: #f8fafc;
   border-color: #cbd5e1;
+}
+
+.code-card-run {
+  color: #2563eb;
+}
+
+.code-card-run:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.code-card-run.is-running {
+  color: #dc2626;
+}
+
+.code-card-run.is-running:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .code-card-record {
@@ -4426,21 +6217,16 @@ onBeforeUnmount(() => {
 }
 
 .visual-action-editor {
-  margin-top: 8px;
+  margin-top: 6px;
+  padding-left: 28px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .visual-operation {
-  padding: 6px 0;
-  border-top: 1px solid #eef2f7;
+  padding: 2px 0;
   cursor: pointer;
-}
-
-.visual-operation:first-child {
-  padding-top: 0;
-  border-top: none;
 }
 
 .visual-operation.is-selected {
@@ -4461,20 +6247,37 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
+.visual-instruction-set {
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.visual-instruction-set :deep(.sortable-order-handle) {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.visual-instruction-set :deep(.sortable-order-handle:hover:not(:disabled)) {
+  background: #fde68a;
+  color: #78350f;
+}
+
+.visual-instruction-set + .visual-instruction-set {
+  margin-top: 2px;
+}
+
 .visual-action-row {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
 }
 
-.visual-action-select {
-  width: 64px;
-}
-
 .visual-operation-index {
-  width: 22px;
+  min-width: 30px;
+  padding: 0 4px;
   height: 22px;
   display: inline-flex;
   align-items: center;
@@ -4485,8 +6288,74 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.visual-target-select {
-  width: 76px;
+.visual-summary-token {
+  min-width: 56px;
+  padding: 0 8px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #d8e1ee;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.visual-summary-text {
+  min-width: 0;
+  padding: 0 7px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #d8e1ee;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.visual-summary-text.is-unique-title {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.visual-action-kind-select {
+  width: 96px;
+}
+
+.visual-instruction-set-ghost {
+  opacity: 0.6;
+  background: #dbeafe;
+  border-radius: 4px;
+}
+
+.visual-target-kind-select {
+  width: 86px;
+}
+
+.visual-call-config-row {
+  flex-wrap: wrap;
+}
+
+.visual-call-config-row .visual-target-kind-select {
+  width: 92px;
+}
+
+.visual-reference-select {
+  width: 170px;
+}
+
+.visual-reference-note {
+  flex-basis: 100%;
+  padding-left: 0;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.visual-reference-token {
+  color: #1d4ed8;
 }
 
 .visual-scan-select {
@@ -4743,9 +6612,46 @@ onBeforeUnmount(() => {
 .screenshot-editor {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: max-content 340px;
+  grid-template-columns: max-content 420px;
   gap: 14px;
   align-items: start;
+}
+
+.screenshot-preview-column {
+  min-width: 0;
+}
+
+.screenshot-detail-title {
+  margin-bottom: 6px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.screenshot-geometry-warning {
+  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.screenshot-rebind-frame {
+  height: 22px;
+  padding: 0 8px;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.screenshot-rebind-frame:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .screenshot-preview {
@@ -4811,12 +6717,30 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #e5e7eb;
 }
 
+.screenshot-config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
 .screenshot-panel-title {
   margin-bottom: 6px;
   color: #1f2937;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
+}
+
+.screenshot-panel-title-row {
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.screenshot-panel-title-row .screenshot-panel-title {
+  margin-bottom: 0;
 }
 
 .screenshot-instruction-metrics {
@@ -4836,11 +6760,243 @@ onBeforeUnmount(() => {
   grid-template-columns: 18px repeat(2, minmax(0, 72px));
 }
 
-.screenshot-advanced-metrics {
-  margin-top: 8px;
-  display: grid;
-  grid-template-columns: minmax(0, 120px);
+.pointer-config-table {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+}
+
+.pointer-config-row {
+  display: grid;
+  grid-template-columns: 34px repeat(3, minmax(0, 72px));
+  align-items: center;
+  gap: 6px;
+}
+
+.visual-box-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.visual-image-box-mode-select {
+  width: 92px;
+}
+
+.visual-box-config .screenshot-box-metric :deep(.el-input-number) {
+  width: 64px;
+}
+
+.screenshot-config-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.screenshot-config-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: max-content max-content;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.screenshot-config-line > span {
+  white-space: nowrap;
+}
+
+.visual-primary-label {
+  color: #dc2626;
+}
+
+.screenshot-wide-number-input {
+  width: 78px;
+}
+
+.visual-match-config {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.visual-threshold-line {
+  display: grid;
+}
+
+.visual-probe-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.visual-threshold-probe {
+  height: 24px;
+  padding: 0 7px;
+  color: #2563eb;
+  background: #ffffff;
+  border: 1px solid #d8e1ee;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.visual-threshold-probe:hover:not(:disabled),
+.visual-threshold-probe.is-active {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.visual-threshold-probe:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.visual-threshold-probe-result {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.screenshot-duration-input {
+  width: 112px;
+}
+
+.instruction-sequence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.instruction-sequence-row {
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.instruction-sequence-row > span:first-child {
+  min-width: 22px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6d28d9;
+  background: #ede9fe;
+  border: 1px solid #ddd6fe;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.instruction-sequence-title {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  color: #334155;
+  background: #ffffff;
+  border: 1px solid #d8e1ee;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.instruction-sequence-title:placeholder-shown {
+  color: #94a3b8;
+}
+
+.instruction-sequence-title:focus {
+  outline: none;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.22);
+}
+
+.instruction-sequence-title.is-unique-title {
+  color: #1d4ed8;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.instruction-sequence-title:disabled {
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.instruction-reference-title {
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.instruction-set-title-input {
+  width: 260px;
+  max-width: 100%;
+}
+
+.instruction-sequence-add,
+.instruction-sequence-delete {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.instruction-sequence-add {
+  color: #2563eb;
+}
+
+.instruction-sequence-delete {
+  justify-self: end;
+  flex: 0 0 20px;
+  color: #dc2626;
+}
+
+.instruction-sequence-add:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.instruction-sequence-delete:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.instruction-sequence-row:hover,
+.instruction-sequence-row.is-active {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .screenshot-metric-group-label {
@@ -4913,8 +7069,17 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.screenshot-box-metric > span {
+  flex: none;
+  white-space: nowrap;
+}
+
 .screenshot-box-metric :deep(.el-input-number) {
   width: 100%;
+}
+
+.screenshot-advanced-metrics .screenshot-box-metric :deep(.el-input-number) {
+  width: 96px;
 }
 
 .screenshot-box-metric :deep(.el-input__wrapper) {
@@ -4951,6 +7116,15 @@ onBeforeUnmount(() => {
 
 .screenshot-box-menu button:hover:not(:disabled) {
   background: #f3f6fb;
+}
+
+.screenshot-box-menu button.is-danger {
+  color: #dc2626;
+}
+
+.screenshot-box-menu button.is-danger:hover:not(:disabled) {
+  color: #b91c1c;
+  background: #fef2f2;
 }
 
 .screenshot-box-menu button:disabled {

@@ -1,9 +1,11 @@
+import csv
 import json
 import struct
 from pathlib import Path
 
 import pytest
 
+from backend.core import fanxiu_doupotd_catalog as doupotd_catalog_module
 from backend.core.fanxiu_resources import (
     FANXIU_RESOURCE_EXPORT_ROOT_ENV,
     FANXIU_RESOURCE_ROOT_ENV,
@@ -15,6 +17,24 @@ from backend.core.fanxiu_resources import (
     list_fanxiu_unity_bundles,
     resolve_fanxiu_asset_path,
     resolve_fanxiu_sprite_icon_path,
+)
+from backend.core.fanxiu_visual_catalog import (
+    build_fanxiu_static_visual_catalog,
+    load_fanxiu_static_visual_manifest,
+    resolve_fanxiu_visual_media_path,
+    search_fanxiu_static_visual_by_image,
+)
+from backend.core.fanxiu_asset_catalog import (
+    build_fanxiu_static_asset_preview,
+    build_fanxiu_static_asset_catalog,
+    build_fanxiu_static_asset_preview_manifest,
+    load_fanxiu_static_asset_manifest,
+)
+from backend.core.fanxiu_audio_catalog import (
+    build_fanxiu_wwise_audio_catalog,
+    build_fanxiu_wwise_mp3_export,
+    load_fanxiu_wwise_mp3_manifest,
+    resolve_fanxiu_audio_media_path,
 )
 from backend.core.fanxiu_apk_static import (
     _decode_dex_instruction_refs,
@@ -73,6 +93,55 @@ from backend.core.fanxiu_doupotd_catalog import (
     build_fanxiu_doupotd_effect_gameplayer_summary_probe,
     build_fanxiu_doupotd_gameplayer_result_probe,
     build_fanxiu_doupotd_monster_drop_resolution_probe,
+    build_fanxiu_doupotd_pvp_report_global_lua_surface_probe,
+    build_fanxiu_doupotd_pvp_report_gap_probe,
+    build_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe,
+    build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe,
+    build_fanxiu_doupotd_pvp_report_netlogic_family_probe,
+    build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe,
+    build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
+    build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe,
+    build_fanxiu_doupotd_pvp_report_trigger_delta_probe,
+    build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_scene_payload_probe,
+    build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe,
+    build_fanxiu_doupotd_pvp_report_shape_alias_probe,
     build_fanxiu_doupotd_reward_config_probe,
     build_fanxiu_doupotd_reward_result_resolution_probe,
     build_fanxiu_doupotd_catalog,
@@ -84,12 +153,18 @@ from backend.core.fanxiu_doupotd_catalog import (
     search_fanxiu_doupotd_partner_cards,
 )
 from backend.core.fanxiu_digitdoor_catalog import (
+    build_fanxiu_digitdoor_activity_end_probe,
     build_fanxiu_digitdoor_buff_class_formula_probe,
     build_fanxiu_digitdoor_buff_effect_usage_probe,
     build_fanxiu_digitdoor_catalog,
+    build_fanxiu_digitdoor_combat_attribute_consumer_probe,
     build_fanxiu_digitdoor_door_customized_type_semantics_probe,
     build_fanxiu_digitdoor_door_gain_buff_flow_probe,
     build_fanxiu_digitdoor_door_refresh_projection_probe,
+    build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe,
+    build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
+    build_fanxiu_digitdoor_gameplayer_settlement_probe,
+    build_fanxiu_digitdoor_info_snapshot_probe,
     build_fanxiu_digitdoor_monster_effect_class_flow_probe,
     build_fanxiu_digitdoor_monster_refresh_probe,
     build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe,
@@ -100,19 +175,35 @@ from backend.core.fanxiu_digitdoor_catalog import (
     build_fanxiu_digitdoor_monster_skill_buff_link_probe,
     build_fanxiu_digitdoor_monster_skill_timeline_probe,
     build_fanxiu_digitdoor_monster_skill_value_projection_probe,
+    build_fanxiu_digitdoor_partner_attribute_formatter_probe,
+    build_fanxiu_digitdoor_pvp_balance_probe,
+    build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe,
+    build_fanxiu_digitdoor_pvp_report_list_lifecycle_probe,
+    build_fanxiu_digitdoor_pvp_report_attr_snapshot_probe,
+    build_fanxiu_digitdoor_pvp_winreduce_gap_probe,
+    build_fanxiu_digitdoor_pvp_winner_projection_probe,
+    build_fanxiu_pvp_report_family_reuse_probe,
     build_fanxiu_digitdoor_reward_marker_semantics_probe,
     build_fanxiu_digitdoor_reward_marker_ui_probe,
     build_fanxiu_digitdoor_reward_result_resolution_probe,
+    build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_readyfight_partnerlist_probe,
     build_fanxiu_digitdoor_readyfight_request_levelid_probe,
     build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
+    build_fanxiu_digitdoor_report_gmbattle_probe,
+    build_fanxiu_digitdoor_runtime_packet_coverage_probe,
+    build_fanxiu_digitdoor_skip_level_probe,
     build_fanxiu_digitdoor_skill_enhance_application_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
+    build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_startgame_response_boundary_probe,
+    build_fanxiu_digitdoor_startgame_runtime_sample_probe,
     build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
+    build_fanxiu_digitdoor_unlock_state_probe,
+    build_fanxiu_digitdoor_uplevel_state_probe,
     get_fanxiu_digitdoor_character_card,
     get_fanxiu_digitdoor_enhance_group,
     get_fanxiu_digitdoor_level_config,
@@ -487,6 +578,90 @@ def test_fanxiu_wwise_inspect_and_extract(tmp_path, monkeypatch):
     assert wem_path.read_bytes().startswith(b"RIFF")
 
 
+def test_fanxiu_wwise_audio_catalog_indexes_banks_without_extracting_payloads(tmp_path, monkeypatch):
+    root = tmp_path / "frxx_game_files"
+    audio_dir = root / "Audio" / "GeneratedSoundBanks" / "Android"
+    export_root = tmp_path / "exports"
+    audio_dir.mkdir(parents=True)
+    _write_minimal_bnk(audio_dir / "bgm_test.bnk")
+    (audio_dir / "ui_click.wem").write_bytes(b"RIFF....WAVEfmt ")
+    monkeypatch.setenv(FANXIU_RESOURCE_ROOT_ENV, str(root))
+    monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
+
+    result = build_fanxiu_wwise_audio_catalog()
+    output_dir = Path(result["output_dir"])
+    banks_text = (output_dir / "wwise_bank_catalog.tsv").read_text(encoding="utf-8-sig")
+    wem_text = (output_dir / "wwise_wem_entries.tsv").read_text(encoding="utf-8-sig")
+    report_text = (output_dir / "wwise_audio_catalog_report.md").read_text(encoding="utf-8")
+
+    assert result["stats"]["audio_file_count"] == 2
+    assert result["stats"]["bank_file_count"] == 1
+    assert result["stats"]["standalone_wem_file_count"] == 1
+    assert result["stats"]["wem_entry_count"] == 1
+    assert result["stats"]["metadata_only_no_audio_payload_exported"] is True
+    assert "Audio/GeneratedSoundBanks/Android/bgm_test.bnk" in banks_text
+    assert "12345" in wem_text
+    assert "does not decode, play, upload, or extract audio payloads" in report_text
+
+
+def test_fanxiu_wwise_mp3_export_converts_manifest_and_media_path(tmp_path, monkeypatch):
+    root = tmp_path / "frxx_game_files"
+    audio_dir = root / "Audio" / "GeneratedSoundBanks" / "Android"
+    export_root = tmp_path / "exports"
+    audio_dir.mkdir(parents=True)
+    _write_minimal_bnk(audio_dir / "bgm_test.bnk")
+    fake_vgmstream = tmp_path / "vgmstream-cli.exe"
+    fake_vgmstream.write_text("fake", encoding="utf-8")
+
+    monkeypatch.setenv(FANXIU_RESOURCE_ROOT_ENV, str(root))
+    monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
+    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._resolve_vgmstream_cli", lambda path=None: fake_vgmstream)
+    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._resolve_ffmpeg", lambda path=None: "ffmpeg")
+    monkeypatch.setattr(
+        "backend.core.fanxiu_audio_catalog._read_vgmstream_info",
+        lambda cli, wem: {
+            "sampleRate": 32000,
+            "channels": 1,
+            "playSamples": 16000,
+            "encoding": "Custom Vorbis",
+        },
+    )
+
+    def fake_decode(_cli, _wem_path, wav_path):
+        wav_path.write_bytes(b"RIFF....WAVEfmt ")
+
+    def fake_mp3(_ffmpeg, _wav_path, mp3_path, *, mp3_quality):
+        assert mp3_quality == 5
+        mp3_path.parent.mkdir(parents=True, exist_ok=True)
+        mp3_path.write_bytes(b"ID3fake")
+
+    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._decode_wem_to_wav", fake_decode)
+    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._convert_wav_to_mp3", fake_mp3)
+
+    result = build_fanxiu_wwise_mp3_export(max_entries=1, mp3_quality=5)
+    output_dir = Path(result["output_dir"])
+    manifest_text = (output_dir / "wwise_mp3_manifest.tsv").read_text(encoding="utf-8-sig")
+    report_text = (output_dir / "wwise_mp3_export_report.md").read_text(encoding="utf-8")
+
+    assert result["stats"]["converted_count"] == 1
+    assert result["stats"]["failed_count"] == 0
+    assert result["status_counts"]["converted"] == 1
+    assert "Audio/GeneratedSoundBanks/Android/bgm_test.bnk" in manifest_text
+    assert "12345.mp3" in manifest_text
+    assert "Do not redistribute converted game audio" in report_text
+    media_path = resolve_fanxiu_audio_media_path("Audio/GeneratedSoundBanks/Android/bgm_test/12345.mp3")
+    assert media_path.read_bytes() == b"ID3fake"
+    manifest = load_fanxiu_wwise_mp3_manifest(query="12345", kind="bgm")
+    assert manifest["total"] == 1
+    assert manifest["filtered"] == 1
+    assert manifest["stats"]["kinds"]["bgm"] == 1
+    assert manifest["stats"]["query_kinds"]["bgm"] == 1
+    assert manifest["stats"]["query_total"] == 1
+    assert manifest["rows"][0]["duration_seconds"] == "0.5"
+    with pytest.raises(FanxiuResourceError):
+        resolve_fanxiu_audio_media_path("../outside.mp3")
+
+
 def test_fanxiu_unity_text_asset_export_uses_source_scoped_dir(tmp_path, monkeypatch):
     root = tmp_path / "frxx_game_files"
     export_root = tmp_path / "exports"
@@ -586,6 +761,378 @@ def test_fanxiu_sprite_icon_resolves_cached_export(tmp_path, monkeypatch):
     assert resolve_fanxiu_sprite_icon_path("icon9_item_0713") == icon_path.resolve()
     with pytest.raises(FanxiuResourceError):
         resolve_fanxiu_sprite_icon_path("../icon9_item_0713")
+
+
+def test_fanxiu_static_visual_catalog_exports_icon_logo_gallery(tmp_path, monkeypatch):
+    from PIL import Image, ImageDraw
+
+    resource_root = tmp_path / "frxx_game_files"
+    export_root = tmp_path / "exports"
+    apk_root = tmp_path / "apk"
+    atlas_dir = resource_root / "atlasnew"
+    atlas_dir.mkdir(parents=True)
+    (atlas_dir / "icon_00000000000000000000000000000001.bytes").write_bytes(b"fake")
+    (atlas_dir / "mainui_00000000000000000000000000000002.bytes").write_bytes(b"fake")
+    (atlas_dir / "common_00000000000000000000000000000003.bytes").write_bytes(b"fake")
+    (apk_root / "assets" / "logo").mkdir(parents=True)
+    (apk_root / "res" / "drawable-hdpi").mkdir(parents=True)
+    (apk_root / "res" / "drawable").mkdir(parents=True)
+    (apk_root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    logo_image = Image.new("RGBA", (64, 32), (255, 0, 0, 255))
+    ImageDraw.Draw(logo_image).rectangle((8, 8, 56, 24), fill=(255, 255, 255, 255))
+    logo_image.save(apk_root / "assets" / "logo" / "logo.png")
+    launcher_image = Image.new("RGBA", (72, 72), (0, 255, 0, 255))
+    ImageDraw.Draw(launcher_image).ellipse((16, 16, 56, 56), fill=(0, 0, 255, 255))
+    launcher_image.save(apk_root / "res" / "drawable-hdpi" / "sy37_ic_launcher.png")
+    Image.new("RGBA", (8, 8), (0, 0, 255, 255)).save(apk_root / "res" / "drawable" / "ordinary.png")
+    (export_root / "parsed_configs" / "Item").mkdir(parents=True)
+    (export_root / "parsed_configs" / "Item" / "rows.tsv").write_text(
+        "_row_key\tid\ticon\tname_plain\n1\t1\ticon_item_0001\t测试道具\n",
+        encoding="utf-8",
+    )
+    (export_root / "by_source" / "lscripts" / "gamesystem" / "game").mkdir(parents=True)
+    (export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "sample.lua").write_text(
+        "local logo = 'mainui_logo_zw_5008'\n",
+        encoding="utf-8",
+    )
+
+    class FakeType:
+        def __init__(self, name: str):
+            self.name = name
+
+    class FakeRect:
+        def __init__(self, width: int, height: int):
+            self.width = width
+            self.height = height
+            self.x = 1.0
+            self.y = 2.0
+
+    class FakeSpriteData:
+        def __init__(self, name: str, width: int, height: int):
+            self.m_Name = name
+            self.m_Rect = FakeRect(width, height)
+            self.image = Image.new("RGBA", (width, height), (255, 255, 0, 255))
+
+    class FakeObject:
+        def __init__(self, name: str, path_id: int, width: int = 32, height: int = 32):
+            self.type = FakeType("Sprite")
+            self.path_id = path_id
+            self._data = FakeSpriteData(name, width, height)
+
+        def read(self):
+            return self._data
+
+    class FakeEnv:
+        def __init__(self, objects):
+            self.objects = objects
+
+    def fake_load_unity_environment(path):
+        stem = Path(path).stem
+        if stem.startswith("icon_"):
+            return FakeEnv([FakeObject("icon_item_0001", 1, 40, 40)])
+        if stem.startswith("mainui_"):
+            return FakeEnv([FakeObject("mainui_logo_zw_5008", 2, 80, 42)])
+        return FakeEnv([FakeObject("common_bg_0001", 3, 12, 12)])
+
+    monkeypatch.setattr("backend.core.fanxiu_visual_catalog.load_unity_environment", fake_load_unity_environment)
+
+    result = build_fanxiu_static_visual_catalog(
+        resource_root=resource_root,
+        apk_root=apk_root,
+        export_root=export_root,
+        max_export_images=10,
+    )
+    output_dir = Path(result["output_dir"])
+    visual_asset_tsv = (output_dir / "visual_asset_catalog.tsv").read_text(encoding="utf-8-sig")
+    sprite_tsv = (output_dir / "icon_logo_sprite_catalog.tsv").read_text(encoding="utf-8-sig")
+    apk_all_tsv = (output_dir / "apk_visual_assets.tsv").read_text(encoding="utf-8-sig")
+    apk_tsv = (output_dir / "apk_icon_logo_assets.tsv").read_text(encoding="utf-8-sig")
+    usage_summary_tsv = (output_dir / "sprite_usage_summary.tsv").read_text(encoding="utf-8-sig")
+    html_text = (output_dir / "icon_logo_gallery.html").read_text(encoding="utf-8")
+    report_text = (output_dir / "static_visual_catalog_report.md").read_text(encoding="utf-8")
+
+    assert result["stats"]["atlas_bundle_count"] == 3
+    assert result["stats"]["atlas_sprite_count"] == 3
+    assert result["stats"]["target_sprite_count"] == 2
+    assert result["stats"]["visual_sprite_asset_count"] == 3
+    assert result["stats"]["exported_sprite_image_count"] == 3
+    assert result["stats"]["target_apk_image_count"] == 2
+    assert result["stats"]["visual_similarity_index_count"] == 6
+    assert result["stats"]["visual_similarity_hash_error_count"] == 0
+    assert result["stats"]["usage_ref_count"] == 2
+    assert result["stats"]["usage_sprite_count"] == 2
+    assert "icon_item_0001" in sprite_tsv
+    assert "mainui_logo_zw_5008" in sprite_tsv
+    assert "common_bg_0001" in visual_asset_tsv
+    assert "ordinary.png" in apk_all_tsv
+    assert "assets/logo/logo.png" in apk_tsv
+    assert "sy37_ic_launcher.png" in apk_tsv
+    assert "parsed_configs/Item/rows.tsv" in usage_summary_tsv
+    assert "by_source/lscripts/gamesystem/game/sample.lua" in usage_summary_tsv
+    assert "icon_item_0001" in html_text
+    assert "metadata and cropped sprite PNGs only" in report_text
+    similarity_index_text = (output_dir / "visual_similarity_index.tsv").read_text(encoding="utf-8-sig")
+    assert "phash" in similarity_index_text
+    manifest = load_fanxiu_static_visual_manifest(export_root=export_root, query="logo", limit=10)
+    assert manifest["filtered"] >= 1
+    assert any(row["name"] == "mainui_logo_zw_5008" for row in manifest["rows"])
+    background_manifest = load_fanxiu_static_visual_manifest(export_root=export_root, query="背景", limit=10)
+    assert any(row["name"] == "common_bg_0001" for row in background_manifest["rows"])
+    image_bytes = (apk_root / "assets" / "logo" / "logo.png").read_bytes()
+    similar = search_fanxiu_static_visual_by_image(export_root=export_root, image_bytes=image_bytes, query="logo", limit=5)
+    assert similar["rows"][0]["name"] == "logo"
+    assert similar["rows"][0]["similarity_rank"] == 1
+    assert similar["rows"][0]["phash_distance"] == 0
+    first_media = manifest["rows"][0]["media_path"]
+    assert resolve_fanxiu_visual_media_path(first_media, export_root=export_root).is_file()
+    with pytest.raises(FanxiuResourceError):
+        resolve_fanxiu_visual_media_path("../outside.png", export_root=export_root)
+
+
+def test_fanxiu_static_asset_catalog_indexes_modelish_bundles(tmp_path, monkeypatch):
+    resource_root = tmp_path / "resources"
+    export_root = tmp_path / "exports"
+    weapon_dir = resource_root / "model" / "weapon"
+    effect_dir = resource_root / "effect" / "skill"
+    ui_dir = resource_root / "ui" / "notice"
+    texture_dir = resource_root / "texture"
+    weapon_dir.mkdir(parents=True)
+    effect_dir.mkdir(parents=True)
+    ui_dir.mkdir(parents=True)
+    texture_dir.mkdir(parents=True)
+    weapon_path = weapon_dir / "pre_fs_default_feijian_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bytes"
+    effect_path = effect_dir / "eff_fire_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bytes"
+    ui_path = ui_dir / "win_notice_cccccccccccccccccccccccccccccccc.bytes"
+    texture_path = texture_dir / "raw_texture_dddddddddddddddddddddddddddddddd.bytes"
+    weapon_path.write_bytes(b"model")
+    effect_path.write_bytes(b"effect")
+    ui_path.write_bytes(b"ui")
+    texture_path.write_bytes(b"texture")
+    index_dir = export_root / "indexes"
+    index_dir.mkdir(parents=True)
+    (index_dir / "mesh_summary.tsv").write_text(
+        "source\tmesh_name\tpath_id\tvertices\ttexcoords\tnormals\tfaces\tpath\n"
+        "model/weapon/pre_fs_default_feijian_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bytes\tmod_feijian\t1\t12\t12\t12\t6\tmesh.obj\n",
+        encoding="utf-8",
+    )
+    (index_dir / "material_summary.tsv").write_text(
+        "source\tmaterial_name\tpath_id\ttex_envs\tfloats\tcolors\n"
+        "model/weapon/pre_fs_default_feijian_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bytes\tmat_feijian\t2\t1\t2\t3\n",
+        encoding="utf-8",
+    )
+
+    class FakeType:
+        def __init__(self, name: str):
+            self.name = name
+
+    class FakeObject:
+        def __init__(self, type_name: str, name: str, image=None, path_id: int = 1):
+            self.type = FakeType(type_name)
+            self._name = name
+            self._image = image
+            self.path_id = path_id
+
+        def read(self):
+            return type("FakeData", (), {"m_Name": self._name, "image": self._image})()
+
+    class FakeEnv:
+        def __init__(self, objects):
+            self.objects = objects
+
+    def fake_load_unity_environment(path):
+        text = Path(path).as_posix()
+        if "/texture/" in text:
+            from PIL import Image
+
+            image = Image.new("RGBA", (2, 3), (255, 0, 0, 255))
+            return FakeEnv([FakeObject("Texture2D", "raw_texture", image=image, path_id=99)])
+        if "/model/" in text:
+            return FakeEnv([FakeObject("GameObject", "pre_fs_default_feijian"), FakeObject("Mesh", "mod_feijian"), FakeObject("SkinnedMeshRenderer", "")])
+        if "/effect/" in text:
+            return FakeEnv([FakeObject("GameObject", "eff_fire"), FakeObject("ParticleSystem", "spark"), FakeObject("Material", "mat_fire")])
+        return FakeEnv([FakeObject("GameObject", "win_notice"), FakeObject("RectTransform", ""), FakeObject("CanvasRenderer", ""), FakeObject("MonoScript", "NoticeView")])
+
+    monkeypatch.setattr("backend.core.fanxiu_asset_catalog.load_unity_environment", fake_load_unity_environment)
+
+    result = build_fanxiu_static_asset_catalog(
+        resource_root=resource_root,
+        export_root=export_root,
+        source_kinds=["model", "effect", "ui"],
+        parse_unity_objects=True,
+    )
+    manifest_path = Path(result["manifest"])
+    manifest_text = manifest_path.read_text(encoding="utf-8-sig")
+    report_text = Path(result["report"]).read_text(encoding="utf-8")
+
+    assert result["stats"]["asset_count"] == 3
+    assert result["stats"]["asset_groups"]["model"] == 1
+    assert result["stats"]["asset_groups"]["effect"] == 1
+    assert result["stats"]["asset_groups"]["ui"] == 1
+    assert result["stats"]["detail_covered_asset_count"] == 1
+    assert result["stats"]["unity_parsed_asset_count"] == 3
+    assert result["stats"]["visible_data_types"]["skinned_mesh"] == 1
+    assert result["stats"]["visible_data_types"]["particle_effect"] == 1
+    assert result["stats"]["visible_data_types"]["ui_prefab"] == 1
+    assert "pre_fs_default_feijian" in manifest_text
+    assert "ParticleSystem:1" in manifest_text
+    assert "NoticeView" in manifest_text
+    assert "metadata-only path and index catalog" in report_text
+
+    model_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="飞剑", limit=10)
+    assert model_manifest["filtered"] == 1
+    assert model_manifest["rows"][0]["mesh_count"] == 1
+    assert model_manifest["rows"][0]["material_count"] == 1
+    assert model_manifest["rows"][0]["visible_data_type"] == "skinned_mesh"
+    assert model_manifest["rows"][0]["unity_object_count"] == 3
+
+    gallery_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, catalog_view="gallery", limit=10)
+    assert gallery_manifest["filtered"] == 2
+    assert {row["name"] for row in gallery_manifest["rows"]} == {"eff_fire", "win_notice"}
+    assert gallery_manifest["stats"]["query_catalog_views"] == {"semantic": 0, "gallery": 2, "raw": 3}
+    assert gallery_manifest["stats"]["query_asset_groups"]["effect"] == 1
+    assert gallery_manifest["stats"]["query_asset_groups"]["ui"] == 1
+
+    gallery_model_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="飞剑", catalog_view="gallery", limit=10)
+    assert gallery_model_manifest["filtered"] == 0
+    assert gallery_model_manifest["stats"]["raw_query_total"] == 1
+
+    model_config_dir = export_root / "parsed_configs" / "Model"
+    item_config_dir = export_root / "parsed_configs" / "Item"
+    open_function_config_dir = export_root / "parsed_configs" / "OpenFunction"
+    activity_config_dir = export_root / "parsed_configs" / "Activity"
+    activity_gift_config_dir = export_root / "parsed_configs" / "ActivityGift"
+    model_config_dir.mkdir(parents=True, exist_ok=True)
+    item_config_dir.mkdir(parents=True, exist_ok=True)
+    open_function_config_dir.mkdir(parents=True, exist_ok=True)
+    activity_config_dir.mkdir(parents=True, exist_ok=True)
+    activity_gift_config_dir.mkdir(parents=True, exist_ok=True)
+    visual_catalog_dir = export_root / "parsed_configs" / "visual_catalog"
+    visual_catalog_dir.mkdir(parents=True, exist_ok=True)
+    visual_image = visual_catalog_dir / "sprite_images" / "head" / "head_feijian.png"
+    visual_image.parent.mkdir(parents=True, exist_ok=True)
+    visual_image.write_bytes(b"png")
+    item_visual_image = visual_catalog_dir / "sprite_images" / "icon" / "icon_item_0050.png"
+    item_visual_image.parent.mkdir(parents=True, exist_ok=True)
+    item_visual_image.write_bytes(b"png")
+    bottle_visual_image = visual_catalog_dir / "sprite_images" / "common" / "common_icon_1002.png"
+    bottle_visual_image.parent.mkdir(parents=True, exist_ok=True)
+    bottle_visual_image.write_bytes(b"png")
+    activity_visual_image = visual_catalog_dir / "sprite_images" / "mainui" / "mainui_icon_0737.png"
+    activity_visual_image.parent.mkdir(parents=True, exist_ok=True)
+    activity_visual_image.write_bytes(b"png")
+    (visual_catalog_dir / "visual_asset_catalog.tsv").write_text(
+        "source_kind\tatlas_key\trelative_source_path\tname\tcategory\tasset_group\twidth\theight\tpath_id\timage_path\texport_error\n"
+        f"atlas_sprite\thead\tatlasnew/head.bytes\thead_feijian\thead_portrait\ticon\t90\t90\t1\t{visual_image}\t\n"
+        f"atlas_sprite\ticon\tatlasnew/icon.bytes\ticon_item_0050\titem_or_ui_icon\ticon\t91\t91\t2\t{item_visual_image}\t\n"
+        f"atlas_sprite\tcommon\tatlasnew/common.bytes\tcommon_icon_1002\titem_or_ui_icon\ticon\t120\t205\t3\t{bottle_visual_image}\t\n"
+        f"atlas_sprite\tmainui\tatlasnew/mainui.bytes\tmainui_icon_0737\titem_or_ui_icon\ticon\t60\t60\t4\t{activity_visual_image}\t\n",
+        encoding="utf-8-sig",
+    )
+    (model_config_dir / "rows.tsv").write_text(
+        "_row_key\tid\tname\tResPath\tAniController\tRTAniController\thead\tidle\twalk\tfightIdle\trun\tdead\ttalkidle\tweakIdle\tweakWalk\n"
+        "9001\t9001\t飞剑语义模型\tModel/Weapon/pre_fs_default_feijian\t\t\thead_feijian\t\t\t\t\t\t\t\t\n"
+        "9002\t9002\t飞剑语义模型\tModel/Weapon/pre_fs_default_feijian\t\t\thead_feijian\t\t\t\t\t\t\t\t\n",
+        encoding="utf-8-sig",
+    )
+    (item_config_dir / "rows.tsv").write_text(
+        "_row_key\tid\tname_plain\tname\tquality\ticon\tdescript_plain\teffDescript_plain\ticonPatch\ttype\tsubType\n"
+        "1004\t1004\t功法经验\t功法经验\t4\ticon_item_0050\t修行者参悟功法时的感悟\t使用后增加1点功法经验\ticon\t12\t1\n",
+        encoding="utf-8-sig",
+    )
+    (open_function_config_dir / "rows.tsv").write_text(
+        "_row_key\tid\tname_plain\tname\ticon\tdescript_plain\tluaPath\ticonPatch\twaySprite\twayAtlas\twindowId\n"
+        "8008\t8008\t跳转小绿瓶\t跳转小绿瓶\tcommon_icon_1002\t炼化丹药，提升境界\tLittleBottleAdvanceView\tcommon\tcommon_icon_1002\tcommon\t112\n",
+        encoding="utf-8-sig",
+    )
+    (activity_config_dir / "rows.tsv").write_text(
+        "_row_key\tid\tname_plain\tname\ticon\tactivityId\tbaseId\ttittleName_plain\tjoinConditionDescribe_plain\n"
+        "94003\t94003\t首充豪礼\t首充豪礼\tmainui_icon_0737\t15\t650001\t首充\t完成主线第一卷解锁\n",
+        encoding="utf-8-sig",
+    )
+    (activity_gift_config_dir / "rows.tsv").write_text(
+        "_row_key\tid\ttitle_plain\ttitle\ticon\tactivityId\tcosts\treward\ttimes\n"
+        "104040102\t104040102\tVIP3特惠灵石礼包\tVIP3特惠灵石礼包\tmainui_icon_0737\t1040401\tItem|1_488\t['Item|1004_5']\t1\n",
+        encoding="utf-8-sig",
+    )
+    semantic_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="飞剑语义", catalog_view="semantic", limit=10)
+    assert semantic_manifest["filtered"] == 1
+    assert semantic_manifest["rows"][0]["semantic_id"].startswith("model:group:")
+    assert semantic_manifest["rows"][0]["semantic_group"] == "model"
+    assert semantic_manifest["rows"][0]["semantic_variant_count"] == 2
+    assert "model:9001" in semantic_manifest["rows"][0]["semantic_variant_refs"]
+    assert "model:9002" in semantic_manifest["rows"][0]["semantic_variant_refs"]
+    assert semantic_manifest["rows"][0]["semantic_visual_count"] == 1
+    assert semantic_manifest["rows"][0]["semantic_visual_media_paths"] == "sprite_images/head/head_feijian.png"
+    assert semantic_manifest["rows"][0]["linked_asset_count"] == 1
+    assert semantic_manifest["rows"][0]["relative_path"].startswith("model/weapon/pre_fs_default_feijian")
+
+    item_semantic_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="功法经验", catalog_view="semantic", limit=10)
+    assert item_semantic_manifest["filtered"] == 1
+    assert item_semantic_manifest["rows"][0]["semantic_group"] == "item"
+    assert item_semantic_manifest["rows"][0]["semantic_visual_media_paths"] == "sprite_images/icon/icon_item_0050.png"
+
+    bottle_semantic_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="小绿瓶", catalog_view="semantic", limit=10)
+    assert bottle_semantic_manifest["filtered"] >= 1
+    assert any(row["semantic_group"] == "function" and "common_icon_1002" in row["semantic_visual_names"] for row in bottle_semantic_manifest["rows"])
+
+    activity_semantic_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="首充豪礼", catalog_view="semantic", limit=10)
+    assert activity_semantic_manifest["filtered"] >= 1
+    assert any(row["semantic_group"] == "activity" and row["semantic_name"] == "首充豪礼" for row in activity_semantic_manifest["rows"])
+
+    notice_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, query="游戏公告", limit=10)
+    assert notice_manifest["filtered"] == 1
+    assert notice_manifest["rows"][0]["source_kind"] == "ui"
+    assert notice_manifest["rows"][0]["visible_data_type"] == "ui_prefab"
+
+    effect_manifest = load_fanxiu_static_asset_manifest(export_root=export_root, asset_group="effect", limit=10)
+    assert effect_manifest["filtered"] == 1
+    assert effect_manifest["stats"]["query_total"] == 3
+    assert effect_manifest["stats"]["query_asset_groups"]["model"] == 1
+    assert effect_manifest["stats"]["query_asset_groups"]["effect"] == 1
+    assert effect_manifest["stats"]["query_asset_groups"]["ui"] == 1
+
+    preview = build_fanxiu_static_asset_preview(
+        "effect/skill/eff_fire_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bytes",
+        resource_root=resource_root,
+        export_root=export_root,
+        force=True,
+    )
+    preview_path = Path(preview["preview_path"])
+    assert preview_path.is_file()
+    assert preview["preview_kind"] == "object_summary"
+    preview_text = preview_path.read_text(encoding="utf-8")
+    assert "eff_fire_bbbbb" not in preview_text
+
+    ui_preview = build_fanxiu_static_asset_preview(
+        "ui/notice/win_notice_cccccccccccccccccccccccccccccccc.bytes",
+        resource_root=resource_root,
+        export_root=export_root,
+        force=True,
+    )
+    ui_preview_text = Path(ui_preview["preview_path"]).read_text(encoding="utf-8")
+    assert ui_preview["preview_kind"] == "ui_layout"
+    assert "win_notice_cccccc" not in ui_preview_text
+    assert 'width="920" height="620"' not in ui_preview_text
+
+    image_preview = build_fanxiu_static_asset_preview_manifest(
+        "texture/raw_texture_dddddddddddddddddddddddddddddddd.bytes",
+        resource_root=resource_root,
+        export_root=export_root,
+        force=True,
+    )
+    assert image_preview["preview_kind"] == "original_images"
+    assert image_preview["items"][0]["is_original_image"] is True
+    assert image_preview["items"][0]["width"] == 2
+    assert image_preview["items"][0]["height"] == 3
+    image_media_path = image_preview["items"][0]["media_path"]
+    assert (export_root / "parsed_configs" / "asset_catalog" / image_media_path).is_file()
+    primary_preview = build_fanxiu_static_asset_preview(
+        "texture/raw_texture_dddddddddddddddddddddddddddddddd.bytes",
+        resource_root=resource_root,
+        export_root=export_root,
+    )
+    assert primary_preview["preview_kind"] == "original_images"
+    assert primary_preview["preview_media_path"] == image_media_path
 
 
 def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
@@ -2250,19 +2797,39 @@ def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp
                         "zlib": False,
                         "parsed": {"_class": "CM_DigitDoorReadyFight", "levelId": 1},
                     },
-                    {
-                        "offset": 20,
-                        "frame_len": 16,
-                        "pro_id": 91629,
+                        {
+                            "offset": 20,
+                            "frame_len": 16,
+                            "pro_id": 91629,
                         "name": "SM_DigitDoorReadyFight",
                         "direction": "s2c",
                         "payload_len": 9,
                         "zlib": False,
-                        "parsed": {"_class": "SM_DigitDoorReadyFight", "levelId": 1, "skillList": [1001]},
-                    },
-                ]
-            },
-            ensure_ascii=False,
+                            "parsed": {"_class": "SM_DigitDoorReadyFight", "levelId": 1, "skillList": [1001]},
+                        },
+                        {
+                            "offset": 30,
+                            "frame_len": 20,
+                            "pro_id": 91622,
+                            "name": "CM_DigitDoorStartGame",
+                            "direction": "c2s",
+                            "payload_len": 12,
+                            "zlib": False,
+                            "parsed": {"_class": "CM_DigitDoorStartGame", "indexList": [{"id": 1, "index": 2}]},
+                        },
+                        {
+                            "offset": 50,
+                            "frame_len": 24,
+                            "pro_id": 91623,
+                            "name": "SM_DigitDoorStartGame",
+                            "direction": "s2c",
+                            "payload_len": 14,
+                            "zlib": False,
+                            "parsed": {"_class": "SM_DigitDoorStartGame", "indexList": [{"id": 1, "index": 2}], "skillVos": [{"id": 1001, "num": 1}]},
+                        },
+                    ]
+                },
+                ensure_ascii=False,
         ),
         encoding="utf-8",
     )
@@ -2275,6 +2842,16 @@ def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp
     runtime_sample_hits = Path(runtime_sample_result["files"]["hits"]).read_text(encoding="utf-8-sig")
     assert "ReadyFight runtime sample coverage" in runtime_sample_report
     assert "skillList" in runtime_sample_hits
+
+    startgame_runtime_sample = build_fanxiu_digitdoor_startgame_runtime_sample_probe(export_root=export_root)
+    assert startgame_runtime_sample["confirmed"] is True
+    assert startgame_runtime_sample["stats"]["startgame_request_frame_count"] == 1
+    assert startgame_runtime_sample["stats"]["startgame_response_frame_count"] == 1
+    assert startgame_runtime_sample["verdict"]["existing_captures_cover_startgame_response"] is True
+    startgame_runtime_report = Path(startgame_runtime_sample["files"]["markdown"]).read_text(encoding="utf-8")
+    startgame_runtime_hits = Path(startgame_runtime_sample["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "StartGame runtime sample coverage" in startgame_runtime_report
+    assert "skillVos" in startgame_runtime_hits
 
     (logic_dir / "DigitDoorNetLogic.lua").write_text(
         "function _M.CM_DigitDoorReadyFightFun(self)\n"
@@ -2502,6 +3079,8590 @@ def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp
     assert class_formula_result["counts"]["fields"]["addAttr"] == 1
     formula_text = (export_root / "parsed_configs" / "digitdoor_catalog" / "buff_class_formula_report.md").read_text(encoding="utf-8")
     assert "DigitDoorBuffData:InitData" in formula_text
+
+
+def test_fanxiu_digitdoor_startgame_cpp2il_consumer_probe_marks_bridge_not_skillvos(tmp_path):
+    export_root = tmp_path / "exports"
+    cs_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "Core"
+        / "Managers"
+    )
+    isil_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "Core"
+        / "Managers"
+    )
+    metadata_dir = export_root / "apk_static_index"
+    lua_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    cs_dir.mkdir(parents=True)
+    isil_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+    (cs_dir / "CsCallLuaMgr.cs").write_text(
+        "namespace Core.Managers { public class CsCallLuaMgr { public static string GetDigitDoorPartnerAttributes() { return string.Empty; } } }\n",
+        encoding="utf-8",
+    )
+    (isil_dir / "CsCallLuaMgr.txt").write_text(
+        "Method: System.String GetDigitDoorPartnerAttributes()\nCall LuaFunction.Call\n",
+        encoding="utf-8",
+    )
+    (metadata_dir / "il2cpp_methods.tsv").write_text(
+        "index\tfull_name\n1\tCore.Managers.CsCallLuaMgr.GetDigitDoorPartnerAttributes\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "SkillEditorBridge.lua").write_text(
+        "function _M.GetDigitDoorPartnerAttributes()\n"
+        "if not DigitDoorFightMgr.inst then return '' end\n"
+        "local partnerList=EntityMgr.Inst_get():GetDigitDoorPartnerViewList()\n"
+        "local botList=EntityMgr.Inst_get():GetDigitDoorBotViewList()\n"
+        "AttrStr:Append(partnerView:FormatBaseAttr4ConsoleOutput())\n"
+        "AttrStr:Append(partnerView:FormatBuffAddAttrOutput())\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["cpp2il_has_digitdoor_partner_attribute_bridge"] is True
+    assert result["verdict"]["cpp2il_has_skillvos_symbol"] is False
+    assert result["verdict"]["lua_bridge_reads_runtime_partner_and_bot_views"] is True
+    assert result["verdict"]["lua_bridge_mentions_startgame_skillvos_or_ddskillvo"] is False
+    assert result["verdict"]["native_readable_surface_closes_startgame_skillvos"] is False
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    bridge_lua_text = Path(result["files"]["bridge_lua_hits"]).read_text(encoding="utf-8-sig")
+    assert "StartGame Cpp2IL consumer surface" in report_text
+    assert "GetDigitDoorPartnerAttributes" in hits_text
+    assert "GetDigitDoorPartnerViewList" in bridge_lua_text
+
+
+def test_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe_keeps_broad_skilllist_open(tmp_path):
+    export_root = tmp_path / "exports"
+    cs_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "Core"
+    )
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    cs_dir.mkdir(parents=True)
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (cs_dir / "SomeDigitDoorView.cs").write_text(
+        "public class SomeDigitDoorView { private int[] skillList; public void RenderDigitDoor() {} }\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorReadyFight.lua").write_text(
+        "function _M:ctor()\nself.skillList=CList.new()\nend\n"
+        "function _M:read()\nself:readMessageList2List(self.skillList)\nend\n"
+        "function _M:write()\nself:writeIntList(self.skillList)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.SM_DigitDoorReadyFightFun(msg)\nself.DigitDoorData:SetCouncilSkill2lvMap(msg.skillList)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.SetCouncilSkill2lvMap(self,skillList)\nself.V_CouncilSkillList=skillList\nend\n"
+        "function _M.GetCouncilSkillList(self)\nreturn self.V_CouncilSkillList\nend\n"
+        "function _M.GetCouncilSkillById(self,skillId)\nreturn ConfigUtil.GetConfigTableByIdWithLog(ConfigName.DigitDoor_CharacterSkillInfo,skillId)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["cpp2il_has_broad_skilllist_identifier"] is True
+    assert result["verdict"]["cpp2il_has_readyfight_packet_symbol"] is False
+    assert result["verdict"]["cpp2il_has_ddskillvo_symbol"] is False
+    assert result["verdict"]["lua_readyfight_skilllist_cache_found"] is True
+    assert result["verdict"]["lua_readyfight_shape_still_ambiguous"] is True
+    assert result["verdict"]["native_readable_surface_closes_readyfight_skilllist"] is False
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    lua_text = Path(result["files"]["lua_reference_hits"]).read_text(encoding="utf-8-sig")
+    assert "ReadyFight Cpp2IL consumer surface" in report_text
+    assert "broad identifier only" in hits_text
+    assert "readyfight_msg_to_cache" in lua_text
+
+
+def test_fanxiu_digitdoor_partner_attribute_formatter_probe_maps_debug_runtime_attrs(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (logic_dir / "DigitDoorType.lua").write_text(
+        "_M={}\n"
+        "_M.SkillBuffType={AddAttr=9,Shield=10,Injure=8}\n"
+        "_M.BuffAddAttrType={Attack=\"ATTACK\",AttackSpeed=\"ATKSPEED\",CriticalRate=\"CRIT\",CriticalDamage=\"CRITDAMAGE\",AntiCritical=\"ANTICIRT\",IncreaseDamage=\"INCDAMAGE\",ReduceDamage=\"REDUCEDAMAGE\",MaxHp=\"MAXHP\",AddDamage=\"ADDDAMAGE\",SkillDamage=\"SKILL_DAMAGE\"}\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityData.lua").write_text(
+        "function _M.FormatBaseAttr4ConsoleOutput(self)\n"
+        "local currentHp=self:GetCurrentHp()\nlocal maxHp=self:GetMaxHp()\nlocal attack=self:GetAttack()\nlocal skillDamage=self:GetSkillDamage()\n"
+        "return string.format('[当前血量]=%d [基础技能增伤]=%d',currentHp,skillDamage)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerView.lua").write_text(
+        "function _M.FormatBaseAttr4ConsoleOutput(self)\nreturn self.Entity.EntityData:FormatBaseAttr4ConsoleOutput()\nend\n"
+        "function _M.FormatBuffAddAttrOutput(self)\n"
+        "for _,key in pairs(DigitDoorType.BuffAddAttrType)do\nlocal val=buff.V_Data:GetAddExtBattleAttr(key)*buff.V_Data:GetLayer()\nend\n"
+        "local shieldValue=maxHp*shieldRatio*0.0001\ninjuredValue=injuredValue+value*layer\nlocal ratio=0.01\n"
+        "return string.format('[额外攻击]=%d%% [当前护盾值]=%d [易伤]=%d%%',extAttack*ratio,shieldValue,injuredValue*ratio)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBuffData.lua").write_text(
+        "function _M.InitData(self,cfg,extParam,strengthVal)\nlocal ratio=0.0001\nself:SetAddExtBattleAttr(key,value*(1+strengthVal*ratio))\nend\n"
+        "function _M.SetAddExtBattleAttr(self,key,value) self.extAttr[key]=self:EncryptData(value) end\n"
+        "function _M.GetAddExtBattleAttr(self,key) return self:DecryptData(self.extAttr[key]) end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorSceneView.lua").write_text(
+        "if not LuaGlobal.IsDebugBuild then return end\n"
+        "if not DigitDoorMgr.Inst_get():IsStartGame()then return end\n"
+        "self.AttrStr:Append(partnerView:FormatBaseAttr4ConsoleOutput())\n"
+        "self.AttrStr:Append(partnerView:FormatBuffAddAttrOutput())\n"
+        "self.TestTimeTF:SetText(self.V_TestTime..self.AttrStr:ToString())\n",
+        encoding="utf-8",
+    )
+    (core_dir / "SkillEditorBridge.lua").write_text(
+        "function _M.GetDigitDoorPartnerAttributes()\n"
+        "local partnerList=EntityMgr.Inst_get():GetDigitDoorPartnerViewList()\n"
+        "local botList=EntityMgr.Inst_get():GetDigitDoorBotViewList()\n"
+        "AttrStr:Append(partnerView:FormatBaseAttr4ConsoleOutput())\n"
+        "AttrStr:Append(partnerView:FormatBuffAddAttrOutput())\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_partner_attribute_formatter_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["base_attr_field_count"] == 15
+    assert result["stats"]["buff_attr_field_count"] == 11
+    assert result["verdict"]["debug_or_editor_display_surface"] is True
+    assert result["verdict"]["buff_add_attr_formula_confirmed"] is True
+    assert result["verdict"]["shield_and_injure_formula_confirmed"] is True
+    assert result["verdict"]["safe_static_debug_formatter_boundary"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor partner attribute formatter" in report_text
+    assert "SKILL_DAMAGE" in fields_text
+
+
+def test_fanxiu_digitdoor_combat_attribute_consumer_probe_maps_runtime_consumers(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.AddDamageResult(self,casterView,targetView,skill)\n"
+        "local attack,extAttack,critical,criticalDamage,increaseDamage,addDamage,skillDamage=self:GetAttackerFinalAttr(casterView)\n"
+        "local antiCritical,reduceDamage=self:GetDefenseFinalAttr(targetView)\n"
+        "local realIncreaseDamage=Mathf.Max(1+(increaseDamage-reduceDamage)*Damage_Ratio,0.1)\n"
+        "damage=(attack*(1+extAttack*Damage_Ratio))*(1+skillDamage*Damage_Ratio)*(1+addDamage*Damage_Ratio)\n"
+        "local injureBuffList=targetView:GetBuffListByType(DigitDoorType.SkillBuffType.Injure)\n"
+        "local value=injureBuff.V_Data:GetInjuredValue()\n"
+        "targetView.Entity.EntityData:CalculateCurrentHp(damage)\n"
+        "hurtData:DigitDoorHurtDataExecute(casterView.Entity.V_ID,targetView.Entity.V_ID,damage)\n"
+        "end\n"
+        "function _M.GetShieldCost(self,damage,targetView)\n"
+        "local buffList=targetView:GetBuffListByType(DigitDoorType.SkillBuffType.Shield)\n"
+        "local shieldRatio=tempBuff.V_Data:GetShieldRatio()*tempBuff.V_Data:GetLayer()\n"
+        "tempBuff.V_Data:SetShieldRatio(0)\n"
+        "end\n"
+        "function _M.GetAttackerFinalAttr(self,attackerView)\n"
+        "local buffExtAttack=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.Attack)\n"
+        "local buffExtCritical=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.CriticalRate)\n"
+        "local buffExtCriticalDamage=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.CriticalDamage)\n"
+        "local buffExtIncreaseDamage=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.IncreaseDamage)\n"
+        "local buffExtAddDamage=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.AddDamage)\n"
+        "local buffExtSkillDamage=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.SkillDamage)\n"
+        "end\n"
+        "function _M.GetDefenseFinalAttr(self,defenseView)\n"
+        "local buffExtAntiCrit=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.AntiCritical)\n"
+        "local buffExtReduceDamage=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.ReduceDamage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBaseSkill.lua").write_text(
+        "function _M.CalculateSkillSpeed(self)\n"
+        "local buffList=self.casterView:GetBuffListByType(DigitDoorType.SkillBuffType.AddAttr)\n"
+        "local value=buff.V_Data:GetAddExtBattleAttr(DigitDoorType.BuffAddAttrType.AttackSpeed)\n"
+        "self.speed=atkSpeed*(1/(1+extAtkSpeed*0.0001))\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBuffAddAttr.lua").write_text(
+        "function _M.Start(self)\n"
+        "if LuaGlobal.IsUnityEditor then\n"
+        "if type==DigitDoorType.BuffAddAttrType.MaxHp then\n"
+        "ownerView.Entity.EntityData:SetMaxHp(maxHp)\n"
+        "ownerView.Entity.EntityData:SetCurrentHp(curHp)\n"
+        "end\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerView.lua").write_text(
+        "function _M.FormatBuffAddAttrOutput(self)\n"
+        "local val=buff.V_Data:GetAddExtBattleAttr(key)*buff.V_Data:GetLayer()\n"
+        "local shieldRatio=shieldRatio+buff.V_Data:GetShieldRatio()\n"
+        "local value=buff.V_Data:GetInjuredValue()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_combat_attribute_consumer_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["addattr_fields_consumed_by_combat"] is True
+    assert result["verdict"]["attack_speed_affects_skill_timing"] is True
+    assert result["verdict"]["shield_consumed_before_hp_apply"] is True
+    assert result["verdict"]["injure_consumed_in_damage_formula"] is True
+    assert result["verdict"]["maxhp_visible_surface_is_editor_only"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor combat attribute consumer" in report_text
+    assert "AttackSpeed" in fields_text
+    assert "UnityEditor-only" in fields_text
+
+
+def test_fanxiu_digitdoor_gameplayer_settlement_probe_maps_request_response_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorGamePlayer.lua").write_text(
+        "function _M:ctor()\n"
+        "self.currWave=0\nself.wavePercent=0\nself.killNum=0\nself.bossVoList=CList.new()\nend\n"
+        "function _M:read()\nself.currWave=self:readInt()\nself.wavePercent=self:readInt()\nself.killNum=self:readInt()\nself:readMessageList2List(self.bossVoList)\nend\n"
+        "function _M:write()\nself:writeInt(self.currWave)\nself:writeInt(self.wavePercent)\nself:writeInt(self.killNum)\nself:writeList(self.bossVoList)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorGamePlayer.lua").write_text(
+        "function _M:ctor()\n"
+        "self.finishWave=0\nself.rewardResults=CList.new()\nself.passLevelVOS=CList.new()\nself.levelId=0\nself.gameType=0\nself.isSkipLevel=false\nend\n"
+        "function _M:read()\nself.finishWave=self:readInt()\nself:readMessageList2List(self.rewardResults)\nself:readMessageList2List(self.passLevelVOS)\nself.levelId=self:readInt()\nself.gameType=self:readInt()\nself.isSkipLevel=self:readBool()\nend\n"
+        "function _M:write()\nself:writeInt(self.finishWave)\nself:writeList(self.rewardResults)\nself:writeIntList(self.passLevelVOS)\nself:writeInt(self.levelId)\nself:writeInt(self.gameType)\nself:writeBool(self.isSkipLevel)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDBossVo.lua").write_text(
+        "function _M:ctor()\nself.id=0\nself.hp=0\nend\n"
+        "function _M:read()\nself.id=self:readInt()\nself.hp=self:readDouble()\nend\n"
+        "function _M:write()\nself:writeInt(self.id)\nself:writeDouble(self.hp)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorGamePlayerFun(self,currWave,wavePercent)\n"
+        "local CM_DigitDoorGamePlayer=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorGamePlayer)\n"
+        "CM_DigitDoorGamePlayer.currWave=currWave or 0\n"
+        "CM_DigitDoorGamePlayer.wavePercent=wavePercent or 0\n"
+        "CM_DigitDoorGamePlayer.killNum=DigitDoorEntityMgr.Inst_get():GetTotalKillSmallMonsterNum()\n"
+        "CM_DigitDoorGamePlayer.bossVoList=DigitDoorEntityMgr.Inst_get():GetTotalBossDamageList()\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorGamePlayer)\n"
+        "end\n"
+        "function _M.SM_DigitDoorGamePlayerFun(msg)\n"
+        "DigitDoorMgr.Inst_get():DigitDoorExitGame(msg)\n"
+        "if msg.isSkipLevel==false then end\n"
+        "if msg.rewardResults and msg.rewardResults:Count()>0 then CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityMgr.lua").write_text(
+        "function _M.GetTotalBossDamageList(self)\n"
+        "local bossVoList=CList.new()\nlocal vo=DDBossVo.new()\nlocal maxHp=DigitDoorData:GetMaxHp()\n"
+        "percent=Mathf.Floor(DigitDoorData:GetCurrentHp()/maxHp*10000)\nvo.hp=percent\nbossVoList:Add(vo)\nreturn bossVoList\nend\n"
+        "function _M.GetTotalKillSmallMonsterNum(self)\nreturn self.totalKillMonsterNum-self.skillMonsterNum-self.totalKillBossNum\nend\n"
+        "self.totalKillMonsterNum=self.totalKillMonsterNum+1\nself.skillMonsterNum=self.skillMonsterNum+1\nself.totalKillBossNum=self.totalKillBossNum+1\n"
+        "DigitDoorMgr.Inst_get():ReqFinishGame()\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.DigitDoorExitGame(self,msg)\n"
+        "self:SetIsSkipLevel(msg.isSkipLevel)\nself.Model.DigitDoorData:SetFinishLevelInfo(msg)\nend\n"
+        "function _M.ReqFinishGame(self)\n"
+        "if self.V_IsReqFinishGame then return end\nself.V_IsReqFinishGame=true\nself.NetLogic:CM_DigitDoorGamePlayerFun(wave,wavePercent)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.SetFinishLevelInfo(self,msg)\nself:InitNewLevelDic(msg.passLevelVOS)\nend\n"
+        "local damageDict=DigitDoorFightMgr.Inst_get().UserFightComponent:GetDamageCache()\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorResultInfoView.lua").write_text(
+        "finishWave=msg.finishWave or DigitDoorMgr.Inst_get().Model:GetWave()\n"
+        "local isHasPass=msg.passLevelVOS and msg.passLevelVOS:Contains(msg.levelId)\n"
+        "local isHasRewards=msg.rewardResults and msg.rewardResults:Count()>0\n"
+        "self.ItemScrollView:UpdateView(msg.rewardResults)\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M._init_(self)\nself.DamageCache=Dictionary.new()\nend\n"
+        "function _M.AddDamageResult(self,casterView,targetView,skill)\n"
+        "self.DamageCache[casterView.Entity.campGroup][roleId][skill.skillId]=self.DamageCache[casterView.Entity.campGroup][roleId][skill.skillId]+(pvpDamage>0 and pvpDamage or damage)\n"
+        "end\n"
+        "function _M.GetDamageCache(self)\nreturn self.DamageCache[DigitDoorType.CampGroup.Attack]\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_gameplayer_settlement_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_progress_snapshot_confirmed"] is True
+    assert result["verdict"]["request_uses_local_kill_and_boss_hp_summary"] is True
+    assert result["verdict"]["response_settlement_fields_confirmed"] is True
+    assert result["verdict"]["response_rewards_drive_display"] is True
+    assert result["verdict"]["response_pass_level_drives_state_and_win_display"] is True
+    assert result["verdict"]["local_damage_cache_not_sent_in_gameplayer_schema"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor GamePlayer settlement boundary" in report_text
+    assert "bossVoList" in fields_text
+    assert "DamageCache" in fields_text
+
+
+def test_fanxiu_digitdoor_info_snapshot_probe_maps_activity_snapshot_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorInfo.lua").write_text(
+        "function _M._init_(self)\n_M._super_._init_(self)\nend\n"
+        "function _M.reading(self)\n_M._super_.reading(self)\nreturn true\nend\n"
+        "function _M.writing(self)\n_M._super_.writing(self)\nreturn true\nend\n"
+        "function _M.getId(self)\nreturn 91620\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorInfo.lua").write_text(
+        "function _M._init_(self)\nself.passList=CList.new()\nself.ddPartnerVOList=CList.new()\nend\n"
+        "function _M.reading(self)\nself:readMessageList2List(self.passList)\nself:readMessageList2List(self.ddPartnerVOList)\nend\n"
+        "function _M.writing(self)\nself:writeIntList(self.passList)\nself:writeList(self.ddPartnerVOList)\nend\n"
+        "function _M.getId(self)\nreturn 91621\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDPartnerVO.lua").write_text(
+        "function _M._init_(self)\nself.id=0\nself.lv=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nself.lv=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nself:writeInt(self.lv)\nend\n"
+        "function _M.getId(self)\nreturn 91600\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorInfo:getId(),typeof(_CM_DigitDoorInfo))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_DigitDoorInfo:getId(),typeof(_SM_DigitDoorInfo),function(msg)\n"
+        "self.SM_DigitDoorInfoFun(msg)\nend)\n"
+        "function _M.CM_DigitDoorInfoFun(self)\n"
+        "local CM_DigitDoorInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorInfo)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorInfo)\nend\n"
+        "function _M.SM_DigitDoorInfoFun(msg)\n"
+        "if msg.code==0 then\n"
+        "DigitDoorMgr.Inst_get().Model.DigitDoorData:SeDigitDoorInfoFun(msg)\n"
+        "DigitDoorMgr.Inst_get().Model:RaiseEvent(DigitDoorType.EventType.DigitDoorInfoUpdate)\n"
+        "DigitDoorMgr.Inst_get():UpdateRedDot()\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.UpdateActivationActivityVO(self)\n"
+        "self.NetLogic:CM_DigitDoorInfoFun()\n"
+        "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID[\"DigitDoor_Rank_Reward\"])\nend\n"
+        "function _M.CheckActivityActivation(self,activityId,state)\nself.NetLogic:CM_DigitDoorInfoFun()\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.SeDigitDoorInfoFun(self,msg)\n"
+        "self:ClearActivityData()\nself.V_DigitDoorInfo=msg\n"
+        "self:UpdateDDPartnerVos(msg.ddPartnerVOList)\nself:InitNewLevelDic(msg.passList)\nend\n"
+        "function _M.ClearActivityData(self)\nself.V_NewLevelIdDic=nil\nv:SetServerData(nil)\nend\n"
+        "function _M.GeDigitDoorInfo(self)\nreturn self.V_DigitDoorInfo\nend\n"
+        "function _M.UpdateDDPartnerVos(self,list)\nfor _,v in Cipairs(list)do\nself:UpdateOneDigitDoorCharacterVo(v)\nend\nend\n"
+        "function _M.UpdateOneDigitDoorCharacterVo(self,msgVo)\n"
+        "local vo=self:GetDigitDoorCharacterVoById(msgVo.id)\nvo:SetServerData(msgVo)\nend\n"
+        "function _M.InitNewLevelDic(self,passList)\n"
+        "for _,levelId in Cipairs(passList)do\n"
+        "local levelCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_Level,levelId)\n"
+        "self.V_NewLevelIdDic[levelCfg.type][levelCfg.layer]=true\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorInfoPanel.lua").write_text(
+        "self.onUpdateViewFunc=function()\nself:UpdateViewData()\nend\n"
+        "DigitDoorMgr.Inst_get().Model:AddEventHandler(DigitDoorType.EventType.DigitDoorInfoUpdate,self.onUpdateViewFunc)\n"
+        "DigitDoorMgr.Inst_get().Model:RemoveEventHandler(DigitDoorType.EventType.DigitDoorInfoUpdate,self.onUpdateViewFunc)\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorType.lua").write_text(
+        'DigitDoorType.EventType={DigitDoorInfoUpdate="DigitDoorInfoUpdate"}\n',
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_info_snapshot_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_has_no_payload_fields"] is True
+    assert result["verdict"]["response_snapshot_fields_confirmed"] is True
+    assert result["verdict"]["partner_vo_shape_confirmed"] is True
+    assert result["verdict"]["response_updates_partner_state"] is True
+    assert result["verdict"]["response_updates_pass_level_state"] is True
+    assert result["verdict"]["info_update_event_raised"] is True
+    assert result["verdict"]["info_panel_listens_to_info_update"] is True
+    assert result["verdict"]["activity_state_triggers_info_request"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor Info snapshot boundary" in report_text
+    assert "passList" in fields_text
+    assert "ddPartnerVOList" in fields_text
+    assert "DigitDoorInfoUpdate" in evidence_text
+
+
+def test_fanxiu_digitdoor_uplevel_state_probe_maps_partner_level_update_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorUpLevel.lua").write_text(
+        "function _M._init_(self)\nself.id=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nend\n"
+        "function _M.getId(self)\nreturn 91637\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorUpLevel.lua").write_text(
+        "function _M._init_(self)\nself.partnerList=CList.new()\nend\n"
+        "function _M.reading(self)\nself:readMessageList2List(self.partnerList)\nend\n"
+        "function _M.writing(self)\nself:writeList(self.partnerList)\nend\n"
+        "function _M.getId(self)\nreturn 91638\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDPartnerVO.lua").write_text(
+        "function _M._init_(self)\nself.id=0\nself.lv=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nself.lv=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nself:writeInt(self.lv)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorUpLevel:getId(),typeof(_CM_DigitDoorUpLevel))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_DigitDoorUpLevel:getId(),typeof(_SM_DigitDoorUpLevel),function(msg)\n"
+        "self.SM_DigitDoorUpLevelFun(msg)\nend)\n"
+        "function _M.CM_DigitDoorUpLevelFun(self,id)\n"
+        "local CM_DigitDoorUpLevel=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorUpLevel)\n"
+        "CM_DigitDoorUpLevel.id=id\nSocketManager.Inst_get():F_SendMsg(CM_DigitDoorUpLevel)\nend\n"
+        "function _M.SM_DigitDoorUpLevelFun(msg)\n"
+        "if msg.code==0 then\n"
+        "DigitDoorMgr.Inst_get().Model.DigitDoorData:UpdateDDPartnerVos(msg.partnerList)\n"
+        "DigitDoorMgr.Inst_get().Model:RaiseEvent(DigitDoorType.EventType.Update_Character_Info,msg.partnerVO,true)\n"
+        "TipsMgr.Inst_get():ShowSystemTips(LuaLocalization.Get(\"Digit_Door_Tips_27\"))\n"
+        "DigitDoorMgr.Inst_get():UpdateRedDot()\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerPanel.lua").write_text(
+        "DigitDoorMgr.Inst_get().Model:AddEventHandler(DigitDoorType.EventType.Update_Character_Info,self.OnUpdateViewFunc)\n"
+        "function _M.OnUpdateLevelClick(self)\n"
+        "if self.isMax then return end\n"
+        "if not self.isEnough and self.costId then return end\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorUpLevelFun(0)\nend\n"
+        "local levelCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_CharacterLevelCost,curLevel)\n"
+        "local costInfo=DigitDoorMgr.Inst_get():GetCostInfo(levelCfg.cost,true)\n"
+        "DigitDoorMgr.Inst_get().Model:RemoveEventHandler(DigitDoorType.EventType.Update_Character_Info,self.OnUpdateViewFunc)\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPlayerView.lua").write_text(
+        "function _M.OnUpdateLevelClick(self)\n"
+        "if self.defenseVo:GetIsMaxLevel()then return end\n"
+        "if self.defenseVo:GetIsActive()then\n"
+        "if not self.isEnough and self.costId then return end\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorUpLevelFun(self.defenseVo.id)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.CheckCanLevelUp(self)\n"
+        "local curLevel=self.Model:GetCurCostLevel()\n"
+        "local levelCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_CharacterLevelCost,curLevel)\n"
+        "local costInfo=self:GetCostInfo(levelCfg.cost,true)\n"
+        "local isEnough=costInfo and costInfo.hadNum>=costInfo.itemNum\nreturn isEnough\nend\n"
+        "function _M.UpdateRedDot(self)\nRedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID[\"DigitDoor_Character_Level\"])\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.UpdateDDPartnerVos(self,list)\nfor _,v in Cipairs(list)do\nself:UpdateOneDigitDoorCharacterVo(v)\nend\nend\n"
+        "function _M.UpdateOneDigitDoorCharacterVo(self,msgVo)\nlocal vo=self:GetDigitDoorCharacterVoById(msgVo.id)\nvo:SetServerData(msgVo)\nend\n"
+        "function _M.GetCurCostLevel(self)\nfor _,vo in ipairs(allVoTb)do\nif vo:GetIsActive()then\nself.CurCostLevel=vo:GetCurLevel()\nend\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorCharacterVo.lua").write_text(
+        "function _M.GetIsMaxLevel(self)\nlocal curLevel=self:GetCurLevel()\nlocal maxLvl=self:GetMaxLevel()\nreturn curLevel>=maxLvl\nend\n"
+        "function _M.CheckCanLevelUp(self)\nreturn false\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorType.lua").write_text(
+        'DigitDoorType.EventType={Update_Character_Info="Update_Character_Info"}\n',
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_uplevel_state_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_id_schema_confirmed"] is True
+    assert result["verdict"]["ui_sends_zero_or_selected_partner_id"] is True
+    assert result["verdict"]["ui_cost_and_max_guards_visible"] is True
+    assert result["verdict"]["response_partner_list_confirmed"] is True
+    assert result["verdict"]["partner_vo_shape_confirmed"] is True
+    assert result["verdict"]["response_updates_partner_state"] is True
+    assert result["verdict"]["character_update_event_raised_and_listened"] is True
+    assert result["verdict"]["event_partner_vo_reference_not_in_sm_schema"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor UpLevel state boundary" in report_text
+    assert "partnerList" in fields_text
+    assert "partnerVO" in fields_text
+
+
+def test_fanxiu_digitdoor_unlock_state_probe_maps_unlock_response_and_request_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorUnlock.lua").write_text(
+        "function _M._init_(self)\nself.Id=0\nend\n"
+        "function _M.reading(self)\nself.Id=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.Id)\nend\n"
+        "function _M.getId(self)\nreturn 91630\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorUnlock.lua").write_text(
+        "function _M._init_(self)\nself.list=CList.new()\nend\n"
+        "function _M.reading(self)\nself:readMessageList2List(self.list)\nend\n"
+        "function _M.writing(self)\nself:writeList(self.list)\nend\n"
+        "function _M.getId(self)\nreturn 91631\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDPartnerVO.lua").write_text(
+        "function _M._init_(self)\nself.id=0\nself.lv=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nself.lv=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nself:writeInt(self.lv)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorUnlock:getId(),typeof(_CM_DigitDoorUnlock))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_DigitDoorUnlock:getId(),typeof(_SM_DigitDoorUnlock),function(msg)\n"
+        "self.SM_DigitDoorUnlockFun(msg)\nend)\n"
+        "function _M.CM_DigitDoorUnlockFun(self)\n"
+        "local CM_DigitDoorUnlock=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorUnlock)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorUnlock)\nend\n"
+        "function _M.SM_DigitDoorUnlockFun(msg)\n"
+        "if msg.code==0 then\n"
+        "DigitDoorMgr.Inst_get().Model.DigitDoorData:UpdateDDPartnerVos(msg.list)\n"
+        "DigitDoorMgr.Inst_get():OpenDigitDoorNewCharacterView(msg.list,true)\n"
+        "DigitDoorMgr.Inst_get().Model:RaiseEvent(DigitDoorType.EventType.Update_Character_Info)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.OpenDigitDoorNewCharacterView(self,list,isFromMsg)\n"
+        "self.recordOpenCharacterIdList=CList.new()\n"
+        "for _,v in Cipairs(list)do\n"
+        "if v.id and not self.recordOpenCharacterIdList:Contains(v.id)then\n"
+        "self.recordOpenCharacterIdList:Add(v.id)\nend\nend\n"
+        "if DigitDoorSceneMgr.Inst_get():IsInDigitDoorPveScene()or self:GetIsSkipLevel()then return end\n"
+        "UIShowMgr.Inst_get():F_ShowWin(Window.DigitDoorNewCharacterView,function(view)\n"
+        "view:UpdateView(characterInfoVo)\nend,true,true,false,true,true)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.UpdateDDPartnerVos(self,list)\nfor _,v in Cipairs(list)do\nself:UpdateOneDigitDoorCharacterVo(v)\nend\nend\n"
+        "function _M.UpdateOneDigitDoorCharacterVo(self,msgVo)\nlocal vo=self:GetDigitDoorCharacterVoById(msgVo.id)\nvo:SetServerData(msgVo)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerPanel.lua").write_text(
+        "DigitDoorMgr.Inst_get().Model:AddEventHandler(DigitDoorType.EventType.Update_Character_Info,self.OnUpdateViewFunc)\n"
+        "DigitDoorMgr.Inst_get().Model:RemoveEventHandler(DigitDoorType.EventType.Update_Character_Info,self.OnUpdateViewFunc)\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorType.lua").write_text(
+        'DigitDoorType.EventType={Update_Character_Info="Update_Character_Info"}\n',
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_unlock_state_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_id_schema_confirmed"] is True
+    assert result["verdict"]["visible_request_id_assignment_missing"] is True
+    assert result["verdict"]["visible_unlock_callsite_missing"] is True
+    assert result["verdict"]["response_list_confirmed"] is True
+    assert result["verdict"]["partner_vo_shape_confirmed"] is True
+    assert result["verdict"]["response_updates_partner_state"] is True
+    assert result["verdict"]["new_character_popup_path_visible"] is True
+    assert result["verdict"]["character_update_event_raised_and_listened"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor Unlock state boundary" in report_text
+    assert "does not assign it before sending" in report_text
+    assert "Id" in fields_text
+    assert "recordOpenCharacterIdList" in fields_text
+
+
+def test_fanxiu_digitdoor_skip_level_probe_maps_skip_intent_to_gameplayer_result(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorSkipLevel.lua").write_text(
+        "function _M._init_(self)\n_M._super_._init_(self)\nend\n"
+        "function _M.reading(self)\n_M._super_.reading(self)\nreturn true\nend\n"
+        "function _M.writing(self)\n_M._super_.writing(self)\nreturn true\nend\n"
+        "function _M.getId(self)\nreturn 91624\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorGamePlayer.lua").write_text(
+        "function _M._init_(self)\nself.isSkipLevel=false\nend\n"
+        "function _M.reading(self)\nself.isSkipLevel=self:readBool()\nend\n"
+        "function _M.writing(self)\nself:writeBool(self.isSkipLevel)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorInfoPanel.lua").write_text(
+        "if DigitDoorMgr.Inst_get().Model:IsFinishLevel(self.showLevelCfg.type,self.showLevelCfg.layer)then return end\n"
+        "local totalLevel=DigitDoorMgr.Inst_get().Model:GetTotalLevel()\n"
+        "local isCanChallenge=totalLevel>=self.showLevelCfg.minimumLevel\n"
+        "local isCanSkip=self.showLevelCfg.allowSkipLevel~=999 and totalLevel>=self.showLevelCfg.allowSkipLevel\n"
+        "TipsMgr.Inst_get():ShowCommonAlertTip(true,contentStr,sureStr,cancelStr,\n"
+        "function()\nDigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorSkipLevelFun()\nend,function()\n"
+        "SceneMgr.Inst_get():ReqChangeMap(self.showLevelCfg.sceneId)\nend)\n"
+        "SceneMgr.Inst_get():ReqChangeMap(self.showLevelCfg.sceneId)\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorSkipLevel:getId(),typeof(_CM_DigitDoorSkipLevel))\n"
+        "function _M.CM_DigitDoorSkipLevelFun(self)\n"
+        "local CM_DigitDoorSkipLevel=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorSkipLevel)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorSkipLevel)\nend\n"
+        "function _M.SM_DigitDoorActivityEndFun(msg)\n"
+        "DigitDoorMgr.Inst_get():ReqFinishGame()\nend\n"
+        "function _M.SM_DigitDoorGamePlayerFun(msg)\n"
+        "DigitDoorMgr.Inst_get():DigitDoorExitGame(msg)\n"
+        "if msg.isSkipLevel==false then\nDigitDoorMgr.Inst_get():OpenDigitDoorResultInfoView(msg)\nelse\n"
+        "if msg.rewardResults and msg.rewardResults:Count()>0 then\n"
+        "CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME,nil,nil,nil,nil,nil,function()\n"
+        "DigitDoorMgr.Inst_get():SetIsSkipLevel(false)\n"
+        "local recordIdList=DigitDoorMgr.Inst_get():GetRecordOpenCharacterId()\n"
+        "DigitDoorMgr.Inst_get():OpenDigitDoorNewCharacterView(recordIdList)\nend)\nend\nend\n"
+        "DigitDoorMgr.Inst_get().Model:RaiseEvent(DigitDoorType.EventType.DigitDoorInfoUpdate)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.DigitDoorExitGame(self,msg)\n"
+        "self:SetIsSkipLevel(msg.isSkipLevel)\nif not msg.isSkipLevel then self.V_IsReqFinishGame=true end\n"
+        "self.Model.DigitDoorData:SetFinishLevelInfo(msg)\nend\n"
+        "function _M.SetIsSkipLevel(self,value)\nself.isSkipLevel=value\nend\n"
+        "function _M.GetIsSkipLevel(self)\nreturn self.isSkipLevel\nend\n"
+        "function _M.ReqFinishGame(self)\nself.NetLogic:CM_DigitDoorGamePlayerFun(wave,wavePercent)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.SetFinishLevelInfo(self,msg)\nself:InitNewLevelDic(msg.passLevelVOS)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorResultInfoView.lua").write_text(
+        "local skip=msg.isSkipLevel\nself.ItemScrollView:UpdateView(msg.rewardResults)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_skip_level_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_has_no_payload_fields"] is True
+    assert result["verdict"]["ui_skip_conditions_visible"] is True
+    assert result["verdict"]["ui_cancel_or_normal_enters_scene"] is True
+    assert result["verdict"]["no_visible_dedicated_sm_skip_packet"] is True
+    assert result["verdict"]["skip_outcome_folded_into_gameplayer"] is True
+    assert result["verdict"]["exit_game_stores_skip_state"] is True
+    assert result["verdict"]["activity_end_to_gameplayer_finish_path_visible"] is True
+    assert result["verdict"]["skip_rewards_and_new_character_popup_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor SkipLevel boundary" in report_text
+    assert "no visible `SM_DigitDoorSkipLevel`" in report_text
+    assert "allowSkipLevel" in fields_text
+    assert "isSkipLevel" in fields_text
+
+
+def test_fanxiu_digitdoor_activity_end_probe_maps_server_signal_to_finish_pipeline(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_DigitDoorActivityEnd.lua").write_text(
+        'local ClientResult=require"GameSystem.Game.Message.core.model.ClientResult"\n'
+        "_M=class(ClientResult,_M)\n"
+        "function _M._init_(self)\n_M._super_._init_(self)\nend\n"
+        "function _M.reading(self)\n_M._super_.reading(self)\nreturn true\nend\n"
+        "function _M.writing(self)\n_M._super_.writing(self)\nreturn true\nend\n"
+        "function _M.getId(self)\nreturn 91632\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorGamePlayer.lua").write_text(
+        "function _M._init_(self)\n"
+        "self.currWave=0\nself.wavePercent=0\nself.killNum=0\nself.bossVoList=CList.new()\nend\n"
+        "function _M.reading(self)\nself.currWave=self:readInt()\nself.wavePercent=self:readInt()\n"
+        "self.killNum=self:readInt()\nself:readMessageList2List(self.bossVoList)\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.currWave)\nself:writeInt(self.wavePercent)\n"
+        "self:writeInt(self.killNum)\nself:writeList(self.bossVoList)\nend\n"
+        "function _M.getId(self)\nreturn 91626\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorGamePlayer.lua").write_text(
+        "function _M._init_(self)\n"
+        "self.finishWave=0\nself.rewardResults=CList.new()\nself.passLevelVOS=CList.new()\n"
+        "self.levelId=0\nself.gameType=0\nself.isSkipLevel=false\nend\n"
+        "function _M.reading(self)\nself.finishWave=self:readInt()\nself:readMessageList2List(self.rewardResults)\n"
+        "self:readMessageList2List(self.passLevelVOS)\nself.levelId=self:readInt()\n"
+        "self.gameType=self:readInt()\nself.isSkipLevel=self:readBool()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.finishWave)\nself:writeList(self.rewardResults)\n"
+        "self:writeIntList(self.passLevelVOS)\nself:writeInt(self.levelId)\n"
+        "self:writeInt(self.gameType)\nself:writeBool(self.isSkipLevel)\nend\n"
+        "function _M.getId(self)\nreturn 91627\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        'local _SM_DigitDoorActivityEnd=require"GameSystem.Game.Message.module.mini.digitdoor.packet.SM_DigitDoorActivityEnd"\n'
+        "_MessagePool.Inst_get():F_Register(_SM_DigitDoorActivityEnd:getId(),typeof(_SM_DigitDoorActivityEnd),function(msg)\n"
+        "self.SM_DigitDoorActivityEndFun(msg)\nend)\n"
+        "function _M.SM_DigitDoorActivityEndFun(msg)\n"
+        "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then\n"
+        "DigitDoorMgr.Inst_get():ReqFinishGame()\nend\nend\n"
+        "function _M.CM_DigitDoorGamePlayerFun(self,currWave,wavePercent)\n"
+        "local CM_DigitDoorGamePlayer=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorGamePlayer)\n"
+        "CM_DigitDoorGamePlayer.currWave=currWave or 0\n"
+        "CM_DigitDoorGamePlayer.wavePercent=wavePercent or 0\n"
+        "CM_DigitDoorGamePlayer.killNum=DigitDoorEntityMgr.Inst_get():GetTotalKillSmallMonsterNum()\n"
+        "CM_DigitDoorGamePlayer.bossVoList=DigitDoorEntityMgr.Inst_get():GetTotalBossDamageList()\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorGamePlayer)\nend\n"
+        "function _M.SM_DigitDoorGamePlayerFun(msg)\n"
+        "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then\n"
+        "DigitDoorMgr.Inst_get():DigitDoorExitGame(msg)\n"
+        "DigitDoorMgr.Inst_get():OpenDigitDoorResultInfoView(msg)\n"
+        "DigitDoorMgr.Inst_get().Model:RaiseEvent(DigitDoorType.EventType.DigitDoorInfoUpdate)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "self.onFinishLevelFunc=function(level)\nself:ReqFinishGame(true,true)\nend\n"
+        "function _M.DigitDoorExitGame(self,msg)\n"
+        "self:SetIsSkipLevel(msg.isSkipLevel)\n"
+        "self.V_IsReqFinishGame=true\n"
+        "self.Model.DigitDoorData:SetFinishLevelInfo(msg)\nend\n"
+        "function _M.ReqFinishGame(self,isNeedDelay,isWin)\n"
+        "if not DigitDoorSceneMgr.Inst_get():IsInDigitDoorPveScene()then return end\n"
+        "if self.V_IsReqFinishGame then return end\n"
+        "if not self.V_ReqFinishSaveTime then self.V_ReqFinishSaveTime=0 end\n"
+        "local wave=DigitDoorMgr.Inst_get().Model:GetWave()\n"
+        "local wavePercent=0\n"
+        "DigitDoorMgr.Inst_get():OpenDigitDoorResultInfoView()\n"
+        "self.NetLogic:CM_DigitDoorGamePlayerFun(wave,wavePercent)\n"
+        "self:UpdateDigitDoorThinkingData(result)\nend\n"
+        "function _M.UpdateDigitDoorThinkingData(self,result)\n"
+        "local usedTime=DigitDoorEntityMgr.Inst_get():GetCurLevelTime()\n"
+        'PhoneHelper.UploadThinkingDatas("activity_stage",{used_time=usedTime},true)\nend\n',
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorSceneView.lua").write_text(
+        "if isNeedFinish then\n"
+        "if DigitDoorSceneMgr.Inst_get():IsInDigitDoorPveScene()and DigitDoorMgr.Inst_get():IsStartGame()and not DigitDoorMgr.Inst_get().V_IsReqFinishGame then\n"
+        "DigitDoorMgr.Inst_get():ReqFinishGame(true)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityMgr.lua").write_text(
+        "function _M.CheckAutoLose(self,fTime)\n"
+        "if self.curLevelTime>=DigitDoorMgr.Inst_get():GetAutoLostTimeLimit()then\n"
+        "DigitDoorMgr.Inst_get():ReqFinishGame()\nend\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_activity_end_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["activity_end_is_server_only_no_payload_response"] is True
+    assert result["verdict"]["activity_end_registered_and_guarded"] is True
+    assert result["verdict"]["activity_end_triggers_finish_request"] is True
+    assert result["verdict"]["finish_request_sends_gameplayer_snapshot"] is True
+    assert result["verdict"]["gameplayer_response_remains_settlement_authority"] is True
+    assert result["verdict"]["other_finish_triggers_share_same_req_finish"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor ActivityEnd finish boundary" in report_text
+    assert "server-to-client `ClientResult` signal" in report_text
+    assert "currWave" in fields_text
+    assert "bossVoList" in fields_text
+
+
+def test_fanxiu_digitdoor_report_gmbattle_probe_maps_pvp_report_and_replay_push(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        "function _M._init_(self)\n"
+        "self.replayId=0\nself.type=0\nself.round=0\nself.pkStage=0\nself.zone=0\nself.pkStep=0\n"
+        "self.time=0\nself.atkVoList=CList.new()\nself.defVoList=CList.new()\nself.clientWinnerId=0\nself.serverWinnerId=0\nend\n"
+        "function _M.reading(self)\nself.replayId=self:readLong()\nself.type=self:readInt()\nself.round=self:readInt()\n"
+        "self.pkStage=self:readInt()\nself.zone=self:readInt()\nself.pkStep=self:readInt()\nself.time=self:readLong()\n"
+        "self:readMessageList2List(self.atkVoList)\nself:readMessageList2List(self.defVoList)\n"
+        "self.clientWinnerId=self:readLong()\nself.serverWinnerId=self:readLong()\nend\n"
+        "function _M.writing(self)\nself:writeLong(self.replayId)\nself:writeInt(self.type)\nself:writeInt(self.round)\n"
+        "self:writeInt(self.pkStage)\nself:writeInt(self.zone)\nself:writeInt(self.pkStep)\nself:writeLong(self.time)\n"
+        "self:writeList(self.atkVoList)\nself:writeList(self.defVoList)\nself:writeLong(self.clientWinnerId)\n"
+        "self:writeLong(self.serverWinnerId)\nend\nfunction _M.getId(self)\nreturn 91644\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorGMBattle.lua").write_text(
+        "_M=class(ClientResult,_M)\n"
+        "function _M._init_(self)\nself.battleVO=ImmortalBattleVO.new()\nself.type=0\nend\n"
+        "function _M.reading(self)\nself.battleVO=_AS_(self:readBean(typeof(ImmortalBattleVO)),ImmortalBattleVO)\n"
+        "self.type=self:readInt()\nend\nfunction _M.writing(self)\nself:writeBean(self.battleVO)\n"
+        "self:writeInt(self.type)\nend\nfunction _M.getId(self)\nreturn 91643\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DigitDoorSimpleVO.lua").write_text(
+        "function _M._init_(self)\nself.ownerId=0\nself.resourceId=0\nself.index=0\nself.lv=0\nself.attrVOList=CList.new()\nend\n"
+        "function _M.reading(self)\nself.ownerId=self:readLong()\nself.resourceId=self:readInt()\nself.index=self:readInt()\n"
+        "self.lv=self:readInt()\nself:readMessageList2List(self.attrVOList)\nend\n"
+        "function _M.writing(self)\nself:writeLong(self.ownerId)\nself:writeInt(self.resourceId)\nself:writeInt(self.index)\n"
+        "self:writeInt(self.lv)\nself:writeList(self.attrVOList)\nend\nfunction _M.getId(self)\nreturn 91605\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "ImmortalBattleVO__digitaldoor.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.digitaldoor.immortaldigital.packet.bean.ImmortalBattleVO"]=_M\n'
+        "function _M._init_(self)\nself.id=0\nself.round=0\nself.winnerId=0\nself.startTime=0\nself.overTime=0\n"
+        "self.sortTime=0\nself.replayId=0\nself.joiners=CList.new()\nself.statList=CList.new()\nend\n"
+        "function _M.reading(self)\nself.id=self:readLong()\nself.round=self:readInt()\nself.winnerId=self:readLong()\n"
+        "self.startTime=self:readLong()\nself.overTime=self:readLong()\nself.sortTime=self:readLong()\n"
+        "self.replayId=self:readLong()\nself:readMessageList2List(self.joiners)\nself:readMessageList2List(self.statList)\nend\n"
+        "function _M.writing(self)\nself:writeLong(self.id)\nself:writeInt(self.round)\nself:writeLong(self.winnerId)\n"
+        "self:writeLong(self.startTime)\nself:writeLong(self.overTime)\nself:writeLong(self.sortTime)\n"
+        "self:writeLong(self.replayId)\nself:writeList(self.joiners)\nself:writeList(self.statList)\nend\n"
+        "function _M.getId(self)\nreturn 92034\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        'local _SM_DigitDoorGMBattle=require"GameSystem.Game.Message.module.mini.digitdoor.packet.SM_DigitDoorGMBattle"\n'
+        'local _CM_DigitDoorReport=require"GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorReport"\n'
+        "_MessagePool.Inst_get():F_Register(_SM_DigitDoorGMBattle:getId(),typeof(_SM_DigitDoorGMBattle),function(msg)\n"
+        "self.SM_DigitDoorGMBattleFun(msg)\nend)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorReport:getId(),typeof(_CM_DigitDoorReport))\n"
+        "function _M.CM_DigitDoorReportFun(self,replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "local CM_DigitDoorReport=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorReport)\n"
+        "CM_DigitDoorReport.replayId=replayId\nCM_DigitDoorReport.type=type\nCM_DigitDoorReport.round=round\n"
+        "CM_DigitDoorReport.pkStage=pkStage\nCM_DigitDoorReport.zone=zone\nCM_DigitDoorReport.pkStep=pkStep\n"
+        "CM_DigitDoorReport.time=time\nCM_DigitDoorReport.atkVoList=atkVoList\nCM_DigitDoorReport.defVoList=defVoList\n"
+        "CM_DigitDoorReport.clientWinnerId=clientWinnerId\nCM_DigitDoorReport.serverWinnerId=serverWinnerId\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\nend\n"
+        "function _M.SM_DigitDoorGMBattleFun(msg)\nlocal userView=EntityMgr.Inst_get().UserView\nif userView then\n"
+        "ImmortalDigitalMgr.Inst_get().Model.ImmortalData:UpdateFinishVo(msg.battleVO)\n"
+        "ImmortalDigitalMgr.Inst_get():ReqReplay({battleId=msg.battleVO.replayId},msg.type==1 and 89504 or 87006,\n"
+        "msg.type==1 and MapType.ReplayType.DigitDoorPVP or MapType.ReplayType.TowerDefensePVP)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.CheckList(self,fightComponent)\nif not self.curFinishVo then return end\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\nlocal attackViewList=fightComponent:GetAttackViewList()\n"
+        "local replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId\n"
+        "if self.curMapType==MapType.SceneType.Scene_DigitDoorPVPIT then\n"
+        "replayId=self.curFinishVo.replayId\ntype=1\nround=self.curFinishVo.round\npkStage=0\nzone=0\npkStep=0\ntime=self.curFinishVo.startTime\n"
+        "elseif self.curMapType==MapType.SceneType.Scene_DigitDoorPVP then\n"
+        "replayId=self.curFinishVo.replayId\ntype=2\nround=0\npkStage=self.curFinishVo.pkStage\nzone=self.curFinishVo.zone\npkStep=self.curFinishVo.pkStep\ntime=self.curFinishVo.createTime\nend\n"
+        "atkVoList=self.attackList\ndefVoList=self.defenseList\nclientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId\nserverWinnerId=self.winnerId\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\nend\n"
+        "function _M.CreateEntityData(self,entityView)\nlocal data=DigitDoorSimpleVO.new()\n"
+        "data.ownerId=entityView.Entity.V_Data.ownerId\ndata.resourceId=entityView.Entity.V_RoleId or 0\ndata.index=entityView.Entity.V_Data.pos or 0\ndata.lv=entityView.Entity.V_Data.level or 0\n"
+        "self:GetAttr(entityView.Entity.EntityData,data.attrVOList)\nreturn data\nend\n"
+        "function _M.GetAttr(self,EntityData,clist)\nself:GetAttrCode(\"HP\",hp,clist)\nend\n"
+        "function _M.GetAttrCode(self,id,value,clist)\nattrVo.type=id\nattrVo.value=value\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.LeaveScene(self)\nself.DigitDoorPVPReplayMsg=nil\nend\n"
+        "function _M.OnEnterReplayScene(self,msg)\nself.DigitDoorPVPReplayMsg=msg\n"
+        "DigitDoorPvpEntityMgr.Inst_get():SceneInfoSync()\nDigitDoorFightMgr.Inst_get():SceneInfoSync(msg)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.GM_GetImmortalDigitPartnerVO(self)\nlocal data=ImmortalBattleVO.new()\n"
+        "data.winnerId=LusuoLong.FromString(userView.Entity.V_ID:ToString())\n"
+        "data.joiners:Add(selfJoinerVO)\nreturn data\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_report_gmbattle_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["report_request_schema_confirmed"] is True
+    assert result["verdict"]["pvp_scene_builds_report_from_finish_state"] is True
+    assert result["verdict"]["report_entity_snapshot_shape_confirmed"] is True
+    assert result["verdict"]["no_visible_dedicated_sm_report_packet"] is True
+    assert result["verdict"]["gmbattle_response_schema_confirmed"] is True
+    assert result["verdict"]["gmbattle_is_server_only_replay_trigger"] is True
+    assert result["verdict"]["gmbattle_type_selects_replay_context"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor Report/GMBattle boundary" in report_text
+    assert "PVP report upload" in report_text
+    assert "clientWinnerId" in fields_text
+    assert "battleVO" in fields_text
+
+
+def test_fanxiu_digitdoor_pvp_balance_probe_maps_visible_pvp_formula(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    config_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "digitdoor_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    config_dir.mkdir(parents=True)
+
+    (config_dir / "ConfigValue.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,value=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='PVP_TIMELIMIT',\n[2]='120',\n[3]='FAKEPVP_REGULATION',\n[4]='3000,3000',\n"
+        "[5]='FAKEPVP_REGULATION_WINNER',\n[6]='7000',\n[7]='WIN_TEAM_LOSTHP_LIMIT',\n[8]='1000,500',\n"
+        "[9]='FAIL_TEAM_LOSTHP_LIMIT',\n[10]='2500,1500',\n[11]='WIN_TEAM_attack',\n[12]='1000',\n}\n"
+        "local _M={\n"
+        "['PVP_TIMELIMIT']=setmetatable({[1]=_A[1],[2]=_A[2]},_P),\n"
+        "['FAKEPVP_REGULATION']=setmetatable({[1]=_A[3],[2]=_A[4]},_P),\n"
+        "['FAKEPVP_REGULATION_WINNER']=setmetatable({[1]=_A[5],[2]=_A[6]},_P),\n"
+        "['WIN_TEAM_LOSTHP_LIMIT']=setmetatable({[1]=_A[7],[2]=_A[8]},_P),\n"
+        "['FAIL_TEAM_LOSTHP_LIMIT']=setmetatable({[1]=_A[9],[2]=_A[10]},_P),\n"
+        "['WIN_TEAM_attack']=setmetatable({[1]=_A[11],[2]=_A[12]},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (config_dir / "CharacterLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,PVPATTACK=2,PVPINCREASE=3,PVPREDUCE=4,PVP_WINREDUCE=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=100,[3]=200,[4]=300,[5]=400},_P),\n}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (config_dir / "AttrName.lua").write_text(
+        "local _A={\n[1]='PVPATTACK',\n}\nreturn {}\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "local PVP_BALANCE_DURATION=0.2\n"
+        "local PVP_WINNER_MAXTIME_CHECK=30\n"
+        "local PVP_WINNER_ATTACK_DURATION=1\n"
+        "function _M.InitBalanceValue(self)\n"
+        "local configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"FAKEPVP_REGULATION\")\n"
+        "self.pvpHpExtRate=tonumber(temps[0])*Damage_Ratio\n"
+        "self.pvpReduceDamageExtRate=tonumber(temps[1])*Damage_Ratio\n"
+        "configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"FAKEPVP_REGULATION_WINNER\")\n"
+        "self.pvpWinnerReduceRate=tonumber(configValue.value)\n"
+        "configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"WIN_TEAM_LOSTHP_LIMIT\")\n"
+        "self.pvpWinnerDamageLimit={[1]=tonumber(temps[0]),[2]=tonumber(temps[1])}\n"
+        "configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"FAIL_TEAM_LOSTHP_LIMIT\")\n"
+        "self.pvpLoserDamageLimit={[1]=tonumber(temps[0]),[2]=tonumber(temps[1])}\n"
+        "configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"WIN_TEAM_attack\")\n"
+        "self.pvpWinnerExtAttack=tonumber(configValue.value)\nend\n"
+        "function _M.CreateAttackerPartner(self,partnerData)\n"
+        "pvpHpRate=self.pvpHpExtRate*(1+rate)\n"
+        "pvpReduceDamageRate=self.pvpReduceDamageExtRate*(1+rate)\n"
+        "damageLimit=self.pvpWinnerDamageLimit\n"
+        "damageLimit=self.pvpLoserDamageLimit\n"
+        "_Partner:InitData(partnerData,isPVE,pvpHpRate,pvpReduceDamageRate,damageLimit)\nend\n"
+        "function _M.AddDamageResult(self,casterView,targetView)\n"
+        "pvpExtAttack=casterView.Entity.EntityData:GetPVPWinnerExtAttack()\n"
+        "pvpIncrease=casterView.Entity.EntityData:GetPVPIncreaseDamage()\n"
+        "pvpReduce=targetView.Entity.EntityData:GetPVPReduceDamage()\n"
+        "pvpWinnerReduce=targetView.Entity.EntityData:GetPVPWinnerReduceDamage()\n"
+        "pvpIncreaseDamage=1+pvpIncrease*Damage_Ratio\n"
+        "pvpReduceDamage=Mathf.Max(1-pvpReduce*Damage_Ratio,0.1)\n"
+        "pvpWinnerReduceDamage=Mathf.Max(1-pvpWinnerReduce*Damage_Ratio,0.3)\n"
+        "pvpDamage=(attack*(1+extAttack*Damage_Ratio))*pvpIncreaseDamage*pvpReduceDamage*pvpWinnerReduceDamage\n"
+        "targetView.Entity.EntityData:CalculateCurrentHp(pvpDamage)\nend\n"
+        "function _M.GetAttackerFinalAttr(self,attackerView)\n"
+        "attack=attackerView.Entity.EntityData:GetPVPAttack()\nend\n"
+        "function _M.UpdatePVPWinnerProtection(self)\n"
+        "if self.pvpBalanceTimer<PVP_BALANCE_DURATION then return end\n"
+        "if curWinnerHp/curLoserHp<1 then winnerView.Entity.EntityData:SetPVPWinnerReduceDamage(self.pvpWinnerReduceRate) end\n"
+        "if curWinnerHp/curLoserHp>1 then winnerView.Entity.EntityData:SetPVPWinnerReduceDamage(self.pvpWinnerReduceRate*0.5) end\n"
+        "if curTime>=PVP_WINNER_MAXTIME_CHECK then\n"
+        "local pvpWinnerExtAttack=winnerView.Entity.EntityData:GetPVPWinnerExtAttack()\n"
+        "winnerView.Entity.EntityData:SetPVPWinnerExtAttack(pvpWinnerExtAttack)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityData.lua").write_text(
+        "function _M.InitData(self,cfg,pvpHpRate,pvpReduceDamageRate)\n"
+        "self:SetCurrentHp(cfg.MAXHP*(1+pvpHpRate))\n"
+        "self:SetReduceDamage(cfg.REDUCEDAMAGE*(1+pvpReduceDamageRate))\n"
+        "self:SetPVPAttack(cfg.PVPATTACK or 0)\n"
+        "self:SetPVPIncreaseDamage(cfg.PVPINCREASE or 0)\n"
+        "self:SetPVPReduceDamage(cfg.PVPREDUCE or 0)\nend\n"
+        "function _M.SetPVPIncreaseDamage(self,val) end\nfunction _M.GetPVPIncreaseDamage(self) end\n"
+        "function _M.SetPVPReduceDamage(self,val) end\nfunction _M.GetPVPReduceDamage(self) end\n"
+        "function _M.SetPVPWinnerReduceDamage(self,val) end\nfunction _M.GetPVPWinnerReduceDamage(self) end\n"
+        "function _M.SetPVPWinnerExtAttack(self,val) end\nfunction _M.GetPVPWinnerExtAttack(self) end\n"
+        "function _M.SetPVPDamageLimit(self,val) end\nfunction _M.GetPVPDamageLimit(self) end\n"
+        "function _M.SetDefaultPVPDamageLimit(self,val) end\nfunction _M.GetDefaultPVPDamageLimit(self) end\n"
+        "function _M.SetPVPAttack(self,val) end\nfunction _M.GetPVPAttack(self) end\n"
+        "function _M.CalculateCurrentHp(self,damage)\n"
+        "local defaultLimit=self:GetDefaultPVPDamageLimit()\n"
+        "local limitLeft=self:GetPVPDamageLimit()\n"
+        "self:SetPVPDamageLimit(limitLeft)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartner.lua").write_text(
+        "function _M.InitData(self,partnerData,isPVE,pvpHpRate,pvpReduceDamageRate,damageLimit)\n"
+        "limitRate=self.isFront and damageLimit[1] or damageLimit[2]\n"
+        "limitVal=maxHp*limitRate*Ratio\n"
+        "self.EntityData:SetDefaultPVPDamageLimit(limitVal)\n"
+        "self.EntityData:SetPVPDamageLimit(limitVal)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerView.lua").write_text(
+        "function _M.UpdatePVPDamageLimit(self,fTime,fDTime)\n"
+        "local damageLimit=self.Entity.EntityData:GetDefaultPVPDamageLimit()\n"
+        "self.Entity.EntityData:SetPVPDamageLimit(damageLimit)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "local exitTimeCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.DigitDoor_ConfigValue,\"PVP_TIMELIMIT\")\n"
+        "function _M.GetAttr(self,EntityData,clist)\n"
+        "self:GetAttrCode(\"PVPATTACK\",pvpAttack,clist)\n"
+        "self:GetAttrCode(\"PVPINCREASE\",pvpIncreaseDamage,clist)\n"
+        "self:GetAttrCode(\"PVPREDUCE\",pvpReduceDamage,clist)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_balance_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["pvp_config_values_confirmed"] is True
+    assert result["verdict"]["pvp_damage_formula_visible"] is True
+    assert result["verdict"]["pvp_damage_limit_chain_visible"] is True
+    assert result["verdict"]["pvp_report_attr_codes_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP balance/formula probe" in report_text
+    assert "FAKEPVP_REGULATION" in report_text
+    assert "PVPATTACK" in fields_text
+    assert "PVPWinnerReduceDamage" in fields_text
+
+
+def test_fanxiu_digitdoor_pvp_winreduce_gap_probe_marks_declared_zero_unused_column(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    config_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "digitdoor_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    config_dir.mkdir(parents=True)
+
+    (config_dir / "CharacterLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,PVPATTACK=2,PVPINCREASE=3,PVPREDUCE=4,PVP_WINREDUCE=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=100,[3]=0,[4]=300,[5]=0},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]=110,[3]=0,[4]=300,[5]=0},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (config_dir / "ConfigValue.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,value=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='FAKEPVP_REGULATION_WINNER',\n[2]='7000',\n}\n"
+        "local _M={\n['FAKEPVP_REGULATION_WINNER']=setmetatable({[1]=_A[1],[2]=_A[2]},_P),\n}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityData.lua").write_text(
+        "function _M.InitData(self,cfg)\n"
+        "self:SetPVPAttack(cfg.PVPATTACK or 0)\nself:SetPVPIncreaseDamage(cfg.PVPINCREASE or 0)\nself:SetPVPReduceDamage(cfg.PVPREDUCE or 0)\nend\n"
+        "function _M.SetPVPWinnerReduceDamage(self,val) self.pvpWinnerReduceDamage=self:EncryptData(val) end\n"
+        "function _M.GetPVPWinnerReduceDamage(self) return self:DecryptData(self.pvpWinnerReduceDamage) end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.InitBalanceValue(self)\n"
+        "local configValue=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_ConfigValue,\"FAKEPVP_REGULATION_WINNER\")\n"
+        "self.pvpWinnerReduceRate=tonumber(configValue.value)\nend\n"
+        "function _M.UpdatePVPWinnerProtection(self)\n"
+        "winnerView.Entity.EntityData:SetPVPWinnerReduceDamage(self.pvpWinnerReduceRate)\nend\n"
+        "function _M.AddDamageResult(self,targetView)\n"
+        "pvpWinnerReduce=targetView.Entity.EntityData:GetPVPWinnerReduceDamage()\n"
+        "local pvpWinnerReduceDamage=Mathf.Max(1-pvpWinnerReduce*Damage_Ratio,0.3)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_winreduce_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["pvp_winreduce_column_declared"] is True
+    assert result["verdict"]["pvp_winreduce_values_all_zero"] is True
+    assert result["verdict"]["no_visible_lua_direct_cfg_consumer"] is True
+    assert result["verdict"]["winner_reduce_runtime_slot_uses_dynamic_config"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP_WINREDUCE gap probe" in report_text
+    assert "declared-but-currently-inactive" in report_text
+    assert "PVP_WINREDUCE" in evidence_text
+    assert "FAKEPVP_REGULATION_WINNER" in evidence_text
+
+
+def test_fanxiu_digitdoor_pvp_report_attr_snapshot_probe_maps_attrvo_order(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+
+    (logic_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.GetAttr(self,EntityData,clist)\n"
+        "local hp=EntityData:GetCurrentHp()\n"
+        "local maxhp=EntityData:GetMaxHp()\n"
+        "local attack=EntityData:GetAttack()\n"
+        "local pvpAttack=EntityData:GetPVPAttack()\n"
+        "local attackSpeed=EntityData:GetAttackSpeed()\n"
+        "local critical=EntityData:GetCritical()\n"
+        "local antiCritical=EntityData:GetAntiCritical()\n"
+        "local increaseDamage=EntityData:GetIncreaseDamage()\n"
+        "local reduceDamage=EntityData:GetReduceDamage()\n"
+        "local pvpIncreaseDamage=EntityData:GetPVPIncreaseDamage()\n"
+        "local pvpReduceDamage=EntityData:GetPVPReduceDamage()\n"
+        "local addDamage=EntityData:GetAddDamage()\n"
+        "self:GetAttrCode(\"HP\",hp,clist)\n"
+        "self:GetAttrCode(\"MAXHP\",maxhp,clist)\n"
+        "self:GetAttrCode(\"ATTACK\",attack,clist)\n"
+        "self:GetAttrCode(\"PVPATTACK\",pvpAttack,clist)\n"
+        "self:GetAttrCode(\"ATKSPEED\",attackSpeed,clist)\n"
+        "self:GetAttrCode(\"CRITICAL\",critical,clist)\n"
+        "self:GetAttrCode(\"ANTICRITICAL\",antiCritical,clist)\n"
+        "self:GetAttrCode(\"INCREASEDAMAGE\",increaseDamage,clist)\n"
+        "self:GetAttrCode(\"REDUCEDAMAGE\",reduceDamage,clist)\n"
+        "self:GetAttrCode(\"PVPINCREASE\",pvpIncreaseDamage,clist)\n"
+        "self:GetAttrCode(\"PVPREDUCE\",pvpReduceDamage,clist)\n"
+        "self:GetAttrCode(\"ADDDAMAGE\",addDamage,clist)\nend\n"
+        "function _M.GetAttrCode(self,id,value,clist)\n"
+        "local attrVo=DigitDoorAttrVO.new()\n"
+        "attrVo.type=id\n"
+        "attrVo.value=value\n"
+        "clist:Add(attrVo)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DigitDoorAttrVO.lua").write_text(
+        "function _M._init_(self)\nself.type=\"\"\nself.value=0\nend\n"
+        "function _M.reading(self)\nself.type=self:readString()\nself.value=self:readDouble()\nend\n"
+        "function _M.writing(self)\nself:writeString(self.type)\nself:writeDouble(self.value)\nend\n"
+        "function _M.getId(self)\nreturn 91606\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DigitDoorSimpleVO.lua").write_text(
+        "function _M._init_(self)\nself.attrVOList=CList.new()\nend\n"
+        "function _M.reading(self)\nself:readMessageList2List(self.attrVOList)\nend\n"
+        "function _M.writing(self)\nself:writeList(self.attrVOList)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_report_attr_snapshot_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["attr_order_confirmed"] is True
+    assert result["verdict"]["pvp_specific_attrs_present"] is True
+    assert result["verdict"]["pvp_winreduce_not_emitted"] is True
+    assert result["verdict"]["digitdoor_attrvo_wire_shape_confirmed"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    attrs_text = Path(result["files"]["attrs"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP report attr snapshot" in report_text
+    assert "PVPATTACK" in attrs_text
+    assert "GetPVPReduceDamage" in attrs_text
+    assert "PVP_WINREDUCE" not in attrs_text
+
+
+def test_fanxiu_digitdoor_pvp_winner_projection_probe_maps_finish_vo_to_report_fields(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+
+    (logic_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.InitDataInfo(self)\n"
+        "self.curMapType=SceneMgr.Inst_get():GetCurMapType()\n"
+        "if self.curMapType==MapType.SceneType.Scene_DigitDoorPVPIT then\n"
+        "self.curFinishVo=ImmortalDigitalMgr.Inst_get().Model.ImmortalData:GetFinishVo()\n"
+        "self.otherId=v.id\n"
+        "self.winnerId=self.curFinishVo.winnerId\n"
+        "elseif self.curMapType==MapType.SceneType.Scene_DigitDoorPVP then\n"
+        "self.curFinishVo=ClubPkDigitalMgr.Inst_get().Model.ClubPkDigitalData:GetFinishVo()\n"
+        "self.otherId=self.curFinishVo.attacker.id\n"
+        "self.otherId=self.curFinishVo.defender.id\n"
+        "if self.curFinishVo.victory then\n"
+        "self.winnerId=self.curFinishVo.attacker.id\n"
+        "else\n"
+        "self.winnerId=self.curFinishVo.defender.id\n"
+        "end\n"
+        "end\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "local allHp,curHp=fightComponent:GetDefenseHPMsg()\n"
+        "if curHp==0 then\n"
+        "local userVID=EntityMgr.Inst_get():GetUserId()\n"
+        "if self.winnerId and(not self.winnerId:Equal(userVID))then\n"
+        "self:CheckList(fightComponent)\n"
+        "end\n"
+        "end\n"
+        "local curHp=fightComponent:GetAttackHPMsg()\n"
+        "if curHp and curHp==0 then\n"
+        "local userVID=EntityMgr.Inst_get():GetUserId()\n"
+        "if self.winnerId and self.winnerId:Equal(userVID)then\n"
+        "self:CheckList(fightComponent)\n"
+        "end\n"
+        "end\n"
+        "end\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "local userId=EntityMgr.Inst_get():GetUserId()\n"
+        "atkVoList=self.attackList\n"
+        "defVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId\n"
+        "serverWinnerId=self.winnerId\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorReportFun(self,replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "CM_DigitDoorReport.clientWinnerId=clientWinnerId\n"
+        "CM_DigitDoorReport.serverWinnerId=serverWinnerId\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.SceneInfoSync(self,vo)\nself.winnerId=vo.winnerId\nend\n"
+        "function _M.GetWinnerId(self)\nreturn self.winnerId\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        "function _M._init_(self)\nself.clientWinnerId=0\nself.serverWinnerId=0\nend\n"
+        "function _M.reading(self)\nself.clientWinnerId=self:readLong()\nself.serverWinnerId=self:readLong()\nend\n"
+        "function _M.writing(self)\nself:writeLong(self.clientWinnerId)\nself:writeLong(self.serverWinnerId)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_winner_projection_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["winner_source_from_finish_vo_visible"] is True
+    assert result["verdict"]["client_winner_id_inverts_visible_winner"] is True
+    assert result["verdict"]["server_winner_id_uses_finish_winner"] is True
+    assert result["verdict"]["report_winner_fields_assigned_and_serialized"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP winner projection" in report_text
+    assert "opposite participant" in report_text
+    assert "clientWinnerId" in evidence_text
+    assert "serverWinnerId" in evidence_text
+
+
+def test_fanxiu_digitdoor_pvp_report_list_lifecycle_probe_tracks_snapshot_collection(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+
+    (logic_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M._init_(self)\n"
+        "self.tbAttack={}\nself.tbDefense={}\nself.attackList=CList.new()\nself.defenseList=CList.new()\nend\n"
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:SaveEntityData(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.SaveEntityData(self,entityView)\n"
+        "if entityView.Entity.V_EntityType==LuaEntityType.DigitDoorPartner then\n"
+        "if entityView.Entity.campGroup==DigitDoorType.CampGroup.Attack then\n"
+        "if not self.tbAttack[entityView.Entity.V_RoleId] then\nself.tbAttack[entityView.Entity.V_RoleId]=true\n"
+        "local data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\nend\n"
+        "else\nif not self.tbDefense[entityView.Entity.V_RoleId] then\nself.tbDefense[entityView.Entity.V_RoleId]=true\n"
+        "local data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nend\nend\nend\nend\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "if not self.curFinishVo then\nreturn\nend\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\n"
+        "if not self.tbDefense[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nend\n"
+        "local attackViewList=fightComponent:GetAttackViewList()\n"
+        "if not self.tbAttack[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\nend\n"
+        "atkVoList=self.attackList\ndefVoList=self.defenseList\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n"
+        "function _M.CreateEntityData(self,entityView)\n"
+        "local data=DigitDoorSimpleVO.new()\n"
+        "data.ownerId=LusuoLong.new(entityView.Entity.V_Data.ownerId._low,entityView.Entity.V_Data.ownerId._internalHigh)\n"
+        "data.resourceId=entityView.Entity.V_RoleId or 0\n"
+        "data.index=entityView.Entity.V_Data.pos or 0\n"
+        "data.lv=entityView.Entity.V_Data.level or 0\n"
+        "self:GetAttr(entityView.Entity.EntityData,data.attrVOList)\nreturn data\nend\n"
+        "function _M.Destroy(self)\n"
+        "self.attackList=CList:Recyle(self.attackList)\nself.defenseList=CList:Recyle(self.defenseList)\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorReportFun(self,replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "CM_DigitDoorReport.atkVoList=atkVoList\n"
+        "CM_DigitDoorReport.defVoList=defVoList\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        "function _M._init_(self)\nself.atkVoList=CList.new()\nself.defVoList=CList.new()\nend\n"
+        "function _M.reading(self)\nself:readMessageList2List(self.atkVoList)\nself:readMessageList2List(self.defVoList)\nend\n"
+        "function _M.writing(self)\nself:writeList(self.atkVoList)\nself:writeList(self.defVoList)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DigitDoorSimpleVO.lua").write_text(
+        "function _M._init_(self)\nself.ownerId=0\nself.resourceId=0\nself.index=0\nself.lv=0\nself.attrVOList=CList.new()\nend\n"
+        "function _M.reading(self)\nself.ownerId=self:readLong()\nself.resourceId=self:readInt()\nself.index=self:readInt()\nself.lv=self:readInt()\nself:readMessageList2List(self.attrVOList)\nend\n"
+        "function _M.writing(self)\nself:writeLong(self.ownerId)\nself:writeInt(self.resourceId)\nself:writeInt(self.index)\nself:writeInt(self.lv)\nself:writeList(self.attrVOList)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_report_list_lifecycle_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["lists_initialized_with_dedupe_maps"] is True
+    assert result["verdict"]["dead_events_feed_snapshot_path"] is True
+    assert result["verdict"]["checklist_backfills_live_views_before_report"] is True
+    assert result["verdict"]["request_list_wire_shape_confirmed"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP report list lifecycle" in report_text
+    assert "SaveEntityData" in evidence_text
+    assert "attackList" in evidence_text
+    assert "defenseList" in evidence_text
+
+
+def test_fanxiu_digitdoor_pvp_report_acceptance_gap_probe_marks_missing_sm_report_surface(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    index_dir = export_root / "apk_static_index"
+    capture_dir = export_root / "tcp_captures"
+    logic_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    index_dir.mkdir(parents=True)
+    capture_dir.mkdir(parents=True)
+
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        "function _M.getId(self)\nreturn 91644\nend\nfunction _M.getName(self)\nreturn\"CM_DigitDoorReport\"\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "local _CM_DigitDoorReport=require\"GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorReport\"\n"
+        "function _M.LuaDigitDoorNetLogic(self)\n_MessagePool.Inst_get():F_Register(_CM_DigitDoorReport:getId(),typeof(_CM_DigitDoorReport))\nend\n"
+        "function _M.CM_DigitDoorReportFun(self)\n"
+        "local CM_DigitDoorReport=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorReport)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\nend\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_digitdoor_protocol_schemas.tsv").write_text(
+        "module\tpacket\tid\tdirection\tfields\n"
+        "digitdoor\tCM_DigitDoorReport\t91644\tclient_to_server\treplayId|atkVoList|defVoList\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_digitdoor_protocol_fields.tsv").write_text(
+        "module\tpacket\tid\tdirection\tfield\n"
+        "digitdoor\tCM_DigitDoorReport\t91644\tclient_to_server\treplayId\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_digitdoor_netlogic_flow_edges.tsv").write_text(
+        "function\tpacket\tedge\nCM_DigitDoorReportFun\tCM_DigitDoorReport\tpacket_send\n",
+        encoding="utf-8",
+    )
+    (capture_dir / "sample.codeyun_decoded.json").write_text(
+        json.dumps({"frames": [{"pro_id": 91620, "name": "CM_DigitDoorInfo"}]}),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["request_report_surface_visible"] is True
+    assert result["verdict"]["no_visible_sm_report_packet_or_handler"] is True
+    assert result["verdict"]["existing_decoded_fixtures_have_no_report_sample"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor PVP report acceptance gap" in report_text
+    assert "SM_DigitDoorReport" in evidence_text
+    assert "CM_DigitDoorReport" in evidence_text
+
+
+def test_fanxiu_pvp_report_family_reuse_probe_marks_towerdefense_reuse_and_doupotd_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    towerdefense_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "towerdefense_mock" / "text_assets"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    index_dir = export_root / "apk_static_index"
+    for path in [digitdoor_dir, towerdefense_dir, doupotd_dir, message_dir, index_dir]:
+        path.mkdir(parents=True)
+
+    common_report_body = (
+        "function _M.CheckList(self)\n"
+        "local replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId\n"
+        "if self.curMapType=={it_scene} then\ntype=1\nelseif self.curMapType=={pvp_scene} then\ntype=2\nend\n"
+        "atkVoList=self.attackList\n"
+        "defVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId\n"
+        "serverWinnerId=self.winnerId\n"
+        "{send_line}\n"
+        "end\n"
+        "function _M.CreateEntityData(self,entityView)\n"
+        "local data=DigitDoorSimpleVO.new()\n"
+        "data.ownerId=entityView.Entity.V_Data.ownerId\n"
+        "data.resourceId=entityView.Entity.V_RoleId or 0\n"
+        "data.index=entityView.Entity.V_Data.pos or 0\n"
+        "data.lv=entityView.Entity.V_Data.level or 0\n"
+        "return data\nend\n"
+    )
+    (digitdoor_dir / "DigitDoorPVPSceneView.lua").write_text(
+        common_report_body.format(
+            it_scene="MapType.SceneType.Scene_DigitDoorPVPIT",
+            pvp_scene="MapType.SceneType.Scene_DigitDoorPVP",
+            send_line="DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)",
+        ),
+        encoding="utf-8",
+    )
+    (towerdefense_dir / "TowerDefensePVPSceneView.lua").write_text(
+        common_report_body.format(
+            it_scene="MapType.SceneType.Scene_TowerDefensePVPIT",
+            pvp_scene="MapType.SceneType.Scene_TowerDefensePVP",
+            send_line="DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)",
+        ),
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        common_report_body.format(
+            it_scene="MapType.SceneType.Scene_DoupoTDPVPIT",
+            pvp_scene="MapType.SceneType.Scene_DoupoTDPVP",
+            send_line="DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)",
+        ),
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorReportFun(self)\n"
+        "local CM_DigitDoorReport=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorReport)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\nend\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        "function _M.getId(self)\nreturn 91644\nend\nfunction _M.getName(self)\nreturn\"CM_DigitDoorReport\"\nend\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_digitdoor_protocol_schemas.tsv").write_text(
+        "module\tpacket\tid\tdirection\n"
+        "digitdoor\tCM_DigitDoorReport\t91644\tclient_to_server\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_digitdoor_netlogic_flow_edges.tsv").write_text(
+        "function\tpacket\tedge\nCM_DigitDoorReportFun\tCM_DigitDoorReport\tpacket_send\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_protocol_schemas.tsv").write_text(
+        "module\tpacket\tid\tdirection\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_netlogic_flow_edges.tsv").write_text(
+        "function\tpacket\tedge\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_pvp_report_family_reuse_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["digitdoor_scene_uses_digitdoor_report"] is True
+    assert result["verdict"]["towerdefense_scene_reuses_digitdoor_report"] is True
+    assert result["verdict"]["doupotd_scene_has_parallel_report_call"] is True
+    assert result["verdict"]["doupotd_report_request_surface_missing"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "PVP report family reuse" in report_text
+    assert "towerdefense" in evidence_text
+    assert "CM_DoupoTDReportFun" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_gap_probe_marks_scene_call_without_packet_surface(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    index_dir = export_root / "apk_static_index"
+    doupotd_dir.mkdir(parents=True)
+    index_dir.mkdir(parents=True)
+
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        'local DigitDoorSimpleVO=require"GameSystem.Game.DigitDoor.Core.Fight.VO.DigitDoorSimpleVO"\n'
+        'local DigitDoorAttrVO=require"GameSystem.Game.DigitDoor.Core.Fight.VO.DigitDoorAttrVO"\n'
+        "function _M.CheckList(self,fightComponent)\n"
+        "local replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId\n"
+        "if self.curMapType==MapType.SceneType.Scene_DoupoTDPVPIT then\n"
+        "type=1\nround=self.round\ntime=self.startTime\n"
+        "elseif self.curMapType==MapType.SceneType.Scene_DoupoTDPVP then\n"
+        "type=2\npkStage=self.pkStage\nzone=self.zone\npkStep=self.pkStep\ntime=self.createTime\nend\n"
+        "atkVoList=self.attackList\n"
+        "defVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId\n"
+        "serverWinnerId=self.winnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n"
+        "function _M.CreateEntityData(self,entityView)\n"
+        "local data=DigitDoorSimpleVO.new()\n"
+        "data.attr=DigitDoorAttrVO.new()\n"
+        "return data\nend\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\nend\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_surface_markers.tsv").write_text(
+        "module\tfile\tline\tcategory\tmarker\n"
+        "doupotd\tDoupoTDPVPSceneView.lua\t15\tnetlogic_call\tCM_DoupoTDReportFun\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_protocol_schemas.tsv").write_text(
+        "module\tpacket\tid\tdirection\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_protocol_fields.tsv").write_text(
+        "module\tpacket\tfield\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_netlogic_flow_edges.tsv").write_text(
+        "function\tpacket\tedge\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_surface_protocol_refs.tsv").write_text(
+        "module\tfile\tline\tpacket\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["scene_report_call_visible"] is True
+    assert result["verdict"]["scene_common_payload_shape_visible"] is True
+    assert result["verdict"]["no_visible_doupotd_report_packet_file"] is True
+    assert result["verdict"]["no_visible_doupotd_report_netlogic_fun"] is True
+    assert result["verdict"]["no_generated_doupotd_report_protocol_index"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report gap" in report_text
+    assert "CM_DoupoTDReportFun" in evidence_text
+    assert "packet_file_missing" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_global_lua_surface_probe_scans_all_lscript_symbols(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.CheckList(self)\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DoupoReport.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoReport"]=_M\n'
+        "CM_DoupoReport=_M\n"
+        'function _M.getName(self)\nreturn"CM_DoupoReport"\nend\n',
+        encoding="utf-8",
+    )
+    (message_dir / "VO_URL.lua").write_text(
+        "['93671']=setmetatable({'93671','module.mini.doupo.packet.CM_DoupoReport',},_o)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_global_lua_surface_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["scene_report_call_count"] == 1
+    assert result["stats"]["packet_alias_file_hit_count"] == 3
+    assert result["stats"]["vo_url_registration_count"] == 1
+    assert result["stats"]["netlogic_symbol_hit_count"] == 0
+    assert result["verdict"]["no_other_symbolic_sender_surface"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report global Lua surface" in report_text
+    assert "CM_DoupoTDReportFun" in evidence_text
+    assert "CM_DoupoReport" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_scene_payload_probe_maps_attr_and_winner_fields(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.SaveEntityData(self,entityView)\n"
+        "if not self.tbDefense[entityView.Entity.V_RoleId] then\nself.tbDefense[entityView.Entity.V_RoleId]=true\n"
+        "local data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nend\n"
+        "if not self.tbAttack[entityView.Entity.V_RoleId] then\nself.tbAttack[entityView.Entity.V_RoleId]=true\n"
+        "local data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\nend\nend\n"
+        "function _M.GetAttr(self,EntityData,clist)\n"
+        "local hp=EntityData:GetCurrentHp()\n"
+        "local maxhp=EntityData:GetMaxHp()\n"
+        "local attack=EntityData:GetAttack()\n"
+        "local pvpAttack=EntityData:GetPVPAttack()\n"
+        "local attackSpeed=EntityData:GetAttackSpeed()\n"
+        "local critical=EntityData:GetCritical()\n"
+        "local antiCritical=EntityData:GetAntiCritical()\n"
+        "local increaseDamage=EntityData:GetIncreaseDamage()\n"
+        "local reduceDamage=EntityData:GetReduceDamage()\n"
+        "local pvpIncreaseDamage=EntityData:GetPVPIncreaseDamage()\n"
+        "local pvpReduceDamage=EntityData:GetPVPReduceDamage()\n"
+        "local addDamage=EntityData:GetAddDamage()\n"
+        "self:GetAttrCode(\"HP\",hp,clist)\n"
+        "self:GetAttrCode(\"MAXHP\",maxhp,clist)\n"
+        "self:GetAttrCode(\"ATTACK\",attack,clist)\n"
+        "self:GetAttrCode(\"PVPATTACK\",pvpAttack,clist)\n"
+        "self:GetAttrCode(\"ATKSPEED\",attackSpeed,clist)\n"
+        "self:GetAttrCode(\"CRITICAL\",critical,clist)\n"
+        "self:GetAttrCode(\"ANTICRITICAL\",antiCritical,clist)\n"
+        "self:GetAttrCode(\"INCREASEDAMAGE\",increaseDamage,clist)\n"
+        "self:GetAttrCode(\"REDUCEDAMAGE\",reduceDamage,clist)\n"
+        "self:GetAttrCode(\"PVPINCREASE\",pvpIncreaseDamage,clist)\n"
+        "self:GetAttrCode(\"PVPREDUCE\",pvpReduceDamage,clist)\n"
+        "self:GetAttrCode(\"ADDDAMAGE\",addDamage,clist)\nend\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\n"
+        "local attackViewList=fightComponent:GetAttackViewList()\n"
+        "local data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nself.attackList:Add(data)\n"
+        "if self.curMapType==MapType.SceneType.Scene_DoupoTDPVPIT then\n"
+        "replayId=self.curFinishVo.replayId\ntype=1\nround=self.curFinishVo.round\npkStage=0\nzone=0\npkStep=0\ntime=self.curFinishVo.startTime\n"
+        "elseif self.curMapType==MapType.SceneType.Scene_DoupoTDPVP then\n"
+        "replayId=self.curFinishVo.replayId\ntype=2\nround=0\npkStage=self.curFinishVo.pkStage\nzone=self.curFinishVo.zone\npkStep=self.curFinishVo.pkStep\ntime=self.curFinishVo.createTime\nend\n"
+        "atkVoList=self.attackList\ndefVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId\n"
+        "serverWinnerId=self.winnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\nend\n"
+        "function _M.CreateEntityData(self,entityView)\n"
+        "local data=DigitDoorSimpleVO.new()\n"
+        "data.ownerId=LusuoLong.new(entityView.Entity.V_Data.ownerId._low,entityView.Entity.V_Data.ownerId._internalHigh)\n"
+        "data.resourceId=entityView.Entity.V_RoleId or 0\n"
+        "data.index=entityView.Entity.V_Data.pos or 0\n"
+        "data.lv=entityView.Entity.V_Data.level or 0\n"
+        "self:GetAttr(entityView.Entity.EntityData,data.attrVOList)\n"
+        "return data\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_scene_payload_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["attr_codes"] == [
+        "HP",
+        "MAXHP",
+        "ATTACK",
+        "PVPATTACK",
+        "ATKSPEED",
+        "CRITICAL",
+        "ANTICRITICAL",
+        "INCREASEDAMAGE",
+        "REDUCEDAMAGE",
+        "PVPINCREASE",
+        "PVPREDUCE",
+        "ADDDAMAGE",
+    ]
+    assert result["verdict"]["winner_projection_visible"] is True
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "clientWinnerId" in fields_text
+    assert "data.attrVOList" in fields_text
+    assert "DoupoTD PVP report scene payload" in report_text
+
+
+def test_fanxiu_doupotd_pvp_report_native_symbol_gap_probe_scans_readable_surfaces(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    cpp2il_dir = index_dir / "cpp2il_mock" / "IsilDump" / "Assembly-CSharp"
+    cpp2il_dir.mkdir(parents=True)
+    (index_dir / "il2cpp_methods.tsv").write_text(
+        "type\tmethod\nCore.Net.SocketManager\tF_SendMsg\n",
+        encoding="utf-8",
+    )
+    (index_dir / "apk_il2cpp_binary_boundary_symbols.tsv").write_text(
+        "symbol\tkind\nSocketBridge\ttype\n",
+        encoding="utf-8",
+    )
+    (cpp2il_dir / "SocketManager.txt").write_text(
+        "public void F_SendMsg(BaseMessage msg) {}\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["surface_file_count"] == 3
+    assert result["stats"]["exact_symbol_hit_count"] == 0
+    assert result["verdict"]["no_exact_doupotd_report_symbol_in_native_readable_surfaces"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    surfaces_text = Path(result["files"]["surfaces"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report native symbol gap" in report_text
+    assert "cpp2il_isil_dump" in surfaces_text
+
+
+def test_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe_marks_bridge_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    diffable_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_mock_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "Core"
+        / "Lua"
+    )
+    isil_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_mock_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "Core"
+        / "Lua"
+    )
+    lua_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    diffable_dir.mkdir(parents=True)
+    isil_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+    (diffable_dir / "LuaSingleton.cs").write_text(
+        "public class LuaSingleton {\n"
+        "public void LuaBeginAddSingleton() { }\n"
+        "public void LuaEndAddSingleton() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (isil_dir / "LuaSingleton.txt").write_text(
+        "Method: System.Void LuaBeginAddSingleton()\n"
+        "026 Call LuaTable.get_Item, X0, X1\n"
+        "044 Call LuaFunction.Call, X0\n"
+        "Method: System.Void LuaEndAddSingleton()\n"
+        "026 Call LuaTable.get_Item, X0, X1\n"
+        "044 Call LuaFunction.Call, X0\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LuaEngineBridge.lua").write_text(
+        "local _sins={}\n"
+        "function _M.AddSingleton(_,sin)\n"
+        "_sins[#_sins+1]=sin\n"
+        "end\n"
+        "function _M.EndAddSingleton()\n"
+        "for _,v in ipairs(_sins)do v:InitSingleton() end\n"
+        "end\n"
+        "function _M.Update(fTime,dTime,timelineTime)\n"
+        "for _,v in ipairs(_sins)do if(v.Update~=nil)then v:Update(fTime,dTime,timelineTime) end end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["cpp2il_diffable_cs_file_count"] == 1
+    assert result["stats"]["cpp2il_isil_file_count"] == 1
+    assert result["stats"]["cpp2il_lua_singleton_method_hit_count"] == 4
+    assert result["stats"]["cpp2il_lua_function_call_hit_count"] == 2
+    assert result["stats"]["native_report_symbol_hit_count"] == 0
+    assert result["stats"]["lua_engine_bridge_netlogic_mutation_count"] == 0
+    assert result["verdict"]["lua_engine_bridge_only_tracks_lifecycle_singletons"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report native Lua bridge boundary" in report_text
+    assert "cpp2il_lua_function_call" in evidence_text
+    assert "lua_engine_bridge_addsingleton" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_netlogic_family_probe_compares_explicit_report_senders(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    digitdoor_dir.mkdir(parents=True)
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.CheckList(self)\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\n"
+        "local CM_DoupoTDInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DoupoTDInfo)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorReportFun(self,replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "local CM_DigitDoorReport=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorReport)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReport)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_netlogic_family_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["digitdoor_report_function_count"] == 1
+    assert result["stats"]["doupotd_report_function_count"] == 0
+    assert result["stats"]["doupotd_cm_sender_function_count"] == 1
+    assert result["stats"]["callsite_doupotd_reportfun_count"] == 1
+    assert result["verdict"]["digitdoor_pvp_report_sender_explicit"] is True
+    assert result["verdict"]["doupotd_pvp_report_sender_missing_from_family"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report NetLogic family" in report_text
+    assert "CM_DigitDoorReportFun" in functions_text
+
+
+def test_fanxiu_doupotd_pvp_report_raw_export_coverage_probe_rules_out_export_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    index_dir.mkdir(parents=True)
+    netlogic_path = doupotd_dir / "DoupoTDNetLogic.lua"
+    scene_path = doupotd_dir / "DoupoTDPVPSceneView.lua"
+    netlogic_path.write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\n"
+        "local msg=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "SocketManager.Inst_get():F_SendMsg(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    scene_path.write_text(
+        "function _M.CheckList(self)\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_raw_lscript_export_coverage.tsv").write_text(
+        "raw_path\tmodule\tbyte_size\texport_match_count\thot_update_index_rows\tstatus\n"
+        "lscripts/gamesystem/game/doupotd_mock.bytes\tdoupotd\t123\t2\t0\tcovered_by_hash\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_raw_lscript_missing_export_text_assets.tsv").write_text(
+        "raw_path\tmodule\tasset_name\tpath_id\tbyte_size\tline_count\tfunction_count\toutput_path\n"
+        f"lscripts/gamesystem/game/doupotd_mock.bytes\tdoupotd\tDoupoTDNetLogic.lua\t1\t200\t4\t1\t{netlogic_path}\n"
+        f"lscripts/gamesystem/game/doupotd_mock.bytes\tdoupotd\tDoupoTDPVPSceneView.lua\t2\t180\t3\t1\t{scene_path}\n",
+        encoding="utf-8",
+    )
+    (index_dir / "hot_update_lscripts_text_assets.tsv").write_text(
+        "module\tasset_name\tstatus\tactual_path\toutput_path\n"
+        "message\tCM_DoupoReport.lua\tchanged\tmessage/CM_DoupoReport.lua\tout/CM_DoupoReport.lua\n"
+        "message\tVO_URL.lua\tchanged\tmessage/VO_URL.lua\tout/VO_URL.lua\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_surface_assets.tsv").write_text(
+        "module\tasset_name\tpacket_name\tpro_id\tdirection\tpackage\tline_count\tfunction_count\n"
+        "doupotd\tDoupoTDNetLogic.lua\t\t\t\tGameSystem.Game.DoupoTD.NetLogic.DoupoTDNetLogic\t4\t1\n"
+        "doupotd\tDoupoTDPVPSceneView.lua\t\t\t\tGameSystem.Game.DoupoTD.Activity.PVP.DoupoTDPVPSceneView\t3\t1\n"
+        "message\tCM_DoupoReport.lua\tCM_DoupoReport\t93671\tclient_to_server\tGameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoReport\t50\t4\n"
+        "message\tVO_URL.lua\t\t\t\tGameSystem.Game.Message.VO_URL\t20\t0\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["raw_missing_export_by_hash_count"] == 0
+    assert result["stats"]["doupotd_raw_status_covered_count"] == 1
+    assert result["stats"]["doupotd_target_raw_text_asset_count"] == 2
+    assert result["stats"]["actual_scene_report_call_hit_count"] == 1
+    assert result["stats"]["actual_netlogic_reportfun_hit_count"] == 0
+    assert result["verdict"]["doupotd_pvp_report_sender_gap_not_raw_export_coverage_gap"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report raw export coverage" in report_text
+    assert "raw_target_text_asset_exported" in evidence_text
+    assert "actual_scene_file_scan" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe_marks_static_binding_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    tolua_dir = export_root / "by_source" / "lscripts" / "tolua_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    tolua_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    doupotd_dir.mkdir(parents=True)
+    digitdoor_dir.mkdir(parents=True)
+    (tolua_dir / "class.lua").write_text(
+        "function class(super,M)\n"
+        "setmetatable(obj,{__index=_class[class_type]})\n"
+        "setmetatable(vtbl,{__index=function(t,k) return _class[super][k] end})\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "LuaInitializer.lua").write_text(
+        'local DoupoTDMgr=require("GameSystem.Game.DoupoTD.Mgr.DoupoTDMgr")\n'
+        "LuaEngineBridge:AddSingleton(DoupoTDMgr.Inst_get())\n",
+        encoding="utf-8",
+    )
+    (core_dir / "LuaEngineBridge.lua").write_text(
+        "local _sins={}\n"
+        "function _M.AddSingleton(_,sin)\n"
+        "_sins[#_sins+1]=sin\n"
+        "end\n"
+        "function _M.EndAddSingleton()\n"
+        "for _,v in ipairs(_sins)do v:InitSingleton() end\n"
+        "end\n"
+        "function _M.Destroy()\n"
+        "for _,v in ipairs(_sins)do v:Destroy() end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDMgr.lua").write_text(
+        'local DoupoTDNetLogic=require"GameSystem.Game.DoupoTD.NetLogic.DoupoTDNetLogic"\n'
+        "self.NetLogic=DoupoTDNetLogic.new()\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "local class=require\"class\"\n"
+        "_M=class(nil,_M)\n"
+        "function _M.CM_DoupoTDInfoFun(self)\nend\n"
+        "function _M.CM_DouPoCardPanelFun(self)\nend\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round)\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorNetLogic.lua").write_text(
+        'local _CM_DigitDoorReport=require"GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorReport"\n'
+        "_MessagePool.Inst_get():F_Register(_CM_DigitDoorReport:getId(),typeof(_CM_DigitDoorReport))\n"
+        "function _M.CM_DigitDoorReportFun(self,replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["class_static_vtbl_index_line_count"] == 2
+    assert result["stats"]["lua_engine_bridge_addsingleton_count"] == 2
+    assert result["stats"]["lua_engine_bridge_netlogic_mutation_count"] == 0
+    assert result["stats"]["doupotd_mgr_netlogic_new_count"] == 2
+    assert result["stats"]["doupotd_netlogic_report_function_count"] == 0
+    assert result["stats"]["digitdoor_report_function_count"] == 1
+    assert result["stats"]["global_report_function_assignment_count"] == 0
+    assert result["verdict"]["doupotd_netlogic_has_no_report_binding_triplet"] is True
+    assert result["verdict"]["lua_engine_bridge_only_tracks_lifecycle_singletons"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report Lua binding boundary" in report_text
+    assert "doupotd_mgr_netlogic_new" in evidence_text
+    assert "digitdoor_report_function" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_shape_alias_probe_finds_cm_doupo_report_packet(tmp_path):
+    export_root = tmp_path / "exports"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    message_dir.mkdir(parents=True)
+    doupotd_dir.mkdir(parents=True)
+
+    def packet_body(packet_name: str, packet_id: int, package: str) -> str:
+        return (
+            'local class=require"class"\n'
+            'local BaseMessage=require"Core.Engine.Net.Sockets.BaseMessage"\n'
+            "local _M={}\n"
+            f'package.loaded["{package}"]=_M\n'
+            "_M=class(BaseMessage,_M)\n"
+            f"{packet_name}=_M\n"
+            "function _M._init_(self)\n"
+            "self.replayId=0\nself.type=0\nself.round=0\nself.pkStage=0\nself.zone=0\nself.pkStep=0\nself.time=0\n"
+            'local CList=require"CList"\nself.atkVoList=CList.new()\nlocal CList=require"CList"\nself.defVoList=CList.new()\n'
+            "self.clientWinnerId=0\nself.serverWinnerId=0\nend\n"
+            "function _M.reading(self)\n"
+            "self.replayId=self:readLong()\nself.type=self:readInt()\nself.round=self:readInt()\nself.pkStage=self:readInt()\nself.zone=self:readInt()\nself.pkStep=self:readInt()\nself.time=self:readLong()\n"
+            "self:readMessageList2List(self.atkVoList)\nself:readMessageList2List(self.defVoList)\n"
+            "self.clientWinnerId=self:readLong()\nself.serverWinnerId=self:readLong()\nreturn true\nend\n"
+            "function _M.writing(self)\n"
+            "self:writeLong(self.replayId)\nself:writeInt(self.type)\nself:writeInt(self.round)\nself:writeInt(self.pkStage)\nself:writeInt(self.zone)\nself:writeInt(self.pkStep)\nself:writeLong(self.time)\n"
+            "self:writeList(self.atkVoList)\nself:writeList(self.defVoList)\nself:writeLong(self.clientWinnerId)\nself:writeLong(self.serverWinnerId)\nreturn true\nend\n"
+            f"function _M.getId(self)\nreturn {packet_id}\nend\n"
+            f'function _M.getName(self)\nreturn"{packet_name}"\nend\n'
+            "return _M\n"
+        )
+
+    (message_dir / "CM_DoupoReport.lua").write_text(
+        packet_body("CM_DoupoReport", 93671, "GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoReport"),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        packet_body(
+            "CM_DigitDoorReport",
+            91644,
+            "GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorReport",
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "VO_URL.lua").write_text(
+        "local _M={}\n['93671']=setmetatable({'93671','module.mini.doupo.packet.CM_DoupoReport',},_o)\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.CheckList(self,fightComponent)\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.CM_DoupoTDInfoFun(self)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_shape_alias_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["cm_doupo_report_exact_shape_match"] is True
+    assert result["verdict"]["cm_doupo_report_registered_in_vo_url"] is True
+    assert result["verdict"]["visible_doupotd_lua_sender_for_cm_doupo_report_missing"] is True
+    candidates_text = Path(result["files"]["candidates"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "CM_DoupoReport" in candidates_text
+    assert "CM_DigitDoorReport" in candidates_text
+    assert "93671" in candidates_text
+    assert "DoupoTD PVP report shape alias" in report_text
+
+
+def test_fanxiu_doupotd_pvp_report_sender_alias_gap_probe_marks_alias_without_visible_sender(tmp_path):
+    export_root = tmp_path / "exports"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    index_dir = export_root / "apk_static_index"
+    message_dir.mkdir(parents=True)
+    doupotd_dir.mkdir(parents=True)
+    index_dir.mkdir(parents=True)
+
+    def packet_body(packet_name: str, packet_id: int, package: str) -> str:
+        return (
+            'local class=require"class"\n'
+            'local BaseMessage=require"Core.Engine.Net.Sockets.BaseMessage"\n'
+            "local _M={}\n"
+            f'package.loaded["{package}"]=_M\n'
+            "_M=class(BaseMessage,_M)\n"
+            f"{packet_name}=_M\n"
+            "function _M._init_(self)\n"
+            "self.replayId=0\nself.type=0\nself.round=0\nself.pkStage=0\nself.zone=0\nself.pkStep=0\nself.time=0\n"
+            'local CList=require"CList"\nself.atkVoList=CList.new()\nlocal CList=require"CList"\nself.defVoList=CList.new()\n'
+            "self.clientWinnerId=0\nself.serverWinnerId=0\nend\n"
+            "function _M.reading(self)\n"
+            "self.replayId=self:readLong()\nself.type=self:readInt()\nself.round=self:readInt()\nself.pkStage=self:readInt()\nself.zone=self:readInt()\nself.pkStep=self:readInt()\nself.time=self:readLong()\n"
+            "self:readMessageList2List(self.atkVoList)\nself:readMessageList2List(self.defVoList)\n"
+            "self.clientWinnerId=self:readLong()\nself.serverWinnerId=self:readLong()\nreturn true\nend\n"
+            "function _M.writing(self)\n"
+            "self:writeLong(self.replayId)\nself:writeInt(self.type)\nself:writeInt(self.round)\nself:writeInt(self.pkStage)\nself:writeInt(self.zone)\nself:writeInt(self.pkStep)\nself:writeLong(self.time)\n"
+            "self:writeList(self.atkVoList)\nself:writeList(self.defVoList)\nself:writeLong(self.clientWinnerId)\nself:writeLong(self.serverWinnerId)\nreturn true\nend\n"
+            f"function _M.getId(self)\nreturn {packet_id}\nend\n"
+            f'function _M.getName(self)\nreturn"{packet_name}"\nend\n'
+            "return _M\n"
+        )
+
+    (message_dir / "CM_DoupoReport.lua").write_text(
+        packet_body("CM_DoupoReport", 93671, "GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoReport"),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReport.lua").write_text(
+        packet_body(
+            "CM_DigitDoorReport",
+            91644,
+            "GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorReport",
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "VO_URL.lua").write_text(
+        "local _M={}\n['93671']=setmetatable({'93671','module.mini.doupo.packet.CM_DoupoReport',},_o)\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.CheckList(self,fightComponent)\n"
+        "local replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDNetLogic.lua").write_text(
+        'local _CM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoTDInfo"\n'
+        "function _M.CM_DoupoTDInfoFun(self)\n"
+        "local msg=Core.Net.MessagePool.GetMessageFromPools(_CM_DoupoTDInfo:getId())\n"
+        "self.Facade.F_SocketMgr:F_SendMsg(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_surface_assets.tsv").write_text(
+        "asset\tcategory\tpro_id\tpacket_name\tpackage\n"
+        "CM_DoupoReport.lua\tserver\t93671\tCM_DoupoReport\tGameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoReport\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_surface_markers.tsv").write_text(
+        "module\tfile\tline\tcategory\tmarker\n"
+        "doupotd\tDoupoTDPVPSceneView.lua\t3\tnetlogic_call\tCM_DoupoTDReportFun\n",
+        encoding="utf-8",
+    )
+    (index_dir / "lua_lscript_module_doupotd_netlogic_flow_edges.tsv").write_text(
+        "function\tpacket\tedge\n"
+        "CM_DoupoTDInfoFun\tCM_DoupoTDInfo\tsend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["scene_report_call_count"] == 1
+    assert result["stats"]["cm_doupo_report_exact_shape_count"] == 1
+    assert result["stats"]["packet_alias_vo_url_registration_count"] == 1
+    assert result["stats"]["global_surface_cm_doupo_report_row_count"] == 1
+    assert result["stats"]["netlogic_report_function_count"] == 0
+    assert result["stats"]["netlogic_cm_doupo_report_ref_count"] == 0
+    assert result["verdict"]["packet_alias_body_visible"] is True
+    assert result["verdict"]["visible_doupotd_netlogic_report_function_missing"] is True
+    assert result["verdict"]["visible_doupotd_netlogic_alias_sender_missing"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report sender alias gap" in report_text
+    assert "CM_DoupoReport" in evidence_text
+    assert "93671" in evidence_text
+    assert "netlogic_alias_sender_missing" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_runtime_coverage_probe_marks_old_captures_without_hits(tmp_path):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "sample.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"offset": 10, "pro_id": 93603, "name": "CM_DoupoTDInfo", "direction": "c2s", "parsed": {}},
+                    {"offset": 20, "pro_id": 91628, "name": "SM_DigitDoorReadyFight", "direction": "s2c"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_runtime_coverage_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["decoded_fixture_count"] == 1
+    assert result["stats"]["decoded_frame_count"] == 2
+    assert result["stats"]["target_frame_count"] == 0
+    assert result["verdict"]["existing_decoded_fixtures_cover_no_doupotd_pvp_report"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    targets_text = Path(result["files"]["targets"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report runtime coverage" in report_text
+    assert "93671" in targets_text
+    assert "CM_DoupoReport" in targets_text
+
+
+def test_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe_marks_fixture_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "sample.pcapng").write_bytes(b"pcapng")
+    (capture_dir / "sample.err.log").write_text("capture stderr line\n", encoding="utf-8")
+    (capture_dir / "sample.out.log").write_text("", encoding="utf-8")
+    (capture_dir / "sample.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"offset": 10, "pro_id": 93603, "name": "CM_DoupoTDInfo", "direction": "c2s", "parsed": {}},
+                    {"offset": 20, "pro_id": 91628, "name": "SM_DigitDoorReadyFight", "direction": "s2c"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["pcapng_capture_count"] == 1
+    assert result["stats"]["decoded_fixture_count"] == 1
+    assert result["stats"]["decoded_frame_count"] == 2
+    assert result["stats"]["target_frame_count"] == 0
+    assert result["stats"]["capture_step_count"] == 4
+    assert result["verdict"]["pcapng_fixture_available"] is True
+    assert result["verdict"]["existing_decoded_fixture_gap_confirmed"] is True
+    assert result["verdict"]["focused_capture_plan_ready"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    fixtures_text = Path(result["files"]["fixtures"]).read_text(encoding="utf-8-sig")
+    privacy_text = Path(result["files"]["privacy"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report focused capture readiness" in report_text
+    assert "93671" in report_text
+    assert "sample.pcapng" in fixtures_text
+    assert "sample.codeyun_decoded.json" in fixtures_text
+    assert "no_packet_tampering" in privacy_text
+
+
+def test_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe_lists_offline_streams(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "sample.pcapng").write_bytes(b"pcapng")
+    (capture_dir / "sample.codeyun_decoded.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+
+    def fake_resolve_tshark(tshark_path=None):
+        return (
+            "fake-tshark",
+            [{"candidate": "fake-tshark", "exists": True, "selected": True, "version": "TShark fake", "error": ""}],
+            "TShark fake",
+        )
+
+    def fake_list_streams(pcap, *, host="", tshark=""):
+        assert Path(pcap).name == "sample.pcapng"
+        assert host == "1.2.3.4"
+        assert tshark == "fake-tshark"
+        return [
+            {"stream": 36, "packets": 64, "payload_bytes": 8856},
+            {"stream": 34, "packets": 78, "payload_bytes": 8213},
+        ]
+
+    monkeypatch.setattr(doupotd_catalog_module, "_resolve_tshark_candidate", fake_resolve_tshark)
+    monkeypatch.setattr(doupotd_catalog_module, "list_tcp_streams_with_tshark", fake_list_streams)
+
+    result = build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe(export_root=export_root, server_host="1.2.3.4")
+
+    assert result["confirmed"] is True
+    assert result["stats"]["tshark_available"] is True
+    assert result["stats"]["pcapng_capture_count"] == 1
+    assert result["stats"]["capture_with_decoded_sibling_count"] == 1
+    assert result["stats"]["host_stream_row_count"] == 2
+    assert result["stats"]["host_stream_max_payload_bytes"] == 8856
+    assert result["verdict"]["stream_metadata_only_no_payload_exported"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    streams_text = Path(result["files"]["streams"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP pcap stream readiness" in report_text
+    assert "sample.pcapng" in streams_text
+    assert "8856" in streams_text
+
+
+def test_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe_decodes_counts_only(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "sample.pcapng").write_bytes(b"pcapng")
+    (capture_dir / "sample.codeyun_decoded.json").write_text(json.dumps({"frames": []}), encoding="utf-8")
+
+    def fake_resolve_tshark(tshark_path=None):
+        return (
+            "fake-tshark",
+            [{"candidate": "fake-tshark", "exists": True, "selected": True, "version": "TShark fake", "error": ""}],
+            "TShark fake",
+        )
+
+    def fake_list_streams(pcap, *, host="", tshark=""):
+        return [{"stream": 36, "packets": 64, "payload_bytes": 8856}]
+
+    def fake_extract_payloads(pcap, stream, *, server_host, tshark=""):
+        assert stream == 36
+        assert server_host == "1.2.3.4"
+        assert tshark == "fake-tshark"
+        return b"c2s", b"s2c"
+
+    def fake_decode_frames(payload, schema):
+        if payload == b"c2s":
+            return [{"offset": 0, "frame_len": 10, "pro_id": 93603, "name": "CM_DoupoTDInfo", "payload_len": 4, "parsed": {}}]
+        return [{"offset": 0, "frame_len": 12, "pro_id": 93604, "name": "SM_DoupoTDInfo", "payload_len": 5}]
+
+    monkeypatch.setattr(doupotd_catalog_module, "_resolve_tshark_candidate", fake_resolve_tshark)
+    monkeypatch.setattr(doupotd_catalog_module, "list_tcp_streams_with_tshark", fake_list_streams)
+    monkeypatch.setattr(doupotd_catalog_module, "extract_tcp_stream_payloads_with_tshark", fake_extract_payloads)
+    monkeypatch.setattr(doupotd_catalog_module, "decode_lusuo_frames", fake_decode_frames)
+
+    result = build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(export_root=export_root, server_host="1.2.3.4")
+
+    assert result["confirmed"] is True
+    assert result["stats"]["selected_stream_count"] == 1
+    assert result["stats"]["decoded_frame_count"] == 2
+    assert result["stats"]["decoded_protocol_row_count"] == 2
+    assert result["stats"]["target_frame_count"] == 0
+    assert result["verdict"]["metadata_only_no_payload_values_exported"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    protocols_text = Path(result["files"]["protocols"]).read_text(encoding="utf-8-sig")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP pcap decode metadata" in report_text
+    assert "CM_DoupoTDInfo" in protocols_text
+    assert "SM_DoupoTDInfo" in protocols_text
+    assert "raw" not in hits_text.lower()
+
+
+def test_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe_classifies_old_sample(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    protocols_path = output_dir / "doupotd_pvp_report_pcap_decode_metadata_protocols.tsv"
+    rows = [
+        {"file": "sample.pcapng", "stream": "36", "direction": "c2s", "pro_id": "7", "name": "CM_SyncTime", "count": "20", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "36", "direction": "c2s", "pro_id": "8", "name": "CM_ChangeMap", "count": "12", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "36", "direction": "s2c", "pro_id": "100", "name": "SM_ActivityRankSync", "count": "14", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "34", "direction": "s2c", "pro_id": "101", "name": "SM_VeinsSelfSeat", "count": "9", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "34", "direction": "s2c", "pro_id": "102", "name": "SM_RewardResult", "count": "8", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "34", "direction": "s2c", "pro_id": "103", "name": "SM_UnknownOther", "count": "3", "is_target": "False"},
+    ]
+    with protocols_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["file", "stream", "direction", "pro_id", "name", "count", "is_target"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["protocol_row_count"] == 6
+    assert result["stats"]["packet_count"] == 66
+    assert result["stats"]["target_report_packet_count"] == 0
+    assert result["stats"]["map_sync_lifecycle_packet_count"] == 32
+    assert result["stats"]["activity_refresh_packet_count"] == 14
+    assert result["stats"]["seat_veins_social_packet_count"] == 9
+    assert result["verdict"]["old_pcap_unsuitable_for_doupotd_pvp_report_runtime_claims"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    categories_text = Path(result["files"]["categories"]).read_text(encoding="utf-8-sig")
+    protocols_text = Path(result["files"]["protocols"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP old pcap protocol scope" in report_text
+    assert "map_sync_lifecycle" in categories_text
+    assert "activity_refresh" in categories_text
+    assert "seat_veins_social" in categories_text
+    assert "CM_SyncTime" in protocols_text
+    assert "payload" not in protocols_text.lower()
+
+
+def test_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe_maps_fields(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    protocols_path = output_dir / "doupotd_pvp_report_pcap_decode_metadata_protocols.tsv"
+    rows = [
+        {"file": "sample.pcapng", "stream": "36", "direction": "c2s", "pro_id": "7", "name": "CM_SyncTime", "count": "20", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "36", "direction": "c2s", "pro_id": "8", "name": "CM_ChangeMap", "count": "12", "is_target": "False"},
+        {"file": "sample.pcapng", "stream": "34", "direction": "s2c", "pro_id": "100", "name": "SM_ActivityRankSync", "count": "14", "is_target": "False"},
+    ]
+    with protocols_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["file", "stream", "direction", "pro_id", "name", "count", "is_target"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    class FakeInfo:
+        def __init__(self, packet_id, name, ops):
+            self.packet_id = packet_id
+            self.name = name
+            self.parent = ""
+            self.ops = ops
+            self.path = export_root / "message" / f"{name}.lua"
+
+    class FakeSchema:
+        def __init__(self, _text_assets):
+            sync = FakeInfo(7, "CM_SyncTime", [("primitive", "time", "writeInt")])
+            change = FakeInfo(8, "CM_ChangeMap", [("primitive", "mapId", "writeInt"), ("primitive", "line", "writeShort")])
+            self.by_id = {7: sync, 8: change}
+            self.by_name = {"CM_SyncTime": sync, "CM_ChangeMap": change}
+            self.protocol_names = {7: "CM_SyncTime", 8: "CM_ChangeMap", 100: "SM_ActivityRankSync"}
+
+    monkeypatch.setattr(doupotd_catalog_module, "LuaPacketSchemaIndex", FakeSchema)
+
+    result = build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_protocol_count"] == 3
+    assert result["stats"]["observed_packet_count"] == 46
+    assert result["stats"]["schema_present_protocol_count"] == 2
+    assert result["stats"]["schema_missing_protocol_count"] == 1
+    assert result["verdict"]["all_observed_protocols_have_schema"] is False
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    protocols_text = Path(result["files"]["protocols"]).read_text(encoding="utf-8-sig")
+    directions_text = Path(result["files"]["directions"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP old pcap observed schema coverage" in report_text
+    assert "CM_SyncTime" in protocols_text
+    assert "time" in protocols_text
+    assert "SM_ActivityRankSync" in directions_text
+    assert "payload" not in protocols_text.lower()
+
+
+def test_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe_maps_logic_refs(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    observed_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    observed_rows = [
+        {
+            "pro_id": "10062",
+            "name": "SM_RewardResult",
+            "packet_count": "4",
+            "directions": "s2c",
+            "category": "combat_state_misc",
+            "schema_present": "True",
+            "field_count": "2",
+        },
+        {
+            "pro_id": "40001",
+            "name": "CM_ChangeMap",
+            "packet_count": "2",
+            "directions": "c2s",
+            "category": "map_sync_lifecycle",
+            "schema_present": "True",
+            "field_count": "2",
+        },
+        {
+            "pro_id": "1",
+            "name": "SM_OnlySchema",
+            "packet_count": "1",
+            "directions": "s2c",
+            "category": "other",
+            "schema_present": "True",
+            "field_count": "0",
+        },
+    ]
+    with observed_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "category", "schema_present", "field_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerows(observed_rows)
+
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "costandreward" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    (logic_dir / "CostAndRewardNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_RewardResult=require"GameSystem.Game.Message.module.common.reward.packet.SM_RewardResult"',
+                "_MessagePool.Inst_get():F_Register(_SM_RewardResult:getId(),typeof(_SM_RewardResult),function(msg)",
+                "self.SM_RewardResultFun(msg)",
+                "end)",
+                "function _M.SM_RewardResultFun(msg)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    scene_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "scene" / "text_assets"
+    scene_dir.mkdir(parents=True)
+    (scene_dir / "SceneNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_ChangeMap=require"GameSystem.Game.Message.module.scene.map.packet.CM_ChangeMap"',
+                "_MessagePool.Inst_get():F_Register(_CM_ChangeMap:getId(),typeof(_CM_ChangeMap))",
+                "function _M.CM_ChangeMapFun(mapId)",
+                "self:F_SendMsg(msg)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_fake" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_OnlySchema.lua").write_text("SM_OnlySchema=_M\n", encoding="utf-8")
+
+    result = build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_protocol_count"] == 3
+    assert result["stats"]["protocol_with_logic_ref_count"] == 2
+    assert result["stats"]["protocol_schema_only_count"] == 1
+    assert result["stats"]["server_packet_handler_visible_count"] == 1
+    assert result["stats"]["client_sender_visible_count"] == 1
+    assert result["verdict"]["generated_message_schema_files_excluded"] is True
+    summary_text = Path(result["files"]["summary"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "server_packet_handler_visible" in summary_text
+    assert "client_sender_visible" in summary_text
+    assert "schema_only_no_logic_ref" in summary_text
+    assert "SM_RewardResultFun" in evidence_text
+    assert "message_fake" not in evidence_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe_maps_costandreward_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "10062",
+                "name": "SM_RewardResult",
+                "packet_count": "4",
+                "directions": "s2c",
+                "field_order": "rewards | reason",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "10062",
+                "name": "SM_RewardResult",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    cost_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "costandreward_hash" / "text_assets"
+    cost_dir.mkdir(parents=True)
+    (cost_dir / "CostAndRewardNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_RewardResult=require"GameSystem.Game.Message.module.common.reward.packet.SM_RewardResult"',
+                "function _M.LuaCostAndRewardNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_RewardResult:getId(),typeof(_SM_RewardResult),function(msg)",
+                "self.SM_RewardResultFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_RewardResult:getId())",
+                "end",
+                "function _M.SM_RewardResultFun(msg)",
+                "CostAndRewardMgr.Inst_get():AddRewardResultsData(msg)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cost_dir / "CostAndRewardMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.AddRewardResultsData(self,rewards)",
+                "if(rewards==nil or rewards.rewards==nil)then return end",
+                "self._RewardDic:LuaDic_Clear()",
+                "local dataCount=rewards.rewards:Count()",
+                "for keyType,vList in Kpairs(self._RewardDic)do",
+                "self:DispatchReward(keyType,vList)",
+                "end",
+                "end",
+                "function _M.DispatchReward(self,rewardType,rewardList)",
+                "if(rewardType==RewardType.ITEM)then",
+                "BackpackMgr.Inst_get().Model:AddItem(rewardList)",
+                "elseif(rewardType==RewardType.WALLET)then",
+                "WalletMgr.Inst_get().Model:UpdateWalletInfo(rewardList)",
+                "elseif(rewardType==RewardType.EXP)then",
+                "RoleMgr.Inst_get().Model:AddRoleExp(1)",
+                "elseif(rewardType==RewardType.GONGFA_EXP)then",
+                "GongFaNewMgr.Inst_get():UpGongFaExp(rewardList)",
+                "end",
+                "end",
+                "function _M.AddRewardResults(self,rewards,popType)",
+                "self:OpenGetGoodsFlyView(rewards)",
+                "self:OpenWinAlertRewardView(rewards,RewardType.OpenRewardViewType.common)",
+                "self:UpdateItemQuickUse(rewards)",
+                "end",
+                "function _M.OpenGetGoodsFlyView(self,rewards)",
+                "end",
+                "function _M.OpenWinAlertRewardView(self,rewards)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    other_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "demo" / "text_assets"
+    other_dir.mkdir(parents=True)
+    (other_dir / "DemoRewardView.lua").write_text(
+        "CostAndRewardMgr.Inst_get():OpenWinAlertRewardView(msg.rewardResults,RewardType.OpenRewardViewType.common)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 4
+    assert result["stats"]["model_mutation_evidence_count"] >= 3
+    assert result["stats"]["reward_ui_surface_evidence_count"] >= 2
+    assert result["stats"]["cross_module_costandreward_call_count_capped"] == 1
+    assert result["verdict"]["handler_forwards_to_costandreward_mgr"] is True
+    assert result["verdict"]["client_model_mutation_surface_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_RewardResult chain" in report_text
+    assert "AddRewardResultsData(msg)" in evidence_text
+    assert "BackpackMgr" in evidence_text
+    assert "DispatchReward" in functions_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe_maps_role_practice_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "30022",
+                "name": "SM_PracticeCollect",
+                "packet_count": "4",
+                "directions": "s2c",
+                "field_order": "gongfa | collectTime | interval | gongfaExp | roleExp",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "30022",
+                "name": "SM_PracticeCollect",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "8",
+            }
+        )
+
+    role_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "role_hash" / "text_assets"
+    role_dir.mkdir(parents=True)
+    (role_dir / "RoleNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_PracticeCollect=require"GameSystem.Game.Message.module.player.role.packet.SM_PracticeCollect"',
+                'local _SM_PracticeOffline=require"GameSystem.Game.Message.module.player.role.packet.SM_PracticeOffline"',
+                'local _CM_ChoosePracticeGongfa=require"GameSystem.Game.Message.module.player.role.packet.CM_ChoosePracticeGongfa"',
+                "function _M.LuaRoleNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_PracticeCollect:getId(),typeof(_SM_PracticeCollect),self.SM_PracticeCollectFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_PracticeOffline:getId(),typeof(_SM_PracticeOffline),self.SM_PracticeOfflineFun)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_PracticeCollect:getId())",
+                "end",
+                "function _M.SM_PracticeCollectFun(msg)",
+                "RoleMgr.Inst_get():ShowPractice(msg)",
+                "end",
+                "function _M.SM_PracticeOfflineFun(msg)",
+                "RoleMgr.Inst_get():SyncOfflinePractice(msg)",
+                "end",
+                "function _M.CM_ChoosePracticeGongfa(gongfa)",
+                "local CM_ChoosePracticeGongfa=SocketManager.Inst_get():GetMessageFromPools(_CM_ChoosePracticeGongfa)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (role_dir / "RoleMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ShowPractice(self,msg)",
+                "self:UpdateLastExpIncTime(LoginMgr.Inst_get():GetSeverTime())",
+                "local gExp=msg.gongfaExp:ToNum()",
+                "local data=CList.new()",
+                "data:Add(LuaLocalization.Get('GameUtil_Type_2')..GameUtil.ConvertBigDouble(msg.gongfaExp))",
+                "self.Model:UpdateGongFaExpPool(msg.gongfaExp)",
+                "self:OnPracticeUpdate(data)",
+                "end",
+                "function _M.OnPracticeUpdate(self,data)",
+                "if PlotMgr.Inst_get():IsRunning()then return end",
+                "if not BottleWorldMgr.Inst_get():IsInBottle()or BottleWorldMgr.Inst_get():GetCurBottleState()~=BottleType.BottleStateType.Sit then return end",
+                "UIShowMgr.Inst_get():F_ShowBottonWin(Window.MainFloatTextView,function(panel)",
+                "panel:AddContent(PlayerType.ExpShowType.Middle,data)",
+                "end,false,true)",
+                "end",
+                "function _M.UpdateLastExpIncTime(self,lastExpIncTime)",
+                "self.lastExpIncTime=lastExpIncTime:ToNum()",
+                "end",
+                "function _M.SyncOfflinePractice(self,msg)",
+                "self.Model:SetChooseGongFaId(msg.gongfa)",
+                "self.offlinePractice=msg",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (role_dir / "RoleData.lua").write_text(
+        "function _M.GetPracticeInterval(self)\nreturn 1\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 4
+    assert result["stats"]["payload_field_usage_evidence_count"] >= 2
+    assert result["stats"]["model_update_evidence_count"] >= 2
+    assert result["stats"]["float_text_ui_gate_evidence_count"] >= 3
+    assert result["verdict"]["handler_forwards_to_role_mgr_show_practice"] is True
+    assert result["verdict"]["gongfa_exp_pool_update_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_PracticeCollect chain" in report_text
+    assert "ShowPractice(msg)" in evidence_text
+    assert "UpdateGongFaExpPool" in evidence_text
+    assert "MainFloatTextView" in evidence_text
+    assert "SM_PracticeCollectFun" in functions_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe_maps_rank_sync_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "51104",
+                "name": "SM_ActivityRankSync",
+                "packet_count": "3",
+                "directions": "s2c",
+                "field_order": "vo",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "51103",
+                "name": "CM_ActivityRankSync",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "activityId | startIndex | endIndex | group",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "51104",
+                "name": "SM_ActivityRankSync",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "7",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "51103",
+                "name": "CM_ActivityRankSync",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "127",
+            }
+        )
+
+    rank_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "activityrank_hash" / "text_assets"
+    rank_dir.mkdir(parents=True)
+    (rank_dir / "ActivityrankNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_ActivityRankSync=require"GameSystem.Game.Message.module.common.activityrank.packet.SM_ActivityRankSync"',
+                'local _CM_ActivityRankSync=require"GameSystem.Game.Message.module.common.activityrank.packet.CM_ActivityRankSync"',
+                "function _M.LuaActivityrankNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_ActivityRankSync:getId(),typeof(_SM_ActivityRankSync),function(msg)",
+                "self.SM_ActivityRankSyncFun(msg)",
+                "end)",
+                "_MessagePool.Inst_get():F_Register(_CM_ActivityRankSync:getId(),typeof(_CM_ActivityRankSync))",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_ActivityRankSync:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_ActivityRankSync:getId())",
+                "end",
+                "function _M.CM_ActivityRankSyncFun(self,activityId,startIndex,endIndex,group)",
+                "local CM_ActivityRankSync=SocketManager.Inst_get():GetMessageFromPools(_CM_ActivityRankSync)",
+                "CM_ActivityRankSync.activityId=activityId",
+                "CM_ActivityRankSync.startIndex=startIndex or 0",
+                "CM_ActivityRankSync.endIndex=endIndex or 0",
+                "CM_ActivityRankSync.group=group or 0",
+                "SocketManager.Inst_get():F_SendMsg(CM_ActivityRankSync,activityId)",
+                "end",
+                "function _M.SM_ActivityRankSyncFun(msg)",
+                "if msg.code==0 then",
+                "ActivityrankMgr.Inst_get().Model:ActivityRankSyncMsg(msg)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (rank_dir / "ActivityrankModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ActivityRankSyncMsg(self,msg)",
+                "if(not msg)or(not msg.vo)then return end",
+                "self.ActivityrankData:SetRefreshActicityRankData(msg)",
+                "self:RaiseEvent(ActivityrankType.ActivityRankSync,msg)",
+                "self:RaiseEvent(ActivityrankType.ActivityRankRewardTypeChange,msg.vo.activityId)",
+                "self:RefreshRewardRedDot(msg.vo.activityId)",
+                "end",
+                "function _M.RefreshRewardRedDot(self,id)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.Activity_Menu_Node)",
+                "end",
+                "function _M.ChecRankRedDot(self,actId,activityId)",
+                "local rankData=self.ActivityrankData:GetRankDataDic()",
+                "return rankData~=nil",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (rank_dir / "ActivityrankData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetRefreshActicityRankData(self,msg)",
+                "self.V_RankDataDic:LuaDic_AddOrSetItem(msg.vo.activityId,msg.vo)",
+                "end",
+                "function _M.GetRankDataById(self,activityId)",
+                "return self.V_RankDataDic:LuaDic_GetItem(activityId)",
+                "end",
+                "function _M.GetRankDataDic(self)",
+                "return self.V_RankDataDic",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (rank_dir / "ActivityrankHandler.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetActivityListVO(self,rankVO,minLen)",
+                "self:UpdateRankData(rankVO,minLen)",
+                "end",
+                "function _M.GetActivityRankVO(self,index)",
+                "return self.V_RankDic:LuaDic_GetItem(index)",
+                "end",
+                "function _M.GetRankListData(self,pageIndex,nowTime,getAll,group)",
+                "local startIndex=pageIndex*self.V_PageShow",
+                "local endIndex=(pageIndex+1)*self.V_PageShow-1",
+                "ActivityrankMgr.Inst_get().NetLogic:CM_ActivityRankSyncFun(self.V_RankActivityId,startIndex,endIndex,self.V_RankGroup)",
+                "end",
+                "function _M.UpdateRankData(self,rankVO,minLen)",
+                "self:RankDicUpdate(self.V_RankDic,rankVO.rankVOS)",
+                "end",
+                "function _M.RankDicUpdate(self,dic,list)",
+                "dic:LuaDic_AddOrSetItem(1,list[1])",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 3
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["model_cache_update_evidence_count"] >= 2
+    assert result["stats"]["activityrank_event_red_dot_evidence_count"] >= 3
+    assert result["stats"]["request_builder_evidence_count"] >= 4
+    assert result["stats"]["paging_request_surface_evidence_count"] >= 2
+    assert result["verdict"]["handler_forwards_to_activityrank_model"] is True
+    assert result["verdict"]["client_rank_request_sender_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_ActivityRankSync chain" in report_text
+    assert "ActivityRankSyncMsg(msg)" in evidence_text
+    assert "LuaDic_AddOrSetItem(msg.vo.activityId,msg.vo)" in evidence_text
+    assert "CM_ActivityRankSyncFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sync_time_chain_probe_maps_heartbeat_time_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "20012",
+                "name": "SM_SyncTime",
+                "packet_count": "26",
+                "directions": "s2c",
+                "field_order": "timestamp",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "20011",
+                "name": "CM_SyncTime",
+                "packet_count": "26",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "20012",
+                "name": "SM_SyncTime",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "20011",
+                "name": "CM_SyncTime",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "7",
+            }
+        )
+
+    login_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gamelogin_hash" / "text_assets"
+    login_dir.mkdir(parents=True)
+    (login_dir / "LoginNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_SyncTime=require"GameSystem.Game.Message.module.user.login.packet.SM_SyncTime"',
+                'local _CM_SyncTime=require"GameSystem.Game.Message.module.user.login.packet.CM_SyncTime"',
+                "function _M.LoginNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_SyncTime:getId(),typeof(_CM_SyncTime))",
+                "_MessagePool.Inst_get():F_Register(_SM_SyncTime:getId(),typeof(_SM_SyncTime),function(msg)",
+                "self.SM_SyncTimeFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SyncTime:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_SyncTime:getId())",
+                "end",
+                "function _M.CM_SyncTimeFun()",
+                "local CM_SyncTime=SocketManager.Inst_get():GetMessageFromPools(_CM_SyncTime)",
+                "local clientData",
+                "if LoginMgr.Inst_get().EnterGameInfo.V_IsInfoTime then",
+                "clientData=LoginMgr.Inst_get():GetSeverTime():ToNum()",
+                "end",
+                "SocketManager.Inst_get():F_SendMsg(CM_SyncTime,clientData)",
+                "end",
+                "function _M.SM_SyncTimeFun(msg)",
+                "if msg.ClientData then",
+                "LoginMgr.Inst_get():UpdatePingData(msg.ClientData)",
+                "end",
+                "LoginMgr.Inst_get():UpdateSystemTime(msg.timestamp)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (login_dir / "GameTime.lua").write_text(
+        "\n".join(
+            [
+                "function _M.InitData(self)",
+                "self.V_StartHeart=false",
+                "self.V_TimeSn=0",
+                "end",
+                "function _M.CleanTimeAndGotoReLink(self)",
+                "self.V_TimeSn=0",
+                "LoginMgr.Inst_get():SocketErrorRelink(LoginType.SocketState.E_StateNormal)",
+                "end",
+                "function _M.SendHeartMsg(self)",
+                "if self.V_TimeSn and self.V_TimeSn>10 then",
+                "self:CleanTimeAndGotoReLink()",
+                "return",
+                "end",
+                "self:AddSn()",
+                "LoginMgr.Inst_get().LoginNetLogic:CM_SyncTimeFun()",
+                "end",
+                "function _M.AddSn(self)",
+                "self.V_TimeSn=self.V_TimeSn+1",
+                "end",
+                "function _M.StartHeartMsg(self)",
+                "self.V_StartHeart=true",
+                "self.V_LastSendHeratTime=0",
+                "end",
+                "function _M.HeartBeat(self)",
+                "if self.V_StartHeart==false then return end",
+                "if UnityEngine.Time:GetTimestamp()*1000-self.V_LastSendHeratTime>5000 then",
+                "self.V_LastSendHeratTime=UnityEngine.Time:GetTimestamp()*1000",
+                "self:SendHeartMsg()",
+                "end",
+                "end",
+                "function _M.UpdateSystemTime(self,timestamp)",
+                "self.V_TimeDifference=Mathf.Round(self.V_PreGetSystemTime-timestamp:ToNum())",
+                "self.V_ServerTime=timestamp",
+                "LoginMgr.Inst_get().EnterGameInfo.V_IsInfoTime=true",
+                "LoginMgr.Inst_get().EnterGameInfo:CheckAndSendFinish()",
+                "PhoneHelper.F_ThinkingAnalyticsCalibrateTime(timestamp)",
+                "end",
+                "function _M.GetSeverTime(self)",
+                "self.V_ServerTime=self.V_ServerTime:UpdateNumber(1)",
+                "return self.V_ServerTime",
+                "end",
+                "function _M.UpdatePingData(self,sendTime)",
+                "self.V_PingLogList=CList.new()",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.PingUpdata,sendTime)",
+                "end",
+                "function _M.CheckNet(self)",
+                "self:ShowPingNumWarryTips()",
+                "end",
+                "function _M.ShowPingNumWarryTips(self)",
+                "self:CleanPingList()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 26
+    assert result["stats"]["request_packet_count"] == 26
+    assert result["stats"]["client_sync_request_evidence_count"] >= 4
+    assert result["stats"]["server_sync_response_evidence_count"] >= 3
+    assert result["stats"]["heartbeat_loop_evidence_count"] >= 5
+    assert result["stats"]["time_model_update_evidence_count"] >= 5
+    assert result["stats"]["ping_monitor_evidence_count"] >= 4
+    assert result["verdict"]["client_heartbeat_sender_visible"] is True
+    assert result["verdict"]["server_timestamp_updates_system_time"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_SyncTime / SM_SyncTime chain" in report_text
+    assert "F_SendMsg(CM_SyncTime,clientData)" in evidence_text
+    assert "UpdateSystemTime(msg.timestamp)" in evidence_text
+    assert "SendHeartMsg" in functions_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe_maps_post_message_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "18002",
+                "name": "SM_Notice",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "i18nId | channel | subId | infos | extras",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "18002",
+                "name": "SM_Notice",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "45",
+            }
+        )
+
+    post_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "post_hash" / "text_assets"
+    post_dir.mkdir(parents=True)
+    (post_dir / "I18nNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_Notice=require"GameSystem.Game.Message.module.common.i18n.packet.SM_Notice"',
+                "function _M.LuaI18nNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_Notice:getId(),typeof(_SM_Notice),function(msg)",
+                "self.SM_NoticeFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_Notice:getId())",
+                "end",
+                "function _M.SM_NoticeFun(msg)",
+                "if not msg or not msg.i18nId then return end",
+                "local systemMesslo=DBMgr.Inst_get():GetConfigTableById(ConfigName.SystemMessage_SystemMessage,msg.i18nId)",
+                "if not systemMesslo then return end",
+                "if msg.condition then",
+                "local canShow=GameUtil.CheckCondition(msg.condition)",
+                "if not canShow then return end",
+                "end",
+                "PostMgr.Inst_get():PostMessage2Push(msg.i18nId,msg.infos,nil,msg.extras,nil,msg.subId,msg.channel)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (post_dir / "PostMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.GetPostMessage(self,postId,infos,cleanLink,colorType,extras)",
+                "return tostring(postId)",
+                "end",
+                "function _M.FormatTypeValue(self,type,value,link,extras)",
+                "return value",
+                "end",
+                "function _M.Post2ChatFunInit(self)",
+                "self.V_Post2ChatDIc={}",
+                "end",
+                "function _M.F_CPC_ALLIANCE_UP(postlo,messageStr_Bright,messageStr_Dark,extras,subId,svrChannel)",
+                "PostMgr.Inst_get():SendMessageToChannel(messageStr_Bright,svrChannel,postlo,extras,nil,subId)",
+                "end",
+                "function _M.PostMessage2Push(self,postId,infos,colorType,extras,ignore,subId,svrChannel)",
+                "subId=subId or 0",
+                "svrChannel=svrChannel or 0",
+                "local messagelo=DBMgr.Inst_get():GetConfigTableById(ConfigName.SystemMessage_SystemMessage,postId)",
+                "if(messagelo==nil or messagelo.text==nil or messagelo.type==nil)then return end",
+                "self:CheckEffect(messagelo)",
+                "local messageStr_Bright=self:GetPostMessage(postId,infos,nil,GameDefine.QualityColorType.Bright,extras)",
+                "local messageStr_Dark=self:GetPostMessage(postId,infos,nil,GameDefine.QualityColorType.Dark,extras)",
+                "if extras and extras.type and extras.type~=''then",
+                "if not self.V_Post2ChatDIc then self:Post2ChatFunInit() end",
+                "local fun=self.V_Post2ChatDIc[extras.type]",
+                "fun(messagelo,messageStr_Bright,messageStr_Dark,extras,subId,svrChannel)",
+                "return",
+                "end",
+                "local channelArr",
+                "if svrChannel>0 then",
+                "channelArr=CList.new()",
+                "channelArr:Add(svrChannel)",
+                "else",
+                "channelArr=StringProxy.Split(messagelo.type,'|')",
+                "end",
+                "for i=0,channelArr:Count()-1 do",
+                "local channel=tonumber(channelArr[i])",
+                "self:SendMessageToChannel(messageStr_Bright,channel,messagelo,extras,ignore,subId,infos)",
+                "end",
+                "end",
+                "function _M.SendMessageToChannel(self,message,channel,messlo,extras,ignore,subId,infos)",
+                "local isSow=self:GetIsCanShowWindow(messlo,ignore)",
+                "if not isSow then return end",
+                "if(channel==ChatType.ChatChannelType.TIPS)then",
+                "TipsMgr.Inst_get():ShowSystemTips(message)",
+                "elseif(channel==ChatType.ChatChannelType.MARQUEE)then",
+                "TipsMgr.Inst_get():ShowSystemNoticeTips(message,messlo.important,channel)",
+                "elseif(channel==ChatType.ChatChannelType.SYSTEM_ALERT)then",
+                "TipsMgr.Inst_get():ShowSystemExTips(message)",
+                "else",
+                "ChatMgr.Inst_get().Model:AddSpecialPostTalkCall(message,extras,1,messlo.contentType,channel,nil,subId)",
+                "ChatMgr.Inst_get().Model:AddSystemChat(channel,message,messlo,extras,subId,infos)",
+                "end",
+                "end",
+                "function _M.GetIsCanShowWindow(self,messlo,ignore)",
+                "local isInfoFinish=LoginMgr.Inst_get():IsInfoAllFinish()",
+                "if(not ignore)and(not isInfoFinish)or EntityMgr.Inst_get().UserView==nil then return end",
+                "if messlo.minLevel or messlo.maxLevel then return true end",
+                "return true",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["handler_validation_evidence_count"] >= 4
+    assert result["stats"]["post_formatting_evidence_count"] >= 4
+    assert result["stats"]["channel_resolution_evidence_count"] >= 5
+    assert result["stats"]["tips_output_evidence_count"] >= 3
+    assert result["stats"]["chat_output_evidence_count"] >= 2
+    assert result["verdict"]["handler_forwards_to_post_mgr"] is True
+    assert result["verdict"]["post_mgr_channel_resolution_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    channels_text = Path(result["files"]["channels"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_Notice chain" in report_text
+    assert "PostMessage2Push(msg.i18nId" in evidence_text
+    assert "ShowSystemTips" in evidence_text
+    assert "AddSystemChat" in channels_text
+    assert "SM_NoticeFun" in functions_text
+
+
+def test_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe_maps_activity_sync_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "97325",
+                "name": "CM_BlldSync",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "97326",
+                "name": "SM_BlldSync",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "groupInfoVOMap | roleGroupToLevel",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "97325",
+                "name": "CM_BlldSync",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "24",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "97326",
+                "name": "SM_BlldSync",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "12",
+            }
+        )
+
+    blld_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "blld_hash" / "text_assets"
+    blld_dir.mkdir(parents=True)
+    (blld_dir / "BLLDNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_BlldSync=require"GameSystem.Game.Message.module.world.blld.packet.CM_BlldSync"',
+                'local _SM_BlldSync=require"GameSystem.Game.Message.module.world.blld.packet.SM_BlldSync"',
+                "function _M.LuaBLLDNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_BlldSync:getId(),typeof(_CM_BlldSync))",
+                "_MessagePool.Inst_get():F_Register(_SM_BlldSync:getId(),typeof(_SM_BlldSync),function(msg)",
+                "self.SM_BlldSyncFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_BlldSync:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_BlldSync:getId())",
+                "end",
+                "function _M.CM_BlldSyncFun(self)",
+                "local CM_BlldSync=SocketManager.Inst_get():GetMessageFromPools(_CM_BlldSync)",
+                "SocketManager.Inst_get():F_SendMsg(CM_BlldSync)",
+                "end",
+                "function _M.SM_BlldSyncFun(msg)",
+                "if msg.code==0 then",
+                "BLLDMgr.Inst_get().Model:OnSyncData(msg)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (blld_dir / "BLLDMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.CheckActivityActivation(self,activityId,state)",
+                "self.NetLogic.CM_BlldSyncFun()",
+                "end",
+                "function _M.UpdateActivationActivityVO(self)",
+                "self.NetLogic.CM_BlldSyncFun()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (blld_dir / "BLLDModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.OnSyncData(self,msg)",
+                "self.BLLDData:OnSyncData(msg)",
+                "self:RaiseEvent(BLLDType.EventType.BLLDInfoUpdate)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.BLLD_SkipLevel,true)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.BLLD_FaQiUpgrade,true)",
+                "end",
+                "function _M.GetTotalLevel(self,roleGroup)",
+                "return self.BLLDData:GetTotalLevel(roleGroup)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (blld_dir / "BLLDData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.GetCurPassLevelInfo(self,group)",
+                "local isFinish=self:IsFinishLevel(group,1)",
+                "return isFinish and 1 or 0",
+                "end",
+                "function _M.GetCurMaxChallengeLevelInfo(self,group)",
+                "local curLevel=self:GetCurPassLevelInfo(group)",
+                "return curLevel+1",
+                "end",
+                "function _M.IsFinishLevel(self,group,level)",
+                "local actDict=self.V_NewLevelIdDic and self.V_NewLevelIdDic[group]",
+                "return actDict and actDict[level]or false",
+                "end",
+                "function _M.GetTotalLevel(self,roleGroup)",
+                "if not self.V_RoleGroupToLevel or not roleGroup then return 0 end",
+                "return self.V_RoleGroupToLevel[roleGroup]or 0",
+                "end",
+                "function _M.OnSyncData(self,msg)",
+                "if msg.groupInfoVOMap then",
+                "self.V_NewLevelIdDic={}",
+                "for levelGroup,vo in Kpairs(msg.groupInfoVOMap)do",
+                "self.V_NewLevelIdDic[levelGroup]={}",
+                "local maxLayer=vo.layer or 0",
+                "for i=1,maxLayer do self.V_NewLevelIdDic[levelGroup][i]=true end",
+                "if vo.layerFindRewardHistory then",
+                "self.V_LayerFindRewardHistory={}",
+                "self.V_LayerFindRewardHistory[levelGroup]=vo.layerFindRewardHistory",
+                "end",
+                "end",
+                "end",
+                "if msg.roleGroupToLevel then",
+                "self.V_RoleGroupToLevel={}",
+                "for roleGroup,level in Kpairs(msg.roleGroupToLevel)do",
+                "self.V_RoleGroupToLevel[roleGroup]=level",
+                "end",
+                "end",
+                "end",
+                "function _M.GetLevelByRoleGroup(self,roleGroup)",
+                "return self.V_RoleGroupToLevel[roleGroup]or 1",
+                "end",
+                "function _M.SetRoleLevelUp(self,roleGroup,level)",
+                "self.V_RoleGroupToLevel[roleGroup]=level",
+                "end",
+                "function _M.GetLayerFindRewardHistory(self,levelGroup,layer)",
+                "return self.V_LayerFindRewardHistory[levelGroup][layer]",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (blld_dir / "BLLDInfoPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetOpenParams(self,param,grouplo)",
+                "BLLDMgr.Inst_get().Model:AddEventHandler(BLLDType.EventType.BLLDInfoUpdate,self.onUpdateViewFunc)",
+                "BLLDMgr.Inst_get().NetLogic:CM_BlldSyncFun()",
+                "self:UpdateViewData()",
+                "self:UpdatePanelBaseShow()",
+                "end",
+                "function _M.UpdatePanelBaseShow(self)",
+                "local cur=BLLDMgr.Inst_get().Model:GetCurPassLevelInfo(self.V_ActivityGroup)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (blld_dir / "BLLDFaQiInfoView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetOpenParams(self,param,grouplo)",
+                "BLLDMgr.Inst_get().Model:AddEventHandler(BLLDType.EventType.BLLDInfoUpdate,self._onBLLDInfoUpdate)",
+                "BLLDMgr.Inst_get().NetLogic:CM_BlldSyncFun()",
+                "self:UpdateAttr()",
+                "self:UpdateUpgradeCost()",
+                "self:UpdatePopItem()",
+                "end",
+                "function _M.UpdateAttr(self)",
+                "local curLevel=BLLDMgr.Inst_get().Model.BLLDData:GetLevelByRoleGroup(roleGroup)or 0",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["request_callsite_evidence_count"] >= 3
+    assert result["stats"]["model_sync_update_evidence_count"] >= 5
+    assert result["stats"]["events_red_dot_evidence_count"] >= 3
+    assert result["stats"]["ui_refresh_consumer_evidence_count"] >= 3
+    assert result["verdict"]["client_blld_sync_sender_visible"] is True
+    assert result["verdict"]["server_handler_forwards_to_model"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_BlldSync / SM_BlldSync chain" in report_text
+    assert "F_SendMsg(CM_BlldSync)" in evidence_text
+    assert "V_NewLevelIdDic" in evidence_text
+    assert "BLLDInfoUpdate" in evidence_text
+    assert "CM_BlldSyncFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_self_seat_chain_probe_maps_lundao_self_seat_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59529",
+                "name": "CM_SelfSeat",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59530",
+                "name": "SM_SelfSeat",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "seatVO",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59529",
+                "name": "CM_SelfSeat",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "26",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59530",
+                "name": "SM_SelfSeat",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "15",
+            }
+        )
+
+    lundao_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "lundao_hash" / "text_assets"
+    lundao_dir.mkdir(parents=True)
+    (lundao_dir / "LundaoNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_SelfSeat=require"GameSystem.Game.Message.module.world.lundao.packet.CM_SelfSeat"',
+                'local _SM_SelfSeat=require"GameSystem.Game.Message.module.world.lundao.packet.SM_SelfSeat"',
+                "function _M.LuaLundaoNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_SelfSeat:getId(),typeof(_CM_SelfSeat))",
+                "_MessagePool.Inst_get():F_Register(_SM_SelfSeat:getId(),typeof(_SM_SelfSeat),function(msg)",
+                "self.SM_SelfSeatFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_SelfSeat:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SelfSeat:getId())",
+                "end",
+                "function _M.CM_SelfSeatFun()",
+                "local CM_SelfSeat=SocketManager.Inst_get():GetMessageFromPools(_CM_SelfSeat)",
+                "SocketManager.Inst_get():F_SendMsg(CM_SelfSeat)",
+                "end",
+                "function _M.SM_SelfSeatFun(msg)",
+                "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then",
+                "LundaoMgr.Inst_get():SetMySeatVO(msg.seatVO)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqMsg(self)",
+                "self.NetLogic.CM_SelfSeatFun()",
+                "end",
+                "function _M.SetMySeatVO(self,seatVO)",
+                "self.Model.data:SetMySeatVO(seatVO)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetMySeatVO(self,seatVO)",
+                "self.mySeatVO=seatVO",
+                "if seatVO then",
+                "local seatId=seatVO.id",
+                "self:SetMySeatId(seatId)",
+                "local cfg=LundaoMgr.Inst_get():GetRoomCfgBySeatId(seatId)",
+                "if cfg then self:SetMyRoomId(cfg.id) end",
+                "end",
+                "self:RaiseEvent(LunDaoType.EventType.MySeatUpdate)",
+                "end",
+                "function _M.GetMySeatVO(self)",
+                "return self.mySeatVO",
+                "end",
+                "function _M.SetMySeatId(self,seatId)",
+                "self.mySeatId=seatId",
+                "self:RaiseEvent(LunDaoType.EventType.MySeatIdUpdate)",
+                "end",
+                "function _M.GetMySeatId(self)",
+                "return self.mySeatId",
+                "end",
+                "function _M.SetMyRoomId(self,roomId)",
+                "self.myRoomId=roomId",
+                "self:RaiseEvent(LunDaoType.EventType.MyRoomUpdate)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.GetMySeatVO(self)",
+                "return self.data:GetMySeatVO()",
+                "end",
+                "function _M.GetMySeatId(self)",
+                "return self.data:GetMySeatId()",
+                "end",
+                "function _M.GetSeatVOById(self,seatId)",
+                "return self.data:GetSeatVOById(seatId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoSeatView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.AddEvent(self)",
+                "LundaoMgr.Inst_get().Model:AddEventHandler(LunDaoType.EventType.MyRoomUpdate,self._OnMySeatUpdate)",
+                "LundaoMgr.Inst_get().Model:AddEventHandler(LunDaoType.EventType.MySeatIdUpdate,self._OnMySeatUpdate)",
+                "LundaoMgr.Inst_get().Model:AddEventHandler(LunDaoType.EventType.MySeatUpdate,self._OnMySeatUpdate)",
+                "end",
+                "function _M._OnMySeatUpdate(self)",
+                "self:UpdateView()",
+                "end",
+                "function _M.UpdateView(self)",
+                "self:UpdateSeatView()",
+                "self:UpdateListenTime()",
+                "end",
+                "function _M.UpdateSeatView(self)",
+                "local vo=LundaoMgr.Inst_get().Model:GetMySeatVO()",
+                "end",
+                "function _M.UpdateListenTime(self)",
+                "local id=LundaoMgr.Inst_get().Model:GetMySeatId()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LunDaoSceneMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.CheckLunDaoSceneView(self)",
+                "LundaoMgr.Inst_get().NetLogic.CM_SelfSeatFun()",
+                "UIShowMgr.Inst_get():F_ShowBottonWin(Window.LunDaoSceneView,nil,false,true,false,false)",
+                "end",
+                "function _M.UpdateSeat(self)",
+                "local seatId=LundaoMgr.Inst_get().Model:GetMySeatId()",
+                "self:UpdateSeatShow(seatId)",
+                "end",
+                "function _M.UpdateSeatShow(self,seatId)",
+                "self:UpdateSeatVOList()",
+                "end",
+                "function _M.UpdateSeatVOList(self)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "seatVO"
+    assert result["stats"]["request_callsite_evidence_count"] >= 2
+    assert result["stats"]["model_self_seat_update_evidence_count"] >= 4
+    assert result["stats"]["ui_refresh_consumer_evidence_count"] >= 5
+    assert result["verdict"]["client_self_seat_sender_visible"] is True
+    assert result["verdict"]["server_handler_forwards_seat_vo"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_SelfSeat / SM_SelfSeat chain" in report_text
+    assert "F_SendMsg(CM_SelfSeat)" in evidence_text
+    assert "SetMySeatVO(msg.seatVO)" in evidence_text
+    assert "LunDaoType.EventType.MySeatUpdate" in evidence_text
+    assert "CM_SelfSeatFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe_maps_listen_time_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59513",
+                "name": "CM_SyncLundaoRoleInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59514",
+                "name": "SM_SyncLundaoRoleInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "roomId | seatId | leftListenTime | sitDownTime | ganwuStartTime",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59513",
+                "name": "CM_SyncLundaoRoleInfo",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "10",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59514",
+                "name": "SM_SyncLundaoRoleInfo",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    lundao_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "lundao_hash" / "text_assets"
+    lundao_dir.mkdir(parents=True)
+    (lundao_dir / "LundaoNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_SyncLundaoRoleInfo=require"GameSystem.Game.Message.module.world.lundao.packet.CM_SyncLundaoRoleInfo"',
+                'local _SM_SyncLundaoRoleInfo=require"GameSystem.Game.Message.module.world.lundao.packet.SM_SyncLundaoRoleInfo"',
+                "function _M.LuaLundaoNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_SyncLundaoRoleInfo:getId(),typeof(_CM_SyncLundaoRoleInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_SyncLundaoRoleInfo:getId(),typeof(_SM_SyncLundaoRoleInfo),function(msg)",
+                "self.SM_SyncLundaoRoleInfoFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_SyncLundaoRoleInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SyncLundaoRoleInfo:getId())",
+                "end",
+                "function _M.CM_SyncLundaoRoleInfoFun()",
+                "local CM_SyncLundaoRoleInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_SyncLundaoRoleInfo)",
+                "SocketManager.Inst_get():F_SendMsg(CM_SyncLundaoRoleInfo)",
+                "end",
+                "function _M.SM_SyncLundaoRoleInfoFun(msg)",
+                "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then",
+                "LundaoMgr.Inst_get():SyncRoleInfo(msg)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqMsg(self)",
+                "self.NetLogic.CM_SyncLundaoRoleInfoFun()",
+                "end",
+                "function _M.SyncRoleInfo(self,msg)",
+                "self.Model:SyncRoleInfo(msg)",
+                "end",
+                "function _M.GetCurLeftListenTime(self)",
+                "local leftTime=self.Model:GetLeftListenTime()",
+                "local sitTime=self.Model:GetRoleInfo().sitDownTime:ToNum()",
+                "return leftTime:ToNum()-sitTime",
+                "end",
+                "function _M.IsMaxTime(self)",
+                "local leftTime=self.Model:GetLeftListenTime()",
+                "return leftTime:ToNum()<=0",
+                "end",
+                "function _M.GetMyCurrentRewardAmount(self)",
+                "local startTime=self.Model:GetRoleInfo().sitDownTime:ToNum()",
+                "return startTime",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SyncRoleInfo(self,msg)",
+                "self.data:SyncRoleInfo(msg)",
+                "end",
+                "function _M.GetRoleInfo(self)",
+                "return self.data:GetRoleInfo()",
+                "end",
+                "function _M.GetMyRoomId(self)",
+                "return self.data:GetMyRoomId()",
+                "end",
+                "function _M.GetMySeatId(self)",
+                "return self.data:GetMySeatId()",
+                "end",
+                "function _M.GetLeftListenTime(self)",
+                "return self.data:GetLeftListenTime()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SyncRoleInfo(self,msg)",
+                "self:SetRoleInfo(msg)",
+                "self:SetMyRoomId(msg.roomId)",
+                "self:SetMySeatId(msg.seatId)",
+                "self:SetLeftListenTime(msg.leftListenTime)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.LunDao_Strength)",
+                "end",
+                "function _M.SetRoleInfo(self,msg)",
+                "self.roleInfo=msg",
+                "end",
+                "function _M.GetRoleInfo(self)",
+                "return self.roleInfo",
+                "end",
+                "function _M.SetMyRoomId(self,roomId)",
+                "self.roomId=roomId",
+                "end",
+                "function _M.GetMyRoomId(self)",
+                "return self.roomId",
+                "end",
+                "function _M.SetMySeatId(self,seatId)",
+                "self.seatId=seatId",
+                "end",
+                "function _M.GetMySeatId(self)",
+                "return self.seatId",
+                "end",
+                "function _M.SetLeftListenTime(self,time)",
+                "self.leftListenTime=time",
+                "self:UpdateHaveTime(time:ToNum()>0)",
+                "self:RaiseEvent(LunDaoType.EventType.ListenTimeUpdate)",
+                "end",
+                "function _M.UpdateHaveTime(self,haveTime)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.LunDao_Strength)",
+                "end",
+                "function _M.GetLeftListenTime(self)",
+                "return self.leftListenTime or self.zeroLong",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoSeatView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateListenTime(self)",
+                "local leftTime=LundaoMgr.Inst_get().Model:GetLeftListenTime()",
+                "end",
+                "function _M.UpdateSeatView(self)",
+                "local passedTime=(curTime-seatOwner.sitDownTime:ToNum())*0.001",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LunDaoSceneMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.CheckLunDaoSceneView(self)",
+                "LundaoMgr.Inst_get().NetLogic.CM_SyncLundaoRoleInfoFun()",
+                "UIShowMgr.Inst_get():F_ShowBottonWin(Window.LunDaoSceneView,nil,false,true,false,false)",
+                "end",
+                "function _M.UpdateSeat(self)",
+                "self:UpdateSeatShow()",
+                "end",
+                "function _M.UpdateSeatShow(self)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LunDaoSceneView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateSeat(self)",
+                "local passedTime=curTime-seatOwner.sitDownTime:ToNum()",
+                "local leftTime=(seatOwner.leftListenTime:ToNum()-passedTime)*0.001",
+                "end",
+                "function _M.UpdateGanwu(self)",
+                "local passedTime=(LoginMgr.Inst_get():GetSeverTime():ToNum()-seatVO.seatOwner.ganwuStartTime:ToNum())*0.001",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert "leftListenTime" in result["stats"]["schema_field_order"]
+    assert result["stats"]["request_callsite_evidence_count"] >= 2
+    assert result["stats"]["model_role_info_update_evidence_count"] >= 5
+    assert result["stats"]["listen_time_update_evidence_count"] >= 4
+    assert result["stats"]["ui_time_consumer_evidence_count"] >= 5
+    assert result["verdict"]["client_role_info_sender_visible"] is True
+    assert result["verdict"]["listen_time_event_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_SyncLundaoRoleInfo / SM_SyncLundaoRoleInfo chain" in report_text
+    assert "F_SendMsg(CM_SyncLundaoRoleInfo)" in evidence_text
+    assert "self.roleInfo=msg" in evidence_text
+    assert "LunDaoType.EventType.ListenTimeUpdate" in evidence_text
+    assert "CM_SyncLundaoRoleInfoFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe_maps_reward_reminder_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59511",
+                "name": "CM_LastLeaveSeatInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59512",
+                "name": "SM_LastLeaveSeatInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "roomId | listenTime | themeId | faze | lootSeatPlayerName | beLootNum | leftListenTime | ganwuTime | inScene | leaveBySelf",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "59511",
+                "name": "CM_LastLeaveSeatInfo",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "24",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "59512",
+                "name": "SM_LastLeaveSeatInfo",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "15",
+            }
+        )
+
+    lundao_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "lundao_hash" / "text_assets"
+    lundao_dir.mkdir(parents=True)
+    (lundao_dir / "LundaoNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_LastLeaveSeatInfo=require"GameSystem.Game.Message.module.world.lundao.packet.CM_LastLeaveSeatInfo"',
+                'local _SM_LastLeaveSeatInfo=require"GameSystem.Game.Message.module.world.lundao.packet.SM_LastLeaveSeatInfo"',
+                'local _CM_CleanLastLeaveSeatInfo=require"GameSystem.Game.Message.module.world.lundao.packet.CM_CleanLastLeaveSeatInfo"',
+                "function _M.LuaLundaoNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_LastLeaveSeatInfo:getId(),typeof(_CM_LastLeaveSeatInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_LastLeaveSeatInfo:getId(),typeof(_SM_LastLeaveSeatInfo),function(msg)",
+                "self.SM_LastLeaveSeatInfoFun(msg)",
+                "end)",
+                "_MessagePool.Inst_get():F_Register(_CM_CleanLastLeaveSeatInfo:getId(),typeof(_CM_CleanLastLeaveSeatInfo))",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_LastLeaveSeatInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_LastLeaveSeatInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_CleanLastLeaveSeatInfo:getId())",
+                "end",
+                "function _M.CM_LastLeaveSeatInfoFun()",
+                "local CM_LastLeaveSeatInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_LastLeaveSeatInfo)",
+                "SocketManager.Inst_get():F_SendMsg(CM_LastLeaveSeatInfo)",
+                "end",
+                "function _M.SM_LastLeaveSeatInfoFun(msg)",
+                "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then",
+                "LundaoMgr.Inst_get():CheckLastLeaveSeatInfo(msg)",
+                "end",
+                "end",
+                "function _M.CM_CleanLastLeaveSeatInfoFun()",
+                "local CM_CleanLastLeaveSeatInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_CleanLastLeaveSeatInfo)",
+                "SocketManager.Inst_get():F_SendMsg(CM_CleanLastLeaveSeatInfo)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqMsg(self)",
+                "self.NetLogic.CM_LastLeaveSeatInfoFun()",
+                "end",
+                "function _M.CheckLastLeaveSeatInfo(self,msg)",
+                "self.Model:SetLastLeaveSeatInfo(msg)",
+                "end",
+                "function _M.CheckSeatTakenView(self)",
+                "self.Model:UpdateSeatTakenRed(false)",
+                "local msg=self.Model:GetLastLeaveSeatInfo()",
+                "if msg.roomId==0 or msg.listenTime:ToNum()==0 then return end",
+                "UIShowMgr.Inst_get():F_ShowWin(Window.LunDaoRewardView)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetLastLeaveSeatInfo(self,msg)",
+                "self.data:SetLastLeaveSeatInfo(msg)",
+                "end",
+                "function _M.GetLastLeaveSeatInfo(self)",
+                "return self.data:GetLastLeaveSeatInfo()",
+                "end",
+                "function _M.UpdateSeatTakenRed(self,needRed)",
+                "self.data:UpdateSeatTakenRed(needRed)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LundaoData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetLastLeaveSeatInfo(self,msg)",
+                "self.lastLeaveSeatInfo=msg",
+                "if msg and msg.leaveBySelf then",
+                "LundaoMgr.Inst_get():CheckSeatTakenView()",
+                "self:UpdateSeatTakenRed(false)",
+                "return",
+                "end",
+                "local needRed=msg and msg.roomId~=0 and msg.listenTime:ToNum()>0 or false",
+                "self:UpdateSeatTakenRed(needRed)",
+                "end",
+                "function _M.GetLastLeaveSeatInfo(self)",
+                "return self.lastLeaveSeatInfo",
+                "end",
+                "function _M.UpdateSeatTakenRed(self,needRed)",
+                "self.seatTakenRed=needRed",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.LunDao_SeatTaken)",
+                "end",
+                "function _M.GetSeatTakenRed(self)",
+                "return self.seatTakenRed",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (lundao_dir / "LunDaoRewardView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self)",
+                "local info=LundaoMgr.Inst_get().Model:GetLastLeaveSeatInfo()",
+                "if not info then return end",
+                "LundaoMgr.Inst_get().Model:SetLastLeaveSeatInfo()",
+                "LundaoMgr.Inst_get().NetLogic.CM_CleanLastLeaveSeatInfoFun()",
+                "local sitTime=info.listenTime:ToNum()*0.001",
+                "local roomCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.Lecture_Lecture,info.roomId)",
+                "local rewardAmount=math.floor(info.listenTime:ToNum()*0.001-info.beLootNum)",
+                "local ganwuTime=info.ganwuTime:ToNum()*0.001",
+                "local leftTime=info.leftListenTime:ToNum()*0.001",
+                "self.leftTimeText:SetText(tostring(leftTime))",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert "leaveBySelf" in result["stats"]["schema_field_order"]
+    assert result["stats"]["model_last_leave_update_evidence_count"] >= 5
+    assert result["stats"]["reward_view_trigger_evidence_count"] >= 3
+    assert result["stats"]["reward_view_consumer_evidence_count"] >= 5
+    assert result["verdict"]["client_last_leave_sender_visible"] is True
+    assert result["verdict"]["reward_view_trigger_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_LastLeaveSeatInfo / SM_LastLeaveSeatInfo chain" in report_text
+    assert "F_SendMsg(CM_LastLeaveSeatInfo)" in evidence_text
+    assert "RedDotID.LunDao_SeatTaken" in evidence_text
+    assert "info.listenTime" in evidence_text
+    assert "CM_LastLeaveSeatInfoFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe_maps_group_cache_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "93559",
+                "name": "CM_UnionVeinsUnionList",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "93560",
+                "name": "SM_UnionVeinsUnionList",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "groupVOS | veinsGroup",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "93559",
+                "name": "CM_UnionVeinsUnionList",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "9",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "93560",
+                "name": "SM_UnionVeinsUnionList",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    union_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "unionvenis_hash" / "text_assets"
+    union_dir.mkdir(parents=True)
+    (union_dir / "UnionVenisNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_UnionVeinsUnionList=require"GameSystem.Game.Message.module.world.unionveins.packet.CM_UnionVeinsUnionList"',
+                'local _SM_UnionVeinsUnionList=require"GameSystem.Game.Message.module.world.unionveins.packet.SM_UnionVeinsUnionList"',
+                "function _M.LuaUnionVenisNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_UnionVeinsUnionList:getId(),typeof(_CM_UnionVeinsUnionList))",
+                "_MessagePool.Inst_get():F_Register(_SM_UnionVeinsUnionList:getId(),typeof(_SM_UnionVeinsUnionList),function(msg)",
+                "self.SM_UnionVeinsUnionListFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_UnionVeinsUnionList:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_UnionVeinsUnionList:getId())",
+                "end",
+                "function _M.CM_UnionVeinsUnionListFun()",
+                "local CM_UnionVeinsUnionList=SocketManager.Inst_get():GetMessageFromPools(_CM_UnionVeinsUnionList)",
+                "SocketManager.Inst_get():F_SendMsg(CM_UnionVeinsUnionList)",
+                "end",
+                "function _M.SM_UnionVeinsUnionListFun(msg)",
+                "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then",
+                "UnionVenisMgr.Inst_get().Model.data:SetUnionVeinsGroup(msg.veinsGroup)",
+                "UnionVenisMgr.Inst_get().Model.data:SetUnionVeinsGroup2Server(msg.groupVOS)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqMsg(self)",
+                "self.NetLogic.CM_UnionVeinsUnionListFun()",
+                "end",
+                "function _M.UpdateCamp(self)",
+                "local selfCamp=self.Model.data:GetUnionVeinsGroup()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetUnionVeinsGroup2Server(self,msg)",
+                "self.UnionVeinsGroup2Server=msg",
+                "end",
+                "function _M.GetUnionVeinsGroup2Server(self)",
+                "return self.UnionVeinsGroup2Server",
+                "end",
+                "function _M.SetUnionVeinsGroup(self,msg)",
+                "self.UnionVeinsGroup=msg",
+                "end",
+                "function _M.GetUnionVeinsGroup(self)",
+                "return self.UnionVeinsGroup or LusuoLong.ZERO",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisRoomPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetOpenParams(self,param)",
+                "UnionVenisMgr.Inst_get().NetLogic.CM_UnionVeinsUnionListFun()",
+                "end",
+                "function _M.UpdateView(self)",
+                "local playVeinsGroup=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup()",
+                "local serverGroups=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup2Server()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisCampPanelDetailView.lua").write_text(
+        "function _M.UpdateView(self)\nlocal serverGroup=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup2Server()\nend\n",
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisCampPanelDetailItem.lua").write_text(
+        "function _M.UpdateView(self)\nlocal seflGroupUid=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup()\nlocal serverGroup=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup2Server()\nend\n",
+        encoding="utf-8",
+    )
+    (union_dir / "CrossUnionItem.lua").write_text(
+        "function _M.UpdateView(self)\nlocal playVeinsGroup=UnionVenisMgr.Inst_get().Model.data:GetUnionVeinsGroup()\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "groupVOS | veinsGroup"
+    assert result["stats"]["request_callsite_evidence_count"] >= 2
+    assert result["stats"]["model_union_group_update_evidence_count"] >= 4
+    assert result["stats"]["ui_group_consumer_evidence_count"] >= 4
+    assert result["verdict"]["client_union_list_sender_visible"] is True
+    assert result["verdict"]["server_handler_forwards_group_fields"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_UnionVeinsUnionList / SM_UnionVeinsUnionList chain" in report_text
+    assert "F_SendMsg(CM_UnionVeinsUnionList)" in evidence_text
+    assert "self.UnionVeinsGroup2Server=msg" in evidence_text
+    assert "GetUnionVeinsGroup2Server" in evidence_text
+    assert "CM_UnionVeinsUnionListFun" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe_maps_key_value_persistence(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order", "field_types"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "31811",
+                "name": "CM_SetClientData",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "key | value",
+                "field_types": "key:String | value:String",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "31812",
+                "name": "SM_SetClientData",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "",
+                "field_types": "",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "31811",
+                "name": "CM_SetClientData",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "29",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "31812",
+                "name": "SM_SetClientData",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    clientdata_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "clientdata_hash" / "text_assets"
+    clientdata_dir.mkdir(parents=True)
+    (clientdata_dir / "ClientDataNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_SetClientData=require"GameSystem.Game.Message.module.player.guide.packet.CM_SetClientData"',
+                'local _SM_SetClientData=require"GameSystem.Game.Message.module.player.guide.packet.SM_SetClientData"',
+                'local _CM_GetClientData=require"GameSystem.Game.Message.module.player.guide.packet.CM_GetClientData"',
+                'local _SM_GetClientData=require"GameSystem.Game.Message.module.player.guide.packet.SM_GetClientData"',
+                "function _M.LuaClientDataNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_SetClientData:getId(),typeof(_CM_SetClientData))",
+                "_MessagePool.Inst_get():F_Register(_SM_SetClientData:getId(),typeof(_SM_SetClientData),function(msg)",
+                "self.SM_SetClientDataFun(msg)",
+                "end)",
+                "_MessagePool.Inst_get():F_Register(_SM_GetClientData:getId(),typeof(_SM_GetClientData),function(msg)",
+                "self.SM_GetClientDataFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_SetClientData:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SetClientData:getId())",
+                "end",
+                "function _M.CM_SetClientDataFun(key,value)",
+                "local CM_SetClientData=SocketManager.Inst_get():GetMessageFromPools(_CM_SetClientData)",
+                "CM_SetClientData.key=key",
+                "CM_SetClientData.value=value",
+                "SocketManager.Inst_get():F_SendMsg(CM_SetClientData)",
+                "end",
+                "function _M.SM_SetClientDataFun(msg)",
+                "ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)",
+                "end",
+                "function _M.CM_GetClientDataFun(key)",
+                "local CM_GetClientData=SocketManager.Inst_get():GetMessageFromPools(_CM_GetClientData)",
+                "CM_GetClientData.key=key",
+                "SocketManager.Inst_get():F_SendMsg(CM_GetClientData)",
+                "end",
+                "function _M.SM_GetClientDataFun(msg)",
+                "ClientDataMgr.Inst_get():HandleClientData(msg.key,msg.value)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (clientdata_dir / "ClientDataMgr.lua").write_text(
+        "\n".join(
+            [
+                'local ClientDataType=require"GameSystem.Game.ClientData.ClientDataType"',
+                "function _M.LuaClientDataMgr(self)",
+                "self.clientDataDic={}",
+                "self:InitDic()",
+                "end",
+                "function _M.InitDic(self)",
+                "self.clientDataDic[ClientDataType.Key.Helper]=function(value) self:HelperHandler(value) end",
+                "self.clientDataDic[ClientDataType.Key.WorldMap]=function(value) self:WorldMapDataHandler(value) end",
+                "self.clientDataDic[ClientDataType.Key.SkillGuide]=function(value) self:UpdateSkillGuideState(value) end",
+                "self.clientDataDic[ClientDataType.Key.ChatBubbleFlag]=function(value) self:ChatSettingShowHandler(value) end",
+                "end",
+                "function _M.CM_SetClientDataFun(self,key,value)",
+                "self.NetLogic.CM_SetClientDataFun(key,value)",
+                "end",
+                "function _M.CM_GetClientDataFun(self,key)",
+                "self.NetLogic.CM_GetClientDataFun(key)",
+                "end",
+                "function _M.HandleClientData(self,key,value)",
+                "local handler=self.clientDataDic[key]",
+                "if handler then handler(value) end",
+                "end",
+                "function _M.HelperHandler(self,value)",
+                "self.Helper=value",
+                "end",
+                "function _M.WorldMapDataHandler(self,value)",
+                "self.WorldMap=value",
+                "end",
+                "function _M.ChatSettingShowHandler(self,value)",
+                "self.ChatBubbleFlag=value",
+                "end",
+                "function _M.ShowTreasureGuideHandler(self,value)",
+                "self.ShowTreasureGuide=value",
+                "end",
+                "function _M.UpdateSkillGuideState(self,value)",
+                "self.SkillGuide=value",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (clientdata_dir / "ClientDataType.lua").write_text(
+        "\n".join(
+            [
+                "local _M={}",
+                "_M.Key=setmetatable({},_M.Key)",
+                "_M.Key.Helper='Helper'",
+                "_M.Key.WorldMap='WorldMap'",
+                "_M.Key.SkillGuide='SkillGuide'",
+                "_M.Key.ChatBubbleFlag='ChatBubbleFlag'",
+                "return _M",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for module_name, snippet in {
+        "ascension_hash": "ClientDataMgr.Inst_get().NetLogic.CM_SetClientDataFun(ClientDataType.Key.AscensionTask,value)",
+        "chat_hash": 'ClientDataMgr.Inst_get():CM_SetClientDataFun(ClientDataType.Key.ChatBubbleFlag,"1")',
+        "map_hash": "ClientDataMgr.Inst_get():CM_SetClientDataFun(ClientDataType.Key.WorldMap,value)",
+        "winmain_hash": 'ClientDataMgr.Inst_get():CM_SetClientDataFun(ClientDataType.Key.SkillGuide,"1")',
+    }.items():
+        module_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / module_name / "text_assets"
+        module_dir.mkdir(parents=True)
+        (module_dir / f"{module_name}.lua").write_text(
+            f"function _M.Save(self,value)\n{snippet}\nend\n",
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["request_schema_field_order"] == "key | value"
+    assert result["stats"]["request_field_types"] == "key:String | value:String"
+    assert result["stats"]["representative_write_surface_count"] >= 4
+    assert result["verdict"]["key_value_assignment_visible"] is True
+    assert result["verdict"]["client_data_key_registry_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    callsites_text = Path(result["files"]["callsites"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_SetClientData / SM_SetClientData chain" in report_text
+    assert "CM_SetClientData.key=key" in evidence_text
+    assert "CM_SetClientData.value=value" in evidence_text
+    assert "ClientDataType.Key.SkillGuide" in callsites_text
+
+
+def test_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe_maps_activity_vo_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "51007",
+                "name": "CM_ActivityBaseSync",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "baseIds",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "51008",
+                "name": "SM_ActivityBaseSync",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "activityVOS",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "51007",
+                "name": "CM_ActivityBaseSync",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "25",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "51008",
+                "name": "SM_ActivityBaseSync",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    activity_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "activity_hash" / "text_assets"
+    activity_dir.mkdir(parents=True)
+    (activity_dir / "ActivityNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_ActivityBaseSync=require"GameSystem.Game.Message.module.common.activity.packet.CM_ActivityBaseSync"',
+                'local _SM_ActivityBaseSync=require"GameSystem.Game.Message.module.common.activity.packet.SM_ActivityBaseSync"',
+                "function _M.LuaActivityNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_ActivityBaseSync:getId(),typeof(_SM_ActivityBaseSync),function(msg)",
+                "self.SM_ActivityBaseSyncFun(msg)",
+                "end)",
+                "_MessagePool.Inst_get():F_Register(_CM_ActivityBaseSync:getId(),typeof(_CM_ActivityBaseSync))",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_ActivityBaseSync:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_ActivityBaseSync:getId())",
+                "end",
+                "function _M.SM_ActivityBaseSyncFun(msg)",
+                "if msg.code==0 then",
+                "ActivityMgr.Inst_get().Model:SetActivityBaseSync(msg)",
+                "if msg and msg.ClientData then msg.ClientData() end",
+                "end",
+                "end",
+                "function _M.CM_ActivityBaseSyncFun(self,baseIds,clientData)",
+                "local CM_ActivityBaseSync=SocketManager.Inst_get():GetMessageFromPools(_CM_ActivityBaseSync)",
+                "CM_ActivityBaseSync.baseIds=baseIds",
+                "SocketManager.Inst_get():F_SendMsg(CM_ActivityBaseSync,clientData)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (activity_dir / "ActivityModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.LuaActivityModel(self)",
+                "self.ActivityData=ActivityData.new()",
+                "end",
+                "function _M.SetActivityBaseSync(self,msg)",
+                "if msg.activityVOS:Count()==0 then",
+                "return",
+                "end",
+                "self.ActivityData:SetActivityBaseSync(msg)",
+                "self:AddUnlockCondition()",
+                "self:RaiseEvent(ActivityType.ACTIVITY_REFRESH_BY_TYPE,true)",
+                "end",
+                "function _M.GetActivityVoByBaseId(self,baseId)",
+                "return self.ActivityData:GetActivityVoByBaseId(baseId)",
+                "end",
+                "function _M.GetActivityVo(self,activityId)",
+                "return self.ActivityData:GetActivityVo(activityId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (activity_dir / "ActivityData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetActivityBaseSync(self,msg)",
+                "local lo",
+                "for k,v in Cipairs(msg.activityVOS)do",
+                "self._ActivityInfo:LuaDic_AddOrSetItem(v.id,v)",
+                "lo=DBMgr.Inst_get():GetConfigTableById(ConfigName.Activity_Activity,v.activityId)",
+                "v.baseId=lo and lo.baseId",
+                "self.V_ActivationActivityDic:LuaDic_AddOrSetItem(v.activityId,v)",
+                "self:CheckPushActView(v.activityId,false)",
+                "self._ActivityBaseDic:LuaDic_AddOrSetItem(v.activityId,v)",
+                "QuestMgr.Inst_get().Model:F_AddTaskRedDotByActivityId(v.activityId)",
+                "GiftMgr.Inst_get().Model:GetGiftInfoData(v and v.activityType)",
+                "end",
+                "end",
+                "function _M.GetActivityVoByBaseId(self,baseId)",
+                "return self._ActivityBaseDic:LuaDic_GetItem(baseId)",
+                "end",
+                "function _M.GetActivityVo(self,activityId)",
+                "return self._ActivityInfo:LuaDic_GetItem(activityId)",
+                "end",
+                "function _M.GetActivityState(self,activityId)",
+                "local vo=self._ActivityInfo:LuaDic_GetItem(activityId)",
+                "return vo and vo.state",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (activity_dir / "ThemeWeekActivityMainView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateTime(self)",
+                "local ActivityVO=ActivityMgr.Inst_get().Model:GetActivityVo(self.V_ActivityId)",
+                "if ActivityVO then",
+                "self.V_NextRefreshTime=ActivityVO.endTime:ToNum()",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    requester_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "clubpk_hash" / "text_assets"
+    requester_dir.mkdir(parents=True)
+    (requester_dir / "ClubPkMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.RequestBase(self)",
+                "local baseIdList=CList.new()",
+                "ActivityMgr.Inst_get().NetLogic:CM_ActivityBaseSyncFun(baseIdList,function()",
+                "self:OpenView()",
+                "end)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "activityVOS"
+    assert result["stats"]["request_schema_field_order"] == "baseIds"
+    assert result["stats"]["request_callsite_evidence_count"] >= 1
+    assert result["stats"]["data_activity_vo_cache_evidence_count"] >= 5
+    assert result["verdict"]["base_ids_assignment_visible"] is True
+    assert result["verdict"]["server_handler_forwards_activity_vos"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_ActivityBaseSync / SM_ActivityBaseSync chain" in report_text
+    assert "CM_ActivityBaseSync.baseIds=baseIds" in evidence_text
+    assert "self._ActivityBaseDic:LuaDic_AddOrSetItem" in evidence_text
+    assert "CM_ActivityBaseSyncFun(baseIdList" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe_maps_record_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "12572",
+                "name": "CM_YunmengPkChallengeRecord",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "type",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "12573",
+                "name": "SM_YunmengPkChallengeRecord",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "type | challengeList",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "12572",
+                "name": "CM_YunmengPkChallengeRecord",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "36",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "12573",
+                "name": "SM_YunmengPkChallengeRecord",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "15",
+            }
+        )
+
+    yunmeng_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "yunmengpk_hash" / "text_assets"
+    yunmeng_dir.mkdir(parents=True)
+    (yunmeng_dir / "YunmengpkNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_YunmengPkChallengeRecord=require"GameSystem.Game.Message.module.world.yunmengpk.packet.CM_YunmengPkChallengeRecord"',
+                'local _SM_YunmengPkChallengeRecord=require"GameSystem.Game.Message.module.world.yunmengpk.packet.SM_YunmengPkChallengeRecord"',
+                "function _M.LuaYunmengpkNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_YunmengPkChallengeRecord:getId(),typeof(_CM_YunmengPkChallengeRecord))",
+                "_MessagePool.Inst_get():F_Register(_SM_YunmengPkChallengeRecord:getId(),typeof(_SM_YunmengPkChallengeRecord),function(msg)",
+                "self.SM_YunmengPkChallengeRecordFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_YunmengPkChallengeRecord:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_YunmengPkChallengeRecord:getId())",
+                "end",
+                "function _M.CM_YunmengPkChallengeRecordFun(self,type)",
+                "local CM_YunmengPkChallengeRecord=SocketManager.Inst_get():GetMessageFromPools(_CM_YunmengPkChallengeRecord)",
+                "CM_YunmengPkChallengeRecord.type=type",
+                "SocketManager.Inst_get():F_SendMsg(CM_YunmengPkChallengeRecord)",
+                "end",
+                "function _M.SM_YunmengPkChallengeRecordFun(msg)",
+                "if msg.code==0 then",
+                "YunmengpkMgr.Inst_get().Model.YunmengpkData:SetChallengeList(msg.type,msg.challengeList)",
+                "if msg.type==YunmengpkType.RecordType.Personal then",
+                'RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID["YunMengRecord_Personal"])',
+                "end",
+                "YunmengpkMgr.Inst_get().Model:RaiseEvent(YunmengpkType.Update_ChallengeList_Info,msg.type)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.LuaYunmengpkData(self)",
+                "self.challengeListDic=Dictionary.new()",
+                "end",
+                "function _M.SetChallengeList(self,type,challengeList)",
+                "if self.challengeListDic==nil then",
+                "self.challengeListDic=Dictionary.new()",
+                "end",
+                "self.challengeListDic:LuaDic_AddOrSetItem(type,challengeList)",
+                "end",
+                "function _M.UpdateChallengeList(self,challengeVO)",
+                "if self.challengeListDic==nil then",
+                "self.challengeListDic=Dictionary.new()",
+                "end",
+                "local list=self.challengeListDic:LuaDic_GetItem(YunmengpkType.RecordType.Personal)",
+                "self.challengeListDic:LuaDic_AddOrSetItem(YunmengpkType.RecordType.Personal,list)",
+                "end",
+                "function _M.GetRecordList(self,btnType,subBtnType)",
+                "local recordList=self.challengeListDic:LuaDic_GetItem(btnType)",
+                "local isCan=self:CheckPersonalRecordType(subBtnType,data.noticeId)",
+                "return recordList",
+                "end",
+                "function _M.CheckPersonalRecordType(self,subBtnType,noticeId)",
+                'return YunmengpkType.EventRecordType["RecordType_"..subBtnType]~=nil',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkType.lua").write_text(
+        "\n".join(
+            [
+                "local _M={}",
+                "_M.RecordType={All=1,Personal=2}",
+                "_M.EventRecordType={RecordType_1=1,RecordType_2=2}",
+                "_M.Update_ChallengeList_Info='Update_ChallengeList_Info'",
+                "return _M",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.OpenGuildWarsDuelInfoView(self,btnType,subBtnType)",
+                "UIShowMgr.Inst_get():F_ShowWin(Window.GuildWarsDuelInfoView,function(view)",
+                "end)",
+                "end",
+                "function _M.RequestPersonal(self)",
+                "self.NetLogic:CM_YunmengPkChallengeRecordFun(YunmengpkType.RecordType.Personal)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "GuildWarsDuelInfoView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.LuaGuildWarsDuelInfoView(self)",
+                "self.selectedPage=YunmengpkType.RecordType.All",
+                "self.recordScrollView:Init(self.RecordItem,RecordItem,self.OnItemInstCall,self)",
+                "YunmengpkMgr.Inst_get().NetLogic:CM_YunmengPkChallengeRecordFun(self.selectedPage)",
+                "end",
+                "function _M.ClickTabBtn(self,selectedPage)",
+                "YunmengpkMgr.Inst_get().NetLogic:CM_YunmengPkChallengeRecordFun(selectedPage)",
+                "self.selectedPage=selectedPage",
+                "self:UpdateRecordScrollView(selectedPage,true)",
+                "self:UpdatePersonRedDot(selectedPage)",
+                "end",
+                "function _M.UpdateRecordScrollView(self,selectedPage,isShowTop)",
+                "local showList=YunmengpkMgr.Inst_get().Model:GetRecordList(YunmengpkType.RecordType.All)",
+                "end",
+                "function _M.UpdateRecordObjShow(self,selectedPage)",
+                "self:UpdateRecordScrollView(self.selectedPage,true)",
+                "end",
+                "function _M.UpdatePersonRedDot(self,selectedPage)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "type | challengeList"
+    assert result["stats"]["request_schema_field_order"] == "type"
+    assert result["stats"]["request_callsite_evidence_count"] >= 2
+    assert result["stats"]["challenge_list_cache_evidence_count"] >= 4
+    assert result["verdict"]["request_type_assignment_visible"] is True
+    assert result["verdict"]["server_handler_stores_challenge_list"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_YunmengPkChallengeRecord / SM_YunmengPkChallengeRecord chain" in report_text
+    assert "CM_YunmengPkChallengeRecord.type=type" in evidence_text
+    assert "SetChallengeList(msg.type,msg.challengeList)" in evidence_text
+    assert "CM_YunmengPkChallengeRecordFun(self.selectedPage)" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe_maps_scene_events(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "40001",
+                "name": "CM_ChangeMap",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "mapId | param",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40002",
+                "name": "SM_ChangeMap",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "mapId | sceneId | preMapId | position",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40003",
+                "name": "CM_LoadMapFinish",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "mapId",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40004",
+                "name": "SM_LoadMapFinish",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "40001",
+                "name": "CM_ChangeMap",
+                "visible_logic_status": "message_registered_without_visible_fun",
+                "evidence_count": "10",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40002",
+                "name": "SM_ChangeMap",
+                "visible_logic_status": "message_registered_without_visible_fun",
+                "evidence_count": "14",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40003",
+                "name": "CM_LoadMapFinish",
+                "visible_logic_status": "message_registered_without_visible_fun",
+                "evidence_count": "8",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "40004",
+                "name": "SM_LoadMapFinish",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "10",
+            }
+        )
+
+    core_dir = export_root / "by_source" / "lscripts" / "core_hash" / "text_assets"
+    core_dir.mkdir(parents=True)
+    (core_dir / "SceneNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_ChangeMap=require"GameSystem.Game.Message.module.scene.map.packet.SM_ChangeMap"',
+                'local _CM_ChangeMap=require"GameSystem.Game.Message.module.scene.map.packet.CM_ChangeMap"',
+                'local _CM_LoadMapFinish=require"GameSystem.Game.Message.module.scene.map.packet.CM_LoadMapFinish"',
+                'local _SM_LoadMapFinish=require"GameSystem.Game.Message.module.scene.map.packet.SM_LoadMapFinish"',
+                "function _M.SceneNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_ChangeMap:getId(),typeof(_SM_ChangeMap),self.RspChangeMap)",
+                "_MessagePool.Inst_get():F_Register(_CM_LoadMapFinish:getId(),typeof(_CM_LoadMapFinish))",
+                "_MessagePool.Inst_get():F_Register(_CM_ChangeMap:getId(),typeof(_CM_ChangeMap))",
+                "_MessagePool.Inst_get():F_Register(_SM_LoadMapFinish:getId(),typeof(_SM_LoadMapFinish),function(msg)",
+                "self.SM_LoadMapFinishFun(msg)",
+                "end)",
+                "end",
+                "function _M.SM_LoadMapFinishFun(msg)",
+                "DungeonManager.Inst_get():LoadMapFinish()",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.SM_LOAD_MAP_FINISH)",
+                "end",
+                "function _M.ReqLoadMapFinish(clientData)",
+                "local _ReqMapLoadFinish=SocketManager.Inst_get():GetMessageFromPools(_CM_LoadMapFinish)",
+                "_ReqMapLoadFinish.mapId=SceneMgr.Inst_get().V_CurrentMapId",
+                "SocketManager.Inst_get():F_SendMsg(_ReqMapLoadFinish,clientData)",
+                "TaskMgr.Inst_get():ChangeMapFinish()",
+                "end",
+                "function _M.ReqChangeMap(mapid,param,clientData)",
+                "local _ReqMapChange=SocketManager.Inst_get():GetMessageFromPools(_CM_ChangeMap)",
+                "_ReqMapChange.mapId=mapid",
+                "_ReqMapChange.param=param",
+                "LoginMgr.Inst_get().OpenLoadingRunView()",
+                "SocketManager.Inst_get():F_SendMsg(_ReqMapChange,clientData)",
+                "end",
+                "function _M.RspChangeMap(msg)",
+                "LoginMgr.Inst_get().CloseLoadingRunView()",
+                "if msg.code==0 then",
+                "SceneMgr.Inst_get():RspEnterMap(msg)",
+                "MapMgr.Inst_get():OnCheckClientData_RspChangeMap(msg.ClientData)",
+                "elseif msg.code==31424 then",
+                "TipsMgr.Inst_get():ShowSystemTips(msg.ClientData.failAction)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (core_dir / "SceneMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqChangeMap(self,mapid,param,clientData,reqExit)",
+                "self.SceneNetLogic.ReqChangeMap(mapid,param,clientData)",
+                "end",
+                "function _M.CheckSandBornId_ReqChangeMap(self,toMapId,param)",
+                "return param",
+                "end",
+                "function _M.RspEnterMap(self,msg)",
+                "self.V_CurrentMapId=msg.mapId",
+                "self.V_LoadMapId=msg.mapId",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.CHANGE_MAP,GameDefine.Scene.LoadStart)",
+                "self.SceneNetLogic.ReqLoadMapFinish()",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.CHANGE_MAP,GameDefine.Scene.LoadFinish)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    common_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "common_hash" / "text_assets"
+    common_dir.mkdir(parents=True)
+    (common_dir / "CommonEventType.lua").write_text(
+        "\n".join(
+            [
+                'local _M={}',
+                '_M.CHANGE_MAP="CHANGE_MAP"',
+                '_M.SM_LOAD_MAP_FINISH="SM_LOAD_MAP_FINISH"',
+                "return _M",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    requester_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "sceneuser_hash" / "text_assets"
+    requester_dir.mkdir(parents=True)
+    (requester_dir / "SceneUser.lua").write_text(
+        "\n".join(
+            [
+                "function _M.OpenScene(self)",
+                "SceneMgr.Inst_get():ReqChangeMap(991001)",
+                "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.CHANGE_MAP,self._OnChangeMap)",
+                "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.SM_LOAD_MAP_FINISH,self._OnLoadFinish)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["cm_change_map_packet_count"] == 2
+    assert result["stats"]["sm_change_map_packet_count"] == 2
+    assert result["stats"]["cm_load_map_finish_packet_count"] == 2
+    assert result["stats"]["sm_load_map_finish_packet_count"] == 2
+    assert result["stats"]["request_callsite_evidence_count"] >= 1
+    assert result["stats"]["sm_load_map_finish_event_consumer_count"] >= 1
+    assert result["verdict"]["change_map_sender_visible"] is True
+    assert result["verdict"]["load_map_finish_response_event_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    assert "Observed scene map lifecycle chain" in report_text
+    assert "F_SendMsg(_ReqMapChange" in evidence_text
+    assert "RaiseEvent(CommonEventType.SM_LOAD_MAP_FINISH" in evidence_text
+    assert "SceneMgr.Inst_get():ReqChangeMap(991001)" in requesters_text
+
+
+def test_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe_maps_match_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "12548",
+                "name": "CM_SyncYunmengPkInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "12549",
+                "name": "SM_SyncYunmengPkInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "isCheck | yunmengMatchVO | continueKill | hasQualify | isFirstSnip | activityId",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "12548",
+                "name": "CM_SyncYunmengPkInfo",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "25",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "12549",
+                "name": "SM_SyncYunmengPkInfo",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "15",
+            }
+        )
+
+    yunmeng_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "yunmengpk_hash" / "text_assets"
+    yunmeng_dir.mkdir(parents=True)
+    (yunmeng_dir / "YunmengpkNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_SyncYunmengPkInfo=require"GameSystem.Game.Message.module.world.yunmengpk.packet.CM_SyncYunmengPkInfo"',
+                'local _SM_SyncYunmengPkInfo=require"GameSystem.Game.Message.module.world.yunmengpk.packet.SM_SyncYunmengPkInfo"',
+                "function _M.LuaYunmengpkNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_SyncYunmengPkInfo:getId(),typeof(_CM_SyncYunmengPkInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_SyncYunmengPkInfo:getId(),typeof(_SM_SyncYunmengPkInfo),function(msg)",
+                "self.SM_SyncYunmengPkInfoFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_SyncYunmengPkInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SyncYunmengPkInfo:getId())",
+                "end",
+                "function _M.CM_SyncYunmengPkInfoFun(self,activityId)",
+                "local CM_SyncYunmengPkInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_SyncYunmengPkInfo)",
+                "SocketManager.Inst_get():F_SendMsg(CM_SyncYunmengPkInfo,{activityId=activityId})",
+                "end",
+                "function _M.SM_SyncYunmengPkInfoFun(msg)",
+                "if msg.code==0 then",
+                "YunmengpkMgr.Inst_get().Model:SyncYunmengPkInfo(msg.yunmengMatchVO)",
+                "YunmengpkMgr.Inst_get().Model:UpdateCheckStateList(msg.checkItemSet)",
+                "YunmengpkMgr.Inst_get().Model:UpdateKillCounter(msg.continueKill)",
+                "local actId=msg.activityId",
+                "if msg.ClientData and msg.ClientData.activityId then",
+                "actId=msg.ClientData.activityId",
+                "end",
+                "YunmengpkMgr.Inst_get().Model.YunmengpkData:UpdateHasQualify(msg.hasQualify,actId)",
+                "YunmengpkMgr.Inst_get().Model:UpdateFirstSnip(msg.isFirstSnip)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SyncYunmengPkInfo(self,info)",
+                "self.YunmengpkData:SyncYunmengPkInfo(info)",
+                "end",
+                "function _M.OnMatchSuccess(self,info)",
+                "self.YunmengpkData:SyncYunmengPkInfo(info)",
+                "self:RaiseEvent(YunmengpkType.Match_Success)",
+                "end",
+                "function _M.UpdateCheckStateList(self,check)",
+                "self.YunmengpkData:UpdateCheckState(true)",
+                "end",
+                "function _M.UpdateKillCounter(self,counter)",
+                "self.YunmengpkData:UpdateKillCounter(counter)",
+                "end",
+                "function _M.UpdateFirstSnip(self,isFirstSnip)",
+                "self.YunmengpkData:UpdateFirstSnip(isFirstSnip)",
+                "end",
+                "function _M.IsFirstSnip(self)",
+                "return self.YunmengpkData:IsFirstSnip()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SyncYunmengPkInfo(self,info)",
+                "self._SyncYunmengPkInfo=info",
+                "end",
+                "function _M.GetYunmengPkInfo(self)",
+                "if self._SyncYunmengPkInfo then",
+                "local svrTimer=LoginMgr.Inst_get():GetSeverTime():ToNum()",
+                "if svrTimer>self._SyncYunmengPkInfo.timeStamp:ToNum() then",
+                "self._SyncYunmengPkInfo=nil",
+                "end",
+                "end",
+                "return self._SyncYunmengPkInfo",
+                "end",
+                "function _M.UpdateHasQualify(self,value,activityId)",
+                "self.hasQualify=self.hasQualify or{}",
+                "self.hasQualify[activityId]=value",
+                "end",
+                "function _M.CheckHasQualify(self)",
+                "return self.hasQualify and true or false",
+                "end",
+                "function _M.UpdateKillCounter(self,counter)",
+                "self._KillCounter=counter",
+                "end",
+                "function _M.UpdateFirstSnip(self,isFirstSnip)",
+                "self.isFirstSnip=isFirstSnip",
+                "end",
+                "function _M.IsFirstSnip(self)",
+                "return self.isFirstSnip",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.RequestInfo(self,activityvo,crossVo)",
+                "self.NetLogic:CM_SyncYunmengPkInfoFun(activityvo.activityId)",
+                "self.NetLogic:CM_SyncYunmengPkInfoFun(crossVo.activityId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "YunmengpkMainPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.LuaYunmengpkMainPanel(self)",
+                "YunmengpkMgr.Inst_get().Model:AddEventHandler(YunmengpkType.Match_Success,self._OnPkInfoUpdate)",
+                "end",
+                "function _M._OnPkInfoUpdate(self)",
+                "local matchVo=YunmengpkMgr.Inst_get().Model.YunmengpkData:GetYunmengPkInfo()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (yunmeng_dir / "AutoActivityActionMatch.lua").write_text(
+        "local matchVo=YunmengpkMgr.Inst_get().Model.YunmengpkData:GetYunmengPkInfo()\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "isCheck | yunmengMatchVO | continueKill | hasQualify | isFirstSnip | activityId"
+    assert result["stats"]["request_callsite_evidence_count"] >= 2
+    assert result["stats"]["match_info_cache_evidence_count"] >= 4
+    assert result["verdict"]["activity_id_client_data_visible"] is True
+    assert result["verdict"]["server_handler_forwards_match_vo"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed CM_SyncYunmengPkInfo / SM_SyncYunmengPkInfo chain" in report_text
+    assert "F_SendMsg(CM_SyncYunmengPkInfo,{activityId=activityId})" in evidence_text
+    assert "SyncYunmengPkInfo(msg.yunmengMatchVO)" in evidence_text
+    assert "CM_SyncYunmengPkInfoFun(activityvo.activityId)" in requesters_text
+    assert "GetYunmengPkInfo()" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe_maps_display_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "34001",
+                "name": "SM_FazeShow",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "fazeResId",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "34001",
+                "name": "SM_FazeShow",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "10",
+            }
+        )
+
+    faze_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_hash" / "text_assets"
+    faze_dir.mkdir(parents=True)
+    (faze_dir / "FazeNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_FazeShow=require"GameSystem.Game.Message.module.player.faze.packet.CM_FazeShow"',
+                'local _SM_FazeShow=require"GameSystem.Game.Message.module.player.faze.packet.SM_FazeShow"',
+                "function _M.LuaFazeNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_FazeShow:getId(),typeof(_CM_FazeShow))",
+                "_MessagePool.Inst_get():F_Register(_SM_FazeShow:getId(),typeof(_SM_FazeShow),function(msg)",
+                "self.SM_FazeShowFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_FazeShow:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_FazeShow:getId())",
+                "end",
+                "function _M.CM_FazeShowFun(fazeResId)",
+                "local CM_FazeShow=SocketManager.Inst_get():GetMessageFromPools(_CM_FazeShow)",
+                "CM_FazeShow.fazeResId=fazeResId",
+                "SocketManager.Inst_get():F_SendMsg(CM_FazeShow)",
+                "end",
+                "function _M.SM_FazeShowFun(msg)",
+                "if msg.code==0 then",
+                "FazeMgr.Inst_get().Model:SaveFazeShowId(msg.fazeResId)",
+                "FazeMgr.Inst_get().Model:RaiseEvent(FazeType.ReFreshRuleBagData)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SaveFazeShowId(self,showId)",
+                "self.FazeData:SaveFazeShowId(showId)",
+                "end",
+                "function _M.GetFazeShowId(self)",
+                "return self.FazeData:GetFazeShowId()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateFazeShow(self,showId)",
+                "local userView=EntityMgr.Inst_get().UserView",
+                "if not userView then",
+                "return",
+                "end",
+                "userView:UpdateFazeShow(showId)",
+                "end",
+                "function _M.SaveFazeShowId(self,showId)",
+                "self.currentShowId=showId",
+                "self:UpdateFazeShow(showId)",
+                "end",
+                "function _M.GetFazeShowId(self)",
+                "return self.currentShowId",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqFazeShowFun(self,fazeResId)",
+                "FazeMgr.Inst_get().NetLogic.CM_FazeShowFun(fazeResId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeRuleBagView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.LuaFazeRuleBagView(self)",
+                "FazeMgr.Inst_get().Model:AddEventHandler(FazeType.ReFreshRuleBagData,self.Refresh)",
+                "end",
+                "function _M.Refresh(self)",
+                "local showId=FazeMgr.Inst_get().Model:GetFazeShowId()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "fazeResId"
+    assert result["stats"]["server_show_response_evidence_count"] >= 2
+    assert result["stats"]["show_id_data_apply_evidence_count"] >= 3
+    assert result["verdict"]["server_handler_saves_faze_show_id"] is True
+    assert result["verdict"]["user_view_update_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    requesters_text = Path(result["files"]["requesters"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_FazeShow chain" in report_text
+    assert "SaveFazeShowId(msg.fazeResId)" in evidence_text
+    assert "userView:UpdateFazeShow(showId)" in evidence_text
+    assert "F_SendMsg(CM_FazeShow)" in requesters_text
+    assert "GetFazeShowId()" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe_maps_buff_snapshot(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60035",
+                "name": "SM_AllBuff",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "buffVOList",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60035",
+                "name": "SM_AllBuff",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "8",
+            }
+        )
+
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_hash" / "text_assets"
+    battle_dir.mkdir(parents=True)
+    (battle_dir / "BuffNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_AllBuff=require"GameSystem.Game.Message.module.scene.buff.packet.SM_AllBuff"',
+                "function _M.BuffNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_AllBuff:getId(),typeof(_SM_AllBuff),self.SM_AllBuffFunc)",
+                "end",
+                "function _M.SM_AllBuffFunc(msg)",
+                "BuffMgr.Inst_get():RemoveAllBuff()",
+                "for _,buffVO in Kpairs(msg.buffVOList)do",
+                "BuffMgr.Inst_get():AddBuff(buffVO)",
+                "end",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.BuffRefresh)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_AllBuff:getId())",
+                "end",
+                "function _M.SM_AddBuffFunc(msg)",
+                "BuffMgr.Inst_get():AddBuff(msg.buffVO)",
+                "end",
+                "function _M.SM_RemoveBuffFunc(msg)",
+                "BuffMgr.Inst_get():RemoveBuff(msg)",
+                "end",
+                "function _M.SM_UpdateBuffFunc(msg)",
+                "BuffMgr.Inst_get():ModifyBuff(msg)",
+                "end",
+                "function _M.SM_BuffChangeHpAndMpFunc(msg)",
+                "BuffMgr.Inst_get():UpdateBuffResult(msg.resultVOs)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (battle_dir / "BuffMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.AddBuff(self,buffVO)",
+                "local entityView=EntityMgr.Inst_get():GetEntityFightInBattleView(buffVO.ownerId)",
+                "if entityView then",
+                "local buff=Buff.new()",
+                "entityView:AddBuff(buffVO,buff,entityView.Entity.V_ID)",
+                "end",
+                "end",
+                "function _M.RemoveAllBuff(self)",
+                "local userView=EntityMgr.Inst_get().UserView",
+                "if userView then",
+                "userView:RemoveAllBuff()",
+                "end",
+                "for k,entityView in Cipairs(EntityMgr.Inst_get():GetAllPlayerList())do",
+                "entityView:RemoveAllBuff()",
+                "end",
+                "end",
+                "function _M.RemoveBuff(self,msg)",
+                "entityView:RemoveBuff(msg.id,msg.configId,msg.destroyReason)",
+                "end",
+                "function _M.ModifyBuff(self,msg)",
+                "entityView:ModifyBuff(msg.buffVO)",
+                "end",
+                "function _M.UpdateBuffResult(self,resultVOs)",
+                "entityView:AddBuffResult(buffResultVO)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (battle_dir / "Buff.lua").write_text(
+        "\n".join(
+            [
+                "function _M.OnAdd(self)",
+                "BuffMgr.Inst_get().Model:RaiseEvent(BuffEventType.BUFF_ADD_EVENT,self)",
+                "end",
+                "function _M.OnRemove(self)",
+                "BuffMgr.Inst_get().Model:RaiseEvent(BuffEventType.BUFF_REMOVE_EVENT,self)",
+                "end",
+                "function _M.OnUpdate(self)",
+                "BuffMgr.Inst_get().Model:RaiseEvent(BuffEventType.BUFF_UPDATE_EVENT,self)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_AllBuff.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.buffVOList=CList.new()",
+                "end",
+                "function _M.reading(self)",
+                "self:readMessageList2List(self.buffVOList)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_AllBuff"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "BuffVO.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.id=0",
+                "self.configId=0",
+                "self.layer=0",
+                "self.ownerId=0",
+                "self.remainTime=0",
+                "self.duration=0",
+                "self.effectVO=BuffEffectVO.new()",
+                "end",
+                "function _M.getName(self)",
+                'return"BuffVO"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "buffVOList"
+    assert result["stats"]["all_buff_response_evidence_count"] >= 4
+    assert result["stats"]["packet_schema_evidence_count"] >= 5
+    assert result["verdict"]["handler_removes_all_then_adds_each_buff"] is True
+    assert result["verdict"]["buff_vo_schema_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_AllBuff chain" in report_text
+    assert "Kpairs(msg.buffVOList)" in evidence_text
+    assert "entityView:AddBuff(buffVO,buff,entityView.Entity.V_ID)" in evidence_text
+    assert "BuffEventType.BUFF_ADD_EVENT" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe_maps_role_and_skill_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60044",
+                "name": "SM_SyncUnit",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "currHp | maxHp | currMp | maxMp | runSpeed | systemTime | groupId | skills | cds | chargeLv",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60044",
+                "name": "SM_SyncUnit",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "4",
+            }
+        )
+
+    fight_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "fight_hash" / "text_assets"
+    fight_dir.mkdir(parents=True)
+    (fight_dir / "FightNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_SyncUnit=require"GameSystem.Game.Message.module.scene.fight.packet.SM_SyncUnit"',
+                "function _M.LuaFightNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_SyncUnit:getId(),typeof(_SM_SyncUnit),self.SM_SyncUnitFun)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_SyncUnit:getId())",
+                "end",
+                "function _M.SM_SyncUnitFun(msg)",
+                "RoleMgr.Inst_get():ReviveInfo(msg)",
+                "SkillMgr.Inst_get():RefreshUserSkillCD(msg)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    role_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "role_hash" / "text_assets"
+    role_dir.mkdir(parents=True)
+    (role_dir / "RoleMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReviveInfo(self,msg)",
+                "local userView=EntityMgr.Inst_get().UserView",
+                "if userView==nil or msg==nil then return end",
+                "if userView:IsInState(StateType.Dead)and msg.currHp>0 then",
+                "userView:Revive()",
+                "end",
+                "userView.Entity:SetChargeLv(msg.chargeLv)",
+                "userView.Entity:SetProperty(LuaEntityPropertyType.HP,msg.currHp)",
+                "userView.Entity:SetProperty(LuaEntityPropertyType.MAXHP,msg.maxHp)",
+                "userView.Entity:SetProperty(LuaEntityPropertyType.MP,msg.currMp)",
+                "userView.Entity:SetProperty(LuaEntityPropertyType.MAXMP,msg.maxMp)",
+                "userView.Entity:SetProperty(LuaEntityPropertyType.RUNSPEED,msg.runSpeed)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_hash" / "text_assets"
+    battle_dir.mkdir(parents=True)
+    (battle_dir / "SkillMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.RefreshUserSkillCD(self,msg)",
+                "self.Model.SkillData:SetSkillCD(msg.groupId,msg.skills,msg.cds,msg.systemTime:ToNum())",
+                "local userView=EntityMgr.Inst_get().UserView",
+                "if userView and userView.SkillActor then",
+                "for _,skillVo in Kpairs(msg.skills)do",
+                "userView.SkillActor:RefreshSkillCD(skillVo.skillId)",
+                "end",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (battle_dir / "SkillData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetSkillCD(self,groupId,skillList,cdList,systemTime)",
+                "if self.cdDic:LuaDic_ContainsKey(groupId)then",
+                "self.cdDic[groupId]:LuaDic_Clear()",
+                "else",
+                "self.cdDic:LuaDic_AddOrSetItem(groupId,Dictionary.new())",
+                "end",
+                "local groupCDDic=self.cdDic[groupId]",
+                "for index,skillVo in Kpairs(skillList)do",
+                "if skillVo.skillId then",
+                "groupCDDic:LuaDic_AddOrSetItem(skillVo.skillId,math.max(cdList[index-1]:ToNum()-systemTime,0))",
+                "end",
+                "end",
+                "end",
+                "function _M.GetCDBySkillId(self,skillId)",
+                "return self.cdDic[self.currentGroupId][skillId]",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_SyncUnit.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.currHp=0",
+                "self.maxHp=0",
+                "self.currMp=0",
+                "self.maxMp=0",
+                "self.runSpeed=0",
+                "self.systemTime=0",
+                "self.groupId=0",
+                "self.skills=CList.new()",
+                "self.cds=CList.new()",
+                "self.chargeLv=0",
+                "end",
+                "function _M.reading(self)",
+                "self.currHp=self:readDouble()",
+                "self.maxHp=self:readDouble()",
+                "self.currMp=self:readDouble()",
+                "self.maxMp=self:readDouble()",
+                "self.runSpeed=self:readDouble()",
+                "self.systemTime=self:readLong()",
+                "self.groupId=self:readInt()",
+                "self:readMessageList2List(self.skills)",
+                "self:readMessageList2List(self.cds)",
+                "self.chargeLv=self:readInt()",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_SyncUnit"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"].startswith("currHp | maxHp")
+    assert result["stats"]["role_state_apply_evidence_count"] >= 6
+    assert result["stats"]["skill_cd_refresh_evidence_count"] >= 4
+    assert result["verdict"]["role_mgr_applies_hp_mp_speed_charge"] is True
+    assert result["verdict"]["skill_data_cd_cache_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_SyncUnit chain" in report_text
+    assert "RoleMgr.Inst_get():ReviveInfo(msg)" in evidence_text
+    assert "SetSkillCD(msg.groupId,msg.skills,msg.cds,msg.systemTime:ToNum())" in evidence_text
+    assert "userView.Entity:SetProperty(LuaEntityPropertyType.HP,msg.currHp)" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe_maps_entity_restrictions(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60012",
+                "name": "SM_RestrictStatus",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "unitId | restrictCode",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "60012",
+                "name": "SM_RestrictStatus",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "4",
+            }
+        )
+
+    fight_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "fight_hash" / "text_assets"
+    fight_dir.mkdir(parents=True)
+    (fight_dir / "FightNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_RestrictStatus=require"GameSystem.Game.Message.module.scene.fight.packet.SM_RestrictStatus"',
+                "function _M.LuaFightNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_RestrictStatus:getId(),typeof(_SM_RestrictStatus),self.SM_RestrictStatusFun)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_RestrictStatus:getId())",
+                "end",
+                "function _M.SM_RestrictStatusFun(msg)",
+                "local entityView=EntityMgr.Inst_get():GetEntityFightInBattleView(msg.unitId)",
+                "if entityView then",
+                "entityView:AddRestrictCode(msg.restrictCode)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_hash" / "text_assets"
+    battle_dir.mkdir(parents=True)
+    (battle_dir / "SkillDefine.lua").write_text(
+        "\n".join(
+            [
+                "_M.RestrictStatus=",
+                "{",
+                "FORBID_MOVE=2,",
+                "CANNOT_SELECT_AS_TARGET=4,",
+                "USE_DEFAULT_SKILL_ONLY=8,",
+                "FORBID_USE_SKILL=16,",
+                "NO_HP_CHANGE=32,",
+                "FORBID_USE_SKILL_GONGFA=32768,",
+                "FORBID_USE_SKILL_DODGE=65536,",
+                "FORBID_USE_SKILL_XINFA=131072,",
+                "FORBID_USE_SKILL_NORMAL=262144,",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (battle_dir / "SkillMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.IsInRestrictStatus(self,restrictCode,status)",
+                "if not restrictCode then return false end",
+                "return bit.band(restrictCode,status)>0",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    core_dir = export_root / "by_source" / "lscripts" / "core_hash" / "text_assets"
+    core_dir.mkdir(parents=True)
+    (core_dir / "EntityFightView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.AddRestrictCode(self,code)",
+                "local lastCode=self.restrictCode",
+                "self.restrictCode=code",
+                "if self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_MOVE)and self:IsInMoveState()then",
+                "self:StopMove()",
+                "end",
+                "LuaEventMgr.Inst_get():RaiseEvent(FightEventType.RESTRICT_STATUS_CHANGED,self,lastCode,self.restrictCode)",
+                "end",
+                "function _M.IsInRestrictStatus(self,status)",
+                "return bit.band(self.restrictCode,status)>0",
+                "end",
+                "function _M.IsCanSelectAsTarget(self)",
+                "if self:IsInRestrictStatus(SkillDefine.RestrictStatus.CANNOT_SELECT_AS_TARGET)then return false end",
+                "return true",
+                "end",
+                "function _M.IsCanMove(self)",
+                "if self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_MOVE)then return false end",
+                "return true",
+                "end",
+                "function _M.IsCanCastSkill(self)",
+                "if self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_USE_SKILL)then return false end",
+                "return true",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (core_dir / "UserView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UserNormalAttackOnly(self)",
+                "return self:IsInRestrictStatus(SkillDefine.RestrictStatus.USE_DEFAULT_SKILL_ONLY)",
+                "end",
+                "function _M.ForbidUseGongFa(self)",
+                "return self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_USE_SKILL_GONGFA)",
+                "end",
+                "function _M.ForbidUseDodge(self)",
+                "return self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_USE_SKILL_DODGE)",
+                "end",
+                "function _M.ForbidUseNormalAttack(self)",
+                "return self:IsInRestrictStatus(SkillDefine.RestrictStatus.FORBID_USE_SKILL_NORMAL)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (core_dir / "AutoFightComponent.lua").write_text(
+        "\n".join(
+            [
+                "function _M.GetCanUseSkill(self,currentCode,skillType)",
+                "local Status=SkillDefine.RestrictStatus",
+                "if IsInRestrictStatus(currentCode,Status.FORBID_USE_SKILL)then return false end",
+                "if IsInRestrictStatus(currentCode,Status.USE_DEFAULT_SKILL_ONLY)or IsInRestrictStatus(currentCode,Status.FORBID_USE_SKILL_GONGFA)then return false end",
+                "if IsInRestrictStatus(currentCode,Status.FORBID_USE_SKILL_DODGE)then return false end",
+                "if IsInRestrictStatus(currentCode,Status.FORBID_USE_SKILL_NORMAL)then return false end",
+                "return true",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_RestrictStatus.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.unitId=0",
+                "self.restrictCode=0",
+                "end",
+                "function _M.reading(self)",
+                "self.unitId=self:readLong()",
+                "self.restrictCode=self:readInt()",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_RestrictStatus"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "unitId | restrictCode"
+    assert result["stats"]["restrict_status_handler_evidence_count"] >= 3
+    assert result["stats"]["entity_restrict_apply_evidence_count"] >= 4
+    assert result["stats"]["packet_schema_evidence_count"] >= 5
+    assert result["verdict"]["handler_applies_restrict_code_to_entity"] is True
+    assert result["verdict"]["movement_target_skill_consumers_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_RestrictStatus chain" in report_text
+    assert "entityView:AddRestrictCode(msg.restrictCode)" in evidence_text
+    assert "FORBID_USE_SKILL_GONGFA" in consumers_text
+    assert "IsInRestrictStatus(currentCode,Status.FORBID_USE_SKILL)" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe_maps_targeting_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "50002",
+                "name": "SM_ChangePeaceState",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "peaceState",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "50002",
+                "name": "SM_ChangePeaceState",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "8",
+            }
+        )
+
+    core_dir = export_root / "by_source" / "lscripts" / "core_hash" / "text_assets"
+    core_dir.mkdir(parents=True)
+    (core_dir / "EntityNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_ChangePeaceState=require"GameSystem.Game.Message.module.scene.peaceState.packet.CM_ChangePeaceState"',
+                'local _SM_ChangePeaceState=require"GameSystem.Game.Message.module.scene.peaceState.packet.SM_ChangePeaceState"',
+                "function _M.EntityNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_ChangePeaceState:getId(),typeof(_CM_ChangePeaceState))",
+                "_MessagePool.Inst_get():F_Register(_SM_ChangePeaceState:getId(),typeof(_SM_ChangePeaceState),self.SM_ChangePeaceStateFun)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_ChangePeaceState:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_ChangePeaceState:getId())",
+                "end",
+                "function _M.CM_ChangePeaceStateFun(state)",
+                "local _CM_ChangePeaceState=SocketManager.Inst_get():GetMessageFromPools(_CM_ChangePeaceState)",
+                "_CM_ChangePeaceState.peaceState=state",
+                "SocketManager.Inst_get():F_SendMsg(_CM_ChangePeaceState)",
+                "end",
+                "function _M.SM_ChangePeaceStateFun(msg)",
+                "local userView=EntityMgr.Inst_get().UserView",
+                "if userView then",
+                "userView.Entity:ChangePeaceState(msg.peaceState)",
+                "end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (core_dir / "User.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ChangePeaceState(self,state,sendToServer,notCleanLastPeaceState)",
+                "if self.V_PeaceState==state then return end",
+                "if not notCleanLastPeaceState then self.V_LastPeaceState=nil end",
+                "self.V_PeaceState=state",
+                "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.CHANGE_PEACE_STATE,state)",
+                "if sendToServer then",
+                "EntityMgr.Inst_get().EntityNetLogic.CM_ChangePeaceStateFun(state)",
+                "end",
+                "end",
+                "function _M.GetShowPeaceState(self)",
+                "return self.V_PeaceState",
+                "end",
+                "function _M.SetPeacefulCounterattack(self,isAttack)",
+                "if self.V_PeaceState==LuaUserAttackState.Peace and isAttack then",
+                "self.V_LastPeaceState=LuaUserAttackState.Peace",
+                "self:ChangePeaceState(LuaUserAttackState.Team,true,true)",
+                "end",
+                "end",
+                "function _M.CheckCanAttackTarget(self,targetView,showTips)",
+                "if self.V_PeaceState~=LuaUserAttackState.All and self.teamId and TeamMgr.Inst_get():IsMyTeamMate(self.teamId,targetView.Entity.V_ID)then return false end",
+                "if self.V_PeaceState==LuaUserAttackState.Peace then return false end",
+                "if self.V_PeaceState==LuaUserAttackState.Union then return false end",
+                "if self.V_PeaceState==LuaUserAttackState.Region then return false end",
+                "if self.V_PeaceState==LuaUserAttackState.Club then return false end",
+                "if self.V_PeaceState==LuaUserAttackState.FairyLand then return false end",
+                "return true",
+                "end",
+                "function _M.CheckCanHealTarget(self,targetView)",
+                "if self.V_PeaceState~=LuaUserAttackState.All and self.teamId and TeamMgr.Inst_get():IsMyTeamMate(self.teamId,targetView.Entity.V_ID)then return true end",
+                "if self.V_PeaceState==LuaUserAttackState.Peace then return false end",
+                "return true",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    for name in ["SM_ChangePeaceState", "CM_ChangePeaceState"]:
+        (message_dir / f"{name}.lua").write_text(
+            "\n".join(
+                [
+                    "function _M._init_(self)",
+                    "self.peaceState=0",
+                    "end",
+                    "function _M.reading(self)",
+                    "self.peaceState=self:readInt()",
+                    "end",
+                    "function _M.writing(self)",
+                    "self:writeInt(self.peaceState)",
+                    "end",
+                    "function _M.getName(self)",
+                    f'return"{name}"',
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "peaceState"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 2
+    assert result["stats"]["user_state_apply_evidence_count"] >= 4
+    assert result["stats"]["target_filter_consumer_evidence_count"] >= 4
+    assert result["verdict"]["handler_applies_to_user_entity"] is True
+    assert result["verdict"]["attack_and_heal_filter_consumers_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_ChangePeaceState chain" in report_text
+    assert "userView.Entity:ChangePeaceState(msg.peaceState)" in evidence_text
+    assert "_CM_ChangePeaceState.peaceState=state" in evidence_text
+    assert "LuaUserAttackState.Peace" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe_maps_scene_cross_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "40089",
+                "name": "SM_IsCross",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "cross",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "40089",
+                "name": "SM_IsCross",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "10",
+            }
+        )
+
+    core_dir = export_root / "by_source" / "lscripts" / "core_hash" / "text_assets"
+    core_dir.mkdir(parents=True)
+    (core_dir / "SceneNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_IsCross=require"GameSystem.Game.Message.module.scene.map.packet.SM_IsCross"',
+                "function _M.SceneNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_IsCross:getId(),typeof(_SM_IsCross),function(msg)",
+                "self.SM_IsCrossFun(msg)",
+                "end)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_IsCross:getId())",
+                "end",
+                "function _M.SM_IsCrossFun(msg)",
+                "SceneMgr.Inst_get():UpdateCrossSceneState(msg.cross)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (core_dir / "SceneMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SceneMgr(self)",
+                "self.V_IsCrossScene=false",
+                "end",
+                "function _M.UpdateCrossSceneState(self,cross)",
+                "self.V_IsCrossScene=cross",
+                "end",
+                "function _M.IsCrossScene(self)",
+                "return self.V_IsCrossScene",
+                "end",
+                "function _M.Clear(self)",
+                "self:UpdateCrossSceneState(false)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_IsCross.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.cross=false",
+                "end",
+                "function _M.reading(self)",
+                "self.cross=self:readBool()",
+                "end",
+                "function _M.writing(self)",
+                "self:writeBool(self.cross)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_IsCross"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "cross"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 2
+    assert result["stats"]["scene_cross_state_apply_evidence_count"] >= 4
+    assert result["stats"]["packet_schema_evidence_count"] >= 4
+    assert result["verdict"]["handler_updates_scene_mgr_cross_state"] is True
+    assert result["verdict"]["scene_mgr_query_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_IsCross chain" in report_text
+    assert "SceneMgr.Inst_get():UpdateCrossSceneState(msg.cross)" in evidence_text
+    assert "return self.V_IsCrossScene" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe_maps_left_count(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "97701",
+                "name": "SM_CampFlagPanel",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "times",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "97701",
+                "name": "SM_CampFlagPanel",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    campflag_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "campflag_hash" / "text_assets"
+    campflag_dir.mkdir(parents=True)
+    (campflag_dir / "CampFlagNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_CampFlagPanel=require"GameSystem.Game.Message.module.world.campflag.packet.SM_CampFlagPanel"',
+                'local _CM_CampFlagPanel=require"GameSystem.Game.Message.module.world.campflag.packet.CM_CampFlagPanel"',
+                "function _M.LuaCampflagNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_SM_CampFlagPanel:getId(),typeof(_SM_CampFlagPanel),function(msg)",
+                "self.SM_CampFlagPanelFun(msg)",
+                "end)",
+                "_MessagePool.Inst_get():F_Register(_CM_CampFlagPanel:getId(),typeof(_CM_CampFlagPanel))",
+                "end",
+                "function _M.CM_CampFlagPanelFun(self)",
+                "local CM_CampFlagPanel=SocketManager.Inst_get():GetMessageFromPools(_CM_CampFlagPanel)",
+                "SocketManager.Inst_get():F_SendMsg(CM_CampFlagPanel)",
+                "end",
+                "function _M.SM_CampFlagPanelFun(msg)",
+                "CampFlagMgr.Inst_get().Model:SetCampFlagPanelInfo(msg)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_CampFlagPanel:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_CampFlagPanel:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (campflag_dir / "CampFlagMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqCampFlagInfo(self)",
+                "self.NetLogic:CM_CampFlagPanelFun()",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.CampFlagTask)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (campflag_dir / "CampFlagModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetCampFlagPanelInfo(self,msg)",
+                "if not msg then return end",
+                "self.CampFlagData:SetCampFlagPanelInfo(msg)",
+                "self:RaiseEvent(CampFlagType.EventType.CampFlagLeftCountUpdate)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.CampFlagLeftCount)",
+                "end",
+                "function _M.GetCampFlagLeftCount(self)",
+                "local leftCount,maxCount=0,0",
+                'local cfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.CampFlag_ConfigValue,"CHALLENGE_TIME")',
+                "if cfg then maxCount=cfg[2]and tonumber(cfg[2])or 0 end",
+                "local panelInfo=self.CampFlagData:GetCampFlagPanelInfo()",
+                "if not panelInfo then return leftCount,maxCount end",
+                "leftCount=maxCount-(panelInfo.times or 0)",
+                "return leftCount,maxCount",
+                "end",
+                "function _M.CheckCampFlagLeftCount(self)",
+                "local leftCount=self:GetCampFlagLeftCount()",
+                "return leftCount>0 and isInChallenge",
+                "end",
+                "function _M.SetCampFlagMainPanelShowValue(self,value)",
+                "self.isMainPanelShow=value",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.CampFlagLeftCount)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (campflag_dir / "CampFlagData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetCampFlagPanelInfo(self,msg)",
+                "self.panelInfo=msg",
+                "end",
+                "function _M.GetCampFlagPanelInfo(self)",
+                "return self.panelInfo or nil",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (campflag_dir / "CampFlagMainPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self)",
+                "self:UpdateLeftCount()",
+                "self:UpdateEnterBtn()",
+                "end",
+                "function _M.UpdateLeftCount(self)",
+                "local leftCount,maxCount=CampFlagMgr.Inst_get().Model:GetCampFlagLeftCount()",
+                'self.LeftCountTxt:SetText(LuaLocalization.Format("CampFlagMianPanel_5",color,leftCount,maxCount))',
+                "end",
+                "function _M.UpdateEnterBtn(self)",
+                "local leftCount=CampFlagMgr.Inst_get().Model:GetCampFlagLeftCount()",
+                "local isGray=leftCount<=0",
+                "self.EnterBtn:SetImageGrayAll(isGray)",
+                "end",
+                "function _M.BindEvent(self)",
+                "self:BinderEvent(CampFlagMgr.Inst_get().Model,CampFlagType.EventType.CampFlagLeftCountUpdate,function()",
+                "self:UpdateLeftCount()",
+                "self:UpdateEnterBtn()",
+                "end)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_CampFlagPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.times=0",
+                "end",
+                "function _M.reading(self)",
+                "self.times=self:readInt()",
+                "end",
+                "function _M.writing(self)",
+                "self:writeInt(self.times)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_CampFlagPanel"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_CampFlagPanel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.getName(self)",
+                'return"CM_CampFlagPanel"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "times"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 2
+    assert result["stats"]["panel_info_apply_evidence_count"] >= 5
+    assert result["stats"]["left_count_consumer_evidence_count"] >= 6
+    assert result["verdict"]["left_count_computation_visible"] is True
+    assert result["verdict"]["left_count_event_and_ui_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_CampFlagPanel chain" in report_text
+    assert "CampFlagMgr.Inst_get().Model:SetCampFlagPanelInfo(msg)" in evidence_text
+    assert "leftCount=maxCount-(panelInfo.times or 0)" in evidence_text
+    assert "EnterBtn:SetImageGrayAll" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe_maps_dual_veins_sort_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order", "list_fields"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "87251",
+                "name": "SM_VeinsSelectSort",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "sort",
+                "list_fields": "sort",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "87250",
+                "name": "CM_VeinsSelectSort",
+                "packet_count": "1",
+                "directions": "c2s",
+                "field_order": "sortList",
+                "list_fields": "sortList",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "93552",
+                "name": "SM_UnionVeinsSelectSort",
+                "packet_count": "0",
+                "directions": "",
+                "field_order": "sort",
+                "list_fields": "sort",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "87251",
+                "name": "SM_VeinsSelectSort",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "10",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "87250",
+                "name": "CM_VeinsSelectSort",
+                "visible_logic_status": "client_request_visible",
+                "evidence_count": "4",
+            }
+        )
+
+    venis_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "venis_hash" / "text_assets"
+    union_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "unionvenis_hash" / "text_assets"
+    venis_dir.mkdir(parents=True)
+    union_dir.mkdir(parents=True)
+    (venis_dir / "VenisNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_VeinsSelectSort=require"GameSystem.Game.Message.module.world.veins.packet.CM_VeinsSelectSort"',
+                'local _SM_VeinsSelectSort=require"GameSystem.Game.Message.module.world.veins.packet.SM_VeinsSelectSort"',
+                "function _M.LuaVenisNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_VeinsSelectSort:getId(),typeof(_CM_VeinsSelectSort))",
+                "_MessagePool.Inst_get():F_Register(_SM_VeinsSelectSort:getId(),typeof(_SM_VeinsSelectSort),function(msg)",
+                "self.SM_VeinsSelectSortFun(msg)",
+                "end)",
+                "end",
+                "function _M.CM_VeinsSelectSortFun(self,sortList)",
+                "local sortCList=CList.new(sortList)",
+                "local CM_VeinsSelectSort=SocketManager.Inst_get():GetMessageFromPools(_CM_VeinsSelectSort)",
+                "CM_VeinsSelectSort.sortList=sortCList",
+                "SocketManager.Inst_get():F_SendMsg(CM_VeinsSelectSort)",
+                "end",
+                "function _M.SM_VeinsSelectSortFun(msg)",
+                "VenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_VeinsSelectSort:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_VeinsSelectSort:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_VeinsSelectSort=require"GameSystem.Game.Message.module.world.unionveins.packet.CM_UnionVeinsSelectSort"',
+                'local _SM_VeinsSelectSort=require"GameSystem.Game.Message.module.world.unionveins.packet.SM_UnionVeinsSelectSort"',
+                "function _M.LuaUnionVenisNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_VeinsSelectSort:getId(),typeof(_CM_VeinsSelectSort))",
+                "_MessagePool.Inst_get():F_Register(_SM_VeinsSelectSort:getId(),typeof(_SM_VeinsSelectSort),function(msg)",
+                "self.SM_VeinsSelectSortFun(msg)",
+                "end)",
+                "end",
+                "function _M.CM_VeinsSelectSortFun(self,sortList)",
+                "local sortCList=CList.new(sortList)",
+                "local CM_VeinsSelectSort=SocketManager.Inst_get():GetMessageFromPools(_CM_VeinsSelectSort)",
+                "CM_VeinsSelectSort.sortList=sortCList",
+                "SocketManager.Inst_get():F_SendMsg(CM_VeinsSelectSort)",
+                "end",
+                "function _M.SM_VeinsSelectSortFun(msg)",
+                "UnionVenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for data_dir, name in [(venis_dir, "VenisData.lua"), (union_dir, "UnionVenisData.lua")]:
+        (data_dir / name).write_text(
+            "\n".join(
+                [
+                    "function _M.SetSelectSort(self,value)",
+                    "self.selectSort=value",
+                    "end",
+                    "function _M.GetSelectSort(self)",
+                    "return self.selectSort",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    (venis_dir / "VenisSearchIndexSetView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.InitSortList(self)",
+                "local sortList=VenisMgr.Inst_get().Model.data:GetSelectSort()",
+                "for k,v in Cipairs(sortList)do self.sortList[v]=k+1 end",
+                "end",
+                "function _M.OnSureBtnClick(self)",
+                "local sendList=CList.new()",
+                "VenisMgr.Inst_get().NetLogic:CM_VeinsSelectSortFun(sendList)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisSearchIndexSetView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.InitSortList(self)",
+                "local sortList=UnionVenisMgr.Inst_get().Model.data:GetSelectSort()",
+                "for k,v in Cipairs(sortList)do self.sortList[v]=k+1 end",
+                "end",
+                "function _M.OnSureBtnClick(self)",
+                "local sendList=CList.new()",
+                "UnionVenisMgr.Inst_get().NetLogic:CM_VeinsSelectSortFun(sendList)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (venis_dir / "VenisMultSearchView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self)",
+                "local sortList=VenisMgr.Inst_get().Model.data:GetSelectSort()",
+                "if sortList and sortList:Count()>0 then self:UpdateItem(sortList) end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (union_dir / "UnionVenisMultSearchView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self)",
+                "local sortList=UnionVenisMgr.Inst_get().Model.data:GetSelectSort()",
+                "if sortList and sortList:Count()>0 then self:UpdateItem(sortList) end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    for packet_name in ["SM_VeinsSelectSort", "SM_UnionVeinsSelectSort"]:
+        (message_dir / f"{packet_name}.lua").write_text(
+            "\n".join(
+                [
+                    "function _M._init_(self)",
+                    "self.sort=CList.new()",
+                    "end",
+                    "function _M.reading(self)",
+                    "self:readMessageList2List(self.sort)",
+                    "end",
+                    "function _M.writing(self)",
+                    "self:writeIntList(self.sort)",
+                    "end",
+                    "function _M.getName(self)",
+                    f'return"{packet_name}"',
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    for packet_name in ["CM_VeinsSelectSort", "CM_UnionVeinsSelectSort"]:
+        (message_dir / f"{packet_name}.lua").write_text(
+            "\n".join(
+                [
+                    "function _M._init_(self)",
+                    "self.sortList=CList.new()",
+                    "end",
+                    "function _M.reading(self)",
+                    "self:readMessageList2List(self.sortList)",
+                    "end",
+                    "function _M.writing(self)",
+                    "self:writeIntList(self.sortList)",
+                    "end",
+                    "function _M.getName(self)",
+                    f'return"{packet_name}"',
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "sort"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 4
+    assert result["stats"]["select_sort_cache_evidence_count"] >= 4
+    assert result["stats"]["search_view_consumer_evidence_count"] >= 6
+    assert result["verdict"]["dual_venis_union_handlers_visible"] is True
+    assert result["verdict"]["search_views_consume_select_sort"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_VeinsSelectSort chain" in report_text
+    assert "VenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)" in evidence_text
+    assert "UnionVenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)" in evidence_text
+    assert "VenisMgr.Inst_get().NetLogic:CM_VeinsSelectSortFun(sendList)" in evidence_text
+    assert "self.sortList[v]=k+1" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe_maps_boss_vo_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "80716",
+                "name": "SM_CrossBossInfoUpdate",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "bossVO",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "80715",
+                "name": "CM_CrossBossInfoUpdate",
+                "packet_count": "0",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "80716",
+                "name": "SM_CrossBossInfoUpdate",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "80715",
+                "name": "CM_CrossBossInfoUpdate",
+                "visible_logic_status": "client_request_visible",
+                "evidence_count": "3",
+            }
+        )
+
+    cross_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "crossneutralboss_hash" / "text_assets"
+    cross_dir.mkdir(parents=True)
+    (cross_dir / "CrossneutralbossNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_CrossBossInfoUpdate=require"GameSystem.Game.Message.module.world.crossboss.crossneutralboss.packet.CM_CrossBossInfoUpdate"',
+                'local _SM_CrossBossInfoUpdate=require"GameSystem.Game.Message.module.world.crossboss.crossneutralboss.packet.SM_CrossBossInfoUpdate"',
+                "function _M.LuaCrossneutralbossNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_CrossBossInfoUpdate:getId(),typeof(_CM_CrossBossInfoUpdate))",
+                "_MessagePool.Inst_get():F_Register(_SM_CrossBossInfoUpdate:getId(),typeof(_SM_CrossBossInfoUpdate),function(msg)",
+                "self.SM_CrossBossInfoUpdateFun(msg)",
+                "end)",
+                "end",
+                "function _M.CM_CrossBossInfoUpdateFun(self)",
+                "local CM_CrossBossInfoUpdate=SocketManager.Inst_get():GetMessageFromPools(_CM_CrossBossInfoUpdate)",
+                "SocketManager.Inst_get():F_SendMsg(CM_CrossBossInfoUpdate)",
+                "end",
+                "function _M.SM_CrossBossInfoUpdateFun(msg)",
+                "CrossneutralbossMgr.Inst_get().Model:CrossBossInfoUpdate(msg)",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_CrossBossInfoUpdate:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_CrossBossInfoUpdate:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cross_dir / "CrossneutralbossModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.CrossBossInfoUpdate(self,msg)",
+                "self.CrossneutralbossData:CrossBossInfoUpdate(msg.bossVO)",
+                "self:RaiseEvent(CrossneutralbossType.CrossBossInfoUpdate)",
+                "if msg.bossVO.isDead then LoginMgr.Inst_get().SdkCustomEvent:SendEventData(SdkCustomEventType.NameType.finish_boss,\"1\") end",
+                "local isBigBoss=msg.bossVO.isBigBoss",
+                "BossMgr.Inst_get():OpenBossKillTipView(isBigBoss,true)",
+                "local currHp=msg.bossVO.currHp",
+                "if isBigBoss then",
+                "BossMgr.Inst_get().Model:RaiseEvent(BossType.BossSpecialReFresh)",
+                "return",
+                "end",
+                "if msg.bossVO.isFocus and currHp>0 then",
+                "self:SaveAttentionDown(msg.bossVO)",
+                "BossMgr.Inst_get().Model:RaiseEvent(BossType.BossReFreshTips,true)",
+                "end",
+                "end",
+                "function _M.SaveAttentionDown(self,msg)",
+                "self.CrossneutralbossData:SaveAttentionDown(msg)",
+                "end",
+                "function _M.GetSpecialBossInfo(self)",
+                "return self.CrossneutralbossData:GetSpecialBossInfo()",
+                "end",
+                "function _M.GetBossDataByUnitId(self,unitId)",
+                "return self.CrossneutralbossData:GetBossDataByUnitId(unitId)",
+                "end",
+                "function _M.GetBossInfoByBossGroupId(self,mapId,bossGroupId)",
+                "return self.CrossneutralbossData:GetBossInfoByBossGroupId(mapId,bossGroupId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cross_dir / "CrossneutralbossData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.CrossBossInfoUpdate(self,bossVo)",
+                "if not bossVo then return nil end",
+                "self.bossUnitIdDic[bossVo.unitId]=bossVo",
+                "if bossVo.isBigBoss then",
+                "self:SaveBigBossData(bossVo)",
+                "self.specialBossInfo.infoVOS[0]=bossVo",
+                "end",
+                "local itemList=self.bossInfoVoDic[bossVo.mapId]",
+                "if not itemList then",
+                "itemList=CList.new()",
+                "itemList:Add(bossVo)",
+                "self.bossInfoVoDic:LuaDic_AddOrSetItem(bossVo.mapId,itemList)",
+                "end",
+                "for i,v in Cipairs(itemList)do",
+                "if v.bossGroupId==bossVo.bossGroupId then",
+                "itemList[i]=bossVo",
+                "break",
+                "end",
+                "end",
+                "self.bossMapInfoVoDic:LuaDic_AddOrSetItem(bossVo.bossGroupId,bossVo)",
+                "end",
+                "function _M.GetBossDataByUnitId(self,unitId)",
+                "return self.bossUnitIdDic[unitId]",
+                "end",
+                "function _M.GetBossInfoByBossGroupId(self,mapId,bossGroupId,needUpdate)",
+                "local bossInfo=self.bossMapInfoVoDic:LuaDic_GetItem(bossGroupId)",
+                "return bossInfo",
+                "end",
+                "function _M.GetSpecialBossInfo(self)",
+                "return self.specialBossInfo",
+                "end",
+                "function _M.SaveBigBossData(self,bossInfoVo)",
+                "self.bigBossInfoVo=bossInfoVo",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cross_dir / "CrossBossView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReFreshBossWin(self)",
+                "local bossInfo=CrossneutralbossMgr.Inst_get().Model:GetSpecialBossInfo()",
+                "local bossVo=bossInfo and bossInfo.infoVOS[0]",
+                "self:ReFreshBigBossData(bossVo)",
+                "self:UpdateSpecialScroll()",
+                "self:UpdateBossScroll()",
+                "end",
+                "function _M.ReFreshBigBossData(self,bossVo)",
+                "self.levelTxt:SetText(levelText)",
+                "end",
+                "function _M.UpdateSpecialScroll(self,needRestPos)",
+                "end",
+                "function _M.UpdateBossScroll(self)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cross_dir / "CrossBossItem.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self,mapId,groupId)",
+                "local bossInfo=CrossneutralbossMgr.Inst_get().Model:GetBossInfoByBossGroupId(mapId,groupId)",
+                "self.nameTxt:SetText(bossInfo.bossId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (cross_dir / "CrossneutralbossType.lua").write_text(
+        "\n".join(
+            [
+                '_M.CrossBossInfoUpdate="CrossBossInfoUpdate"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_CrossBossInfoUpdate.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.bossVO=AbstractBossVO.new()",
+                "end",
+                "function _M.reading(self)",
+                "self.bossVO=_AS_(self:readBean(typeof(AbstractBossVO)),AbstractBossVO)",
+                "end",
+                "function _M.writing(self)",
+                "self:writeBean(self.bossVO)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_CrossBossInfoUpdate"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_CrossBossInfoUpdate.lua").write_text(
+        "\n".join(
+            [
+                "function _M.getName(self)",
+                'return"CM_CrossBossInfoUpdate"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "bossVO"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 2
+    assert result["stats"]["boss_vo_model_apply_evidence_count"] >= 8
+    assert result["stats"]["boss_vo_data_cache_evidence_count"] >= 10
+    assert result["stats"]["view_cache_consumer_evidence_count"] >= 6
+    assert result["verdict"]["model_applies_boss_vo"] is True
+    assert result["verdict"]["data_cache_updates_visible"] is True
+    assert result["verdict"]["view_cache_consumers_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_CrossBossInfoUpdate chain" in report_text
+    assert "CrossneutralbossMgr.Inst_get().Model:CrossBossInfoUpdate(msg)" in evidence_text
+    assert "self.CrossneutralbossData:CrossBossInfoUpdate(msg.bossVO)" in evidence_text
+    assert "self.bossMapInfoVoDic:LuaDic_AddOrSetItem(bossVo.bossGroupId,bossVo)" in evidence_text
+    assert "CrossneutralbossMgr.Inst_get().Model:GetBossInfoByBossGroupId(mapId,groupId)" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe_maps_joiner_targets(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order", "list_fields"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "90101",
+                "name": "CM_PartnerArenaPlayInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+                "list_fields": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "90102",
+                "name": "SM_PartnerArenaPlayInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "joinerVO | targets",
+                "list_fields": "targets",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "90101",
+                "name": "CM_PartnerArenaPlayInfo",
+                "visible_logic_status": "client_sender_visible",
+                "evidence_count": "9",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "90102",
+                "name": "SM_PartnerArenaPlayInfo",
+                "visible_logic_status": "server_packet_handler_visible",
+                "evidence_count": "5",
+            }
+        )
+
+    partner_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "partnerarena_hash" / "text_assets"
+    partner_dir.mkdir(parents=True)
+    (partner_dir / "PartnerarenaNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_PartnerArenaPlayInfo=require"GameSystem.Game.Message.module.world.partnerarena.packet.CM_PartnerArenaPlayInfo"',
+                'local _SM_PartnerArenaPlayInfo=require"GameSystem.Game.Message.module.world.partnerarena.packet.SM_PartnerArenaPlayInfo"',
+                "function _M.LuaPartnerarenaNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_PartnerArenaPlayInfo:getId(),typeof(_CM_PartnerArenaPlayInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_PartnerArenaPlayInfo:getId(),typeof(_SM_PartnerArenaPlayInfo),function(msg)",
+                "self.SM_PartnerArenaPlayInfoFun(msg)",
+                "end)",
+                "end",
+                "function _M.CM_PartnerArenaPlayInfoFun(self,activityId)",
+                "local CM_PartnerArenaPlayInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_PartnerArenaPlayInfo)",
+                "CM_PartnerArenaPlayInfo.activityId=activityId",
+                "SocketManager.Inst_get():F_SendMsg(CM_PartnerArenaPlayInfo)",
+                "end",
+                "function _M.SM_PartnerArenaPlayInfoFun(msg)",
+                "if msg.code==0 then",
+                "PartnerarenaMgr.Inst_get().Model:PartnerArenaPlayInfo(msg)",
+                "end",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_PartnerArenaPlayInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_PartnerArenaPlayInfo:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerarenaModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.PartnerArenaPlayInfo(self,msg)",
+                "self.PartnerarenaData:PartnerArenaPlayInfo(msg)",
+                "self:RaiseEvent(PartnerarenaType.PartnerArenaPlayInfo)",
+                "end",
+                "function _M.GetTargets(self)",
+                "return self.PartnerarenaData:GetTargets()",
+                "end",
+                "function _M.GetJoinerVO(self)",
+                "return self.PartnerarenaData:GetJoinerVO()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerarenaData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.PartnerArenaPlayInfo(self,msg)",
+                "self.joinerVO=msg.joinerVO",
+                "self.targets=msg.targets",
+                "if self.joinerVO then",
+                "self:SetTeams(self.joinerVO.teams)",
+                "self:SetCurRank(self.joinerVO.rank)",
+                "self:SetMaxScore(self.joinerVO.maxScore)",
+                "self:UpdateDrawRewardTime(self.joinerVO.drawTime)",
+                "for k,v in Cipairs(self.joinerVO.records)do",
+                "end",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.PartnerArenaRecord)",
+                "end",
+                "end",
+                "function _M.GetTargets(self)",
+                "return self.targets",
+                "end",
+                "function _M.GetJoinerVO(self)",
+                "return self.joinerVO",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerArenaMainView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.InitEvent(self)",
+                "self:BinderEvent(PartnerarenaMgr.Inst_get().Model,PartnerarenaType.PartnerArenaPlayInfo,self._UpdateView)",
+                "end",
+                "function _M.OnEnable(self)",
+                "PartnerarenaMgr.Inst_get().NetLogic:CM_PartnerArenaPlayInfoFun(self.V_ActivityId)",
+                "end",
+                "function _M.UpdateView(self)",
+                "self._data=PartnerarenaMgr.Inst_get().Model:GetJoinerVO()",
+                "local targets=PartnerarenaMgr.Inst_get().Model:GetTargets()",
+                "for i,v in Cipairs(targets)do",
+                "end",
+                "self.TimesTxt:SetText(LuaLocalization.Format(\"PartnerArenaMainView_11\",leftTimes))",
+                "self.RankTxt:SetText(LuaLocalization.Format(\"PartnerArenaMainView_6\",curRank))",
+                "self.FightTxt:SetText(LuaLocalization.Format(\"PartnerArenaMainView_5\",GameUtil.ConvertBigDouble(curFight)))",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerarenaMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.ReqPlayInfo(self,activityId)",
+                "PartnerarenaMgr.Inst_get().NetLogic:CM_PartnerArenaPlayInfoFun(activityId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_PartnerArenaPlayInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.joinerVO=PartnerArenaJoinerVO.new()",
+                "self.targets=CList.new()",
+                "end",
+                "function _M.reading(self)",
+                "self.joinerVO=_AS_(self:readBean(typeof(PartnerArenaJoinerVO)),PartnerArenaJoinerVO)",
+                "self:readMessageList2List(self.targets)",
+                "end",
+                "function _M.writing(self)",
+                "self:writeBean(self.joinerVO)",
+                "self:writeIntList(self.targets)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_PartnerArenaPlayInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_PartnerArenaPlayInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M.getName(self)",
+                'return"CM_PartnerArenaPlayInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_observed_packet_count"] == 2
+    assert result["stats"]["schema_field_order"] == "joinerVO | targets"
+    assert result["stats"]["server_response_handler_evidence_count"] >= 3
+    assert result["stats"]["joiner_target_data_cache_evidence_count"] >= 10
+    assert result["stats"]["main_view_consumer_evidence_count"] >= 7
+    assert result["verdict"]["data_caches_joiner_and_targets"] is True
+    assert result["verdict"]["main_view_consumes_joiner_and_targets"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed SM_PartnerArenaPlayInfo chain" in report_text
+    assert "PartnerarenaMgr.Inst_get().Model:PartnerArenaPlayInfo(msg)" in evidence_text
+    assert "self.joinerVO=msg.joinerVO" in evidence_text
+    assert "PartnerarenaMgr.Inst_get().Model:GetTargets()" in evidence_text
+    assert "PartnerarenaMgr.Inst_get().NetLogic:CM_PartnerArenaPlayInfoFun(self.V_ActivityId)" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe_maps_stage_and_role_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "83115",
+                "name": "CM_LandContendInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "stage",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "83116",
+                "name": "SM_LandContendInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "stage | canSignUp | signUpBattleField | myClubRank | score | pillarCurHp | pillarMaxHp",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "83139",
+                "name": "CM_LandContendRoleInfo",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "83140",
+                "name": "SM_LandContendRoleInfo",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "canJoin | commanderState",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for pro_id, name, status, evidence_count in [
+            ("83115", "CM_LandContendInfo", "client_sender_visible", "4"),
+            ("83116", "SM_LandContendInfo", "server_packet_handler_visible", "4"),
+            ("83139", "CM_LandContendRoleInfo", "client_sender_visible", "3"),
+            ("83140", "SM_LandContendRoleInfo", "server_packet_handler_visible", "4"),
+        ]:
+            writer.writerow(
+                {
+                    "pro_id": pro_id,
+                    "name": name,
+                    "visible_logic_status": status,
+                    "evidence_count": evidence_count,
+                }
+            )
+
+    land_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "landcontend_hash" / "text_assets"
+    land_dir.mkdir(parents=True)
+    (land_dir / "LandcontendNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _SM_LandContendInfo=require"GameSystem.Game.Message.module.world.landcontend.packet.SM_LandContendInfo"',
+                'local _CM_LandContendInfo=require"GameSystem.Game.Message.module.world.landcontend.packet.CM_LandContendInfo"',
+                'local _SM_LandContendRoleInfo=require"GameSystem.Game.Message.module.world.landcontend.packet.SM_LandContendRoleInfo"',
+                'local _CM_LandContendRoleInfo=require"GameSystem.Game.Message.module.world.landcontend.packet.CM_LandContendRoleInfo"',
+                "function _M.LuaLandcontendNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_LandContendInfo:getId(),typeof(_CM_LandContendInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_LandContendInfo:getId(),typeof(_SM_LandContendInfo),self.SM_LandContendInfoFun)",
+                "_MessagePool.Inst_get():F_Register(_CM_LandContendRoleInfo:getId(),typeof(_CM_LandContendRoleInfo))",
+                "_MessagePool.Inst_get():F_Register(_SM_LandContendRoleInfo:getId(),typeof(_SM_LandContendRoleInfo),self.SM_LandContendRoleInfoFun)",
+                "end",
+                "function _M.CM_LandContendInfoFun(stage)",
+                "local CM_LandContendInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_LandContendInfo)",
+                "CM_LandContendInfo.stage=stage",
+                "SocketManager.Inst_get():F_SendMsg(CM_LandContendInfo)",
+                "end",
+                "function _M.SM_LandContendInfoFun(msg)",
+                "if msg.code~=0 then return end",
+                "LandcontendMgr.Inst_get().Model:SetLandContendInfo(msg)",
+                "end",
+                "function _M.CM_LandContendRoleInfoFun()",
+                "local CM_LandContendRoleInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_LandContendRoleInfo)",
+                "SocketManager.Inst_get():F_SendMsg(CM_LandContendRoleInfo)",
+                "end",
+                "function _M.SM_LandContendRoleInfoFun(msg)",
+                "if msg.code==0 then",
+                "LandcontendMgr.Inst_get().Model:UpdateRoleInfo(msg)",
+                "end",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_SM_LandContendInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_LandContendInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_LandContendRoleInfo:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_CM_LandContendRoleInfo:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (land_dir / "LandcontendModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateRoleInfo(self,info)",
+                "self.LandcontendData:UpdateRoleInfo(info)",
+                "self:RaiseEvent(LandContendType.EventType.RoleInfoUpdate)",
+                "end",
+                "function _M.SetLandContendInfo(self,msg)",
+                "self.LandcontendData:SetLandContendInfo(msg)",
+                "self:RaiseEvent(LandContendType.EventType.UpdateSelfInfo,msg.stage)",
+                "if msg.stage==LandContendType.ActStageType.Outside then",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.LandContendInfo_SignUp,true)",
+                "end",
+                "end",
+                "function _M.GetLandContendInfo(self,stage)",
+                "return self.LandcontendData:GetLandContendInfo(stage)",
+                "end",
+                "function _M.CheckIsCanSignUp(self)",
+                "local isCanJoin=self:IsCanJoin()",
+                "if not isCanJoin then return false end",
+                "return not self:IsSingUp(LandContendType.ActStageType.Outside)",
+                "end",
+                "function _M.IsCanJoin(self)",
+                "local roleInfo=self.LandcontendData:GetRoleInfo()",
+                "if not roleInfo then return false end",
+                "return roleInfo.canJoin or false",
+                "end",
+                "function _M.IsSingUp(self,stage)",
+                "local info=self.LandcontendData:GetLandContendInfo(stage)",
+                "if not info then return false end",
+                "return info.signUpBattleField~=0,info.signUpBattleField",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (land_dir / "LandcontendData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetLandContendInfo(self,msg)",
+                "if not self.baseData then self.baseData={} end",
+                "if msg.signUpBattleField>0 then",
+                "self._CurScheduleStage=msg.stage",
+                "end",
+                "self.baseData[msg.stage]=msg",
+                "end",
+                "function _M.GetLandContendInfo(self,stage)",
+                "if not self.baseData or not stage then return end",
+                "return self.baseData[stage]",
+                "end",
+                "function _M.UpdateRoleInfo(self,info)",
+                "self._RoleInfo=info",
+                "end",
+                "function _M.CheckIsCommander(self)",
+                "if not self._RoleInfo then return false end",
+                "return self._RoleInfo.commanderState>0",
+                "end",
+                "function _M.GetRoleInfo(self)",
+                "return self._RoleInfo",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (land_dir / "LandcontendView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.RefreshContendUI(self)",
+                "self:RefreshSelfInfo()",
+                "end",
+                "function _M.RefreshSelfInfo(self)",
+                "local info=LandcontendMgr.Inst_get().Model:GetLandContendInfo(self:GetActStageType())",
+                "if not info then return end",
+                "local curHp=info.pillarCurHp",
+                "local str=LuaLocalization.Format(\"Landcontend_89\",info.score,(info.myClubRank>0 and info.myClubRank or LuaLocalization.Get(\"Landcontend_77\")))",
+                "self.txtContendDesc:SetText(str)",
+                "end",
+                "function _M.OnEnable(self)",
+                "LandcontendMgr.Inst_get().NetLogic.CM_LandContendInfoFun(LandContendType.ActStageType.Outside)",
+                "LandcontendMgr.Inst_get().NetLogic.CM_LandContendInfoFun(LandContendType.ActStageType.Inside)",
+                "LandcontendMgr.Inst_get().NetLogic.CM_LandContendInfoFun(LandContendType.ActStageType.Qualifying)",
+                "local isSignUp,signUpBattleField=LandcontendMgr.Inst_get().Model:IsSingUp(LandContendType.ActStageType.Outside)",
+                "self.isCanJoin=LandcontendMgr.Inst_get().Model:IsCanJoin()",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (land_dir / "LandcontendMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.RefreshLandContend(self)",
+                "self.NetLogic.CM_LandContendRoleInfoFun()",
+                "self.NetLogic.CM_LandContendInfoFun(LandContendType.ActStageType.Outside)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (land_dir / "LandcontendRaceItem.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateView(self)",
+                "local roleInfo=LandcontendMgr.Inst_get().Model.LandcontendData:GetRoleInfo()",
+                "if roleInfo and roleInfo.commanderState>0 then return end",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "SM_LandContendInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.stage=0",
+                "self.canSignUp=false",
+                "self.signUpBattleField=0",
+                "self.myClubRank=0",
+                "self.score=0",
+                "self.pillarCurHp=0",
+                "self.pillarMaxHp=0",
+                "end",
+                "function _M.reading(self)",
+                "self.stage=self:readInt()",
+                "self.canSignUp=self:readBool()",
+                "self.pillarCurHp=self:readDouble()",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_LandContendInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_LandContendInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.stage=0",
+                "end",
+                "function _M.getName(self)",
+                'return"CM_LandContendInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "SM_LandContendRoleInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.canJoin=false",
+                "self.commanderState=0",
+                "end",
+                "function _M.reading(self)",
+                "self.canJoin=self:readBool()",
+                "self.commanderState=self:readInt()",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_LandContendRoleInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "CM_LandContendRoleInfo.lua").write_text(
+        "\n".join(
+            [
+                "function _M.getName(self)",
+                'return"CM_LandContendRoleInfo"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["info_observed_packet_count"] == 2
+    assert result["stats"]["role_observed_packet_count"] == 2
+    assert result["stats"]["server_response_handler_evidence_count"] >= 4
+    assert result["stats"]["landcontend_info_apply_evidence_count"] >= 8
+    assert result["stats"]["landcontend_role_apply_evidence_count"] >= 8
+    assert result["stats"]["view_state_consumer_evidence_count"] >= 8
+    assert result["verdict"]["stage_info_cache_visible"] is True
+    assert result["verdict"]["role_info_cache_visible"] is True
+    assert result["verdict"]["view_reads_score_rank_pillar_hp"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed LandContend info / role-info chain" in report_text
+    assert "LandcontendMgr.Inst_get().Model:SetLandContendInfo(msg)" in evidence_text
+    assert "LandcontendMgr.Inst_get().Model:UpdateRoleInfo(msg)" in evidence_text
+    assert "self.baseData[msg.stage]=msg" in evidence_text
+    assert "LandcontendMgr.Inst_get().Model:GetLandContendInfo(self:GetActStageType())" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe_maps_round_info_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    schema_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    with schema_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "pro_id": "97302",
+                "name": "CM_QuanFDrawSyn",
+                "packet_count": "2",
+                "directions": "c2s",
+                "field_order": "activityId",
+            }
+        )
+        writer.writerow(
+            {
+                "pro_id": "97303",
+                "name": "SM_QuanFDrawSyn",
+                "packet_count": "2",
+                "directions": "s2c",
+                "field_order": "activityId | roundInfoVOMap",
+            }
+        )
+    handler_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    with handler_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for pro_id, name, status, evidence_count in [
+            ("97302", "CM_QuanFDrawSyn", "client_sender_visible", "13"),
+            ("97303", "SM_QuanFDrawSyn", "server_packet_handler_visible", "4"),
+        ]:
+            writer.writerow(
+                {
+                    "pro_id": pro_id,
+                    "name": name,
+                    "visible_logic_status": status,
+                    "evidence_count": evidence_count,
+                }
+            )
+
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "quanfuchourand_hash" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    (logic_dir / "QuanfuchourandNetLogic.lua").write_text(
+        "\n".join(
+            [
+                'local _CM_QuanFDrawSyn=require"GameSystem.Game.Message.module.player.quanfuchourand.packet.CM_QuanFDrawSyn"',
+                'local _SM_QuanFDrawSyn=require"GameSystem.Game.Message.module.player.quanfuchourand.packet.SM_QuanFDrawSyn"',
+                "function _M.LuaQuanfuchourandNetLogic(self)",
+                "_MessagePool.Inst_get():F_Register(_CM_QuanFDrawSyn:getId(),typeof(_CM_QuanFDrawSyn))",
+                "_MessagePool.Inst_get():F_Register(_SM_QuanFDrawSyn:getId(),typeof(_SM_QuanFDrawSyn),self.SM_QuanFDrawSynFun)",
+                "end",
+                "function _M.CM_QuanFDrawSynFun(activityId)",
+                "local CM_QuanFDrawSyn=SocketManager.Inst_get():GetMessageFromPools(_CM_QuanFDrawSyn)",
+                "CM_QuanFDrawSyn.activityId=activityId",
+                "SocketManager.Inst_get():F_SendMsg(CM_QuanFDrawSyn)",
+                "end",
+                "function _M.SM_QuanFDrawSynFun(msg)",
+                "if msg==nil then return end",
+                "if(msg.code==0)then",
+                "QuanfuchourandMgr.Inst_get().Model.QuanfuchourandData:SetLuckyDrawInfo(msg)",
+                "end",
+                "end",
+                "function _M.Destroy(self)",
+                "_MessagePool.Inst_get():F_Unregister(_CM_QuanFDrawSyn:getId())",
+                "_MessagePool.Inst_get():F_Unregister(_SM_QuanFDrawSyn:getId())",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (logic_dir / "QuanfuchourandData.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetLuckyDrawInfo(self,msg)",
+                "if not msg then return end",
+                "if not self.luckyDrawInfo then self.luckyDrawInfo={} end",
+                "local activityId=msg.activityId",
+                "local oldDict=self.luckyDrawInfo[activityId]",
+                "local newDict=msg.roundInfoVOMap",
+                "if oldDict then",
+                "QuanfuchourandMgr.Inst_get().Model:RaiseEvent(QuanfuchourandType.EventType.LuckyDrawGetBigReward,1)",
+                "end",
+                "self.luckyDrawInfo[activityId]=newDict",
+                "QuanfuchourandMgr.Inst_get().Model:RaiseEvent(QuanfuchourandType.EventType.LuckyDrawInfoUpdate)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.QuanfuchourandLuckyDrawLogin)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.QuanfuchourandLuckyDrawSign)",
+                "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.QuanfuchourandLuckyDrawGet)",
+                "end",
+                "function _M.GetLuckyDrawInfo(self,activityId,day)",
+                "if not self.luckyDrawInfo or not self.luckyDrawInfo[activityId]then return nil end",
+                "return self.luckyDrawInfo[activityId][day]or nil",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (logic_dir / "QuanfuchourandModel.lua").write_text(
+        "\n".join(
+            [
+                "function _M.GetDefaultSelectTabIndex(self,activityId)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,1)",
+                "if info.chooseType==QuanfuchourandType.LuckyDrawChooseType.Random and not info.haveDraw then return 0 end",
+                "end",
+                "function _M.IsLuckyDrawEndByDay(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "return info.haveDraw",
+                "end",
+                "function _M.IsLuckyDrawSigned(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "return info.chooseType>0 and true or false,info.chooseType",
+                "end",
+                "function _M.IsLuckyDrawReach(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "return info.rewardTime:ToNum()>0,0",
+                "end",
+                "function _M.GetLuckyDrawStateByDay(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "if info.chooseType==QuanfuchourandType.LuckyDrawChooseType.Random then return QuanfuchourandType.LuckyDrawState.Sign end",
+                "end",
+                "function _M.GetLuckyDrawNextDrawTime(self,activityId)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,1)",
+                "return info.rewardTime:ToNum(),false",
+                "end",
+                "function _M.GetLuckyDrawBigRewardList(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "local roleList=info.bigRewardHitRoles",
+                "return roleList",
+                "end",
+                "function _M.GetLuckyDrawMyRewardList(self,activityId)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,1)",
+                "if info.selfHitRewardId>0 then return CList.new() end",
+                "end",
+                "function _M.GetLuckyDrawLimit(self,activityId,day,id)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "return info.idToLimit[id]or 0",
+                "end",
+                "function _M.CanLuckyDrawGetByDay(self,activityId,day)",
+                "local isChooseRandom,haveDraw=self:IsNeedShowGetRandomBtn(activityId,day)",
+                "return isChooseRandom and not haveDraw",
+                "end",
+                "function _M.IsNeedShowGetRandomBtn(self,activityId,day)",
+                "local info=self.QuanfuchourandData:GetLuckyDrawInfo(activityId,day)",
+                "local isChooseRandom=info.chooseType==QuanfuchourandType.LuckyDrawChooseType.Random",
+                "return isChooseRandom,info.haveDraw",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (logic_dir / "QuanfuchourandMgr.lua").write_text(
+        "\n".join(
+            [
+                "function _M.UpdateActivity(self)",
+                "self.NetLogic.CM_QuanFDrawSynFun(activityId)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (logic_dir / "QuanfuchourandLuckyDrawView.lua").write_text(
+        "\n".join(
+            [
+                "function _M.SetOpenParams(self,param,grouplo)",
+                "QuanfuchourandMgr.Inst_get().NetLogic.CM_QuanFDrawSynFun(self.V_ActivityId)",
+                "end",
+                "function _M.InitEvent(self)",
+                "self._OnInfoUpdate=function() self:OnInfoUpdate() end",
+                "QuanfuchourandMgr.Inst_get().Model:AddEventHandler(QuanfuchourandType.EventType.LuckyDrawInfoUpdate,self._OnInfoUpdate)",
+                "end",
+                "function _M.OnLeftTimeEnd(self)",
+                "QuanfuchourandMgr.Inst_get().NetLogic.CM_QuanFDrawSynFun(self.V_ActivityId)",
+                "end",
+                "function _M.UpdateTabButtonState(self)",
+                "local Model=QuanfuchourandMgr.Inst_get().Model",
+                "tabBtn:UpdateLuckyDrawEndTag(QuanfuchourandMgr.Inst_get().Model:IsLuckyDrawEndByDay(activityId,day))",
+                "tabBtn:UpdateLuckyDrawLock(not QuanfuchourandMgr.Inst_get().Model:IsLuckyDrawReach(activityId,day))",
+                "tabBtn:UpdateRedDotActive(QuanfuchourandMgr.Inst_get().Model:CanLuckyDrawGetByDay(activityId,day))",
+                "end",
+                "function _M.OnInfoUpdate(self)",
+                "self:UpdateTabButtonState()",
+                "self:UpdateLuckyDrawState(cfg)",
+                "end",
+                "function _M.UpdateLuckyDrawState(self,cfg)",
+                "local Model=QuanfuchourandMgr.Inst_get().Model",
+                "local activityId,day=self.V_ActivityId,cfg.day",
+                "local state=Model:GetLuckyDrawStateByDay(activityId,day)",
+                "local isSigned,chooseType=Model:IsLuckyDrawSigned(activityId,day)",
+                "local isShow,isNeedGray=Model:IsNeedShowGetRandomBtn(activityId,day)",
+                "self.GetRandomBtnImg:SetActive(isShow)",
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    (message_dir / "CM_QuanFDrawSyn.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.activityId=0",
+                "end",
+                "function _M.getName(self)",
+                'return"CM_QuanFDrawSyn"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "SM_QuanFDrawSyn.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.activityId=0",
+                "local Dictionary=require\"Dictionary\"",
+                "self.roundInfoVOMap=Dictionary.new()",
+                "end",
+                "function _M.reading(self)",
+                "self:readMessageMap2Dic(self.roundInfoVOMap)",
+                "end",
+                "function _M.getName(self)",
+                'return"SM_QuanFDrawSyn"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (message_dir / "QuanFDrawRoundInfoVO.lua").write_text(
+        "\n".join(
+            [
+                "function _M._init_(self)",
+                "self.day=0",
+                "self.startTime=0",
+                "self.endTime=0",
+                "self.rewardTime=0",
+                "self.chooseType=0",
+                "self.selfHitRewardId=0",
+                "local CList=require\"CList\"",
+                "self.bigRewardHitRoles=CList.new()",
+                "local Dictionary=require\"Dictionary\"",
+                "self.idToLimit=Dictionary.new()",
+                "self.haveDraw=false",
+                "end",
+                "function _M.reading(self)",
+                "self:readMessageList2List(self.bigRewardHitRoles)",
+                "self:readMessageMap2Dic(self.idToLimit)",
+                "end",
+                "function _M.getName(self)",
+                'return"QuanFDrawRoundInfoVO"',
+                "end",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["observed_packet_count"] == 2
+    assert result["stats"]["request_observed_packet_count"] == 2
+    assert result["stats"]["server_response_handler_evidence_count"] >= 3
+    assert result["stats"]["lucky_draw_info_cache_evidence_count"] >= 8
+    assert result["stats"]["model_state_consumer_evidence_count"] >= 12
+    assert result["stats"]["view_state_consumer_evidence_count"] >= 8
+    assert result["verdict"]["round_info_map_cache_visible"] is True
+    assert result["verdict"]["model_state_consumers_visible"] is True
+    assert result["verdict"]["view_state_consumers_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed QuanFDrawSyn chain" in report_text
+    assert "QuanfuchourandMgr.Inst_get().Model.QuanfuchourandData:SetLuckyDrawInfo(msg)" in evidence_text
+    assert "self.luckyDrawInfo[activityId]=newDict" in evidence_text
+    assert "Model:GetLuckyDrawStateByDay(activityId,day)" in evidence_text
+    assert "CM_QuanFDrawSynFun(self.V_ActivityId)" in consumers_text
+
+
+def test_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe_corrects_require_only(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "parsed_configs" / "doupotd_catalog"
+    output_dir.mkdir(parents=True)
+    packets = [
+        ("87209", "CM_VeinsLastLeaveSeatInfo", "c2s", ""),
+        ("87210", "SM_VeinsLastLeaveSeatInfo", "s2c", "roomId | listenTime | themeId | faze | lootSeatPlayerName | lootSeatPlayerBuffValue | beLootNum | leftListenTime | inScene | leaveBySelf | rewardNum"),
+        ("87211", "CM_SyncVeinsRoleInfo", "c2s", ""),
+        ("87212", "SM_SyncVeinsRoleInfo", "s2c", "roomId | seatId | leftListenTime | sitDownTime | rewardIds | veinsGroup2Server | veinsGroup | localServer | buffValue | buffRate"),
+        ("87226", "CM_VeinsSelfSeat", "c2s", ""),
+        ("87227", "SM_VeinsSelfSeat", "s2c", "seatVO"),
+        ("93510", "CM_UnionVeinsLastLeaveSeatInfo", "c2s", ""),
+        ("93511", "SM_UnionVeinsLastLeaveSeatInfo", "s2c", "roomId | listenTime | themeId | faze | lootSeatPlayerName | lootSeatPlayerBuffValue | beLootNum | leftListenTime | inScene | leaveBySelf | rewardNum"),
+        ("93512", "CM_SyncUnionVeinsRoleInfo", "c2s", ""),
+        ("93513", "SM_SyncUnionVeinsRoleInfo", "s2c", "roomId | seatId | leftListenTime | sitDownTime | rewardIds | localServer | buffValue | buffRate | skillLv | battleId"),
+        ("93527", "CM_UnionVeinsSelfSeat", "c2s", ""),
+        ("93528", "SM_UnionVeinsSelfSeat", "s2c", "seatVO"),
+    ]
+    with (output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv").open(
+        "w", encoding="utf-8-sig", newline=""
+    ) as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "packet_count", "directions", "field_order"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for pro_id, name, direction, field_order in packets:
+            writer.writerow(
+                {
+                    "pro_id": pro_id,
+                    "name": name,
+                    "packet_count": "2",
+                    "directions": direction,
+                    "field_order": field_order,
+                }
+            )
+    with (output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv").open(
+        "w", encoding="utf-8-sig", newline=""
+    ) as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["pro_id", "name", "visible_logic_status", "evidence_count"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for pro_id, name, _direction, _field_order in packets:
+            writer.writerow(
+                {
+                    "pro_id": pro_id,
+                    "name": name,
+                    "visible_logic_status": "require_only",
+                    "evidence_count": "1",
+                }
+            )
+
+    def write_family(prefix: str, mgr: str, type_name: str, message_module: str, packet_prefix: str) -> None:
+        logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / f"{prefix.lower()}_hash" / "text_assets"
+        logic_dir.mkdir(parents=True)
+        last_leave = f"{packet_prefix}LastLeaveSeatInfo"
+        role_info = f"Sync{packet_prefix}RoleInfo"
+        self_seat = f"{packet_prefix}SelfSeat"
+        (logic_dir / f"{prefix}NetLogic.lua").write_text(
+            "\n".join(
+                [
+                    f'local _CM_LastLeaveSeatInfo=require"GameSystem.Game.Message.module.world.{message_module}.packet.CM_{last_leave}"',
+                    f'local _SM_LastLeaveSeatInfo=require"GameSystem.Game.Message.module.world.{message_module}.packet.SM_{last_leave}"',
+                    f'local _CM_SyncVenisRoleInfo=require"GameSystem.Game.Message.module.world.{message_module}.packet.CM_{role_info}"',
+                    f'local _SM_SyncVenisRoleInfo=require"GameSystem.Game.Message.module.world.{message_module}.packet.SM_{role_info}"',
+                    f'local _CM_SelfSeat=require"GameSystem.Game.Message.module.world.{message_module}.packet.CM_{self_seat}"',
+                    f'local _SM_SelfSeat=require"GameSystem.Game.Message.module.world.{message_module}.packet.SM_{self_seat}"',
+                    "function _M.LuaVenisNetLogic(self)",
+                    "_MessagePool.Inst_get():F_Register(_CM_LastLeaveSeatInfo:getId(),typeof(_CM_LastLeaveSeatInfo))",
+                    "_MessagePool.Inst_get():F_Register(_SM_LastLeaveSeatInfo:getId(),typeof(_SM_LastLeaveSeatInfo),function(msg)",
+                    "self.SM_LastLeaveSeatInfoFun(msg)",
+                    "end)",
+                    "_MessagePool.Inst_get():F_Register(_CM_SyncVenisRoleInfo:getId(),typeof(_CM_SyncVenisRoleInfo))",
+                    "_MessagePool.Inst_get():F_Register(_SM_SyncVenisRoleInfo:getId(),typeof(_SM_SyncVenisRoleInfo),function(msg)",
+                    "self.SM_SyncVenisRoleInfoFun(msg)",
+                    "end)",
+                    "_MessagePool.Inst_get():F_Register(_CM_SelfSeat:getId(),typeof(_CM_SelfSeat))",
+                    "_MessagePool.Inst_get():F_Register(_SM_SelfSeat:getId(),typeof(_SM_SelfSeat),function(msg)",
+                    "self.SM_SelfSeatFun(msg)",
+                    "end)",
+                    "end",
+                    "function _M.CM_SyncVenisRoleInfoFun()",
+                    "local CM_SyncVenisRoleInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_SyncVenisRoleInfo)",
+                    "SocketManager.Inst_get():F_SendMsg(CM_SyncVenisRoleInfo)",
+                    "end",
+                    "function _M.SM_SyncVenisRoleInfoFun(msg)",
+                    f"{mgr}.Inst_get():SyncRoleInfo(msg)",
+                    "end",
+                    "function _M.CM_LastLeaveSeatInfoFun()",
+                    "local CM_LastLeaveSeatInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_LastLeaveSeatInfo)",
+                    "SocketManager.Inst_get():F_SendMsg(CM_LastLeaveSeatInfo)",
+                    "end",
+                    "function _M.SM_LastLeaveSeatInfoFun(msg)",
+                    f"{mgr}.Inst_get():CheckLastLeaveSeatInfo(msg)",
+                    "end",
+                    "function _M.CM_SelfSeatFun()",
+                    "local CM_SelfSeat=SocketManager.Inst_get():GetMessageFromPools(_CM_SelfSeat)",
+                    "SocketManager.Inst_get():F_SendMsg(CM_SelfSeat)",
+                    "end",
+                    "function _M.SM_SelfSeatFun(msg)",
+                    f"{mgr}.Inst_get():SetMySeatVO(msg.seatVO)",
+                    "end",
+                    "function _M.CM_CleanLastLeaveSeatInfoFun()",
+                    "local CM_CleanLastLeaveSeatInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_CleanLastLeaveSeatInfo)",
+                    "SocketManager.Inst_get():F_SendMsg(CM_CleanLastLeaveSeatInfo)",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}Data.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.SyncRoleInfo(self,msg)",
+                    "self:SetRoleInfo(msg)",
+                    "self:SetMyRoomId(msg.roomId)",
+                    "self:SetMySeatId(msg.seatId)",
+                    "self:SetLeftListenTime(msg.leftListenTime)",
+                    "self:SetVeinsGroup(msg.veinsGroup)",
+                    "self:SetVeinsGroup2Server(msg.veinsGroup2Server)",
+                    "self:SetLocalServer(msg.localServer)",
+                    "self:SetBuffValue(msg.buffValue)",
+                    "self:SetBuffRate(msg.buffRate)",
+                    "self:SetRewards(msg.rewardIds)",
+                    "self:SetBattleId(msg.battleId)",
+                    f"RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.{packet_prefix}_Strength)",
+                    "end",
+                    "function _M.SetRoleInfo(self,msg)",
+                    "self.roleInfo=msg",
+                    "end",
+                    "function _M.GetRoleInfo(self)",
+                    "return self.roleInfo",
+                    "end",
+                    "function _M.SetLastLeaveSeatInfo(self,msg)",
+                    "self.lastLeaveSeatInfo=msg",
+                    "if msg and msg.leaveBySelf then return end",
+                    "local needRed=msg and msg.roomId~=0 and msg.listenTime:ToNum()>0 or false",
+                    "self:UpdateSeatTakenRed(needRed)",
+                    "end",
+                    "function _M.GetLastLeaveSeatInfo(self)",
+                    "return self.lastLeaveSeatInfo",
+                    "end",
+                    "function _M.SetMySeatVO(self,seatVO)",
+                    "self.mySeatVO=seatVO",
+                    "if seatVO then",
+                    "local seatId=seatVO.id",
+                    "self:SetMySeatId(seatId)",
+                    "self:SetMyRoomId(cfg.id)",
+                    "end",
+                    f"self:RaiseEvent({type_name}.EventType.MySeatUpdate)",
+                    "end",
+                    "function _M.GetMySeatVO(self)",
+                    "return self.mySeatVO",
+                    "end",
+                    "function _M.SetMySeatId(self,seatId)",
+                    f"self:RaiseEvent({type_name}.EventType.MySeatIdUpdate)",
+                    "end",
+                    "function _M.GetMySeatId(self)",
+                    "return self.mySeatId",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}Model.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.SetLastLeaveSeatInfo(self,msg)",
+                    "self.data:SetLastLeaveSeatInfo(msg)",
+                    "end",
+                    "function _M.GetLastLeaveSeatInfo(self)",
+                    "return self.data:GetLastLeaveSeatInfo()",
+                    "end",
+                    "function _M.GetMySeatVO(self)",
+                    "return self.data:GetMySeatVO()",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}Mgr.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.ReqMsg(self)",
+                    "self.NetLogic.CM_SelfSeatFun()",
+                    "self.NetLogic.CM_LastLeaveSeatInfoFun()",
+                    "self.NetLogic.CM_SyncVenisRoleInfoFun()",
+                    "end",
+                    "function _M.CheckLastLeaveSeatInfo(self,msg)",
+                    "self.Model:SetLastLeaveSeatInfo(msg)",
+                    "end",
+                    "function _M.SetMySeatVO(self,seatVO)",
+                    "self.Model.data:SetMySeatVO(seatVO)",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}RewardView.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.UpdateView(self)",
+                    f"local info={mgr}.Inst_get().Model:GetLastLeaveSeatInfo()",
+                    f"{mgr}.Inst_get().Model:SetLastLeaveSeatInfo()",
+                    f"{mgr}.Inst_get().NetLogic.CM_CleanLastLeaveSeatInfoFun()",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}SceneMgr.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.CheckScene(self)",
+                    f"{mgr}.Inst_get().NetLogic.CM_SelfSeatFun()",
+                    f"{mgr}.Inst_get().NetLogic.CM_SyncVenisRoleInfoFun()",
+                    f"local seatVO={mgr}.Inst_get().Model:GetMySeatVO()",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (logic_dir / f"{prefix}SceneView.lua").write_text(
+            "\n".join(
+                [
+                    "function _M.InitEvent(self)",
+                    "self._OnMySeatUpdate=function() end",
+                    f"{mgr}.Inst_get().Model:AddEventHandler({type_name}.EventType.MySeatUpdate,self._OnMySeatUpdate)",
+                    f"{mgr}.Inst_get().Model:AddEventHandler({type_name}.EventType.MySeatIdUpdate,self._OnMySeatUpdate)",
+                    f"local mySeatVO={mgr}.Inst_get().Model:GetMySeatVO()",
+                    "end",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    write_family("Venis", "VenisMgr", "VenisType", "veins", "Veins")
+    write_family("UnionVenis", "UnionVenisMgr", "UnionVenisType", "unionveins", "UnionVeins")
+
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bf46a8de9ccefb33ec3f4d0545cc766e" / "text_assets"
+    message_dir.mkdir(parents=True)
+    for _pro_id, name, _direction, field_order in packets:
+        init_lines = [f"self.{field}=0" for field in [part.strip() for part in field_order.split("|") if part.strip()] if field != "seatVO"]
+        if "seatVO" in field_order:
+            init_lines.append("self.seatVO=VeinsSeatVO.new()")
+        (message_dir / f"{name}.lua").write_text(
+            "\n".join(["function _M._init_(self)", *init_lines, "end", "function _M.getName(self)", f'return"{name}"', "end"]),
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["target_packet_count"] == 12
+    assert result["stats"]["old_pcap_observed_target_packet_count"] == 12
+    assert result["stats"]["generic_require_only_count"] == 12
+    assert result["stats"]["packet_registration_evidence_count"] >= 24
+    assert result["stats"]["server_response_handler_evidence_count"] >= 12
+    assert result["verdict"]["classifier_correction_visible"] is True
+    assert result["verdict"]["venis_client_request_surfaces_visible"] is True
+    assert result["verdict"]["unionvenis_client_request_surfaces_visible"] is True
+    assert result["verdict"]["last_leave_cache_visible"] is True
+    assert result["verdict"]["self_seat_cache_and_events_visible"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    consumers_text = Path(result["files"]["consumers"]).read_text(encoding="utf-8-sig")
+    assert "Observed Venis / UnionVeins seat-role chain" in report_text
+    assert "classifier blind spot" in report_text
+    assert "VenisMgr.Inst_get():SyncRoleInfo(msg)" in evidence_text
+    assert "UnionVenisMgr.Inst_get():SetMySeatVO(msg.seatVO)" in evidence_text
+    assert "CM_CleanLastLeaveSeatInfoFun()" in consumers_text
+
+
+def test_fanxiu_doupotd_pvp_report_decoder_readiness_probe_marks_schema_ready(tmp_path):
+    export_root = tmp_path / "exports"
+    text_assets = export_root / "message" / "text_assets"
+    text_assets.mkdir(parents=True)
+    (text_assets / "VO_URL.lua").write_text(
+        "\n".join(
+            [
+                "['91605']=setmetatable({'91605','module.mini.digitdoor.packet.vo.DigitDoorSimpleVO',},_o),",
+                "['91606']=setmetatable({'91606','module.mini.digitdoor.packet.vo.DigitDoorAttrVO',},_o),",
+                "['91644']=setmetatable({'91644','module.mini.digitdoor.packet.CM_DigitDoorReport',},_o),",
+                "['93671']=setmetatable({'93671','module.mini.doupo.packet.CM_DoupoReport',},_o),",
+                "['93672']=setmetatable({'93672','module.mini.doupo.packet.vo.DouPoSimpleVO',},_o),",
+                "['93673']=setmetatable({'93673','module.mini.doupo.packet.vo.DoupoAttrVO',},_o),",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def write_packet(name: str, packet_id: int, read_lines: list[str], write_lines: list[str]) -> None:
+        (text_assets / f"{name}.lua").write_text(
+            "\n".join(
+                [
+                    'local class=require"class"',
+                    'local BaseMessage=require"Core.Engine.Net.Sockets.BaseMessage"',
+                    "local _M={}",
+                    "_M=class(BaseMessage,_M)",
+                    f"{name}=_M",
+                    "function _M.reading(self)",
+                    *read_lines,
+                    "_M._super_.reading(self)",
+                    "return true",
+                    "end",
+                    "function _M.writing(self)",
+                    *write_lines,
+                    "_M._super_.writing(self)",
+                    "return true",
+                    "end",
+                    "function _M.getId(self)",
+                    f"return {packet_id}",
+                    "end",
+                    "return _M",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    report_read = [
+        "self.replayId=self:readLong()",
+        "self.type=self:readInt()",
+        "self.round=self:readInt()",
+        "self.pkStage=self:readInt()",
+        "self.zone=self:readInt()",
+        "self.pkStep=self:readInt()",
+        "self.time=self:readLong()",
+        "self:readMessageList2List(self.atkVoList)",
+        "self:readMessageList2List(self.defVoList)",
+        "self.clientWinnerId=self:readLong()",
+        "self.serverWinnerId=self:readLong()",
+    ]
+    report_write = [
+        "self:writeLong(self.replayId)",
+        "self:writeInt(self.type)",
+        "self:writeInt(self.round)",
+        "self:writeInt(self.pkStage)",
+        "self:writeInt(self.zone)",
+        "self:writeInt(self.pkStep)",
+        "self:writeLong(self.time)",
+        "self:writeList(self.atkVoList)",
+        "self:writeList(self.defVoList)",
+        "self:writeLong(self.clientWinnerId)",
+        "self:writeLong(self.serverWinnerId)",
+    ]
+    simple_read = [
+        "self.ownerId=self:readLong()",
+        "self.resourceId=self:readInt()",
+        "self.index=self:readInt()",
+        "self.lv=self:readInt()",
+        "self:readMessageList2List(self.attrVOList)",
+    ]
+    simple_write = [
+        "self:writeLong(self.ownerId)",
+        "self:writeInt(self.resourceId)",
+        "self:writeInt(self.index)",
+        "self:writeInt(self.lv)",
+        "self:writeList(self.attrVOList)",
+    ]
+    attr_read = ["self.type=self:readString()", "self.value=self:readDouble()"]
+    attr_write = ["self:writeString(self.type)", "self:writeDouble(self.value)"]
+    write_packet("CM_DoupoReport", 93671, report_read, report_write)
+    write_packet("CM_DigitDoorReport", 91644, report_read, report_write)
+    write_packet("DigitDoorSimpleVO", 91605, simple_read, simple_write)
+    write_packet("DigitDoorAttrVO", 91606, attr_read, attr_write)
+    write_packet("DouPoSimpleVO", 93672, simple_read, simple_write)
+    write_packet("DoupoAttrVO", 93673, attr_read, attr_write)
+
+    result = build_fanxiu_doupotd_pvp_report_decoder_readiness_probe(
+        export_root=export_root,
+        text_assets=text_assets.relative_to(export_root),
+    )
+
+    assert result["confirmed"] is True
+    assert result["stats"]["present_target_schema_count"] == 6
+    assert result["stats"]["passing_check_count"] == result["stats"]["check_count"]
+    assert result["verdict"]["decoder_schema_ready_for_cm_doupo_report_93671"] is True
+    assert result["verdict"]["future_capture_can_be_named_cm_doupo_report"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    checks_text = Path(result["files"]["checks"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report decoder readiness" in report_text
+    assert "generic message-list fields" in report_text
+    assert "decoder_can_name_future_frame\tTrue" in checks_text
+
+
+def test_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe_marks_visible_trigger_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    digitdoor_dir.mkdir(parents=True)
+    (doupotd_dir / "DoupoTDMgr.lua").write_text(
+        "function _M.OpenDoupoTDPVPSceneView(self)\n"
+        "UIShowMgr.Inst_get():F_ShowBottonWin(Window.DoupoTDPVPSceneView,nil,false,true,false,false)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M._init_(self)\n"
+        "self.tbAttack={}\nself.tbDefense={}\nself.attackList=CList.new()\nself.defenseList=CList.new()\nend\n"
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "local fightComponent=DoupoTDFightMgr.Inst_get().UserFightComponent\n"
+        "local allHp,curHp=fightComponent:GetDefenseHPMsg()\n"
+        "if curHp==0 then\nself.isDead=true\nend\n"
+        "local curHp=fightComponent:GetAttackHPMsg()\n"
+        "if curHp and curHp==0 then\nself.isDead=true\nend\n"
+        "end\n"
+        "function _M.SaveEntityData(self,entityView)\n"
+        "if entityView.Entity.V_EntityType==LuaEntityType.DoupoTDPartner then\n"
+        "if entityView.Entity.campGroup==DoupoTDType.CampGroup.Attack then\n"
+        "if not self.tbAttack[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\nend\n"
+        "else\nif not self.tbDefense[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nend\nend\nend\nend\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "if not self.curFinishVo then\nreturn\nend\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\n"
+        "local data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\n"
+        "local attackViewList=fightComponent:GetAttackViewList()\n"
+        "local data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\n"
+        "atkVoList=self.attackList\ndefVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId) and self.otherId or userId\nserverWinnerId=self.winnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:SaveEntityData(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "if curHp==0 then\nself:CheckList(fightComponent)\nend\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["doupotd_report_body_visible"] is True
+    assert result["verdict"]["doupotd_visible_checklist_callsite_missing"] is True
+    assert result["verdict"]["doupotd_death_event_snapshot_call_missing"] is True
+    assert result["verdict"]["nearby_baseline_trigger_pattern_visible"] is True
+    assert result["stats"]["doupotd_visible_checklist_callsite_count"] == 0
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report trigger lifecycle" in report_text
+    assert "currently orphaned" in report_text
+    assert "scene_checklist_callsite_count" in evidence_text
+    assert "CM_DoupoTDReportFun" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe_marks_no_parent_or_dynamic_trigger(tmp_path):
+    export_root = tmp_path / "exports"
+    activity_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "activity_mock" / "text_assets"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    cpp2il_dir = export_root / "apk_static_index" / "cpp2il_mock"
+    activity_dir.mkdir(parents=True)
+    doupotd_dir.mkdir(parents=True)
+    digitdoor_dir.mkdir(parents=True)
+    cpp2il_dir.mkdir(parents=True)
+    (activity_dir / "ActivityBaseSceneView.lua").write_text(
+        "function _M.InitView(self)\n"
+        "self.fun_Update=function(fTime,fDTime)self:Update(fTime,fDTime)end\n"
+        "EnterFrameMgr.inst:AddUpdateCallback(self.fun_Update)\n"
+        "end\n"
+        "function _M.Update(self,fTime,fDTime)\nend\n"
+        "function _M.Destroy(self)\nend\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDMgr.lua").write_text(
+        "function _M.OpenDoupoTDPVPSceneView(self)\n"
+        "UIShowMgr.Inst_get():F_ShowBottonWin(Window.DoupoTDPVPSceneView,nil,false,true,false,false)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "local ActivityBaseSceneView=require\"GameSystem.Game.Activity.Model.BaseSceneInfo.ActivityBaseSceneView\"\n"
+        "_M=class(ActivityBaseSceneView,_M)\n"
+        "function _M._init_(self)\nself.tbAttack={}\nself.tbDefense={}\nself.attackList=CList.new()\nself.defenseList=CList.new()\nend\n"
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "local fightComponent=DoupoTDFightMgr.Inst_get().UserFightComponent\n"
+        "local allHp,curHp=fightComponent:GetDefenseHPMsg()\n"
+        "if curHp==0 then\nself.isDead=true\nend\n"
+        "local curHp=fightComponent:GetAttackHPMsg()\n"
+        "if curHp and curHp==0 then\nself.isDead=true\nend\n"
+        "end\n"
+        "function _M.SaveEntityData(self,entityView)\n"
+        "if entityView.Entity.V_EntityType==LuaEntityType.DoupoTDPartner then\n"
+        "if entityView.Entity.campGroup==DoupoTDType.CampGroup.Attack then\n"
+        "if not self.tbAttack[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\nend\n"
+        "else\nif not self.tbDefense[entityView.Entity.V_RoleId] then\nlocal data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\nend\nend\nend\nend\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "if not self.curFinishVo then\nreturn\nend\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\n"
+        "local data=self:CreateEntityData(entityView)\nself.defenseList:Add(data)\n"
+        "local attackViewList=fightComponent:GetAttackViewList()\n"
+        "local data=self:CreateEntityData(entityView)\nself.attackList:Add(data)\n"
+        "atkVoList=self.attackList\ndefVoList=self.defenseList\n"
+        "clientWinnerId=self.winnerId:Equal(userId) and self.otherId or userId\nserverWinnerId=self.winnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:SaveEntityData(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "if curHp==0 then\nself:CheckList(fightComponent)\nend\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (cpp2il_dir / "Neutral.cs").write_text("public class Neutral { public void Tick() {} }\n", encoding="utf-8")
+
+    result = build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["visible_scene_trigger_gap_already_confirmed"] is True
+    assert result["verdict"]["activity_base_has_no_checklist_trigger"] is True
+    assert result["verdict"]["global_lua_has_no_doupotd_checklist_callsite"] is True
+    assert result["verdict"]["dynamic_lua_generation_hint_absent_or_unresolved"] is True
+    assert result["verdict"]["readable_cpp2il_has_no_named_trigger"] is True
+    assert result["stats"]["activity_base_update_tick_rows"] > 0
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report trigger base/dynamic gap" in report_text
+    assert "runtime observation" in report_text
+    assert "activity_base_update_tick_surface" in evidence_text
+
+
+def test_fanxiu_doupotd_pvp_report_trigger_delta_probe_marks_baseline_missing_edges(tmp_path):
+    export_root = tmp_path / "exports"
+    doupotd_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    digitdoor_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    doupotd_dir.mkdir(parents=True)
+    digitdoor_dir.mkdir(parents=True)
+    (doupotd_dir / "DoupoTDPVPSceneView.lua").write_text(
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "local fightComponent=DoupoTDFightMgr.Inst_get().UserFightComponent\n"
+        "local allHp,curHp=fightComponent:GetDefenseHPMsg()\n"
+        "if curHp==0 then\nself.isDead=true\nend\n"
+        "local curHp=fightComponent:GetAttackHPMsg()\n"
+        "if curHp and curHp==0 then\nself.isDead=true\nend\n"
+        "end\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "local defenseViewList=fightComponent:GetDefenseViewList()\n"
+        "local attackViewList=fightComponent:GetAttackViewList()\n"
+        "clientWinnerId=self.winnerId:Equal(userId) and self.otherId or userId\nserverWinnerId=self.winnerId\n"
+        "DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (digitdoor_dir / "DigitDoorPVPSceneView.lua").write_text(
+        "function _M.AddEvent(self)\n"
+        "self.entityDead=function(entityView)\nself:SaveEntityData(entityView)\nself:UpdateHp()\nend\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.ENTITY_ENTER_DEAD,self.entityDead)\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM,self.entityDead)\n"
+        "end\n"
+        "function _M.UpdateHp(self)\n"
+        "local fightComponent=DigitDoorFightMgr.Inst_get().UserFightComponent\n"
+        "local allHp,curHp=fightComponent:GetDefenseHPMsg()\n"
+        "if curHp==0 then\n"
+        "local userVID=EntityMgr.Inst_get():GetUserId()\n"
+        "if self.winnerId and(not self.winnerId:Equal(userVID))then\nself:CheckList(fightComponent)\nend\n"
+        "end\n"
+        "end\n"
+        "function _M.CheckList(self,fightComponent)\n"
+        "DigitDoorMgr.Inst_get().NetLogic:CM_DigitDoorReportFun(replayId,type,round,pkStage,zone,pkStep,time,atkVoList,defVoList,clientWinnerId,serverWinnerId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_pvp_report_trigger_delta_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["verdict"]["doupotd_death_snapshot_edge_missing_vs_baseline"] is True
+    assert result["verdict"]["doupotd_updatehp_checklist_edge_missing_vs_baseline"] is True
+    assert result["stats"]["delta_missing_edge_rows"] >= 2
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    assert "DoupoTD PVP report trigger delta" in report_text
+    assert "delta_missing_updatehp_checklist_edge" in evidence_text
+
+
+def test_fanxiu_digitdoor_gameplayer_runtime_sample_probe_detects_settlement_frames(tmp_path):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "gameplayer.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "offset": 100,
+                        "frame_len": 32,
+                        "pro_id": 91626,
+                        "name": "CM_DigitDoorGamePlayer",
+                        "direction": "c2s",
+                        "payload_len": 20,
+                        "zlib": False,
+                        "parsed": {
+                            "_class": "CM_DigitDoorGamePlayer",
+                            "currWave": 3,
+                            "wavePercent": 7500,
+                            "killNum": 12,
+                            "bossVoList": [{"id": 101, "hp": 6400}],
+                        },
+                    },
+                    {
+                        "offset": 140,
+                        "frame_len": 48,
+                        "pro_id": 91627,
+                        "name": "SM_DigitDoorGamePlayer",
+                        "direction": "s2c",
+                        "payload_len": 34,
+                        "zlib": False,
+                        "parsed": {
+                            "_class": "SM_DigitDoorGamePlayer",
+                            "finishWave": 3,
+                            "rewardResults": [{"id": 1, "num": 2}],
+                            "passLevelVOS": [10001],
+                            "levelId": 10001,
+                            "gameType": 1,
+                            "isSkipLevel": False,
+                        },
+                    },
+                    {
+                        "offset": 190,
+                        "frame_len": 16,
+                        "pro_id": 91607,
+                        "name": "DDBossVo",
+                        "direction": "",
+                        "payload_len": 12,
+                        "zlib": False,
+                        "parsed": {"_class": "DDBossVo", "id": 101, "hp": 6400},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_gameplayer_runtime_sample_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["gameplayer_request_frame_count"] == 1
+    assert result["stats"]["gameplayer_response_frame_count"] == 1
+    assert result["stats"]["ddbossvo_top_level_frame_count"] == 1
+    assert result["verdict"]["existing_captures_cover_gameplayer_settlement"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "GamePlayer runtime sample coverage" in report_text
+    assert "bossVoList" in hits_text
+    assert "rewardResults" in hits_text
+    assert "metadata_and_key_names_only_no_payload_values" in hits_text
+
+
+def test_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe_keeps_native_surface_separate(tmp_path):
+    export_root = tmp_path / "exports"
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
+    cpp_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+    logic_dir.mkdir(parents=True)
+    cpp_dir.mkdir(parents=True)
+    (cpp_dir / "DigitDoorGamePlayer.cs").write_text(
+        "public class SM_DigitDoorGamePlayer {\n"
+        "  public object passLevelVOS;\n"
+        "  public object bossVoList;\n"
+        "}\n"
+        "public class DDBossVo {}\n"
+        "public class DigitDoorNativeBridge {\n"
+        "  void ReqFinishGame() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe(export_root=export_root, digitdoor_logic_dir=logic_dir)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["direct_packet_hit_count"] == 1
+    assert result["stats"]["boss_vo_hit_count"] == 1
+    assert result["stats"]["field_hit_count"] == 2
+    assert result["verdict"]["cpp2il_has_gameplayer_packet_symbols"] is True
+    assert result["verdict"]["cpp2il_has_ddbossvo_symbol"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "GamePlayer Cpp2IL consumer surface" in report_text
+    assert "SM_DigitDoorGamePlayer" in hits_text
+    assert "passLevelVOS" in hits_text
+
+
+def test_fanxiu_digitdoor_runtime_packet_coverage_probe_indexes_all_digitdoor_packets(tmp_path):
+    export_root = tmp_path / "exports"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    capture_dir = export_root / "tcp_captures"
+    message_dir.mkdir(parents=True)
+    capture_dir.mkdir(parents=True)
+    (message_dir / "CM_DigitDoorInfo.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorInfo"]=_M\n'
+        "_M=class(BaseMessage,_M)\n"
+        "function _M._init_(self)\nself.id=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nend\n"
+        "function _M.getId(self)\nreturn 91620\nend\n"
+        "function _M.getName(self)\nreturn\"CM_DigitDoorInfo\"\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorInfo.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.mini.digitdoor.packet.SM_DigitDoorInfo"]=_M\n'
+        "_M=class(ClientResult,_M)\n"
+        "function _M._init_(self)\nself.levelId=0\nself.rewardResults=CList.new()\nend\n"
+        "function _M.reading(self)\nself.levelId=self:readInt()\nself:readMessageList2List(self.rewardResults)\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.levelId)\nself:writeList(self.rewardResults)\nend\n"
+        "function _M.getId(self)\nreturn 91621\nend\n"
+        "function _M.getName(self)\nreturn\"SM_DigitDoorInfo\"\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDBossVo.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.mini.digitdoor.packet.vo.DDBossVo"]=_M\n'
+        "_M=class(BaseMessage,_M)\n"
+        "function _M._init_(self)\nself.id=0\nself.hp=0\nend\n"
+        "function _M.reading(self)\nself.id=self:readInt()\nself.hp=self:readDouble()\nend\n"
+        "function _M.writing(self)\nself:writeInt(self.id)\nself:writeDouble(self.hp)\nend\n"
+        "function _M.getId(self)\nreturn 91607\nend\n"
+        "function _M.getName(self)\nreturn\"DDBossVo\"\nend\n",
+        encoding="utf-8",
+    )
+    (capture_dir / "digitdoor.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "offset": 1,
+                        "frame_len": 12,
+                        "pro_id": 91620,
+                        "name": "CM_DigitDoorInfo",
+                        "direction": "c2s",
+                        "payload_len": 4,
+                        "zlib": False,
+                        "parsed": {"_class": "CM_DigitDoorInfo", "id": 1},
+                    },
+                    {
+                        "offset": 20,
+                        "frame_len": 10,
+                        "pro_id": 20011,
+                        "name": "CM_SyncTime",
+                        "direction": "c2s",
+                        "payload_len": 2,
+                        "zlib": False,
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_runtime_packet_coverage_probe(export_root=export_root)
+
+    assert result["confirmed"] is True
+    assert result["stats"]["digitdoor_packet_target_count"] == 3
+    assert result["stats"]["digitdoor_target_hit_count"] == 1
+    assert result["stats"]["covered_digitdoor_packet_count"] == 1
+    assert result["verdict"]["existing_captures_cover_any_digitdoor_packet"] is True
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    targets_text = Path(result["files"]["targets"]).read_text(encoding="utf-8-sig")
+    hits_text = Path(result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "DigitDoor runtime packet coverage" in report_text
+    assert "CM_DigitDoorInfo" in targets_text
+    assert "DDBossVo" in targets_text
+    assert "metadata_and_key_names_only_no_payload_values" in hits_text
 
 
 def test_fanxiu_doupotd_skill_timeline_probe_links_config_to_effect_classes(tmp_path):

@@ -1,0 +1,16 @@
+[
+  {
+    "name": "区分 + du -> 度",
+    "corpus": "区分度越高越好。这个指标的区分度很重要。需要提高区分度。区分毒性不是这个场景。",
+    "history": ["区分"],
+    "input": "du",
+    "expected_top": "度",
+    "expected_rows": [
+      {
+        "context": "区分",
+        "prefix": "du",
+        "candidate": "度"
+      }
+    ]
+  }
+]
