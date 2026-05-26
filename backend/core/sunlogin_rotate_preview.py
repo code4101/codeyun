@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyxllib.cv.rgbfmt import encode_jpeg_bytes
+
 if sys.platform == "win32":
     import cv2
     import mss
@@ -86,8 +88,9 @@ def get_capture_rect(hwnd: int, area: str) -> tuple[int, int, int, int]:
     return get_extended_window_rect(hwnd)
 
 
-def iter_windows(title_substring: str = "") -> list[WindowCandidate]:
+def iter_windows(title_substring: str = "", title_match: str = "contains") -> list[WindowCandidate]:
     needle = title_substring.lower()
+    match_mode = "exact" if title_match == "exact" else "contains"
     items: list[WindowCandidate] = []
 
     def callback(hwnd: int, _: object) -> bool:
@@ -97,8 +100,12 @@ def iter_windows(title_substring: str = "") -> list[WindowCandidate]:
         title = win32gui.GetWindowText(hwnd).strip()
         if not title:
             return True
-        if needle and needle not in title.lower():
-            return True
+        title_lower = title.lower()
+        if needle:
+            if match_mode == "exact" and title_lower != needle:
+                return True
+            if match_mode == "contains" and needle not in title_lower:
+                return True
 
         rect = get_extended_window_rect(hwnd)
         width = rect[2] - rect[0]
@@ -109,6 +116,8 @@ def iter_windows(title_substring: str = "") -> list[WindowCandidate]:
         class_name = win32gui.GetClassName(hwnd)
         if class_name == "Main HighGUI class":
             return True
+        if class_name == "Qt5156QWindowToolSaveBits":
+            return True
 
         items.append(WindowCandidate(hwnd, title, class_name, rect))
         return True
@@ -117,9 +126,11 @@ def iter_windows(title_substring: str = "") -> list[WindowCandidate]:
     return items
 
 
-def find_window(title_substring: str) -> WindowCandidate:
-    candidates = iter_windows(title_substring)
+def find_window(title_substring: str, title_match: str = "contains") -> WindowCandidate:
+    candidates = iter_windows(title_substring, title_match=title_match)
     if not candidates:
+        if title_match == "exact":
+            raise RuntimeError(f"未找到标题等于 {title_substring!r} 的可见窗口")
         raise RuntimeError(f"未找到标题包含 {title_substring!r} 的可见窗口")
     return max(candidates, key=lambda item: item.area)
 
@@ -308,12 +319,14 @@ class WindowCapture:
         area: str,
         mode: str,
         title_substring: str,
+        title_match: str,
         refind_interval: float,
     ):
         self.hwnd = hwnd
         self.area = area
         self.mode = mode
         self.title_substring = title_substring
+        self.title_match = title_match
         self.refind_interval = refind_interval
         self._force_screen = False
         self._last_refind_at = 0.0
@@ -350,7 +363,7 @@ class WindowCapture:
         self._last_refind_at = now
 
         try:
-            target = find_window(self.title_substring)
+            target = find_window(self.title_substring, self.title_match)
         except RuntimeError:
             return False
 
@@ -397,14 +410,7 @@ def process_frame(
 
 
 def encode_jpeg(frame: np.ndarray, quality: int) -> bytes:
-    if frame.ndim == 3 and frame.shape[2] == 4:
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-    quality = max(1, min(100, int(quality)))
-    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-    if not ok:
-        raise RuntimeError("JPEG 编码失败")
-    return encoded.tobytes()
+    return encode_jpeg_bytes(frame, quality=quality, source_format="auto")
 
 
 def detect_sunlogin_promotion_cancel_point(frame: np.ndarray) -> tuple[int, int] | None:
@@ -542,6 +548,7 @@ def iter_mjpeg_frames(
     fixed_height: int,
     refind_interval: float,
     quality: int,
+    title_match: str = "contains",
     auto_dismiss_popup: bool = False,
     popup_check_interval: float = 3.0,
 ):
@@ -550,8 +557,8 @@ def iter_mjpeg_frames(
     if fps <= 0:
         raise ValueError("fps 必须大于 0")
 
-    target = find_window(title)
-    capturer = WindowCapture(target.hwnd, area, mode, title, refind_interval)
+    target = find_window(title, title_match)
+    capturer = WindowCapture(target.hwnd, area, mode, title, title_match, refind_interval)
     interval = 1.0 / fps
     last_popup_check_at = 0.0
     last_popup_click_at = 0.0
@@ -741,7 +748,7 @@ def main(argv: list[str] | None = None) -> int:
         activate_window(target.hwnd)
         time.sleep(0.2)
 
-    capturer = WindowCapture(target.hwnd, args.area, args.mode, args.title, args.refind_interval)
+        capturer = WindowCapture(target.hwnd, args.area, args.mode, args.title, "contains", args.refind_interval)
     if args.snapshot:
         save_snapshot(
             capturer,

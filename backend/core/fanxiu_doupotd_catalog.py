@@ -3,10 +3,20 @@ from __future__ import annotations
 import csv
 import json
 import re
+import shutil
+import subprocess
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from pyxllib.file.packetstream import (
+    LuaPacketSchemaIndex,
+    decode_lusuo_frames,
+    extract_tcp_stream_payloads_with_tshark,
+    list_tcp_streams_with_tshark,
+    summarize_decoded_frames,
+)
 
 from backend.core.fanxiu_item_catalog import load_fanxiu_item_runtime_index
 from backend.core.fanxiu_lua_config import load_fanxiu_lang_map, parse_fanxiu_generated_lua_config
@@ -21,7 +31,11 @@ DEFAULT_CARD_COMPOSE_DIR_PATTERN = "by_source/lscripts/generate/cfg/doupocardcom
 DEFAULT_DROP_CONFIG_DIR_PATTERN = "by_source/lscripts/generate/cfg/drop_*/text_assets"
 DEFAULT_ITEM_CORNER_PATTERN = "by_source/lscripts/generate/cfg/item_*/text_assets/ItemCorner.lua"
 DEFAULT_LANG_PATTERN = "by_source/lscripts/generate/localization/chinese/lang_*/text_assets/lang.lua"
+DEFAULT_MESSAGE_TEXT_ASSETS = Path("by_source/lscripts/gamesystem/game/message_bf46a8de9ccefb33ec3f4d0545cc766e/text_assets")
+DEFAULT_FANXIU_TCP_SERVER_HOST = "1.12.44.63"
 DOUPOTD_EFFECT_TYPE_REQUIRE = "GameSystem.Game.DoupoTD.Core.Fight.SkillEffect.Const.DoupoTDEffectType"
+_LUA_FUNCTION_RE = re.compile(r"function\s+([A-Za-z0-9_:.]+)\s*\(")
+_WHITESPACE_RE = re.compile(r"\s+")
 ATTR_FALLBACK_LABELS = {
     "ATK_ASSEMBLY_RATE": "攻击资质",
     "ATK_ASSEMBLY_RATE_TOTAL": "攻击资质",
@@ -3179,6 +3193,16726 @@ def build_fanxiu_doupotd_gameplayer_result_probe(
         "object_paths": object_paths,
         "files": {
             "fields": str(fields_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _collect_doupotd_pvp_report_scene_evidence(root: Path) -> tuple[list[dict[str, Any]], set[str]]:
+    rows: list[dict[str, Any]] = []
+    payload_args: set[str] = set()
+    arg_pattern = re.compile(
+        r"\b(replayId|type|round|pkStage|zone|pkStep|time|atkVoList|defVoList|clientWinnerId|serverWinnerId)\b"
+    )
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        for path in sorted(text_dir.glob("DoupoTDPVPSceneView*.lua")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = str(path.relative_to(root))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("--"):
+                    continue
+                if "CM_DoupoTDReportFun" in stripped:
+                    rows.append(
+                        {
+                            "category": "scene_report_call",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "CM_DoupoTDReportFun",
+                            "snippet": stripped[:320],
+                        }
+                    )
+                if re.search(r"Scene_DoupoTDPVPIT|Scene_DoupoTDPVP", stripped):
+                    rows.append(
+                        {
+                            "category": "scene_type_branch",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "DoupoTDPVP",
+                            "snippet": stripped[:320],
+                        }
+                    )
+                if re.search(r"DigitDoor(Simple|Attr)VO", stripped):
+                    rows.append(
+                        {
+                            "category": "scene_digitdoor_vo_reuse",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "DigitDoorSimpleVO/DigitDoorAttrVO",
+                            "snippet": stripped[:320],
+                        }
+                    )
+                matches = {match.group(1) for match in arg_pattern.finditer(stripped)}
+                if matches:
+                    payload_args.update(matches)
+                    if re.search(r"=|CM_DoupoTDReportFun|local\s+", stripped):
+                        rows.append(
+                            {
+                                "category": "scene_payload_arg",
+                                "source": rel_path,
+                                "line": line_no,
+                                "target": "|".join(sorted(matches)),
+                                "snippet": stripped[:320],
+                            }
+                        )
+    return rows, payload_args
+
+
+def _collect_doupotd_pvp_report_index_evidence(root: Path) -> tuple[list[dict[str, Any]], int]:
+    output_dir = root / "apk_static_index"
+    rows: list[dict[str, Any]] = []
+    report_row_count = 0
+
+    for name in (
+        "lua_lscript_module_doupotd_surface_markers.tsv",
+        "lua_lscript_module_doupotd_surface_requires.tsv",
+        "lua_lscript_module_doupotd_protocol_schemas.tsv",
+        "lua_lscript_module_doupotd_protocol_fields.tsv",
+        "lua_lscript_module_doupotd_netlogic_flow_edges.tsv",
+        "lua_lscript_module_doupotd_surface_protocol_refs.tsv",
+    ):
+        path = output_dir / name
+        for row in _read_tsv_dicts(path):
+            text = " ".join(str(value or "") for value in row.values())
+            if not re.search(r"CM_DoupoTDReport|SM_DoupoTDReport|CM_DoupoTDReportFun", text):
+                continue
+            category = "surface_marker_report_call" if "surface_markers" in name else "protocol_index_report_row"
+            if category == "protocol_index_report_row":
+                report_row_count += 1
+            rows.append(
+                {
+                    "category": category,
+                    "source": str(path.relative_to(root)),
+                    "line": row.get("line") or row.get("line_no") or "",
+                    "target": "CM_DoupoTDReport/SM_DoupoTDReport",
+                    "snippet": text[:320],
+                }
+            )
+
+    if report_row_count == 0:
+        rows.append(
+            {
+                "category": "protocol_index_missing",
+                "source": str(output_dir.relative_to(root)),
+                "line": "",
+                "target": "CM_DoupoTDReport/SM_DoupoTDReport",
+                "snippet": "No generated doupotd protocol/schema/flow rows for CM_DoupoTDReport or SM_DoupoTDReport were found.",
+            }
+        )
+    return rows, report_row_count
+
+
+def _collect_doupotd_pvp_report_packet_evidence(root: Path) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    packet_paths = sorted(
+        path
+        for path in (root / "by_source" / "lscripts" / "gamesystem" / "game").glob(
+            "message_*/text_assets/*DoupoTDReport*.lua"
+        )
+        if path.is_file()
+    )
+    for path in packet_paths:
+        rows.append(
+            {
+                "category": "packet_file_visible",
+                "source": str(path.relative_to(root)),
+                "line": "",
+                "target": path.stem,
+                "snippet": "Visible message packet file.",
+            }
+        )
+    if not packet_paths:
+        rows.append(
+            {
+                "category": "packet_file_missing",
+                "source": "by_source/lscripts/gamesystem/game/message_*/text_assets",
+                "line": "",
+                "target": "CM_DoupoTDReport/SM_DoupoTDReport",
+                "snippet": "No visible CM_DoupoTDReport*.lua or SM_DoupoTDReport*.lua packet file under exported message text_assets.",
+            }
+        )
+    return rows, len(packet_paths)
+
+
+def _collect_doupotd_pvp_report_netlogic_evidence(root: Path) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    visible_count = 0
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        for path in sorted(text_dir.glob("DoupoTDNetLogic*.lua")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = str(path.relative_to(root))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("--"):
+                    continue
+                if re.search(r"\bCM_DoupoTDReportFun\b", stripped):
+                    visible_count += 1
+                    rows.append(
+                        {
+                            "category": "netlogic_report_fun_visible",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "CM_DoupoTDReportFun",
+                            "snippet": stripped[:320],
+                        }
+                    )
+    if visible_count == 0:
+        rows.append(
+            {
+                "category": "netlogic_report_fun_missing",
+                "source": "DoupoTDNetLogic*.lua",
+                "line": "",
+                "target": "CM_DoupoTDReportFun",
+                "snippet": "No visible DoupoTDNetLogic CM_DoupoTDReportFun implementation in exported doupotd Lua text_assets.",
+            }
+        )
+    return rows, visible_count
+
+
+def _write_doupotd_pvp_report_gap_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report gap report",
+        "",
+        "This is a static, read-only probe for the visible DoupoTD PVP replay/report request surface.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Evidence Samples", ""])
+    for row in evidence_rows[:80]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "The scene-level call and payload shape are visible, but the current exported Lua/protocol index does not expose the matching DoupoTD report packet or NetLogic implementation. This is an export/static-index gap, not proof of server internals or absence of runtime handling.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_gap_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    scene_rows, payload_args = _collect_doupotd_pvp_report_scene_evidence(root)
+    index_rows, protocol_index_report_row_count = _collect_doupotd_pvp_report_index_evidence(root)
+    packet_rows, packet_file_count = _collect_doupotd_pvp_report_packet_evidence(root)
+    netlogic_rows, netlogic_report_fun_count = _collect_doupotd_pvp_report_netlogic_evidence(root)
+    evidence_rows = scene_rows + index_rows + packet_rows + netlogic_rows
+    evidence_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    required_payload_args = {"atkVoList", "defVoList", "clientWinnerId", "serverWinnerId"}
+    stats = {
+        "evidence_row_count": len(evidence_rows),
+        "scene_report_call_count": evidence_counts.get("scene_report_call", 0),
+        "scene_payload_arg_count": len(payload_args),
+        "scene_required_payload_arg_count": len(required_payload_args & payload_args),
+        "scene_digitdoor_vo_reuse_count": evidence_counts.get("scene_digitdoor_vo_reuse", 0),
+        "surface_marker_report_call_count": evidence_counts.get("surface_marker_report_call", 0),
+        "packet_file_count": packet_file_count,
+        "netlogic_report_fun_count": netlogic_report_fun_count,
+        "protocol_index_report_row_count": protocol_index_report_row_count,
+    }
+    verdict = {
+        "scene_report_call_visible": stats["scene_report_call_count"] > 0,
+        "scene_common_payload_shape_visible": required_payload_args.issubset(payload_args)
+        and stats["scene_digitdoor_vo_reuse_count"] > 0,
+        "surface_marker_report_call_visible": stats["surface_marker_report_call_count"] > 0,
+        "no_visible_doupotd_report_packet_file": stats["packet_file_count"] == 0,
+        "no_visible_doupotd_report_netlogic_fun": stats["netlogic_report_fun_count"] == 0,
+        "no_generated_doupotd_report_protocol_index": stats["protocol_index_report_row_count"] == 0,
+        "static_boundary_only": True,
+    }
+    verdict["doupotd_pvp_report_gap_confirmed"] = bool(
+        verdict["scene_report_call_visible"]
+        and verdict["scene_common_payload_shape_visible"]
+        and verdict["no_visible_doupotd_report_packet_file"]
+        and verdict["no_visible_doupotd_report_netlogic_fun"]
+        and verdict["no_generated_doupotd_report_protocol_index"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_gap_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_gap_report.md"
+    json_path = output_dir / "doupotd_pvp_report_gap_report.json"
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_gap_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "payload_args": sorted(payload_args),
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "payload_args": sorted(payload_args),
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_pvp_scene_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        paths.extend(path for path in text_dir.glob("DoupoTDPVPSceneView*.lua") if path.is_file())
+    return sorted(paths)
+
+
+def _lua_method_blocks(lines: list[str]) -> dict[str, list[tuple[int, str]]]:
+    blocks: dict[str, list[tuple[int, str]]] = {}
+    current: str | None = None
+    for line_no, line in enumerate(lines, 1):
+        stripped = line.strip()
+        match = re.search(r"\bfunction\s+_M\.([A-Za-z0-9_]+)\s*\(", stripped)
+        if match:
+            current = match.group(1)
+            blocks.setdefault(current, [])
+        if current is not None:
+            blocks.setdefault(current, []).append((line_no, stripped))
+    return blocks
+
+
+def _collect_doupotd_pvp_report_scene_payload(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    field_rows: list[dict[str, Any]] = []
+    evidence_rows: list[dict[str, Any]] = []
+    for path in _doupotd_pvp_scene_paths(root):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = str(path.relative_to(root))
+        blocks = _lua_method_blocks(lines)
+
+        value_sources: dict[str, str] = {}
+        for line_no, stripped in blocks.get("GetAttr", []):
+            assign = re.match(r"local\s+([A-Za-z0-9_]+)\s*=\s*(.+)", stripped)
+            if assign:
+                value_sources[assign.group(1)] = assign.group(2)
+            attr = re.search(r'self:GetAttrCode\("([^"]+)",\s*([A-Za-z0-9_]+),\s*clist\)', stripped)
+            if attr:
+                field_rows.append(
+                    {
+                        "section": "attr_snapshot",
+                        "order": sum(1 for row in field_rows if row.get("section") == "attr_snapshot") + 1,
+                        "name": attr.group(1),
+                        "value": attr.group(2),
+                        "expression": value_sources.get(attr.group(2), ""),
+                        "source": rel_path,
+                        "line": line_no,
+                    }
+                )
+                evidence_rows.append(
+                    {
+                        "category": "attr_snapshot_order",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": attr.group(1),
+                        "snippet": stripped[:320],
+                    }
+                )
+
+        for line_no, stripped in blocks.get("CreateEntityData", []):
+            assign = re.match(r"data\.([A-Za-z0-9_]+)\s*=\s*(.+)", stripped)
+            if assign:
+                field_rows.append(
+                    {
+                        "section": "simple_vo_field",
+                        "order": "",
+                        "name": assign.group(1),
+                        "value": "",
+                        "expression": assign.group(2),
+                        "source": rel_path,
+                        "line": line_no,
+                    }
+                )
+                evidence_rows.append(
+                    {
+                        "category": "simple_vo_field",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": assign.group(1),
+                        "snippet": stripped[:320],
+                    }
+                )
+            if "data.attrVOList" in stripped and "GetAttr" in stripped:
+                field_rows.append(
+                    {
+                        "section": "simple_vo_field",
+                        "order": "",
+                        "name": "attrVOList",
+                        "value": "",
+                        "expression": stripped,
+                        "source": rel_path,
+                        "line": line_no,
+                    }
+                )
+                evidence_rows.append(
+                    {
+                        "category": "simple_vo_attr_list_fill",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "attrVOList",
+                        "snippet": stripped[:320],
+                    }
+                )
+
+        for line_no, stripped in blocks.get("CheckList", []):
+            if re.search(r"Scene_DoupoTDPVPIT|Scene_DoupoTDPVP", stripped):
+                evidence_rows.append(
+                    {
+                        "category": "scene_mode_branch",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "DoupoTDPVP",
+                        "snippet": stripped[:320],
+                    }
+                )
+            report_arg = re.match(
+                r"(replayId|type|round|pkStage|zone|pkStep|time|atkVoList|defVoList|clientWinnerId|serverWinnerId)\s*=\s*(.+)",
+                stripped,
+            )
+            if report_arg:
+                field_rows.append(
+                    {
+                        "section": "report_arg",
+                        "order": "",
+                        "name": report_arg.group(1),
+                        "value": "",
+                        "expression": report_arg.group(2),
+                        "source": rel_path,
+                        "line": line_no,
+                    }
+                )
+                evidence_rows.append(
+                    {
+                        "category": "report_arg_assignment",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": report_arg.group(1),
+                        "snippet": stripped[:320],
+                    }
+                )
+            if re.search(r"GetDefenseViewList|GetAttackViewList|tbDefense|tbAttack|defenseList:Add|attackList:Add|CreateEntityData", stripped):
+                evidence_rows.append(
+                    {
+                        "category": "snapshot_list_fill",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "attackList/defenseList",
+                        "snippet": stripped[:320],
+                    }
+                )
+            if "CM_DoupoTDReportFun" in stripped:
+                evidence_rows.append(
+                    {
+                        "category": "report_send_call",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "CM_DoupoTDReportFun",
+                        "snippet": stripped[:320],
+                    }
+                )
+
+        for line_no, stripped in blocks.get("SaveEntityData", []):
+            if re.search(r"tbDefense|tbAttack|defenseList:Add|attackList:Add|CreateEntityData", stripped):
+                evidence_rows.append(
+                    {
+                        "category": "dead_entity_snapshot_fill",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "attackList/defenseList",
+                        "snippet": stripped[:320],
+                    }
+                )
+    return field_rows, evidence_rows
+
+
+def _write_doupotd_pvp_report_scene_payload_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    attr_rows: list[dict[str, Any]],
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report scene payload report",
+        "",
+        "This is a static, read-only scene-level payload map for `DoupoTDPVPSceneView`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Attribute Snapshot Order", ""])
+    for row in attr_rows:
+        lines.append(
+            f"- `{row.get('order')}` `{row.get('name')}` from `{row.get('value')}` = `{row.get('expression')}`"
+        )
+    lines.extend(["", "## Report Fields", ""])
+    for row in field_rows:
+        if row.get("section") == "attr_snapshot":
+            continue
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('section')}` `{row.get('name')}` `{row.get('expression')}` at `{location}`"
+        )
+    lines.extend(["", "## Evidence Samples", ""])
+    for row in evidence_rows[:80]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This closes the client scene payload construction that is visible in Lua. It still does not expose the missing DoupoTD report packet class, NetLogic sender implementation, or server acceptance logic.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_scene_payload_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    field_rows, evidence_rows = _collect_doupotd_pvp_report_scene_payload(root)
+    attr_rows = [row for row in field_rows if row.get("section") == "attr_snapshot"]
+    attr_codes = [str(row.get("name") or "") for row in sorted(attr_rows, key=lambda item: _sort_value(item.get("order")))]
+    simple_fields = {str(row.get("name") or "") for row in field_rows if row.get("section") == "simple_vo_field"}
+    report_args = {str(row.get("name") or "") for row in field_rows if row.get("section") == "report_arg"}
+    expected_attr_codes = [
+        "HP",
+        "MAXHP",
+        "ATTACK",
+        "PVPATTACK",
+        "ATKSPEED",
+        "CRITICAL",
+        "ANTICRITICAL",
+        "INCREASEDAMAGE",
+        "REDUCEDAMAGE",
+        "PVPINCREASE",
+        "PVPREDUCE",
+        "ADDDAMAGE",
+    ]
+    stats = {
+        "scene_file_count": len(_doupotd_pvp_scene_paths(root)),
+        "field_row_count": len(field_rows),
+        "evidence_row_count": len(evidence_rows),
+        "attr_snapshot_count": len(attr_rows),
+        "simple_vo_field_count": len(simple_fields),
+        "report_arg_count": len(report_args),
+        "snapshot_list_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "snapshot_list_fill"),
+        "dead_entity_snapshot_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "dead_entity_snapshot_fill"),
+    }
+    verdict = {
+        "fixed_attr_snapshot_order_visible": attr_codes == expected_attr_codes,
+        "simple_vo_fields_visible": {"ownerId", "resourceId", "index", "lv", "attrVOList"}.issubset(simple_fields),
+        "winner_projection_visible": {"clientWinnerId", "serverWinnerId"}.issubset(report_args),
+        "pvp_mode_projection_visible": {"replayId", "type", "round", "pkStage", "zone", "pkStep", "time"}.issubset(report_args)
+        and any(row.get("category") == "scene_mode_branch" for row in evidence_rows),
+        "snapshot_lists_visible": {"atkVoList", "defVoList"}.issubset(report_args)
+        and stats["snapshot_list_evidence_count"] > 0,
+        "static_scene_payload_only": True,
+    }
+    verdict["doupotd_pvp_scene_payload_confirmed"] = bool(
+        verdict["fixed_attr_snapshot_order_visible"]
+        and verdict["simple_vo_fields_visible"]
+        and verdict["winner_projection_visible"]
+        and verdict["pvp_mode_projection_visible"]
+        and verdict["snapshot_lists_visible"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fields_tsv = output_dir / "doupotd_pvp_report_scene_payload_fields.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_scene_payload_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_scene_payload_report.md"
+    json_path = output_dir / "doupotd_pvp_report_scene_payload_report.json"
+    _write_tsv(fields_tsv, field_rows, ["section", "order", "name", "value", "expression", "source", "line"])
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_scene_payload_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        attr_rows=attr_rows,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_scene_payload_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "attr_codes": attr_codes,
+                "files": {
+                    "fields": str(fields_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_scene_payload_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "attr_codes": attr_codes,
+        "files": {
+            "fields": str(fields_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+DOUPOTD_PVP_REPORT_EXPECTED_FIELDS = [
+    ("replayId", "Long"),
+    ("type", "Int"),
+    ("round", "Int"),
+    ("pkStage", "Int"),
+    ("zone", "Int"),
+    ("pkStep", "Int"),
+    ("time", "Long"),
+    ("atkVoList", "MessageList2List"),
+    ("defVoList", "MessageList2List"),
+    ("clientWinnerId", "Long"),
+    ("serverWinnerId", "Long"),
+]
+
+
+def _parse_lua_message_packet_shape(path: Path, root: Path) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None, []
+    rel_path = str(path.relative_to(root))
+    packet_name = path.stem.split("__", 1)[0]
+    packet_id = ""
+    package_name = ""
+    read_fields: list[tuple[str, str]] = []
+    write_fields: list[tuple[str, str]] = []
+    evidence_rows: list[dict[str, Any]] = []
+    for line_no, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        package_match = re.search(r'package\.loaded\["([^"]+)"\]', stripped)
+        if package_match:
+            package_name = package_match.group(1)
+        id_match = re.search(r"return\s+(-?\d+)\s*$", stripped)
+        if id_match and lines[max(0, line_no - 2)].strip().startswith("function _M.getId"):
+            packet_id = id_match.group(1)
+        name_match = re.search(r'return\s*"([^"]+)"', stripped)
+        if name_match and lines[max(0, line_no - 2)].strip().startswith("function _M.getName"):
+            packet_name = name_match.group(1)
+        read_match = re.search(r"self\.([A-Za-z0-9_]+)\s*=\s*self:read([A-Za-z0-9_]+)\(", stripped)
+        if read_match:
+            read_fields.append((read_match.group(1), read_match.group(2)))
+        list_read_match = re.search(r"self:readMessageList2List\(self\.([A-Za-z0-9_]+)\)", stripped)
+        if list_read_match:
+            read_fields.append((list_read_match.group(1), "MessageList2List"))
+        write_match = re.search(r"self:write([A-Za-z0-9_]+)\(self\.([A-Za-z0-9_]+)\)", stripped)
+        if write_match:
+            write_fields.append((write_match.group(2), write_match.group(1)))
+        list_write_match = re.search(r"self:writeList\(self\.([A-Za-z0-9_]+)\)", stripped)
+        if list_write_match:
+            write_fields.append((list_write_match.group(1), "List"))
+    if not read_fields and not write_fields:
+        return None, []
+    expected_names = [name for name, _kind in DOUPOTD_PVP_REPORT_EXPECTED_FIELDS]
+    read_names = [name for name, _kind in read_fields]
+    matched_names = [name for name in expected_names if name in read_names]
+    if len(matched_names) < 4 and not re.search(r"DoupoReport|DigitDoorReport", packet_name):
+        return None, []
+    expected_types = dict(DOUPOTD_PVP_REPORT_EXPECTED_FIELDS)
+    read_types = dict(read_fields)
+    exact_order_match = read_fields[: len(DOUPOTD_PVP_REPORT_EXPECTED_FIELDS)] == DOUPOTD_PVP_REPORT_EXPECTED_FIELDS
+    exact_name_order_match = read_names[: len(expected_names)] == expected_names
+    type_match_count = sum(1 for name, kind in DOUPOTD_PVP_REPORT_EXPECTED_FIELDS if read_types.get(name) == kind)
+    row = {
+        "packet_name": packet_name,
+        "packet_id": packet_id,
+        "package": package_name,
+        "source": rel_path,
+        "field_count": len(read_fields),
+        "matched_field_count": len(matched_names),
+        "type_match_count": type_match_count,
+        "field_order": " | ".join(read_names),
+        "read_types": " | ".join(f"{name}:{kind}" for name, kind in read_fields),
+        "write_types": " | ".join(f"{name}:{kind}" for name, kind in write_fields),
+        "exact_order_match": exact_order_match,
+        "exact_name_order_match": exact_name_order_match,
+        "is_doupo_alias_candidate": packet_name == "CM_DoupoReport" and exact_order_match,
+        "is_digitdoor_baseline": packet_name == "CM_DigitDoorReport" and exact_order_match,
+    }
+    if len(matched_names) >= 8 or row["is_doupo_alias_candidate"] or row["is_digitdoor_baseline"]:
+        evidence_rows.append(
+            {
+                "category": "packet_shape_candidate",
+                "source": rel_path,
+                "line": "",
+                "target": packet_name,
+                "snippet": f"id={packet_id} fields={' | '.join(read_names)}",
+            }
+        )
+    return row, evidence_rows
+
+
+def _collect_doupotd_pvp_report_shape_alias(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lscript_root = root / "by_source" / "lscripts" / "gamesystem" / "game"
+    candidates: list[dict[str, Any]] = []
+    evidence_rows: list[dict[str, Any]] = []
+    if lscript_root.is_dir():
+        message_files = sorted(
+            path
+            for path in lscript_root.glob("message_*/text_assets/*.lua")
+            if path.is_file() and not path.name.startswith("VO_URL")
+        )
+        for path in message_files:
+            row, rows = _parse_lua_message_packet_shape(path, root)
+            if row is None:
+                continue
+            candidates.append(row)
+            evidence_rows.extend(rows)
+
+        for path in sorted(lscript_root.glob("message_*/text_assets/VO_URL*.lua")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = str(path.relative_to(root))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if "93671" in stripped or "CM_DoupoReport" in stripped:
+                    evidence_rows.append(
+                        {
+                            "category": "vo_url_registration",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "93671/CM_DoupoReport",
+                            "snippet": stripped[:320],
+                        }
+                    )
+
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        for path in sorted(text_dir.glob("*.lua")):
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = str(path.relative_to(root))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if re.search(r"CM_DoupoReportFun|CM_DoupoReport\b|CM_DoupoTDReportFun", stripped):
+                    evidence_rows.append(
+                        {
+                            "category": "doupotd_lua_report_reference",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "report_reference",
+                            "snippet": stripped[:320],
+                        }
+                    )
+    return candidates, evidence_rows
+
+
+def _write_doupotd_pvp_report_shape_alias_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report shape alias report",
+        "",
+        "This static probe matches the visible DoupoTD PVP scene payload shape against all exported message packet classes, independent of packet name.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Exact Shape Candidates", ""])
+    for row in candidates:
+        if not row.get("exact_order_match"):
+            continue
+        lines.append(
+            f"- `{row.get('packet_name')}` id `{row.get('packet_id')}` package `{row.get('package')}` source `{row.get('source')}` fields `{row.get('field_order')}`"
+        )
+    lines.extend(["", "## Evidence Samples", ""])
+    for row in evidence_rows[:80]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "`CM_DoupoReport(93671)` has the exact same packet field shape as the DoupoTD PVP scene payload, so the earlier name-exact `CM_DoupoTDReport` miss should be treated as a naming/export gap rather than absence of a packet body. The visible DoupoTD NetLogic sender implementation is still missing, so the final call-to-send mapping remains unresolved.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_shape_alias_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    candidates, evidence_rows = _collect_doupotd_pvp_report_shape_alias(root)
+    exact_candidates = [row for row in candidates if row.get("exact_order_match")]
+    doupo_candidates = [row for row in exact_candidates if row.get("packet_name") == "CM_DoupoReport"]
+    digitdoor_candidates = [row for row in exact_candidates if row.get("packet_name") == "CM_DigitDoorReport"]
+    netlogic_alias_refs = [
+        row
+        for row in evidence_rows
+        if row.get("category") == "doupotd_lua_report_reference" and "CM_DoupoReport" in str(row.get("snippet") or "")
+    ]
+    scene_td_refs = [
+        row
+        for row in evidence_rows
+        if row.get("category") == "doupotd_lua_report_reference" and "CM_DoupoTDReportFun" in str(row.get("snippet") or "")
+    ]
+    stats = {
+        "candidate_packet_count": len(candidates),
+        "exact_shape_candidate_count": len(exact_candidates),
+        "cm_doupo_report_exact_shape_count": len(doupo_candidates),
+        "cm_digitdoor_report_exact_shape_count": len(digitdoor_candidates),
+        "vo_url_registration_count": sum(1 for row in evidence_rows if row.get("category") == "vo_url_registration"),
+        "doupotd_lua_report_reference_count": len(
+            [row for row in evidence_rows if row.get("category") == "doupotd_lua_report_reference"]
+        ),
+        "doupotd_lua_cm_doupo_report_reference_count": len(netlogic_alias_refs),
+        "doupotd_lua_cm_doupotd_reportfun_reference_count": len(scene_td_refs),
+        "evidence_row_count": len(evidence_rows),
+    }
+    verdict = {
+        "cm_doupo_report_packet_visible": stats["cm_doupo_report_exact_shape_count"] > 0,
+        "cm_doupo_report_exact_shape_match": bool(doupo_candidates),
+        "cm_doupo_report_registered_in_vo_url": stats["vo_url_registration_count"] > 0,
+        "digitdoor_baseline_exact_shape_visible": bool(digitdoor_candidates),
+        "scene_still_calls_cm_doupotd_reportfun": stats["doupotd_lua_cm_doupotd_reportfun_reference_count"] > 0,
+        "visible_doupotd_lua_sender_for_cm_doupo_report_missing": stats["doupotd_lua_cm_doupo_report_reference_count"] == 0,
+        "static_shape_alias_only": True,
+    }
+    verdict["doupotd_pvp_report_shape_alias_confirmed"] = bool(
+        verdict["cm_doupo_report_exact_shape_match"]
+        and verdict["cm_doupo_report_registered_in_vo_url"]
+        and verdict["scene_still_calls_cm_doupotd_reportfun"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidates_tsv = output_dir / "doupotd_pvp_report_shape_alias_candidates.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_shape_alias_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_shape_alias_report.md"
+    json_path = output_dir / "doupotd_pvp_report_shape_alias_report.json"
+    _write_tsv(
+        candidates_tsv,
+        candidates,
+        [
+            "packet_name",
+            "packet_id",
+            "package",
+            "source",
+            "field_count",
+            "matched_field_count",
+            "type_match_count",
+            "field_order",
+            "read_types",
+            "write_types",
+            "exact_order_match",
+            "exact_name_order_match",
+            "is_doupo_alias_candidate",
+            "is_digitdoor_baseline",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_shape_alias_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        candidates=candidates,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_shape_alias_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "candidates": str(candidates_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_shape_alias_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "candidates": str(candidates_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _collect_doupotd_pvp_report_sender_alias_gap(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    candidates, alias_evidence = _collect_doupotd_pvp_report_shape_alias(root)
+    scene_rows, payload_args = _collect_doupotd_pvp_report_scene_evidence(root)
+    evidence_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "scene_payload_arg_count": len(payload_args),
+        "scene_report_call_count": sum(1 for row in scene_rows if row.get("category") == "scene_report_call"),
+        "packet_alias_vo_url_registration_count": 0,
+        "global_surface_cm_doupo_report_row_count": 0,
+        "doupotd_index_cm_doupo_report_row_count": 0,
+        "doupotd_index_reportfun_row_count": 0,
+        "netlogic_file_count": 0,
+        "netlogic_function_count": 0,
+        "netlogic_report_function_count": 0,
+        "netlogic_cm_doupotd_reportfun_ref_count": 0,
+        "netlogic_cm_doupo_report_ref_count": 0,
+        "netlogic_cm_doupo_report_send_ref_count": 0,
+        "netlogic_cm_doupo_report_register_ref_count": 0,
+    }
+
+    for row in scene_rows:
+        if row.get("category") not in {"scene_report_call", "scene_payload_arg", "scene_digitdoor_vo_reuse"}:
+            continue
+        evidence_rows.append(
+            {
+                "category": f"scene_{row.get('category')}",
+                "source": row.get("source", ""),
+                "line": row.get("line", ""),
+                "target": row.get("target", ""),
+                "snippet": row.get("snippet", ""),
+            }
+        )
+
+    for row in candidates:
+        if not row.get("exact_order_match"):
+            continue
+        if row.get("packet_name") not in {"CM_DoupoReport", "CM_DigitDoorReport"}:
+            continue
+        evidence_rows.append(
+            {
+                "category": "packet_exact_shape_alias",
+                "source": row.get("source", ""),
+                "line": "",
+                "target": f"{row.get('packet_name')}:{row.get('packet_id')}",
+                "snippet": str(row.get("field_order") or "")[:320],
+            }
+        )
+
+    for row in alias_evidence:
+        category = str(row.get("category") or "")
+        snippet = str(row.get("snippet") or "")
+        if category == "vo_url_registration":
+            stats["packet_alias_vo_url_registration_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "packet_alias_vo_url_registration",
+                    "source": row.get("source", ""),
+                    "line": row.get("line", ""),
+                    "target": row.get("target", ""),
+                    "snippet": snippet,
+                }
+            )
+        elif category == "doupotd_lua_report_reference" and (
+            "CM_DoupoTDReportFun" in snippet or "CM_DoupoReport" in snippet
+        ):
+            evidence_rows.append(
+                {
+                    "category": "doupotd_lua_report_reference",
+                    "source": row.get("source", ""),
+                    "line": row.get("line", ""),
+                    "target": row.get("target", ""),
+                    "snippet": snippet,
+                }
+            )
+
+    surface_path = root / "apk_static_index" / "lua_lscript_surface_assets.tsv"
+    for row in _read_tsv_dicts(surface_path):
+        text = " ".join(str(value or "") for value in row.values())
+        if not re.search(r"\b93671\b|CM_DoupoReport", text):
+            continue
+        stats["global_surface_cm_doupo_report_row_count"] += 1
+        evidence_rows.append(
+            {
+                "category": "global_surface_cm_doupo_report_row",
+                "source": str(surface_path.relative_to(root)),
+                "line": row.get("line") or row.get("line_no") or "",
+                "target": row.get("packet_name") or row.get("name") or "CM_DoupoReport",
+                "snippet": text[:320],
+            }
+        )
+
+    index_dir = root / "apk_static_index"
+    for path in sorted(index_dir.glob("lua_lscript_module_doupotd_*.tsv")):
+        for row in _read_tsv_dicts(path):
+            text = " ".join(str(value or "") for value in row.values())
+            alias_hit = bool(re.search(r"\b93671\b|CM_DoupoReport", text))
+            reportfun_hit = "CM_DoupoTDReportFun" in text
+            if not alias_hit and not reportfun_hit:
+                continue
+            if alias_hit:
+                stats["doupotd_index_cm_doupo_report_row_count"] += 1
+            if reportfun_hit:
+                stats["doupotd_index_reportfun_row_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "doupotd_index_alias_or_reportfun_row",
+                    "source": str(path.relative_to(root)),
+                    "line": row.get("line") or row.get("line_no") or "",
+                    "target": "CM_DoupoReport/93671/CM_DoupoTDReportFun",
+                    "snippet": text[:320],
+                }
+            )
+
+    netlogic_function_names: set[str] = set()
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        for path in sorted(text_dir.glob("DoupoTDNetLogic*.lua")):
+            stats["netlogic_file_count"] += 1
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = str(path.relative_to(root))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("--"):
+                    continue
+                func_match = re.search(r"\bfunction\s+_M\.([A-Za-z0-9_]+)\s*\(", stripped)
+                if func_match:
+                    function_name = func_match.group(1)
+                    netlogic_function_names.add(function_name)
+                    if function_name == "CM_DoupoTDReportFun":
+                        stats["netlogic_report_function_count"] += 1
+                        evidence_rows.append(
+                            {
+                                "category": "netlogic_report_function_signature",
+                                "source": rel_path,
+                                "line": line_no,
+                                "target": function_name,
+                                "snippet": stripped[:320],
+                            }
+                        )
+                has_td_reportfun = "CM_DoupoTDReportFun" in stripped
+                has_alias = bool(re.search(r"\b93671\b|_?CM_DoupoReport\b", stripped))
+                if has_td_reportfun:
+                    stats["netlogic_cm_doupotd_reportfun_ref_count"] += 1
+                    evidence_rows.append(
+                        {
+                            "category": "netlogic_cm_doupotd_reportfun_ref",
+                            "source": rel_path,
+                            "line": line_no,
+                            "target": "CM_DoupoTDReportFun",
+                            "snippet": stripped[:320],
+                        }
+                    )
+                if not has_alias:
+                    continue
+                stats["netlogic_cm_doupo_report_ref_count"] += 1
+                category = "netlogic_cm_doupo_report_ref"
+                if re.search(r"F_SendMsg|GetMessageFromPools", stripped):
+                    stats["netlogic_cm_doupo_report_send_ref_count"] += 1
+                    category = "netlogic_cm_doupo_report_send_ref"
+                if re.search(r"Regist|Register|getId", stripped):
+                    stats["netlogic_cm_doupo_report_register_ref_count"] += 1
+                    category = "netlogic_cm_doupo_report_register_ref"
+                evidence_rows.append(
+                    {
+                        "category": category,
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "CM_DoupoReport/93671",
+                        "snippet": stripped[:320],
+                    }
+                )
+
+    stats["netlogic_function_count"] = len(netlogic_function_names)
+    if stats["netlogic_report_function_count"] == 0:
+        evidence_rows.append(
+            {
+                "category": "netlogic_report_function_missing",
+                "source": "DoupoTDNetLogic*.lua",
+                "line": "",
+                "target": "CM_DoupoTDReportFun",
+                "snippet": "No visible function _M.CM_DoupoTDReportFun implementation in exported DoupoTDNetLogic Lua.",
+            }
+        )
+    if stats["netlogic_cm_doupo_report_ref_count"] == 0:
+        evidence_rows.append(
+            {
+                "category": "netlogic_alias_sender_missing",
+                "source": "DoupoTDNetLogic*.lua",
+                "line": "",
+                "target": "CM_DoupoReport/93671",
+                "snippet": "No visible DoupoTDNetLogic reference to CM_DoupoReport, _CM_DoupoReport, or protocol id 93671.",
+            }
+        )
+    if stats["netlogic_cm_doupo_report_register_ref_count"] == 0:
+        evidence_rows.append(
+            {
+                "category": "netlogic_alias_register_missing",
+                "source": "DoupoTDNetLogic*.lua",
+                "line": "",
+                "target": "CM_DoupoReport/93671",
+                "snippet": "No visible DoupoTDNetLogic register/unregister line for CM_DoupoReport or protocol id 93671.",
+            }
+        )
+
+    return candidates, evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_sender_alias_gap_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report sender alias gap",
+        "",
+        "This static probe connects the scene call `CM_DoupoTDReportFun(...)` with the exact-shape packet alias `CM_DoupoReport(93671)` and checks whether the visible DoupoTD NetLogic export contains a sender/register mapping.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Exact Alias Candidates", ""])
+    for row in candidates:
+        if row.get("packet_name") != "CM_DoupoReport" or not row.get("exact_order_match"):
+            continue
+        lines.append(
+            f"- `{row.get('packet_name')}` id `{row.get('packet_id')}` package `{row.get('package')}` source `{row.get('source')}` fields `{row.get('field_order')}`"
+        )
+    lines.extend(["", "## Evidence Samples", ""])
+    for row in evidence_rows[:100]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "The packet body alias is visible, but the exported DoupoTD NetLogic Lua still does not show the function body or send/register mapping for the scene-level `CM_DoupoTDReportFun` call. This is a static export boundary; runtime capture or a deeper Lua/IL2CPP dispatcher trace is still needed to prove the final sender path.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    candidates, evidence_rows, collected_stats = _collect_doupotd_pvp_report_sender_alias_gap(root)
+    exact_candidates = [row for row in candidates if row.get("exact_order_match")]
+    doupo_candidates = [row for row in exact_candidates if row.get("packet_name") == "CM_DoupoReport"]
+    digitdoor_candidates = [row for row in exact_candidates if row.get("packet_name") == "CM_DigitDoorReport"]
+    evidence_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    stats = {
+        "evidence_row_count": len(evidence_rows),
+        "exact_shape_candidate_count": len(exact_candidates),
+        "cm_doupo_report_exact_shape_count": len(doupo_candidates),
+        "cm_digitdoor_report_exact_shape_count": len(digitdoor_candidates),
+        "packet_alias_vo_url_registration_count": collected_stats["packet_alias_vo_url_registration_count"],
+        "global_surface_cm_doupo_report_row_count": collected_stats["global_surface_cm_doupo_report_row_count"],
+        "scene_report_call_count": collected_stats["scene_report_call_count"],
+        "scene_payload_arg_count": collected_stats["scene_payload_arg_count"],
+        "doupotd_index_cm_doupo_report_row_count": collected_stats["doupotd_index_cm_doupo_report_row_count"],
+        "doupotd_index_reportfun_row_count": collected_stats["doupotd_index_reportfun_row_count"],
+        "netlogic_file_count": collected_stats["netlogic_file_count"],
+        "netlogic_function_count": collected_stats["netlogic_function_count"],
+        "netlogic_report_function_count": collected_stats["netlogic_report_function_count"],
+        "netlogic_cm_doupotd_reportfun_ref_count": collected_stats["netlogic_cm_doupotd_reportfun_ref_count"],
+        "netlogic_cm_doupo_report_ref_count": collected_stats["netlogic_cm_doupo_report_ref_count"],
+        "netlogic_cm_doupo_report_send_ref_count": collected_stats["netlogic_cm_doupo_report_send_ref_count"],
+        "netlogic_cm_doupo_report_register_ref_count": collected_stats[
+            "netlogic_cm_doupo_report_register_ref_count"
+        ],
+        "missing_evidence_row_count": sum(
+            evidence_counts.get(category, 0)
+            for category in (
+                "netlogic_report_function_missing",
+                "netlogic_alias_sender_missing",
+                "netlogic_alias_register_missing",
+            )
+        ),
+    }
+    verdict = {
+        "scene_calls_report_function": stats["scene_report_call_count"] > 0,
+        "packet_alias_body_visible": stats["cm_doupo_report_exact_shape_count"] > 0,
+        "packet_alias_registered_globally": stats["packet_alias_vo_url_registration_count"] > 0
+        or stats["global_surface_cm_doupo_report_row_count"] > 0,
+        "digitdoor_baseline_exact_shape_visible": stats["cm_digitdoor_report_exact_shape_count"] > 0,
+        "visible_doupotd_netlogic_report_function_missing": stats["netlogic_report_function_count"] == 0,
+        "visible_doupotd_netlogic_alias_sender_missing": stats["netlogic_cm_doupo_report_send_ref_count"] == 0
+        and stats["netlogic_cm_doupo_report_ref_count"] == 0,
+        "visible_doupotd_netlogic_alias_register_missing": stats["netlogic_cm_doupo_report_register_ref_count"] == 0,
+        "visible_doupotd_module_alias_index_missing": stats["doupotd_index_cm_doupo_report_row_count"] == 0,
+        "static_boundary_only": True,
+    }
+    verdict["doupotd_pvp_report_sender_alias_gap_confirmed"] = bool(
+        verdict["scene_calls_report_function"]
+        and verdict["packet_alias_body_visible"]
+        and verdict["packet_alias_registered_globally"]
+        and verdict["visible_doupotd_netlogic_report_function_missing"]
+        and verdict["visible_doupotd_netlogic_alias_sender_missing"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidates_tsv = output_dir / "doupotd_pvp_report_sender_alias_gap_candidates.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_sender_alias_gap_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_sender_alias_gap_report.md"
+    json_path = output_dir / "doupotd_pvp_report_sender_alias_gap_report.json"
+    _write_tsv(
+        candidates_tsv,
+        candidates,
+        [
+            "packet_name",
+            "packet_id",
+            "package",
+            "source",
+            "field_count",
+            "matched_field_count",
+            "type_match_count",
+            "field_order",
+            "read_types",
+            "write_types",
+            "exact_order_match",
+            "exact_name_order_match",
+            "is_doupo_alias_candidate",
+            "is_digitdoor_baseline",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_sender_alias_gap_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        candidates=candidates,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_sender_alias_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "candidates": str(candidates_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_sender_alias_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "candidates": str(candidates_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _classify_doupotd_pvp_report_global_lua_hit(path: Path, stripped: str) -> str:
+    if "DoupoTDNetLogic" in path.name:
+        return "netlogic_symbol_hit"
+    if "DoupoTDPVPSceneView" in path.name and "CM_DoupoTDReportFun" in stripped:
+        return "scene_report_call"
+    if path.name.startswith("CM_DoupoReport"):
+        return "packet_alias_file_hit"
+    if path.name.startswith("VO_URL") and "CM_DoupoReport" in stripped:
+        return "vo_url_registration"
+    return "other_symbol_hit"
+
+
+def _collect_doupotd_pvp_report_global_lua_surface(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    lscript_root = root / "by_source" / "lscripts"
+    evidence_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "scanned_lua_file_count": 0,
+        "distinct_hit_file_count": 0,
+        "symbol_hit_count": 0,
+        "scene_report_call_count": 0,
+        "packet_alias_file_hit_count": 0,
+        "vo_url_registration_count": 0,
+        "netlogic_symbol_hit_count": 0,
+        "other_symbol_hit_count": 0,
+    }
+    if not lscript_root.is_dir():
+        return evidence_rows, stats
+
+    hit_files: set[str] = set()
+    pattern = re.compile(r"CM_DoupoTDReportFun|CM_DoupoReport|DoupoTDReport")
+    for path in sorted(lscript_root.rglob("*.lua")):
+        stats["scanned_lua_file_count"] += 1
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = str(path.relative_to(root))
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--") or not pattern.search(stripped):
+                continue
+            category = _classify_doupotd_pvp_report_global_lua_hit(path, stripped)
+            stats["symbol_hit_count"] += 1
+            stats[f"{category}_count"] = int(stats.get(f"{category}_count", 0)) + 1
+            hit_files.add(rel_path)
+            evidence_rows.append(
+                {
+                    "category": category,
+                    "source": rel_path,
+                    "line": line_no,
+                    "target": "CM_DoupoTDReportFun/CM_DoupoReport/DoupoTDReport",
+                    "snippet": stripped[:320],
+                }
+            )
+    stats["distinct_hit_file_count"] = len(hit_files)
+    return evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_global_lua_surface_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report global Lua surface",
+        "",
+        "This probe scans all exported Lua text under `by_source/lscripts` for the report symbols `CM_DoupoTDReportFun`, `CM_DoupoReport`, and `DoupoTDReport`, independent of module-specific generated indexes.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Evidence", ""])
+    for row in evidence_rows[:120]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "A clean global Lua symbol scan reduces the chance that the sender was simply missed by the doupotd module index. It still does not inspect runtime-generated functions, binary-only Lua chunks, or server-side handling.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_global_lua_surface_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    evidence_rows, stats = _collect_doupotd_pvp_report_global_lua_surface(root)
+    verdict = {
+        "scene_call_visible_in_global_lua": stats["scene_report_call_count"] > 0,
+        "packet_alias_visible_in_global_lua": stats["packet_alias_file_hit_count"] > 0,
+        "vo_url_alias_visible_in_global_lua": stats["vo_url_registration_count"] > 0,
+        "no_netlogic_symbol_hit_in_global_lua": stats["netlogic_symbol_hit_count"] == 0,
+        "no_other_symbolic_sender_surface": stats["other_symbol_hit_count"] == 0,
+        "static_symbol_scan_only": True,
+    }
+    verdict["doupotd_pvp_report_global_lua_surface_gap_confirmed"] = bool(
+        verdict["scene_call_visible_in_global_lua"]
+        and verdict["packet_alias_visible_in_global_lua"]
+        and verdict["vo_url_alias_visible_in_global_lua"]
+        and verdict["no_netlogic_symbol_hit_in_global_lua"]
+        and verdict["no_other_symbolic_sender_surface"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_global_lua_surface_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_global_lua_surface_report.md"
+    json_path = output_dir / "doupotd_pvp_report_global_lua_surface_report.json"
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_global_lua_surface_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_global_lua_surface_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_global_lua_surface_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _collect_doupotd_pvp_report_netlogic_family(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    game_root = root / "by_source" / "lscripts" / "gamesystem" / "game"
+    function_rows: list[dict[str, Any]] = []
+    evidence_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "netlogic_file_count": 0,
+        "netlogic_report_function_count": 0,
+        "netlogic_report_send_ref_count": 0,
+        "cm_report_function_count": 0,
+        "sm_report_function_count": 0,
+        "digitdoor_report_function_count": 0,
+        "doupotd_report_function_count": 0,
+        "doupotd_cm_sender_function_count": 0,
+        "doupotd_dynamic_dispatch_hint_count": 0,
+        "callsite_digitdoor_reportfun_count": 0,
+        "callsite_doupotd_reportfun_count": 0,
+    }
+    if not game_root.is_dir():
+        return function_rows, evidence_rows, stats
+
+    for path in sorted(game_root.glob("*/text_assets/*NetLogic*.lua")):
+        stats["netlogic_file_count"] += 1
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = str(path.relative_to(root))
+        module = path.parent.parent.name.split("_", 1)[0]
+        current_report_function = ""
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            func_match = re.search(r"\bfunction\s+_M\.([A-Za-z0-9_]+)\s*\(", stripped)
+            if func_match:
+                function_name = func_match.group(1)
+                current_report_function = function_name if "ReportFun" in function_name else ""
+                if path.name.startswith("DoupoTDNetLogic") and re.match(r"CM_DoupoTD[A-Za-z0-9_]*Fun$", function_name):
+                    stats["doupotd_cm_sender_function_count"] += 1
+                if "ReportFun" not in function_name:
+                    continue
+                direction = "client_to_server" if function_name.startswith("CM_") else "server_to_client"
+                if function_name.startswith("CM_"):
+                    stats["cm_report_function_count"] += 1
+                if function_name.startswith("SM_"):
+                    stats["sm_report_function_count"] += 1
+                if function_name == "CM_DigitDoorReportFun":
+                    stats["digitdoor_report_function_count"] += 1
+                if function_name == "CM_DoupoTDReportFun":
+                    stats["doupotd_report_function_count"] += 1
+                row = {
+                    "module": module,
+                    "function_name": function_name,
+                    "direction": direction,
+                    "source": rel_path,
+                    "line": line_no,
+                    "snippet": stripped[:320],
+                }
+                function_rows.append(row)
+                evidence_rows.append(
+                    {
+                        "category": "netlogic_report_function",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": function_name,
+                        "snippet": stripped[:320],
+                    }
+                )
+                continue
+            if path.name.startswith("DoupoTDNetLogic") and re.search(r"__index|__newindex|\brawget\b", stripped):
+                stats["doupotd_dynamic_dispatch_hint_count"] += 1
+                evidence_rows.append(
+                    {
+                        "category": "doupotd_dynamic_dispatch_hint",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "__index/rawget",
+                        "snippet": stripped[:320],
+                    }
+                )
+            if current_report_function and re.search(r"GetMessageFromPools|F_SendMsg", stripped):
+                stats["netlogic_report_send_ref_count"] += 1
+                evidence_rows.append(
+                    {
+                        "category": "netlogic_report_send_ref",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": current_report_function,
+                        "snippet": stripped[:320],
+                    }
+                )
+
+    for path in sorted(game_root.glob("*/text_assets/*.lua")):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = str(path.relative_to(root))
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("--"):
+                continue
+            if "CM_DigitDoorReportFun" in stripped:
+                stats["callsite_digitdoor_reportfun_count"] += 1
+                evidence_rows.append(
+                    {
+                        "category": "callsite_digitdoor_reportfun",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "CM_DigitDoorReportFun",
+                        "snippet": stripped[:320],
+                    }
+                )
+            if "CM_DoupoTDReportFun" in stripped:
+                stats["callsite_doupotd_reportfun_count"] += 1
+                evidence_rows.append(
+                    {
+                        "category": "callsite_doupotd_reportfun",
+                        "source": rel_path,
+                        "line": line_no,
+                        "target": "CM_DoupoTDReportFun",
+                        "snippet": stripped[:320],
+                    }
+                )
+
+    stats["netlogic_report_function_count"] = len(function_rows)
+    return function_rows, evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_netlogic_family_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    function_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report NetLogic family",
+        "",
+        "This probe compares visible NetLogic report sender functions across exported Lua modules, using DigitDoor PVP as the nearest baseline for the missing DoupoTD PVP report sender.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Focus Functions", ""])
+    for row in function_rows:
+        name = str(row.get("function_name") or "")
+        if name not in {"CM_DigitDoorReportFun", "CM_DoupoTDReportFun"} and "XianLvMine" not in name:
+            continue
+        lines.append(
+            f"- `{name}` module `{row.get('module')}` direction `{row.get('direction')}` source `{row.get('source')}:{row.get('line')}`"
+        )
+    lines.extend(["", "## Evidence Samples", ""])
+    for row in evidence_rows[:120]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This closes only the visible exported-Lua NetLogic pattern. It does not disprove a runtime-generated method, native bridge, or server-side numeric dispatch, but it shows that nearby report senders are normally explicit in Lua exports.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_netlogic_family_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    function_rows, evidence_rows, stats = _collect_doupotd_pvp_report_netlogic_family(root)
+    verdict = {
+        "explicit_netlogic_report_family_visible": stats["netlogic_report_function_count"] > 0,
+        "explicit_report_senders_have_send_refs": stats["netlogic_report_send_ref_count"] > 0,
+        "digitdoor_pvp_report_sender_explicit": stats["digitdoor_report_function_count"] > 0,
+        "doupotd_has_explicit_cm_senders": stats["doupotd_cm_sender_function_count"] > 0,
+        "doupotd_pvp_report_callsite_visible": stats["callsite_doupotd_reportfun_count"] > 0,
+        "doupotd_pvp_report_sender_missing_from_family": stats["doupotd_report_function_count"] == 0,
+        "doupotd_netlogic_has_no_dynamic_dispatch_hint": stats["doupotd_dynamic_dispatch_hint_count"] == 0,
+        "static_netlogic_family_only": True,
+    }
+    verdict["doupotd_pvp_report_netlogic_family_gap_confirmed"] = bool(
+        verdict["explicit_netlogic_report_family_visible"]
+        and verdict["digitdoor_pvp_report_sender_explicit"]
+        and verdict["doupotd_has_explicit_cm_senders"]
+        and verdict["doupotd_pvp_report_callsite_visible"]
+        and verdict["doupotd_pvp_report_sender_missing_from_family"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    functions_tsv = output_dir / "doupotd_pvp_report_netlogic_family_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_netlogic_family_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_netlogic_family_report.md"
+    json_path = output_dir / "doupotd_pvp_report_netlogic_family_report.json"
+    _write_tsv(functions_tsv, function_rows, ["module", "function_name", "direction", "source", "line", "snippet"])
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_netlogic_family_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        function_rows=function_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_netlogic_family_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_netlogic_family_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _collect_doupotd_pvp_report_raw_export_coverage(
+    root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    index_dir = root / "apk_static_index"
+    evidence_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "coverage_row_count": 0,
+        "raw_missing_export_by_hash_count": 0,
+        "doupotd_raw_bundle_count": 0,
+        "doupotd_raw_export_match_count": 0,
+        "doupotd_raw_hot_update_index_rows": 0,
+        "doupotd_raw_status_covered_count": 0,
+        "doupotd_raw_text_asset_row_count": 0,
+        "doupotd_target_raw_text_asset_count": 0,
+        "doupotd_target_surface_asset_count": 0,
+        "doupotd_target_hot_update_row_count": 0,
+        "message_alias_hot_update_row_count": 0,
+        "message_alias_surface_row_count": 0,
+        "actual_netlogic_function_count": 0,
+        "actual_netlogic_reportfun_hit_count": 0,
+        "actual_scene_report_call_hit_count": 0,
+    }
+    target_doupotd_assets = {"DoupoTDNetLogic.lua", "DoupoTDPVPSceneView.lua"}
+    target_message_assets = {
+        "CM_DoupoReport.lua",
+        "CM_DoupoReport__-5002418535717797156.lua",
+        "VO_URL.lua",
+        "VO_URL__-2797871209586775078.lua",
+    }
+
+    for row in _read_tsv_dicts(index_dir / "lua_raw_lscript_export_coverage.tsv"):
+        stats["coverage_row_count"] += 1
+        if row.get("status") == "missing_export_by_hash":
+            stats["raw_missing_export_by_hash_count"] += 1
+        if row.get("module") != "doupotd" and "doupotd_" not in str(row.get("raw_path") or ""):
+            continue
+        stats["doupotd_raw_bundle_count"] += 1
+        stats["doupotd_raw_export_match_count"] += _as_int(row.get("export_match_count")) or 0
+        stats["doupotd_raw_hot_update_index_rows"] += _as_int(row.get("hot_update_index_rows")) or 0
+        if row.get("status") == "covered_by_hash":
+            stats["doupotd_raw_status_covered_count"] += 1
+        evidence_rows.append(
+            {
+                "category": "raw_bundle_coverage",
+                "source": "apk_static_index/lua_raw_lscript_export_coverage.tsv",
+                "line": "",
+                "target": row.get("raw_path", ""),
+                "snippet": (
+                    f"status={row.get('status')} export_match_count={row.get('export_match_count')} "
+                    f"hot_update_index_rows={row.get('hot_update_index_rows')} byte_size={row.get('byte_size')}"
+                ),
+            }
+        )
+
+    target_output_paths: dict[str, str] = {}
+    for row in _read_tsv_dicts(index_dir / "lua_raw_lscript_missing_export_text_assets.tsv"):
+        if row.get("module") != "doupotd" and "doupotd_" not in str(row.get("raw_path") or ""):
+            continue
+        stats["doupotd_raw_text_asset_row_count"] += 1
+        asset_name = str(row.get("asset_name") or "")
+        if asset_name not in target_doupotd_assets:
+            continue
+        stats["doupotd_target_raw_text_asset_count"] += 1
+        target_output_paths[asset_name] = str(row.get("output_path") or "")
+        evidence_rows.append(
+            {
+                "category": "raw_target_text_asset_exported",
+                "source": "apk_static_index/lua_raw_lscript_missing_export_text_assets.tsv",
+                "line": "",
+                "target": asset_name,
+                "snippet": (
+                    f"path_id={row.get('path_id')} byte_size={row.get('byte_size')} "
+                    f"line_count={row.get('line_count')} function_count={row.get('function_count')}"
+                ),
+            }
+        )
+
+    for row in _read_tsv_dicts(index_dir / "hot_update_lscripts_text_assets.tsv"):
+        asset_name = str(row.get("asset_name") or "")
+        if asset_name in target_doupotd_assets:
+            stats["doupotd_target_hot_update_row_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "hot_update_doupotd_target_row",
+                    "source": "apk_static_index/hot_update_lscripts_text_assets.tsv",
+                    "line": "",
+                    "target": asset_name,
+                    "snippet": f"status={row.get('status')} actual_path={row.get('actual_path')}",
+                }
+            )
+        if asset_name in {"CM_DoupoReport.lua", "VO_URL.lua"} and row.get("module") == "message":
+            stats["message_alias_hot_update_row_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "hot_update_message_alias_row",
+                    "source": "apk_static_index/hot_update_lscripts_text_assets.tsv",
+                    "line": "",
+                    "target": asset_name,
+                    "snippet": f"status={row.get('status')} output_path={row.get('output_path')}",
+                }
+            )
+
+    for row in _read_tsv_dicts(index_dir / "lua_lscript_surface_assets.tsv"):
+        asset_name = str(row.get("asset_name") or "")
+        if row.get("module") == "doupotd" and asset_name in target_doupotd_assets:
+            stats["doupotd_target_surface_asset_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "surface_doupotd_target_row",
+                    "source": "apk_static_index/lua_lscript_surface_assets.tsv",
+                    "line": "",
+                    "target": asset_name,
+                    "snippet": (
+                        f"package={row.get('package')} line_count={row.get('line_count')} "
+                        f"function_count={row.get('function_count')}"
+                    ),
+                }
+            )
+        if row.get("module") == "message" and asset_name in target_message_assets:
+            stats["message_alias_surface_row_count"] += 1
+            evidence_rows.append(
+                {
+                    "category": "surface_message_alias_row",
+                    "source": "apk_static_index/lua_lscript_surface_assets.tsv",
+                    "line": "",
+                    "target": asset_name,
+                    "snippet": (
+                        f"packet={row.get('packet_name')} pro_id={row.get('pro_id')} "
+                        f"direction={row.get('direction')} package={row.get('package')}"
+                    ),
+                }
+            )
+
+    netlogic_path_text = target_output_paths.get("DoupoTDNetLogic.lua", "")
+    if netlogic_path_text:
+        netlogic_path = Path(netlogic_path_text)
+        if netlogic_path.is_file():
+            try:
+                text = netlogic_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            stats["actual_netlogic_function_count"] = len(re.findall(r"\bfunction\s+_M\.", text))
+            stats["actual_netlogic_reportfun_hit_count"] = len(re.findall(r"\bCM_DoupoTDReportFun\b", text))
+            evidence_rows.append(
+                {
+                    "category": "actual_netlogic_file_scan",
+                    "source": str(netlogic_path.relative_to(root)) if _is_relative_to(netlogic_path, root) else str(netlogic_path),
+                    "line": "",
+                    "target": "CM_DoupoTDReportFun",
+                    "snippet": (
+                        f"function_count={stats['actual_netlogic_function_count']} "
+                        f"CM_DoupoTDReportFun_hits={stats['actual_netlogic_reportfun_hit_count']}"
+                    ),
+                }
+            )
+
+    scene_path_text = target_output_paths.get("DoupoTDPVPSceneView.lua", "")
+    if scene_path_text:
+        scene_path = Path(scene_path_text)
+        if scene_path.is_file():
+            try:
+                text = scene_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            stats["actual_scene_report_call_hit_count"] = len(re.findall(r"\bCM_DoupoTDReportFun\b", text))
+            evidence_rows.append(
+                {
+                    "category": "actual_scene_file_scan",
+                    "source": str(scene_path.relative_to(root)) if _is_relative_to(scene_path, root) else str(scene_path),
+                    "line": "",
+                    "target": "CM_DoupoTDReportFun",
+                    "snippet": f"CM_DoupoTDReportFun_hits={stats['actual_scene_report_call_hit_count']}",
+                }
+            )
+
+    return evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_raw_export_coverage_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report raw export coverage",
+        "",
+        "This probe checks whether the missing visible `CM_DoupoTDReportFun` sender can be explained by raw lscript export coverage gaps.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Evidence", ""])
+    for row in evidence_rows[:100]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This only proves the current exported raw Lua text surface is covered. It does not rule out runtime-generated Lua methods, native bridges, or server-side handling.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    evidence_rows, stats = _collect_doupotd_pvp_report_raw_export_coverage(root)
+    verdict = {
+        "raw_lscript_coverage_has_no_missing_bundles": stats["raw_missing_export_by_hash_count"] == 0,
+        "doupotd_raw_bundle_covered": stats["doupotd_raw_bundle_count"] > 0
+        and stats["doupotd_raw_bundle_count"] == stats["doupotd_raw_status_covered_count"],
+        "doupotd_scene_and_netlogic_exported_from_raw": stats["doupotd_target_raw_text_asset_count"] >= 2,
+        "doupotd_targets_present_in_surface_index": stats["doupotd_target_surface_asset_count"] >= 2,
+        "doupotd_targets_not_direct_hot_update_rows": stats["doupotd_target_hot_update_row_count"] == 0,
+        "packet_alias_message_hot_update_visible": stats["message_alias_hot_update_row_count"] >= 2,
+        "packet_alias_surface_visible": stats["message_alias_surface_row_count"] >= 2,
+        "scene_call_visible_in_actual_raw_export": stats["actual_scene_report_call_hit_count"] > 0,
+        "netlogic_sender_absent_in_actual_raw_export": stats["actual_netlogic_reportfun_hit_count"] == 0,
+        "static_export_coverage_only": True,
+    }
+    verdict["doupotd_pvp_report_sender_gap_not_raw_export_coverage_gap"] = bool(
+        verdict["raw_lscript_coverage_has_no_missing_bundles"]
+        and verdict["doupotd_raw_bundle_covered"]
+        and verdict["doupotd_scene_and_netlogic_exported_from_raw"]
+        and verdict["scene_call_visible_in_actual_raw_export"]
+        and verdict["netlogic_sender_absent_in_actual_raw_export"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_raw_export_coverage_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_raw_export_coverage_report.md"
+    json_path = output_dir / "doupotd_pvp_report_raw_export_coverage_report.json"
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_raw_export_coverage_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_sender_gap_not_raw_export_coverage_gap"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_sender_gap_not_raw_export_coverage_gap"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _collect_doupotd_pvp_report_lua_binding_boundary(
+    root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    evidence_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "class_file_count": 0,
+        "class_static_vtbl_index_line_count": 0,
+        "class_dynamic_method_generation_hint_count": 0,
+        "lua_engine_bridge_addsingleton_count": 0,
+        "lua_engine_bridge_lifecycle_call_count": 0,
+        "lua_engine_bridge_netlogic_mutation_count": 0,
+        "lua_initializer_doupotd_singleton_count": 0,
+        "doupotd_mgr_netlogic_new_count": 0,
+        "doupotd_netlogic_file_count": 0,
+        "doupotd_netlogic_class_nil_count": 0,
+        "doupotd_netlogic_total_function_count": 0,
+        "doupotd_netlogic_cm_sender_function_count": 0,
+        "doupotd_netlogic_report_require_count": 0,
+        "doupotd_netlogic_report_register_count": 0,
+        "doupotd_netlogic_report_function_count": 0,
+        "digitdoor_report_require_count": 0,
+        "digitdoor_report_register_count": 0,
+        "digitdoor_report_function_count": 0,
+        "global_report_function_assignment_count": 0,
+        "global_report_runtime_generation_hint_count": 0,
+    }
+    lscript_root = root / "by_source" / "lscripts"
+
+    def add_row(category: str, path: Path, line_no: int | str, target: str, snippet: str) -> None:
+        evidence_rows.append(
+            {
+                "category": category,
+                "source": str(path.relative_to(root)) if _is_relative_to(path, root) else str(path),
+                "line": line_no,
+                "target": target,
+                "snippet": snippet[:320],
+            }
+        )
+
+    for class_path in sorted(lscript_root.glob("**/text_assets/class.lua")) if lscript_root.is_dir() else []:
+        stats["class_file_count"] += 1
+        try:
+            lines = class_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if "__index=_class[class_type]" in stripped or "setmetatable(vtbl,{__index=" in stripped:
+                stats["class_static_vtbl_index_line_count"] += 1
+                add_row("class_static_vtbl_lookup", class_path, line_no, "class.lua", stripped)
+            if re.search(r"loadstring|load\(|_G\s*\[|rawset\s*\([^)]*CM_DoupoTDReportFun", stripped):
+                stats["class_dynamic_method_generation_hint_count"] += 1
+                add_row("class_dynamic_generation_hint", class_path, line_no, "class.lua", stripped)
+
+    for bridge_path in sorted(lscript_root.glob("**/text_assets/LuaEngineBridge*.lua")) if lscript_root.is_dir() else []:
+        try:
+            lines = bridge_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if "function _M.AddSingleton" in stripped or "_sins[#_sins+1]=sin" in stripped:
+                stats["lua_engine_bridge_addsingleton_count"] += 1
+                add_row("lua_engine_bridge_addsingleton", bridge_path, line_no, "LuaEngineBridge.AddSingleton", stripped)
+            if re.search(r":(InitSingleton|UnInitSingleton|Update|LateUpdate|FixedUpdate|Destroy)\(", stripped):
+                stats["lua_engine_bridge_lifecycle_call_count"] += 1
+                add_row("lua_engine_bridge_lifecycle_call", bridge_path, line_no, "singleton lifecycle", stripped)
+            if re.search(r"NetLogic\s*=|CM_DoupoTDReportFun|rawset|__index|loadstring|load\(", stripped):
+                stats["lua_engine_bridge_netlogic_mutation_count"] += 1
+                add_row("lua_engine_bridge_netlogic_mutation", bridge_path, line_no, "NetLogic/method mutation", stripped)
+
+    for initializer_path in sorted(lscript_root.glob("**/text_assets/LuaInitializer*.lua")) if lscript_root.is_dir() else []:
+        try:
+            lines = initializer_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if "DoupoTDMgr" in stripped and ("require" in stripped or "AddSingleton" in stripped):
+                stats["lua_initializer_doupotd_singleton_count"] += 1
+                add_row("lua_initializer_singleton", initializer_path, line_no, "DoupoTDMgr", stripped)
+
+    doupotd_netlogic_paths: list[Path] = []
+    for text_dir in _doupotd_lscript_text_asset_dirs(root):
+        for mgr_path in sorted(text_dir.glob("DoupoTDMgr*.lua")):
+            try:
+                lines = mgr_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if "DoupoTDNetLogic" in stripped and ("require" in stripped or "NetLogic=DoupoTDNetLogic.new" in stripped):
+                    stats["doupotd_mgr_netlogic_new_count"] += 1
+                    add_row("doupotd_mgr_netlogic_new", mgr_path, line_no, "DoupoTDNetLogic", stripped)
+
+        for netlogic_path in sorted(text_dir.glob("DoupoTDNetLogic*.lua")):
+            doupotd_netlogic_paths.append(netlogic_path)
+            stats["doupotd_netlogic_file_count"] += 1
+            try:
+                text = netlogic_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            lines = text.splitlines()
+            stats["doupotd_netlogic_total_function_count"] += len(re.findall(r"\bfunction\s+_M\.", text))
+            stats["doupotd_netlogic_cm_sender_function_count"] += len(
+                re.findall(r"\bfunction\s+_M\.CM_DoupoTD|\bfunction\s+_M\.CM_DouPoCard", text)
+            )
+            stats["doupotd_netlogic_report_require_count"] += len(
+                re.findall(r"CM_DoupoTDReport|CM_DoupoReport|93671", text)
+            )
+            stats["doupotd_netlogic_report_register_count"] += len(
+                re.findall(r"F_Register[^\n]*(CM_DoupoTDReport|CM_DoupoReport|93671)", text)
+            )
+            stats["doupotd_netlogic_report_function_count"] += len(re.findall(r"\bCM_DoupoTDReportFun\b", text))
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if "_M=class(nil,_M)" in stripped:
+                    stats["doupotd_netlogic_class_nil_count"] += 1
+                    add_row("doupotd_netlogic_class_base", netlogic_path, line_no, "class(nil)", stripped)
+                if "CM_DoupoTDReport" in stripped or "CM_DoupoReport" in stripped or "93671" in stripped:
+                    add_row("doupotd_netlogic_report_symbol", netlogic_path, line_no, "DoupoTDReport/CM_DoupoReport", stripped)
+                if "CM_DoupoTDReportFun" in stripped:
+                    add_row("doupotd_netlogic_report_function", netlogic_path, line_no, "CM_DoupoTDReportFun", stripped)
+
+    for digitdoor_path in sorted(lscript_root.glob("**/text_assets/DigitDoorNetLogic*.lua")) if lscript_root.is_dir() else []:
+        try:
+            lines = digitdoor_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if "_CM_DigitDoorReport" in stripped and "require" in stripped:
+                stats["digitdoor_report_require_count"] += 1
+                add_row("digitdoor_report_require", digitdoor_path, line_no, "CM_DigitDoorReport", stripped)
+            if "F_Register" in stripped and "_CM_DigitDoorReport" in stripped:
+                stats["digitdoor_report_register_count"] += 1
+                add_row("digitdoor_report_register", digitdoor_path, line_no, "CM_DigitDoorReport", stripped)
+            if "function _M.CM_DigitDoorReportFun" in stripped:
+                stats["digitdoor_report_function_count"] += 1
+                add_row("digitdoor_report_function", digitdoor_path, line_no, "CM_DigitDoorReportFun", stripped)
+
+    report_assignment_pattern = re.compile(
+        r"(CM_DoupoTDReportFun\s*=|function\s+[^\\n]*CM_DoupoTDReportFun|rawset\s*\([^)]*CM_DoupoTDReportFun)"
+    )
+    runtime_generation_pattern = re.compile(
+        r"(CM_DoupoTDReportFun|CM_DoupoReport).*(loadstring|load\(|rawset|__index|_G\s*\[)"
+        r"|(loadstring|load\(|rawset|__index|_G\s*\[).*(CM_DoupoTDReportFun|CM_DoupoReport)"
+    )
+    for path in sorted(lscript_root.glob("**/text_assets/*.lua")) if lscript_root.is_dir() else []:
+        if path in doupotd_netlogic_paths:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if report_assignment_pattern.search(stripped):
+                stats["global_report_function_assignment_count"] += 1
+                add_row("global_report_function_assignment", path, line_no, "CM_DoupoTDReportFun", stripped)
+            if runtime_generation_pattern.search(stripped):
+                stats["global_report_runtime_generation_hint_count"] += 1
+                add_row("global_report_runtime_generation_hint", path, line_no, "CM_DoupoTDReportFun/CM_DoupoReport", stripped)
+
+    return evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_lua_binding_boundary_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report Lua binding boundary",
+        "",
+        "This probe checks whether visible Lua class/mgr binding can explain `CM_DoupoTDReportFun` being callable from the scene while absent from `DoupoTDNetLogic.lua`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Evidence", ""])
+    for row in evidence_rows[:120]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This closes only the readable Lua binding surface. It still cannot rule out native runtime injection, a server-side acceptance path, or packet transmission observed only in a focused capture.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    evidence_rows, stats = _collect_doupotd_pvp_report_lua_binding_boundary(root)
+    verdict = {
+        "lua_class_uses_static_vtbl_lookup": stats["class_file_count"] > 0
+        and stats["class_static_vtbl_index_line_count"] > 0
+        and stats["class_dynamic_method_generation_hint_count"] == 0,
+        "lua_engine_bridge_only_tracks_lifecycle_singletons": stats["lua_engine_bridge_addsingleton_count"] > 0
+        and stats["lua_engine_bridge_lifecycle_call_count"] > 0
+        and stats["lua_engine_bridge_netlogic_mutation_count"] == 0,
+        "doupotd_mgr_instantiates_doupotd_netlogic_directly": stats["doupotd_mgr_netlogic_new_count"] >= 2,
+        "doupotd_netlogic_has_no_report_binding_triplet": stats["doupotd_netlogic_report_require_count"] == 0
+        and stats["doupotd_netlogic_report_register_count"] == 0
+        and stats["doupotd_netlogic_report_function_count"] == 0,
+        "digitdoor_baseline_report_binding_triplet_visible": stats["digitdoor_report_require_count"] > 0
+        and stats["digitdoor_report_register_count"] > 0
+        and stats["digitdoor_report_function_count"] > 0,
+        "no_visible_global_report_function_assignment": stats["global_report_function_assignment_count"] == 0,
+        "no_visible_runtime_generation_hint_for_report_binding": stats["global_report_runtime_generation_hint_count"] == 0,
+        "static_lua_binding_only": True,
+    }
+    verdict["doupotd_pvp_report_lua_binding_gap_confirmed"] = bool(
+        verdict["lua_class_uses_static_vtbl_lookup"]
+        and verdict["lua_engine_bridge_only_tracks_lifecycle_singletons"]
+        and verdict["doupotd_mgr_instantiates_doupotd_netlogic_directly"]
+        and verdict["doupotd_netlogic_has_no_report_binding_triplet"]
+        and verdict["digitdoor_baseline_report_binding_triplet_visible"]
+        and verdict["no_visible_global_report_function_assignment"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_lua_binding_boundary_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_lua_binding_boundary_report.md"
+    json_path = output_dir / "doupotd_pvp_report_lua_binding_boundary_report.json"
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_lua_binding_boundary_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_lua_binding_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_lua_binding_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_capture_decoded_jsons(root: Path) -> list[Path]:
+    capture_dir = root / "tcp_captures"
+    if not capture_dir.is_dir():
+        return []
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for pattern in ("*.codeyun_decoded.json", "*.decoded.json"):
+        for path in sorted(capture_dir.glob(pattern), key=lambda item: item.name.lower()):
+            key = str(path).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+    return paths
+
+
+def _load_doupotd_decoded_frames(path: Path) -> tuple[list[dict[str, Any]], str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    raw_frames = data.get("frames", []) if isinstance(data, dict) else []
+    if not isinstance(raw_frames, list):
+        return [], "frames field is not a list"
+    return [frame for frame in raw_frames if isinstance(frame, dict)], ""
+
+
+def _write_doupotd_pvp_report_runtime_coverage_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    targets: list[dict[str, Any]],
+    fixtures: list[dict[str, Any]],
+    hits: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report runtime coverage",
+        "",
+        "This report checks existing decoded TCP fixtures for the visible DoupoTD PVP report packet alias `CM_DoupoReport(93671)` and the DigitDoor baseline `CM_DigitDoorReport(91644)`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Targets", ""])
+    for row in targets:
+        lines.append(f"- `{row.get('pro_id')}` `{row.get('packet')}` `{row.get('note')}`")
+    lines.extend(["", "## Fixtures", ""])
+    for row in fixtures:
+        lines.append(
+            f"- `{row.get('file')}` frames `{row.get('frame_count')}` target frames `{row.get('target_frame_count')}` error `{row.get('error')}`"
+        )
+    lines.extend(["", "## Hits", ""])
+    if hits:
+        for row in hits[:80]:
+            lines.append(
+                f"- `{row.get('file')}` offset `{row.get('offset')}` pro `{row.get('pro_id')}` name `{row.get('name')}` direction `{row.get('direction')}` parsed `{row.get('has_parsed')}`"
+            )
+    else:
+        lines.append("- No existing decoded fixture contains `93671/CM_DoupoReport` or `91644/CM_DigitDoorReport`.")
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "A zero-hit result only means the current decoded fixtures do not contain these packet ids. It does not prove the live client never sends them; add a focused privacy-filtered PVP report capture and rerun this probe to close runtime coverage.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_runtime_coverage_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    targets = [
+        {"pro_id": 93671, "packet": "CM_DoupoReport", "note": "DoupoTD PVP report shape-alias packet"},
+        {"pro_id": 91644, "packet": "CM_DigitDoorReport", "note": "DigitDoor/TowerDefense exact-shape baseline"},
+    ]
+    target_ids = {int(row["pro_id"]) for row in targets}
+    target_by_id = {int(row["pro_id"]): row for row in targets}
+    decoded_paths = _doupotd_capture_decoded_jsons(root)
+    fixtures: list[dict[str, Any]] = []
+    hits: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    for decoded_path in decoded_paths:
+        frames, error = _load_doupotd_decoded_frames(decoded_path)
+        target_frame_count = 0
+        for frame in frames:
+            pro_id = _as_int(frame.get("pro_id"))
+            name = str(frame.get("name") or frame.get("packet") or "")
+            direction = str(frame.get("direction") or "")
+            if pro_id is not None:
+                protocol_counts[(direction, pro_id, name)] += 1
+            name_hit = name in {"CM_DoupoReport", "CM_DigitDoorReport", "CM_DoupoTDReport"}
+            if pro_id not in target_ids and not name_hit:
+                continue
+            target_frame_count += 1
+            target = target_by_id.get(pro_id, {"packet": name, "note": "name-only match"})
+            hits.append(
+                {
+                    "file": decoded_path.name,
+                    "offset": frame.get("offset", ""),
+                    "pro_id": pro_id if pro_id is not None else "",
+                    "name": name,
+                    "direction": direction,
+                    "target_packet": target.get("packet", ""),
+                    "has_parsed": isinstance(frame.get("parsed"), dict),
+                }
+            )
+        fixtures.append(
+            {
+                "file": decoded_path.name,
+                "frame_count": len(frames),
+                "target_frame_count": target_frame_count,
+                "error": error,
+            }
+        )
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_target": pro_id in target_ids or name in {"CM_DoupoReport", "CM_DigitDoorReport", "CM_DoupoTDReport"},
+        }
+        for (direction, pro_id, name), count in sorted(protocol_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    stats = {
+        "decoded_fixture_count": len(decoded_paths),
+        "decoded_frame_count": sum(int(row.get("frame_count") or 0) for row in fixtures),
+        "target_frame_count": len(hits),
+        "cm_doupo_report_frame_count": sum(1 for row in hits if _as_int(row.get("pro_id")) == 93671 or row.get("name") == "CM_DoupoReport"),
+        "cm_digitdoor_report_frame_count": sum(1 for row in hits if _as_int(row.get("pro_id")) == 91644 or row.get("name") == "CM_DigitDoorReport"),
+        "protocol_count_rows": len(protocol_rows),
+    }
+    verdict = {
+        "decoded_fixtures_exist": stats["decoded_fixture_count"] > 0,
+        "existing_decoded_fixtures_cover_no_doupotd_pvp_report": stats["cm_doupo_report_frame_count"] == 0,
+        "existing_decoded_fixtures_cover_no_digitdoor_report_baseline": stats["cm_digitdoor_report_frame_count"] == 0,
+        "runtime_sample_still_needed_for_pvp_report": stats["cm_doupo_report_frame_count"] == 0,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    targets_tsv = output_dir / "doupotd_pvp_report_runtime_coverage_targets.tsv"
+    fixtures_tsv = output_dir / "doupotd_pvp_report_runtime_coverage_fixtures.tsv"
+    hits_tsv = output_dir / "doupotd_pvp_report_runtime_coverage_hits.tsv"
+    counts_tsv = output_dir / "doupotd_pvp_report_runtime_coverage_protocol_counts.tsv"
+    report_path = output_dir / "doupotd_pvp_report_runtime_coverage_report.md"
+    json_path = output_dir / "doupotd_pvp_report_runtime_coverage_report.json"
+    _write_tsv(targets_tsv, targets, ["pro_id", "packet", "note"])
+    _write_tsv(fixtures_tsv, fixtures, ["file", "frame_count", "target_frame_count", "error"])
+    _write_tsv(hits_tsv, hits, ["file", "offset", "pro_id", "name", "direction", "target_packet", "has_parsed"])
+    _write_tsv(counts_tsv, protocol_rows, ["direction", "pro_id", "name", "count", "is_target"])
+    _write_doupotd_pvp_report_runtime_coverage_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        targets=targets,
+        fixtures=fixtures,
+        hits=hits,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["existing_decoded_fixtures_cover_no_doupotd_pvp_report"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "targets": str(targets_tsv),
+                    "fixtures": str(fixtures_tsv),
+                    "hits": str(hits_tsv),
+                    "protocol_counts": str(counts_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["existing_decoded_fixtures_cover_no_doupotd_pvp_report"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "targets": str(targets_tsv),
+            "fixtures": str(fixtures_tsv),
+            "hits": str(hits_tsv),
+            "protocol_counts": str(counts_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_capture_files(root: Path) -> list[Path]:
+    capture_dir = root / "tcp_captures"
+    if not capture_dir.is_dir():
+        return []
+    patterns = ("*.pcapng", "*.pcap", "*.codeyun_decoded.json", "*.decoded.json", "*.err.log", "*.out.log")
+    files: list[Path] = []
+    seen: set[str] = set()
+    for pattern in patterns:
+        for path in sorted(capture_dir.glob(pattern), key=lambda item: item.name.lower()):
+            key = str(path).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+    return files
+
+
+def _doupotd_decoded_sibling_names(capture_path: Path) -> str:
+    stem = capture_path.stem
+    names = [
+        f"{stem}.codeyun_decoded.json",
+        f"{stem}.decoded.json",
+    ]
+    return ";".join(name for name in names if (capture_path.parent / name).is_file())
+
+
+def _count_nonempty_log_lines(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
+def _doupotd_runtime_target_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "target_key": "doupotd_pvp_report_alias",
+            "pro_id": 93671,
+            "packet": "CM_DoupoReport",
+            "direction": "client_to_server",
+            "role": "DoupoTD PVP report packet alias",
+            "static_evidence": "Exact-shape alias of DoupoTD scene payload; VO_URL registration is visible.",
+            "needed_runtime_evidence": "One decoded frame with pro_id=93671 or name=CM_DoupoReport during the smallest DoupoTD PVP report finish/checklist action.",
+            "success_condition": "Decoded hit row records file, offset/index, direction, body length, and parsed key names only.",
+        },
+        {
+            "target_key": "digitdoor_report_baseline",
+            "pro_id": 91644,
+            "packet": "CM_DigitDoorReport",
+            "direction": "client_to_server",
+            "role": "same-shape baseline packet",
+            "static_evidence": "DigitDoor/TowerDefense report sender path is visible and uses the same payload shape.",
+            "needed_runtime_evidence": "Optional decoded frame with pro_id=91644 or name=CM_DigitDoorReport to validate decoder/counter plumbing.",
+            "success_condition": "Baseline hit proves report packet counting works even before DoupoTD-specific evidence appears.",
+        },
+        {
+            "target_key": "doupotd_scene_sender_symbol",
+            "pro_id": "",
+            "packet": "CM_DoupoTDReportFun",
+            "direction": "scene_call_to_netlogic",
+            "role": "Lua scene call marker",
+            "static_evidence": "DoupoTDPVPSceneView calls DoupoTDMgr.Inst_get().NetLogic:CM_DoupoTDReportFun(...).",
+            "needed_runtime_evidence": "Use the scene action that reaches CheckList/report finish; packet proof is still the decoded 93671 frame.",
+            "success_condition": "Treat this as the trigger marker, not as a wire packet name.",
+        },
+    ]
+
+
+def _is_doupotd_runtime_report_target(frame: dict[str, Any]) -> tuple[bool, str]:
+    pro_id = _as_int(frame.get("pro_id"))
+    name = str(frame.get("name") or frame.get("packet") or "")
+    if pro_id == 93671 or name in {"CM_DoupoReport", "CM_DoupoTDReport"}:
+        return True, "doupotd_pvp_report_alias"
+    if pro_id == 91644 or name == "CM_DigitDoorReport":
+        return True, "digitdoor_report_baseline"
+    return False, ""
+
+
+def _summarize_decoded_fixture_for_readiness(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]], Counter[tuple[str, int, str]]]:
+    frames, error = _load_doupotd_decoded_frames(path)
+    target_hits: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    for index, frame in enumerate(frames):
+        pro_id = _as_int(frame.get("pro_id"))
+        name = str(frame.get("name") or frame.get("packet") or "")
+        direction = str(frame.get("direction") or "")
+        if pro_id is not None:
+            protocol_counts[(direction, pro_id, name)] += 1
+        hit, target_key = _is_doupotd_runtime_report_target(frame)
+        if not hit:
+            continue
+        parsed = frame.get("parsed")
+        parsed_keys = ";".join(str(key) for key in sorted(parsed.keys())[:30]) if isinstance(parsed, dict) else ""
+        target_hits.append(
+            {
+                "file": path.name,
+                "frame_index": index,
+                "offset": frame.get("offset", ""),
+                "pro_id": pro_id if pro_id is not None else "",
+                "name": name,
+                "direction": direction,
+                "target_key": target_key,
+                "frame_len": frame.get("frame_len", frame.get("length", "")),
+                "payload_len": frame.get("payload_len", frame.get("body_len", "")),
+                "has_parsed": isinstance(parsed, dict),
+                "parsed_keys": parsed_keys,
+            }
+        )
+    fixture_row = {
+        "file": path.name,
+        "kind": "decoded_json",
+        "size_bytes": path.stat().st_size if path.is_file() else 0,
+        "frame_count": len(frames),
+        "target_frame_count": len(target_hits),
+        "doupotd_report_frame_count": sum(1 for row in target_hits if row.get("target_key") == "doupotd_pvp_report_alias"),
+        "digitdoor_baseline_frame_count": sum(1 for row in target_hits if row.get("target_key") == "digitdoor_report_baseline"),
+        "decoded_sibling_names": "",
+        "nonempty_log_lines": "",
+        "error": error,
+    }
+    return fixture_row, target_hits, protocol_counts
+
+
+def _doupotd_pvp_report_capture_steps() -> list[dict[str, Any]]:
+    return [
+        {
+            "step": 1,
+            "phase": "prepare",
+            "action": "Use the existing CodeYun TCP capture/decoder surface for Fanxiu; keep reports metadata-only.",
+            "success_signal": "A new pcapng appears under tcp_captures and can be decoded into *.codeyun_decoded.json.",
+            "notes": "Frontend helper: frontend/src/standard/fanxiu/packet-capture/page.vue; backend helper: backend/core/fanxiu_tcp_flow.py.",
+        },
+        {
+            "step": 2,
+            "phase": "trigger",
+            "action": "In the emulator, perform the smallest DoupoTD PVP report-producing finish/checklist action.",
+            "success_signal": "The capture covers only that short interaction window.",
+            "notes": "Keep the sample focused so unrelated login/account traffic is minimized.",
+        },
+        {
+            "step": 3,
+            "phase": "decode",
+            "action": "Decode the newest capture with the existing decoder and keep decoded frame metadata under tcp_captures.",
+            "success_signal": "Decoded JSON has frames with pro_id/name/direction/offset fields.",
+            "notes": "Do not persist raw payload values into summary reports.",
+        },
+        {
+            "step": 4,
+            "phase": "verify",
+            "action": "Rerun runtime coverage and this readiness probe.",
+            "success_signal": "A target hit appears for 93671/CM_DoupoReport, or the report explicitly stays at zero.",
+            "notes": "A zero-hit focused sample is still useful evidence that the trigger did not reach the sender path.",
+        },
+    ]
+
+
+def _doupotd_pvp_report_capture_privacy_rows() -> list[dict[str, Any]]:
+    return [
+        {
+            "rule": "export_metadata_only",
+            "allowed": "file name, frame index, offset, direction, pro_id, packet name, frame/body length, parsed key names",
+            "blocked": "raw payload bytes, token/session/account fields, full parsed payload values",
+            "reason": "Protocol coverage only needs routing metadata; payload values can carry private account state.",
+        },
+        {
+            "rule": "minimize_capture_window",
+            "allowed": "short action-focused capture around the report trigger",
+            "blocked": "long background captures covering login, chat, payment, or unrelated app traffic",
+            "reason": "Focused captures reduce privacy risk and make packet attribution cleaner.",
+        },
+        {
+            "rule": "no_packet_tampering",
+            "allowed": "passive capture, static inspection, local report generation",
+            "blocked": "replay, forge, modify, bypass, inject, or send custom packets",
+            "reason": "This reverse track is for understanding program/protocol structure, not altering live behavior.",
+        },
+    ]
+
+
+def _write_doupotd_pvp_report_capture_readiness_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    targets: list[dict[str, Any]],
+    fixtures: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    privacy_rows: list[dict[str, Any]],
+    hits: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report focused capture readiness",
+        "",
+        "This report turns the current DoupoTD PVP report runtime gap into a concrete, privacy-filtered capture checklist. It is read-only: it scans existing capture artifacts and writes metadata summaries only.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Runtime Targets", ""])
+    for row in targets:
+        pro_id = row.get("pro_id") if row.get("pro_id") != "" else "n/a"
+        lines.append(f"- `{row.get('target_key')}` pro `{pro_id}` packet `{row.get('packet')}`: {row.get('needed_runtime_evidence')}")
+    lines.extend(["", "## Existing Fixtures", ""])
+    if fixtures:
+        for row in fixtures:
+            lines.append(
+                f"- `{row.get('file')}` `{row.get('kind')}` size `{row.get('size_bytes')}` frames `{row.get('frame_count')}` target `{row.get('target_frame_count')}` decoded siblings `{row.get('decoded_sibling_names')}` error `{row.get('error')}`"
+            )
+    else:
+        lines.append("- No capture artifacts are currently present under `tcp_captures`.")
+    lines.extend(["", "## Current Target Hits", ""])
+    if hits:
+        for row in hits[:80]:
+            lines.append(
+                f"- `{row.get('file')}` frame `{row.get('frame_index')}` offset `{row.get('offset')}` pro `{row.get('pro_id')}` name `{row.get('name')}` direction `{row.get('direction')}` parsed keys `{row.get('parsed_keys')}`"
+            )
+    else:
+        lines.append("- No existing decoded fixture contains `93671/CM_DoupoReport` or `91644/CM_DigitDoorReport`.")
+    lines.extend(["", "## Focused Capture Steps", ""])
+    for row in steps:
+        lines.append(f"- `{row.get('step')}` `{row.get('phase')}`: {row.get('action')} Success: {row.get('success_signal')}")
+    lines.extend(["", "## Privacy Guardrails", ""])
+    for row in privacy_rows:
+        lines.append(f"- `{row.get('rule')}`: allowed `{row.get('allowed')}`; blocked `{row.get('blocked')}`.")
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This report does not read live traffic, hook the client, replay packets, alter APK/resources, or prove server-side acceptance. It only defines what future passive focused capture evidence must contain to close the DoupoTD PVP report sender/runtime gap.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    capture_files = _doupotd_capture_files(root)
+    targets = _doupotd_runtime_target_rows()
+    steps = _doupotd_pvp_report_capture_steps()
+    privacy_rows = _doupotd_pvp_report_capture_privacy_rows()
+
+    fixtures: list[dict[str, Any]] = []
+    hits: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    decoded_names = {path.name for path in _doupotd_capture_decoded_jsons(root)}
+    decoded_name_set: set[str] = set()
+    for path in capture_files:
+        suffix_name = path.name.lower()
+        if suffix_name.endswith(".codeyun_decoded.json") or suffix_name.endswith(".decoded.json"):
+            decoded_name_set.add(path.name)
+            fixture_row, target_hits, counts = _summarize_decoded_fixture_for_readiness(path)
+            fixtures.append(fixture_row)
+            hits.extend(target_hits)
+            protocol_counts.update(counts)
+        elif suffix_name.endswith(".pcapng") or suffix_name.endswith(".pcap"):
+            fixtures.append(
+                {
+                    "file": path.name,
+                    "kind": "pcapng" if suffix_name.endswith(".pcapng") else "pcap",
+                    "size_bytes": path.stat().st_size if path.is_file() else 0,
+                    "frame_count": "",
+                    "target_frame_count": "",
+                    "doupotd_report_frame_count": "",
+                    "digitdoor_baseline_frame_count": "",
+                    "decoded_sibling_names": _doupotd_decoded_sibling_names(path),
+                    "nonempty_log_lines": "",
+                    "error": "",
+                }
+            )
+        elif suffix_name.endswith(".err.log") or suffix_name.endswith(".out.log"):
+            fixtures.append(
+                {
+                    "file": path.name,
+                    "kind": "err_log" if suffix_name.endswith(".err.log") else "out_log",
+                    "size_bytes": path.stat().st_size if path.is_file() else 0,
+                    "frame_count": "",
+                    "target_frame_count": "",
+                    "doupotd_report_frame_count": "",
+                    "digitdoor_baseline_frame_count": "",
+                    "decoded_sibling_names": "",
+                    "nonempty_log_lines": _count_nonempty_log_lines(path),
+                    "error": "",
+                }
+            )
+
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_target": _is_doupotd_runtime_report_target({"pro_id": pro_id, "name": name})[0],
+        }
+        for (direction, pro_id, name), count in sorted(protocol_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    pcap_rows = [row for row in fixtures if row.get("kind") in {"pcap", "pcapng"}]
+    decoded_rows = [row for row in fixtures if row.get("kind") == "decoded_json"]
+    log_rows = [row for row in fixtures if str(row.get("kind") or "").endswith("_log")]
+    stats = {
+        "tcp_capture_file_count": len(capture_files),
+        "pcapng_capture_count": sum(1 for row in fixtures if row.get("kind") == "pcapng"),
+        "pcap_capture_count": sum(1 for row in fixtures if row.get("kind") == "pcap"),
+        "decoded_fixture_count": len(decoded_rows),
+        "decoded_frame_count": sum(int(row.get("frame_count") or 0) for row in decoded_rows),
+        "target_frame_count": len(hits),
+        "cm_doupo_report_frame_count": sum(1 for row in hits if row.get("target_key") == "doupotd_pvp_report_alias"),
+        "cm_digitdoor_report_frame_count": sum(1 for row in hits if row.get("target_key") == "digitdoor_report_baseline"),
+        "pcap_with_decoded_sibling_count": sum(1 for row in pcap_rows if row.get("decoded_sibling_names")),
+        "capture_log_count": len(log_rows),
+        "protocol_count_rows": len(protocol_rows),
+        "capture_step_count": len(steps),
+        "privacy_guardrail_count": len(privacy_rows),
+    }
+    verdict = {
+        "pcapng_fixture_available": stats["pcapng_capture_count"] > 0,
+        "decoded_sibling_available": bool(decoded_names or decoded_name_set),
+        "existing_decoded_fixture_gap_confirmed": stats["decoded_fixture_count"] > 0 and stats["cm_doupo_report_frame_count"] == 0,
+        "focused_capture_plan_ready": bool(targets) and bool(steps) and bool(privacy_rows),
+        "needs_user_or_runtime_action_for_new_evidence": stats["cm_doupo_report_frame_count"] == 0,
+        "read_only_runtime_readiness_only": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    targets_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_targets.tsv"
+    fixtures_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_fixtures.tsv"
+    hits_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_hits.tsv"
+    counts_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_protocol_counts.tsv"
+    steps_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_steps.tsv"
+    privacy_tsv = output_dir / "doupotd_pvp_report_focused_capture_readiness_privacy.tsv"
+    report_path = output_dir / "doupotd_pvp_report_focused_capture_readiness_report.md"
+    json_path = output_dir / "doupotd_pvp_report_focused_capture_readiness_report.json"
+    _write_tsv(
+        targets_tsv,
+        targets,
+        [
+            "target_key",
+            "pro_id",
+            "packet",
+            "direction",
+            "role",
+            "static_evidence",
+            "needed_runtime_evidence",
+            "success_condition",
+        ],
+    )
+    _write_tsv(
+        fixtures_tsv,
+        fixtures,
+        [
+            "file",
+            "kind",
+            "size_bytes",
+            "frame_count",
+            "target_frame_count",
+            "doupotd_report_frame_count",
+            "digitdoor_baseline_frame_count",
+            "decoded_sibling_names",
+            "nonempty_log_lines",
+            "error",
+        ],
+    )
+    _write_tsv(
+        hits_tsv,
+        hits,
+        [
+            "file",
+            "frame_index",
+            "offset",
+            "pro_id",
+            "name",
+            "direction",
+            "target_key",
+            "frame_len",
+            "payload_len",
+            "has_parsed",
+            "parsed_keys",
+        ],
+    )
+    _write_tsv(counts_tsv, protocol_rows, ["direction", "pro_id", "name", "count", "is_target"])
+    _write_tsv(steps_tsv, steps, ["step", "phase", "action", "success_signal", "notes"])
+    _write_tsv(privacy_tsv, privacy_rows, ["rule", "allowed", "blocked", "reason"])
+    _write_doupotd_pvp_report_capture_readiness_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        targets=targets,
+        fixtures=fixtures,
+        steps=steps,
+        privacy_rows=privacy_rows,
+        hits=hits,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["focused_capture_plan_ready"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "targets": str(targets_tsv),
+                    "fixtures": str(fixtures_tsv),
+                    "hits": str(hits_tsv),
+                    "protocol_counts": str(counts_tsv),
+                    "steps": str(steps_tsv),
+                    "privacy": str(privacy_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["focused_capture_plan_ready"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "targets": str(targets_tsv),
+            "fixtures": str(fixtures_tsv),
+            "hits": str(hits_tsv),
+            "protocol_counts": str(counts_tsv),
+            "steps": str(steps_tsv),
+            "privacy": str(privacy_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _resolve_tshark_candidate(tshark_path: str | Path | None = None) -> tuple[str, list[dict[str, Any]], str]:
+    candidates: list[Path] = []
+    if tshark_path:
+        candidates.append(Path(tshark_path))
+    which_path = shutil.which("tshark")
+    if which_path:
+        candidates.append(Path(which_path))
+    candidates.append(Path(r"C:\Program Files\Wireshark\tshark.exe"))
+
+    rows: list[dict[str, Any]] = []
+    selected = ""
+    version = ""
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        exists = candidate.is_file()
+        row = {
+            "candidate": str(candidate),
+            "exists": exists,
+            "selected": False,
+            "version": "",
+            "error": "",
+        }
+        if exists and not selected:
+            try:
+                output = subprocess.check_output(
+                    [str(candidate), "-v"],
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=20,
+                )
+                version = next((line.strip() for line in output.splitlines() if line.strip()), "")
+                selected = str(candidate)
+                row["selected"] = True
+                row["version"] = version
+            except Exception as exc:  # pragma: no cover - platform/tool specific
+                row["error"] = str(exc)
+        rows.append(row)
+    return selected, rows, version
+
+
+def _doupotd_pcap_capture_files(root: Path) -> list[Path]:
+    capture_dir = root / "tcp_captures"
+    if not capture_dir.is_dir():
+        return []
+    return sorted(
+        list(capture_dir.glob("*.pcapng")) + list(capture_dir.glob("*.pcap")),
+        key=lambda item: item.name.lower(),
+    )
+
+
+def _write_doupotd_pcap_stream_readiness_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    tool_rows: list[dict[str, Any]],
+    capture_rows: list[dict[str, Any]],
+    stream_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP pcap stream readiness",
+        "",
+        "This report verifies the local offline pcap tooling needed for future focused DoupoTD PVP report captures. It reads only capture metadata and TCP stream byte counts; it does not export payload bytes or parsed packet values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## TShark Candidates", ""])
+    for row in tool_rows:
+        lines.append(
+            f"- `{row.get('candidate')}` exists `{row.get('exists')}` selected `{row.get('selected')}` version `{row.get('version')}` error `{row.get('error')}`"
+        )
+    lines.extend(["", "## Captures", ""])
+    if capture_rows:
+        for row in capture_rows:
+            lines.append(
+                f"- `{row.get('file')}` kind `{row.get('kind')}` size `{row.get('size_bytes')}` decoded siblings `{row.get('decoded_sibling_names')}` host streams `{row.get('host_stream_count')}` error `{row.get('error')}`"
+            )
+    else:
+        lines.append("- No pcap/pcapng files are present under `tcp_captures`.")
+    lines.extend(["", "## Stream Candidates", ""])
+    if stream_rows:
+        lines.append("| File | Host | Stream | Packets | Payload Bytes | Rank |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
+        for row in stream_rows[:80]:
+            lines.append(
+                f"| `{row.get('file')}` | `{row.get('host_filter')}` | {row.get('stream')} | {row.get('packets')} | {row.get('payload_bytes')} | {row.get('rank')} |"
+            )
+    else:
+        lines.append("- No TCP stream candidates were listed.")
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This probe is offline-only. It does not start a live capture, require admin privileges, read account/session fields, or decode/export payload values. It only proves whether a future focused pcap can be split into candidate TCP streams for the existing decoder.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    tshark_path: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    host = server_host or DEFAULT_FANXIU_TCP_SERVER_HOST
+    selected_tshark, tool_rows, tshark_version = _resolve_tshark_candidate(tshark_path)
+    capture_paths = _doupotd_pcap_capture_files(root)
+    capture_rows: list[dict[str, Any]] = []
+    stream_rows: list[dict[str, Any]] = []
+
+    for capture_path in capture_paths:
+        kind = "pcapng" if capture_path.suffix.lower() == ".pcapng" else "pcap"
+        error = ""
+        host_stream_count = 0
+        if selected_tshark:
+            try:
+                streams = list_tcp_streams_with_tshark(capture_path, host=host, tshark=selected_tshark)
+                host_stream_count = len(streams)
+                for rank, stream in enumerate(streams[:20], 1):
+                    stream_rows.append(
+                        {
+                            "file": capture_path.name,
+                            "host_filter": host,
+                            "stream": stream.get("stream", ""),
+                            "packets": stream.get("packets", ""),
+                            "payload_bytes": stream.get("payload_bytes", ""),
+                            "rank": rank,
+                            "error": "",
+                        }
+                    )
+            except Exception as exc:
+                error = str(exc)
+        else:
+            error = "tshark not available"
+        capture_rows.append(
+            {
+                "file": capture_path.name,
+                "kind": kind,
+                "path": str(capture_path),
+                "size_bytes": capture_path.stat().st_size if capture_path.is_file() else 0,
+                "modified_at": capture_path.stat().st_mtime if capture_path.is_file() else "",
+                "decoded_sibling_names": _doupotd_decoded_sibling_names(capture_path),
+                "host_filter": host,
+                "host_stream_count": host_stream_count,
+                "error": error,
+            }
+        )
+
+    stats = {
+        "tshark_candidate_count": len(tool_rows),
+        "tshark_available": bool(selected_tshark),
+        "tshark_version": tshark_version,
+        "pcap_capture_count": sum(1 for row in capture_rows if row.get("kind") == "pcap"),
+        "pcapng_capture_count": sum(1 for row in capture_rows if row.get("kind") == "pcapng"),
+        "capture_count": len(capture_rows),
+        "capture_with_decoded_sibling_count": sum(1 for row in capture_rows if row.get("decoded_sibling_names")),
+        "host_stream_row_count": len(stream_rows),
+        "host_stream_total_payload_bytes": sum(int(row.get("payload_bytes") or 0) for row in stream_rows),
+        "host_stream_max_payload_bytes": max((int(row.get("payload_bytes") or 0) for row in stream_rows), default=0),
+        "capture_error_count": sum(1 for row in capture_rows if row.get("error")),
+        "server_host": host,
+    }
+    verdict = {
+        "offline_tshark_available": bool(selected_tshark),
+        "pcapng_fixture_available": stats["pcapng_capture_count"] > 0,
+        "decoded_sibling_available": stats["capture_with_decoded_sibling_count"] > 0,
+        "server_host_streams_visible": stats["host_stream_row_count"] > 0,
+        "stream_metadata_only_no_payload_exported": True,
+        "ready_to_split_future_focused_capture": bool(selected_tshark) and stats["host_stream_row_count"] > 0,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tools_tsv = output_dir / "doupotd_pvp_report_pcap_stream_readiness_tools.tsv"
+    captures_tsv = output_dir / "doupotd_pvp_report_pcap_stream_readiness_captures.tsv"
+    streams_tsv = output_dir / "doupotd_pvp_report_pcap_stream_readiness_streams.tsv"
+    report_path = output_dir / "doupotd_pvp_report_pcap_stream_readiness_report.md"
+    json_path = output_dir / "doupotd_pvp_report_pcap_stream_readiness_report.json"
+    _write_tsv(tools_tsv, tool_rows, ["candidate", "exists", "selected", "version", "error"])
+    _write_tsv(
+        captures_tsv,
+        capture_rows,
+        [
+            "file",
+            "kind",
+            "path",
+            "size_bytes",
+            "modified_at",
+            "decoded_sibling_names",
+            "host_filter",
+            "host_stream_count",
+            "error",
+        ],
+    )
+    _write_tsv(streams_tsv, stream_rows, ["file", "host_filter", "stream", "packets", "payload_bytes", "rank", "error"])
+    _write_doupotd_pcap_stream_readiness_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        tool_rows=tool_rows,
+        capture_rows=capture_rows,
+        stream_rows=stream_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["ready_to_split_future_focused_capture"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "tools": str(tools_tsv),
+                    "captures": str(captures_tsv),
+                    "streams": str(streams_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["ready_to_split_future_focused_capture"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "tools": str(tools_tsv),
+            "captures": str(captures_tsv),
+            "streams": str(streams_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _summarize_doupotd_decoded_frames_metadata(
+    frames: list[dict[str, Any]],
+    *,
+    file_name: str,
+    stream: int,
+    direction: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    protocol_summary = summarize_decoded_frames(frames)
+    target_hits: list[dict[str, Any]] = []
+    for index, frame in enumerate(frames):
+        hit, target_key = _is_doupotd_runtime_report_target(frame)
+        if not hit:
+            continue
+        parsed = frame.get("parsed")
+        parsed_keys = ";".join(str(key) for key in sorted(parsed.keys())[:30]) if isinstance(parsed, dict) else ""
+        target_hits.append(
+            {
+                "file": file_name,
+                "stream": stream,
+                "direction": direction,
+                "frame_index": index,
+                "offset": frame.get("offset", ""),
+                "pro_id": frame.get("pro_id", ""),
+                "name": frame.get("name", ""),
+                "target_key": target_key,
+                "frame_len": frame.get("frame_len", ""),
+                "payload_len": frame.get("payload_len", ""),
+                "has_parsed": isinstance(parsed, dict),
+                "parsed_keys": parsed_keys,
+            }
+        )
+    protocol_rows = [
+        {
+            "file": file_name,
+            "stream": stream,
+            "direction": direction,
+            "pro_id": row.get("pro_id", ""),
+            "name": row.get("name", ""),
+            "count": row.get("count", 0),
+            "is_target": _is_doupotd_runtime_report_target({"pro_id": row.get("pro_id"), "name": row.get("name")})[0],
+        }
+        for row in protocol_summary
+    ]
+    summary_row = {
+        "file": file_name,
+        "stream": stream,
+        "direction": direction,
+        "frame_count": len(frames),
+        "protocol_count": len(protocol_summary),
+        "target_frame_count": len(target_hits),
+        "doupotd_report_frame_count": sum(1 for row in target_hits if row.get("target_key") == "doupotd_pvp_report_alias"),
+        "digitdoor_baseline_frame_count": sum(1 for row in target_hits if row.get("target_key") == "digitdoor_report_baseline"),
+    }
+    return summary_row, protocol_rows, target_hits
+
+
+def _write_doupotd_pcap_decode_metadata_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    decode_rows: list[dict[str, Any]],
+    protocol_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP pcap decode metadata",
+        "",
+        "This report decodes existing pcap stream candidates in memory and exports only frame/protocol metadata. It is meant to prove that the offline decoder chain can consume focused capture streams without saving raw payload bytes or full parsed values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stream Decode Summary", ""])
+    if decode_rows:
+        lines.append("| File | Stream | Direction | Payload Bytes | Frames | Protocols | Target Frames | Error |")
+        lines.append("| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |")
+        for row in decode_rows:
+            lines.append(
+                f"| `{row.get('file')}` | {row.get('stream')} | `{row.get('direction')}` | {row.get('payload_bytes')} | {row.get('frame_count')} | {row.get('protocol_count')} | {row.get('target_frame_count')} | `{row.get('error', '')}` |"
+            )
+    else:
+        lines.append("- No stream decode rows were produced.")
+    lines.extend(["", "## Top Protocol Counts", ""])
+    if protocol_rows:
+        lines.append("| File | Stream | Direction | Pro Id | Name | Count | Target |")
+        lines.append("| --- | ---: | --- | ---: | --- | ---: | --- |")
+        for row in protocol_rows[:100]:
+            lines.append(
+                f"| `{row.get('file')}` | {row.get('stream')} | `{row.get('direction')}` | {row.get('pro_id')} | `{row.get('name')}` | {row.get('count')} | `{row.get('is_target')}` |"
+            )
+    else:
+        lines.append("- No protocol counts were decoded.")
+    lines.extend(["", "## Target Hits", ""])
+    if hit_rows:
+        for row in hit_rows[:80]:
+            lines.append(
+                f"- `{row.get('file')}` stream `{row.get('stream')}` `{row.get('direction')}` frame `{row.get('frame_index')}` pro `{row.get('pro_id')}` name `{row.get('name')}` parsed keys `{row.get('parsed_keys')}`"
+            )
+    else:
+        lines.append("- Existing pcap decode metadata still has no `93671/CM_DoupoReport` or `91644/CM_DigitDoorReport` hit.")
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "The probe extracts payload bytes only in memory to feed the decoder. Persisted outputs are restricted to counts, packet ids/names, lengths, offsets, and parsed key names for target hits. It does not start live capture, replay/forge packets, or export account/session/payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    text_assets: str | Path | None = None,
+    max_streams_per_capture: int = 4,
+    tshark_path: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    host = server_host or DEFAULT_FANXIU_TCP_SERVER_HOST
+    selected_tshark, tool_rows, tshark_version = _resolve_tshark_candidate(tshark_path)
+    text_assets_path = root / (Path(text_assets) if text_assets is not None else DEFAULT_MESSAGE_TEXT_ASSETS)
+    schema = LuaPacketSchemaIndex(text_assets_path)
+    capture_paths = _doupotd_pcap_capture_files(root)
+    max_streams = max(1, min(int(max_streams_per_capture or 1), 12))
+
+    decode_rows: list[dict[str, Any]] = []
+    protocol_rows: list[dict[str, Any]] = []
+    hit_rows: list[dict[str, Any]] = []
+    capture_rows: list[dict[str, Any]] = []
+
+    for capture_path in capture_paths:
+        stream_error = ""
+        stream_candidates: list[dict[str, Any]] = []
+        if selected_tshark:
+            try:
+                stream_candidates = list_tcp_streams_with_tshark(capture_path, host=host, tshark=selected_tshark)
+            except Exception as exc:
+                stream_error = str(exc)
+        else:
+            stream_error = "tshark not available"
+        selected_streams = stream_candidates[:max_streams]
+        capture_rows.append(
+            {
+                "file": capture_path.name,
+                "path": str(capture_path),
+                "size_bytes": capture_path.stat().st_size if capture_path.is_file() else 0,
+                "decoded_sibling_names": _doupotd_decoded_sibling_names(capture_path),
+                "candidate_stream_count": len(stream_candidates),
+                "selected_stream_count": len(selected_streams),
+                "error": stream_error,
+            }
+        )
+        if stream_error:
+            continue
+        for stream in selected_streams:
+            stream_id = int(stream.get("stream") or 0)
+            try:
+                c2s_payload, s2c_payload = extract_tcp_stream_payloads_with_tshark(
+                    capture_path,
+                    stream_id,
+                    server_host=host,
+                    tshark=selected_tshark,
+                )
+            except Exception as exc:
+                decode_rows.append(
+                    {
+                        "file": capture_path.name,
+                        "stream": stream_id,
+                        "direction": "extract",
+                        "payload_bytes": 0,
+                        "frame_count": 0,
+                        "protocol_count": 0,
+                        "target_frame_count": 0,
+                        "doupotd_report_frame_count": 0,
+                        "digitdoor_baseline_frame_count": 0,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            for direction, payload in (("c2s", c2s_payload), ("s2c", s2c_payload)):
+                try:
+                    frames = decode_lusuo_frames(payload, schema) if payload else []
+                    for frame in frames:
+                        frame["direction"] = direction
+                    summary_row, rows, hits = _summarize_doupotd_decoded_frames_metadata(
+                        frames,
+                        file_name=capture_path.name,
+                        stream=stream_id,
+                        direction=direction,
+                    )
+                    summary_row["payload_bytes"] = len(payload)
+                    summary_row["error"] = ""
+                    decode_rows.append(summary_row)
+                    protocol_rows.extend(rows)
+                    hit_rows.extend(hits)
+                except Exception as exc:
+                    decode_rows.append(
+                        {
+                            "file": capture_path.name,
+                            "stream": stream_id,
+                            "direction": direction,
+                            "payload_bytes": len(payload),
+                            "frame_count": 0,
+                            "protocol_count": 0,
+                            "target_frame_count": 0,
+                            "doupotd_report_frame_count": 0,
+                            "digitdoor_baseline_frame_count": 0,
+                            "error": str(exc),
+                        }
+                    )
+
+    stats = {
+        "tshark_available": bool(selected_tshark),
+        "tshark_version": tshark_version,
+        "capture_count": len(capture_rows),
+        "capture_with_decoded_sibling_count": sum(1 for row in capture_rows if row.get("decoded_sibling_names")),
+        "candidate_stream_count": sum(int(row.get("candidate_stream_count") or 0) for row in capture_rows),
+        "selected_stream_count": sum(int(row.get("selected_stream_count") or 0) for row in capture_rows),
+        "decode_direction_row_count": len(decode_rows),
+        "decoded_direction_row_count": sum(1 for row in decode_rows if not row.get("error") and int(row.get("frame_count") or 0) > 0),
+        "decoded_frame_count": sum(int(row.get("frame_count") or 0) for row in decode_rows),
+        "decoded_protocol_row_count": len(protocol_rows),
+        "target_frame_count": len(hit_rows),
+        "cm_doupo_report_frame_count": sum(1 for row in hit_rows if row.get("target_key") == "doupotd_pvp_report_alias"),
+        "cm_digitdoor_report_frame_count": sum(1 for row in hit_rows if row.get("target_key") == "digitdoor_report_baseline"),
+        "decode_error_count": sum(1 for row in decode_rows if row.get("error")),
+        "server_host": host,
+        "max_streams_per_capture": max_streams,
+    }
+    verdict = {
+        "offline_tshark_available": bool(selected_tshark),
+        "pcap_streams_selected": stats["selected_stream_count"] > 0,
+        "offline_decoder_produces_frames": stats["decoded_frame_count"] > 0,
+        "existing_pcap_has_no_doupotd_report_hit": stats["cm_doupo_report_frame_count"] == 0,
+        "existing_pcap_has_no_digitdoor_report_baseline_hit": stats["cm_digitdoor_report_frame_count"] == 0,
+        "metadata_only_no_payload_values_exported": True,
+        "ready_to_decode_future_focused_stream": bool(selected_tshark) and stats["decoded_frame_count"] > 0,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    captures_tsv = output_dir / "doupotd_pvp_report_pcap_decode_metadata_captures.tsv"
+    decode_tsv = output_dir / "doupotd_pvp_report_pcap_decode_metadata_streams.tsv"
+    protocols_tsv = output_dir / "doupotd_pvp_report_pcap_decode_metadata_protocols.tsv"
+    hits_tsv = output_dir / "doupotd_pvp_report_pcap_decode_metadata_hits.tsv"
+    report_path = output_dir / "doupotd_pvp_report_pcap_decode_metadata_report.md"
+    json_path = output_dir / "doupotd_pvp_report_pcap_decode_metadata_report.json"
+    _write_tsv(
+        captures_tsv,
+        capture_rows,
+        ["file", "path", "size_bytes", "decoded_sibling_names", "candidate_stream_count", "selected_stream_count", "error"],
+    )
+    _write_tsv(
+        decode_tsv,
+        decode_rows,
+        [
+            "file",
+            "stream",
+            "direction",
+            "payload_bytes",
+            "frame_count",
+            "protocol_count",
+            "target_frame_count",
+            "doupotd_report_frame_count",
+            "digitdoor_baseline_frame_count",
+            "error",
+        ],
+    )
+    _write_tsv(protocols_tsv, protocol_rows, ["file", "stream", "direction", "pro_id", "name", "count", "is_target"])
+    _write_tsv(
+        hits_tsv,
+        hit_rows,
+        [
+            "file",
+            "stream",
+            "direction",
+            "frame_index",
+            "offset",
+            "pro_id",
+            "name",
+            "target_key",
+            "frame_len",
+            "payload_len",
+            "has_parsed",
+            "parsed_keys",
+        ],
+    )
+    _write_doupotd_pcap_decode_metadata_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        decode_rows=decode_rows,
+        protocol_rows=protocol_rows,
+        hit_rows=hit_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["ready_to_decode_future_focused_stream"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "captures": str(captures_tsv),
+                    "streams": str(decode_tsv),
+                    "protocols": str(protocols_tsv),
+                    "hits": str(hits_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["ready_to_decode_future_focused_stream"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "captures": str(captures_tsv),
+            "streams": str(decode_tsv),
+            "protocols": str(protocols_tsv),
+            "hits": str(hits_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _classify_doupotd_pcap_protocol_scope(pro_id: int | None, name: str) -> tuple[str, str]:
+    packet_name = str(name or "")
+    if pro_id in {93671, 91644} or packet_name in {"CM_DoupoReport", "CM_DigitDoorReport", "CM_DoupoTDReport"}:
+        return "target_pvp_report", "Target DoupoTD/DigitDoor PVP report packet."
+    if "DoupoTD" in packet_name or "Doupo" in packet_name or (pro_id is not None and 93600 <= pro_id <= 93699):
+        return "doupotd_family", "DoupoTD/Doupo protocol family but not the PVP report target."
+    if "DigitDoor" in packet_name or (pro_id is not None and 91600 <= pro_id <= 91699):
+        return "digitdoor_family", "DigitDoor protocol family but not the PVP report target."
+    if "TowerDefense" in packet_name:
+        return "towerdefense_family", "TowerDefense protocol family."
+    if any(token in packet_name for token in ("SyncTime", "ChangeMap", "LoadMapFinish", "IsCross", "SyncUnit", "RestrictStatus", "PeaceState")):
+        return "map_sync_lifecycle", "Map/session lifecycle, sync, or movement-adjacent traffic."
+    if any(token in packet_name for token in ("Activity", "Rank", "Blld", "QuanF", "CampFlag", "CrossBoss", "LandContend", "Arena", "Yunmeng")):
+        return "activity_refresh", "Activity, ranking, event, or arena refresh traffic."
+    if any(token in packet_name for token in ("Veins", "Seat", "Lundao", "Union")):
+        return "seat_veins_social", "Seat/veins/union/social-state traffic."
+    if any(token in packet_name for token in ("Reward", "Buff", "Faze", "Practice", "Notice")):
+        return "combat_state_misc", "Reward/buff/faze/practice/notice state traffic."
+    return "other", "Other protocol family in this broad capture."
+
+
+def _write_doupotd_pcap_scope_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    category_rows: list[dict[str, Any]],
+    protocol_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP old pcap protocol scope",
+        "",
+        "This report classifies the metadata-only protocol counts decoded from the existing pcap, so future reverse-analysis steps do not overuse a broad old capture as if it were a DoupoTD PVP report sample.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Category Summary", "", "| Category | Packet Count | Protocol Rows | Notes |", "| --- | ---: | ---: | --- |"])
+    for row in category_rows:
+        lines.append(
+            f"| `{row.get('category')}` | {row.get('packet_count')} | {row.get('protocol_row_count')} | {row.get('note')} |"
+        )
+    lines.extend(["", "## Top Protocol Rows", "", "| File | Stream | Direction | Pro Id | Name | Count | Category |", "| --- | ---: | --- | ---: | --- | ---: | --- |"])
+    for row in protocol_rows[:120]:
+        lines.append(
+            f"| `{row.get('file')}` | {row.get('stream')} | `{row.get('direction')}` | {row.get('pro_id')} | `{row.get('name')}` | {row.get('count')} | `{row.get('category')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The existing pcap is a broad session/map/activity sample, not a narrow DoupoTD PVP report finish sample.",
+            "- It is still useful for validating pcap splitting, socket framing, and schema decoding, but not for proving DoupoTD PVP report sender or server-acceptance behavior.",
+            "- Persisted rows are metadata-only protocol ids, names, counts, directions, streams, and coarse categories; no payload values are exported.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    text_assets: str | Path | None = None,
+    max_streams_per_capture: int = 4,
+    tshark_path: str | Path | None = None,
+    use_existing_metadata: bool = True,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    protocol_source = output_dir / "doupotd_pvp_report_pcap_decode_metadata_protocols.tsv"
+    decode_generated = False
+    if not use_existing_metadata or not protocol_source.is_file():
+        decode_result = build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(
+            export_root=root,
+            server_host=server_host,
+            text_assets=text_assets,
+            max_streams_per_capture=max_streams_per_capture,
+            tshark_path=tshark_path,
+        )
+        protocol_source = Path(str(decode_result["files"]["protocols"]))
+        decode_generated = True
+
+    source_rows = _read_tsv_dicts(protocol_source)
+    protocol_rows: list[dict[str, Any]] = []
+    category_counts: Counter[str] = Counter()
+    category_row_counts: Counter[str] = Counter()
+    category_notes: dict[str, str] = {}
+    direction_counts: Counter[str] = Counter()
+    stream_keys: set[tuple[str, str]] = set()
+    file_names: set[str] = set()
+    for row in source_rows:
+        pro_id = _as_int(row.get("pro_id"))
+        name = str(row.get("name") or "")
+        count = _as_int(row.get("count")) or 0
+        category, note = _classify_doupotd_pcap_protocol_scope(pro_id, name)
+        category_counts[category] += count
+        category_row_counts[category] += 1
+        category_notes.setdefault(category, note)
+        direction = str(row.get("direction") or "")
+        direction_counts[direction] += count
+        file_name = str(row.get("file") or "")
+        file_names.add(file_name)
+        stream_keys.add((file_name, str(row.get("stream") or "")))
+        protocol_rows.append(
+            {
+                "file": file_name,
+                "stream": row.get("stream", ""),
+                "direction": direction,
+                "pro_id": pro_id if pro_id is not None else "",
+                "name": name,
+                "count": count,
+                "is_target": row.get("is_target", ""),
+                "category": category,
+                "note": note,
+            }
+        )
+    protocol_rows.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("category") or ""), str(item.get("name") or "")))
+    category_rows = [
+        {
+            "category": category,
+            "packet_count": count,
+            "protocol_row_count": category_row_counts.get(category, 0),
+            "note": category_notes.get(category, ""),
+        }
+        for category, count in sorted(category_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    stats = {
+        "protocol_source": str(protocol_source),
+        "decode_generated": decode_generated,
+        "file_count": len({name for name in file_names if name}),
+        "stream_count": len(stream_keys),
+        "protocol_row_count": len(protocol_rows),
+        "packet_count": sum(int(row.get("count") or 0) for row in protocol_rows),
+        "category_count": len(category_rows),
+        "c2s_packet_count": direction_counts.get("c2s", 0),
+        "s2c_packet_count": direction_counts.get("s2c", 0),
+        "target_report_packet_count": category_counts.get("target_pvp_report", 0),
+        "doupotd_family_packet_count": category_counts.get("doupotd_family", 0),
+        "digitdoor_family_packet_count": category_counts.get("digitdoor_family", 0),
+        "map_sync_lifecycle_packet_count": category_counts.get("map_sync_lifecycle", 0),
+        "activity_refresh_packet_count": category_counts.get("activity_refresh", 0),
+        "seat_veins_social_packet_count": category_counts.get("seat_veins_social", 0),
+    }
+    verdict = {
+        "metadata_protocol_counts_available": stats["protocol_row_count"] > 0,
+        "old_pcap_has_no_pvp_report_targets": stats["target_report_packet_count"] == 0,
+        "old_pcap_has_no_doupotd_family_protocols": stats["doupotd_family_packet_count"] == 0,
+        "old_pcap_is_broad_mixed_session_scope": stats["category_count"] >= 4 and stats["packet_count"] >= 50,
+        "old_pcap_useful_for_decoder_not_report_evidence": stats["protocol_row_count"] > 0
+        and stats["target_report_packet_count"] == 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict["old_pcap_unsuitable_for_doupotd_pvp_report_runtime_claims"] = bool(
+        verdict["metadata_protocol_counts_available"]
+        and verdict["old_pcap_has_no_pvp_report_targets"]
+        and verdict["old_pcap_is_broad_mixed_session_scope"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    categories_tsv = output_dir / "doupotd_pvp_report_pcap_protocol_scope_categories.tsv"
+    protocols_tsv = output_dir / "doupotd_pvp_report_pcap_protocol_scope_protocols.tsv"
+    report_path = output_dir / "doupotd_pvp_report_pcap_protocol_scope_report.md"
+    json_path = output_dir / "doupotd_pvp_report_pcap_protocol_scope_report.json"
+    _write_tsv(categories_tsv, category_rows, ["category", "packet_count", "protocol_row_count", "note"])
+    _write_tsv(protocols_tsv, protocol_rows, ["file", "stream", "direction", "pro_id", "name", "count", "is_target", "category", "note"])
+    _write_doupotd_pcap_scope_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        category_rows=category_rows,
+        protocol_rows=protocol_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["old_pcap_unsuitable_for_doupotd_pvp_report_runtime_claims"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "categories": str(categories_tsv),
+                    "protocols": str(protocols_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["old_pcap_unsuitable_for_doupotd_pvp_report_runtime_claims"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "categories": str(categories_tsv),
+            "protocols": str(protocols_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def build_fanxiu_doupotd_pvp_report_old_pcap_scope_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    text_assets: str | Path | None = None,
+    max_streams_per_capture: int = 4,
+    tshark_path: str | Path | None = None,
+    use_existing_metadata: bool = True,
+) -> dict[str, Any]:
+    return build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe(
+        export_root=export_root,
+        server_host=server_host,
+        text_assets=text_assets,
+        max_streams_per_capture=max_streams_per_capture,
+        tshark_path=tshark_path,
+        use_existing_metadata=use_existing_metadata,
+    )
+
+
+def _schema_info_row(root: Path, info: Any, *, role: str) -> dict[str, Any]:
+    ops = list(getattr(info, "ops", []) or []) if info is not None else []
+    fields = [field for kind, field, _arg in ops if kind != "super" and field]
+    list_fields = [field for kind, field, _arg in ops if kind == "list" and field]
+    primitive_fields = [f"{field}:{arg}" for kind, field, arg in ops if kind == "primitive" and field]
+    source = ""
+    path = getattr(info, "path", None) if info is not None else None
+    if isinstance(path, Path):
+        source = str(path.relative_to(root)) if _is_relative_to(path, root) else str(path)
+    return {
+        "role": role,
+        "packet_id": getattr(info, "packet_id", "") if info is not None else "",
+        "packet_name": getattr(info, "name", "") if info is not None else "",
+        "parent": getattr(info, "parent", "") if info is not None else "",
+        "field_count": len(fields),
+        "field_order": " | ".join(fields),
+        "primitive_fields": " | ".join(primitive_fields),
+        "list_fields": " | ".join(list_fields),
+        "source": source,
+        "present": info is not None,
+    }
+
+
+def _field_rows_from_schema_info(root: Path, info: Any, *, role: str) -> list[dict[str, Any]]:
+    if info is None:
+        return []
+    source = ""
+    path = getattr(info, "path", None)
+    if isinstance(path, Path):
+        source = str(path.relative_to(root)) if _is_relative_to(path, root) else str(path)
+    rows: list[dict[str, Any]] = []
+    ordinal = 0
+    for kind, field, arg in list(getattr(info, "ops", []) or []):
+        if kind == "super":
+            continue
+        ordinal += 1
+        rows.append(
+            {
+                "role": role,
+                "packet_id": getattr(info, "packet_id", ""),
+                "packet_name": getattr(info, "name", ""),
+                "ordinal": ordinal,
+                "field": field,
+                "kind": kind,
+                "type_or_write_method": arg or "",
+                "source": source,
+            }
+        )
+    return rows
+
+
+def _write_doupotd_pcap_observed_schema_coverage_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    aggregate_rows: list[dict[str, Any]],
+    direction_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP old pcap observed schema coverage",
+        "",
+        "This report maps the protocol ids/names observed in the existing pcap metadata to local Lua packet schemas. It is a metadata-only coverage index: packet counts, directions, schema presence, and field names only.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Observed Protocol Schema Coverage",
+            "",
+            "| Pro Id | Name | Count | Directions | Category | Schema | Fields |",
+            "| ---: | --- | ---: | --- | --- | --- | --- |",
+        ]
+    )
+    for row in aggregate_rows[:120]:
+        lines.append(
+            f"| {row.get('pro_id')} | `{row.get('name')}` | {row.get('packet_count')} | `{row.get('directions')}` | `{row.get('category')}` | `{row.get('schema_present')}` | `{row.get('field_order')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Direction Rows",
+            "",
+            "| File | Stream | Direction | Pro Id | Name | Count | Schema |",
+            "| --- | ---: | --- | ---: | --- | ---: | --- |",
+        ]
+    )
+    for row in direction_rows[:120]:
+        lines.append(
+            f"| `{row.get('file')}` | {row.get('stream')} | `{row.get('direction')}` | {row.get('pro_id')} | `{row.get('name')}` | {row.get('count')} | `{row.get('schema_present')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "Use this to decide which old-capture packet families are worth static/runtime follow-up. It deliberately does not persist raw payload bytes, decoded field values, account/session values, or replayable packet material.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    text_assets: str | Path | None = None,
+    max_streams_per_capture: int = 4,
+    tshark_path: str | Path | None = None,
+    use_existing_metadata: bool = True,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    protocol_source = output_dir / "doupotd_pvp_report_pcap_decode_metadata_protocols.tsv"
+    decode_generated = False
+    if not use_existing_metadata or not protocol_source.is_file():
+        decode_result = build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe(
+            export_root=root,
+            server_host=server_host,
+            text_assets=text_assets,
+            max_streams_per_capture=max_streams_per_capture,
+            tshark_path=tshark_path,
+        )
+        protocol_source = Path(str(decode_result["files"]["protocols"]))
+        decode_generated = True
+
+    text_assets_path = root / (Path(text_assets) if text_assets is not None else DEFAULT_MESSAGE_TEXT_ASSETS)
+    schema = LuaPacketSchemaIndex(text_assets_path)
+    source_rows = _read_tsv_dicts(protocol_source)
+    aggregate: dict[tuple[int | None, str], dict[str, Any]] = {}
+    direction_rows: list[dict[str, Any]] = []
+    file_names: set[str] = set()
+    stream_keys: set[tuple[str, str]] = set()
+    direction_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+
+    for row in source_rows:
+        pro_id = _as_int(row.get("pro_id"))
+        name = str(row.get("name") or "")
+        count = _as_int(row.get("count")) or 0
+        info = (schema.by_id.get(pro_id) if pro_id is not None else None) or schema.by_name.get(name)
+        schema_row = _schema_info_row(root, info, role=name or str(pro_id or ""))
+        category, note = _classify_doupotd_pcap_protocol_scope(pro_id, name)
+        direction = str(row.get("direction") or "")
+        file_name = str(row.get("file") or "")
+        stream = str(row.get("stream") or "")
+        file_names.add(file_name)
+        stream_keys.add((file_name, stream))
+        direction_counts[direction] += count
+        category_counts[category] += count
+        key = (pro_id, name)
+        entry = aggregate.setdefault(
+            key,
+            {
+                "pro_id": pro_id if pro_id is not None else "",
+                "name": name,
+                "packet_count": 0,
+                "c2s_count": 0,
+                "s2c_count": 0,
+                "directions": set(),
+                "stream_count": set(),
+                "category": category,
+                "classification_note": note,
+                "schema_present": bool(schema_row.get("present")),
+                "schema_packet_id": schema_row.get("packet_id", ""),
+                "schema_packet_name": schema_row.get("packet_name", ""),
+                "parent": schema_row.get("parent", ""),
+                "field_count": schema_row.get("field_count", 0),
+                "field_order": schema_row.get("field_order", ""),
+                "primitive_fields": schema_row.get("primitive_fields", ""),
+                "list_fields": schema_row.get("list_fields", ""),
+                "source": schema_row.get("source", ""),
+            },
+        )
+        entry["packet_count"] += count
+        entry["directions"].add(direction)
+        entry["stream_count"].add((file_name, stream))
+        if direction == "c2s":
+            entry["c2s_count"] += count
+        elif direction == "s2c":
+            entry["s2c_count"] += count
+        direction_rows.append(
+            {
+                "file": file_name,
+                "stream": stream,
+                "direction": direction,
+                "pro_id": pro_id if pro_id is not None else "",
+                "name": name,
+                "count": count,
+                "category": category,
+                "classification_note": note,
+                "schema_present": bool(schema_row.get("present")),
+                "schema_packet_name": schema_row.get("packet_name", ""),
+                "field_count": schema_row.get("field_count", 0),
+                "field_order": schema_row.get("field_order", ""),
+                "list_fields": schema_row.get("list_fields", ""),
+                "source": schema_row.get("source", ""),
+            }
+        )
+
+    aggregate_rows = []
+    for row in aggregate.values():
+        row = dict(row)
+        row["directions"] = "|".join(sorted(value for value in row["directions"] if value))
+        row["stream_count"] = len(row["stream_count"])
+        aggregate_rows.append(row)
+    aggregate_rows.sort(key=lambda item: (-int(item.get("packet_count") or 0), str(item.get("name") or "")))
+    direction_rows.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("name") or "")))
+
+    stats = {
+        "protocol_source": str(protocol_source),
+        "decode_generated": decode_generated,
+        "file_count": len({name for name in file_names if name}),
+        "stream_count": len(stream_keys),
+        "direction_row_count": len(direction_rows),
+        "observed_protocol_count": len(aggregate_rows),
+        "observed_packet_count": sum(int(row.get("packet_count") or 0) for row in aggregate_rows),
+        "schema_present_protocol_count": sum(1 for row in aggregate_rows if row.get("schema_present") is True),
+        "schema_missing_protocol_count": sum(1 for row in aggregate_rows if row.get("schema_present") is not True),
+        "c2s_packet_count": direction_counts.get("c2s", 0),
+        "s2c_packet_count": direction_counts.get("s2c", 0),
+        "target_report_packet_count": category_counts.get("target_pvp_report", 0),
+        "doupotd_family_packet_count": category_counts.get("doupotd_family", 0),
+        "digitdoor_family_packet_count": category_counts.get("digitdoor_family", 0),
+        "schema_by_id_count": len(schema.by_id),
+        "schema_by_name_count": len(schema.by_name),
+        "protocol_name_count": len(schema.protocol_names),
+    }
+    verdict = {
+        "observed_protocol_metadata_available": stats["observed_protocol_count"] > 0,
+        "observed_protocol_schemas_indexed": stats["schema_present_protocol_count"] > 0,
+        "all_observed_protocols_have_schema": stats["schema_missing_protocol_count"] == 0 and stats["observed_protocol_count"] > 0,
+        "old_pcap_has_no_doupotd_or_digitdoor_report_family_packets": stats["target_report_packet_count"] == 0
+        and stats["doupotd_family_packet_count"] == 0
+        and stats["digitdoor_family_packet_count"] == 0,
+        "useful_as_general_observed_packet_shape_index": stats["schema_present_protocol_count"] > 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    aggregate_tsv = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    directions_tsv = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_direction_rows.tsv"
+    report_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_report.md"
+    json_path = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_report.json"
+    _write_tsv(
+        aggregate_tsv,
+        aggregate_rows,
+        [
+            "pro_id",
+            "name",
+            "packet_count",
+            "c2s_count",
+            "s2c_count",
+            "directions",
+            "stream_count",
+            "category",
+            "classification_note",
+            "schema_present",
+            "schema_packet_id",
+            "schema_packet_name",
+            "parent",
+            "field_count",
+            "field_order",
+            "primitive_fields",
+            "list_fields",
+            "source",
+        ],
+    )
+    _write_tsv(
+        directions_tsv,
+        direction_rows,
+        [
+            "file",
+            "stream",
+            "direction",
+            "pro_id",
+            "name",
+            "count",
+            "category",
+            "classification_note",
+            "schema_present",
+            "schema_packet_name",
+            "field_count",
+            "field_order",
+            "list_fields",
+            "source",
+        ],
+    )
+    _write_doupotd_pcap_observed_schema_coverage_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        aggregate_rows=aggregate_rows,
+        direction_rows=direction_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["useful_as_general_observed_packet_shape_index"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "protocols": str(aggregate_tsv),
+                    "directions": str(directions_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["useful_as_general_observed_packet_shape_index"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "protocols": str(aggregate_tsv),
+            "directions": str(directions_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _classify_observed_lua_packet_ref(line: str, packet_name: str) -> str:
+    packet_fun = f"{packet_name}Fun"
+    if "F_Register" in line:
+        return "message_pool_register"
+    if "F_Unregister" in line:
+        return "message_pool_unregister"
+    if "require" in line:
+        return "require_ref"
+    if re.search(rf"\bfunction\b[^\n]*\b{re.escape(packet_fun)}\b", line):
+        return "packet_fun_definition"
+    if packet_fun in line:
+        return "packet_fun_ref"
+    if "F_SendMsg" in line:
+        return "send_msg_line"
+    return "direct_ref"
+
+
+def _write_doupotd_pcap_observed_lua_handler_coverage_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    summary_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP old pcap observed Lua handler coverage",
+        "",
+        "This report maps the protocols observed in the existing pcap metadata to visible exported Lua references. It is scoped to packet ids/names already seen in the old pcap and exports only code-reference metadata, not payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Observed Protocol Logic Summary",
+            "",
+            "| Pro Id | Name | Count | Direction | Status | Evidence | Registers | Handler/Sender | Files |",
+            "| ---: | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in summary_rows[:120]:
+        lines.append(
+            f"| {row.get('pro_id')} | `{row.get('name')}` | {row.get('packet_count')} | `{row.get('directions')}` | `{row.get('visible_logic_status')}` | {row.get('evidence_count')} | {row.get('register_count')} | {row.get('handler_or_sender_count')} | {row.get('logic_file_count')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Evidence Samples",
+            "",
+            "| Name | Kind | File | Line | Text |",
+            "| --- | --- | --- | ---: | --- |",
+        ]
+    )
+    for row in evidence_rows[:120]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(
+            f"| `{row.get('name')}` | `{row.get('kind')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "The scan excludes generated message schema/VO_URL files because schema coverage is already handled separately. This report is about visible Lua logic surfaces: requires, MessagePool registrations, callbacks, packet `*Fun` methods, and nearby send lines.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe(
+    *,
+    export_root: str | Path | None = None,
+    server_host: str | None = None,
+    text_assets: str | Path | None = None,
+    max_streams_per_capture: int = 4,
+    tshark_path: str | Path | None = None,
+    use_existing_metadata: bool = True,
+    max_evidence_per_protocol: int = 16,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_source = output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv"
+    coverage_generated = False
+    if not use_existing_metadata or not observed_source.is_file():
+        coverage_result = build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe(
+            export_root=root,
+            server_host=server_host,
+            text_assets=text_assets,
+            max_streams_per_capture=max_streams_per_capture,
+            tshark_path=tshark_path,
+            use_existing_metadata=use_existing_metadata,
+        )
+        observed_source = Path(str(coverage_result["files"]["protocols"]))
+        coverage_generated = True
+
+    observed_rows = _read_tsv_dicts(observed_source)
+    observed_by_name = {str(row.get("name") or ""): row for row in observed_rows if row.get("name")}
+    observed_names = sorted(observed_by_name, key=len, reverse=True)
+    max_rows_per_protocol = max(1, min(int(max_evidence_per_protocol or 1), 80))
+    evidence_rows: list[dict[str, Any]] = []
+    evidence_counts_by_name: Counter[str] = Counter()
+    kind_counts_by_name: dict[str, Counter[str]] = {name: Counter() for name in observed_names}
+    files_by_name: dict[str, set[str]] = {name: set() for name in observed_names}
+    lscript_root = root / "by_source" / "lscripts"
+    scanned_file_count = 0
+    scanned_logic_file_count = 0
+    skipped_message_file_count = 0
+    if observed_names and lscript_root.is_dir():
+        for path in sorted(lscript_root.rglob("*.lua")):
+            rel = str(path.relative_to(root))
+            rel_lower = rel.replace("\\", "/").lower()
+            if "/message_" in rel_lower:
+                skipped_message_file_count += 1
+                continue
+            scanned_file_count += 1
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if not any(name in text for name in observed_names):
+                continue
+            scanned_logic_file_count += 1
+            for line_no, line in enumerate(text.splitlines(), 1):
+                matches = [name for name in observed_names if name in line]
+                if not matches:
+                    continue
+                snippet = line.strip()
+                for name in matches:
+                    kind = _classify_observed_lua_packet_ref(line, name)
+                    evidence_counts_by_name[name] += 1
+                    kind_counts_by_name[name][kind] += 1
+                    files_by_name[name].add(rel)
+                    if evidence_counts_by_name[name] <= max_rows_per_protocol:
+                        evidence_rows.append(
+                            {
+                                "pro_id": observed_by_name[name].get("pro_id", ""),
+                                "name": name,
+                                "kind": kind,
+                                "file": rel,
+                                "line": line_no,
+                                "snippet": snippet[:240],
+                            }
+                        )
+
+    summary_rows: list[dict[str, Any]] = []
+    for name, observed in observed_by_name.items():
+        kinds = kind_counts_by_name.get(name, Counter())
+        register_count = kinds.get("message_pool_register", 0)
+        callback_register_count = 0
+        for row in evidence_rows:
+            if row.get("name") == name and row.get("kind") == "message_pool_register" and "function" in str(row.get("snippet", "")):
+                callback_register_count += 1
+        fun_def_count = kinds.get("packet_fun_definition", 0)
+        fun_ref_count = kinds.get("packet_fun_ref", 0)
+        send_count = kinds.get("send_msg_line", 0)
+        require_count = kinds.get("require_ref", 0)
+        handler_or_sender_count = callback_register_count + fun_def_count + send_count
+        if name.startswith("SM_") and (callback_register_count > 0 or fun_def_count > 0 or fun_ref_count > 0):
+            visible_status = "server_packet_handler_visible"
+        elif name.startswith("CM_") and (fun_def_count > 0 or send_count > 0):
+            visible_status = "client_sender_visible"
+        elif register_count > 0:
+            visible_status = "message_registered_without_visible_fun"
+        elif require_count > 0:
+            visible_status = "require_only"
+        elif evidence_counts_by_name.get(name, 0) > 0:
+            visible_status = "logic_reference_only"
+        else:
+            visible_status = "schema_only_no_logic_ref"
+        summary_rows.append(
+            {
+                "pro_id": observed.get("pro_id", ""),
+                "name": name,
+                "packet_count": observed.get("packet_count", ""),
+                "directions": observed.get("directions", ""),
+                "category": observed.get("category", ""),
+                "schema_present": observed.get("schema_present", ""),
+                "field_count": observed.get("field_count", ""),
+                "visible_logic_status": visible_status,
+                "evidence_count": evidence_counts_by_name.get(name, 0),
+                "logic_file_count": len(files_by_name.get(name, set())),
+                "require_count": require_count,
+                "register_count": register_count,
+                "callback_register_count": callback_register_count,
+                "fun_definition_count": fun_def_count,
+                "fun_reference_count": fun_ref_count,
+                "send_msg_line_count": send_count,
+                "handler_or_sender_count": handler_or_sender_count,
+                "sample_files": " | ".join(sorted(files_by_name.get(name, set()))[:8]),
+            }
+        )
+    summary_rows.sort(
+        key=lambda row: (
+            str(row.get("visible_logic_status") == "schema_only_no_logic_ref"),
+            -int(row.get("evidence_count") or 0),
+            -int(row.get("packet_count") or 0),
+            str(row.get("name") or ""),
+        )
+    )
+    status_counts = Counter(str(row.get("visible_logic_status") or "") for row in summary_rows)
+    stats = {
+        "observed_source": str(observed_source),
+        "coverage_generated": coverage_generated,
+        "observed_protocol_count": len(summary_rows),
+        "observed_packet_count": sum(_as_int(row.get("packet_count")) or 0 for row in summary_rows),
+        "scanned_lua_file_count": scanned_file_count,
+        "scanned_logic_hit_file_count": scanned_logic_file_count,
+        "skipped_message_schema_file_count": skipped_message_file_count,
+        "evidence_row_count": len(evidence_rows),
+        "total_logic_reference_count": sum(int(row.get("evidence_count") or 0) for row in summary_rows),
+        "protocol_with_logic_ref_count": sum(1 for row in summary_rows if int(row.get("evidence_count") or 0) > 0),
+        "protocol_schema_only_count": status_counts.get("schema_only_no_logic_ref", 0),
+        "server_packet_handler_visible_count": status_counts.get("server_packet_handler_visible", 0),
+        "client_sender_visible_count": status_counts.get("client_sender_visible", 0),
+        "message_registered_without_visible_fun_count": status_counts.get("message_registered_without_visible_fun", 0),
+        "require_only_count": status_counts.get("require_only", 0),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "observed_lua_logic_scan_ran": lscript_root.is_dir() and bool(observed_names),
+        "some_observed_protocols_have_visible_logic_refs": stats["protocol_with_logic_ref_count"] > 0,
+        "all_observed_protocols_have_visible_logic_refs": stats["protocol_with_logic_ref_count"] == stats["observed_protocol_count"]
+        and stats["observed_protocol_count"] > 0,
+        "old_pcap_can_seed_general_lua_handler_followup": stats["server_packet_handler_visible_count"] > 0
+        or stats["client_sender_visible_count"] > 0,
+        "generated_message_schema_files_excluded": skipped_message_file_count > 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary_tsv = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_report.md"
+    json_path = output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_report.json"
+    _write_tsv(
+        summary_tsv,
+        summary_rows,
+        [
+            "pro_id",
+            "name",
+            "packet_count",
+            "directions",
+            "category",
+            "schema_present",
+            "field_count",
+            "visible_logic_status",
+            "evidence_count",
+            "logic_file_count",
+            "require_count",
+            "register_count",
+            "callback_register_count",
+            "fun_definition_count",
+            "fun_reference_count",
+            "send_msg_line_count",
+            "handler_or_sender_count",
+            "sample_files",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["pro_id", "name", "kind", "file", "line", "snippet"])
+    _write_doupotd_pcap_observed_lua_handler_coverage_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        summary_rows=summary_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["old_pcap_can_seed_general_lua_handler_followup"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "summary": str(summary_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["old_pcap_can_seed_general_lua_handler_followup"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "summary": str(summary_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _costandreward_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/costandreward_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _add_line_evidence(
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    path: Path,
+    text: str,
+    category: str,
+    patterns: list[str],
+    max_rows: int = 120,
+) -> None:
+    if len(rows) >= max_rows:
+        return
+    regexes = [re.compile(pattern) for pattern in patterns]
+    for line_no, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(regex.search(stripped) for regex in regexes):
+            rows.append(
+                {
+                    "category": category,
+                    "file": str(path.relative_to(root)) if _is_relative_to(path, root) else str(path),
+                    "line": line_no,
+                    "function": "",
+                    "snippet": stripped[:260],
+                }
+            )
+            if len(rows) >= max_rows:
+                return
+
+
+def _write_doupotd_observed_sm_reward_result_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_RewardResult chain",
+        "",
+        "This report follows `SM_RewardResult`, a packet actually present in the old pcap metadata, from Lua packet registration into CostAndReward manager/model/UI surfaces. It is static metadata only; no live payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_RewardResult` is a generic server reward-result packet observed in the old pcap.",
+            "- Its direct handler updates local client models by reward type via `CostAndRewardMgr:AddRewardResultsData` and `DispatchReward`.",
+            "- Reward popups/fly animations are exposed as generic CostAndReward UI APIs and are used by many module-specific flows, but the direct `SM_RewardResult` handler itself does not prove a specific activity reward UI trigger.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_RewardResult"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_RewardResult"), {})
+    text_dirs = _costandreward_text_asset_dirs(root)
+
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    cross_module_rows: list[dict[str, Any]] = []
+    selected_functions = {
+        "SM_RewardResultFun",
+        "AddRewardResultsData",
+        "DispatchReward",
+        "AddRewardResults",
+        "DoFloatingWord",
+        "UpdateItemQuickUse",
+        "OpenGetGoodsFlyView",
+        "OpenWinAlertRewardView",
+        "OpenWinAlertRewardAlert",
+        "UpdatePanel",
+        "UpdateReward",
+    }
+    for text_dir in text_dirs:
+        netlogic = text_dir / "CostAndRewardNetLogic.lua"
+        mgr = text_dir / "CostAndRewardMgr.lua"
+        for lua_path in [netlogic, mgr, text_dir / "WinAlertRewardView.lua", text_dir / "WinAlertRewardRevenueView.lua"]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "uses_msg_rewards": "rewards.rewards" in block_text or "msg.rewards" in block_text,
+                        "uses_msg_reason": ".reason" in block_text or "reason" in block_text,
+                        "calls_dispatch_reward": "DispatchReward" in block_text,
+                        "calls_model_update": any(
+                            token in block_text
+                            for token in [
+                                "AddItem",
+                                "UpdateWalletInfo",
+                                "AddRoleExp",
+                                "AddTalismanItem",
+                                "UpGongFaExp",
+                                "UpMedicalElfExp",
+                                "AddNewMemory",
+                            ]
+                        ),
+                        "calls_reward_view": "OpenWinAlertReward" in block_text or "OpenGetGoodsFlyView" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[r"F_Register\(_SM_RewardResult", r"F_Unregister\(_SM_RewardResult"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="handler_to_manager",
+                patterns=[r"SM_RewardResultFun", r"AddRewardResultsData\(msg\)"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="reward_data_grouping",
+                patterns=[r"rewards\.rewards", r"_RewardDic", r"DispatchReward"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_mutation",
+                patterns=[
+                    r"BackpackMgr.*AddItem",
+                    r"WalletMgr.*UpdateWalletInfo",
+                    r"RoleMgr.*AddRoleExp",
+                    r"TalismanMgr.*AddTalismanItem",
+                    r"GongFaNewMgr.*UpGongFaExp",
+                    r"MedicalelfMgr.*UpMedicalElfExp",
+                    r"CharacterMgr.*AddNewMemory",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="reward_ui_surface",
+                patterns=[r"OpenGetGoodsFlyView", r"OpenWinAlertReward", r"WinAlertRewardView", r"UpdatePanel", r"UpdateReward"],
+            )
+
+    logic_root = root / "by_source" / "lscripts"
+    if logic_root.is_dir():
+        for lua_path in sorted(logic_root.rglob("*.lua")):
+            if len(cross_module_rows) >= 300:
+                break
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            rel_lower = rel.replace("\\", "/").lower()
+            if "/message_" in rel_lower or "/costandreward_" in rel_lower:
+                continue
+            try:
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CostAndRewardMgr.Inst_get():" not in stripped:
+                    continue
+                if not any(token in stripped for token in ["OpenGetGoodsFlyView", "OpenWinAlertRewardView", "OpenWinAlertRewardAlert", "AddRewardResults"]):
+                    continue
+                cross_module_rows.append(
+                    {
+                        "file": rel,
+                        "line": line_no,
+                        "surface": (
+                            "OpenGetGoodsFlyView"
+                            if "OpenGetGoodsFlyView" in stripped
+                            else "OpenWinAlertRewardAlert"
+                            if "OpenWinAlertRewardAlert" in stripped
+                            else "OpenWinAlertRewardView"
+                            if "OpenWinAlertRewardView" in stripped
+                            else "AddRewardResults"
+                        ),
+                        "snippet": stripped[:260],
+                    }
+                )
+                if len(cross_module_rows) >= 300:
+                    break
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_RewardResult(10062)", "meaning": "Old pcap observed this generic server reward packet."},
+        {"step": 2, "surface": "CostAndRewardNetLogic:LuaCostAndRewardNetLogic", "meaning": "Registers `_SM_RewardResult` with MessagePool callback."},
+        {"step": 3, "surface": "CostAndRewardNetLogic:SM_RewardResultFun", "meaning": "Forwards the packet object to `CostAndRewardMgr:AddRewardResultsData(msg)`."},
+        {"step": 4, "surface": "CostAndRewardMgr:AddRewardResultsData", "meaning": "Reads `msg.rewards`, groups reward entries by `reward.type`, and dispatches each group."},
+        {"step": 5, "surface": "CostAndRewardMgr:DispatchReward", "meaning": "Mutates local client models for item, wallet, exp, talisman, character, gongfa exp, and other reward families."},
+        {"step": 6, "surface": "CostAndReward UI APIs", "meaning": "Generic reward popup/fly surfaces exist and are widely used by module-specific flows."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "costandreward_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "model_mutation_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_mutation"),
+        "reward_ui_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "reward_ui_surface"),
+        "cross_module_costandreward_call_count_capped": len(cross_module_rows),
+        "cross_module_open_fly_count_capped": sum(1 for row in cross_module_rows if row.get("surface") == "OpenGetGoodsFlyView"),
+        "cross_module_open_alert_count_capped": sum(1 for row in cross_module_rows if str(row.get("surface", "")).startswith("OpenWinAlertReward")),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_reward_result": stats["observed_packet_count"] > 0,
+        "messagepool_handler_visible": any(row.get("category") == "packet_registration" for row in evidence_rows),
+        "handler_forwards_to_costandreward_mgr": any("AddRewardResultsData(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "reward_entries_grouped_by_type": any("DispatchReward" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_model_mutation_surface_visible": stats["model_mutation_evidence_count"] > 0,
+        "generic_reward_ui_surface_visible": stats["reward_ui_surface_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_reward_result_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_reward_result_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_reward_result_evidence.tsv"
+    cross_module_tsv = output_dir / "doupotd_pcap_observed_sm_reward_result_cross_module_calls.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_reward_result_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_reward_result_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "uses_msg_rewards",
+            "uses_msg_reason",
+            "calls_dispatch_reward",
+            "calls_model_update",
+            "calls_reward_view",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(cross_module_tsv, cross_module_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_reward_result_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "cross_module_calls": str(cross_module_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "cross_module_calls": str(cross_module_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _role_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/role_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_sm_practice_collect_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_PracticeCollect chain",
+        "",
+        "This report follows `SM_PracticeCollect`, a packet actually present in the old pcap metadata, from Lua packet registration into Role manager/model/UI surfaces. It is static metadata only; no live payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_PracticeCollect` is a server-to-client practice/idle collection packet observed in the old pcap.",
+            "- The visible handler consumes `msg.gongfaExp` and updates the local GongFa exp pool, then builds a localized float-text list.",
+            "- The float text is gated by plot state and BottleWorld sit state, so the packet can update model state even when the visual feedback is suppressed.",
+            "- `roleExp`, `collectTime`, and `interval` are present in the schema, but the visible `ShowPractice` path currently centers on `gongfaExp`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_PracticeCollect"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_PracticeCollect"), {})
+    text_dirs = _role_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaRoleNetLogic",
+        "Destroy",
+        "SM_PracticeCollectFun",
+        "SM_PracticeOfflineFun",
+        "ShowPractice",
+        "OnPracticeUpdate",
+        "UpdateLastExpIncTime",
+        "GetLastExpIncTime",
+        "SyncOfflinePractice",
+        "GetOfflinePractice",
+        "CM_ChoosePracticeGongfa",
+        "SM_ChoosePracticeGongfa",
+        "CM_FastPracticeFun",
+        "SM_FastPracticeFun",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    related_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [text_dir / "RoleNetLogic.lua", text_dir / "RoleMgr.lua", text_dir / "RoleData.lua", text_dir / "PlayerType.lua"]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "uses_gongfa_exp": "gongfaExp" in block_text,
+                        "uses_role_exp": "roleExp" in block_text,
+                        "uses_collect_time": "collectTime" in block_text or "lastCollectTime" in block_text,
+                        "uses_interval": "interval" in block_text,
+                        "updates_gongfa_exp_pool": "UpdateGongFaExpPool" in block_text,
+                        "calls_practice_update": "OnPracticeUpdate" in block_text,
+                        "shows_main_float_text": "MainFloatTextView" in block_text or "AddContent" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[r"F_Register\(_SM_PracticeCollect", r"F_Unregister\(_SM_PracticeCollect"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="handler_to_manager",
+                patterns=[r"SM_PracticeCollectFun", r"RoleMgr\.Inst_get\(\):ShowPractice\(msg\)"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="payload_field_usage",
+                patterns=[r"msg\.gongfaExp", r"msg\.roleExp", r"msg\.collectTime", r"msg\.interval", r"msg\.gongfa"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_update",
+                patterns=[r"UpdateGongFaExpPool", r"UpdateLastExpIncTime", r"SetChooseGongFaId", r"offlinePractice=msg"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="float_text_ui_gate",
+                patterns=[r"OnPracticeUpdate", r"PlotMgr.*IsRunning", r"BottleWorldMgr.*IsInBottle", r"BottleStateType\.Sit", r"MainFloatTextView", r"AddContent"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="related_practice_family",
+                patterns=[r"SM_PracticeOffline", r"CM_ChoosePracticeGongfa", r"SM_ChoosePracticeGongfa", r"CM_FastPractice", r"SM_FastPractice", r"PRACTICE_INTERVAL"],
+            )
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if any(
+                    token in stripped
+                    for token in [
+                        "SM_PracticeCollect",
+                        "SM_PracticeOffline",
+                        "CM_ChoosePracticeGongfa",
+                        "SM_ChoosePracticeGongfa",
+                        "CM_FastPractice",
+                        "SM_FastPractice",
+                        "UpdateGongFaExpPool",
+                        "MainFloatTextView",
+                    ]
+                ):
+                    related_rows.append(
+                        {
+                            "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                            "line": line_no,
+                            "snippet": stripped[:260],
+                        }
+                    )
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_PracticeCollect(30022)", "meaning": "Old pcap observed this server practice/idle collection packet."},
+        {"step": 2, "surface": "RoleNetLogic:LuaRoleNetLogic", "meaning": "Registers `_SM_PracticeCollect` with MessagePool callback `self.SM_PracticeCollectFun`."},
+        {"step": 3, "surface": "RoleNetLogic:SM_PracticeCollectFun", "meaning": "Forwards the packet object to `RoleMgr:ShowPractice(msg)`."},
+        {"step": 4, "surface": "RoleMgr:ShowPractice", "meaning": "Reads `msg.gongfaExp`, updates last exp time, updates GongFa exp pool, and builds localized float text."},
+        {"step": 5, "surface": "RoleMgr:OnPracticeUpdate", "meaning": "Shows practice gains in `MainFloatTextView` only when plot is not running and BottleWorld is in sit state."},
+        {"step": 6, "surface": "Related practice packet family", "meaning": "Nearby offline/choose/fast-practice packets share the RoleNetLogic/RoleMgr practice subsystem."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "role_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "payload_field_usage_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "payload_field_usage"),
+        "model_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_update"),
+        "float_text_ui_gate_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "float_text_ui_gate"),
+        "related_practice_family_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "related_practice_family"),
+        "related_row_count": len(related_rows),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_practice_collect": stats["observed_packet_count"] > 0,
+        "messagepool_handler_visible": any(row.get("category") == "packet_registration" for row in evidence_rows),
+        "handler_forwards_to_role_mgr_show_practice": any("ShowPractice(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "gongfa_exp_payload_field_consumed": any("msg.gongfaExp" in str(row.get("snippet", "")) for row in evidence_rows),
+        "gongfa_exp_pool_update_visible": any("UpdateGongFaExpPool" in str(row.get("snippet", "")) for row in evidence_rows),
+        "practice_float_text_ui_gate_visible": stats["float_text_ui_gate_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_practice_collect_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_practice_collect_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_practice_collect_evidence.tsv"
+    related_tsv = output_dir / "doupotd_pcap_observed_sm_practice_collect_related_rows.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_practice_collect_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_practice_collect_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "uses_gongfa_exp",
+            "uses_role_exp",
+            "uses_collect_time",
+            "uses_interval",
+            "updates_gongfa_exp_pool",
+            "calls_practice_update",
+            "shows_main_float_text",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(related_tsv, related_rows, ["file", "line", "snippet"])
+    _write_doupotd_observed_sm_practice_collect_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "related": str(related_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "related": str(related_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _activityrank_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/activityrank_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_sm_activity_rank_sync_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_ActivityRankSync chain",
+        "",
+        "This report follows `SM_ActivityRankSync`, a packet actually present in the old pcap metadata, from Lua packet registration into Activityrank model/cache/event surfaces. It also records the paired `CM_ActivityRankSync` request path. It is static metadata only; no live payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_ActivityRankSync` is a server-to-client activity-rank refresh packet observed in the old pcap.",
+            "- The visible handler validates `msg.code`, then forwards `msg` to `ActivityrankModel:ActivityRankSyncMsg(msg)`.",
+            "- The model stores `msg.vo` by `msg.vo.activityId`, raises Activityrank events, and refreshes red-dot state for the activity.",
+            "- The paired client request `CM_ActivityRankSync` carries `activityId/startIndex/endIndex/group`; `ActivityrankHandler:GetRankListData` derives paging ranges before sending it.",
+            "- This is general activity-rank traffic, not DoupoTD PVP evidence, and no payload values are exported.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_ActivityRankSync"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_ActivityRankSync"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_ActivityRankSync"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_ActivityRankSync"), {})
+    text_dirs = _activityrank_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaActivityrankNetLogic",
+        "Destroy",
+        "CM_ActivityRankSyncFun",
+        "SM_ActivityRankSyncFun",
+        "ActivityRankSyncMsg",
+        "SetRefreshActicityRankData",
+        "SetAllActicityRankData",
+        "GetRankDataById",
+        "GetRankDataDic",
+        "RefreshRewardRedDot",
+        "ChecRankRedDot",
+        "SetActivityListVO",
+        "GetActivityRankVO",
+        "GetRankListData",
+        "UpdateRankData",
+        "RankDicUpdate",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requester_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "ActivityrankNetLogic.lua",
+            text_dir / "ActivityrankModel.lua",
+            text_dir / "ActivityrankData.lua",
+            text_dir / "ActivityrankHandler.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "uses_msg_vo": "msg.vo" in block_text,
+                        "uses_msg_code": "msg.code" in block_text,
+                        "uses_activity_id": "activityId" in block_text,
+                        "uses_rank_page_range": "startIndex" in block_text or "endIndex" in block_text or "V_PageShow" in block_text,
+                        "sends_cm_activity_rank_sync": "F_SendMsg(CM_ActivityRankSync" in block_text,
+                        "updates_rank_cache": "V_RankDataDic" in block_text or "SetRefreshActicityRankData" in block_text,
+                        "raises_activityrank_event": "RaiseEvent(ActivityrankType.ActivityRank" in block_text,
+                        "refreshes_red_dot": "RefreshRewardRedDot" in block_text or "RaiseRedDotEvent" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_SM_ActivityRankSync",
+                    r"F_Register\(_CM_ActivityRankSync",
+                    r"F_Unregister\(_SM_ActivityRankSync",
+                    r"F_Unregister\(_CM_ActivityRankSync",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="handler_to_model",
+                patterns=[r"SM_ActivityRankSyncFun", r"ActivityRankSyncMsg\(msg\)"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_cache_update",
+                patterns=[r"SetRefreshActicityRankData", r"LuaDic_AddOrSetItem\(msg\.vo\.activityId,msg\.vo\)", r"V_RankDataDic"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="activityrank_events_red_dot",
+                patterns=[r"RaiseEvent\(ActivityrankType\.ActivityRankSync", r"ActivityRankRewardTypeChange", r"RefreshRewardRedDot", r"RaiseRedDotEvent"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_builder",
+                patterns=[
+                    r"CM_ActivityRankSyncFun",
+                    r"GetMessageFromPools\(_CM_ActivityRankSync\)",
+                    r"CM_ActivityRankSync\.activityId",
+                    r"CM_ActivityRankSync\.startIndex",
+                    r"CM_ActivityRankSync\.endIndex",
+                    r"CM_ActivityRankSync\.group",
+                    r"F_SendMsg\(CM_ActivityRankSync",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="paging_request_surface",
+                patterns=[r"GetRankListData", r"V_PageShow", r"startIndex=pageIndex\*self\.V_PageShow", r"endIndex=\(pageIndex\+1\)\*self\.V_PageShow-1"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="rank_data_consumer",
+                patterns=[r"SetActivityListVO", r"UpdateRankData", r"RankDicUpdate", r"GetActivityRankVO", r"GetRankDataById"],
+            )
+
+    logic_root = root / "by_source" / "lscripts"
+    if logic_root.is_dir():
+        for lua_path in sorted(logic_root.rglob("*.lua")):
+            if len(requester_rows) >= 240:
+                break
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            rel_lower = rel.replace("\\", "/").lower()
+            if "/message_" in rel_lower:
+                continue
+            try:
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_ActivityRankSyncFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_ActivityRankSyncFun"):
+                    surface = "sender_definition"
+                elif "ActivityrankMgr.Inst_get().NetLogic" in stripped:
+                    surface = "rank_request_callsite"
+                else:
+                    surface = "rank_request_reference"
+                requester_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+                if len(requester_rows) >= 240:
+                    break
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_ActivityRankSync(51104)", "meaning": "Old pcap observed this server activity-rank refresh packet."},
+        {"step": 2, "surface": "ActivityrankNetLogic:LuaActivityrankNetLogic", "meaning": "Registers `_SM_ActivityRankSync` with MessagePool callback `self.SM_ActivityRankSyncFun(msg)`."},
+        {"step": 3, "surface": "ActivityrankNetLogic:SM_ActivityRankSyncFun", "meaning": "Checks `msg.code==0` and forwards the packet object to `ActivityrankModel:ActivityRankSyncMsg(msg)`."},
+        {"step": 4, "surface": "ActivityrankModel:ActivityRankSyncMsg", "meaning": "Requires `msg.vo`, caches it by `msg.vo.activityId`, raises activity-rank events, and refreshes red-dot state."},
+        {"step": 5, "surface": "ActivityrankData:SetRefreshActicityRankData", "meaning": "Stores the latest activity-rank VO in `V_RankDataDic` keyed by activity id."},
+        {"step": 6, "surface": "ActivityrankHandler:GetRankListData", "meaning": "Builds paged client requests via `CM_ActivityRankSync(activityId,startIndex,endIndex,group)`."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "activityrank_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count_capped": len(requester_rows),
+        "model_cache_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_cache_update"),
+        "activityrank_event_red_dot_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "activityrank_events_red_dot"),
+        "request_builder_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_builder"),
+        "paging_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "paging_request_surface"),
+        "rank_data_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "rank_data_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_activity_rank_sync": stats["observed_packet_count"] > 0,
+        "messagepool_handler_visible": any("F_Register(_SM_ActivityRankSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_to_activityrank_model": any("ActivityRankSyncMsg(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "vo_cached_by_activity_id": any("LuaDic_AddOrSetItem(msg.vo.activityId,msg.vo)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "activity_rank_events_visible": stats["activityrank_event_red_dot_evidence_count"] > 0,
+        "client_rank_request_sender_visible": any("F_SendMsg(CM_ActivityRankSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "paging_request_surface_visible": stats["paging_request_surface_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_activity_rank_sync_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "uses_msg_vo",
+            "uses_msg_code",
+            "uses_activity_id",
+            "uses_rank_page_range",
+            "sends_cm_activity_rank_sync",
+            "updates_rank_cache",
+            "raises_activityrank_event",
+            "refreshes_red_dot",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requester_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_activity_rank_sync_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _gamelogin_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/gamelogin_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_sync_time_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_SyncTime / SM_SyncTime chain",
+        "",
+        "This report follows the old-pcap observed `CM_SyncTime` and `SM_SyncTime` pair through LoginNetLogic and GameTime. It is static metadata only; no live timestamp, account, or session values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The old pcap contains both `CM_SyncTime(20011)` and `SM_SyncTime(20012)` at high count, making it a concrete heartbeat/time-sync sample.",
+            "- `GameTime:HeartBeat` periodically calls `SendHeartMsg`, which increments a sequence counter and sends `CM_SyncTime` via `LoginNetLogic:CM_SyncTimeFun`.",
+            "- `LoginNetLogic:SM_SyncTimeFun` uses `msg.ClientData` for ping tracking and `msg.timestamp` to update local server-time state.",
+            "- `GameTime:UpdateSystemTime` calibrates `V_TimeDifference`, stores `V_ServerTime`, enables `EnterGameInfo.V_IsInfoTime`, and may calibrate analytics time.",
+            "- This is login/session infrastructure traffic, not DoupoTD PVP evidence, and no payload values are exported.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SyncTime"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_SyncTime"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SyncTime"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_SyncTime"), {})
+    text_dirs = _gamelogin_text_asset_dirs(root)
+
+    selected_functions = {
+        "LoginNetLogic",
+        "Destroy",
+        "CM_SyncTimeFun",
+        "SM_SyncTimeFun",
+        "InitData",
+        "SendHeartMsg",
+        "AddSn",
+        "CleanSn",
+        "CleanTimeAndGotoReLink",
+        "StartHeartMsg",
+        "StopSendHeartMsg",
+        "UpdateSystemTime",
+        "GetSeverTime",
+        "HeartBeat",
+        "CheckNet",
+        "IsHeartTimeOut",
+        "UpdatePingData",
+        "ShowPingNumWarryTips",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [text_dir / "LoginNetLogic.lua", text_dir / "GameTime.lua"]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_sync_time_packets": "_SM_SyncTime" in block_text or "_CM_SyncTime" in block_text,
+                        "sends_cm_sync_time": "F_SendMsg(CM_SyncTime" in block_text,
+                        "uses_client_data_ping": "ClientData" in block_text or "UpdatePingData" in block_text,
+                        "uses_timestamp": "timestamp" in block_text,
+                        "updates_server_time": "UpdateSystemTime" in block_text or "V_ServerTime" in block_text,
+                        "heartbeat_loop": "HeartBeat" in block_text or "SendHeartMsg" in block_text or "V_StartHeart" in block_text,
+                        "timeout_or_relink": "CleanTimeAndGotoReLink" in block_text or "SocketErrorRelink" in block_text or "V_TimeSn" in block_text,
+                        "raises_ping_event": "CommonEventType.PingUpdata" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_SyncTime",
+                    r"F_Register\(_SM_SyncTime",
+                    r"F_Unregister\(_CM_SyncTime",
+                    r"F_Unregister\(_SM_SyncTime",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_sync_request",
+                patterns=[
+                    r"CM_SyncTimeFun",
+                    r"GetMessageFromPools\(_CM_SyncTime\)",
+                    r"EnterGameInfo\.V_IsInfoTime",
+                    r"GetSeverTime\(\):ToNum\(\)",
+                    r"F_SendMsg\(CM_SyncTime",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_sync_response",
+                patterns=[r"SM_SyncTimeFun", r"msg\.ClientData", r"UpdatePingData\(msg\.ClientData\)", r"UpdateSystemTime\(msg\.timestamp\)"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="heartbeat_loop",
+                patterns=[r"StartHeartMsg", r"HeartBeat", r"SendHeartMsg", r"V_StartHeart", r"V_LastSendHeratTime", r"V_TimeSn", r"CleanTimeAndGotoReLink"],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="time_model_update",
+                patterns=[
+                    r"function _M\.UpdateSystemTime",
+                    r"V_TimeDifference",
+                    r"V_ServerTime",
+                    r"EnterGameInfo\.V_IsInfoTime",
+                    r"CheckAndSendFinish",
+                    r"F_ThinkingAnalyticsCalibrateTime",
+                    r"function _M\.GetSeverTime",
+                    r"UpdateNumber",
+                ],
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ping_monitor",
+                patterns=[r"UpdatePingData", r"V_PingLogList", r"CommonEventType\.PingUpdata", r"ShowPingNumWarryTips", r"CheckNet", r"CleanPingList"],
+            )
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_SyncTime(20011)", "meaning": "Old pcap observed repeated client time-sync requests."},
+        {"step": 2, "surface": "GameTime:HeartBeat", "meaning": "Every ~5 seconds, when heartbeats are active, calls `SendHeartMsg`."},
+        {"step": 3, "surface": "GameTime:SendHeartMsg", "meaning": "Increments `V_TimeSn`, triggers relink after too many outstanding syncs, and calls `LoginNetLogic:CM_SyncTimeFun()`."},
+        {"step": 4, "surface": "LoginNetLogic:CM_SyncTimeFun", "meaning": "Builds `CM_SyncTime`; when server time is initialized, attaches local server-time snapshot as ClientData before sending."},
+        {"step": 5, "surface": "SM_SyncTime(20012)", "meaning": "Old pcap observed repeated server time-sync responses carrying `timestamp` plus inherited ClientData."},
+        {"step": 6, "surface": "LoginNetLogic:SM_SyncTimeFun", "meaning": "Feeds `msg.ClientData` into ping tracking and `msg.timestamp` into server-time calibration."},
+        {"step": 7, "surface": "GameTime:UpdateSystemTime / UpdatePingData", "meaning": "Updates local server-time state, login-time readiness, analytics calibration, ping list, and ping events."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "gamelogin_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "client_sync_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_sync_request"),
+        "server_sync_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_sync_response"),
+        "heartbeat_loop_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "heartbeat_loop"),
+        "time_model_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "time_model_update"),
+        "ping_monitor_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ping_monitor"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_sync_time": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_sync_time": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_SyncTime" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_SyncTime" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_heartbeat_sender_visible": any("F_SendMsg(CM_SyncTime" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_timestamp_updates_system_time": any("UpdateSystemTime(msg.timestamp)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "ping_clientdata_path_visible": any("UpdatePingData(msg.ClientData)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "heartbeat_timeout_guard_visible": any("CleanTimeAndGotoReLink" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sync_time_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sync_time_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sync_time_evidence.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sync_time_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sync_time_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_sync_time_packets",
+            "sends_cm_sync_time",
+            "uses_client_data_ping",
+            "uses_timestamp",
+            "updates_server_time",
+            "heartbeat_loop",
+            "timeout_or_relink",
+            "raises_ping_event",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_doupotd_observed_sync_time_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _post_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/post_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_sm_notice_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_Notice chain",
+        "",
+        "This report follows `SM_Notice`, a generic server-to-client i18n notice packet actually present in the old pcap metadata, from Lua packet registration into PostMgr formatting and display channels. It is static metadata only; no live notice payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_Notice(18002)` is a generic announcement/notice packet observed in the old pcap, not a gameplay-specific battle report.",
+            "- `I18nNetLogic:SM_NoticeFun` validates the i18n id and SystemMessage config, optionally checks conditions, then passes the packet fields to `PostMgr:PostMessage2Push`.",
+            "- `PostMgr:PostMessage2Push` resolves localized text via SystemMessage, formats bright/dark message variants, and selects one or more chat/tips channels from either server-specified channel or config type.",
+            "- `PostMgr:SendMessageToChannel` is the visible fan-out point for tips, marquee, system alert, alliance-special chat, and ordinary system chat.",
+            "- The packet schema proves field shape (`i18nId/channel/subId/infos/extras`), but this report deliberately exports only metadata and code evidence, not live notice content values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_Notice"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_Notice"), {})
+    text_dirs = _post_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaI18nNetLogic",
+        "Destroy",
+        "SM_NoticeFun",
+        "PostMessage2Push",
+        "SendMessageToChannel",
+        "GetIsCanShowWindow",
+        "GetPostMessage",
+        "FormatTypeValue",
+        "Post2ChatFunInit",
+        "F_CPC_ALLIANCE_UP",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    channel_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [text_dir / "I18nNetLogic.lua", text_dir / "PostMgr.lua"]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_sm_notice": "_SM_Notice" in block_text,
+                        "validates_i18n_id": "msg.i18nId" in block_text,
+                        "checks_system_message_config": "SystemMessage_SystemMessage" in block_text,
+                        "checks_condition": "CheckCondition" in block_text or "msg.condition" in block_text,
+                        "forwards_to_post_mgr": "PostMessage2Push(msg.i18nId" in block_text,
+                        "formats_post_message": "GetPostMessage" in block_text or "messageStr_Bright" in block_text or "messageStr_Dark" in block_text,
+                        "resolves_channel": "svrChannel" in block_text or "messagelo.type" in block_text or "channelArr" in block_text,
+                        "sends_tips": "ShowSystemTips" in block_text or "ShowSystemNoticeTips" in block_text or "ShowSystemExTips" in block_text,
+                        "sends_chat": "AddSystemChat" in block_text or "AddSpecialPostTalkCall" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[r"F_Register\(_SM_Notice", r"F_Unregister\(_SM_Notice"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="handler_validation",
+                patterns=[r"SM_NoticeFun", r"msg\.i18nId", r"SystemMessage_SystemMessage,msg\.i18nId", r"msg\.condition", r"GameUtil\.CheckCondition"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="handler_to_post_mgr",
+                patterns=[r"PostMessage2Push\(msg\.i18nId,msg\.infos,nil,msg\.extras,nil,msg\.subId,msg\.channel\)"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="post_formatting",
+                patterns=[r"PostMessage2Push", r"CheckEffect\(messagelo\)", r"GetPostMessage\(postId", r"messageStr_Bright", r"messageStr_Dark"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="post2chat_specializer",
+                patterns=[r"extras\.type", r"V_Post2ChatDIc", r"Post2ChatFunInit", r"fun\(messagelo,messageStr_Bright,messageStr_Dark,extras,subId,svrChannel\)"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="channel_resolution",
+                patterns=[r"svrChannel", r"messagelo\.type", r"StringProxy\.Split\(messagelo\.type", r"channelArr", r"tonumber\(channelArr"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="tips_output",
+                patterns=[r"ShowSystemTips", r"ShowSystemNoticeTips", r"ShowSystemExTips"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="chat_output",
+                patterns=[r"AddSystemChat", r"AddSpecialPostTalkCall", r"CleanOldChatData"],
+                max_rows=180,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="show_guard",
+                patterns=[r"GetIsCanShowWindow", r"IsInfoAllFinish", r"EntityMgr\.Inst_get\(\)\.UserView", r"messlo\.minLevel", r"messlo\.maxLevel"],
+                max_rows=180,
+            )
+
+            if lua_path.name != "PostMgr.lua":
+                continue
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if not any(
+                    token in stripped
+                    for token in [
+                        "ChatType.ChatChannelType.",
+                        "ShowSystemTips",
+                        "ShowSystemNoticeTips",
+                        "ShowSystemExTips",
+                        "AddSpecialPostTalkCall",
+                        "AddSystemChat",
+                    ]
+                ):
+                    continue
+                if "ShowSystem" in stripped:
+                    surface = "tips_output"
+                elif "AddSpecialPostTalkCall" in stripped:
+                    surface = "special_chat_output"
+                elif "AddSystemChat" in stripped:
+                    surface = "system_chat_output"
+                elif "ChatType.ChatChannelType." in stripped:
+                    surface = "channel_branch"
+                else:
+                    surface = "post_channel_reference"
+                channel_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_Notice(18002)", "meaning": "Old pcap observed this generic server i18n notice packet."},
+        {"step": 2, "surface": "I18nNetLogic:LuaI18nNetLogic", "meaning": "Registers `_SM_Notice` with MessagePool callback `self.SM_NoticeFun(msg)`."},
+        {"step": 3, "surface": "I18nNetLogic:SM_NoticeFun", "meaning": "Requires `msg.i18nId`, resolves `SystemMessage_SystemMessage`, optionally checks `msg.condition`, and forwards packet fields to PostMgr."},
+        {"step": 4, "surface": "PostMgr:PostMessage2Push", "meaning": "Builds localized bright/dark message strings from SystemMessage text, `infos`, and `extras`."},
+        {"step": 5, "surface": "PostMgr channel resolution", "meaning": "Uses server `msg.channel` when supplied, otherwise splits the SystemMessage channel type list."},
+        {"step": 6, "surface": "PostMgr:SendMessageToChannel", "meaning": "Dispatches the final message into tips, marquee, system alert, alliance special talk, or chat model surfaces."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "post_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "channel_row_count": len(channel_rows),
+        "handler_validation_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "handler_validation"),
+        "post_formatting_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "post_formatting"),
+        "post2chat_specializer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "post2chat_specializer"),
+        "channel_resolution_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "channel_resolution"),
+        "tips_output_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "tips_output"),
+        "chat_output_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "chat_output"),
+        "show_guard_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "show_guard"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_notice": stats["observed_packet_count"] > 0,
+        "messagepool_handler_visible": any("F_Register(_SM_Notice" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_validates_i18n_id_and_config": stats["handler_validation_evidence_count"] >= 3
+        and any("SystemMessage_SystemMessage" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_to_post_mgr": any("PostMessage2Push(msg.i18nId" in str(row.get("snippet", "")) for row in evidence_rows),
+        "post_message_formatting_visible": stats["post_formatting_evidence_count"] > 0,
+        "post_mgr_channel_resolution_visible": stats["channel_resolution_evidence_count"] > 0,
+        "tips_output_visible": stats["tips_output_evidence_count"] > 0,
+        "chat_output_visible": stats["chat_output_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_notice_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_notice_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_notice_evidence.tsv"
+    channels_tsv = output_dir / "doupotd_pcap_observed_sm_notice_channels.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_notice_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_notice_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_sm_notice",
+            "validates_i18n_id",
+            "checks_system_message_config",
+            "checks_condition",
+            "forwards_to_post_mgr",
+            "formats_post_message",
+            "resolves_channel",
+            "sends_tips",
+            "sends_chat",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(channels_tsv, channel_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_notice_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "channels": str(channels_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "channels": str(channels_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _blld_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/blld_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_blld_sync_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_BlldSync / SM_BlldSync chain",
+        "",
+        "This report follows the old-pcap observed `CM_BlldSync` and `SM_BlldSync` pair through the BLLD Lua module. It is static metadata only; no live payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The old pcap contains both `CM_BlldSync(97325)` and `SM_BlldSync(97326)`, making this a concrete request/response activity-refresh sample.",
+            "- `CM_BlldSync` carries no explicit Lua fields; the request is a state refresh trigger.",
+            "- `SM_BlldSync` carries `groupInfoVOMap` and `roleGroupToLevel`, then `BLLDData:OnSyncData` projects those maps into local pass-level, layer-reward-history, and role-level caches.",
+            "- `BLLDModel:OnSyncData` raises `BLLDInfoUpdate` and red-dot refreshes; BLLD panels listen to that event and refresh progress/upgrade UI.",
+            "- This is BLLD activity state traffic, not DoupoTD PVP evidence, and no payload values are exported.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_BlldSync"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_BlldSync"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_BlldSync"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_BlldSync"), {})
+    text_dirs = _blld_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaBLLDNetLogic",
+        "Destroy",
+        "CM_BlldSyncFun",
+        "SM_BlldSyncFun",
+        "CheckActivityActivation",
+        "UpdateActivationActivityVO",
+        "SetOpenParams",
+        "OnSyncData",
+        "GetCurPassLevelInfo",
+        "GetCurPassLevelInfoByStage",
+        "GetCurMaxChallengeLevelInfo",
+        "IsFinishLevel",
+        "GetTotalLevel",
+        "GetLevelByRoleGroup",
+        "SetRoleLevelUp",
+        "GetLayerFindRewardHistory",
+        "UpdateAttr",
+        "UpdatePanelBaseShow",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "BLLDNetLogic.lua",
+            text_dir / "BLLDMgr.lua",
+            text_dir / "BLLDModel.lua",
+            text_dir / "BLLDData.lua",
+            text_dir / "BLLDInfoPanel.lua",
+            text_dir / "BLLDFaQiInfoView.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_blld_sync_packets": "_CM_BlldSync" in block_text or "_SM_BlldSync" in block_text,
+                        "sends_cm_blld_sync": "F_SendMsg(CM_BlldSync" in block_text,
+                        "calls_cm_blld_sync": "CM_BlldSyncFun" in block_text,
+                        "handles_sm_blld_sync": "SM_BlldSyncFun" in block_text or "OnSyncData(msg)" in block_text,
+                        "uses_group_info_vo_map": "groupInfoVOMap" in block_text,
+                        "uses_role_group_to_level": "roleGroupToLevel" in block_text or "V_RoleGroupToLevel" in block_text,
+                        "updates_level_cache": "V_NewLevelIdDic" in block_text or "IsFinishLevel" in block_text,
+                        "updates_layer_reward_history": "V_LayerFindRewardHistory" in block_text or "layerFindRewardHistory" in block_text,
+                        "raises_blld_info_update": "BLLDInfoUpdate" in block_text,
+                        "raises_red_dot": "RaiseRedDotEvent" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_BlldSync",
+                    r"F_Register\(_SM_BlldSync",
+                    r"F_Unregister\(_CM_BlldSync",
+                    r"F_Unregister\(_SM_BlldSync",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_sync_request",
+                patterns=[
+                    r"CM_BlldSyncFun",
+                    r"GetMessageFromPools\(_CM_BlldSync\)",
+                    r"F_SendMsg\(CM_BlldSync",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_callsite",
+                patterns=[
+                    r"NetLogic\.CM_BlldSyncFun\(\)",
+                    r"NetLogic:CM_BlldSyncFun\(\)",
+                    r"self\.NetLogic\.CM_BlldSyncFun\(\)",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_sync_response",
+                patterns=[r"SM_BlldSyncFun", r"msg\.code==0", r"Model:OnSyncData\(msg\)"],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_sync_update",
+                patterns=[
+                    r"function _M\.OnSyncData",
+                    r"BLLDData:OnSyncData\(msg\)",
+                    r"msg\.groupInfoVOMap",
+                    r"msg\.roleGroupToLevel",
+                    r"V_NewLevelIdDic",
+                    r"V_RoleGroupToLevel",
+                    r"V_LayerFindRewardHistory",
+                    r"layerFindRewardHistory",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_query_surface",
+                patterns=[
+                    r"GetCurPassLevelInfo",
+                    r"GetCurMaxChallengeLevelInfo",
+                    r"IsFinishLevel",
+                    r"GetTotalLevel",
+                    r"GetLevelByRoleGroup",
+                    r"GetLayerFindRewardHistory",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="events_red_dot",
+                patterns=[
+                    r"RaiseEvent\(BLLDType\.EventType\.BLLDInfoUpdate",
+                    r"AddEventHandler\(BLLDType\.EventType\.BLLDInfoUpdate",
+                    r"RaiseRedDotEvent\(RedDotID\.BLLD_SkipLevel",
+                    r"RaiseRedDotEvent\(RedDotID\.BLLD_FaQiUpgrade",
+                ],
+                max_rows=220,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ui_refresh_consumer",
+                patterns=[
+                    r"UpdateViewData",
+                    r"UpdatePanelBaseShow",
+                    r"UpdateAttr",
+                    r"UpdateUpgradeCost",
+                    r"UpdatePopItem",
+                    r"AddEventHandler\(BLLDType\.EventType\.BLLDInfoUpdate",
+                ],
+                max_rows=220,
+            )
+
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_BlldSyncFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_BlldSyncFun"):
+                    surface = "sender_definition"
+                elif "F_SendMsg(CM_BlldSync" in stripped:
+                    surface = "socket_send"
+                elif "NetLogic" in stripped:
+                    surface = "ui_or_mgr_request_callsite"
+                else:
+                    surface = "sync_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_BlldSync(97325)", "meaning": "Old pcap observed this no-field client request as a BLLD activity state refresh trigger."},
+        {"step": 2, "surface": "BLLDMgr / BLLDInfoPanel / BLLDFaQiInfoView", "meaning": "Activity refresh and BLLD panel entry paths call `NetLogic:CM_BlldSyncFun()`."},
+        {"step": 3, "surface": "BLLDNetLogic:CM_BlldSyncFun", "meaning": "Allocates `_CM_BlldSync` from SocketManager pools and sends it without extra Lua fields."},
+        {"step": 4, "surface": "SM_BlldSync(97326)", "meaning": "Old pcap observed server responses carrying `groupInfoVOMap` and `roleGroupToLevel`."},
+        {"step": 5, "surface": "BLLDNetLogic:SM_BlldSyncFun", "meaning": "On `msg.code==0`, forwards the packet object to `BLLDModel:OnSyncData(msg)`."},
+        {"step": 6, "surface": "BLLDModel / BLLDData:OnSyncData", "meaning": "Stores pass-level flags, layer reward history, and role-group level cache, then raises BLLD info/red-dot updates."},
+        {"step": 7, "surface": "BLLDInfoPanel / BLLDFaQiInfoView", "meaning": "Views listen to `BLLDInfoUpdate` and read model caches to refresh level, reward, and upgrade UI."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "blld_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_sync_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_sync_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_sync_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_sync_response"),
+        "model_sync_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_sync_update"),
+        "model_query_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_query_surface"),
+        "events_red_dot_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "events_red_dot"),
+        "ui_refresh_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ui_refresh_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_blld_sync": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_blld_sync": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_BlldSync" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_BlldSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_blld_sync_sender_visible": any("F_SendMsg(CM_BlldSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_to_model": any("Model:OnSyncData(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "group_info_projected_to_level_cache": any("V_NewLevelIdDic" in str(row.get("snippet", "")) for row in evidence_rows),
+        "role_group_level_cache_visible": any("V_RoleGroupToLevel" in str(row.get("snippet", "")) for row in evidence_rows),
+        "blld_info_update_event_visible": any("BLLDInfoUpdate" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_blld_sync_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_blld_sync_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_blld_sync_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_blld_sync_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_blld_sync_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_blld_sync_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_blld_sync_packets",
+            "sends_cm_blld_sync",
+            "calls_cm_blld_sync",
+            "handles_sm_blld_sync",
+            "uses_group_info_vo_map",
+            "uses_role_group_to_level",
+            "updates_level_cache",
+            "updates_layer_reward_history",
+            "raises_blld_info_update",
+            "raises_red_dot",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_blld_sync_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _lundao_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/lundao_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_self_seat_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_SelfSeat / SM_SelfSeat chain",
+        "",
+        "This report follows the old-pcap observed generic Lundao `CM_SelfSeat` and `SM_SelfSeat` pair. It is static metadata only; no live `seatVO` payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_SelfSeat(59529)` is a no-field client refresh request observed in the old pcap metadata.",
+            "- `SM_SelfSeat(59530)` carries one schema field, `seatVO`, and is handled by `LundaoNetLogic:SM_SelfSeatFun`.",
+            "- `LundaoMgr:ReqMsg` and `LunDaoSceneMgr:CheckLunDaoSceneView` are visible callsites for requesting self-seat state.",
+            "- `LundaoData:SetMySeatVO` caches `mySeatVO`, derives seat/room ids, and raises Lundao seat-update events consumed by seat/scene UI surfaces.",
+            "- Union/Venis modules have analogous self-seat names, but this probe intentionally follows the generic Lundao packet ids present as `CM_SelfSeat/SM_SelfSeat`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SelfSeat"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_SelfSeat"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SelfSeat"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_SelfSeat"), {})
+    text_dirs = _lundao_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaLundaoNetLogic",
+        "Destroy",
+        "CM_SelfSeatFun",
+        "SM_SelfSeatFun",
+        "ReqMsg",
+        "CheckLunDaoSceneView",
+        "SetMySeatVO",
+        "GetMySeatVO",
+        "SetMySeatId",
+        "GetMySeatId",
+        "SetMyRoomId",
+        "GetSeatVOById",
+        "AddEvent",
+        "_OnMySeatUpdate",
+        "UpdateView",
+        "UpdateSeatView",
+        "UpdateListenTime",
+        "UpdateSeat",
+        "UpdateSeatShow",
+        "UpdateSeatVOList",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "LundaoNetLogic.lua",
+            text_dir / "LundaoMgr.lua",
+            text_dir / "LundaoData.lua",
+            text_dir / "LundaoModel.lua",
+            text_dir / "LundaoSeatView.lua",
+            text_dir / "LunDaoSceneMgr.lua",
+            text_dir / "LunDaoSeatMyItem.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_self_seat_packets": "_CM_SelfSeat" in block_text or "_SM_SelfSeat" in block_text,
+                        "sends_cm_self_seat": "F_SendMsg(CM_SelfSeat" in block_text,
+                        "calls_cm_self_seat": "CM_SelfSeatFun" in block_text,
+                        "handles_sm_self_seat": "SM_SelfSeatFun" in block_text or "SetMySeatVO(msg.seatVO)" in block_text,
+                        "uses_seat_vo": "seatVO" in block_text or "mySeatVO" in block_text,
+                        "updates_seat_id": "SetMySeatId" in block_text or "mySeatId" in block_text,
+                        "updates_room_id": "SetMyRoomId" in block_text or "myRoomId" in block_text,
+                        "raises_self_seat_event": "MySeatUpdate" in block_text or "MySeatIdUpdate" in block_text,
+                        "reads_self_seat": "GetMySeatVO" in block_text or "GetMySeatId" in block_text,
+                        "updates_ui": "UpdateView" in block_text or "UpdateSeat" in block_text or "UpdateListenTime" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_SelfSeat",
+                    r"F_Register\(_SM_SelfSeat",
+                    r"F_Unregister\(_CM_SelfSeat",
+                    r"F_Unregister\(_SM_SelfSeat",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_self_seat_request",
+                patterns=[
+                    r"CM_SelfSeatFun",
+                    r"GetMessageFromPools\(_CM_SelfSeat\)",
+                    r"F_SendMsg\(CM_SelfSeat",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_callsite",
+                patterns=[
+                    r"NetLogic\.CM_SelfSeatFun\(\)",
+                    r"NetLogic:CM_SelfSeatFun\(\)",
+                    r"LundaoMgr\.Inst_get\(\)\.NetLogic\.CM_SelfSeatFun\(\)",
+                    r"self\.NetLogic\.CM_SelfSeatFun\(\)",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_self_seat_response",
+                patterns=[r"SM_SelfSeatFun", r"CheckCodeMessage\(msg,3,true\)", r"SetMySeatVO\(msg\.seatVO\)"],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_self_seat_update",
+                patterns=[
+                    r"function _M\.SetMySeatVO",
+                    r"self\.mySeatVO=seatVO",
+                    r"SetMySeatId\(seatId\)",
+                    r"SetMyRoomId\(cfg\.id\)",
+                    r"RaiseEvent\(LunDaoType\.EventType\.MySeatUpdate",
+                    r"RaiseEvent\(LunDaoType\.EventType\.MySeatIdUpdate",
+                    r"RaiseEvent\(LunDaoType\.EventType\.MyRoomUpdate",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_query_surface",
+                patterns=[
+                    r"GetMySeatVO",
+                    r"GetMySeatId",
+                    r"GetSeatVOById",
+                    r"self\.mySeatVO",
+                    r"self\.mySeatId",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ui_refresh_consumer",
+                patterns=[
+                    r"AddEventHandler\(LunDaoType\.EventType\.MyRoomUpdate",
+                    r"AddEventHandler\(LunDaoType\.EventType\.MySeatIdUpdate",
+                    r"AddEventHandler\(LunDaoType\.EventType\.MySeatUpdate",
+                    r"_OnMySeatUpdate",
+                    r"UpdateView",
+                    r"UpdateSeatView",
+                    r"UpdateListenTime",
+                    r"GetMySeatVO",
+                    r"GetMySeatId",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="scene_request_surface",
+                patterns=[
+                    r"CheckLunDaoSceneView",
+                    r"Window\.LunDaoSceneView",
+                    r"F_ShowBottonWin\(Window\.LunDaoSceneView",
+                    r"UpdateSeat",
+                    r"UpdateSeatShow",
+                    r"UpdateSeatVOList",
+                ],
+                max_rows=260,
+            )
+
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_SelfSeatFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_SelfSeatFun"):
+                    surface = "sender_definition"
+                elif "F_SendMsg(CM_SelfSeat" in stripped:
+                    surface = "socket_send"
+                elif "LunDaoSceneMgr" in rel or "CheckLunDaoSceneView" in stripped:
+                    surface = "scene_request_callsite"
+                elif "NetLogic" in stripped:
+                    surface = "manager_request_callsite"
+                else:
+                    surface = "self_seat_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_SelfSeat(59529)", "meaning": "Old pcap observed this no-field client request as a Lundao self-seat state refresh."},
+        {"step": 2, "surface": "LundaoMgr:ReqMsg / LunDaoSceneMgr:CheckLunDaoSceneView", "meaning": "Panel and scene entry paths request the current self-seat state."},
+        {"step": 3, "surface": "LundaoNetLogic:CM_SelfSeatFun", "meaning": "Allocates `_CM_SelfSeat` from SocketManager pools and sends it without extra Lua fields."},
+        {"step": 4, "surface": "SM_SelfSeat(59530)", "meaning": "Old pcap observed server responses carrying schema field `seatVO`."},
+        {"step": 5, "surface": "LundaoNetLogic:SM_SelfSeatFun", "meaning": "Checks the result code and forwards `msg.seatVO` to `LundaoMgr:SetMySeatVO`."},
+        {"step": 6, "surface": "LundaoMgr / LundaoData:SetMySeatVO", "meaning": "Stores `mySeatVO`, derives seat id and room id, then raises Lundao seat update events."},
+        {"step": 7, "surface": "LundaoSeatView / LunDaoSceneMgr", "meaning": "Seat and scene surfaces read `GetMySeatVO/GetMySeatId` and refresh the visible seat state."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "lundao_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_self_seat_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_self_seat_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_self_seat_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_self_seat_response"),
+        "model_self_seat_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_self_seat_update"),
+        "model_query_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_query_surface"),
+        "ui_refresh_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ui_refresh_consumer"),
+        "scene_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "scene_request_surface"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_self_seat": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_self_seat": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_SelfSeat" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_SelfSeat" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_self_seat_sender_visible": any("F_SendMsg(CM_SelfSeat" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_seat_vo": any("SetMySeatVO(msg.seatVO)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "self_seat_cache_visible": any("self.mySeatVO=seatVO" in str(row.get("snippet", "")) for row in evidence_rows),
+        "self_seat_event_visible": any("LunDaoType.EventType.MySeatUpdate" in str(row.get("snippet", "")) for row in evidence_rows),
+        "ui_self_seat_consumer_visible": stats["ui_refresh_consumer_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_self_seat_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_self_seat_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_self_seat_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_self_seat_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_self_seat_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_self_seat_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_self_seat_packets",
+            "sends_cm_self_seat",
+            "calls_cm_self_seat",
+            "handles_sm_self_seat",
+            "uses_seat_vo",
+            "updates_seat_id",
+            "updates_room_id",
+            "raises_self_seat_event",
+            "reads_self_seat",
+            "updates_ui",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_self_seat_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _write_doupotd_observed_lundao_role_info_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_SyncLundaoRoleInfo / SM_SyncLundaoRoleInfo chain",
+        "",
+        "This report follows the old-pcap observed Lundao role-info sync pair through request, handler, local role/listen-time cache, and visible time consumers. It is static metadata only; no live role-info payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_SyncLundaoRoleInfo(59513)` is a no-field client refresh request observed in the old pcap metadata.",
+            "- `SM_SyncLundaoRoleInfo(59514)` carries `roomId`, `seatId`, `leftListenTime`, `sitDownTime`, and `ganwuStartTime`.",
+            "- `LundaoData:SyncRoleInfo` stores the whole message as `roleInfo`, projects room/seat/listen-time fields into local caches, and refreshes the Lundao strength red dot.",
+            "- `SetLeftListenTime` raises `LunDaoType.EventType.ListenTimeUpdate`; views then compute remaining listen or comprehension time using `leftListenTime`, `sitDownTime`, and `ganwuStartTime`.",
+            "- This is a Lundao state/time sync chain, not DoupoTD PVP evidence, and the report exports no payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SyncLundaoRoleInfo"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_SyncLundaoRoleInfo"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SyncLundaoRoleInfo"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_SyncLundaoRoleInfo"), {})
+    text_dirs = _lundao_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaLundaoNetLogic",
+        "Destroy",
+        "CM_SyncLundaoRoleInfoFun",
+        "SM_SyncLundaoRoleInfoFun",
+        "ReqMsg",
+        "CheckLunDaoSceneView",
+        "SyncRoleInfo",
+        "SetRoleInfo",
+        "GetRoleInfo",
+        "SetLeftListenTime",
+        "GetLeftListenTime",
+        "UpdateHaveTime",
+        "GetMyRoomId",
+        "GetMySeatId",
+        "SetMyRoomId",
+        "SetMySeatId",
+        "GetCurLeftListenTime",
+        "IsMaxTime",
+        "GetMyCurrentRewardAmount",
+        "GetNowLootAmount",
+        "GetRewardAmountBySeatVO",
+        "UpdateListenTime",
+        "UpdateSeatView",
+        "UpdateSeatShow",
+        "UpdateSeat",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "LundaoNetLogic.lua",
+            text_dir / "LundaoMgr.lua",
+            text_dir / "LundaoModel.lua",
+            text_dir / "LundaoData.lua",
+            text_dir / "LundaoSeatView.lua",
+            text_dir / "LundaoSeatItem.lua",
+            text_dir / "LunDaoSceneMgr.lua",
+            text_dir / "LunDaoSceneView.lua",
+            text_dir / "LunDaoLeaveSeatView.lua",
+            text_dir / "LunDaoSeatMyItem.lua",
+            text_dir / "LunDaoTakeSeatView.lua",
+            text_dir / "LunDaoSearchSucceedView.lua",
+            text_dir / "LunDaoRewardView.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_role_info_packets": "_CM_SyncLundaoRoleInfo" in block_text or "_SM_SyncLundaoRoleInfo" in block_text,
+                        "sends_cm_role_info": "F_SendMsg(CM_SyncLundaoRoleInfo" in block_text,
+                        "calls_cm_role_info": "CM_SyncLundaoRoleInfoFun" in block_text,
+                        "handles_sm_role_info": "SM_SyncLundaoRoleInfoFun" in block_text or "SyncRoleInfo(msg)" in block_text,
+                        "stores_role_info": "SetRoleInfo(msg)" in block_text or "self.roleInfo=msg" in block_text,
+                        "uses_room_or_seat_id": "msg.roomId" in block_text or "msg.seatId" in block_text or "GetMySeatId" in block_text,
+                        "uses_left_listen_time": "leftListenTime" in block_text or "GetLeftListenTime" in block_text,
+                        "uses_sit_or_ganwu_time": "sitDownTime" in block_text or "ganwuStartTime" in block_text,
+                        "raises_listen_time_event": "ListenTimeUpdate" in block_text,
+                        "raises_strength_red_dot": "LunDao_Strength" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_SyncLundaoRoleInfo",
+                    r"F_Register\(_SM_SyncLundaoRoleInfo",
+                    r"F_Unregister\(_CM_SyncLundaoRoleInfo",
+                    r"F_Unregister\(_SM_SyncLundaoRoleInfo",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_role_info_request",
+                patterns=[
+                    r"CM_SyncLundaoRoleInfoFun",
+                    r"GetMessageFromPools\(_CM_SyncLundaoRoleInfo\)",
+                    r"F_SendMsg\(CM_SyncLundaoRoleInfo",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_callsite",
+                patterns=[
+                    r"NetLogic\.CM_SyncLundaoRoleInfoFun\(\)",
+                    r"NetLogic:CM_SyncLundaoRoleInfoFun\(\)",
+                    r"LundaoMgr\.Inst_get\(\)\.NetLogic\.CM_SyncLundaoRoleInfoFun\(\)",
+                    r"self\.NetLogic\.CM_SyncLundaoRoleInfoFun\(\)",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_role_info_response",
+                patterns=[
+                    r"SM_SyncLundaoRoleInfoFun",
+                    r"CheckCodeMessage\(msg,3,true\)",
+                    r"SyncRoleInfo\(msg\)",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="manager_model_forwarding",
+                patterns=[
+                    r"function _M\.SyncRoleInfo",
+                    r"self\.Model:SyncRoleInfo\(msg\)",
+                    r"self\.data:SyncRoleInfo\(msg\)",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_role_info_update",
+                patterns=[
+                    r"function _M\.SyncRoleInfo",
+                    r"SetRoleInfo\(msg\)",
+                    r"self\.roleInfo=msg",
+                    r"SetMyRoomId\(msg\.roomId\)",
+                    r"SetMySeatId\(msg\.seatId\)",
+                    r"SetLeftListenTime\(msg\.leftListenTime\)",
+                    r"RaiseRedDotEvent\(RedDotID\.LunDao_Strength",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="listen_time_update",
+                patterns=[
+                    r"function _M\.SetLeftListenTime",
+                    r"self\.leftListenTime=time",
+                    r"UpdateHaveTime\(time:ToNum\(\)>0\)",
+                    r"RaiseEvent\(LunDaoType\.EventType\.ListenTimeUpdate",
+                    r"function _M\.GetLeftListenTime",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_query_surface",
+                patterns=[
+                    r"GetRoleInfo",
+                    r"GetLeftListenTime",
+                    r"GetMyRoomId",
+                    r"GetMySeatId",
+                    r"self\.roleInfo",
+                    r"self\.leftListenTime",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ui_time_consumer",
+                patterns=[
+                    r"leftListenTime",
+                    r"sitDownTime",
+                    r"ganwuStartTime",
+                    r"GetLeftListenTime",
+                    r"UpdateListenTime",
+                    r"GetCurLeftListenTime",
+                    r"IsMaxTime",
+                ],
+                max_rows=340,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="scene_request_surface",
+                patterns=[
+                    r"CheckLunDaoSceneView",
+                    r"Window\.LunDaoSceneView",
+                    r"F_ShowBottonWin\(Window\.LunDaoSceneView",
+                    r"UpdateSeat",
+                    r"UpdateSeatShow",
+                ],
+                max_rows=340,
+            )
+
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_SyncLundaoRoleInfoFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_SyncLundaoRoleInfoFun"):
+                    surface = "sender_definition"
+                elif "F_SendMsg(CM_SyncLundaoRoleInfo" in stripped:
+                    surface = "socket_send"
+                elif "LunDaoSceneMgr" in rel or "CheckLunDaoSceneView" in stripped:
+                    surface = "scene_request_callsite"
+                elif "NetLogic" in stripped:
+                    surface = "manager_request_callsite"
+                else:
+                    surface = "role_info_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_SyncLundaoRoleInfo(59513)", "meaning": "Old pcap observed this no-field client request as a Lundao role/time refresh."},
+        {"step": 2, "surface": "LundaoMgr:ReqMsg / LunDaoSceneMgr:CheckLunDaoSceneView", "meaning": "Panel and scene entry paths request role info next to self-seat state."},
+        {"step": 3, "surface": "LundaoNetLogic:CM_SyncLundaoRoleInfoFun", "meaning": "Allocates `_CM_SyncLundaoRoleInfo` from SocketManager pools and sends it without extra Lua fields."},
+        {"step": 4, "surface": "SM_SyncLundaoRoleInfo(59514)", "meaning": "Old pcap observed server responses carrying room/seat/listen-time fields."},
+        {"step": 5, "surface": "LundaoNetLogic:SM_SyncLundaoRoleInfoFun", "meaning": "Checks the result code and forwards the packet to `LundaoMgr:SyncRoleInfo(msg)`."},
+        {"step": 6, "surface": "LundaoMgr / LundaoModel / LundaoData:SyncRoleInfo", "meaning": "Stores `roleInfo`, projects room id, seat id, and left listen time into local caches, and refreshes red dots."},
+        {"step": 7, "surface": "Lundao views and reward helpers", "meaning": "Seat/scene/reward UI reads listen and seat timestamps to show remaining listen/comprehension time."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "lundao_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_role_info_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_role_info_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_role_info_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_role_info_response"),
+        "manager_model_forwarding_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "manager_model_forwarding"),
+        "model_role_info_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_role_info_update"),
+        "listen_time_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "listen_time_update"),
+        "model_query_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_query_surface"),
+        "ui_time_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ui_time_consumer"),
+        "scene_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "scene_request_surface"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_lundao_role_info": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_lundao_role_info": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_SyncLundaoRoleInfo" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_SyncLundaoRoleInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_role_info_sender_visible": any("F_SendMsg(CM_SyncLundaoRoleInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_role_info": any("SyncRoleInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "role_info_cache_visible": any("self.roleInfo=msg" in str(row.get("snippet", "")) for row in evidence_rows),
+        "left_listen_time_cache_visible": any("self.leftListenTime=time" in str(row.get("snippet", "")) for row in evidence_rows),
+        "listen_time_event_visible": any("LunDaoType.EventType.ListenTimeUpdate" in str(row.get("snippet", "")) for row in evidence_rows),
+        "ui_time_consumer_visible": stats["ui_time_consumer_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_lundao_role_info_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_lundao_role_info_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_lundao_role_info_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_lundao_role_info_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_lundao_role_info_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_lundao_role_info_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_role_info_packets",
+            "sends_cm_role_info",
+            "calls_cm_role_info",
+            "handles_sm_role_info",
+            "stores_role_info",
+            "uses_room_or_seat_id",
+            "uses_left_listen_time",
+            "uses_sit_or_ganwu_time",
+            "raises_listen_time_event",
+            "raises_strength_red_dot",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_lundao_role_info_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _write_doupotd_observed_lundao_last_leave_seat_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_LastLeaveSeatInfo / SM_LastLeaveSeatInfo chain",
+        "",
+        "This report follows the old-pcap observed Lundao last-leave-seat pair through request, handler, cached reward info, red-dot state, and reward-window consumption. It is static metadata only; no live reward payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_LastLeaveSeatInfo(59511)` is a no-field client refresh request observed in the old pcap metadata.",
+            "- `SM_LastLeaveSeatInfo(59512)` carries last-seat reward context such as `listenTime`, `ganwuTime`, `beLootNum`, `leftListenTime`, and `leaveBySelf`.",
+            "- `LundaoData:SetLastLeaveSeatInfo` stores the message and either triggers immediate reward-window checks for self-leave or raises the `LunDao_SeatTaken` red dot.",
+            "- `LunDaoRewardView:UpdateView` reads the cached info, clears it through `CM_CleanLastLeaveSeatInfo`, and derives reward display from listen/comprehension time and loot counts.",
+            "- This is a Lundao reward/reminder chain, not DoupoTD PVP evidence, and the report exports no reward payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_LastLeaveSeatInfo"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_LastLeaveSeatInfo"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_LastLeaveSeatInfo"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_LastLeaveSeatInfo"), {})
+    text_dirs = _lundao_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaLundaoNetLogic",
+        "Destroy",
+        "CM_LastLeaveSeatInfoFun",
+        "SM_LastLeaveSeatInfoFun",
+        "CM_CleanLastLeaveSeatInfoFun",
+        "ReqMsg",
+        "CheckLastLeaveSeatInfo",
+        "CheckSeatTakenView",
+        "SetLastLeaveSeatInfo",
+        "GetLastLeaveSeatInfo",
+        "UpdateSeatTakenRed",
+        "GetSeatTakenRed",
+        "UpdateView",
+        "Destroy",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "LundaoNetLogic.lua",
+            text_dir / "LundaoMgr.lua",
+            text_dir / "LundaoModel.lua",
+            text_dir / "LundaoData.lua",
+            text_dir / "LunDaoRewardView.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_last_leave_packets": "_CM_LastLeaveSeatInfo" in block_text or "_SM_LastLeaveSeatInfo" in block_text,
+                        "sends_cm_last_leave": "F_SendMsg(CM_LastLeaveSeatInfo" in block_text,
+                        "sends_clean_last_leave": "F_SendMsg(CM_CleanLastLeaveSeatInfo" in block_text or "CM_CleanLastLeaveSeatInfoFun" in block_text,
+                        "handles_sm_last_leave": "SM_LastLeaveSeatInfoFun" in block_text or "CheckLastLeaveSeatInfo(msg)" in block_text,
+                        "stores_last_leave_info": "SetLastLeaveSeatInfo" in block_text or "lastLeaveSeatInfo" in block_text,
+                        "uses_reward_fields": any(token in block_text for token in ["listenTime", "ganwuTime", "beLootNum", "leftListenTime", "leaveBySelf"]),
+                        "updates_seat_taken_red": "UpdateSeatTakenRed" in block_text or "LunDao_SeatTaken" in block_text,
+                        "opens_reward_view": "Window.LunDaoRewardView" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_LastLeaveSeatInfo",
+                    r"F_Register\(_SM_LastLeaveSeatInfo",
+                    r"F_Register\(_CM_CleanLastLeaveSeatInfo",
+                    r"F_Unregister\(_CM_LastLeaveSeatInfo",
+                    r"F_Unregister\(_SM_LastLeaveSeatInfo",
+                    r"F_Unregister\(_CM_CleanLastLeaveSeatInfo",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_last_leave_request",
+                patterns=[
+                    r"CM_LastLeaveSeatInfoFun",
+                    r"GetMessageFromPools\(_CM_LastLeaveSeatInfo\)",
+                    r"F_SendMsg\(CM_LastLeaveSeatInfo",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="clean_last_leave_request",
+                patterns=[
+                    r"CM_CleanLastLeaveSeatInfoFun",
+                    r"GetMessageFromPools\(_CM_CleanLastLeaveSeatInfo\)",
+                    r"F_SendMsg\(CM_CleanLastLeaveSeatInfo",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_callsite",
+                patterns=[
+                    r"NetLogic\.CM_LastLeaveSeatInfoFun\(\)",
+                    r"NetLogic:CM_LastLeaveSeatInfoFun\(\)",
+                    r"LundaoMgr\.Inst_get\(\)\.NetLogic\.CM_LastLeaveSeatInfoFun\(\)",
+                    r"self\.NetLogic\.CM_LastLeaveSeatInfoFun\(\)",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_last_leave_response",
+                patterns=[
+                    r"SM_LastLeaveSeatInfoFun",
+                    r"CheckCodeMessage\(msg,3,true\)",
+                    r"CheckLastLeaveSeatInfo\(msg\)",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="manager_model_forwarding",
+                patterns=[
+                    r"function _M\.CheckLastLeaveSeatInfo",
+                    r"self\.Model:SetLastLeaveSeatInfo\(msg\)",
+                    r"self\.data:SetLastLeaveSeatInfo\(msg\)",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_last_leave_update",
+                patterns=[
+                    r"function _M\.SetLastLeaveSeatInfo",
+                    r"self\.lastLeaveSeatInfo=msg",
+                    r"msg\.leaveBySelf",
+                    r"UpdateSeatTakenRed\(false\)",
+                    r"UpdateSeatTakenRed\(needRed\)",
+                    r"RaiseRedDotEvent\(RedDotID\.LunDao_SeatTaken",
+                    r"function _M\.GetLastLeaveSeatInfo",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="reward_view_trigger",
+                patterns=[
+                    r"CheckSeatTakenView",
+                    r"GetLastLeaveSeatInfo",
+                    r"msg\.roomId==0",
+                    r"msg\.listenTime:ToNum\(\)==0",
+                    r"F_ShowWin\(Window\.LunDaoRewardView",
+                ],
+                max_rows=280,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="reward_view_consumer",
+                patterns=[
+                    r"function _M\.UpdateView",
+                    r"GetLastLeaveSeatInfo",
+                    r"SetLastLeaveSeatInfo\(\)",
+                    r"CM_CleanLastLeaveSeatInfoFun",
+                    r"info\.listenTime",
+                    r"info\.roomId",
+                    r"info\.beLootNum",
+                    r"info\.ganwuTime",
+                    r"info\.leftListenTime",
+                    r"rewardAmount",
+                    r"leftTimeText",
+                ],
+                max_rows=280,
+            )
+
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_LastLeaveSeatInfoFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_LastLeaveSeatInfoFun"):
+                    surface = "sender_definition"
+                elif "F_SendMsg(CM_LastLeaveSeatInfo" in stripped:
+                    surface = "socket_send"
+                elif "NetLogic" in stripped:
+                    surface = "manager_request_callsite"
+                else:
+                    surface = "last_leave_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_LastLeaveSeatInfo(59511)", "meaning": "Old pcap observed this no-field client request as a Lundao last-seat reward/reminder refresh."},
+        {"step": 2, "surface": "LundaoMgr:ReqMsg", "meaning": "Generic Lundao refresh sends `CM_LastLeaveSeatInfoFun()` beside self-seat and role-info requests."},
+        {"step": 3, "surface": "LundaoNetLogic:CM_LastLeaveSeatInfoFun", "meaning": "Allocates `_CM_LastLeaveSeatInfo` from SocketManager pools and sends it without extra Lua fields."},
+        {"step": 4, "surface": "SM_LastLeaveSeatInfo(59512)", "meaning": "Old pcap observed server responses carrying last-seat reward/listen context."},
+        {"step": 5, "surface": "LundaoNetLogic:SM_LastLeaveSeatInfoFun", "meaning": "Checks the result code and forwards the packet to `LundaoMgr:CheckLastLeaveSeatInfo(msg)`."},
+        {"step": 6, "surface": "LundaoMgr / LundaoModel / LundaoData:SetLastLeaveSeatInfo", "meaning": "Stores last-seat info, handles self-leave view trigger, and raises `LunDao_SeatTaken` red-dot state."},
+        {"step": 7, "surface": "LunDaoRewardView:UpdateView", "meaning": "Consumes cached listen/reward fields, clears the cache through `CM_CleanLastLeaveSeatInfo`, and renders reward/left-time display."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "lundao_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_last_leave_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_last_leave_request"),
+        "clean_last_leave_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "clean_last_leave_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_last_leave_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_last_leave_response"),
+        "manager_model_forwarding_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "manager_model_forwarding"),
+        "model_last_leave_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_last_leave_update"),
+        "reward_view_trigger_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "reward_view_trigger"),
+        "reward_view_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "reward_view_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_last_leave_seat": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_last_leave_seat": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_LastLeaveSeatInfo" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_LastLeaveSeatInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_last_leave_sender_visible": any("F_SendMsg(CM_LastLeaveSeatInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_last_leave_info": any("CheckLastLeaveSeatInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "last_leave_cache_visible": any("self.lastLeaveSeatInfo=msg" in str(row.get("snippet", "")) for row in evidence_rows),
+        "seat_taken_red_dot_visible": any("RedDotID.LunDao_SeatTaken" in str(row.get("snippet", "")) for row in evidence_rows),
+        "reward_view_trigger_visible": any("Window.LunDaoRewardView" in str(row.get("snippet", "")) for row in evidence_rows),
+        "reward_view_consumes_last_leave_fields": stats["reward_view_consumer_evidence_count"] > 0
+        and any("info.listenTime" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_lundao_last_leave_seat_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_last_leave_packets",
+            "sends_cm_last_leave",
+            "sends_clean_last_leave",
+            "handles_sm_last_leave",
+            "stores_last_leave_info",
+            "uses_reward_fields",
+            "updates_seat_taken_red",
+            "opens_reward_view",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_lundao_last_leave_seat_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _unionvenis_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/unionvenis_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _venis_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/venis_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_union_veins_union_list_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_UnionVeinsUnionList / SM_UnionVeinsUnionList chain",
+        "",
+        "This report follows the old-pcap observed UnionVeins union-list pair through request, handler, group caches, and UI consumers. It is static metadata only; no live union/group payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_UnionVeinsUnionList(93559)` is a no-field client refresh request observed in the old pcap metadata.",
+            "- `SM_UnionVeinsUnionList(93560)` carries `groupVOS` plus the player's `veinsGroup`.",
+            "- The handler writes `msg.veinsGroup` to `UnionVeinsGroup` and `msg.groupVOS` to `UnionVeinsGroup2Server`.",
+            "- Room, seat, list, camp-detail, and cross-union UI surfaces read these caches to color/partition UnionVeins state.",
+            "- This is UnionVeins social/room-state traffic, not DoupoTD PVP evidence, and the report exports no group payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_UnionVeinsUnionList"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_UnionVeinsUnionList"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_UnionVeinsUnionList"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_UnionVeinsUnionList"), {})
+    text_dirs = _unionvenis_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaUnionVenisNetLogic",
+        "Destroy",
+        "CM_UnionVeinsUnionListFun",
+        "SM_UnionVeinsUnionListFun",
+        "ReqMsg",
+        "SetOpenParams",
+        "UpdateView",
+        "SetUnionVeinsGroup2Server",
+        "GetUnionVeinsGroup2Server",
+        "SetUnionVeinsGroup",
+        "GetUnionVeinsGroup",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "UnionVenisNetLogic.lua",
+            text_dir / "UnionVenisMgr.lua",
+            text_dir / "UnionVenisData.lua",
+            text_dir / "UnionVenisRoomPanel.lua",
+            text_dir / "UnionVenisListView.lua",
+            text_dir / "UnionVenisCampPanelDetailView.lua",
+            text_dir / "UnionVenisCampPanelDetailItem.lua",
+            text_dir / "UnionVenisSeatView.lua",
+            text_dir / "UnionVenisSeatViewItem.lua",
+            text_dir / "UnionVenisSeatItem.lua",
+            text_dir / "UnionVenisTakeSeatView.lua",
+            text_dir / "CrossUnionItem.lua",
+            text_dir / "UnionVenisSceneMgr.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_union_list_packets": "_CM_UnionVeinsUnionList" in block_text or "_SM_UnionVeinsUnionList" in block_text,
+                        "sends_cm_union_list": "F_SendMsg(CM_UnionVeinsUnionList" in block_text,
+                        "handles_sm_union_list": "SM_UnionVeinsUnionListFun" in block_text or "SetUnionVeinsGroup" in block_text,
+                        "stores_veins_group": "SetUnionVeinsGroup(msg.veinsGroup)" in block_text or "self.UnionVeinsGroup=msg" in block_text,
+                        "stores_group_vos": "SetUnionVeinsGroup2Server(msg.groupVOS)" in block_text or "self.UnionVeinsGroup2Server=msg" in block_text,
+                        "reads_veins_group": "GetUnionVeinsGroup()" in block_text,
+                        "reads_group_vos": "GetUnionVeinsGroup2Server()" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_UnionVeinsUnionList",
+                    r"F_Register\(_SM_UnionVeinsUnionList",
+                    r"F_Unregister\(_CM_UnionVeinsUnionList",
+                    r"F_Unregister\(_SM_UnionVeinsUnionList",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_union_list_request",
+                patterns=[
+                    r"CM_UnionVeinsUnionListFun",
+                    r"GetMessageFromPools\(_CM_UnionVeinsUnionList\)",
+                    r"F_SendMsg\(CM_UnionVeinsUnionList",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="request_callsite",
+                patterns=[
+                    r"NetLogic\.CM_UnionVeinsUnionListFun\(\)",
+                    r"NetLogic:CM_UnionVeinsUnionListFun\(\)",
+                    r"UnionVenisMgr\.Inst_get\(\)\.NetLogic\.CM_UnionVeinsUnionListFun\(\)",
+                    r"self\.NetLogic\.CM_UnionVeinsUnionListFun\(\)",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_union_list_response",
+                patterns=[
+                    r"SM_UnionVeinsUnionListFun",
+                    r"CheckCodeMessage\(msg,3,true\)",
+                    r"SetUnionVeinsGroup\(msg\.veinsGroup\)",
+                    r"SetUnionVeinsGroup2Server\(msg\.groupVOS\)",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_union_group_update",
+                patterns=[
+                    r"function _M\.SetUnionVeinsGroup2Server",
+                    r"self\.UnionVeinsGroup2Server=msg",
+                    r"function _M\.SetUnionVeinsGroup",
+                    r"self\.UnionVeinsGroup=msg",
+                    r"function _M\.GetUnionVeinsGroup2Server",
+                    r"function _M\.GetUnionVeinsGroup",
+                ],
+                max_rows=260,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ui_group_consumer",
+                patterns=[
+                    r"GetUnionVeinsGroup\(\)",
+                    r"GetUnionVeinsGroup2Server\(\)",
+                    r"playVeinsGroup",
+                    r"playUnionVeinsGroup",
+                    r"serverGroup",
+                    r"serverGroups",
+                    r"selfPlayerCamp",
+                    r"seflGroupUid",
+                ],
+                max_rows=260,
+            )
+
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_UnionVeinsUnionListFun" not in stripped:
+                    continue
+                if stripped.startswith("function _M.CM_UnionVeinsUnionListFun"):
+                    surface = "sender_definition"
+                elif "F_SendMsg(CM_UnionVeinsUnionList" in stripped:
+                    surface = "socket_send"
+                elif "NetLogic" in stripped:
+                    surface = "ui_or_mgr_request_callsite"
+                else:
+                    surface = "union_list_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_UnionVeinsUnionList(93559)", "meaning": "Old pcap observed this no-field client request as a UnionVeins group-list refresh."},
+        {"step": 2, "surface": "UnionVenisMgr / RoomPanel / SceneMgr", "meaning": "UnionVeins entry and room/scene surfaces request the union-list state."},
+        {"step": 3, "surface": "UnionVenisNetLogic:CM_UnionVeinsUnionListFun", "meaning": "Allocates `_CM_UnionVeinsUnionList` and sends it without extra Lua fields."},
+        {"step": 4, "surface": "SM_UnionVeinsUnionList(93560)", "meaning": "Old pcap observed server responses carrying `groupVOS` and `veinsGroup`."},
+        {"step": 5, "surface": "UnionVenisNetLogic:SM_UnionVeinsUnionListFun", "meaning": "On success, writes `msg.veinsGroup` and `msg.groupVOS` directly into UnionVenis data caches."},
+        {"step": 6, "surface": "UnionVenisData", "meaning": "Stores `UnionVeinsGroup` and `UnionVeinsGroup2Server` for later UI/model reads."},
+        {"step": 7, "surface": "UnionVenis room/list/seat/camp UI", "meaning": "Reads the group caches to display player camp/group and server group partitioning."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "unionvenis_text_dir_count": len(text_dirs),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_union_list_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_union_list_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_union_list_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_union_list_response"),
+        "model_union_group_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_union_group_update"),
+        "ui_group_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ui_group_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_union_veins_union_list": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_union_veins_union_list": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_UnionVeinsUnionList" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_UnionVeinsUnionList" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_union_list_sender_visible": any("F_SendMsg(CM_UnionVeinsUnionList" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_group_fields": any("SetUnionVeinsGroup(msg.veinsGroup)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("SetUnionVeinsGroup2Server(msg.groupVOS)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "union_group_cache_visible": any("self.UnionVeinsGroup=msg" in str(row.get("snippet", "")) for row in evidence_rows),
+        "group_vos_cache_visible": any("self.UnionVeinsGroup2Server=msg" in str(row.get("snippet", "")) for row in evidence_rows),
+        "ui_group_consumer_visible": stats["ui_group_consumer_evidence_count"] > 0,
+        "direct_handler_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_union_veins_union_list_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_union_veins_union_list_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_union_veins_union_list_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_union_veins_union_list_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_union_veins_union_list_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_union_veins_union_list_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_union_list_packets",
+            "sends_cm_union_list",
+            "handles_sm_union_list",
+            "stores_veins_group",
+            "stores_group_vos",
+            "reads_veins_group",
+            "reads_group_vos",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_union_veins_union_list_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _clientdata_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/clientdata_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_set_client_data_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    callsite_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_SetClientData / SM_SetClientData chain",
+        "",
+        "This report follows the old-pcap observed client-data persistence pair through the Lua manager, packet sender, ack handler, key registry, and representative write surfaces. It is static metadata only; no live key/value payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Representative Write Surfaces", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in callsite_rows[:120]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_SetClientData(31811)` is a generic `key/value` client persistence request observed in the old pcap metadata.",
+            "- `ClientDataMgr:CM_SetClientDataFun` is the business-facing wrapper, while `ClientDataNetLogic:CM_SetClientDataFun` allocates the packet and assigns `key` plus `value` before sending it.",
+            "- `SM_SetClientData(31812)` is an old-pcap observed ack with no packet fields; the Lua handler only checks the result code.",
+            "- `ClientDataType.Key` and `ClientDataMgr:InitDic` provide the semantic key registry and paired GET-side handlers for guide/settings/task/map/chat/medicine style client-data state.",
+            "- This is generic client preference/guide-state persistence traffic, not DoupoTD PVP evidence, and the report exports source-code metadata rather than captured runtime values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SetClientData"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_SetClientData"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SetClientData"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_SetClientData"), {})
+    text_dirs = _clientdata_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaClientDataNetLogic",
+        "Destroy",
+        "CM_SetClientDataFun",
+        "SM_SetClientDataFun",
+        "CM_GetClientDataFun",
+        "SM_GetClientDataFun",
+        "LuaClientDataMgr",
+        "InitDic",
+        "HandleClientData",
+        "BeastSpiritFavorHandler",
+        "BeastSpiritLockHandler",
+        "MeetNpcDataHandler",
+        "HelperHandler",
+        "MedicineHandler",
+        "HotTaskIdHandler",
+        "AutoTalkHandler",
+        "TaskUpdateHandler",
+        "WorldMapDataHandler",
+        "ClientMedicineExpHandler",
+        "AllianceShopHandler",
+        "SdkCustomEventHandler",
+        "AscensionTaskHandler",
+        "BeastexplodeAutoHandler",
+        "ChatSettingShowHandler",
+        "ShowTreasureGuideHandler",
+        "UpdateSkillGuideState",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    callsite_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "ClientDataNetLogic.lua",
+            text_dir / "ClientDataMgr.lua",
+            text_dir / "ClientDataType.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_set_client_data_packets": "_CM_SetClientData" in block_text or "_SM_SetClientData" in block_text,
+                        "sends_cm_set_client_data": "F_SendMsg(CM_SetClientData" in block_text,
+                        "assigns_key": "CM_SetClientData.key=key" in block_text,
+                        "assigns_value": "CM_SetClientData.value=value" in block_text,
+                        "handles_sm_set_client_data": "SM_SetClientDataFun" in block_text or "CheckCodeMessage(msg,3,true)" in block_text,
+                        "wraps_mgr_sender": "self.NetLogic.CM_SetClientDataFun(key,value)" in block_text,
+                        "maps_client_data_key": "ClientDataType.Key." in block_text or "self.clientDataDic[" in block_text,
+                        "handles_get_side_client_data": "HandleClientData" in block_text or "ClientDataMgr.Inst_get():HandleClientData" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_SetClientData",
+                    r"F_Register\(_SM_SetClientData",
+                    r"F_Unregister\(_CM_SetClientData",
+                    r"F_Unregister\(_SM_SetClientData",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_set_request",
+                patterns=[
+                    r"CM_SetClientDataFun",
+                    r"GetMessageFromPools\(_CM_SetClientData\)",
+                    r"CM_SetClientData\.key=key",
+                    r"CM_SetClientData\.value=value",
+                    r"F_SendMsg\(CM_SetClientData",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_set_ack",
+                patterns=[
+                    r"SM_SetClientDataFun",
+                    r"CheckCodeMessage\(msg,3,true\)",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="mgr_wrapper",
+                patterns=[
+                    r"function _M\.CM_SetClientDataFun\(self,key,value\)",
+                    r"self\.NetLogic\.CM_SetClientDataFun\(key,value\)",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_data_key_registry",
+                patterns=[
+                    r"ClientDataType\.Key\.",
+                    r"self\.clientDataDic\[ClientDataType\.Key\.",
+                    r"Key=setmetatable",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_data_get_handler",
+                patterns=[
+                    r"CM_GetClientDataFun",
+                    r"SM_GetClientDataFun",
+                    r"HandleClientData",
+                    r"handler\(value\)",
+                    r"ClientDataMgr\.Inst_get\(\):HandleClientData\(msg\.key,msg\.value\)",
+                ],
+                max_rows=800,
+            )
+
+    game_lua_paths = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/*/text_assets/*.lua"),
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in game_lua_paths:
+        if len(callsite_rows) >= 320:
+            break
+        scanned_lua_files.add(str(lua_path))
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if "CM_SetClientDataFun" not in stripped:
+                continue
+            if "ClientDataType.Key." in stripped:
+                surface = "representative_write_surface"
+            elif stripped.startswith("function _M.CM_SetClientDataFun"):
+                surface = "mgr_or_netlogic_definition"
+            elif "F_SendMsg(CM_SetClientData" in stripped or "GetMessageFromPools(_CM_SetClientData)" in stripped:
+                surface = "socket_send"
+            else:
+                surface = "set_callsite"
+            row = {"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]}
+            callsite_rows.append(row)
+            if surface in {"representative_write_surface", "set_callsite"}:
+                evidence_rows.append({"category": surface, "file": rel, "line": line_no, "function": "", "snippet": stripped[:260]})
+            if len(callsite_rows) >= 320:
+                break
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_SetClientData(31811)", "meaning": "Old pcap observed this `key/value` client-data persistence request."},
+        {"step": 2, "surface": "Business Lua modules", "meaning": "Guide, task, map, chat, medicine, ascension, and activity modules call `ClientDataMgr:CM_SetClientDataFun` or its NetLogic sender."},
+        {"step": 3, "surface": "ClientDataMgr:CM_SetClientDataFun", "meaning": "The manager wrapper forwards the semantic `key,value` pair to `ClientDataNetLogic`."},
+        {"step": 4, "surface": "ClientDataNetLogic:CM_SetClientDataFun", "meaning": "Allocates `_CM_SetClientData`, assigns `CM_SetClientData.key=key` plus `CM_SetClientData.value=value`, and sends it."},
+        {"step": 5, "surface": "SM_SetClientData(31812)", "meaning": "Old pcap observed the no-field server ack for that persistence request."},
+        {"step": 6, "surface": "ClientDataNetLogic:SM_SetClientDataFun", "meaning": "The ack handler checks only the result code through `ErroCodeMgr`."},
+        {"step": 7, "surface": "ClientDataType / ClientDataMgr:InitDic / HandleClientData", "meaning": "The paired GET side maps semantic client-data keys to module handlers, giving names to the persisted state families."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "request_field_types": request_schema_row.get("field_types", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "clientdata_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "callsite_row_count": len(callsite_rows),
+        "client_set_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_set_request"),
+        "server_set_ack_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_set_ack"),
+        "mgr_wrapper_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "mgr_wrapper"),
+        "key_registry_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_data_key_registry"),
+        "get_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_data_get_handler"),
+        "representative_write_surface_count": sum(1 for row in callsite_rows if row.get("surface") == "representative_write_surface"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_set_client_data": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_set_client_data": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_SetClientData" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_SetClientData" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_set_data_sender_visible": any("F_SendMsg(CM_SetClientData" in str(row.get("snippet", "")) for row in evidence_rows),
+        "key_value_assignment_visible": any("CM_SetClientData.key=key" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("CM_SetClientData.value=value" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_ack_visible": stats["server_set_ack_evidence_count"] > 0,
+        "mgr_wrapper_visible": stats["mgr_wrapper_evidence_count"] > 0,
+        "client_data_key_registry_visible": stats["key_registry_evidence_count"] > 0,
+        "write_callsites_visible": stats["representative_write_surface_count"] > 0,
+        "direct_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_set_client_data_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_set_client_data_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_set_client_data_evidence.tsv"
+    callsites_tsv = output_dir / "doupotd_pcap_observed_set_client_data_callsites.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_set_client_data_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_set_client_data_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_set_client_data_packets",
+            "sends_cm_set_client_data",
+            "assigns_key",
+            "assigns_value",
+            "handles_sm_set_client_data",
+            "wraps_mgr_sender",
+            "maps_client_data_key",
+            "handles_get_side_client_data",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(callsites_tsv, callsite_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_set_client_data_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        callsite_rows=callsite_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "callsites": str(callsites_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "callsites": str(callsites_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _activity_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/activity_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_activity_base_sync_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    requesters_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_ActivityBaseSync / SM_ActivityBaseSync chain",
+        "",
+        "This report follows the old-pcap observed activity base-state refresh pair through request callsites, packet sender, response handler, activity model/data caches, and activity-VO consumers. It is static metadata only; no live activity payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Requesters", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in requesters_rows[:140]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_ActivityBaseSync(51007)` is an old-pcap observed client request carrying `baseIds`.",
+            "- `SM_ActivityBaseSync(51008)` is an old-pcap observed server response carrying `activityVOS`.",
+            "- The visible Lua handler checks `msg.code==0`, then forwards the response into `ActivityModel:SetActivityBaseSync(msg)`.",
+            "- `ActivityData:SetActivityBaseSync` indexes each returned activity VO into activity dictionaries and triggers follow-up push/red-dot/task/gift updates.",
+            "- This is generic activity base-state refresh traffic, not DoupoTD PVP evidence, and the report exports only schema/code metadata rather than live activity VO values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_ActivityBaseSync"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_ActivityBaseSync"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_ActivityBaseSync"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_ActivityBaseSync"), {})
+    text_dirs = _activity_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaActivityNetLogic",
+        "Destroy",
+        "CM_ActivityBaseSyncFun",
+        "SM_ActivityBaseSyncFun",
+        "LuaActivityModel",
+        "SetActivityBaseSync",
+        "SetActivityInfoSync",
+        "GetActivityVo",
+        "GetActivityVoByBaseId",
+        "GetActivityState",
+        "GetActivityIdByBaseId",
+        "CheckPushActView",
+        "CheckEvent",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "ActivityNetLogic.lua",
+            text_dir / "ActivityModel.lua",
+            text_dir / "ActivityData.lua",
+            text_dir / "ActivityMgr.lua",
+            text_dir / "ActivityEnterView.lua",
+            text_dir / "ActivitySceneViewHelper.lua",
+            text_dir / "ThemeWeekActivityMainView.lua",
+            text_dir / "ThemeWeekActivityTaskPanel.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_activity_base_packets": "_CM_ActivityBaseSync" in block_text or "_SM_ActivityBaseSync" in block_text,
+                        "sends_cm_activity_base_sync": "F_SendMsg(CM_ActivityBaseSync" in block_text,
+                        "assigns_base_ids": "CM_ActivityBaseSync.baseIds=baseIds" in block_text,
+                        "handles_sm_activity_base_sync": "SM_ActivityBaseSyncFun" in block_text or "SetActivityBaseSync(msg)" in block_text,
+                        "checks_activity_vo_count": "msg.activityVOS:Count()" in block_text,
+                        "stores_activity_info": "_ActivityInfo:LuaDic_AddOrSetItem" in block_text,
+                        "stores_activation_activity": "V_ActivationActivityDic:LuaDic_AddOrSetItem" in block_text,
+                        "stores_activity_base": "_ActivityBaseDic:LuaDic_AddOrSetItem" in block_text,
+                        "raises_activity_refresh": "RaiseEvent(ActivityType.ACTIVITY_REFRESH_BY_TYPE" in block_text,
+                        "updates_red_dot_or_gift": "F_AddTaskRedDotByActivityId" in block_text or "GetGiftInfoData" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_SM_ActivityBaseSync",
+                    r"F_Register\(_CM_ActivityBaseSync",
+                    r"F_Unregister\(_CM_ActivityBaseSync",
+                    r"F_Unregister\(_SM_ActivityBaseSync",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_activity_base_request",
+                patterns=[
+                    r"CM_ActivityBaseSyncFun",
+                    r"GetMessageFromPools\(_CM_ActivityBaseSync\)",
+                    r"CM_ActivityBaseSync\.baseIds=baseIds",
+                    r"F_SendMsg\(CM_ActivityBaseSync",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_activity_base_response",
+                patterns=[
+                    r"SM_ActivityBaseSyncFun",
+                    r"msg\.code==0",
+                    r"ActivityMgr\.Inst_get\(\)\.Model:SetActivityBaseSync\(msg\)",
+                    r"msg\.ClientData",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_activity_base_update",
+                patterns=[
+                    r"function _M\.SetActivityBaseSync",
+                    r"msg\.activityVOS:Count\(\)",
+                    r"self\.ActivityData:SetActivityBaseSync\(msg\)",
+                    r"RaiseEvent\(ActivityType\.ACTIVITY_REFRESH_BY_TYPE",
+                    r"self:AddUnlockCondition\(\)",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="data_activity_vo_cache",
+                patterns=[
+                    r"for k,v in Cipairs\(msg\.activityVOS\)",
+                    r"self\._ActivityInfo:LuaDic_AddOrSetItem\(v\.id,v\)",
+                    r"self\.V_ActivationActivityDic:LuaDic_AddOrSetItem\(v\.activityId,v\)",
+                    r"self\._ActivityBaseDic:LuaDic_AddOrSetItem\(v\.activityId,v\)",
+                    r"self:CheckPushActView\(v\.activityId,false\)",
+                    r"F_AddTaskRedDotByActivityId\(v\.activityId\)",
+                    r"GetGiftInfoData\(v and v\.activityType\)",
+                ],
+                max_rows=800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="activity_vo_consumer",
+                patterns=[
+                    r"GetActivityVo\(",
+                    r"GetActivityVoByBaseId\(",
+                    r"GetActivityState\(",
+                    r"_ActivityBaseDic",
+                    r"_ActivityInfo",
+                    r"V_ActivationActivityDic",
+                    r"ACTIVITY_REFRESH_BY_TYPE",
+                    r"ACTIVITY_REFRESH_BY_BASEID",
+                ],
+                max_rows=800,
+            )
+
+    game_lua_paths = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/*/text_assets/*.lua"),
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in game_lua_paths:
+        if len(requesters_rows) >= 320:
+            break
+        scanned_lua_files.add(str(lua_path))
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if "CM_ActivityBaseSyncFun" not in stripped:
+                continue
+            if stripped.startswith("function _M.CM_ActivityBaseSyncFun"):
+                surface = "sender_definition"
+            elif "F_SendMsg(CM_ActivityBaseSync" in stripped or "GetMessageFromPools(_CM_ActivityBaseSync)" in stripped:
+                surface = "socket_send"
+            elif "baseId" in stripped or "baseIds" in stripped:
+                surface = "activity_base_request_callsite"
+            else:
+                surface = "activity_base_request_reference"
+            row = {"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]}
+            requesters_rows.append(row)
+            if surface == "activity_base_request_callsite":
+                evidence_rows.append({"category": "request_callsite", "file": rel, "line": line_no, "function": "", "snippet": stripped[:260]})
+            if len(requesters_rows) >= 320:
+                break
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_ActivityBaseSync(51007)", "meaning": "Old pcap observed this client request carrying `baseIds` for targeted activity base-state refresh."},
+        {"step": 2, "surface": "Activity module request callsites", "meaning": "Activity and event modules build base-id lists and call `ActivityMgr.Inst_get().NetLogic:CM_ActivityBaseSyncFun(...)`."},
+        {"step": 3, "surface": "ActivityNetLogic:CM_ActivityBaseSyncFun", "meaning": "Allocates `_CM_ActivityBaseSync`, assigns `baseIds`, and sends the request with optional callback client data."},
+        {"step": 4, "surface": "SM_ActivityBaseSync(51008)", "meaning": "Old pcap observed server responses carrying an `activityVOS` list."},
+        {"step": 5, "surface": "ActivityNetLogic:SM_ActivityBaseSyncFun", "meaning": "On `msg.code==0`, forwards the response to `ActivityModel:SetActivityBaseSync(msg)` and invokes optional `ClientData` callback."},
+        {"step": 6, "surface": "ActivityModel:SetActivityBaseSync", "meaning": "Rejects empty `activityVOS`, delegates to `ActivityData`, refreshes unlock conditions, and raises `ACTIVITY_REFRESH_BY_TYPE`."},
+        {"step": 7, "surface": "ActivityData:SetActivityBaseSync", "meaning": "Indexes each activity VO into activity dictionaries, checks push views, and refreshes task/gift state."},
+        {"step": 8, "surface": "Activity UI/model consumers", "meaning": "Activity views read `GetActivityVo`, `GetActivityVoByBaseId`, and activity dictionaries to render timing/state and entry visibility."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "activity_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_activity_base_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_activity_base_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_activity_base_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_activity_base_response"),
+        "model_activity_base_update_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_activity_base_update"),
+        "data_activity_vo_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "data_activity_vo_cache"),
+        "activity_vo_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "activity_vo_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_activity_base_sync": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_activity_base_sync": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_ActivityBaseSync" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_ActivityBaseSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_activity_base_sender_visible": any("F_SendMsg(CM_ActivityBaseSync" in str(row.get("snippet", "")) for row in evidence_rows),
+        "base_ids_assignment_visible": any("CM_ActivityBaseSync.baseIds=baseIds" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_activity_vos": any("ActivityMgr.Inst_get().Model:SetActivityBaseSync(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_activity_base_update_visible": stats["model_activity_base_update_evidence_count"] > 0,
+        "data_activity_vo_cache_visible": stats["data_activity_vo_cache_evidence_count"] > 0,
+        "activity_vo_consumer_visible": stats["activity_vo_consumer_evidence_count"] > 0,
+        "direct_activity_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_activity_base_sync_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_activity_base_sync_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_activity_base_sync_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_activity_base_sync_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_activity_base_sync_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_activity_base_sync_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_activity_base_packets",
+            "sends_cm_activity_base_sync",
+            "assigns_base_ids",
+            "handles_sm_activity_base_sync",
+            "checks_activity_vo_count",
+            "stores_activity_info",
+            "stores_activation_activity",
+            "stores_activity_base",
+            "raises_activity_refresh",
+            "updates_red_dot_or_gift",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_activity_base_sync_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        requesters_rows=requesters_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _yunmengpk_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [
+            path
+            for path in root.glob("by_source/lscripts/gamesystem/game/*yunmengpk*/text_assets")
+            if path.is_dir()
+        ],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _faze_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/faze_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _campflag_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/campflag_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _crossneutralboss_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/crossneutralboss_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _partnerarena_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/partnerarena_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _landcontend_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/landcontend_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _quanfuchourand_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/quanfuchourand_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _battle_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/battle_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _fight_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/fight_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _role_text_asset_dirs_for_sync(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/gamesystem/game/role_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _core_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [path for path in root.glob("by_source/lscripts/core_*/text_assets") if path.is_dir()],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_yunmengpk_challenge_record_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    requesters_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_YunmengPkChallengeRecord / SM_YunmengPkChallengeRecord chain",
+        "",
+        "This report follows the old-pcap observed YunmengPK challenge-record pair through record-tab request, packet sender, response handler, record cache, red-dot/event update, and duel-info UI consumers. It is static metadata only; no live challenge-record payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Requesters", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in requesters_rows[:140]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_YunmengPkChallengeRecord(12572)` is an old-pcap observed client request carrying a record `type`.",
+            "- `SM_YunmengPkChallengeRecord(12573)` is an old-pcap observed server response carrying the same record `type` plus `challengeList`.",
+            "- The visible sender allocates `_CM_YunmengPkChallengeRecord`, assigns `type`, and sends the packet.",
+            "- The visible handler stores `msg.challengeList` into `challengeListDic` by `msg.type`, refreshes personal-record red dots for personal tabs, and raises `Update_ChallengeList_Info`.",
+            "- Ordinary YunmengPK, PartnerYunmengPK, and Mini YunmengPK share this same record-tab/cache/UI shape.",
+            "- This is generic YunmengPK record-list UI traffic, not DoupoTD PVP evidence, and the report exports no challenge-list payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_YunmengPkChallengeRecord"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_YunmengPkChallengeRecord"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_YunmengPkChallengeRecord"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_YunmengPkChallengeRecord"), {})
+    text_dirs = _yunmengpk_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaYunmengpkNetLogic",
+        "LuaPartnerYunmengpkNetLogic",
+        "LuaYunMengPKMiniNetLogic",
+        "Destroy",
+        "CM_YunmengPkChallengeRecordFun",
+        "SM_YunmengPkChallengeRecordFun",
+        "LuaYunmengpkData",
+        "LuaPartnerYunmengpkData",
+        "LuaYunMengPKMiniData",
+        "SetChallengeList",
+        "UpdateChallengeList",
+        "GetRecordList",
+        "CheckPersonalRecordType",
+        "OpenGuildWarsDuelInfoView",
+        "OpenYunMengPkMiniDuelInfoView",
+        "ClickTabBtn",
+        "UpdateRecordScrollView",
+        "UpdateRecordObjShow",
+        "UpdatePersonRedDot",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+    for text_dir in text_dirs:
+        for lua_path in [
+            text_dir / "YunmengpkNetLogic.lua",
+            text_dir / "PartnerYunmengpkNetLogic.lua",
+            text_dir / "YunMengPKMiniNetLogic.lua",
+            text_dir / "YunmengpkData.lua",
+            text_dir / "PartnerYunmengpkData.lua",
+            text_dir / "YunMengPKMiniData.lua",
+            text_dir / "YunmengpkMgr.lua",
+            text_dir / "PartnerYunmengpkMgr.lua",
+            text_dir / "YunMengPKMiniMgr.lua",
+            text_dir / "GuildWarsDuelInfoView.lua",
+            text_dir / "PartnerYunmengpkDuelInfoView.lua",
+            text_dir / "YunMengPkMiniDuelInfoView.lua",
+            text_dir / "DuelInfoRecordItem.lua",
+            text_dir / "YunMengPkMiniDuelInfoRecordItem.lua",
+            text_dir / "YunmengpkType.lua",
+            text_dir / "PartnerYunmengpkType.lua",
+            text_dir / "YunMengPKMiniType.lua",
+        ]:
+            if not lua_path.is_file():
+                continue
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_challenge_record_packets": "_CM_YunmengPkChallengeRecord" in block_text or "_SM_YunmengPkChallengeRecord" in block_text,
+                        "sends_cm_challenge_record": "F_SendMsg(CM_YunmengPkChallengeRecord" in block_text,
+                        "assigns_type": "CM_YunmengPkChallengeRecord.type=type" in block_text,
+                        "handles_sm_challenge_record": "SM_YunmengPkChallengeRecordFun" in block_text or "SetChallengeList(msg.type,msg.challengeList)" in block_text,
+                        "stores_challenge_list": "challengeListDic:LuaDic_AddOrSetItem(type,challengeList)" in block_text,
+                        "reads_challenge_list": "challengeListDic:LuaDic_GetItem" in block_text or "GetRecordList" in block_text,
+                        "raises_record_event": "Update_ChallengeList_Info" in block_text,
+                        "updates_record_red_dot": "Record_Personal" in block_text,
+                        "requests_from_duel_view": "CM_YunmengPkChallengeRecordFun(selectedPage)" in block_text or "CM_YunmengPkChallengeRecordFun(self.selectedPage)" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_YunmengPkChallengeRecord",
+                    r"F_Register\(_SM_YunmengPkChallengeRecord",
+                    r"F_Unregister\(_CM_YunmengPkChallengeRecord",
+                    r"F_Unregister\(_SM_YunmengPkChallengeRecord",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_record_request",
+                patterns=[
+                    r"CM_YunmengPkChallengeRecordFun",
+                    r"GetMessageFromPools\(_CM_YunmengPkChallengeRecord\)",
+                    r"CM_YunmengPkChallengeRecord\.type=type",
+                    r"F_SendMsg\(CM_YunmengPkChallengeRecord",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_record_response",
+                patterns=[
+                    r"SM_YunmengPkChallengeRecordFun",
+                    r"SetChallengeList\(msg\.type,msg\.challengeList\)",
+                    r"RaiseRedDotEvent\(RedDotID\[\".*Record_Personal",
+                    r"RaiseEvent\(.*Update_ChallengeList_Info,msg\.type\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="record_type_registry",
+                patterns=[
+                    r"_M\.RecordType=",
+                    r"_M\.EventRecordType=",
+                    r"RecordType\.Personal",
+                    r"RecordType\.All",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="challenge_list_cache",
+                patterns=[
+                    r"function _M\.SetChallengeList",
+                    r"self\.challengeListDic==nil",
+                    r"self\.challengeListDic=Dictionary\.new\(\)",
+                    r"challengeListDic:LuaDic_AddOrSetItem\(type,challengeList\)",
+                    r"function _M\.UpdateChallengeList",
+                    r"challengeListDic:LuaDic_AddOrSetItem\(.*RecordType\.Personal",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="record_list_consumer",
+                patterns=[
+                    r"function _M\.GetRecordList",
+                    r"challengeListDic:LuaDic_GetItem",
+                    r"CheckPersonalRecordType",
+                    r"EventRecordType\[\"RecordType_\"",
+                    r"GetRecordList\(.*RecordType",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="duel_view_request",
+                patterns=[
+                    r"selectedPage",
+                    r"CM_YunmengPkChallengeRecordFun\(self\.selectedPage\)",
+                    r"CM_YunmengPkChallengeRecordFun\(selectedPage\)",
+                    r"UpdateRecordScrollView",
+                    r"recordScrollView:Init",
+                    r"UpdatePersonRedDot",
+                ],
+                max_rows=1000,
+            )
+
+    game_lua_paths = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/*/text_assets/*.lua"),
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in game_lua_paths:
+        if len(requesters_rows) >= 320:
+            break
+        scanned_lua_files.add(str(lua_path))
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if "CM_YunmengPkChallengeRecordFun" not in stripped:
+                continue
+            if stripped.startswith("function _M.CM_YunmengPkChallengeRecordFun"):
+                surface = "sender_definition"
+            elif "F_SendMsg(CM_YunmengPkChallengeRecord" in stripped or "GetMessageFromPools(_CM_YunmengPkChallengeRecord)" in stripped:
+                surface = "socket_send"
+            elif "selectedPage" in stripped:
+                surface = "duel_view_tab_request"
+            elif "RecordType" in stripped:
+                surface = "manager_default_record_request"
+            else:
+                surface = "challenge_record_request_reference"
+            row = {"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]}
+            requesters_rows.append(row)
+            if surface in {"duel_view_tab_request", "manager_default_record_request"}:
+                evidence_rows.append({"category": "request_callsite", "file": rel, "line": line_no, "function": "", "snippet": stripped[:260]})
+            if len(requesters_rows) >= 320:
+                break
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_YunmengPkChallengeRecord(12572)", "meaning": "Old pcap observed this client request carrying a record-tab `type`."},
+        {"step": 2, "surface": "YunmengPK duel-info views / managers", "meaning": "Record tabs and default entry flows request personal/all challenge records through `CM_YunmengPkChallengeRecordFun(...)`."},
+        {"step": 3, "surface": "YunmengPK NetLogic sender", "meaning": "Allocates `_CM_YunmengPkChallengeRecord`, assigns `type`, and sends it."},
+        {"step": 4, "surface": "SM_YunmengPkChallengeRecord(12573)", "meaning": "Old pcap observed server responses carrying `type` and `challengeList`."},
+        {"step": 5, "surface": "YunmengPK NetLogic handler", "meaning": "On success, stores `msg.challengeList` by `msg.type`, refreshes personal record red dots, and raises record-list update events."},
+        {"step": 6, "surface": "YunmengPK data caches", "meaning": "`SetChallengeList` writes `challengeListDic[type]`, while `GetRecordList` and personal filters read it for display."},
+        {"step": 7, "surface": "Duel info record UI", "meaning": "Record views update tab state, scroll-list contents, and per-record item rendering from the cached lists."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "yunmengpk_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "client_record_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_record_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_record_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_record_response"),
+        "record_type_registry_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "record_type_registry"),
+        "challenge_list_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "challenge_list_cache"),
+        "record_list_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "record_list_consumer"),
+        "duel_view_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "duel_view_request"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_yunmengpk_challenge_record": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_yunmengpk_challenge_record": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_YunmengPkChallengeRecord" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_YunmengPkChallengeRecord" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_challenge_record_sender_visible": any("F_SendMsg(CM_YunmengPkChallengeRecord" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_type_assignment_visible": any("CM_YunmengPkChallengeRecord.type=type" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_stores_challenge_list": any("SetChallengeList(msg.type,msg.challengeList)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "challenge_list_cache_visible": stats["challenge_list_cache_evidence_count"] > 0,
+        "record_type_registry_visible": stats["record_type_registry_evidence_count"] > 0,
+        "duel_view_consumer_visible": stats["duel_view_request_evidence_count"] > 0 and stats["record_list_consumer_evidence_count"] > 0,
+        "direct_challenge_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_requesters.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_yunmengpk_challenge_record_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_challenge_record_packets",
+            "sends_cm_challenge_record",
+            "assigns_type",
+            "handles_sm_challenge_record",
+            "stores_challenge_list",
+            "reads_challenge_list",
+            "raises_record_event",
+            "updates_record_red_dot",
+            "requests_from_duel_view",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_yunmengpk_challenge_record_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        requesters_rows=requesters_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": all(verdict.values()),
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "chain": str(chain_tsv),
+                    "functions": str(functions_tsv),
+                    "evidence": str(evidence_tsv),
+                    "requesters": str(requesters_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _scene_core_text_asset_dirs(root: Path) -> list[Path]:
+    return sorted(
+        [
+            path
+            for path in root.glob("by_source/lscripts/core_*/text_assets")
+            if path.is_dir()
+        ],
+        key=lambda path: str(path).lower(),
+    )
+
+
+def _write_doupotd_observed_scene_map_lifecycle_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    requesters_rows: list[dict[str, Any]],
+    event_consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed scene map lifecycle chain",
+        "",
+        "This report follows the old-pcap observed scene/map lifecycle packets through map-change request, server response, map-load-finish request, server load-finish acknowledgement, and Lua lifecycle events. It is static metadata only; no live map, position, or ClientData payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:240]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Requesters", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in requesters_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Event consumers", "", "| Event | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in event_consumers_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('event')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_ChangeMap(40001)` and `SM_ChangeMap(40002)` are old-pcap observed map transition packets.",
+            "- `CM_LoadMapFinish(40003)` and `SM_LoadMapFinish(40004)` are old-pcap observed load-finish packets.",
+            "- The scene code does not name the handlers as `CM_ChangeMapFun` / `SM_ChangeMapFun`; it uses `ReqChangeMap`, `RspChangeMap`, `ReqLoadMapFinish`, and `SM_LoadMapFinishFun`, so the older generic handler classifier labels parts of this as registered-without-visible-Fun.",
+            "- `SceneMgr` raises `CommonEventType.CHANGE_MAP` around local loading phases and `SceneNetLogic.SM_LoadMapFinishFun` raises `CommonEventType.SM_LOAD_MAP_FINISH` after the server acknowledgement.",
+            "- This is concrete map/session lifecycle traffic. It is useful for understanding scene transitions and runtime event fan-out, but it is not DoupoTD PVP report evidence and exports no live payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+
+    def schema_row(name: str) -> dict[str, Any]:
+        return next((row for row in observed_schema_rows if row.get("name") == name), {})
+
+    def handler_row(name: str) -> dict[str, Any]:
+        return next((row for row in observed_handler_rows if row.get("name") == name), {})
+
+    cm_change = schema_row("CM_ChangeMap")
+    sm_change = schema_row("SM_ChangeMap")
+    cm_load_finish = schema_row("CM_LoadMapFinish")
+    sm_load_finish = schema_row("SM_LoadMapFinish")
+    cm_change_handler = handler_row("CM_ChangeMap")
+    sm_change_handler = handler_row("SM_ChangeMap")
+    cm_load_finish_handler = handler_row("CM_LoadMapFinish")
+    sm_load_finish_handler = handler_row("SM_LoadMapFinish")
+
+    selected_functions = {
+        "SceneNetLogic",
+        "Destroy",
+        "ReqChangeMap",
+        "RspChangeMap",
+        "ReqLoadMapFinish",
+        "SM_LoadMapFinishFun",
+        "ReqEnterMap",
+        "CheckSandBornId_ReqChangeMap",
+        "RspEnterMap",
+        "DoAfterCloseLoading",
+        "Update",
+        "CloseLoadingView",
+    }
+    scene_core_dirs = _scene_core_text_asset_dirs(root)
+    scene_paths: list[Path] = []
+    for text_dir in scene_core_dirs:
+        scene_paths.extend(sorted(text_dir.glob("SceneNetLogic*.lua"), key=lambda path: str(path).lower()))
+        scene_paths.extend(sorted(text_dir.glob("SceneMgr*.lua"), key=lambda path: str(path).lower()))
+    common_event_paths = sorted(
+        root.glob("by_source/lscripts/gamesystem/common*/text_assets/CommonEventType*.lua"),
+        key=lambda path: str(path).lower(),
+    )
+
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    event_consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for lua_path in [*scene_paths, *common_event_paths]:
+        if not lua_path.is_file():
+            continue
+        scanned_lua_files.add(str(lua_path))
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        for block in _extract_lua_function_blocks(text):
+            function_name = str(block.get("function", ""))
+            if function_name not in selected_functions:
+                continue
+            block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+            function_rows.append(
+                {
+                    "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                    "function": function_name,
+                    "start_line": block.get("start_line", ""),
+                    "end_line": block.get("end_line", ""),
+                    "params": block.get("params", ""),
+                    "line_count": len(block.get("lines", [])),
+                    "registers_map_packets": "_SM_ChangeMap" in block_text
+                    or "_CM_ChangeMap" in block_text
+                    or "_CM_LoadMapFinish" in block_text
+                    or "_SM_LoadMapFinish" in block_text,
+                    "sends_change_map": "F_SendMsg(_ReqMapChange" in block_text,
+                    "sends_load_finish": "F_SendMsg(_ReqMapLoadFinish" in block_text,
+                    "handles_change_map": "RspChangeMap" in function_name or "RspEnterMap(msg)" in block_text,
+                    "handles_load_finish": "SM_LoadMapFinishFun" in function_name,
+                    "raises_change_map_event": "CommonEventType.CHANGE_MAP" in block_text,
+                    "raises_sm_load_finish_event": "CommonEventType.SM_LOAD_MAP_FINISH" in block_text,
+                }
+            )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_registration",
+            patterns=[
+                r"F_Register\(_SM_ChangeMap",
+                r"F_Register\(_CM_ChangeMap",
+                r"F_Register\(_CM_LoadMapFinish",
+                r"F_Register\(_SM_LoadMapFinish",
+                r"F_Unregister\(_SM_ChangeMap",
+                r"F_Unregister\(_CM_ChangeMap",
+                r"F_Unregister\(_CM_LoadMapFinish",
+                r"F_Unregister\(_SM_LoadMapFinish",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="change_map_request",
+            patterns=[
+                r"function _M\.ReqChangeMap",
+                r"GetMessageFromPools\(_CM_ChangeMap\)",
+                r"_ReqMapChange\.mapId=mapid",
+                r"_ReqMapChange\.param=",
+                r"F_SendMsg\(_ReqMapChange",
+                r"OpenLoadingRunView",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="change_map_response",
+            patterns=[
+                r"function _M\.RspChangeMap",
+                r"CloseLoadingRunView",
+                r"msg\.code==0",
+                r"RspEnterMap\(msg\)",
+                r"OnCheckClientData_RspChangeMap",
+                r"msg\.code==31424",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="load_finish_request",
+            patterns=[
+                r"function _M\.ReqLoadMapFinish",
+                r"GetMessageFromPools\(_CM_LoadMapFinish\)",
+                r"_ReqMapLoadFinish\.mapId=SceneMgr\.Inst_get\(\)\.V_CurrentMapId",
+                r"F_SendMsg\(_ReqMapLoadFinish",
+                r"TaskMgr\.Inst_get\(\):ChangeMapFinish",
+                r"SceneNetLogic\.ReqLoadMapFinish",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="load_finish_response",
+            patterns=[
+                r"function _M\.SM_LoadMapFinishFun",
+                r"DungeonManager\.Inst_get\(\):LoadMapFinish",
+                r"RaiseEvent\(CommonEventType\.SM_LOAD_MAP_FINISH",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="scene_mgr_lifecycle",
+            patterns=[
+                r"SceneNetLogic\.ReqChangeMap",
+                r"SceneNetLogic\.ReqLoadMapFinish",
+                r"RaiseEvent\(CommonEventType\.CHANGE_MAP",
+                r"function _M\.RspEnterMap",
+                r"V_CurrentMapId",
+                r"V_LoadMapId",
+            ],
+            max_rows=1000,
+        )
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="event_constant",
+            patterns=[
+                r"_M\.CHANGE_MAP=",
+                r"_M\.SM_LOAD_MAP_FINISH=",
+            ],
+            max_rows=1000,
+        )
+
+    all_lua_paths = sorted(root.glob("by_source/lscripts/**/*.lua"), key=lambda path: str(path).lower())
+    for lua_path in all_lua_paths:
+        if len(requesters_rows) >= 360 and len(event_consumers_rows) >= 420:
+            break
+        scanned_lua_files.add(str(lua_path))
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if len(requesters_rows) < 360 and "ReqChangeMap(" in stripped and not stripped.startswith("function _M.ReqChangeMap"):
+                if "SceneNetLogic.ReqChangeMap" in stripped:
+                    surface = "scene_netlogic_direct_request"
+                elif "SceneMgr.Inst_get():ReqChangeMap" in stripped:
+                    surface = "scene_mgr_request_callsite"
+                elif "self:ReqChangeMap" in stripped:
+                    surface = "scene_mgr_internal_forward"
+                else:
+                    surface = "change_map_request_reference"
+                requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+                if surface in {"scene_mgr_request_callsite", "scene_netlogic_direct_request"}:
+                    evidence_rows.append({"category": "request_callsite", "file": rel, "line": line_no, "function": "", "snippet": stripped[:260]})
+            if len(event_consumers_rows) < 420 and (
+                "CommonEventType.CHANGE_MAP" in stripped or "CommonEventType.SM_LOAD_MAP_FINISH" in stripped
+            ):
+                if "AddEventHandler" in stripped:
+                    surface = "event_subscribe"
+                elif "RemoveEventHandler" in stripped:
+                    surface = "event_unsubscribe"
+                elif "RaiseEvent" in stripped:
+                    surface = "event_raise"
+                else:
+                    surface = "event_reference"
+                event_name = "SM_LOAD_MAP_FINISH" if "SM_LOAD_MAP_FINISH" in stripped else "CHANGE_MAP"
+                event_consumers_rows.append(
+                    {"file": rel, "line": line_no, "event": event_name, "surface": surface, "snippet": stripped[:260]}
+                )
+        if len(requesters_rows) >= 360 and len(event_consumers_rows) >= 420:
+            break
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_ChangeMap(40001)", "meaning": "Old pcap observed a client map-change request carrying `mapId` and `param`."},
+        {"step": 2, "surface": "SceneMgr request surfaces", "meaning": "`SceneMgr:ReqChangeMap` and module callsites request map transitions."},
+        {"step": 3, "surface": "SceneNetLogic.ReqChangeMap", "meaning": "Allocates `_CM_ChangeMap`, assigns `mapId` and `param`, opens loading, and sends the packet."},
+        {"step": 4, "surface": "SM_ChangeMap(40002)", "meaning": "Old pcap observed server map-change responses with destination/current scene fields."},
+        {"step": 5, "surface": "SceneNetLogic.RspChangeMap -> SceneMgr.RspEnterMap", "meaning": "Successful responses close the loading runner and enter the new map through `SceneMgr`."},
+        {"step": 6, "surface": "CM_LoadMapFinish(40003)", "meaning": "After local loading reaches the finish point, the client sends current map-load completion."},
+        {"step": 7, "surface": "SM_LoadMapFinish(40004)", "meaning": "Server load-finish acknowledgement triggers dungeon load-finish handling and `SM_LOAD_MAP_FINISH` events."},
+        {"step": 8, "surface": "CommonEventType.CHANGE_MAP / SM_LOAD_MAP_FINISH", "meaning": "Scene and game modules subscribe to these lifecycle events to reset UI, managers, camera, combat helpers, and activity scene state."},
+    ]
+    stats = {
+        "cm_change_map_packet_count": _as_int(cm_change.get("packet_count")) or 0,
+        "cm_change_map_field_order": cm_change.get("field_order", ""),
+        "cm_change_map_visible_status": cm_change_handler.get("visible_logic_status", ""),
+        "sm_change_map_packet_count": _as_int(sm_change.get("packet_count")) or 0,
+        "sm_change_map_field_order": sm_change.get("field_order", ""),
+        "sm_change_map_visible_status": sm_change_handler.get("visible_logic_status", ""),
+        "cm_load_map_finish_packet_count": _as_int(cm_load_finish.get("packet_count")) or 0,
+        "cm_load_map_finish_field_order": cm_load_finish.get("field_order", ""),
+        "cm_load_map_finish_visible_status": cm_load_finish_handler.get("visible_logic_status", ""),
+        "sm_load_map_finish_packet_count": _as_int(sm_load_finish.get("packet_count")) or 0,
+        "sm_load_map_finish_field_order": sm_load_finish.get("field_order", ""),
+        "sm_load_map_finish_visible_status": sm_load_finish_handler.get("visible_logic_status", ""),
+        "scene_core_text_dir_count": len(scene_core_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "event_consumer_row_count": len(event_consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "change_map_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "change_map_request"),
+        "change_map_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "change_map_response"),
+        "load_finish_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "load_finish_request"),
+        "load_finish_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "load_finish_response"),
+        "scene_mgr_lifecycle_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "scene_mgr_lifecycle"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "change_map_event_consumer_count": sum(1 for row in event_consumers_rows if row.get("event") == "CHANGE_MAP"),
+        "sm_load_map_finish_event_consumer_count": sum(1 for row in event_consumers_rows if row.get("event") == "SM_LOAD_MAP_FINISH"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_change_map": stats["cm_change_map_packet_count"] > 0,
+        "old_pcap_observed_sm_change_map": stats["sm_change_map_packet_count"] > 0,
+        "old_pcap_observed_cm_load_map_finish": stats["cm_load_map_finish_packet_count"] > 0,
+        "old_pcap_observed_sm_load_map_finish": stats["sm_load_map_finish_packet_count"] > 0,
+        "messagepool_registration_visible": stats["packet_registration_evidence_count"] >= 4,
+        "change_map_sender_visible": any("F_SendMsg(_ReqMapChange" in str(row.get("snippet", "")) for row in evidence_rows),
+        "change_map_response_visible": any("RspEnterMap(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "load_map_finish_sender_visible": any("F_SendMsg(_ReqMapLoadFinish" in str(row.get("snippet", "")) for row in evidence_rows),
+        "load_map_finish_response_event_visible": any("SM_LOAD_MAP_FINISH" in str(row.get("snippet", "")) for row in evidence_rows),
+        "scene_mgr_lifecycle_visible": stats["scene_mgr_lifecycle_evidence_count"] > 0,
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "lifecycle_event_consumers_visible": stats["change_map_event_consumer_count"] > 0 and stats["sm_load_map_finish_event_consumer_count"] > 0,
+        "direct_live_map_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_requesters.tsv"
+    event_consumers_tsv = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_event_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_scene_map_lifecycle_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_map_packets",
+            "sends_change_map",
+            "sends_load_finish",
+            "handles_change_map",
+            "handles_load_finish",
+            "raises_change_map_event",
+            "raises_sm_load_finish_event",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_tsv(event_consumers_tsv, event_consumers_rows, ["file", "line", "event", "surface", "snippet"])
+    _write_doupotd_observed_scene_map_lifecycle_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        requesters_rows=requesters_rows,
+        event_consumers_rows=event_consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "event_consumers": str(event_consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_yunmengpk_info_sync_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    requesters_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed CM_SyncYunmengPkInfo / SM_SyncYunmengPkInfo chain",
+        "",
+        "This report follows the old-pcap observed YunmengPK main-state sync pair through activity entry request, packet sender, response handler, match-info cache, qualification/check-state side effects, and main-panel/fight-tip/automation consumers. It is static metadata only; no live match payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:240]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Requesters", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in requesters_rows[:120]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_SyncYunmengPkInfo(12548)` is an old-pcap observed client request; the visible sender passes `activityId` through SocketManager client data instead of packet fields.",
+            "- `SM_SyncYunmengPkInfo(12549)` is an old-pcap observed response carrying `yunmengMatchVO` and status fields such as `continueKill`, `hasQualify`, and `isFirstSnip`.",
+            "- Ordinary YunmengPK, PartnerYunmengPK, and Mini YunmengPK share the same sender/handler shape, while PartnerYunmengPK also syncs team/check-list state.",
+            "- The main state is cached through `SyncYunmengPkInfo(info)` and read through `GetYunmengPkInfo()` by main panels, fight-tip views, and auto-activity actions.",
+            "- This is generic YunmengPK main-state refresh traffic, not DoupoTD PVP evidence, and the report exports no live `yunmengMatchVO` or account payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SyncYunmengPkInfo"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_SyncYunmengPkInfo"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SyncYunmengPkInfo"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_SyncYunmengPkInfo"), {})
+    text_dirs = _yunmengpk_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaYunmengpkNetLogic",
+        "LuaPartnerYunmengpkNetLogic",
+        "LuaYunMengPKMiniNetLogic",
+        "Destroy",
+        "CM_SyncYunmengPkInfoFun",
+        "SM_SyncYunmengPkInfoFun",
+        "SyncYunmengPkInfo",
+        "OnMatchSuccess",
+        "GetYunmengPkInfo",
+        "UpdateHasQualify",
+        "CheckHasQualify",
+        "UpdateKillCounter",
+        "UpdateFirstSnip",
+        "IsFirstSnip",
+        "UpdateCheckState",
+        "UpdateCheckStateList",
+        "UpdateCheckState2",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_info_sync_packets": "_CM_SyncYunmengPkInfo" in block_text
+                        or "_SM_SyncYunmengPkInfo" in block_text,
+                        "sends_cm_info_sync": "F_SendMsg(CM_SyncYunmengPkInfo" in block_text,
+                        "uses_activity_id_client_data": "{activityId=activityId}" in block_text or "ClientData.activityId" in block_text,
+                        "handles_sm_info_sync": "SM_SyncYunmengPkInfoFun" in str(block.get("function", ""))
+                        or "SyncYunmengPkInfo(msg.yunmengMatchVO)" in block_text,
+                        "stores_match_info": "_SyncYunmengPkInfo=info" in block_text,
+                        "reads_match_info": "GetYunmengPkInfo" in str(block.get("function", "")) or "_SyncYunmengPkInfo" in block_text,
+                        "updates_qualify": "UpdateHasQualify" in block_text or "CheckHasQualify" in str(block.get("function", "")),
+                        "updates_match_flags": "UpdateKillCounter" in block_text or "UpdateFirstSnip" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_SyncYunmengPkInfo",
+                    r"F_Register\(_SM_SyncYunmengPkInfo",
+                    r"F_Unregister\(_CM_SyncYunmengPkInfo",
+                    r"F_Unregister\(_SM_SyncYunmengPkInfo",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_info_request",
+                patterns=[
+                    r"CM_SyncYunmengPkInfoFun",
+                    r"GetMessageFromPools\(_CM_SyncYunmengPkInfo\)",
+                    r"F_SendMsg\(CM_SyncYunmengPkInfo,\{activityId=activityId\}\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_info_response",
+                patterns=[
+                    r"SM_SyncYunmengPkInfoFun",
+                    r"SyncYunmengPkInfo\(msg\.yunmengMatchVO\)",
+                    r"UpdateCheckStateList\(msg\.checkItemSet\)",
+                    r"UpdateCheckState\(msg\.isCheck\)",
+                    r"SyncYunmengPkTeam\(msg\.myTeamMap\)",
+                    r"UpdateKillCounter\(msg\.continueKill\)",
+                    r"ClientData\.activityId",
+                    r"UpdateHasQualify\(msg\.hasQualify,actId\)",
+                    r"UpdateFirstSnip\(msg\.isFirstSnip\)",
+                    r"SyncYunmengPkInfoUpdate",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="match_info_cache",
+                patterns=[
+                    r"function _M\.SyncYunmengPkInfo",
+                    r"self\._SyncYunmengPkInfo=info",
+                    r"function _M\.GetYunmengPkInfo",
+                    r"self\._SyncYunmengPkInfo\.timeStamp",
+                    r"return self\._SyncYunmengPkInfo",
+                    r"function _M\.UpdateHasQualify",
+                    r"self\.hasQualify\[activityId\]=value",
+                    r"function _M\.CheckHasQualify",
+                    r"function _M\.UpdateKillCounter",
+                    r"function _M\.UpdateFirstSnip",
+                    r"function _M\.IsFirstSnip",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="match_info_consumer",
+                patterns=[
+                    r"GetYunmengPkInfo\(\)",
+                    r"Match_Success",
+                    r"_OnPkInfoUpdate",
+                    r"_OnMatchInfoChange",
+                    r"AutoActivityAction",
+                    r"FightTipView",
+                ],
+                max_rows=1000,
+            )
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if "CM_SyncYunmengPkInfoFun" in stripped and len(requesters_rows) < 220:
+                    if stripped.startswith("function _M.CM_SyncYunmengPkInfoFun"):
+                        surface = "sender_definition"
+                    elif "activityId" in stripped:
+                        surface = "activity_entry_request"
+                    else:
+                        surface = "info_sync_request_reference"
+                    requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+                    if surface == "activity_entry_request":
+                        evidence_rows.append({"category": "request_callsite", "file": rel, "line": line_no, "function": "", "snippet": stripped[:260]})
+                if len(consumers_rows) < 320 and (
+                    "GetYunmengPkInfo()" in stripped
+                    or "Match_Success" in stripped
+                    or "_OnPkInfoUpdate" in stripped
+                    or "_OnMatchInfoChange" in stripped
+                    or "CheckHasQualify" in stripped
+                ):
+                    if "AutoActivityAction" in lua_path.name:
+                        surface = "auto_activity_consumer"
+                    elif "FightTipView" in lua_path.name:
+                        surface = "fight_tip_consumer"
+                    elif "MainPanel" in lua_path.name:
+                        surface = "main_panel_consumer"
+                    elif "Data.lua" in lua_path.name:
+                        surface = "data_cache_surface"
+                    elif "Model.lua" in lua_path.name:
+                        surface = "model_event_surface"
+                    else:
+                        surface = "match_info_consumer"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_SyncYunmengPkInfo(12548)", "meaning": "Old pcap observed a client request for YunmengPK main state; the visible sender attaches `activityId` as client data."},
+        {"step": 2, "surface": "YunmengPK activity entry / manager callsites", "meaning": "Ordinary, Partner, and Mini YunmengPK managers request state for current or cross activity ids."},
+        {"step": 3, "surface": "YunmengPK NetLogic sender", "meaning": "Allocates `_CM_SyncYunmengPkInfo` and sends it with `{activityId=activityId}` client data."},
+        {"step": 4, "surface": "SM_SyncYunmengPkInfo(12549)", "meaning": "Old pcap observed server state responses carrying match info and status flags."},
+        {"step": 5, "surface": "YunmengPK NetLogic handler", "meaning": "Stores `msg.yunmengMatchVO`, updates item checks, kill counter, qualification state, and first-snipe state."},
+        {"step": 6, "surface": "YunmengPK model/data caches", "meaning": "`SyncYunmengPkInfo(info)` caches match state and `GetYunmengPkInfo()` reads it with timestamp expiry."},
+        {"step": 7, "surface": "Main panel / fight tip / automation consumers", "meaning": "UI and auto-activity flows read the cached match state and listen for `Match_Success` updates."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "yunmengpk_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "consumer_row_count": len(consumers_rows),
+        "client_info_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_info_request"),
+        "request_callsite_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "request_callsite"),
+        "server_info_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_info_response"),
+        "match_info_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "match_info_cache"),
+        "match_info_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "match_info_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_cm_sync_yunmengpk_info": stats["request_packet_count"] > 0,
+        "old_pcap_observed_sm_sync_yunmengpk_info": stats["observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_CM_SyncYunmengPkInfo" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_SyncYunmengPkInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_info_sync_sender_visible": any("F_SendMsg(CM_SyncYunmengPkInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "activity_id_client_data_visible": any("{activityId=activityId}" in str(row.get("snippet", "")) for row in evidence_rows)
+        or any("ClientData.activityId" in str(row.get("snippet", "")) for row in evidence_rows),
+        "request_callsite_visible": stats["request_callsite_evidence_count"] > 0,
+        "server_handler_forwards_match_vo": any("SyncYunmengPkInfo(msg.yunmengMatchVO)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_updates_status_flags": any("UpdateKillCounter(msg.continueKill)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("UpdateHasQualify(msg.hasQualify,actId)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("UpdateFirstSnip(msg.isFirstSnip)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "match_info_cache_visible": stats["match_info_cache_evidence_count"] > 0,
+        "match_info_consumers_visible": len(consumers_rows) > 0 and stats["match_info_consumer_evidence_count"] > 0,
+        "direct_match_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_requesters.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_yunmengpk_info_sync_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_info_sync_packets",
+            "sends_cm_info_sync",
+            "uses_activity_id_client_data",
+            "handles_sm_info_sync",
+            "stores_match_info",
+            "reads_match_info",
+            "updates_qualify",
+            "updates_match_flags",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_yunmengpk_info_sync_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        requesters_rows=requesters_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_faze_show_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    requesters_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_FazeShow chain",
+        "",
+        "This report follows `SM_FazeShow(34001)`, a packet actually present in the old pcap metadata, from Lua packet registration into Faze model/data cache and user-view refresh surfaces. It is static metadata only; no live `fazeResId` values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Request Surface", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in requesters_rows[:100]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:120]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_FazeShow(34001)` is an old-pcap observed server response carrying only `fazeResId` in the visible Lua schema.",
+            "- The visible handler accepts successful responses, calls `SaveFazeShowId(msg.fazeResId)`, and raises `FazeType.ReFreshRuleBagData`.",
+            "- The model delegates the selected show id to `FazeData`, which caches `currentShowId` and calls `EntityMgr.Inst_get().UserView:UpdateFazeShow(showId)`.",
+            "- The paired `CM_FazeShow(34000)` request and sender are visible in static Lua, but this report does not claim that request was observed in the old pcap unless old-pcap metadata contains it.",
+            "- This chain describes display-state synchronization, not combat formula authority, and exports no live id/account/payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_FazeShow"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_FazeShow"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_FazeShow"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_FazeShow"), {})
+    text_dirs = _faze_text_asset_dirs(root)
+
+    selected_functions = {
+        "LuaFazeNetLogic",
+        "Destroy",
+        "CM_FazeShowFun",
+        "SM_FazeShowFun",
+        "ReqFazeShowFun",
+        "SaveFazeShowId",
+        "GetFazeShowId",
+        "UpdateFazeShow",
+        "GetFazeBagData",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    requesters_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_faze_show_packets": "_CM_FazeShow" in block_text or "_SM_FazeShow" in block_text,
+                        "sends_cm_faze_show": "F_SendMsg(CM_FazeShow" in block_text,
+                        "handles_sm_faze_show": "SM_FazeShowFun" in str(block.get("function", "")) or "SaveFazeShowId(msg.fazeResId)" in block_text,
+                        "saves_show_id": "SaveFazeShowId" in str(block.get("function", "")) or "currentShowId=showId" in block_text,
+                        "updates_user_view": "UpdateFazeShow(showId)" in block_text or "userView:UpdateFazeShow(showId)" in block_text,
+                        "raises_rule_bag_event": "ReFreshRuleBagData" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"F_Register\(_CM_FazeShow",
+                    r"F_Register\(_SM_FazeShow",
+                    r"F_Unregister\(_CM_FazeShow",
+                    r"F_Unregister\(_SM_FazeShow",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_show_request_surface",
+                patterns=[
+                    r"CM_FazeShowFun",
+                    r"GetMessageFromPools\(_CM_FazeShow\)",
+                    r"CM_FazeShow\.fazeResId=fazeResId",
+                    r"F_SendMsg\(CM_FazeShow\)",
+                    r"ReqFazeShowFun",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_show_response",
+                patterns=[
+                    r"SM_FazeShowFun",
+                    r"SaveFazeShowId\(msg\.fazeResId\)",
+                    r"RaiseEvent\(FazeType\.ReFreshRuleBagData\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="show_id_model_cache",
+                patterns=[
+                    r"function _M\.SaveFazeShowId",
+                    r"self\.FazeData:SaveFazeShowId\(showId\)",
+                    r"function _M\.GetFazeShowId",
+                    r"return self\.FazeData:GetFazeShowId\(\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="show_id_data_apply",
+                patterns=[
+                    r"self\.currentShowId=showId",
+                    r"return self\.currentShowId",
+                    r"function _M\.UpdateFazeShow",
+                    r"EntityMgr\.Inst_get\(\)\.UserView",
+                    r"userView:UpdateFazeShow\(showId\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="ui_consumer",
+                patterns=[
+                    r"GetFazeShowId\(\)",
+                    r"ReFreshRuleBagData",
+                    r"UpdateFazeShow",
+                ],
+                max_rows=1000,
+            )
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(requesters_rows) < 160 and (
+                    "CM_FazeShowFun" in stripped
+                    or "ReqFazeShowFun" in stripped
+                    or "F_SendMsg(CM_FazeShow" in stripped
+                    or "CM_FazeShow.fazeResId=fazeResId" in stripped
+                ):
+                    if stripped.startswith("function _M.CM_FazeShowFun"):
+                        surface = "net_sender_definition"
+                    elif stripped.startswith("function _M.ReqFazeShowFun"):
+                        surface = "manager_request_wrapper"
+                    elif "fazeResId" in stripped:
+                        surface = "show_id_assignment"
+                    else:
+                        surface = "show_request_reference"
+                    requesters_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+                if len(consumers_rows) < 220 and (
+                    "SaveFazeShowId" in stripped
+                    or "GetFazeShowId()" in stripped
+                    or "currentShowId" in stripped
+                    or "UpdateFazeShow" in stripped
+                    or "ReFreshRuleBagData" in stripped
+                ):
+                    if "FazeNetLogic" in lua_path.name:
+                        surface = "net_handler_surface"
+                    elif "FazeModel" in lua_path.name:
+                        surface = "model_cache_surface"
+                    elif "FazeData" in lua_path.name:
+                        surface = "data_cache_apply_surface"
+                    elif "Type" in lua_path.name:
+                        surface = "event_type_surface"
+                    else:
+                        surface = "ui_or_event_consumer"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_FazeShow(34001)", "meaning": "Old pcap observed a server response whose visible Lua field order is `fazeResId`."},
+        {"step": 2, "surface": "FazeNetLogic.SM_FazeShowFun", "meaning": "The response handler checks `msg.code==0`, saves `msg.fazeResId`, and raises the rule-bag refresh event."},
+        {"step": 3, "surface": "FazeModel.SaveFazeShowId", "meaning": "The model delegates the selected display id to `FazeData`."},
+        {"step": 4, "surface": "FazeData.SaveFazeShowId / GetFazeShowId", "meaning": "The data layer stores `currentShowId`, exposes it through `GetFazeShowId`, and applies the id to the user view."},
+        {"step": 5, "surface": "EntityMgr.UserView.UpdateFazeShow", "meaning": "The visible display state is pushed into the user-view surface as `showId`."},
+        {"step": 6, "surface": "FazeType.ReFreshRuleBagData", "meaning": "The handler also raises a rule-bag refresh event for UI consumers."},
+        {"step": 7, "surface": "CM_FazeShow(34000) static request surface", "meaning": "`CM_FazeShowFun` and `ReqFazeShowFun` are visible static senders for the same display id, independent of old-pcap observation."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "request_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "faze_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "requester_row_count": len(requesters_rows),
+        "consumer_row_count": len(consumers_rows),
+        "client_show_request_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_show_request_surface"),
+        "server_show_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_show_response"),
+        "show_id_model_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "show_id_model_cache"),
+        "show_id_data_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "show_id_data_apply"),
+        "ui_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "ui_consumer"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_faze_show": stats["observed_packet_count"] > 0,
+        "sm_schema_field_is_faze_res_id": "fazeResId" in stats["schema_field_order"],
+        "messagepool_registration_visible": any("F_Register(_SM_FazeShow" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_FazeShowFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_saves_faze_show_id": any("SaveFazeShowId(msg.fazeResId)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "rule_bag_refresh_event_visible": any("RaiseEvent(FazeType.ReFreshRuleBagData)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_data_show_id_cache_visible": stats["show_id_model_cache_evidence_count"] > 0
+        and stats["show_id_data_apply_evidence_count"] > 0,
+        "user_view_update_visible": any("userView:UpdateFazeShow(showId)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "static_cm_faze_show_request_surface_visible": any("F_SendMsg(CM_FazeShow)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("ReqFazeShowFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_faze_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_faze_show_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_faze_show_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_faze_show_evidence.tsv"
+    requesters_tsv = output_dir / "doupotd_pcap_observed_sm_faze_show_requesters.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_faze_show_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_faze_show_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_faze_show_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_faze_show_packets",
+            "sends_cm_faze_show",
+            "handles_sm_faze_show",
+            "saves_show_id",
+            "updates_user_view",
+            "raises_rule_bag_event",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(requesters_tsv, requesters_rows, ["file", "line", "surface", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_faze_show_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        requesters_rows=requesters_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "requesters": str(requesters_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_all_buff_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_AllBuff chain",
+        "",
+        "This report follows `SM_AllBuff(60035)`, a packet actually present in the old pcap metadata, from Lua packet registration into full buff-state reset/replay surfaces. It is static metadata only; no live buff ids, owner ids, or effect payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_AllBuff(60035)` is an old-pcap observed server response carrying `buffVOList`.",
+            "- The visible handler removes all current buff visuals/state, replays every `buffVO` through `BuffMgr:AddBuff`, then raises `CommonEventType.BuffRefresh`.",
+            "- `BuffMgr:AddBuff` applies each `BuffVO` to `EntityMgr:GetEntityFightInBattleView(buffVO.ownerId)` and then `entityView:AddBuff(...)`.",
+            "- `BuffVO(60017)` is the nested value object with `id`, `configId`, `layer`, `ownerId`, `remainTime`, `duration`, and `effectVO`; this report exports only schema/source metadata.",
+            "- This is client buff-state synchronization evidence, not combat formula authority and not a live buff snapshot.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_AllBuff"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_AllBuff"), {})
+    text_dirs = _battle_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "BuffNetLogic",
+        "Destroy",
+        "SM_AllBuffFunc",
+        "SM_AddBuffFunc",
+        "SM_RemoveBuffFunc",
+        "SM_UpdateBuffFunc",
+        "SM_BuffChangeHpAndMpFunc",
+        "AddBuff",
+        "RemoveBuff",
+        "ModifyBuff",
+        "RemoveAllBuff",
+        "UpdateBuffResult",
+        "ContainBuffById",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_all_buff_packet": "_SM_AllBuff" in block_text,
+                        "handles_all_buff": "SM_AllBuffFunc" in str(block.get("function", "")) or "msg.buffVOList" in block_text,
+                        "removes_all_buff": "RemoveAllBuff" in block_text,
+                        "adds_buff_vo": "AddBuff(buffVO)" in block_text or "entityView:AddBuff" in block_text,
+                        "raises_buff_refresh": "BuffRefresh" in block_text,
+                        "uses_entity_view": "GetEntityFightInBattleView" in block_text or "EntityMgr.Inst_get().UserView" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.buff\.packet\.SM_AllBuff\"",
+                    r"F_Register\(_SM_AllBuff",
+                    r"F_Unregister\(_SM_AllBuff",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="all_buff_response",
+                patterns=[
+                    r"function _M\.SM_AllBuffFunc",
+                    r"BuffMgr\.Inst_get\(\):RemoveAllBuff\(\)",
+                    r"Kpairs\(msg\.buffVOList\)",
+                    r"BuffMgr\.Inst_get\(\):AddBuff\(buffVO\)",
+                    r"RaiseEvent\(CommonEventType\.BuffRefresh\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="buff_mgr_apply",
+                patterns=[
+                    r"function _M\.AddBuff",
+                    r"GetEntityFightInBattleView\(buffVO\.ownerId\)",
+                    r"entityView:AddBuff\(buffVO,buff,entityView\.Entity\.V_ID\)",
+                    r"function _M\.RemoveAllBuff",
+                    r"userView:RemoveAllBuff\(\)",
+                    r"entityView:RemoveAllBuff\(\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="incremental_buff_family",
+                patterns=[
+                    r"function _M\.SM_AddBuffFunc",
+                    r"function _M\.SM_RemoveBuffFunc",
+                    r"function _M\.SM_UpdateBuffFunc",
+                    r"function _M\.SM_BuffChangeHpAndMpFunc",
+                    r"BuffMgr\.Inst_get\(\):UpdateBuffResult",
+                    r"BuffMgr\.Inst_get\(\):ModifyBuff",
+                    r"BuffMgr\.Inst_get\(\):RemoveBuff",
+                ],
+                max_rows=1000,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_AllBuff.lua",
+        message_text_dir / "SM_AllBuff__-1934583381887123224.lua",
+        message_text_dir / "BuffVO.lua",
+        message_text_dir / "BuffVO__-4919848389194297552.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.buffVOList=CList\.new\(\)",
+                r"readMessageList2List\(self\.buffVOList\)",
+                r"return\"SM_AllBuff\"",
+                r"self\.configId=0",
+                r"self\.layer=0",
+                r"self\.ownerId=0",
+                r"self\.remainTime=0",
+                r"self\.duration=0",
+                r"self\.effectVO=BuffEffectVO\.new\(\)",
+                r"return\"BuffVO\"",
+            ],
+            max_rows=1000,
+        )
+
+    for text_dir in text_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 260:
+                    break
+                if (
+                    "SM_AllBuffFunc" in stripped
+                    or "RemoveAllBuff" in stripped
+                    or "AddBuff(buffVO" in stripped
+                    or "CommonEventType.BuffRefresh" in stripped
+                    or "BUFF_ADD_EVENT" in stripped
+                    or "BUFF_REMOVE_EVENT" in stripped
+                    or "BUFF_UPDATE_EVENT" in stripped
+                ):
+                    if "BuffNetLogic" in lua_path.name:
+                        surface = "net_handler_surface"
+                    elif "BuffMgr" in lua_path.name:
+                        surface = "manager_apply_surface"
+                    elif lua_path.name.startswith("Buff"):
+                        surface = "buff_entity_event_surface"
+                    else:
+                        surface = "buff_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_AllBuff(60035)", "meaning": "Old pcap observed a server-to-client full buff snapshot with `buffVOList`."},
+        {"step": 2, "surface": "BuffNetLogic.SM_AllBuffFunc", "meaning": "The handler clears current buff state, iterates `msg.buffVOList`, and replays every `buffVO` through `BuffMgr:AddBuff`."},
+        {"step": 3, "surface": "BuffMgr.RemoveAllBuff", "meaning": "Clears user, player, and monster buff surfaces through `RemoveAllBuff` calls."},
+        {"step": 4, "surface": "BuffMgr.AddBuff", "meaning": "Looks up the owner entity by `buffVO.ownerId`, creates a `Buff`, and attaches it to `entityView`."},
+        {"step": 5, "surface": "BuffVO(60017)", "meaning": "Nested value object carries buff id/config/layer/owner/timing/effect fields in schema metadata."},
+        {"step": 6, "surface": "CommonEventType.BuffRefresh", "meaning": "After replay, the handler raises a UI/event refresh signal."},
+        {"step": 7, "surface": "SM_AddBuff / SM_RemoveBuff / SM_UpdateBuff family", "meaning": "Adjacent incremental handlers share the same BuffMgr apply surfaces after the full snapshot baseline is loaded."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "battle_text_dir_count": len(text_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "all_buff_response_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "all_buff_response"),
+        "buff_mgr_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "buff_mgr_apply"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "incremental_buff_family_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "incremental_buff_family"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_all_buff": stats["observed_packet_count"] > 0,
+        "schema_field_is_buff_vo_list": "buffVOList" in stats["schema_field_order"],
+        "messagepool_registration_visible": any("F_Register(_SM_AllBuff" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_AllBuffFunc" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_removes_all_then_adds_each_buff": any("RemoveAllBuff()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("Kpairs(msg.buffVOList)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("AddBuff(buffVO)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "buff_mgr_add_buff_surface_visible": any("entityView:AddBuff(buffVO,buff,entityView.Entity.V_ID)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "buff_mgr_remove_all_surface_visible": any("userView:RemoveAllBuff()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("entityView:RemoveAllBuff()" in str(row.get("snippet", "")) for row in evidence_rows),
+        "buff_vo_schema_visible": any("return\"BuffVO\"" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("ownerId" in str(row.get("snippet", "")) for row in evidence_rows),
+        "buff_refresh_event_visible": any("RaiseEvent(CommonEventType.BuffRefresh)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_buff_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_all_buff_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_all_buff_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_all_buff_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_all_buff_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_all_buff_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_all_buff_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_all_buff_packet",
+            "handles_all_buff",
+            "removes_all_buff",
+            "adds_buff_vo",
+            "raises_buff_refresh",
+            "uses_entity_view",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_all_buff_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_sync_unit_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_SyncUnit chain",
+        "",
+        "This report follows `SM_SyncUnit(60044)`, a packet actually present in the old pcap metadata, from Lua packet registration into local role-state and skill-cooldown refresh surfaces. It is static metadata only; no live HP, MP, skill, cooldown, or account payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:240]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_SyncUnit(60044)` is an old-pcap observed server response carrying local unit state fields such as HP, MP, run speed, skill group, cooldowns, and charge level.",
+            "- The visible handler forwards the same packet object to `RoleMgr:ReviveInfo(msg)` and `SkillMgr:RefreshUserSkillCD(msg)`.",
+            "- `RoleMgr:ReviveInfo` applies charge level and HP/MP/speed properties onto `EntityMgr.Inst_get().UserView.Entity`.",
+            "- `SkillMgr:RefreshUserSkillCD` forwards `groupId`, `skills`, `cds`, and `systemTime` into `SkillData:SetSkillCD`, then refreshes visible skill CD for each skill.",
+            "- This is client local-state synchronization evidence, not combat formula authority, and the report exports no live numeric state values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_SyncUnit"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_SyncUnit"), {})
+    logic_dirs = _fight_text_asset_dirs(root) + _role_text_asset_dirs_for_sync(root) + _battle_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaFightNetLogic",
+        "Destroy",
+        "SM_SyncUnitFun",
+        "ReviveInfo",
+        "RefreshUserSkillCD",
+        "SetSkillCD",
+        "GetCDBySkillId",
+        "SetChangeGroupData",
+        "SetChangeNoUpGroupData",
+        "SetChangeSkillGroupData",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_sync_unit_packet": "_SM_SyncUnit" in block_text,
+                        "handles_sync_unit": "SM_SyncUnitFun" in str(block.get("function", "")) or "ReviveInfo(msg)" in block_text,
+                        "updates_role_state": "SetProperty(LuaEntityPropertyType.HP" in block_text or "SetChargeLv(msg.chargeLv)" in block_text,
+                        "updates_skill_cd": "RefreshUserSkillCD" in str(block.get("function", "")) or "SetSkillCD" in block_text,
+                        "uses_sync_schema_fields": any(field in block_text for field in ["msg.currHp", "msg.maxHp", "msg.currMp", "msg.maxMp", "msg.runSpeed", "msg.chargeLv"]),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.fight\.packet\.SM_SyncUnit\"",
+                    r"F_Register\(_SM_SyncUnit",
+                    r"F_Unregister\(_SM_SyncUnit",
+                ],
+                max_rows=1200,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="sync_unit_handler",
+                patterns=[
+                    r"function _M\.SM_SyncUnitFun",
+                    r"RoleMgr\.Inst_get\(\):ReviveInfo\(msg\)",
+                    r"SkillMgr\.Inst_get\(\):RefreshUserSkillCD\(msg\)",
+                ],
+                max_rows=1200,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="role_state_apply",
+                patterns=[
+                    r"function _M\.ReviveInfo",
+                    r"userView:IsInState\(StateType\.Dead\)and msg\.currHp>0",
+                    r"userView:Revive\(\)",
+                    r"SetChargeLv\(msg\.chargeLv\)",
+                    r"SetProperty\(LuaEntityPropertyType\.HP,msg\.currHp\)",
+                    r"SetProperty\(LuaEntityPropertyType\.MAXHP,msg\.maxHp\)",
+                    r"SetProperty\(LuaEntityPropertyType\.MP,msg\.currMp\)",
+                    r"SetProperty\(LuaEntityPropertyType\.MAXMP,msg\.maxMp\)",
+                    r"SetProperty\(LuaEntityPropertyType\.RUNSPEED,msg\.runSpeed\)",
+                ],
+                max_rows=1200,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="skill_cd_refresh",
+                patterns=[
+                    r"function _M\.RefreshUserSkillCD",
+                    r"SetSkillCD\(msg\.groupId,msg\.skills,msg\.cds,msg\.systemTime:ToNum\(\)\)",
+                    r"userView\.SkillActor:RefreshSkillCD\(skillVo\.skillId\)",
+                    r"function _M\.SetSkillCD",
+                    r"self\.cdDic:LuaDic_AddOrSetItem\(groupId,Dictionary\.new\(\)\)",
+                    r"cdList\[index-1\]:ToNum\(\)-systemTime",
+                    r"groupCDDic:LuaDic_AddOrSetItem\(skillVo\.skillId",
+                    r"function _M\.GetCDBySkillId",
+                ],
+                max_rows=1200,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_SyncUnit.lua",
+        message_text_dir / "SM_SyncUnit__8114881805048840904.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.currHp=0",
+                r"self\.maxHp=0",
+                r"self\.currMp=0",
+                r"self\.maxMp=0",
+                r"self\.runSpeed=0",
+                r"self\.systemTime=0",
+                r"self\.groupId=0",
+                r"self\.skills=CList\.new\(\)",
+                r"self\.cds=CList\.new\(\)",
+                r"self\.chargeLv=0",
+                r"self\.currHp=self:readDouble\(\)",
+                r"self:readMessageList2List\(self\.skills\)",
+                r"self:readMessageList2List\(self\.cds\)",
+                r"return\"SM_SyncUnit\"",
+            ],
+            max_rows=1200,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 260:
+                    break
+                if (
+                    "SM_SyncUnitFun" in stripped
+                    or "ReviveInfo(msg)" in stripped
+                    or "RefreshUserSkillCD(msg)" in stripped
+                    or "SetSkillCD(msg.groupId" in stripped
+                    or "SetProperty(LuaEntityPropertyType." in stripped
+                    or "RefreshSkillCD(skillVo.skillId)" in stripped
+                ):
+                    if "FightNetLogic" in lua_path.name:
+                        surface = "net_handler_surface"
+                    elif "RoleMgr" in lua_path.name:
+                        surface = "role_state_apply_surface"
+                    elif "SkillMgr" in lua_path.name:
+                        surface = "skill_cd_refresh_surface"
+                    elif "SkillData" in lua_path.name:
+                        surface = "skill_cd_cache_surface"
+                    else:
+                        surface = "sync_unit_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_SyncUnit(60044)", "meaning": "Old pcap observed a server-to-client local unit sync packet with HP/MP/speed/skill/CD fields."},
+        {"step": 2, "surface": "FightNetLogic.SM_SyncUnitFun", "meaning": "The handler forwards the packet object to role-state and skill-CD refresh surfaces."},
+        {"step": 3, "surface": "RoleMgr.ReviveInfo", "meaning": "Applies charge level, HP, max HP, MP, max MP, and run speed to the local `UserView.Entity`."},
+        {"step": 4, "surface": "SkillMgr.RefreshUserSkillCD", "meaning": "Forwards skill group, skills, cooldowns, and system time to `SkillData:SetSkillCD`."},
+        {"step": 5, "surface": "SkillData.SetSkillCD", "meaning": "Computes remaining CD by subtracting server system time and stores it in `cdDic[groupId]`."},
+        {"step": 6, "surface": "UserView.SkillActor.RefreshSkillCD", "meaning": "Refreshes visible skill cooldown UI/state for every skill in the packet skill list."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "sync_unit_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "sync_unit_handler"),
+        "role_state_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "role_state_apply"),
+        "skill_cd_refresh_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "skill_cd_refresh"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    schema_order = stats["schema_field_order"]
+    verdict = {
+        "old_pcap_observed_sm_sync_unit": stats["observed_packet_count"] > 0,
+        "schema_fields_include_core_state": all(field in schema_order for field in ["currHp", "maxHp", "currMp", "maxMp", "runSpeed", "systemTime", "groupId", "skills", "cds", "chargeLv"]),
+        "messagepool_registration_visible": any("F_Register(_SM_SyncUnit" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_SyncUnitFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_role_and_skill_cd": any("RoleMgr.Inst_get():ReviveInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("SkillMgr.Inst_get():RefreshUserSkillCD(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "role_mgr_applies_hp_mp_speed_charge": all(
+            any(fragment in str(row.get("snippet", "")) for row in evidence_rows)
+            for fragment in [
+                "SetChargeLv(msg.chargeLv)",
+                "SetProperty(LuaEntityPropertyType.HP,msg.currHp)",
+                "SetProperty(LuaEntityPropertyType.MAXHP,msg.maxHp)",
+                "SetProperty(LuaEntityPropertyType.MP,msg.currMp)",
+                "SetProperty(LuaEntityPropertyType.MAXMP,msg.maxMp)",
+                "SetProperty(LuaEntityPropertyType.RUNSPEED,msg.runSpeed)",
+            ]
+        ),
+        "skill_mgr_refreshes_cd": any("SetSkillCD(msg.groupId,msg.skills,msg.cds,msg.systemTime:ToNum())" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("RefreshSkillCD(skillVo.skillId)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "skill_data_cd_cache_visible": any("groupCDDic:LuaDic_AddOrSetItem(skillVo.skillId" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0 and any("return\"SM_SyncUnit\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_unit_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_sync_unit_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_sync_unit_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_sync_unit_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_sync_unit_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_sync_unit_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_sync_unit_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_sync_unit_packet",
+            "handles_sync_unit",
+            "updates_role_state",
+            "updates_skill_cd",
+            "uses_sync_schema_fields",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_sync_unit_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_restrict_status_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_RestrictStatus chain",
+        "",
+        "This report follows `SM_RestrictStatus(60012)`, a packet actually present in the old pcap metadata, from Lua packet registration into entity restriction bitmask application and local movement/target/skill gating surfaces. It is static metadata only; no live unit ids, restrict-code values, account values, or combat payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:260]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_RestrictStatus(60012)` is an old-pcap observed server response carrying `unitId` and `restrictCode`.",
+            "- The visible fight handler resolves the battle entity with `msg.unitId` and applies `msg.restrictCode` through `EntityFightView:AddRestrictCode`.",
+            "- `SkillDefine.RestrictStatus` names the bitmask flags for movement, target selection, ordinary skill use, and skill-family-specific restrictions.",
+            "- `SkillMgr:IsInRestrictStatus` and entity/user view helpers interpret the bitmask with `bit.band`, then local movement, target, normal attack, gongfa, dodge, and auto-fight consumers read the result.",
+            "- This is client-side restriction-state synchronization evidence, not combat formula authority, and the report exports no live restrict-code payload values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_RestrictStatus"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_RestrictStatus"), {})
+    logic_dirs = _fight_text_asset_dirs(root) + _battle_text_asset_dirs(root) + _core_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaFightNetLogic",
+        "Destroy",
+        "SM_RestrictStatusFun",
+        "AddRestrictCode",
+        "IsInRestrictStatus",
+        "IsCanBeSelectTarget",
+        "IsCanSelectAsTarget",
+        "CanMove",
+        "IsCanMove",
+        "CanCastSkill",
+        "IsCanCastSkill",
+        "UserNormalAttackOnly",
+        "ForbidUseGongFa",
+        "ForbidUseDodge",
+        "ForbidUseNormalAttack",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_restrict_status_packet": "_SM_RestrictStatus" in block_text,
+                        "handles_restrict_status": "SM_RestrictStatusFun" in str(block.get("function", "")) or "AddRestrictCode(msg.restrictCode)" in block_text,
+                        "applies_restrict_code": "AddRestrictCode" in str(block.get("function", "")) or "self.restrictCode=code" in block_text or "self.V_RestrictCode=code" in block_text,
+                        "uses_bitmask": "bit.band" in block_text,
+                        "gates_movement_or_target": "FORBID_MOVE" in block_text or "CANNOT_SELECT_AS_TARGET" in block_text,
+                        "gates_skill_family": any(
+                            flag in block_text
+                            for flag in [
+                                "FORBID_USE_SKILL",
+                                "USE_DEFAULT_SKILL_ONLY",
+                                "FORBID_USE_SKILL_GONGFA",
+                                "FORBID_USE_SKILL_DODGE",
+                                "FORBID_USE_SKILL_NORMAL",
+                            ]
+                        ),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.fight\.packet\.SM_RestrictStatus\"",
+                    r"F_Register\(_SM_RestrictStatus",
+                    r"F_Unregister\(_SM_RestrictStatus",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="restrict_status_handler",
+                patterns=[
+                    r"function _M\.SM_RestrictStatusFun",
+                    r"GetEntityFightInBattleView\(msg\.unitId\)",
+                    r"AddRestrictCode\(msg\.restrictCode\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="entity_restrict_apply",
+                patterns=[
+                    r"function _M\.AddRestrictCode",
+                    r"self\.restrictCode=code",
+                    r"self\.V_RestrictCode=code",
+                    r"AddRestrictCode",
+                    r"FORBID_MOVE",
+                    r"StopMove\(\)",
+                    r"CANNOT_SELECT_AS_TARGET",
+                    r"RESTRICT_STATUS_CHANGED",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="restrict_status_bitmask",
+                patterns=[
+                    r"function _M\.IsInRestrictStatus",
+                    r"bit\.band\(restrictCode,status\)>0",
+                    r"bit\.band\(self\.restrictCode,status\)>0",
+                    r"bit\.band\(currentCode,Status\.",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="restrict_status_define",
+                patterns=[
+                    r"_M\.RestrictStatus=",
+                    r"FORBID_MOVE=2",
+                    r"CANNOT_SELECT_AS_TARGET=4",
+                    r"USE_DEFAULT_SKILL_ONLY=8",
+                    r"FORBID_USE_SKILL=16",
+                    r"FORBID_USE_SKILL_GONGFA=32768",
+                    r"FORBID_USE_SKILL_DODGE=65536",
+                    r"FORBID_USE_SKILL_XINFA=131072",
+                    r"FORBID_USE_SKILL_NORMAL=262144",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="user_skill_restrict_consumer",
+                patterns=[
+                    r"USE_DEFAULT_SKILL_ONLY",
+                    r"FORBID_USE_SKILL_GONGFA",
+                    r"FORBID_USE_SKILL_DODGE",
+                    r"FORBID_USE_SKILL_NORMAL",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="auto_fight_restrict_consumer",
+                patterns=[
+                    r"IsInRestrictStatus\(currentCode",
+                    r"FORBID_USE_SKILL",
+                    r"USE_DEFAULT_SKILL_ONLY",
+                    r"FORBID_USE_SKILL_GONGFA",
+                    r"FORBID_USE_SKILL_DODGE",
+                    r"FORBID_USE_SKILL_NORMAL",
+                ],
+                max_rows=1600,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_RestrictStatus.lua",
+        message_text_dir / "SM_RestrictStatus__7021917790247047331.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.unitId=0",
+                r"self\.restrictCode=0",
+                r"self\.unitId=self:readLong\(\)",
+                r"self\.restrictCode=self:readInt\(\)",
+                r"return\"SM_RestrictStatus\"",
+            ],
+            max_rows=1600,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 300:
+                    break
+                if (
+                    "SM_RestrictStatusFun" in stripped
+                    or "AddRestrictCode(msg.restrictCode)" in stripped
+                    or "function _M.AddRestrictCode" in stripped
+                    or "IsInRestrictStatus" in stripped
+                    or "FORBID_MOVE" in stripped
+                    or "CANNOT_SELECT_AS_TARGET" in stripped
+                    or "FORBID_USE_SKILL" in stripped
+                    or "USE_DEFAULT_SKILL_ONLY" in stripped
+                ):
+                    if "FightNetLogic" in lua_path.name:
+                        surface = "net_handler_surface"
+                    elif "EntityFightView" in lua_path.name:
+                        surface = "entity_restrict_apply_surface"
+                    elif "UserView" in lua_path.name:
+                        surface = "user_skill_restrict_surface"
+                    elif "AutoFightComponent" in lua_path.name:
+                        surface = "auto_fight_restrict_surface"
+                    elif "SkillDefine" in lua_path.name:
+                        surface = "restrict_status_define_surface"
+                    elif "SkillMgr" in lua_path.name:
+                        surface = "restrict_status_bitmask_surface"
+                    else:
+                        surface = "restrict_status_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_RestrictStatus(60012)", "meaning": "Old pcap observed a server-to-client entity restriction packet with `unitId` and `restrictCode`."},
+        {"step": 2, "surface": "FightNetLogic.SM_RestrictStatusFun", "meaning": "The handler looks up the battle entity by `msg.unitId`."},
+        {"step": 3, "surface": "EntityFightView.AddRestrictCode", "meaning": "Applies `msg.restrictCode` to the entity view and can immediately stop movement on `FORBID_MOVE`."},
+        {"step": 4, "surface": "SkillDefine.RestrictStatus", "meaning": "Defines named bitmask flags for movement, target selection, default-only skill use, and skill-family restrictions."},
+        {"step": 5, "surface": "SkillMgr.IsInRestrictStatus", "meaning": "Interprets restriction bitmasks with `bit.band(restrictCode,status)>0`."},
+        {"step": 6, "surface": "EntityFightView / UserView / AutoFightComponent", "meaning": "Movement, target selection, user skill family, and auto-fight logic consume the restriction state."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "restrict_status_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "restrict_status_handler"),
+        "entity_restrict_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "entity_restrict_apply"),
+        "restrict_status_define_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "restrict_status_define"),
+        "restrict_status_bitmask_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "restrict_status_bitmask"),
+        "user_skill_restrict_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "user_skill_restrict_consumer"),
+        "auto_fight_restrict_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "auto_fight_restrict_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    schema_order = stats["schema_field_order"]
+    verdict = {
+        "old_pcap_observed_sm_restrict_status": stats["observed_packet_count"] > 0,
+        "schema_fields_include_unit_and_restrict_code": "unitId" in schema_order and "restrictCode" in schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_RestrictStatus" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_RestrictStatusFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_applies_restrict_code_to_entity": any("GetEntityFightInBattleView(msg.unitId)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("AddRestrictCode(msg.restrictCode)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "entity_restrict_apply_visible": any("function _M.AddRestrictCode" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("FORBID_MOVE" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("CANNOT_SELECT_AS_TARGET" in str(row.get("snippet", "")) for row in evidence_rows),
+        "restrict_status_define_visible": all(
+            any(fragment in str(row.get("snippet", "")) for row in evidence_rows)
+            for fragment in ["FORBID_MOVE=2", "CANNOT_SELECT_AS_TARGET=4", "FORBID_USE_SKILL=16", "FORBID_USE_SKILL_GONGFA=32768"]
+        ),
+        "restrict_status_bitmask_visible": any("bit.band(restrictCode,status)>0" in str(row.get("snippet", "")) for row in evidence_rows)
+        or any("bit.band(self.restrictCode,status)>0" in str(row.get("snippet", "")) for row in evidence_rows),
+        "movement_target_skill_consumers_visible": all(
+            any(fragment in str(row.get("snippet", "")) for row in consumers_rows)
+            for fragment in ["FORBID_MOVE", "CANNOT_SELECT_AS_TARGET", "FORBID_USE_SKILL_GONGFA", "FORBID_USE_SKILL_NORMAL"]
+        )
+        and any("IsInRestrictStatus(currentCode" in str(row.get("snippet", "")) for row in consumers_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0 and any("return\"SM_RestrictStatus\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_restrict_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_restrict_status_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_restrict_status_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_restrict_status_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_restrict_status_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_restrict_status_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_restrict_status_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_restrict_status_packet",
+            "handles_restrict_status",
+            "applies_restrict_code",
+            "uses_bitmask",
+            "gates_movement_or_target",
+            "gates_skill_family",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_restrict_status_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_change_peace_state_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_ChangePeaceState chain",
+        "",
+        "This report follows `SM_ChangePeaceState(50002)`, a packet actually present in the old pcap metadata, from Lua packet registration into local user peace-state application and attack/heal target filtering surfaces. It is static metadata only; no live peace-state values, role ids, target ids, account values, or combat payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_ChangePeaceState(50002)` is an old-pcap observed server response carrying a single `peaceState` field.",
+            "- The visible handler applies `msg.peaceState` to `EntityMgr.Inst_get().UserView.Entity:ChangePeaceState(...)`.",
+            "- `User:ChangePeaceState` stores the local `V_PeaceState`, raises `CommonEventType.CHANGE_PEACE_STATE`, and can send `CM_ChangePeaceState` only when the local caller asks to sync a user-initiated state change.",
+            "- `User:CheckCanAttackTarget` and `User:CheckCanHealTarget` consume `V_PeaceState` to gate team, peace, union, region, club, fairyland, and camp targeting rules.",
+            "- This is client peace/targeting-state synchronization evidence, not combat formula authority, and the report exports no live state values.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_ChangePeaceState"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_ChangePeaceState"), {})
+    logic_dirs = _core_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "EntityNetLogic",
+        "Destroy",
+        "CM_ChangePeaceStateFun",
+        "SM_ChangePeaceStateFun",
+        "ChangePeaceState",
+        "CheckWildBossPeaceState",
+        "GetShowPeaceState",
+        "SetPeacefulCounterattack",
+        "CheckCanAttackTarget",
+        "CheckCanHealTarget",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_change_peace_state_packet": "_SM_ChangePeaceState" in block_text or "_CM_ChangePeaceState" in block_text,
+                        "handles_sm_change_peace_state": "SM_ChangePeaceStateFun" in str(block.get("function", "")) or "ChangePeaceState(msg.peaceState)" in block_text,
+                        "sends_cm_change_peace_state": "CM_ChangePeaceStateFun" in str(block.get("function", "")) or "F_SendMsg(_CM_ChangePeaceState)" in block_text,
+                        "stores_peace_state": "self.V_PeaceState=state" in block_text,
+                        "raises_peace_event": "CHANGE_PEACE_STATE" in block_text,
+                        "uses_targeting_rules": any(
+                            marker in block_text
+                            for marker in [
+                                "CheckCanAttackTarget",
+                                "CheckCanHealTarget",
+                                "LuaUserAttackState.Peace",
+                                "LuaUserAttackState.Union",
+                                "LuaUserAttackState.Region",
+                                "LuaUserAttackState.Club",
+                                "LuaUserAttackState.FairyLand",
+                            ]
+                        ),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.peaceState\.packet\.CM_ChangePeaceState\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.peaceState\.packet\.SM_ChangePeaceState\"",
+                    r"F_Register\(_CM_ChangePeaceState",
+                    r"F_Register\(_SM_ChangePeaceState",
+                    r"F_Unregister\(_CM_ChangePeaceState",
+                    r"F_Unregister\(_SM_ChangePeaceState",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_ChangePeaceStateFun",
+                    r"GetMessageFromPools\(_CM_ChangePeaceState\)",
+                    r"_CM_ChangePeaceState\.peaceState=state",
+                    r"F_SendMsg\(_CM_ChangePeaceState\)",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_ChangePeaceStateFun",
+                    r"ChangePeaceState\(msg\.peaceState\)",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="user_state_apply",
+                patterns=[
+                    r"function _M\.ChangePeaceState",
+                    r"self\.V_PeaceState=state",
+                    r"RaiseEvent\(CommonEventType\.CHANGE_PEACE_STATE,state\)",
+                    r"CM_ChangePeaceStateFun\(state\)",
+                    r"function _M\.GetShowPeaceState",
+                    r"return self\.V_PeaceState",
+                    r"function _M\.SetPeacefulCounterattack",
+                    r"self\.V_LastPeaceState",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="target_filter_consumer",
+                patterns=[
+                    r"function _M\.CheckCanAttackTarget",
+                    r"function _M\.CheckCanHealTarget",
+                    r"self\.V_PeaceState~=LuaUserAttackState\.All",
+                    r"self\.V_PeaceState==LuaUserAttackState\.Peace",
+                    r"self\.V_PeaceState==LuaUserAttackState\.Union",
+                    r"self\.V_PeaceState==LuaUserAttackState\.Region",
+                    r"self\.V_PeaceState==LuaUserAttackState\.Club",
+                    r"self\.V_PeaceState==LuaUserAttackState\.FairyLand",
+                    r"self\.V_PeaceState==LuaUserAttackState\.All and CampFlagMgr",
+                    r"IsMyTeamMate",
+                ],
+                max_rows=1400,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_ChangePeaceState.lua",
+        message_text_dir / "SM_ChangePeaceState__3319486279032624696.lua",
+        message_text_dir / "CM_ChangePeaceState.lua",
+        message_text_dir / "CM_ChangePeaceState__-7757806727358095143.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.peaceState=0",
+                r"self\.peaceState=self:readInt\(\)",
+                r"self:writeInt\(self\.peaceState\)",
+                r"return\"SM_ChangePeaceState\"",
+                r"return\"CM_ChangePeaceState\"",
+            ],
+            max_rows=1400,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 280:
+                    break
+                if (
+                    "SM_ChangePeaceStateFun" in stripped
+                    or "CM_ChangePeaceStateFun" in stripped
+                    or "ChangePeaceState(msg.peaceState)" in stripped
+                    or "function _M.ChangePeaceState" in stripped
+                    or "V_PeaceState" in stripped
+                    or "CHANGE_PEACE_STATE" in stripped
+                    or "CheckCanAttackTarget" in stripped
+                    or "CheckCanHealTarget" in stripped
+                    or "LuaUserAttackState." in stripped
+                ):
+                    if "EntityNetLogic" in lua_path.name:
+                        surface = "entity_netlogic_surface"
+                    elif "User" in lua_path.name and ("CheckCanAttackTarget" in stripped or "CheckCanHealTarget" in stripped or "LuaUserAttackState." in stripped):
+                        surface = "target_filter_surface"
+                    elif "User" in lua_path.name:
+                        surface = "user_peace_state_surface"
+                    else:
+                        surface = "peace_state_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_ChangePeaceState(50002)", "meaning": "Old pcap observed a server-to-client peace-state packet with one `peaceState` field."},
+        {"step": 2, "surface": "EntityNetLogic.SM_ChangePeaceStateFun", "meaning": "The handler gets the local `UserView` and calls `User.Entity:ChangePeaceState(msg.peaceState)`."},
+        {"step": 3, "surface": "User.ChangePeaceState", "meaning": "Stores `V_PeaceState`, raises `CommonEventType.CHANGE_PEACE_STATE`, and can send `CM_ChangePeaceState` for local user-initiated changes."},
+        {"step": 4, "surface": "EntityNetLogic.CM_ChangePeaceStateFun", "meaning": "Allocates the client request packet, assigns `peaceState`, and sends it through `SocketManager`."},
+        {"step": 5, "surface": "User.CheckCanAttackTarget", "meaning": "Consumes `V_PeaceState` to gate attack targeting by team, peace, union, region, club, fairyland, and camp rules."},
+        {"step": 6, "surface": "User.CheckCanHealTarget", "meaning": "Consumes the same state to decide whether a player target can be healed."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "user_state_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "user_state_apply"),
+        "target_filter_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "target_filter_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    schema_order = stats["schema_field_order"]
+    verdict = {
+        "old_pcap_observed_sm_change_peace_state": stats["observed_packet_count"] > 0,
+        "schema_field_is_peace_state": schema_order == "peaceState" or "peaceState" in schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_ChangePeaceState" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_ChangePeaceStateFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_applies_to_user_entity": any("userView.Entity:ChangePeaceState(msg.peaceState)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "user_state_apply_visible": any("function _M.ChangePeaceState" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.V_PeaceState=state" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("CommonEventType.CHANGE_PEACE_STATE" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("_CM_ChangePeaceState.peaceState=state" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(_CM_ChangePeaceState)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "attack_and_heal_filter_consumers_visible": any("function _M.CheckCanAttackTarget" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.CheckCanHealTarget" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("LuaUserAttackState.Peace" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("IsMyTeamMate" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0 and any("return\"SM_ChangePeaceState\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_peace_state_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_change_peace_state_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_change_peace_state_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_change_peace_state_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_change_peace_state_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_change_peace_state_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_change_peace_state_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_change_peace_state_packet",
+            "handles_sm_change_peace_state",
+            "sends_cm_change_peace_state",
+            "stores_peace_state",
+            "raises_peace_event",
+            "uses_targeting_rules",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_change_peace_state_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_is_cross_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_IsCross chain",
+        "",
+        "This report follows `SM_IsCross(40089)`, a packet actually present in the old pcap metadata, from Lua packet registration into local cross-scene state storage and query surfaces. It is static metadata only; no live cross-scene values, map ids, role ids, account values, or position payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:180]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:120]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_IsCross(40089)` is an old-pcap observed server response carrying one boolean `cross` field.",
+            "- `SceneNetLogic` registers the packet with a callback wrapper that calls `SM_IsCrossFun(msg)`.",
+            "- `SM_IsCrossFun` forwards `msg.cross` to `SceneMgr:UpdateCrossSceneState`.",
+            "- `SceneMgr` stores the value in `V_IsCrossScene`, exposes it through `IsCrossScene`, and resets it on scene cleanup.",
+            "- This is client map/session cross-scene state synchronization evidence, not combat formula authority or a live map snapshot.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_IsCross"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_IsCross"), {})
+    logic_dirs = _core_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "SceneNetLogic",
+        "Destroy",
+        "SM_IsCrossFun",
+        "SceneMgr",
+        "UpdateCrossSceneState",
+        "IsCrossScene",
+        "Clear",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Scene*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_sm_is_cross_packet": "_SM_IsCross" in block_text,
+                        "handles_sm_is_cross": "SM_IsCrossFun" in str(block.get("function", "")) or "UpdateCrossSceneState(msg.cross)" in block_text,
+                        "stores_cross_scene_state": "V_IsCrossScene" in block_text,
+                        "exposes_cross_scene_state": "IsCrossScene" in str(block.get("function", "")) or "return self.V_IsCrossScene" in block_text,
+                        "resets_cross_scene_state": "UpdateCrossSceneState(false)" in block_text or "self.V_IsCrossScene=false" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.scene\.map\.packet\.SM_IsCross\"",
+                    r"F_Register\(_SM_IsCross",
+                    r"self\.SM_IsCrossFun\(msg\)",
+                    r"F_Unregister\(_SM_IsCross",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_IsCrossFun",
+                    r"UpdateCrossSceneState\(msg\.cross\)",
+                ],
+                max_rows=1000,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="scene_cross_state_apply",
+                patterns=[
+                    r"self\.V_IsCrossScene=false",
+                    r"function _M\.UpdateCrossSceneState",
+                    r"self\.V_IsCrossScene=cross",
+                    r"function _M\.IsCrossScene",
+                    r"return self\.V_IsCrossScene",
+                    r"UpdateCrossSceneState\(false\)",
+                ],
+                max_rows=1000,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_IsCross.lua",
+        message_text_dir / "SM_IsCross__-4883848890864263587.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.cross=false",
+                r"self\.cross=self:readBool\(\)",
+                r"self:writeBool\(self\.cross\)",
+                r"return\"SM_IsCross\"",
+            ],
+            max_rows=1000,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Scene*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 160:
+                    break
+                if (
+                    "SM_IsCrossFun" in stripped
+                    or "UpdateCrossSceneState(msg.cross)" in stripped
+                    or "function _M.UpdateCrossSceneState" in stripped
+                    or "V_IsCrossScene" in stripped
+                    or "function _M.IsCrossScene" in stripped
+                    or "return self.V_IsCrossScene" in stripped
+                    or "UpdateCrossSceneState(false)" in stripped
+                ):
+                    if "SceneNetLogic" in lua_path.name:
+                        surface = "scene_netlogic_surface"
+                    elif "SceneMgr" in lua_path.name and ("IsCrossScene" in stripped or "return self.V_IsCrossScene" in stripped):
+                        surface = "scene_cross_query_surface"
+                    elif "SceneMgr" in lua_path.name:
+                        surface = "scene_cross_state_surface"
+                    else:
+                        surface = "scene_cross_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_IsCross(40089)", "meaning": "Old pcap observed a server-to-client cross-scene state packet with one boolean `cross` field."},
+        {"step": 2, "surface": "SceneNetLogic registration", "meaning": "Registers `_SM_IsCross` with a callback wrapper that invokes `SM_IsCrossFun(msg)`."},
+        {"step": 3, "surface": "SceneNetLogic.SM_IsCrossFun", "meaning": "Forwards `msg.cross` into `SceneMgr:UpdateCrossSceneState`."},
+        {"step": 4, "surface": "SceneMgr.UpdateCrossSceneState", "meaning": "Stores the value in `V_IsCrossScene`."},
+        {"step": 5, "surface": "SceneMgr.IsCrossScene", "meaning": "Exposes the local cross-scene flag to downstream scene logic."},
+        {"step": 6, "surface": "SceneMgr cleanup", "meaning": "Resets cross-scene state with `UpdateCrossSceneState(false)` during scene cleanup."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "scene_cross_state_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "scene_cross_state_apply"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    schema_order = stats["schema_field_order"]
+    verdict = {
+        "old_pcap_observed_sm_is_cross": stats["observed_packet_count"] > 0,
+        "schema_field_is_cross": schema_order == "cross" or "cross" in schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_IsCross" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_IsCrossFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_updates_scene_mgr_cross_state": any("UpdateCrossSceneState(msg.cross)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "scene_mgr_stores_cross_state": any("self.V_IsCrossScene=cross" in str(row.get("snippet", "")) for row in evidence_rows),
+        "scene_mgr_query_visible": any("function _M.IsCrossScene" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return self.V_IsCrossScene" in str(row.get("snippet", "")) for row in evidence_rows),
+        "scene_mgr_reset_visible": any("UpdateCrossSceneState(false)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0 and any("return\"SM_IsCross\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_cross_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_is_cross_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_is_cross_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_is_cross_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_is_cross_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_is_cross_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_is_cross_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_sm_is_cross_packet",
+            "handles_sm_is_cross",
+            "stores_cross_scene_state",
+            "exposes_cross_scene_state",
+            "resets_cross_scene_state",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_is_cross_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_camp_flag_panel_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_CampFlagPanel chain",
+        "",
+        "This report follows `SM_CampFlagPanel(97701)`, a packet actually present in the old pcap metadata, from Lua packet registration into CampFlag panel-info cache, remaining-count calculation, red-dot update, and main-panel UI refresh surfaces. It is static metadata only; no live count values, activity ids, role ids, account values, or reward payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_CampFlagPanel(97701)` is an old-pcap observed server response carrying one `times` field.",
+            "- `CampFlagNetLogic.SM_CampFlagPanelFun` forwards the response object to `CampFlagModel:SetCampFlagPanelInfo(msg)`.",
+            "- `CampFlagModel:SetCampFlagPanelInfo` stores the panel object through `CampFlagData`, raises `CampFlagLeftCountUpdate`, and raises `RedDotID.CampFlagLeftCount`.",
+            "- `GetCampFlagLeftCount` reads `panelInfo.times` and derives the remaining CampFlag entry count against the configured `CHALLENGE_TIME` cap.",
+            "- `CampFlagMainPanel` listens for `CampFlagLeftCountUpdate` and refreshes the displayed left count plus enter-button enabled/gray state.",
+            "- This is CampFlag activity panel/count synchronization evidence, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_CampFlagPanel"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_CampFlagPanel"), {})
+    logic_dirs = _campflag_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaCampflagNetLogic",
+        "Destroy",
+        "CM_CampFlagPanelFun",
+        "SM_CampFlagPanelFun",
+        "ReqCampFlagInfo",
+        "SetCampFlagPanelInfo",
+        "GetCampFlagPanelInfo",
+        "GetCampFlagLeftCount",
+        "CheckCampFlagLeftCount",
+        "SetCampFlagMainPanelShowValue",
+        "UpdateLeftCount",
+        "UpdateEnterBtn",
+        "UpdateView",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("CampFlag*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_camp_flag_panel_packet": "_SM_CampFlagPanel" in block_text or "_CM_CampFlagPanel" in block_text,
+                        "handles_sm_camp_flag_panel": "SM_CampFlagPanelFun" in str(block.get("function", "")) or "SetCampFlagPanelInfo(msg)" in block_text,
+                        "sends_cm_camp_flag_panel": "CM_CampFlagPanelFun" in str(block.get("function", "")) or "F_SendMsg(CM_CampFlagPanel)" in block_text,
+                        "stores_panel_info": "SetCampFlagPanelInfo" in str(block.get("function", "")) or "self.panelInfo=msg" in block_text,
+                        "computes_left_count": "GetCampFlagLeftCount" in str(block.get("function", "")) or "panelInfo.times" in block_text,
+                        "raises_left_count_event": "CampFlagLeftCountUpdate" in block_text or "RedDotID.CampFlagLeftCount" in block_text,
+                        "updates_main_panel": "UpdateLeftCount" in str(block.get("function", "")) or "UpdateEnterBtn" in str(block.get("function", "")) or "LeftCountTxt" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.campflag\.packet\.SM_CampFlagPanel\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.campflag\.packet\.CM_CampFlagPanel\"",
+                    r"F_Register\(_SM_CampFlagPanel",
+                    r"self\.SM_CampFlagPanelFun\(msg\)",
+                    r"F_Register\(_CM_CampFlagPanel",
+                    r"F_Unregister\(_SM_CampFlagPanel",
+                    r"F_Unregister\(_CM_CampFlagPanel",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.ReqCampFlagInfo",
+                    r"self\.NetLogic:CM_CampFlagPanelFun\(\)",
+                    r"function _M\.CM_CampFlagPanelFun",
+                    r"GetMessageFromPools\(_CM_CampFlagPanel\)",
+                    r"F_SendMsg\(CM_CampFlagPanel\)",
+                    r"RedDotID\.CampFlagTask",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_CampFlagPanelFun",
+                    r"SetCampFlagPanelInfo\(msg\)",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="panel_info_apply",
+                patterns=[
+                    r"function _M\.SetCampFlagPanelInfo",
+                    r"self\.CampFlagData:SetCampFlagPanelInfo\(msg\)",
+                    r"self\.panelInfo=msg",
+                    r"function _M\.GetCampFlagPanelInfo",
+                    r"return self\.panelInfo or nil",
+                    r"CampFlagType\.EventType\.CampFlagLeftCountUpdate",
+                    r"RaiseRedDotEvent\(RedDotID\.CampFlagLeftCount\)",
+                ],
+                max_rows=1400,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="left_count_consumer",
+                patterns=[
+                    r"function _M\.GetCampFlagLeftCount",
+                    r"ConfigName\.CampFlag_ConfigValue,\"CHALLENGE_TIME\"",
+                    r"panelInfo\.times",
+                    r"leftCount=maxCount-\(panelInfo\.times or 0\)",
+                    r"function _M\.CheckCampFlagLeftCount",
+                    r"leftCount>0 and isInChallenge",
+                    r"function _M\.SetCampFlagMainPanelShowValue",
+                    r"function _M\.UpdateLeftCount",
+                    r"CampFlagLeftCountUpdate",
+                    r"LeftCountTxt:SetText",
+                    r"function _M\.UpdateEnterBtn",
+                    r"EnterBtn:SetImageGrayAll",
+                ],
+                max_rows=1400,
+            )
+
+    schema_paths = [
+        message_text_dir / "SM_CampFlagPanel.lua",
+        message_text_dir / "SM_CampFlagPanel__-5834929764810180631.lua",
+        message_text_dir / "CM_CampFlagPanel.lua",
+        message_text_dir / "CM_CampFlagPanel__6659193894699849831.lua",
+    ]
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.times=0",
+                r"self\.times=self:readInt\(\)",
+                r"self:writeInt\(self\.times\)",
+                r"return\"SM_CampFlagPanel\"",
+                r"return\"CM_CampFlagPanel\"",
+            ],
+            max_rows=1400,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("CampFlag*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 260:
+                    break
+                if (
+                    "SM_CampFlagPanelFun" in stripped
+                    or "CM_CampFlagPanelFun" in stripped
+                    or "SetCampFlagPanelInfo" in stripped
+                    or "CampFlagLeftCountUpdate" in stripped
+                    or "RedDotID.CampFlagLeftCount" in stripped
+                    or "GetCampFlagLeftCount" in stripped
+                    or "panelInfo.times" in stripped
+                    or "UpdateLeftCount" in stripped
+                    or "UpdateEnterBtn" in stripped
+                    or "LeftCountTxt:SetText" in stripped
+                    or "EnterBtn:SetImageGrayAll" in stripped
+                ):
+                    if "CampFlagNetLogic" in lua_path.name:
+                        surface = "campflag_netlogic_surface"
+                    elif "CampFlagModel" in lua_path.name:
+                        surface = "campflag_model_surface"
+                    elif "CampFlagData" in lua_path.name:
+                        surface = "campflag_data_surface"
+                    elif "CampFlagMainPanel" in lua_path.name:
+                        surface = "campflag_main_panel_surface"
+                    elif "CampFlagMgr" in lua_path.name:
+                        surface = "campflag_request_surface"
+                    else:
+                        surface = "campflag_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_CampFlagPanel(97701)", "meaning": "Old pcap observed a server-to-client CampFlag panel response with one `times` field."},
+        {"step": 2, "surface": "CampFlagMgr.ReqCampFlagInfo", "meaning": "The static request path calls `CampFlagNetLogic:CM_CampFlagPanelFun()` and refreshes CampFlag task/red-dot surfaces."},
+        {"step": 3, "surface": "CampFlagNetLogic.SM_CampFlagPanelFun", "meaning": "The handler forwards the response object to `CampFlagModel:SetCampFlagPanelInfo(msg)`."},
+        {"step": 4, "surface": "CampFlagModel / CampFlagData.SetCampFlagPanelInfo", "meaning": "Stores the panel response object and raises `CampFlagLeftCountUpdate` plus `RedDotID.CampFlagLeftCount`."},
+        {"step": 5, "surface": "CampFlagModel.GetCampFlagLeftCount", "meaning": "Computes remaining count as configured max count minus `panelInfo.times`."},
+        {"step": 6, "surface": "CampFlagMainPanel", "meaning": "Listens for left-count updates, refreshes the displayed count, and grays/enables the enter button."},
+    ]
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_row.get("field_order", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "panel_info_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "panel_info_apply"),
+        "left_count_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "left_count_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    schema_order = stats["schema_field_order"]
+    verdict = {
+        "old_pcap_observed_sm_camp_flag_panel": stats["observed_packet_count"] > 0,
+        "schema_field_is_times": schema_order == "times" or "times" in schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_CampFlagPanel" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("CM_CampFlagPanelFun()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_CampFlagPanel)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_CampFlagPanelFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_sets_panel_info": any("SetCampFlagPanelInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_data_cache_visible": any("self.CampFlagData:SetCampFlagPanelInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.panelInfo=msg" in str(row.get("snippet", "")) for row in evidence_rows),
+        "left_count_computation_visible": any("panelInfo.times" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("leftCount=maxCount-(panelInfo.times or 0)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "left_count_event_and_ui_visible": any("CampFlagLeftCountUpdate" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("RedDotID.CampFlagLeftCount" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("LeftCountTxt:SetText" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("EnterBtn:SetImageGrayAll" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0 and any("return\"SM_CampFlagPanel\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_times_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_camp_flag_panel_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_camp_flag_panel_packet",
+            "handles_sm_camp_flag_panel",
+            "sends_cm_camp_flag_panel",
+            "stores_panel_info",
+            "computes_left_count",
+            "raises_left_count_event",
+            "updates_main_panel",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_camp_flag_panel_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_veins_select_sort_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_VeinsSelectSort chain",
+        "",
+        "This report follows `SM_VeinsSelectSort(87251)`, a packet actually present in the old pcap metadata, from Lua packet registration into the Venis select-sort cache and the search/sort UI surfaces that consume or update that list. The adjacent UnionVeins implementation is included because it mirrors the same request/cache/view shape. It is static metadata only; no live sort-list values, role ids, account values, or payload entries are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_VeinsSelectSort(87251)` is an old-pcap observed server response carrying one list field: `sort`.",
+            "- `VenisNetLogic.SM_VeinsSelectSortFun` writes the server list to `VenisData:SetSelectSort(msg.sort)`.",
+            "- The mirrored UnionVeins path writes the same shape to `UnionVenisData:SetSelectSort(msg.sort)`.",
+            "- Search-index setting views read `GetSelectSort()`, build local order state, and send `CM_VeinsSelectSort`/`CM_UnionVeinsSelectSort` with a `sortList` when the user confirms changes.",
+            "- Multi-search views read the cached sort list to order or filter displayed search conditions.",
+            "- This is Venis/UnionVeins search UI preference synchronization, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_VeinsSelectSort"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_VeinsSelectSort"), {})
+    union_schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_UnionVeinsSelectSort"), {})
+    union_request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_UnionVeinsSelectSort"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_VeinsSelectSort"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_VeinsSelectSort"), {})
+    union_handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_UnionVeinsSelectSort"), {})
+    logic_dirs = _venis_text_asset_dirs(root) + _unionvenis_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaVenisNetLogic",
+        "LuaUnionVenisNetLogic",
+        "Destroy",
+        "CM_VeinsSelectSortFun",
+        "SM_VeinsSelectSortFun",
+        "SetSelectSort",
+        "GetSelectSort",
+        "InitSortList",
+        "OnSureBtnClick",
+        "UpdateView",
+        "UpdateItem",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        lua_paths = sorted(
+            list(text_dir.glob("Venis*.lua")) + list(text_dir.glob("UnionVenis*.lua")),
+            key=lambda path: str(path).lower(),
+        )
+        for lua_path in lua_paths:
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_select_sort_packet": "_SM_VeinsSelectSort" in block_text
+                        or "_CM_VeinsSelectSort" in block_text
+                        or "SM_UnionVeinsSelectSort" in block_text
+                        or "CM_UnionVeinsSelectSort" in block_text,
+                        "sends_select_sort_request": "CM_VeinsSelectSortFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_VeinsSelectSort)" in block_text,
+                        "handles_select_sort_response": "SM_VeinsSelectSortFun" in str(block.get("function", ""))
+                        or "SetSelectSort(msg.sort)" in block_text,
+                        "stores_select_sort": "SetSelectSort" in str(block.get("function", "")) or "self.selectSort=value" in block_text,
+                        "reads_select_sort": "GetSelectSort" in str(block.get("function", "")) or "GetSelectSort()" in block_text,
+                        "builds_sort_list_request": "sortList" in block_text
+                        and ("CM_VeinsSelectSortFun" in block_text or "F_SendMsg(CM_VeinsSelectSort)" in block_text),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.SM_VeinsSelectSort\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.CM_VeinsSelectSort\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.SM_UnionVeinsSelectSort\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.CM_UnionVeinsSelectSort\"",
+                    r"F_Register\(_SM_VeinsSelectSort",
+                    r"self\.SM_VeinsSelectSortFun\(msg\)",
+                    r"F_Register\(_CM_VeinsSelectSort",
+                    r"F_Unregister\(_SM_VeinsSelectSort",
+                    r"F_Unregister\(_CM_VeinsSelectSort",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_VeinsSelectSortFun",
+                    r"local sortCList=CList\.new\(sortList\)",
+                    r"CM_VeinsSelectSort\.sortList=sortCList",
+                    r"F_SendMsg\(CM_VeinsSelectSort\)",
+                    r"NetLogic:CM_VeinsSelectSortFun\(sendList\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_VeinsSelectSortFun",
+                    r"VenisMgr\.Inst_get\(\)\.Model\.data:SetSelectSort\(msg\.sort\)",
+                    r"UnionVenisMgr\.Inst_get\(\)\.Model\.data:SetSelectSort\(msg\.sort\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="select_sort_cache",
+                patterns=[
+                    r"function _M\.SetSelectSort",
+                    r"self\.selectSort=value",
+                    r"function _M\.GetSelectSort",
+                    r"return self\.selectSort",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="search_view_consumer",
+                patterns=[
+                    r"local sortList=VenisMgr\.Inst_get\(\)\.Model\.data:GetSelectSort\(\)",
+                    r"local sortList=UnionVenisMgr\.Inst_get\(\)\.Model\.data:GetSelectSort\(\)",
+                    r"self\.sortList\[v\]=k\+1",
+                    r"sortList and sortList:Count\(\)>0",
+                    r"NetLogic:CM_VeinsSelectSortFun\(sendList\)",
+                ],
+                max_rows=1600,
+            )
+
+    schema_paths = sorted(
+        {
+            path
+            for packet_name in [
+                "SM_VeinsSelectSort",
+                "CM_VeinsSelectSort",
+                "SM_UnionVeinsSelectSort",
+                "CM_UnionVeinsSelectSort",
+            ]
+            for path in message_text_dir.glob(f"{packet_name}*.lua")
+        },
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.sort=CList\.new\(\)",
+                r"self:readMessageList2List\(self\.sort\)",
+                r"self:writeIntList\(self\.sort\)",
+                r"return\"SM_VeinsSelectSort\"",
+                r"self\.sortList=CList\.new\(\)",
+                r"self:readMessageList2List\(self\.sortList\)",
+                r"self:writeIntList\(self\.sortList\)",
+                r"return\"CM_VeinsSelectSort\"",
+                r"return\"SM_UnionVeinsSelectSort\"",
+                r"return\"CM_UnionVeinsSelectSort\"",
+            ],
+            max_rows=1600,
+        )
+
+    for text_dir in logic_dirs:
+        lua_paths = sorted(
+            list(text_dir.glob("Venis*.lua")) + list(text_dir.glob("UnionVenis*.lua")),
+            key=lambda path: str(path).lower(),
+        )
+        for lua_path in lua_paths:
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 280:
+                    break
+                if (
+                    "SM_VeinsSelectSortFun" in stripped
+                    or "CM_VeinsSelectSortFun" in stripped
+                    or "SetSelectSort" in stripped
+                    or "GetSelectSort" in stripped
+                    or "self.selectSort" in stripped
+                    or "self.sortList[v]" in stripped
+                    or "sortList:Count()>0" in stripped
+                    or "sortList and sortList:Count()" in stripped
+                    or "CM_VeinsSelectSort.sortList" in stripped
+                ):
+                    if "NetLogic" in lua_path.name:
+                        surface = "veins_netlogic_surface"
+                    elif lua_path.name in {"VenisData.lua", "UnionVenisData.lua"}:
+                        surface = "veins_data_cache_surface"
+                    elif "SearchIndexSetView" in lua_path.name:
+                        surface = "veins_search_index_surface"
+                    elif "MultSearchView" in lua_path.name:
+                        surface = "veins_mult_search_surface"
+                    else:
+                        surface = "veins_select_sort_consumer"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_VeinsSelectSort(87251)", "meaning": "Old pcap observed a server-to-client Venis select-sort response with one `sort` list field."},
+        {"step": 2, "surface": "VenisNetLogic.SM_VeinsSelectSortFun", "meaning": "The handler writes `msg.sort` to the Venis model data select-sort cache."},
+        {"step": 3, "surface": "VenisData.SetSelectSort/GetSelectSort", "meaning": "The list is stored as `self.selectSort` and exposed to view code through `GetSelectSort()`."},
+        {"step": 4, "surface": "VenisSearchIndexSetView", "meaning": "The setting view reads the cached order, lets the user rebuild it, and sends `CM_VeinsSelectSort` with `sortList`."},
+        {"step": 5, "surface": "VenisMultSearchView", "meaning": "The multi-search view reads the cached list to drive the displayed search/sort surface."},
+        {"step": 6, "surface": "UnionVenis mirror", "meaning": "UnionVeins uses the same handler/cache/search-view shape with `SM_UnionVeinsSelectSort`/`CM_UnionVeinsSelectSort`."},
+    ]
+    schema_order = schema_row.get("field_order", "")
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_order,
+        "schema_list_fields": schema_row.get("list_fields", ""),
+        "request_observed_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "union_observed_packet_count": _as_int(union_schema_row.get("packet_count")) or 0,
+        "union_request_observed_packet_count": _as_int(union_request_schema_row.get("packet_count")) or 0,
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_handler_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "union_handler_visible_status": union_handler_row.get("visible_logic_status", ""),
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "select_sort_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "select_sort_cache"),
+        "search_view_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "search_view_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_veins_select_sort": stats["observed_packet_count"] > 0,
+        "schema_field_is_sort_list": schema_order == "sort" or "sort" in schema_order or "sort" in stats["schema_list_fields"],
+        "messagepool_registration_visible": any("F_Register(_SM_VeinsSelectSort" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("CM_VeinsSelectSortFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_VeinsSelectSort)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_sets_select_sort": any("SetSelectSort(msg.sort)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "dual_venis_union_handlers_visible": any("VenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("UnionVenisMgr.Inst_get().Model.data:SetSelectSort(msg.sort)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "select_sort_cache_visible": any("self.selectSort=value" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return self.selectSort" in str(row.get("snippet", "")) for row in evidence_rows),
+        "search_views_consume_select_sort": any("GetSelectSort()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("CM_VeinsSelectSortFun(sendList)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.sortList[v]=k+1" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0
+        and any("return\"SM_VeinsSelectSort\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_sort_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_veins_select_sort_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_select_sort_packet",
+            "sends_select_sort_request",
+            "handles_select_sort_response",
+            "stores_select_sort",
+            "reads_select_sort",
+            "builds_sort_list_request",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_veins_select_sort_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_cross_boss_info_update_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_CrossBossInfoUpdate chain",
+        "",
+        "This report follows `SM_CrossBossInfoUpdate(80716)`, a packet actually present in the old pcap metadata, from Lua packet registration into Crossneutralboss boss-VO caches, refresh events, and view/model read surfaces. It is static metadata only; no live boss ids, unit ids, role ids, account values, map values, hp values, or payload entries are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_CrossBossInfoUpdate(80716)` is an old-pcap observed server response carrying one bean field: `bossVO`.",
+            "- `CrossneutralbossNetLogic.SM_CrossBossInfoUpdateFun` forwards the response to `CrossneutralbossModel:CrossBossInfoUpdate(msg)`.",
+            "- The model writes `msg.bossVO` into `CrossneutralbossData:CrossBossInfoUpdate`, raises `CrossneutralbossType.CrossBossInfoUpdate`, and branches on `isDead`, `isBigBoss`, `currHp`, and `isFocus` for local UI/event side effects.",
+            "- `CrossneutralbossData` indexes the boss VO by unit id, map id, and boss-group id, and refreshes special/big-boss caches when applicable.",
+            "- CrossBoss view/item surfaces read `GetSpecialBossInfo` and `GetBossInfoByBossGroupId`, while boss refresh events drive downstream refresh/tip behavior.",
+            "- This is Crossneutralboss activity state synchronization, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_CrossBossInfoUpdate"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_CrossBossInfoUpdate"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_CrossBossInfoUpdate"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_CrossBossInfoUpdate"), {})
+    logic_dirs = _crossneutralboss_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaCrossneutralbossNetLogic",
+        "Destroy",
+        "CM_CrossBossInfoUpdateFun",
+        "SM_CrossBossInfoUpdateFun",
+        "CrossBossInfoUpdate",
+        "SaveBigBossData",
+        "SaveOneBossInfo",
+        "SaveAttentionDown",
+        "ClearAttentionDown",
+        "GetSpecialBossInfo",
+        "GetBossDataByUnitId",
+        "GetBossInfoByBossGroupId",
+        "GetBossInfoVoDic",
+        "OpenCrossBigBossPopView",
+        "ReFreshBossWin",
+        "ReFreshBigBossData",
+        "UpdateBossScroll",
+        "UpdateSpecialScroll",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Cross*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_cross_boss_info_update": "_SM_CrossBossInfoUpdate" in block_text
+                        or "_CM_CrossBossInfoUpdate" in block_text,
+                        "sends_cm_cross_boss_info_update": "CM_CrossBossInfoUpdateFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_CrossBossInfoUpdate)" in block_text,
+                        "handles_sm_cross_boss_info_update": "SM_CrossBossInfoUpdateFun" in str(block.get("function", ""))
+                        or "CrossBossInfoUpdate(msg)" in block_text,
+                        "stores_boss_vo": "CrossBossInfoUpdate" in str(block.get("function", ""))
+                        or "bossUnitIdDic" in block_text
+                        or "bossInfoVoDic" in block_text,
+                        "raises_boss_refresh_events": "CrossBossInfoUpdate" in block_text
+                        or "BossSpecialReFresh" in block_text
+                        or "BossReFreshTips" in block_text,
+                        "reads_boss_cache": "GetSpecialBossInfo" in str(block.get("function", ""))
+                        or "GetBossInfoByBossGroupId" in block_text
+                        or "GetBossDataByUnitId" in str(block.get("function", "")),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.crossboss\.crossneutralboss\.packet\.CM_CrossBossInfoUpdate\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.crossboss\.crossneutralboss\.packet\.SM_CrossBossInfoUpdate\"",
+                    r"F_Register\(_CM_CrossBossInfoUpdate",
+                    r"F_Register\(_SM_CrossBossInfoUpdate",
+                    r"self\.SM_CrossBossInfoUpdateFun\(msg\)",
+                    r"F_Unregister\(_CM_CrossBossInfoUpdate",
+                    r"F_Unregister\(_SM_CrossBossInfoUpdate",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_CrossBossInfoUpdateFun",
+                    r"GetMessageFromPools\(_CM_CrossBossInfoUpdate\)",
+                    r"F_SendMsg\(CM_CrossBossInfoUpdate\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_CrossBossInfoUpdateFun",
+                    r"CrossneutralbossMgr\.Inst_get\(\)\.Model:CrossBossInfoUpdate\(msg\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="boss_vo_model_apply",
+                patterns=[
+                    r"function _M\.CrossBossInfoUpdate\(self,msg\)",
+                    r"self\.CrossneutralbossData:CrossBossInfoUpdate\(msg\.bossVO\)",
+                    r"self:RaiseEvent\(CrossneutralbossType\.CrossBossInfoUpdate\)",
+                    r"msg\.bossVO\.isDead",
+                    r"local isBigBoss=msg\.bossVO\.isBigBoss",
+                    r"local currHp=msg\.bossVO\.currHp",
+                    r"BossMgr\.Inst_get\(\):OpenBossKillTipView\(isBigBoss,true\)",
+                    r"BossMgr\.Inst_get\(\)\.Model:RaiseEvent\(BossType\.BossSpecialReFresh\)",
+                    r"self:SaveAttentionDown\(msg\.bossVO\)",
+                    r"BossMgr\.Inst_get\(\)\.Model:RaiseEvent\(BossType\.BossReFreshTips,true\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="boss_vo_data_cache",
+                patterns=[
+                    r"function _M\.CrossBossInfoUpdate\(self,bossVo\)",
+                    r"self\.bossUnitIdDic\[bossVo\.unitId\]=bossVo",
+                    r"self:SaveBigBossData\(bossVo\)",
+                    r"self\.specialBossInfo\.infoVOS\[0\]=bossVo",
+                    r"local itemList=self\.bossInfoVoDic\[bossVo\.mapId\]",
+                    r"self\.bossInfoVoDic:LuaDic_AddOrSetItem\(bossVo\.mapId,itemList\)",
+                    r"if v\.bossGroupId==bossVo\.bossGroupId then",
+                    r"self\.bossMapInfoVoDic:LuaDic_AddOrSetItem\(bossVo\.bossGroupId,bossVo\)",
+                    r"function _M\.GetBossDataByUnitId",
+                    r"return self\.bossUnitIdDic\[unitId\]",
+                    r"function _M\.GetBossInfoByBossGroupId",
+                    r"self\.bossMapInfoVoDic:LuaDic_GetItem\(bossGroupId\)",
+                    r"function _M\.GetSpecialBossInfo",
+                    r"return self\.specialBossInfo",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="view_cache_consumer",
+                patterns=[
+                    r"CrossneutralbossMgr\.Inst_get\(\)\.Model:GetSpecialBossInfo\(\)",
+                    r"CrossneutralbossMgr\.Inst_get\(\)\.Model:GetBossInfoByBossGroupId\(mapId,groupId\)",
+                    r"function _M\.ReFreshBossWin",
+                    r"function _M\.ReFreshBigBossData",
+                    r"function _M\.UpdateSpecialScroll",
+                    r"function _M\.UpdateBossScroll",
+                    r"self:ReFreshBigBossData\(bossVo\)",
+                    r"self:UpdateSpecialScroll\(\)",
+                    r"self:UpdateBossScroll\(",
+                ],
+                max_rows=1600,
+            )
+
+    schema_paths = sorted(
+        {
+            path
+            for packet_name in ["SM_CrossBossInfoUpdate", "CM_CrossBossInfoUpdate"]
+            for path in message_text_dir.glob(f"{packet_name}*.lua")
+        },
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.bossVO=AbstractBossVO\.new\(\)",
+                r"self\.bossVO=_AS_\(self:readBean\(typeof\(AbstractBossVO\)\),AbstractBossVO\)",
+                r"self:writeBean\(self\.bossVO\)",
+                r"return\"SM_CrossBossInfoUpdate\"",
+                r"return\"CM_CrossBossInfoUpdate\"",
+            ],
+            max_rows=1600,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Cross*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 280:
+                    break
+                if (
+                    "SM_CrossBossInfoUpdateFun" in stripped
+                    or "CM_CrossBossInfoUpdateFun" in stripped
+                    or "CrossBossInfoUpdate" in stripped
+                    or "msg.bossVO" in stripped
+                    or "bossVo." in stripped
+                    or "bossUnitIdDic" in stripped
+                    or "bossInfoVoDic" in stripped
+                    or "bossMapInfoVoDic" in stripped
+                    or "GetSpecialBossInfo" in stripped
+                    or "GetBossInfoByBossGroupId" in stripped
+                    or "BossSpecialReFresh" in stripped
+                    or "BossReFreshTips" in stripped
+                    or "ReFreshBigBossData" in stripped
+                    or "UpdateSpecialScroll" in stripped
+                    or "UpdateBossScroll" in stripped
+                ):
+                    if "NetLogic" in lua_path.name:
+                        surface = "cross_boss_netlogic_surface"
+                    elif "Model" in lua_path.name:
+                        surface = "cross_boss_model_surface"
+                    elif "Data" in lua_path.name:
+                        surface = "cross_boss_data_cache_surface"
+                    elif "View" in lua_path.name or "Item" in lua_path.name:
+                        surface = "cross_boss_view_surface"
+                    elif "Type" in lua_path.name:
+                        surface = "cross_boss_event_type_surface"
+                    else:
+                        surface = "cross_boss_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_CrossBossInfoUpdate(80716)", "meaning": "Old pcap observed a server-to-client Crossneutralboss update response with one `bossVO` bean field."},
+        {"step": 2, "surface": "CrossneutralbossNetLogic.SM_CrossBossInfoUpdateFun", "meaning": "The registered callback forwards the response object to `CrossneutralbossModel:CrossBossInfoUpdate(msg)`."},
+        {"step": 3, "surface": "CrossneutralbossModel.CrossBossInfoUpdate", "meaning": "The model writes `msg.bossVO` into data caches, raises CrossBossInfoUpdate, and triggers big-boss/attention refresh events."},
+        {"step": 4, "surface": "CrossneutralbossData.CrossBossInfoUpdate", "meaning": "Caches the boss VO by unit id, map id, and boss group id, and refreshes special/big-boss records."},
+        {"step": 5, "surface": "CrossBossView / CrossBossItem", "meaning": "UI surfaces read `GetSpecialBossInfo` and `GetBossInfoByBossGroupId` to refresh big-boss and list displays."},
+        {"step": 6, "surface": "CM_CrossBossInfoUpdate", "meaning": "The static client refresh request surface exists but the observed old-pcap row of interest is the server `SM_CrossBossInfoUpdate` response."},
+    ]
+    schema_order = schema_row.get("field_order", "")
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_order,
+        "request_observed_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_handler_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "boss_vo_model_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "boss_vo_model_apply"),
+        "boss_vo_data_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "boss_vo_data_cache"),
+        "view_cache_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "view_cache_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_cross_boss_info_update": stats["observed_packet_count"] > 0,
+        "schema_field_is_boss_vo": schema_order == "bossVO" or "bossVO" in schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_CrossBossInfoUpdate" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("CM_CrossBossInfoUpdateFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_CrossBossInfoUpdate)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_CrossBossInfoUpdateFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_to_model": any("CrossneutralbossMgr.Inst_get().Model:CrossBossInfoUpdate(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_applies_boss_vo": any("self.CrossneutralbossData:CrossBossInfoUpdate(msg.bossVO)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self:RaiseEvent(CrossneutralbossType.CrossBossInfoUpdate)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "data_cache_updates_visible": any("self.bossUnitIdDic[bossVo.unitId]=bossVo" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.bossMapInfoVoDic:LuaDic_AddOrSetItem(bossVo.bossGroupId,bossVo)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "refresh_events_visible": any("BossType.BossSpecialReFresh" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("BossType.BossReFreshTips" in str(row.get("snippet", "")) for row in evidence_rows),
+        "view_cache_consumers_visible": any("GetSpecialBossInfo()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("GetBossInfoByBossGroupId(mapId,groupId)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0
+        and any("return\"SM_CrossBossInfoUpdate\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_boss_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_cross_boss_info_update_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_cross_boss_info_update",
+            "sends_cm_cross_boss_info_update",
+            "handles_sm_cross_boss_info_update",
+            "stores_boss_vo",
+            "raises_boss_refresh_events",
+            "reads_boss_cache",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_cross_boss_info_update_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_sm_partner_arena_play_info_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed SM_PartnerArenaPlayInfo chain",
+        "",
+        "This report follows `SM_PartnerArenaPlayInfo(90102)`, a packet actually present in the old pcap metadata, from Lua packet registration into Partnerarena joiner/target caches and the main arena UI surfaces that read those caches. It is static metadata only; no live target ids, role ids, account values, rank values, score values, team payloads, or opponent payload entries are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_PartnerArenaPlayInfo(90102)` is an old-pcap observed server response carrying `joinerVO` and `targets`.",
+            "- `PartnerarenaNetLogic.SM_PartnerArenaPlayInfoFun` forwards successful responses to `PartnerarenaModel:PartnerArenaPlayInfo(msg)`.",
+            "- The model writes the message into `PartnerarenaData:PartnerArenaPlayInfo(msg)` and raises `PartnerarenaType.PartnerArenaPlayInfo`.",
+            "- `PartnerarenaData` stores `joinerVO` and `targets`, then derives teams, rank, max score, draw-reward time, record red-dot state, and getter surfaces.",
+            "- `PartnerArenaMainView` requests the play-info refresh and consumes `GetJoinerVO()` / `GetTargets()` to update counters, rank/fight text, and target list.",
+            "- This is PartnerArena activity state synchronization, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_PartnerArenaPlayInfo"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_PartnerArenaPlayInfo"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_PartnerArenaPlayInfo"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_PartnerArenaPlayInfo"), {})
+    logic_dirs = _partnerarena_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaPartnerarenaNetLogic",
+        "Destroy",
+        "CM_PartnerArenaPlayInfoFun",
+        "SM_PartnerArenaPlayInfoFun",
+        "PartnerArenaPlayInfo",
+        "GetTargets",
+        "GetJoinerVO",
+        "SetTeams",
+        "SetCurRank",
+        "SetMaxScore",
+        "UpdateDrawRewardTime",
+        "GetCurRank",
+        "InitEvent",
+        "UpdateView",
+        "ReFreshView",
+        "OnEnable",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Partner*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_partner_arena_play_info": "_SM_PartnerArenaPlayInfo" in block_text
+                        or "_CM_PartnerArenaPlayInfo" in block_text,
+                        "sends_cm_partner_arena_play_info": "CM_PartnerArenaPlayInfoFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_PartnerArenaPlayInfo)" in block_text,
+                        "handles_sm_partner_arena_play_info": "SM_PartnerArenaPlayInfoFun" in str(block.get("function", ""))
+                        or "PartnerArenaPlayInfo(msg)" in block_text,
+                        "stores_joiner_targets": "self.joinerVO=msg.joinerVO" in block_text or "self.targets=msg.targets" in block_text,
+                        "raises_partner_arena_event": "PartnerarenaType.PartnerArenaPlayInfo" in block_text,
+                        "reads_joiner_targets": "GetJoinerVO" in str(block.get("function", ""))
+                        or "GetTargets" in str(block.get("function", ""))
+                        or "GetJoinerVO()" in block_text
+                        or "GetTargets()" in block_text,
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.partnerarena\.packet\.CM_PartnerArenaPlayInfo\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.partnerarena\.packet\.SM_PartnerArenaPlayInfo\"",
+                    r"F_Register\(_CM_PartnerArenaPlayInfo",
+                    r"F_Register\(_SM_PartnerArenaPlayInfo",
+                    r"self\.SM_PartnerArenaPlayInfoFun\(msg\)",
+                    r"F_Unregister\(_CM_PartnerArenaPlayInfo",
+                    r"F_Unregister\(_SM_PartnerArenaPlayInfo",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_PartnerArenaPlayInfoFun",
+                    r"GetMessageFromPools\(_CM_PartnerArenaPlayInfo\)",
+                    r"CM_PartnerArenaPlayInfo\.activityId=activityId",
+                    r"F_SendMsg\(CM_PartnerArenaPlayInfo\)",
+                    r"NetLogic:CM_PartnerArenaPlayInfoFun\(self\.V_ActivityId\)",
+                    r"NetLogic:CM_PartnerArenaPlayInfoFun\(activityId\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_PartnerArenaPlayInfoFun",
+                    r"if msg\.code==0 then",
+                    r"PartnerarenaMgr\.Inst_get\(\)\.Model:PartnerArenaPlayInfo\(msg\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="play_info_model_apply",
+                patterns=[
+                    r"function _M\.PartnerArenaPlayInfo\(self,msg\)",
+                    r"self\.PartnerarenaData:PartnerArenaPlayInfo\(msg\)",
+                    r"self:RaiseEvent\(PartnerarenaType\.PartnerArenaPlayInfo\)",
+                    r"function _M\.GetTargets",
+                    r"return self\.PartnerarenaData:GetTargets\(\)",
+                    r"function _M\.GetJoinerVO",
+                    r"return self\.PartnerarenaData:GetJoinerVO\(\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="joiner_target_data_cache",
+                patterns=[
+                    r"function _M\.PartnerArenaPlayInfo\(self,msg\)",
+                    r"self\.joinerVO=msg\.joinerVO",
+                    r"self\.targets=msg\.targets",
+                    r"self:SetTeams\(self\.joinerVO\.teams\)",
+                    r"self:SetCurRank\(self\.joinerVO\.rank\)",
+                    r"self:SetMaxScore\(self\.joinerVO\.maxScore\)",
+                    r"self:UpdateDrawRewardTime\(self\.joinerVO\.drawTime\)",
+                    r"for k,v in Cipairs\(self\.joinerVO\.records\)do",
+                    r"RedDotID\.PartnerArenaRecord",
+                    r"function _M\.GetTargets",
+                    r"return self\.targets",
+                    r"function _M\.GetJoinerVO",
+                    r"return self\.joinerVO",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="main_view_consumer",
+                patterns=[
+                    r"BinderEvent\(PartnerarenaMgr\.Inst_get\(\)\.Model,PartnerarenaType\.PartnerArenaPlayInfo",
+                    r"PartnerarenaMgr\.Inst_get\(\)\.NetLogic:CM_PartnerArenaPlayInfoFun\(self\.V_ActivityId\)",
+                    r"PartnerarenaMgr\.Inst_get\(\)\.NetLogic:CM_PartnerArenaPlayInfoFun\(activityId\)",
+                    r"PartnerarenaMgr\.Inst_get\(\)\.Model:GetJoinerVO\(\)",
+                    r"PartnerarenaMgr\.Inst_get\(\)\.Model:GetTargets\(\)",
+                    r"for i,v in Cipairs\(targets\)do",
+                    r"TimesTxt:SetText",
+                    r"RankTxt:SetText",
+                    r"FightTxt:SetText",
+                ],
+                max_rows=1600,
+            )
+
+    schema_paths = sorted(
+        {
+            path
+            for packet_name in ["SM_PartnerArenaPlayInfo", "CM_PartnerArenaPlayInfo"]
+            for path in message_text_dir.glob(f"{packet_name}*.lua")
+        },
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.joinerVO=PartnerArenaJoinerVO\.new\(\)",
+                r"self\.targets=CList\.new\(\)",
+                r"self\.joinerVO=_AS_\(self:readBean\(typeof\(PartnerArenaJoinerVO\)\),PartnerArenaJoinerVO\)",
+                r"self:readMessageList2List\(self\.targets\)",
+                r"self:writeBean\(self\.joinerVO\)",
+                r"self:writeIntList\(self\.targets\)",
+                r"return\"SM_PartnerArenaPlayInfo\"",
+                r"return\"CM_PartnerArenaPlayInfo\"",
+            ],
+            max_rows=1600,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Partner*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 280:
+                    break
+                if (
+                    "SM_PartnerArenaPlayInfoFun" in stripped
+                    or "CM_PartnerArenaPlayInfoFun" in stripped
+                    or "PartnerArenaPlayInfo" in stripped
+                    or "msg.joinerVO" in stripped
+                    or "msg.targets" in stripped
+                    or "self.joinerVO" in stripped
+                    or "self.targets" in stripped
+                    or "GetJoinerVO" in stripped
+                    or "GetTargets" in stripped
+                    or "PartnerArenaRecord" in stripped
+                    or "TimesTxt:SetText" in stripped
+                    or "RankTxt:SetText" in stripped
+                    or "FightTxt:SetText" in stripped
+                    or "for i,v in Cipairs(targets)" in stripped
+                ):
+                    if "NetLogic" in lua_path.name:
+                        surface = "partner_arena_netlogic_surface"
+                    elif "Model" in lua_path.name:
+                        surface = "partner_arena_model_surface"
+                    elif "Data" in lua_path.name:
+                        surface = "partner_arena_data_cache_surface"
+                    elif "MainView" in lua_path.name or "MainItem" in lua_path.name:
+                        surface = "partner_arena_main_view_surface"
+                    elif "Mgr" in lua_path.name:
+                        surface = "partner_arena_mgr_surface"
+                    else:
+                        surface = "partner_arena_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "SM_PartnerArenaPlayInfo(90102)", "meaning": "Old pcap observed a server-to-client PartnerArena play-info response with `joinerVO` plus target list fields."},
+        {"step": 2, "surface": "PartnerarenaNetLogic.SM_PartnerArenaPlayInfoFun", "meaning": "Successful responses are forwarded to `PartnerarenaModel:PartnerArenaPlayInfo(msg)`."},
+        {"step": 3, "surface": "PartnerarenaModel.PartnerArenaPlayInfo", "meaning": "The model writes the response to data cache and raises `PartnerarenaType.PartnerArenaPlayInfo`."},
+        {"step": 4, "surface": "PartnerarenaData.PartnerArenaPlayInfo", "meaning": "Stores `joinerVO` and `targets`, derives teams/rank/max-score/draw-time, and raises record red-dot state."},
+        {"step": 5, "surface": "PartnerArenaMainView", "meaning": "Main view requests play info and uses `GetJoinerVO()` / `GetTargets()` to refresh counters, rank/fight text, and target list."},
+        {"step": 6, "surface": "CM_PartnerArenaPlayInfo(90101)", "meaning": "Old pcap also observed the no-body refresh request, with `activityId` carried through the activity base request parent."},
+    ]
+    schema_order = schema_row.get("field_order", "")
+    list_fields = schema_row.get("list_fields", "")
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_order,
+        "schema_list_fields": list_fields,
+        "request_observed_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_observed_directions": request_schema_row.get("directions", ""),
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_handler_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_handler_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "play_info_model_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "play_info_model_apply"),
+        "joiner_target_data_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "joiner_target_data_cache"),
+        "main_view_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "main_view_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_partner_arena_play_info": stats["observed_packet_count"] > 0,
+        "schema_fields_are_joiner_and_targets": "joinerVO" in schema_order and "targets" in schema_order and "targets" in list_fields,
+        "old_pcap_observed_cm_partner_arena_play_info": stats["request_observed_packet_count"] > 0,
+        "messagepool_registration_visible": any("F_Register(_SM_PartnerArenaPlayInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("CM_PartnerArenaPlayInfoFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_PartnerArenaPlayInfo)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_PartnerArenaPlayInfoFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_to_model": any("PartnerarenaMgr.Inst_get().Model:PartnerArenaPlayInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_raises_play_info_event": any("self:RaiseEvent(PartnerarenaType.PartnerArenaPlayInfo)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "data_caches_joiner_and_targets": any("self.joinerVO=msg.joinerVO" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.targets=msg.targets" in str(row.get("snippet", "")) for row in evidence_rows),
+        "data_derives_rank_team_red_dot": any("self:SetTeams(self.joinerVO.teams)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self:SetCurRank(self.joinerVO.rank)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("RedDotID.PartnerArenaRecord" in str(row.get("snippet", "")) for row in evidence_rows),
+        "main_view_consumes_joiner_and_targets": any("PartnerarenaMgr.Inst_get().Model:GetJoinerVO()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("PartnerarenaMgr.Inst_get().Model:GetTargets()" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0
+        and any("return\"SM_PartnerArenaPlayInfo\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_partner_arena_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_sm_partner_arena_play_info_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_partner_arena_play_info",
+            "sends_cm_partner_arena_play_info",
+            "handles_sm_partner_arena_play_info",
+            "stores_joiner_targets",
+            "raises_partner_arena_event",
+            "reads_joiner_targets",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_sm_partner_arena_play_info_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_land_contend_info_role_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed LandContend info / role-info chain",
+        "",
+        "This report follows the old-pcap observed LandContend info pair (`CM_LandContendInfo` / `SM_LandContendInfo`) and role-info pair (`CM_LandContendRoleInfo` / `SM_LandContendRoleInfo`) through Lua request surfaces, handlers, Landcontend data caches, signup/role checks, and direct UI consumers. It is static metadata only; no live club ids, role ids, battle-field ids, rank values, score values, hp values, commander values, or payload entries are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_LandContendInfo(83116)` is an old-pcap observed server response carrying stage, signup, rank, score, and pillar-hp fields.",
+            "- `SM_LandContendRoleInfo(83140)` is an old-pcap observed server response carrying `canJoin` and `commanderState`.",
+            "- `LandcontendNetLogic` exposes request surfaces for both packets and forwards successful responses to `LandcontendModel`.",
+            "- `LandcontendData` stores info by `msg.stage` and stores role info as `_RoleInfo`; model helpers expose signup and join/commander checks.",
+            "- `LandcontendView` reads stage info for signup and self-info display, including score/rank/pillar hp, while role-info helpers gate participation and commander-specific UI.",
+            "- This is LandContend activity/session state synchronization, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_LandContendInfo"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_LandContendInfo"), {})
+    role_schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_LandContendRoleInfo"), {})
+    role_request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_LandContendRoleInfo"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_LandContendInfo"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_LandContendInfo"), {})
+    role_handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_LandContendRoleInfo"), {})
+    role_request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_LandContendRoleInfo"), {})
+    logic_dirs = _landcontend_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaLandcontendNetLogic",
+        "Destroy",
+        "CM_LandContendInfoFun",
+        "SM_LandContendInfoFun",
+        "CM_LandContendRoleInfoFun",
+        "SM_LandContendRoleInfoFun",
+        "SetLandContendInfo",
+        "GetLandContendInfo",
+        "UpdateRoleInfo",
+        "GetRoleInfo",
+        "CheckIsCommander",
+        "CheckIsCanSignUp",
+        "IsCanJoin",
+        "IsSingUp",
+        "RefreshSelfInfo",
+        "RefreshContendUI",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Land*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_landcontend_info_packets": "_SM_LandContendInfo" in block_text
+                        or "_CM_LandContendInfo" in block_text
+                        or "_SM_LandContendRoleInfo" in block_text
+                        or "_CM_LandContendRoleInfo" in block_text,
+                        "sends_landcontend_info_request": "CM_LandContendInfoFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_LandContendInfo)" in block_text,
+                        "sends_landcontend_role_request": "CM_LandContendRoleInfoFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_LandContendRoleInfo)" in block_text,
+                        "handles_landcontend_info_response": "SM_LandContendInfoFun" in str(block.get("function", ""))
+                        or "SetLandContendInfo(msg)" in block_text,
+                        "handles_landcontend_role_response": "SM_LandContendRoleInfoFun" in str(block.get("function", ""))
+                        or "UpdateRoleInfo(msg)" in block_text,
+                        "stores_stage_info": "self.baseData[msg.stage]=msg" in block_text,
+                        "stores_role_info": "self._RoleInfo=info" in block_text,
+                        "reads_info_or_role_state": "GetLandContendInfo" in block_text
+                        or "GetRoleInfo" in block_text
+                        or "IsCanJoin" in str(block.get("function", ""))
+                        or "IsSingUp" in str(block.get("function", "")),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.landcontend\.packet\.SM_LandContendInfo\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.landcontend\.packet\.CM_LandContendInfo\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.landcontend\.packet\.SM_LandContendRoleInfo\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.world\.landcontend\.packet\.CM_LandContendRoleInfo\"",
+                    r"F_Register\(_SM_LandContendInfo",
+                    r"F_Register\(_CM_LandContendInfo",
+                    r"F_Register\(_SM_LandContendRoleInfo",
+                    r"F_Register\(_CM_LandContendRoleInfo",
+                    r"F_Unregister\(_SM_LandContendInfo",
+                    r"F_Unregister\(_CM_LandContendInfo",
+                    r"F_Unregister\(_SM_LandContendRoleInfo",
+                    r"F_Unregister\(_CM_LandContendRoleInfo",
+                ],
+                max_rows=1800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_LandContendInfoFun",
+                    r"CM_LandContendInfo\.stage=stage",
+                    r"F_SendMsg\(CM_LandContendInfo\)",
+                    r"function _M\.CM_LandContendRoleInfoFun",
+                    r"GetMessageFromPools\(_CM_LandContendRoleInfo\)",
+                    r"F_SendMsg\(CM_LandContendRoleInfo\)",
+                    r"CM_LandContendInfoFun\(LandContendType\.ActStageType\.Outside\)",
+                    r"CM_LandContendInfoFun\(LandContendType\.ActStageType\.Inside\)",
+                    r"CM_LandContendInfoFun\(LandContendType\.ActStageType\.Qualifying\)",
+                    r"CM_LandContendRoleInfoFun\(\)",
+                ],
+                max_rows=1800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_LandContendInfoFun",
+                    r"LandcontendMgr\.Inst_get\(\)\.Model:SetLandContendInfo\(msg\)",
+                    r"function _M\.SM_LandContendRoleInfoFun",
+                    r"LandcontendMgr\.Inst_get\(\)\.Model:UpdateRoleInfo\(msg\)",
+                ],
+                max_rows=1800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="landcontend_info_apply",
+                patterns=[
+                    r"function _M\.SetLandContendInfo",
+                    r"self\.LandcontendData:SetLandContendInfo\(msg\)",
+                    r"self:RaiseEvent\(LandContendType\.EventType\.UpdateSelfInfo,msg\.stage\)",
+                    r"RedDotID\.LandContendInfo_SignUp",
+                    r"if msg\.signUpBattleField>0 then",
+                    r"self\._CurScheduleStage=msg\.stage",
+                    r"self\.baseData\[msg\.stage\]=msg",
+                    r"function _M\.GetLandContendInfo",
+                    r"return self\.baseData\[stage\]",
+                ],
+                max_rows=1800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="landcontend_role_apply",
+                patterns=[
+                    r"function _M\.UpdateRoleInfo",
+                    r"self\.LandcontendData:UpdateRoleInfo\(info\)",
+                    r"self:RaiseEvent\(LandContendType\.EventType\.RoleInfoUpdate\)",
+                    r"self\._RoleInfo=info",
+                    r"function _M\.CheckIsCommander",
+                    r"return self\._RoleInfo\.commanderState>0",
+                    r"function _M\.GetRoleInfo",
+                    r"return self\._RoleInfo",
+                    r"function _M\.IsCanJoin",
+                    r"return roleInfo\.canJoin or false",
+                ],
+                max_rows=1800,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="view_state_consumer",
+                patterns=[
+                    r"LandcontendMgr\.Inst_get\(\)\.Model:IsCanJoin\(\)",
+                    r"LandcontendMgr\.Inst_get\(\)\.Model:IsSingUp\(LandContendType\.ActStageType\.Outside\)",
+                    r"LandcontendMgr\.Inst_get\(\)\.Model:GetLandContendInfo\(self:GetActStageType\(\)\)",
+                    r"LandcontendMgr\.Inst_get\(\)\.Model\.LandcontendData:GetRoleInfo\(\)",
+                    r"function _M\.RefreshSelfInfo",
+                    r"local curHp=info\.pillarCurHp",
+                    r"info\.score",
+                    r"info\.myClubRank",
+                    r"txtContendDesc:SetText",
+                    r"function _M\.CheckIsCanSignUp",
+                    r"local isCanJoin=self:IsCanJoin\(\)",
+                    r"return not self:IsSingUp\(LandContendType\.ActStageType\.Outside\)",
+                ],
+                max_rows=1800,
+            )
+
+    schema_paths = sorted(
+        {
+            path
+            for packet_name in [
+                "SM_LandContendInfo",
+                "CM_LandContendInfo",
+                "SM_LandContendRoleInfo",
+                "CM_LandContendRoleInfo",
+            ]
+            for path in message_text_dir.glob(f"{packet_name}*.lua")
+        },
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.stage=0",
+                r"self\.canSignUp=false",
+                r"self\.signUpBattleField=0",
+                r"self\.myClubRank=0",
+                r"self\.score=0",
+                r"self\.pillarCurHp=0",
+                r"self\.pillarMaxHp=0",
+                r"self\.canJoin=false",
+                r"self\.commanderState=0",
+                r"self\.stage=self:readInt\(\)",
+                r"self\.canSignUp=self:readBool\(\)",
+                r"self\.pillarCurHp=self:readDouble\(\)",
+                r"self\.canJoin=self:readBool\(\)",
+                r"self\.commanderState=self:readInt\(\)",
+                r"return\"SM_LandContendInfo\"",
+                r"return\"CM_LandContendInfo\"",
+                r"return\"SM_LandContendRoleInfo\"",
+                r"return\"CM_LandContendRoleInfo\"",
+            ],
+            max_rows=1800,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Land*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 320:
+                    break
+                if (
+                    "SM_LandContendInfoFun" in stripped
+                    or "CM_LandContendInfoFun" in stripped
+                    or "SM_LandContendRoleInfoFun" in stripped
+                    or "CM_LandContendRoleInfoFun" in stripped
+                    or "SetLandContendInfo" in stripped
+                    or "GetLandContendInfo" in stripped
+                    or "UpdateRoleInfo" in stripped
+                    or "GetRoleInfo" in stripped
+                    or "self.baseData" in stripped
+                    or "self._RoleInfo" in stripped
+                    or "signUpBattleField" in stripped
+                    or "commanderState" in stripped
+                    or "IsCanJoin" in stripped
+                    or "IsSingUp" in stripped
+                    or "CheckIsCanSignUp" in stripped
+                    or "pillarCurHp" in stripped
+                    or "myClubRank" in stripped
+                    or "txtContendDesc:SetText" in stripped
+                    or "LandContendInfo_SignUp" in stripped
+                ):
+                    if "NetLogic" in lua_path.name:
+                        surface = "landcontend_netlogic_surface"
+                    elif "Model" in lua_path.name:
+                        surface = "landcontend_model_surface"
+                    elif "Data" in lua_path.name:
+                        surface = "landcontend_data_cache_surface"
+                    elif "View" in lua_path.name or "Item" in lua_path.name:
+                        surface = "landcontend_view_surface"
+                    elif "Mgr" in lua_path.name:
+                        surface = "landcontend_mgr_surface"
+                    else:
+                        surface = "landcontend_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_LandContendInfo(83115)", "meaning": "Old pcap observed the client request with a `stage` field; views request outside/inside/qualifying stage info."},
+        {"step": 2, "surface": "SM_LandContendInfo(83116)", "meaning": "Old pcap observed the server response with stage, signup, rank, score, and pillar-hp fields."},
+        {"step": 3, "surface": "LandcontendModel/Data.SetLandContendInfo", "meaning": "The response is stored under `baseData[msg.stage]`, updates current schedule stage, raises `UpdateSelfInfo`, and refreshes signup red dot state."},
+        {"step": 4, "surface": "CM/SM_LandContendRoleInfo(83139/83140)", "meaning": "The role-info pair refreshes local `canJoin` and `commanderState` state."},
+        {"step": 5, "surface": "LandcontendModel/Data.UpdateRoleInfo", "meaning": "Role info is stored as `_RoleInfo`, raises `RoleInfoUpdate`, and powers `IsCanJoin` / `CheckIsCommander` helpers."},
+        {"step": 6, "surface": "LandcontendView / red-dot checks", "meaning": "UI and red-dot logic consume signup, stage, role, score, rank, and pillar-hp state to refresh the activity panel."},
+    ]
+    schema_order = schema_row.get("field_order", "")
+    role_schema_order = role_schema_row.get("field_order", "")
+    stats = {
+        "info_observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "info_observed_directions": schema_row.get("directions", ""),
+        "info_schema_field_order": schema_order,
+        "info_request_observed_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "info_handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "info_handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "info_request_handler_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "role_observed_packet_count": _as_int(role_schema_row.get("packet_count")) or 0,
+        "role_observed_directions": role_schema_row.get("directions", ""),
+        "role_schema_field_order": role_schema_order,
+        "role_request_observed_packet_count": _as_int(role_request_schema_row.get("packet_count")) or 0,
+        "role_handler_visible_status": role_handler_row.get("visible_logic_status", ""),
+        "role_handler_evidence_count": _as_int(role_handler_row.get("evidence_count")) or 0,
+        "role_request_handler_visible_status": role_request_handler_row.get("visible_logic_status", ""),
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "landcontend_info_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "landcontend_info_apply"),
+        "landcontend_role_apply_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "landcontend_role_apply"),
+        "view_state_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "view_state_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_land_contend_info": stats["info_observed_packet_count"] > 0,
+        "old_pcap_observed_sm_land_contend_role_info": stats["role_observed_packet_count"] > 0,
+        "info_schema_fields_visible": all(field in schema_order for field in ["stage", "canSignUp", "signUpBattleField", "myClubRank", "score", "pillarCurHp", "pillarMaxHp"]),
+        "role_schema_fields_visible": "canJoin" in role_schema_order and "commanderState" in role_schema_order,
+        "messagepool_registration_visible": any("F_Register(_SM_LandContendInfo" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_SM_LandContendRoleInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surfaces_visible": any("CM_LandContendInfoFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_LandContendInfo)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("CM_LandContendRoleInfoFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_LandContendRoleInfo)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handlers_visible": any("SM_LandContendInfoFun" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("SM_LandContendRoleInfoFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "info_handler_forwards_to_model": any("LandcontendMgr.Inst_get().Model:SetLandContendInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "role_handler_forwards_to_model": any("LandcontendMgr.Inst_get().Model:UpdateRoleInfo(msg)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "stage_info_cache_visible": any("self.baseData[msg.stage]=msg" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return self.baseData[stage]" in str(row.get("snippet", "")) for row in evidence_rows),
+        "role_info_cache_visible": any("self._RoleInfo=info" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return self._RoleInfo" in str(row.get("snippet", "")) for row in evidence_rows),
+        "signup_and_join_consumers_visible": any("local isCanJoin=self:IsCanJoin()" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return not self:IsSingUp(LandContendType.ActStageType.Outside)" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("LandcontendMgr.Inst_get().Model:IsSingUp(LandContendType.ActStageType.Outside)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "view_reads_score_rank_pillar_hp": any("local curHp=info.pillarCurHp" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("info.score" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("info.myClubRank" in str(row.get("snippet", "")) for row in evidence_rows),
+        "packet_schema_visible": stats["packet_schema_evidence_count"] > 0
+        and any("return\"SM_LandContendInfo\"" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return\"SM_LandContendRoleInfo\"" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_land_contend_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_land_contend_info_role_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_land_contend_info_role_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_land_contend_info_role_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_land_contend_info_role_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_land_contend_info_role_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_land_contend_info_role_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_landcontend_info_packets",
+            "sends_landcontend_info_request",
+            "sends_landcontend_role_request",
+            "handles_landcontend_info_response",
+            "handles_landcontend_role_response",
+            "stores_stage_info",
+            "stores_role_info",
+            "reads_info_or_role_state",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_land_contend_info_role_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_quanf_draw_syn_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed QuanFDrawSyn chain",
+        "",
+        "This report follows the old-pcap observed all-server draw sync pair (`CM_QuanFDrawSyn` / `SM_QuanFDrawSyn`) through Lua request surfaces, response handler, lucky-draw round-info cache, red-dot refreshes, model state helpers, and UI consumers. It is static metadata only; no live activity ids, round ids, reward ids, role names, server names, limit values, timestamps, or payload entries are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:220]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumers", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_QuanFDrawSyn(97302)` is an old-pcap observed client refresh request carrying `activityId`.",
+            "- `SM_QuanFDrawSyn(97303)` is an old-pcap observed server response carrying `activityId` and `roundInfoVOMap`.",
+            "- `QuanfuchourandNetLogic.SM_QuanFDrawSynFun` forwards successful responses to `QuanfuchourandData:SetLuckyDrawInfo(msg)`.",
+            "- `QuanfuchourandData` stores `msg.roundInfoVOMap` under `luckyDrawInfo[activityId]`, raises `LuckyDrawInfoUpdate`, detects new big-reward state, and refreshes lucky-draw red dots.",
+            "- `QuanfuchourandModel` derives sign/reward/end state, signed choice, next draw time, reward result surfaces, per-reward limits, and red-dot eligibility from the cached round info.",
+            "- `QuanfuchourandLuckyDrawView` requests refreshes and consumes those helpers to update tab lock/end/red-dot state, countdown, sign buttons, reward buttons, and result text.",
+            "- This is all-server draw activity state synchronization, not DoupoTD PVP report evidence and not combat formula authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    schema_row = next((row for row in observed_schema_rows if row.get("name") == "SM_QuanFDrawSyn"), {})
+    request_schema_row = next((row for row in observed_schema_rows if row.get("name") == "CM_QuanFDrawSyn"), {})
+    handler_row = next((row for row in observed_handler_rows if row.get("name") == "SM_QuanFDrawSyn"), {})
+    request_handler_row = next((row for row in observed_handler_rows if row.get("name") == "CM_QuanFDrawSyn"), {})
+    logic_dirs = _quanfuchourand_text_asset_dirs(root)
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+
+    selected_functions = {
+        "LuaQuanfuchourandNetLogic",
+        "Destroy",
+        "CM_QuanFDrawSynFun",
+        "SM_QuanFDrawSynFun",
+        "SetLuckyDrawInfo",
+        "GetLuckyDrawInfo",
+        "GetDefaultSelectTabIndex",
+        "IsLuckyDrawEndByDay",
+        "IsLuckyDrawSigned",
+        "IsLuckyDrawReach",
+        "GetLuckyDrawStateByDay",
+        "GetLuckyDrawNextDrawTime",
+        "GetLuckyDrawBigRewardList",
+        "GetLuckyDrawMyRewardList",
+        "GetLuckyDrawLimit",
+        "IsCanLuckyDrawSign",
+        "CanLuckyDrawGetByDay",
+        "IsNeedShowGetRandomBtn",
+        "SetOpenParams",
+        "UpdateActivity",
+        "CheckActivity",
+        "InitEvent",
+        "UpdateTabButton",
+        "UpdateTabButtonState",
+        "OnInfoUpdate",
+        "OnLeftTimeEnd",
+        "UpdateLuckyDrawTime",
+        "UpdateLuckyDrawState",
+        "OnTabClick",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Quanfuchourand*.lua"), key=lambda path: str(path).lower()):
+            scanned_lua_files.add(str(lua_path))
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            for block in _extract_lua_function_blocks(text):
+                if block.get("function") not in selected_functions:
+                    continue
+                block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                function_rows.append(
+                    {
+                        "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                        "function": block.get("function", ""),
+                        "start_line": block.get("start_line", ""),
+                        "end_line": block.get("end_line", ""),
+                        "params": block.get("params", ""),
+                        "line_count": len(block.get("lines", [])),
+                        "registers_quanf_draw_syn_packets": "_SM_QuanFDrawSyn" in block_text
+                        or "_CM_QuanFDrawSyn" in block_text,
+                        "sends_quanf_draw_syn_request": "CM_QuanFDrawSynFun" in str(block.get("function", ""))
+                        or "F_SendMsg(CM_QuanFDrawSyn)" in block_text,
+                        "handles_quanf_draw_syn_response": "SM_QuanFDrawSynFun" in str(block.get("function", ""))
+                        or "SetLuckyDrawInfo(msg)" in block_text,
+                        "stores_round_info_map": "self.luckyDrawInfo[activityId]=newDict" in block_text
+                        or "local newDict=msg.roundInfoVOMap" in block_text,
+                        "raises_lucky_draw_events": "LuckyDrawInfoUpdate" in block_text
+                        or "LuckyDrawGetBigReward" in block_text,
+                        "reads_round_info_state": "GetLuckyDrawInfo" in block_text
+                        or "GetLuckyDrawStateByDay" in str(block.get("function", ""))
+                        or "IsLuckyDrawSigned" in str(block.get("function", "")),
+                    }
+                )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="packet_registration",
+                patterns=[
+                    r"require\"GameSystem\.Game\.Message\.module\.player\.quanfuchourand\.packet\.CM_QuanFDrawSyn\"",
+                    r"require\"GameSystem\.Game\.Message\.module\.player\.quanfuchourand\.packet\.SM_QuanFDrawSyn\"",
+                    r"F_Register\(_CM_QuanFDrawSyn",
+                    r"F_Register\(_SM_QuanFDrawSyn",
+                    r"F_Unregister\(_CM_QuanFDrawSyn",
+                    r"F_Unregister\(_SM_QuanFDrawSyn",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="client_request_surface",
+                patterns=[
+                    r"function _M\.CM_QuanFDrawSynFun",
+                    r"GetMessageFromPools\(_CM_QuanFDrawSyn\)",
+                    r"CM_QuanFDrawSyn\.activityId=activityId",
+                    r"F_SendMsg\(CM_QuanFDrawSyn\)",
+                    r"NetLogic\.CM_QuanFDrawSynFun\(activityId\)",
+                    r"NetLogic\.CM_QuanFDrawSynFun\(activityvo\.activityId\)",
+                    r"NetLogic\.CM_QuanFDrawSynFun\(self\.V_ActivityId\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="server_response_handler",
+                patterns=[
+                    r"function _M\.SM_QuanFDrawSynFun",
+                    r"if\(msg\.code==0\)then",
+                    r"QuanfuchourandMgr\.Inst_get\(\)\.Model\.QuanfuchourandData:SetLuckyDrawInfo\(msg\)",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="lucky_draw_info_cache",
+                patterns=[
+                    r"function _M\.SetLuckyDrawInfo",
+                    r"local newDict=msg\.roundInfoVOMap",
+                    r"self\.luckyDrawInfo\[activityId\]=newDict",
+                    r"QuanfuchourandType\.EventType\.LuckyDrawInfoUpdate",
+                    r"QuanfuchourandType\.EventType\.LuckyDrawGetBigReward",
+                    r"RedDotID\.QuanfuchourandLuckyDrawLogin",
+                    r"RedDotID\.QuanfuchourandLuckyDrawSign",
+                    r"RedDotID\.QuanfuchourandLuckyDrawGet",
+                    r"function _M\.GetLuckyDrawInfo",
+                    r"return self\.luckyDrawInfo\[activityId\]\[day\]or nil",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="model_state_consumer",
+                patterns=[
+                    r"function _M\.GetDefaultSelectTabIndex",
+                    r"function _M\.IsLuckyDrawEndByDay",
+                    r"function _M\.IsLuckyDrawSigned",
+                    r"function _M\.IsLuckyDrawReach",
+                    r"function _M\.GetLuckyDrawStateByDay",
+                    r"function _M\.GetLuckyDrawNextDrawTime",
+                    r"function _M\.GetLuckyDrawBigRewardList",
+                    r"function _M\.GetLuckyDrawMyRewardList",
+                    r"function _M\.GetLuckyDrawLimit",
+                    r"function _M\.CanLuckyDrawGetByDay",
+                    r"function _M\.IsNeedShowGetRandomBtn",
+                    r"info\.chooseType",
+                    r"info\.haveDraw",
+                    r"info\.selfHitRewardId",
+                    r"info\.bigRewardHitRoles",
+                    r"info\.idToLimit\[id\]",
+                ],
+                max_rows=1600,
+            )
+            _add_line_evidence(
+                evidence_rows,
+                root=root,
+                path=lua_path,
+                text=text,
+                category="view_state_consumer",
+                patterns=[
+                    r"AddEventHandler\(QuanfuchourandType\.EventType\.LuckyDrawInfoUpdate",
+                    r"function _M\.OnInfoUpdate",
+                    r"function _M\.UpdateTabButtonState",
+                    r"function _M\.UpdateLuckyDrawState",
+                    r"function _M\.OnLeftTimeEnd",
+                    r"CM_QuanFDrawSynFun\(self\.V_ActivityId\)",
+                    r"Model:GetLuckyDrawStateByDay\(activityId,day\)",
+                    r"Model:IsLuckyDrawSigned\(activityId,day\)",
+                    r"Model:IsNeedShowGetRandomBtn\(activityId,day\)",
+                    r"UpdateLuckyDrawEndTag",
+                    r"UpdateLuckyDrawLock",
+                    r"UpdateRedDotActive",
+                    r"GetRandomBtnImg:SetActive",
+                ],
+                max_rows=1600,
+            )
+
+    schema_paths = sorted(
+        {
+            path
+            for packet_name in ["SM_QuanFDrawSyn", "CM_QuanFDrawSyn", "QuanFDrawRoundInfoVO"]
+            for path in message_text_dir.glob(f"{packet_name}*.lua")
+        },
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"self\.activityId=0",
+                r"self\.roundInfoVOMap=Dictionary\.new\(\)",
+                r"self:readMessageMap2Dic\(self\.roundInfoVOMap\)",
+                r"self\.day=0",
+                r"self\.startTime=0",
+                r"self\.endTime=0",
+                r"self\.rewardTime=0",
+                r"self\.chooseType=0",
+                r"self\.selfHitRewardId=0",
+                r"self\.bigRewardHitRoles=CList\.new\(\)",
+                r"self\.idToLimit=Dictionary\.new\(\)",
+                r"self\.haveDraw=false",
+                r"self:readMessageList2List\(self\.bigRewardHitRoles\)",
+                r"self:readMessageMap2Dic\(self\.idToLimit\)",
+                r"return\"SM_QuanFDrawSyn\"",
+                r"return\"CM_QuanFDrawSyn\"",
+                r"return\"QuanFDrawRoundInfoVO\"",
+            ],
+            max_rows=1800,
+        )
+
+    for text_dir in logic_dirs:
+        for lua_path in sorted(text_dir.glob("Quanfuchourand*.lua"), key=lambda path: str(path).lower()):
+            text = lua_path.read_text(encoding="utf-8", errors="replace")
+            rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+            for line_no, line in enumerate(text.splitlines(), 1):
+                stripped = line.strip()
+                if len(consumers_rows) >= 320:
+                    break
+                if (
+                    "CM_QuanFDrawSynFun" in stripped
+                    or "SM_QuanFDrawSynFun" in stripped
+                    or "SetLuckyDrawInfo" in stripped
+                    or "GetLuckyDrawInfo" in stripped
+                    or "luckyDrawInfo" in stripped
+                    or "roundInfoVOMap" in stripped
+                    or "LuckyDrawInfoUpdate" in stripped
+                    or "LuckyDrawGetBigReward" in stripped
+                    or "QuanfuchourandLuckyDrawLogin" in stripped
+                    or "QuanfuchourandLuckyDrawSign" in stripped
+                    or "QuanfuchourandLuckyDrawGet" in stripped
+                    or "GetLuckyDrawStateByDay" in stripped
+                    or "IsLuckyDrawSigned" in stripped
+                    or "IsLuckyDrawReach" in stripped
+                    or "GetLuckyDrawNextDrawTime" in stripped
+                    or "GetLuckyDrawLimit" in stripped
+                    or "CanLuckyDrawGetByDay" in stripped
+                    or "IsNeedShowGetRandomBtn" in stripped
+                    or "bigRewardHitRoles" in stripped
+                    or "selfHitRewardId" in stripped
+                    or "chooseType" in stripped
+                    or "haveDraw" in stripped
+                    or "idToLimit" in stripped
+                    or "UpdateLuckyDrawState" in stripped
+                    or "UpdateTabButtonState" in stripped
+                    or "GetRandomBtnImg" in stripped
+                ):
+                    if "NetLogic" in lua_path.name:
+                        surface = "quanf_draw_netlogic_surface"
+                    elif "Model" in lua_path.name:
+                        surface = "quanf_draw_model_surface"
+                    elif "Data" in lua_path.name:
+                        surface = "quanf_draw_data_cache_surface"
+                    elif "View" in lua_path.name or "Item" in lua_path.name:
+                        surface = "quanf_draw_view_surface"
+                    elif "Mgr" in lua_path.name:
+                        surface = "quanf_draw_mgr_surface"
+                    else:
+                        surface = "quanf_draw_consumer_surface"
+                    consumers_rows.append({"file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]})
+
+    chain_rows = [
+        {"step": 1, "surface": "CM_QuanFDrawSyn(97302)", "meaning": "Old pcap observed the client activity-refresh request carrying `activityId`."},
+        {"step": 2, "surface": "SM_QuanFDrawSyn(97303)", "meaning": "Old pcap observed the server response carrying `activityId` and `roundInfoVOMap`."},
+        {"step": 3, "surface": "QuanfuchourandNetLogic.SM_QuanFDrawSynFun", "meaning": "Successful responses are forwarded to `QuanfuchourandData:SetLuckyDrawInfo(msg)`."},
+        {"step": 4, "surface": "QuanfuchourandData.SetLuckyDrawInfo", "meaning": "Stores `msg.roundInfoVOMap` under `luckyDrawInfo[activityId]`, detects newly drawn big rewards, raises events, and refreshes red dots."},
+        {"step": 5, "surface": "QuanfuchourandModel lucky-draw helpers", "meaning": "Derives sign/reward/end state, signed choice, countdown, reward list, remaining limits, and red-dot eligibility from cached round info."},
+        {"step": 6, "surface": "QuanfuchourandLuckyDrawView", "meaning": "Requests sync and consumes model helpers to refresh tabs, countdown, sign/reward buttons, result text, and red-dot state."},
+    ]
+    schema_order = schema_row.get("field_order", "")
+    request_schema_order = request_schema_row.get("field_order", "")
+    stats = {
+        "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+        "observed_directions": schema_row.get("directions", ""),
+        "schema_field_order": schema_order,
+        "request_observed_packet_count": _as_int(request_schema_row.get("packet_count")) or 0,
+        "request_observed_directions": request_schema_row.get("directions", ""),
+        "request_schema_field_order": request_schema_order,
+        "handler_visible_status": handler_row.get("visible_logic_status", ""),
+        "handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+        "request_handler_visible_status": request_handler_row.get("visible_logic_status", ""),
+        "request_handler_evidence_count": _as_int(request_handler_row.get("evidence_count")) or 0,
+        "logic_text_dir_count": len(logic_dirs),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "lucky_draw_info_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "lucky_draw_info_cache"),
+        "model_state_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "model_state_consumer"),
+        "view_state_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "view_state_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "old_pcap_observed_sm_quanf_draw_syn": stats["observed_packet_count"] > 0,
+        "old_pcap_observed_cm_quanf_draw_syn": stats["request_observed_packet_count"] > 0,
+        "schema_fields_visible": "activityId" in schema_order and "roundInfoVOMap" in schema_order,
+        "request_schema_field_visible": "activityId" in request_schema_order,
+        "round_info_vo_schema_visible": any("return\"QuanFDrawRoundInfoVO\"" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.chooseType=0" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.idToLimit=Dictionary.new()" in str(row.get("snippet", "")) for row in evidence_rows),
+        "messagepool_registration_visible": any("F_Register(_SM_QuanFDrawSyn" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_Register(_CM_QuanFDrawSyn" in str(row.get("snippet", "")) for row in evidence_rows),
+        "client_request_surface_visible": any("CM_QuanFDrawSyn.activityId=activityId" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("F_SendMsg(CM_QuanFDrawSyn)" in str(row.get("snippet", "")) for row in evidence_rows),
+        "server_handler_visible": any("SM_QuanFDrawSynFun" in str(row.get("snippet", "")) for row in evidence_rows),
+        "handler_forwards_to_data_cache": any(
+            "QuanfuchourandMgr.Inst_get().Model.QuanfuchourandData:SetLuckyDrawInfo(msg)" in str(row.get("snippet", ""))
+            for row in evidence_rows
+        ),
+        "round_info_map_cache_visible": any("local newDict=msg.roundInfoVOMap" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("self.luckyDrawInfo[activityId]=newDict" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("return self.luckyDrawInfo[activityId][day]or nil" in str(row.get("snippet", "")) for row in evidence_rows),
+        "lucky_draw_events_and_red_dots_visible": any("QuanfuchourandType.EventType.LuckyDrawInfoUpdate" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("QuanfuchourandType.EventType.LuckyDrawGetBigReward" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("RedDotID.QuanfuchourandLuckyDrawGet" in str(row.get("snippet", "")) for row in evidence_rows),
+        "model_state_consumers_visible": any("function _M.GetLuckyDrawStateByDay" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.IsLuckyDrawSigned" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.GetLuckyDrawLimit" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.CanLuckyDrawGetByDay" in str(row.get("snippet", "")) for row in evidence_rows),
+        "view_state_consumers_visible": any("AddEventHandler(QuanfuchourandType.EventType.LuckyDrawInfoUpdate" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.UpdateLuckyDrawState" in str(row.get("snippet", "")) for row in evidence_rows)
+        and any("function _M.UpdateTabButtonState" in str(row.get("snippet", "")) for row in evidence_rows),
+        "direct_quanf_draw_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chain_tsv = output_dir / "doupotd_pcap_observed_quanf_draw_syn_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_quanf_draw_syn_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_quanf_draw_syn_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_quanf_draw_syn_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_quanf_draw_syn_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_quanf_draw_syn_chain_report.json"
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_quanf_draw_syn_packets",
+            "sends_quanf_draw_syn_request",
+            "handles_quanf_draw_syn_response",
+            "stores_round_info_map",
+            "raises_lucky_draw_events",
+            "reads_round_info_state",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["file", "line", "surface", "snippet"])
+    _write_doupotd_observed_quanf_draw_syn_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_observed_venis_union_seat_role_chain_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    packet_rows: list[dict[str, Any]],
+    chain_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    consumers_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# Observed Venis / UnionVeins seat-role chain",
+        "",
+        "This report follows old-pcap observed Venis and UnionVeins seat, role-info, and last-leave packets through Lua registration, client senders, server handlers, data caches, and UI consumers. It is static metadata only; no live role, room, seat, reward, union, server, timestamp, account, or payload values are exported.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Old Pcap Packets",
+            "",
+            "| Family | Kind | Pro ID | Name | Direction | Count | Generic status | Field order |",
+            "| --- | --- | ---: | --- | --- | ---: | --- | --- |",
+        ]
+    )
+    for row in packet_rows:
+        field_order = str(row.get("field_order", "")).replace("|", "\\|")
+        lines.append(
+            f"| `{row.get('family')}` | `{row.get('kind')}` | {row.get('pro_id')} | `{row.get('name')}` | "
+            f"`{row.get('directions')}` | {row.get('observed_packet_count')} | `{row.get('generic_handler_status')}` | `{field_order}` |"
+        )
+    lines.extend(["", "## Chain", "", "| Step | Surface | Meaning |", "| ---: | --- | --- |"])
+    for row in chain_rows:
+        lines.append(f"| {row.get('step')} | `{row.get('surface')}` | {row.get('meaning')} |")
+    lines.extend(["", "## Focused Evidence", "", "| Category | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in evidence_rows[:260]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('category')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(["", "## Consumer Surfaces", "", "| Surface | File | Line | Snippet |", "| --- | --- | ---: | --- |"])
+    for row in consumers_rows[:160]:
+        snippet = str(row.get("snippet", "")).replace("|", "\\|")
+        lines.append(f"| `{row.get('surface')}` | `{row.get('file')}` | {row.get('line')} | `{snippet}` |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The generic old-pcap Lua handler coverage marked these 12 packets as `require_only`; direct NetLogic inspection shows this is a classifier blind spot caused by aliases such as `_CM_SyncVenisRoleInfo`, `_CM_LastLeaveSeatInfo`, and `_CM_SelfSeat` plus inline callback wrappers.",
+            "- `CM_SyncVeinsRoleInfo` / `SM_SyncVeinsRoleInfo` and `CM_SyncUnionVeinsRoleInfo` / `SM_SyncUnionVeinsRoleInfo` refresh local room, seat, reward, server/group, buff, and UnionVeins battle metadata caches.",
+            "- `CM_VeinsLastLeaveSeatInfo` / `SM_VeinsLastLeaveSeatInfo` and `CM_UnionVeinsLastLeaveSeatInfo` / `SM_UnionVeinsLastLeaveSeatInfo` drive the last-leave/seat-taken reminder cache and reward window cleanup path.",
+            "- `CM_VeinsSelfSeat` / `SM_VeinsSelfSeat` and `CM_UnionVeinsSelfSeat` / `SM_UnionVeinsSelfSeat` refresh the local seat VO cache and raise MySeat update events for room, scene, seat, and item surfaces.",
+            "- The chain describes social/seat state synchronization. It is not DoupoTD combat evidence, not a settlement authority path, and not a payload decoder.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    observed_schema_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_schema_coverage_protocols.tsv")
+    observed_handler_rows = _read_tsv_dicts(output_dir / "doupotd_pvp_report_pcap_observed_lua_handler_coverage_summary.tsv")
+    packet_index_registration_rows = _read_tsv_dicts(root / "parsed_configs" / "lua_packet_index" / "packet_registrations.tsv")
+    schema_by_name = {row.get("name", ""): row for row in observed_schema_rows}
+    handler_by_name = {row.get("name", ""): row for row in observed_handler_rows}
+
+    target_packets = [
+        {"family": "Venis", "kind": "last_leave_request", "pro_id": "87209", "name": "CM_VeinsLastLeaveSeatInfo"},
+        {"family": "Venis", "kind": "last_leave_response", "pro_id": "87210", "name": "SM_VeinsLastLeaveSeatInfo"},
+        {"family": "Venis", "kind": "role_info_request", "pro_id": "87211", "name": "CM_SyncVeinsRoleInfo"},
+        {"family": "Venis", "kind": "role_info_response", "pro_id": "87212", "name": "SM_SyncVeinsRoleInfo"},
+        {"family": "Venis", "kind": "self_seat_request", "pro_id": "87226", "name": "CM_VeinsSelfSeat"},
+        {"family": "Venis", "kind": "self_seat_response", "pro_id": "87227", "name": "SM_VeinsSelfSeat"},
+        {"family": "UnionVenis", "kind": "last_leave_request", "pro_id": "93510", "name": "CM_UnionVeinsLastLeaveSeatInfo"},
+        {"family": "UnionVenis", "kind": "last_leave_response", "pro_id": "93511", "name": "SM_UnionVeinsLastLeaveSeatInfo"},
+        {"family": "UnionVenis", "kind": "role_info_request", "pro_id": "93512", "name": "CM_SyncUnionVeinsRoleInfo"},
+        {"family": "UnionVenis", "kind": "role_info_response", "pro_id": "93513", "name": "SM_SyncUnionVeinsRoleInfo"},
+        {"family": "UnionVenis", "kind": "self_seat_request", "pro_id": "93527", "name": "CM_UnionVeinsSelfSeat"},
+        {"family": "UnionVenis", "kind": "self_seat_response", "pro_id": "93528", "name": "SM_UnionVeinsSelfSeat"},
+    ]
+    target_names = {packet["name"] for packet in target_packets}
+    target_ids = {packet["pro_id"] for packet in target_packets}
+    packet_rows: list[dict[str, Any]] = []
+    for packet in target_packets:
+        schema_row = schema_by_name.get(packet["name"], {})
+        handler_row = handler_by_name.get(packet["name"], {})
+        packet_rows.append(
+            {
+                "family": packet["family"],
+                "kind": packet["kind"],
+                "pro_id": packet["pro_id"],
+                "name": packet["name"],
+                "directions": schema_row.get("directions", ""),
+                "observed_packet_count": _as_int(schema_row.get("packet_count")) or 0,
+                "generic_handler_status": handler_row.get("visible_logic_status", ""),
+                "generic_handler_evidence_count": _as_int(handler_row.get("evidence_count")) or 0,
+                "field_order": schema_row.get("field_order", ""),
+            }
+        )
+
+    text_dir_specs = [
+        {
+            "family": "Venis",
+            "dirs": _venis_text_asset_dirs(root),
+            "glob": "Venis*.lua",
+            "netlogic": "VenisNetLogic.lua",
+        },
+        {
+            "family": "UnionVenis",
+            "dirs": _unionvenis_text_asset_dirs(root),
+            "glob": "UnionVenis*.lua",
+            "netlogic": "UnionVenisNetLogic.lua",
+        },
+    ]
+    selected_functions = {
+        "LuaVenisNetLogic",
+        "Destroy",
+        "ReqMsg",
+        "CM_SyncVenisRoleInfoFun",
+        "SM_SyncVenisRoleInfoFun",
+        "CM_LastLeaveSeatInfoFun",
+        "SM_LastLeaveSeatInfoFun",
+        "CM_SelfSeatFun",
+        "SM_SelfSeatFun",
+        "CM_CleanLastLeaveSeatInfoFun",
+        "SyncRoleInfo",
+        "SetRoleInfo",
+        "GetRoleInfo",
+        "SetRewards",
+        "GetRewards",
+        "SetBuffValue",
+        "GetBuffValue",
+        "SetBuffRate",
+        "GetBuffRate",
+        "SetBattleId",
+        "GetBattleId",
+        "SetLastLeaveSeatInfo",
+        "GetLastLeaveSeatInfo",
+        "SetMySeatVO",
+        "GetMySeatVO",
+        "SetMySeatId",
+        "GetMySeatId",
+        "CheckLastLeaveSeatInfo",
+        "CheckSeatTakenView",
+        "UpdateView",
+        "InitEvent",
+        "SetOpenParams",
+    }
+    evidence_rows: list[dict[str, Any]] = []
+    function_rows: list[dict[str, Any]] = []
+    consumers_rows: list[dict[str, Any]] = []
+    scanned_lua_files: set[str] = set()
+
+    for spec in text_dir_specs:
+        for text_dir in spec["dirs"]:
+            for lua_path in sorted(text_dir.glob(spec["glob"]), key=lambda path: str(path).lower()):
+                scanned_lua_files.add(str(lua_path))
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+                for block in _extract_lua_function_blocks(text):
+                    block_text = "\n".join(str(line.get("code") or "") for line in block.get("lines", []))
+                    if block.get("function") not in selected_functions and not any(
+                        needle in block_text
+                        for needle in [
+                            "CM_SyncVenisRoleInfoFun",
+                            "CM_LastLeaveSeatInfoFun",
+                            "CM_SelfSeatFun",
+                            "GetMySeatVO",
+                            "GetLastLeaveSeatInfo",
+                            "MySeatUpdate",
+                            "MySeatIdUpdate",
+                        ]
+                    ):
+                        continue
+                    function_rows.append(
+                        {
+                            "family": spec["family"],
+                            "file": str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path),
+                            "function": block.get("function", ""),
+                            "start_line": block.get("start_line", ""),
+                            "end_line": block.get("end_line", ""),
+                            "params": block.get("params", ""),
+                            "line_count": len(block.get("lines", [])),
+                            "registers_alias_packets": "_CM_SyncVenisRoleInfo" in block_text
+                            or "_SM_SyncVenisRoleInfo" in block_text
+                            or "_CM_LastLeaveSeatInfo" in block_text
+                            or "_SM_LastLeaveSeatInfo" in block_text
+                            or "_CM_SelfSeat" in block_text
+                            or "_SM_SelfSeat" in block_text,
+                            "sends_role_request": "F_SendMsg(CM_SyncVenisRoleInfo)" in block_text,
+                            "sends_last_leave_request": "F_SendMsg(CM_LastLeaveSeatInfo)" in block_text,
+                            "sends_self_seat_request": "F_SendMsg(CM_SelfSeat)" in block_text,
+                            "handles_role_response": "SyncRoleInfo(msg)" in block_text,
+                            "handles_last_leave_response": "CheckLastLeaveSeatInfo(msg)" in block_text
+                            or "SetLastLeaveSeatInfo(msg)" in block_text,
+                            "handles_self_seat_response": "SetMySeatVO(msg.seatVO)" in block_text
+                            or "self.mySeatVO=seatVO" in block_text,
+                            "raises_my_seat_events": "MySeatUpdate" in block_text or "MySeatIdUpdate" in block_text,
+                        }
+                    )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="packet_registration",
+                    patterns=[
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.CM_VeinsLastLeaveSeatInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.SM_VeinsLastLeaveSeatInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.CM_SyncVeinsRoleInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.SM_SyncVeinsRoleInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.CM_VeinsSelfSeat\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.veins\.packet\.SM_VeinsSelfSeat\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.CM_UnionVeinsLastLeaveSeatInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.SM_UnionVeinsLastLeaveSeatInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.CM_SyncUnionVeinsRoleInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.SM_SyncUnionVeinsRoleInfo\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.CM_UnionVeinsSelfSeat\"",
+                        r"require\"GameSystem\.Game\.Message\.module\.world\.unionveins\.packet\.SM_UnionVeinsSelfSeat\"",
+                        r"F_Register\(_CM_LastLeaveSeatInfo",
+                        r"F_Register\(_SM_LastLeaveSeatInfo",
+                        r"F_Register\(_CM_SyncVenisRoleInfo",
+                        r"F_Register\(_SM_SyncVenisRoleInfo",
+                        r"F_Register\(_CM_SelfSeat",
+                        r"F_Register\(_SM_SelfSeat",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="client_request_surface",
+                    patterns=[
+                        r"function _M\.CM_SyncVenisRoleInfoFun",
+                        r"GetMessageFromPools\(_CM_SyncVenisRoleInfo\)",
+                        r"F_SendMsg\(CM_SyncVenisRoleInfo\)",
+                        r"function _M\.CM_LastLeaveSeatInfoFun",
+                        r"GetMessageFromPools\(_CM_LastLeaveSeatInfo\)",
+                        r"F_SendMsg\(CM_LastLeaveSeatInfo\)",
+                        r"function _M\.CM_SelfSeatFun",
+                        r"GetMessageFromPools\(_CM_SelfSeat\)",
+                        r"F_SendMsg\(CM_SelfSeat\)",
+                        r"function _M\.CM_CleanLastLeaveSeatInfoFun",
+                        r"F_SendMsg\(CM_CleanLastLeaveSeatInfo\)",
+                        r"NetLogic\.CM_SyncVenisRoleInfoFun\(\)",
+                        r"NetLogic\.CM_LastLeaveSeatInfoFun\(\)",
+                        r"NetLogic\.CM_SelfSeatFun\(\)",
+                        r"CM_CleanLastLeaveSeatInfoFun\(\)",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="server_response_handler",
+                    patterns=[
+                        r"self\.SM_SyncVenisRoleInfoFun\(msg\)",
+                        r"self\.SM_LastLeaveSeatInfoFun\(msg\)",
+                        r"self\.SM_SelfSeatFun\(msg\)",
+                        r"function _M\.SM_SyncVenisRoleInfoFun",
+                        r"function _M\.SM_LastLeaveSeatInfoFun",
+                        r"function _M\.SM_SelfSeatFun",
+                        r":SyncRoleInfo\(msg\)",
+                        r":CheckLastLeaveSeatInfo\(msg\)",
+                        r":SetMySeatVO\(msg\.seatVO\)",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="role_info_cache",
+                    patterns=[
+                        r"function _M\.SyncRoleInfo",
+                        r"self:SetRoleInfo\(msg\)",
+                        r"self:SetMyRoomId\(msg\.roomId\)",
+                        r"self:SetMySeatId\(msg\.seatId\)",
+                        r"self:SetLeftListenTime\(msg\.leftListenTime\)",
+                        r"self:SetVeinsGroup\(msg\.veinsGroup\)",
+                        r"self:SetVeinsGroup2Server\(msg\.veinsGroup2Server\)",
+                        r"self:SetLocalServer\(msg\.localServer\)",
+                        r"self:SetBuffValue\(msg\.buffValue\)",
+                        r"self:SetBuffRate\(msg\.buffRate\)",
+                        r"self:SetRewards\(msg\.rewardIds\)",
+                        r"self:SetBattleId\(msg\.battleId\)",
+                        r"function _M\.SetRoleInfo",
+                        r"self\.roleInfo=msg",
+                        r"function _M\.GetRoleInfo",
+                        r"RedDotID\.Veins_Strength",
+                        r"RedDotID\.UnionVeins_Strength",
+                        r"RedDotID\.UnionVenisSkillRed",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="last_leave_cache",
+                    patterns=[
+                        r"function _M\.CheckLastLeaveSeatInfo",
+                        r"self\.Model:SetLastLeaveSeatInfo\(msg\)",
+                        r"function _M\.SetLastLeaveSeatInfo",
+                        r"self\.lastLeaveSeatInfo=msg",
+                        r"msg and msg\.leaveBySelf",
+                        r"msg\.listenTime:ToNum\(\)>0",
+                        r"self:UpdateSeatTakenRed\(needRed\)",
+                        r"function _M\.GetLastLeaveSeatInfo",
+                        r"Model:GetLastLeaveSeatInfo\(\)",
+                        r"Model:SetLastLeaveSeatInfo\(\)",
+                        r"CM_CleanLastLeaveSeatInfoFun\(\)",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="self_seat_cache",
+                    patterns=[
+                        r"function _M\.SetMySeatVO",
+                        r"self\.mySeatVO=seatVO",
+                        r"self:SetMySeatId\(seatId\)",
+                        r"self:SetMyRoomId\(cfg\.id\)",
+                        r"EventType\.MySeatUpdate",
+                        r"function _M\.GetMySeatVO",
+                        r"function _M\.SetMySeatId",
+                        r"EventType\.MySeatIdUpdate",
+                        r"function _M\.GetMySeatId",
+                        r"Model:GetMySeatVO\(\)",
+                    ],
+                    max_rows=3600,
+                )
+                _add_line_evidence(
+                    evidence_rows,
+                    root=root,
+                    path=lua_path,
+                    text=text,
+                    category="view_state_consumer",
+                    patterns=[
+                        r"AddEventHandler\(.*EventType\.MySeatUpdate",
+                        r"AddEventHandler\(.*EventType\.MySeatIdUpdate",
+                        r"RemoveEventHandler\(.*EventType\.MySeatUpdate",
+                        r"RemoveEventHandler\(.*EventType\.MySeatIdUpdate",
+                        r"self\._OnMySeatUpdate",
+                        r"Model:GetMySeatVO\(\)",
+                        r"Model:GetLastLeaveSeatInfo\(\)",
+                        r"Model\.data:GetBuffValue\(\)",
+                        r"Model\.data:GetRewards\(\)",
+                        r"NetLogic\.CM_SelfSeatFun\(\)",
+                        r"NetLogic\.CM_SyncVenisRoleInfoFun\(\)",
+                        r"NetLogic\.CM_LastLeaveSeatInfoFun\(\)",
+                    ],
+                    max_rows=3600,
+                )
+
+    message_text_dir = root / DEFAULT_MESSAGE_TEXT_ASSETS
+    schema_paths = sorted(
+        {path for packet_name in target_names for path in message_text_dir.glob(f"{packet_name}*.lua")},
+        key=lambda path: str(path).lower(),
+    )
+    for lua_path in schema_paths:
+        if not lua_path.is_file():
+            continue
+        text = lua_path.read_text(encoding="utf-8", errors="replace")
+        _add_line_evidence(
+            evidence_rows,
+            root=root,
+            path=lua_path,
+            text=text,
+            category="packet_schema",
+            patterns=[
+                r"return\"(?:CM|SM)_(?:Sync)?(?:Union)?Veins",
+                r"self\.roomId=0",
+                r"self\.seatId=0",
+                r"self\.leftListenTime=0",
+                r"self\.sitDownTime=0",
+                r"self\.rewardIds=CList\.new\(\)",
+                r"self\.veinsGroup2Server=CList\.new\(\)",
+                r"self\.veinsGroup=0",
+                r"self\.localServer=0",
+                r"self\.buffValue=0",
+                r"self\.buffRate=0",
+                r"self\.skillLv=0",
+                r"self\.battleId=0",
+                r"self\.listenTime=0",
+                r"self\.themeId=0",
+                r"self\.faze=0",
+                r"self\.lootSeatPlayerName=\"\"",
+                r"self\.lootSeatPlayerBuffValue=0",
+                r"self\.beLootNum=0",
+                r"self\.inScene=false",
+                r"self\.leaveBySelf=false",
+                r"self\.rewardNum=0",
+                r"self\.seatVO=",
+            ],
+            max_rows=3800,
+        )
+
+    for spec in text_dir_specs:
+        for text_dir in spec["dirs"]:
+            for lua_path in sorted(text_dir.glob(spec["glob"]), key=lambda path: str(path).lower()):
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+                rel = str(lua_path.relative_to(root)) if _is_relative_to(lua_path, root) else str(lua_path)
+                for line_no, line in enumerate(text.splitlines(), 1):
+                    if len(consumers_rows) >= 460:
+                        break
+                    stripped = line.strip()
+                    if (
+                        "CM_SyncVenisRoleInfoFun" in stripped
+                        or "CM_LastLeaveSeatInfoFun" in stripped
+                        or "CM_SelfSeatFun" in stripped
+                        or "CM_CleanLastLeaveSeatInfoFun" in stripped
+                        or "SyncRoleInfo(msg)" in stripped
+                        or "SetRoleInfo(msg)" in stripped
+                        or "SetLastLeaveSeatInfo" in stripped
+                        or "GetLastLeaveSeatInfo" in stripped
+                        or "SetMySeatVO" in stripped
+                        or "GetMySeatVO" in stripped
+                        or "MySeatUpdate" in stripped
+                        or "MySeatIdUpdate" in stripped
+                        or "GetBuffValue()" in stripped
+                        or "GetRewards()" in stripped
+                    ):
+                        if "NetLogic" in lua_path.name:
+                            surface = "venis_union_netlogic_surface"
+                        elif "Data" in lua_path.name:
+                            surface = "venis_union_data_cache_surface"
+                        elif "Model" in lua_path.name:
+                            surface = "venis_union_model_surface"
+                        elif "Mgr" in lua_path.name:
+                            surface = "venis_union_mgr_surface"
+                        elif "View" in lua_path.name or "Item" in lua_path.name or "Panel" in lua_path.name:
+                            surface = "venis_union_view_surface"
+                        else:
+                            surface = "venis_union_consumer_surface"
+                        consumers_rows.append(
+                            {"family": spec["family"], "file": rel, "line": line_no, "surface": surface, "snippet": stripped[:260]}
+                        )
+
+    def _has_evidence(snippet_part: str, *, category: str | None = None, file_name: str | None = None) -> bool:
+        for row in evidence_rows:
+            if category is not None and row.get("category") != category:
+                continue
+            if file_name is not None and Path(str(row.get("file", ""))).name != file_name:
+                continue
+            if snippet_part in str(row.get("snippet", "")):
+                return True
+        return False
+
+    schema_orders = {row["name"]: str(row.get("field_order", "")) for row in packet_rows}
+    role_schema_visible = all(
+        all(field in schema_orders.get(name, "") for field in ["roomId", "seatId", "leftListenTime", "rewardIds", "buffValue"])
+        for name in ["SM_SyncVeinsRoleInfo", "SM_SyncUnionVeinsRoleInfo"]
+    )
+    last_leave_schema_visible = all(
+        all(field in schema_orders.get(name, "") for field in ["roomId", "listenTime", "leaveBySelf", "rewardNum"])
+        for name in ["SM_VeinsLastLeaveSeatInfo", "SM_UnionVeinsLastLeaveSeatInfo"]
+    )
+    self_seat_schema_visible = all("seatVO" in schema_orders.get(name, "") for name in ["SM_VeinsSelfSeat", "SM_UnionVeinsSelfSeat"])
+    packet_index_target_rows = [
+        row
+        for row in packet_index_registration_rows
+        if row.get("pro_id") in target_ids
+        or row.get("packet_id") in target_ids
+        or row.get("name") in target_names
+        or row.get("packet_name") in target_names
+    ]
+    chain_rows = [
+        {"step": 1, "surface": "Old pcap observed 12 Venis / UnionVeins packets", "meaning": "The observed metadata contains request/response pairs for role info, last-leave info, and self-seat refresh."},
+        {"step": 2, "surface": "Generic coverage summary: require_only", "meaning": "The generic classifier saw require/register references but missed alias callback wrappers and sender definitions."},
+        {"step": 3, "surface": "VenisNetLogic / UnionVenisNetLogic registration", "meaning": "Packet classes are required under concrete names, then registered under shared aliases such as `_CM_SyncVenisRoleInfo` and `_CM_SelfSeat`."},
+        {"step": 4, "surface": "CM_* request functions", "meaning": "Role, last-leave, self-seat, and clean-last-leave request functions allocate messages from SocketManager pools and send them."},
+        {"step": 5, "surface": "SM_* callback wrappers", "meaning": "Inline `F_Register(..., function(msg) self.SM_*Fun(msg) end)` wrappers dispatch successful responses into manager/model state."},
+        {"step": 6, "surface": "VenisData / UnionVenisData caches", "meaning": "Role info, local seat VO, last-leave reminders, rewards, buff values, and related events are stored in client-side state."},
+        {"step": 7, "surface": "Room / scene / seat / reward consumers", "meaning": "Views and scene managers request refreshes and react to `MySeatUpdate`, `MySeatIdUpdate`, and last-leave state."},
+    ]
+    stats = {
+        "target_packet_count": len(target_packets),
+        "old_pcap_observed_target_packet_count": sum(1 for row in packet_rows if row["observed_packet_count"] > 0),
+        "old_pcap_observed_total_count": sum(int(row["observed_packet_count"]) for row in packet_rows),
+        "generic_require_only_count": sum(1 for row in packet_rows if row["generic_handler_status"] == "require_only"),
+        "venis_text_dir_count": len(text_dir_specs[0]["dirs"]),
+        "unionvenis_text_dir_count": len(text_dir_specs[1]["dirs"]),
+        "scanned_lua_file_count": len(scanned_lua_files),
+        "message_schema_file_count": len(schema_paths),
+        "packet_index_registration_row_count": len(packet_index_target_rows),
+        "function_row_count": len(function_rows),
+        "evidence_row_count": len(evidence_rows),
+        "consumer_row_count": len(consumers_rows),
+        "packet_registration_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_registration"),
+        "client_request_surface_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "client_request_surface"),
+        "server_response_handler_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "server_response_handler"),
+        "role_info_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "role_info_cache"),
+        "last_leave_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "last_leave_cache"),
+        "self_seat_cache_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "self_seat_cache"),
+        "view_state_consumer_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "view_state_consumer"),
+        "packet_schema_evidence_count": sum(1 for row in evidence_rows if row.get("category") == "packet_schema"),
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict = {
+        "all_12_old_pcap_packets_observed": stats["old_pcap_observed_target_packet_count"] == len(target_packets),
+        "generic_summary_marked_all_require_only": stats["generic_require_only_count"] == len(target_packets),
+        "observed_schema_fields_cover_role_last_leave_self": role_schema_visible and last_leave_schema_visible and self_seat_schema_visible,
+        "all_packet_requires_visible": all(_has_evidence(name, category="packet_registration") for name in target_names),
+        "messagepool_alias_registration_visible": all(
+            _has_evidence(alias, category="packet_registration")
+            for alias in [
+                "F_Register(_CM_LastLeaveSeatInfo",
+                "F_Register(_SM_LastLeaveSeatInfo",
+                "F_Register(_CM_SyncVenisRoleInfo",
+                "F_Register(_SM_SyncVenisRoleInfo",
+                "F_Register(_CM_SelfSeat",
+                "F_Register(_SM_SelfSeat",
+            ]
+        ),
+        "venis_client_request_surfaces_visible": _has_evidence("F_SendMsg(CM_SyncVenisRoleInfo)", file_name="VenisNetLogic.lua")
+        and _has_evidence("F_SendMsg(CM_LastLeaveSeatInfo)", file_name="VenisNetLogic.lua")
+        and _has_evidence("F_SendMsg(CM_SelfSeat)", file_name="VenisNetLogic.lua"),
+        "unionvenis_client_request_surfaces_visible": _has_evidence("F_SendMsg(CM_SyncVenisRoleInfo)", file_name="UnionVenisNetLogic.lua")
+        and _has_evidence("F_SendMsg(CM_LastLeaveSeatInfo)", file_name="UnionVenisNetLogic.lua")
+        and _has_evidence("F_SendMsg(CM_SelfSeat)", file_name="UnionVenisNetLogic.lua"),
+        "venis_server_handlers_visible": _has_evidence("VenisMgr.Inst_get():SyncRoleInfo(msg)", file_name="VenisNetLogic.lua")
+        and _has_evidence("VenisMgr.Inst_get():CheckLastLeaveSeatInfo(msg)", file_name="VenisNetLogic.lua")
+        and _has_evidence("VenisMgr.Inst_get():SetMySeatVO(msg.seatVO)", file_name="VenisNetLogic.lua"),
+        "unionvenis_server_handlers_visible": _has_evidence("UnionVenisMgr.Inst_get():SyncRoleInfo(msg)", file_name="UnionVenisNetLogic.lua")
+        and _has_evidence("UnionVenisMgr.Inst_get():CheckLastLeaveSeatInfo(msg)", file_name="UnionVenisNetLogic.lua")
+        and _has_evidence("UnionVenisMgr.Inst_get():SetMySeatVO(msg.seatVO)", file_name="UnionVenisNetLogic.lua"),
+        "role_info_cache_visible": _has_evidence("self:SetRoleInfo(msg)", category="role_info_cache")
+        and _has_evidence("self:SetMySeatId(msg.seatId)", category="role_info_cache")
+        and _has_evidence("self:SetBuffValue(msg.buffValue)", category="role_info_cache")
+        and _has_evidence("self:SetRewards(msg.rewardIds)", category="role_info_cache"),
+        "last_leave_cache_visible": _has_evidence("self.lastLeaveSeatInfo=msg", category="last_leave_cache")
+        and _has_evidence("self:UpdateSeatTakenRed(needRed)", category="last_leave_cache")
+        and _has_evidence("Model:GetLastLeaveSeatInfo()", category="last_leave_cache")
+        and _has_evidence("CM_CleanLastLeaveSeatInfoFun()", category="last_leave_cache"),
+        "self_seat_cache_and_events_visible": _has_evidence("self.mySeatVO=seatVO", category="self_seat_cache")
+        and _has_evidence("EventType.MySeatUpdate", category="self_seat_cache")
+        and _has_evidence("EventType.MySeatIdUpdate", category="self_seat_cache"),
+        "view_consumers_visible": stats["view_state_consumer_evidence_count"] >= 8 and len(consumers_rows) >= 12,
+        "classifier_correction_visible": stats["generic_require_only_count"] == len(target_packets)
+        and stats["packet_registration_evidence_count"] >= 24
+        and stats["server_response_handler_evidence_count"] >= 12,
+        "direct_venis_union_payload_values_not_exported": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    packet_tsv = output_dir / "doupotd_pcap_observed_venis_union_seat_role_packets.tsv"
+    chain_tsv = output_dir / "doupotd_pcap_observed_venis_union_seat_role_chain.tsv"
+    functions_tsv = output_dir / "doupotd_pcap_observed_venis_union_seat_role_functions.tsv"
+    evidence_tsv = output_dir / "doupotd_pcap_observed_venis_union_seat_role_evidence.tsv"
+    consumers_tsv = output_dir / "doupotd_pcap_observed_venis_union_seat_role_consumers.tsv"
+    report_path = output_dir / "doupotd_pcap_observed_venis_union_seat_role_chain_report.md"
+    json_path = output_dir / "doupotd_pcap_observed_venis_union_seat_role_chain_report.json"
+    _write_tsv(
+        packet_tsv,
+        packet_rows,
+        [
+            "family",
+            "kind",
+            "pro_id",
+            "name",
+            "directions",
+            "observed_packet_count",
+            "generic_handler_status",
+            "generic_handler_evidence_count",
+            "field_order",
+        ],
+    )
+    _write_tsv(chain_tsv, chain_rows, ["step", "surface", "meaning"])
+    _write_tsv(
+        functions_tsv,
+        function_rows,
+        [
+            "family",
+            "file",
+            "function",
+            "start_line",
+            "end_line",
+            "params",
+            "line_count",
+            "registers_alias_packets",
+            "sends_role_request",
+            "sends_last_leave_request",
+            "sends_self_seat_request",
+            "handles_role_response",
+            "handles_last_leave_response",
+            "handles_self_seat_response",
+            "raises_my_seat_events",
+        ],
+    )
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "file", "line", "function", "snippet"])
+    _write_tsv(consumers_tsv, consumers_rows, ["family", "file", "line", "surface", "snippet"])
+    _write_doupotd_observed_venis_union_seat_role_chain_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        packet_rows=packet_rows,
+        chain_rows=chain_rows,
+        evidence_rows=evidence_rows,
+        consumers_rows=consumers_rows,
+    )
+    result = {
+        "confirmed": all(verdict.values()),
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "packets": str(packet_tsv),
+            "chain": str(chain_tsv),
+            "functions": str(functions_tsv),
+            "evidence": str(evidence_tsv),
+            "consumers": str(consumers_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def _write_doupotd_pvp_report_decoder_readiness_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    checks: list[dict[str, Any]],
+    schemas: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report decoder readiness",
+        "",
+        "This report checks whether the local Lua packet schema decoder is ready to name and parse a future `93671/CM_DoupoReport` frame. It does not need or export live payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Checks", ""])
+    for row in checks:
+        lines.append(f"- `{row.get('check')}`: `{row.get('status')}` - {row.get('detail')}")
+    lines.extend(["", "## Schema Rows", ""])
+    for row in schemas:
+        lines.append(
+            f"- `{row.get('role')}` `{row.get('packet_id')}` `{row.get('packet_name')}` fields `{row.get('field_order')}` lists `{row.get('list_fields')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "`atkVoList` and `defVoList` are generic message-list fields. The decoder resolves each element by the type id embedded in the payload, so readiness requires both the report packet schema and likely nested VO schemas. The current scene creates `DigitDoorSimpleVO/DigitDoorAttrVO`; adjacent Doupo-shaped VO schemas also exist, so either family can be decoded if a future payload carries those ids.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_decoder_readiness_probe(
+    *,
+    export_root: str | Path | None = None,
+    text_assets: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    text_assets_path = root / (Path(text_assets) if text_assets is not None else DEFAULT_MESSAGE_TEXT_ASSETS)
+    schema = LuaPacketSchemaIndex(text_assets_path)
+    expected_fields = [
+        "replayId",
+        "type",
+        "round",
+        "pkStage",
+        "zone",
+        "pkStep",
+        "time",
+        "atkVoList",
+        "defVoList",
+        "clientWinnerId",
+        "serverWinnerId",
+    ]
+    schema_targets = [
+        ("doupotd_report_alias", 93671, "CM_DoupoReport"),
+        ("digitdoor_report_baseline", 91644, "CM_DigitDoorReport"),
+        ("scene_nested_digitdoor_simple_vo", 91605, "DigitDoorSimpleVO"),
+        ("scene_nested_digitdoor_attr_vo", 91606, "DigitDoorAttrVO"),
+        ("adjacent_doupo_simple_vo", 93672, "DouPoSimpleVO"),
+        ("adjacent_doupo_attr_vo", 93673, "DoupoAttrVO"),
+    ]
+    schemas: list[dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
+    info_by_role: dict[str, Any] = {}
+    for role, packet_id, packet_name in schema_targets:
+        info = schema.by_id.get(packet_id) or schema.by_name.get(packet_name)
+        info_by_role[role] = info
+        schemas.append(_schema_info_row(root, info, role=role))
+        fields.extend(_field_rows_from_schema_info(root, info, role=role))
+
+    report_info = info_by_role["doupotd_report_alias"]
+    report_fields = [field for kind, field, _arg in list(getattr(report_info, "ops", []) or []) if kind != "super" and field]
+    report_list_fields = [field for kind, field, _arg in list(getattr(report_info, "ops", []) or []) if kind == "list" and field]
+    protocol_name = schema.protocol_names.get(93671)
+    checks = [
+        {
+            "check": "report_alias_registered_by_id",
+            "status": schema.by_id.get(93671) is not None,
+            "detail": f"by_id[93671]={getattr(schema.by_id.get(93671), 'name', '')}",
+        },
+        {
+            "check": "report_alias_registered_by_name",
+            "status": schema.by_name.get("CM_DoupoReport") is not None,
+            "detail": f"by_name['CM_DoupoReport'].packet_id={getattr(schema.by_name.get('CM_DoupoReport'), 'packet_id', '')}",
+        },
+        {
+            "check": "decoder_can_name_future_frame",
+            "status": protocol_name == "CM_DoupoReport",
+            "detail": f"VO_URL/protocol_names[93671]={protocol_name}",
+        },
+        {
+            "check": "report_field_order_matches_scene_payload",
+            "status": report_fields == expected_fields,
+            "detail": " | ".join(report_fields),
+        },
+        {
+            "check": "report_list_fields_ready",
+            "status": report_list_fields == ["atkVoList", "defVoList"],
+            "detail": " | ".join(report_list_fields),
+        },
+        {
+            "check": "scene_reused_digitdoor_vo_schema_ready",
+            "status": info_by_role["scene_nested_digitdoor_simple_vo"] is not None and info_by_role["scene_nested_digitdoor_attr_vo"] is not None,
+            "detail": "DigitDoorSimpleVO(91605) and DigitDoorAttrVO(91606) are indexed for message-list payloads.",
+        },
+        {
+            "check": "adjacent_doupo_vo_schema_ready",
+            "status": info_by_role["adjacent_doupo_simple_vo"] is not None and info_by_role["adjacent_doupo_attr_vo"] is not None,
+            "detail": "DouPoSimpleVO(93672) and DoupoAttrVO(93673) are indexed as adjacent same-shape Doupo VOs.",
+        },
+        {
+            "check": "digitdoor_baseline_schema_ready",
+            "status": info_by_role["digitdoor_report_baseline"] is not None,
+            "detail": "CM_DigitDoorReport(91644) is indexed for same-shape baseline comparison.",
+        },
+        {
+            "check": "payload_values_not_required",
+            "status": True,
+            "detail": "Readiness is derived from schema metadata; no raw live payload values are inspected.",
+        },
+    ]
+    stats = {
+        "schema_by_id_count": len(schema.by_id),
+        "schema_by_name_count": len(schema.by_name),
+        "protocol_name_count": len(schema.protocol_names),
+        "target_schema_count": len(schema_targets),
+        "present_target_schema_count": sum(1 for row in schemas if row.get("present") is True),
+        "field_row_count": len(fields),
+        "check_count": len(checks),
+        "passing_check_count": sum(1 for row in checks if row.get("status") is True),
+    }
+    verdict = {
+        "decoder_schema_ready_for_cm_doupo_report_93671": all(row.get("status") is True for row in checks),
+        "future_capture_can_be_named_cm_doupo_report": protocol_name == "CM_DoupoReport",
+        "generic_message_lists_require_payload_embedded_type_ids": True,
+        "read_only_schema_metadata_only": True,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    schemas_tsv = output_dir / "doupotd_pvp_report_decoder_readiness_schemas.tsv"
+    fields_tsv = output_dir / "doupotd_pvp_report_decoder_readiness_fields.tsv"
+    checks_tsv = output_dir / "doupotd_pvp_report_decoder_readiness_checks.tsv"
+    report_path = output_dir / "doupotd_pvp_report_decoder_readiness_report.md"
+    json_path = output_dir / "doupotd_pvp_report_decoder_readiness_report.json"
+    _write_tsv(
+        schemas_tsv,
+        schemas,
+        ["role", "packet_id", "packet_name", "parent", "field_count", "field_order", "primitive_fields", "list_fields", "source", "present"],
+    )
+    _write_tsv(fields_tsv, fields, ["role", "packet_id", "packet_name", "ordinal", "field", "kind", "type_or_write_method", "source"])
+    _write_tsv(checks_tsv, checks, ["check", "status", "detail"])
+    _write_doupotd_pvp_report_decoder_readiness_markdown(report_path, stats=stats, verdict=verdict, checks=checks, schemas=schemas)
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["decoder_schema_ready_for_cm_doupo_report_93671"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "schemas": str(schemas_tsv),
+                    "fields": str(fields_tsv),
+                    "checks": str(checks_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["decoder_schema_ready_for_cm_doupo_report_93671"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "schemas": str(schemas_tsv),
+            "fields": str(fields_tsv),
+            "checks": str(checks_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_pvp_report_trigger_lifecycle_files(root: Path) -> list[Path]:
+    patterns = [
+        "by_source/lscripts/gamesystem/game/doupotd_*/text_assets/DoupoTDPVPSceneView.lua",
+        "by_source/lscripts/gamesystem/game/doupotd_*/text_assets/DoupoTDMgr.lua",
+        "by_source/lscripts/gamesystem/game/digitdoor_*/text_assets/DigitDoorPVPSceneView.lua",
+        "by_source/lscripts/gamesystem/game/towerdefense_*/text_assets/TowerDefensePVPSceneView.lua",
+    ]
+    unique: dict[str, Path] = {}
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if path.is_file():
+                unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _doupotd_trigger_source_role(path: Path) -> str:
+    name = path.name
+    if name == "DoupoTDPVPSceneView.lua":
+        return "doupotd_scene"
+    if name == "DoupoTDMgr.lua":
+        return "doupotd_mgr"
+    if name == "DigitDoorPVPSceneView.lua":
+        return "digitdoor_baseline_scene"
+    if name == "TowerDefensePVPSceneView.lua":
+        return "towerdefense_baseline_scene"
+    return "other"
+
+
+def _append_trigger_row(
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    path: Path,
+    role: str,
+    category: str,
+    target: str,
+    line_no: int | str,
+    function_name: str,
+    snippet: str,
+    note: str,
+) -> None:
+    rows.append(
+        {
+            "role": role,
+            "category": category,
+            "target": target,
+            "file": str(path.relative_to(root)) if _is_relative_to(path, root) else str(path),
+            "line": line_no,
+            "function": function_name,
+            "snippet": snippet,
+            "note": note,
+        }
+    )
+
+
+def _doupotd_pvp_report_trigger_lifecycle_rows(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    scene_roles = {"doupotd_scene", "digitdoor_baseline_scene", "towerdefense_baseline_scene"}
+    for path in _doupotd_pvp_report_trigger_lifecycle_files(root):
+        role = _doupotd_trigger_source_role(path)
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        save_call_count = 0
+        checklist_call_count = 0
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            compact = _WHITESPACE_RE.sub("", line)
+            categories: list[tuple[str, str, str]] = []
+
+            if role == "doupotd_mgr":
+                if "OpenDoupoTDPVPSceneView" in current_function:
+                    if "F_ShowBottonWin(Window.DoupoTDPVPSceneView" in line:
+                        categories.append(("mgr_opens_pvp_scene_window", "DoupoTDPVPSceneView", "DoupoTDMgr opens the PVP scene view window."))
+                if "CloseById(Window.DoupoTDPVPSceneView" in line:
+                    categories.append(("mgr_closes_pvp_scene_window", "DoupoTDPVPSceneView", "DoupoTDMgr closes the PVP scene view window."))
+
+            if role in scene_roles:
+                if "self:SaveEntityData(entityView)" in compact:
+                    save_call_count += 1
+                if "self:CheckList(fightComponent)" in compact:
+                    checklist_call_count += 1
+
+                if current_function == "_M._init_":
+                    if "self.tbAttack={}" in compact:
+                        categories.append(("dedupe_map_initialized", "tbAttack", "Attack-side dedupe map is initialized."))
+                    if "self.tbDefense={}" in compact:
+                        categories.append(("dedupe_map_initialized", "tbDefense", "Defense-side dedupe map is initialized."))
+                    if "self.attackList=CList.new()" in compact:
+                        categories.append(("snapshot_list_initialized", "attackList", "Attack snapshot list is initialized."))
+                    if "self.defenseList=CList.new()" in compact:
+                        categories.append(("snapshot_list_initialized", "defenseList", "Defense snapshot list is initialized."))
+                if current_function == "_M.AddEvent":
+                    if "self.entityDead=function" in compact:
+                        categories.append(("dead_event_handler_defined", "entityDead", "Shared death handler is defined."))
+                    if "self:SaveEntityData(entityView)" in compact:
+                        categories.append(("dead_event_saves_entity_data", "SaveEntityData", "Death handler snapshots the dead entity."))
+                    if "self:UpdateHp()" in compact:
+                        categories.append(("dead_event_updates_hp", "UpdateHp", "Death handler re-checks HP/report state."))
+                    if "ENTITY_ENTER_DEAD" in line or "AFTER_ENTITY_DEAD_ANIM" in line:
+                        categories.append(("dead_event_registered", "entityDead", "Entity death event is registered."))
+                if current_function == "_M.Update":
+                    if "self:UpdateHp()" in compact:
+                        categories.append(("update_ticks_hp", "UpdateHp", "Per-frame update re-checks HP/report state."))
+                if current_function == "_M.SaveEntityData":
+                    if "LuaEntityType.DoupoTDPartner" in compact or "LuaEntityType.DigitDoorPartner" in compact:
+                        categories.append(("save_entity_partner_guard", "partner", "SaveEntityData is limited to partner entity snapshots."))
+                    if "CampGroup.Attack" in compact:
+                        categories.append(("save_entity_attack_branch", "attackList", "SaveEntityData has an attack-side branch."))
+                    if "notself.tbAttack[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("save_entity_dedupe_guard", "tbAttack", "Attack snapshot is deduped by role id."))
+                    if "notself.tbDefense[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("save_entity_dedupe_guard", "tbDefense", "Defense snapshot is deduped by role id."))
+                    if "self.attackList:Add(data)" in compact:
+                        categories.append(("save_entity_adds_snapshot", "attackList", "SaveEntityData appends attack snapshot."))
+                    if "self.defenseList:Add(data)" in compact:
+                        categories.append(("save_entity_adds_snapshot", "defenseList", "SaveEntityData appends defense snapshot."))
+                if current_function == "_M.UpdateHp":
+                    if "GetDefenseHPMsg()" in compact:
+                        categories.append(("updatehp_defense_hp_source", "GetDefenseHPMsg", "UpdateHp reads defense HP summary."))
+                    if "GetAttackHPMsg()" in compact:
+                        categories.append(("updatehp_attack_hp_source", "GetAttackHPMsg", "UpdateHp reads attack HP summary."))
+                    if "curHp==0" in compact:
+                        categories.append(("updatehp_zero_hp_gate", "curHp", "UpdateHp observes zero HP."))
+                    if "self.isDead=true" in compact:
+                        categories.append(("updatehp_sets_dead_flag", "isDead", "UpdateHp marks scene as dead/finished."))
+                    if "self:CheckList(fightComponent)" in compact:
+                        categories.append(("updatehp_triggers_checklist", "CheckList", "UpdateHp directly calls CheckList."))
+                if current_function == "_M.CheckList":
+                    if "ifnotself.curFinishVothen" in compact:
+                        categories.append(("checklist_requires_finish_vo", "curFinishVo", "CheckList exits without finish VO."))
+                    if "fightComponent:GetDefenseViewList()" in compact:
+                        categories.append(("checklist_view_source", "defenseList", "CheckList reads remaining defense-side views."))
+                    if "fightComponent:GetAttackViewList()" in compact:
+                        categories.append(("checklist_view_source", "attackList", "CheckList reads remaining attack-side views."))
+                    if "self.defenseList:Add(data)" in compact:
+                        categories.append(("checklist_backfills_snapshot", "defenseList", "CheckList appends remaining defense snapshot."))
+                    if "self.attackList:Add(data)" in compact:
+                        categories.append(("checklist_backfills_snapshot", "attackList", "CheckList appends remaining attack snapshot."))
+                    if "atkVoList=self.attackList" in compact:
+                        categories.append(("checklist_assigns_request_list", "atkVoList", "Report request uses accumulated attackList."))
+                    if "defVoList=self.defenseList" in compact:
+                        categories.append(("checklist_assigns_request_list", "defVoList", "Report request uses accumulated defenseList."))
+                    if "clientWinnerId=" in compact:
+                        categories.append(("checklist_assigns_winner", "clientWinnerId", "CheckList assigns clientWinnerId."))
+                    if "serverWinnerId=" in compact:
+                        categories.append(("checklist_assigns_winner", "serverWinnerId", "CheckList assigns serverWinnerId."))
+                    if "CM_DoupoTDReportFun(" in line:
+                        categories.append(("checklist_sends_report", "CM_DoupoTDReportFun", "CheckList calls the DoupoTD report sender surface."))
+                    if "CM_DigitDoorReportFun(" in line:
+                        categories.append(("baseline_checklist_sends_report", "CM_DigitDoorReportFun", "Baseline CheckList calls the DigitDoor report sender."))
+                if current_function == "_M.Destroy":
+                    if "RemoveEventHandler(CommonEventType.ENTITY_ENTER_DEAD" in line:
+                        categories.append(("dead_event_unregistered", "ENTITY_ENTER_DEAD", "Destroy unregisters death event."))
+                    if "RemoveEventHandler(CommonEventType.AFTER_ENTITY_DEAD_ANIM" in line:
+                        categories.append(("dead_event_unregistered", "AFTER_ENTITY_DEAD_ANIM", "Destroy unregisters death animation event."))
+                    if "CList:Recyle(self.attackList)" in compact:
+                        categories.append(("snapshot_list_recycled", "attackList", "Attack snapshot list is recycled."))
+                    if "CList:Recyle(self.defenseList)" in compact:
+                        categories.append(("snapshot_list_recycled", "defenseList", "Defense snapshot list is recycled."))
+
+            for category, target, note in categories:
+                _append_trigger_row(
+                    rows,
+                    root=root,
+                    path=path,
+                    role=role,
+                    category=category,
+                    target=target,
+                    line_no=line_no,
+                    function_name=current_function,
+                    snippet=stripped,
+                    note=note,
+                )
+
+        if role in scene_roles:
+            _append_trigger_row(
+                rows,
+                root=root,
+                path=path,
+                role=role,
+                category="scene_save_entity_callsite_count",
+                target="SaveEntityData",
+                line_no="summary",
+                function_name="",
+                snippet=str(save_call_count),
+                note="Visible self:SaveEntityData(entityView) callsite count in this scene file.",
+            )
+            _append_trigger_row(
+                rows,
+                root=root,
+                path=path,
+                role=role,
+                category="scene_checklist_callsite_count",
+                target="CheckList",
+                line_no="summary",
+                function_name="",
+                snippet=str(checklist_call_count),
+                note="Visible self:CheckList(fightComponent) callsite count in this scene file.",
+            )
+    return rows
+
+
+def _write_doupotd_pvp_report_trigger_lifecycle_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report trigger lifecycle",
+        "",
+        "This report checks the visible trigger path leading to `DoupoTDPVPSceneView:CheckList(...)` and `CM_DoupoTDReportFun(...)`, using DigitDoor/TowerDefense PVP scene views as nearby baselines.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Key Evidence", "", "| Role | Category | Target | File | Line | Snippet |", "| --- | --- | --- | --- | ---: | --- |"])
+    priority = {
+        "mgr_opens_pvp_scene_window",
+        "dead_event_saves_entity_data",
+        "dead_event_updates_hp",
+        "updatehp_zero_hp_gate",
+        "updatehp_sets_dead_flag",
+        "updatehp_triggers_checklist",
+        "checklist_backfills_snapshot",
+        "checklist_assigns_request_list",
+        "checklist_sends_report",
+        "baseline_checklist_sends_report",
+        "scene_save_entity_callsite_count",
+        "scene_checklist_callsite_count",
+    }
+    for row in rows:
+        if row.get("category") not in priority:
+            continue
+        lines.append(
+            "| "
+            f"{row.get('role', '')} | "
+            f"{row.get('category', '')} | "
+            f"{row.get('target', '')} | "
+            f"`{row.get('file', '')}` | "
+            f"{row.get('line', '')} | "
+            f"`{str(row.get('snippet', '')).replace('|', '\\|')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `DoupoTDMgr` visibly opens `Window.DoupoTDPVPSceneView`, so the scene view itself is a real runtime surface.",
+            "- `DoupoTDPVPSceneView:CheckList` visibly builds `atkVoList/defVoList`, assigns winner fields, and calls `CM_DoupoTDReportFun(...)`.",
+            "- Unlike the nearby DigitDoor/TowerDefense baselines, the current visible DoupoTD scene has no `self:CheckList(fightComponent)` callsite in `UpdateHp`, and its death event handler only calls `UpdateHp()` rather than `SaveEntityData(entityView)`.",
+            "- `SaveEntityData` exists in DoupoTD and can append attack/defense snapshots, but in this visible scene file it is not wired by a visible callsite.",
+            "- This narrows the runtime question: a future capture should prove whether an unseen runtime/base/native path invokes `CheckList`, or whether the visible DoupoTD scene report body is currently orphaned.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    rows = _doupotd_pvp_report_trigger_lifecycle_rows(root)
+    category_counts = Counter((str(row.get("role") or ""), str(row.get("category") or "")) for row in rows)
+
+    def count(role: str, category: str) -> int:
+        return category_counts.get((role, category), 0)
+
+    def summary_int(role: str, category: str) -> int:
+        total = 0
+        for row in rows:
+            if row.get("role") == role and row.get("category") == category:
+                try:
+                    total += int(str(row.get("snippet") or "0"))
+                except ValueError:
+                    pass
+        return total
+
+    baseline_save_calls = summary_int("digitdoor_baseline_scene", "scene_save_entity_callsite_count") + summary_int(
+        "towerdefense_baseline_scene",
+        "scene_save_entity_callsite_count",
+    )
+    baseline_checklist_calls = summary_int("digitdoor_baseline_scene", "scene_checklist_callsite_count") + summary_int(
+        "towerdefense_baseline_scene",
+        "scene_checklist_callsite_count",
+    )
+    stats = {
+        "source_file_count": len(_doupotd_pvp_report_trigger_lifecycle_files(root)),
+        "evidence_row_count": len(rows),
+        "doupotd_mgr_open_scene_rows": count("doupotd_mgr", "mgr_opens_pvp_scene_window"),
+        "doupotd_dead_event_registered_rows": count("doupotd_scene", "dead_event_registered"),
+        "doupotd_dead_event_updates_hp_rows": count("doupotd_scene", "dead_event_updates_hp"),
+        "doupotd_dead_event_saves_entity_data_rows": count("doupotd_scene", "dead_event_saves_entity_data"),
+        "doupotd_updatehp_zero_hp_gate_rows": count("doupotd_scene", "updatehp_zero_hp_gate"),
+        "doupotd_updatehp_triggers_checklist_rows": count("doupotd_scene", "updatehp_triggers_checklist"),
+        "doupotd_visible_save_entity_callsite_count": summary_int("doupotd_scene", "scene_save_entity_callsite_count"),
+        "doupotd_visible_checklist_callsite_count": summary_int("doupotd_scene", "scene_checklist_callsite_count"),
+        "doupotd_save_entity_function_rows": count("doupotd_scene", "save_entity_adds_snapshot"),
+        "doupotd_checklist_report_send_rows": count("doupotd_scene", "checklist_sends_report"),
+        "doupotd_checklist_backfill_rows": count("doupotd_scene", "checklist_backfills_snapshot"),
+        "baseline_visible_save_entity_callsite_count": baseline_save_calls,
+        "baseline_visible_checklist_callsite_count": baseline_checklist_calls,
+        "baseline_updatehp_triggers_checklist_rows": count("digitdoor_baseline_scene", "updatehp_triggers_checklist")
+        + count("towerdefense_baseline_scene", "updatehp_triggers_checklist"),
+    }
+    verdict = {
+        "doupotd_pvp_scene_window_open_visible": stats["doupotd_mgr_open_scene_rows"] > 0,
+        "doupotd_report_body_visible": stats["doupotd_checklist_report_send_rows"] > 0
+        and stats["doupotd_checklist_backfill_rows"] >= 2,
+        "doupotd_hp_zero_gate_visible": stats["doupotd_updatehp_zero_hp_gate_rows"] > 0,
+        "doupotd_visible_checklist_callsite_missing": stats["doupotd_visible_checklist_callsite_count"] == 0,
+        "doupotd_death_event_snapshot_call_missing": stats["doupotd_dead_event_saves_entity_data_rows"] == 0
+        and stats["doupotd_visible_save_entity_callsite_count"] == 0,
+        "doupotd_save_entity_function_present_but_unwired": stats["doupotd_save_entity_function_rows"] >= 2
+        and stats["doupotd_visible_save_entity_callsite_count"] == 0,
+        "nearby_baseline_trigger_pattern_visible": stats["baseline_visible_save_entity_callsite_count"] > 0
+        and stats["baseline_visible_checklist_callsite_count"] > 0
+        and stats["baseline_updatehp_triggers_checklist_rows"] > 0,
+    }
+    verdict["doupotd_pvp_report_visible_trigger_gap_confirmed"] = (
+        verdict["doupotd_pvp_scene_window_open_visible"]
+        and verdict["doupotd_report_body_visible"]
+        and verdict["doupotd_hp_zero_gate_visible"]
+        and verdict["doupotd_visible_checklist_callsite_missing"]
+        and verdict["doupotd_death_event_snapshot_call_missing"]
+        and verdict["doupotd_save_entity_function_present_but_unwired"]
+        and verdict["nearby_baseline_trigger_pattern_visible"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_trigger_lifecycle_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_trigger_lifecycle_report.md"
+    json_path = output_dir / "doupotd_pvp_report_trigger_lifecycle_report.json"
+    _write_tsv(evidence_tsv, rows, ["role", "category", "target", "file", "line", "function", "snippet", "note"])
+    _write_doupotd_pvp_report_trigger_lifecycle_markdown(report_path, stats=stats, verdict=verdict, rows=rows)
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_visible_trigger_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_visible_trigger_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_trigger_lifecycle_visible_gap_from_rows(rows: list[dict[str, Any]]) -> bool:
+    category_counts = Counter((str(row.get("role") or ""), str(row.get("category") or "")) for row in rows)
+
+    def count(role: str, category: str) -> int:
+        return category_counts.get((role, category), 0)
+
+    def summary_int(role: str, category: str) -> int:
+        total = 0
+        for row in rows:
+            if row.get("role") == role and row.get("category") == category:
+                try:
+                    total += int(str(row.get("snippet") or "0"))
+                except ValueError:
+                    pass
+        return total
+
+    baseline_save_calls = summary_int("digitdoor_baseline_scene", "scene_save_entity_callsite_count") + summary_int(
+        "towerdefense_baseline_scene",
+        "scene_save_entity_callsite_count",
+    )
+    baseline_checklist_calls = summary_int("digitdoor_baseline_scene", "scene_checklist_callsite_count") + summary_int(
+        "towerdefense_baseline_scene",
+        "scene_checklist_callsite_count",
+    )
+    return bool(
+        count("doupotd_mgr", "mgr_opens_pvp_scene_window") > 0
+        and count("doupotd_scene", "checklist_sends_report") > 0
+        and count("doupotd_scene", "checklist_backfills_snapshot") >= 2
+        and count("doupotd_scene", "updatehp_zero_hp_gate") > 0
+        and summary_int("doupotd_scene", "scene_checklist_callsite_count") == 0
+        and count("doupotd_scene", "dead_event_saves_entity_data") == 0
+        and summary_int("doupotd_scene", "scene_save_entity_callsite_count") == 0
+        and count("doupotd_scene", "save_entity_adds_snapshot") >= 2
+        and baseline_save_calls > 0
+        and baseline_checklist_calls > 0
+        and (
+            count("digitdoor_baseline_scene", "updatehp_triggers_checklist")
+            + count("towerdefense_baseline_scene", "updatehp_triggers_checklist")
+        )
+        > 0
+    )
+
+
+def _doupotd_pvp_report_trigger_base_dynamic_add_row(
+    rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    surface: str,
+    category: str,
+    target: str,
+    path: Path,
+    line_no: int | str,
+    function_name: str,
+    snippet: str,
+    note: str,
+) -> None:
+    rows.append(
+        {
+            "surface": surface,
+            "category": category,
+            "target": target,
+            "file": str(path.relative_to(root)) if _is_relative_to(path, root) else str(path),
+            "line": line_no,
+            "function": function_name,
+            "snippet": _WHITESPACE_RE.sub(" ", snippet.strip())[:360],
+            "note": note,
+        }
+    )
+
+
+def _doupotd_pvp_report_trigger_base_dynamic_rows(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "lua_scanned_file_count": 0,
+        "activity_base_scene_file_count": 0,
+        "cpp2il_scanned_file_count": 0,
+    }
+    lscript_root = root / "by_source" / "lscripts"
+    dynamic_tokens = ("rawget", "rawset", "__index", "__newindex", "pcall", "xpcall", "Invoke", "SendMessage")
+    if lscript_root.is_dir():
+        for path in sorted(lscript_root.rglob("*.lua")):
+            if "\\gamesystem\\game\\" not in str(path).lower().replace("/", "\\"):
+                continue
+            stats["lua_scanned_file_count"] += 1
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            current_function = ""
+            rel_lower = str(path.relative_to(lscript_root) if _is_relative_to(path, lscript_root) else path.name).lower().replace("/", "\\")
+            is_activity_base = path.name == "ActivityBaseSceneView.lua"
+            is_doupotd_scene = path.name == "DoupoTDPVPSceneView.lua"
+            is_doupotd_context = "\\doupotd_" in rel_lower or is_doupotd_scene
+            if is_activity_base:
+                stats["activity_base_scene_file_count"] += 1
+
+            for line_no, line in enumerate(lines, 1):
+                if match := _LUA_FUNCTION_RE.search(line):
+                    current_function = match.group(1).strip()
+                stripped = line.strip()
+                compact = _WHITESPACE_RE.sub("", line)
+                if not stripped or stripped.startswith("--"):
+                    continue
+
+                if is_activity_base:
+                    if "function _M." in stripped:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="activity_base",
+                            category="activity_base_function",
+                            target=current_function,
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="Visible ActivityBaseSceneView function.",
+                        )
+                    if "AddUpdateCallback" in stripped or "self:Update(fTime,fDTime)" in compact:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="activity_base",
+                            category="activity_base_update_tick_surface",
+                            target="Update",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="Base scene registers or forwards per-frame Update calls.",
+                        )
+                    if "CheckList" in stripped:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="activity_base",
+                            category="activity_base_checklist_symbol",
+                            target="CheckList",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="ActivityBaseSceneView references CheckList.",
+                        )
+                    if "SaveEntityData" in stripped:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="activity_base",
+                            category="activity_base_save_entity_symbol",
+                            target="SaveEntityData",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="ActivityBaseSceneView references SaveEntityData.",
+                        )
+
+                if is_doupotd_scene:
+                    if "ActivityBaseSceneView=require" in compact:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="doupotd_scene",
+                            category="doupotd_scene_requires_activity_base",
+                            target="ActivityBaseSceneView",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="DoupoTDPVPSceneView inherits the shared activity scene base.",
+                        )
+                    if "_M=class(ActivityBaseSceneView,_M)" in compact:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="doupotd_scene",
+                            category="doupotd_scene_activity_base_class",
+                            target="ActivityBaseSceneView",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="DoupoTDPVPSceneView is constructed with ActivityBaseSceneView as its parent.",
+                        )
+                    if re.search(r"\bfunction\s+_M\.CheckList\s*\(", stripped):
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="doupotd_scene",
+                            category="doupotd_checklist_function",
+                            target="CheckList",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="DoupoTD report body function is visible in the scene.",
+                        )
+                    if "CM_DoupoTDReportFun" in stripped:
+                        _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                            rows,
+                            root=root,
+                            surface="doupotd_scene",
+                            category="doupotd_checklist_report_call",
+                            target="CM_DoupoTDReportFun",
+                            path=path,
+                            line_no=line_no,
+                            function_name=current_function,
+                            snippet=stripped,
+                            note="DoupoTD CheckList calls the visible report sender surface.",
+                        )
+
+                if ":CheckList(" in compact and "function_M.CheckList" not in compact:
+                    category = "global_doupotd_checklist_callsite" if is_doupotd_context or "DoupoTD" in stripped else "global_other_checklist_callsite"
+                    _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                        rows,
+                        root=root,
+                        surface="global_lua",
+                        category=category,
+                        target="CheckList",
+                        path=path,
+                        line_no=line_no,
+                        function_name=current_function,
+                        snippet=stripped,
+                        note="Visible Lua callsite to a CheckList method.",
+                    )
+                if ":SaveEntityData(" in compact and "function_M.SaveEntityData" not in compact:
+                    category = "global_doupotd_save_entity_callsite" if is_doupotd_context or "DoupoTD" in stripped else "global_other_save_entity_callsite"
+                    _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                        rows,
+                        root=root,
+                        surface="global_lua",
+                        category=category,
+                        target="SaveEntityData",
+                        path=path,
+                        line_no=line_no,
+                        function_name=current_function,
+                        snippet=stripped,
+                        note="Visible Lua callsite to a SaveEntityData method.",
+                    )
+
+                dynamic_line = any(token in stripped for token in dynamic_tokens)
+                if dynamic_line and ("CheckList" in stripped or "SaveEntityData" in stripped or "DoupoTDPVPSceneView" in stripped):
+                    if "DoupoTDPVPSceneView" in stripped:
+                        category = "dynamic_doupotd_scene_symbol"
+                        target = "DoupoTDPVPSceneView"
+                    elif ("CheckList" in stripped or "SaveEntityData" in stripped) and (is_doupotd_context or "DoupoTD" in stripped):
+                        category = "dynamic_doupotd_checklist_symbol"
+                        target = "CheckList/SaveEntityData"
+                    else:
+                        category = "dynamic_other_checklist_symbol"
+                        target = "CheckList/SaveEntityData"
+                    _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                        rows,
+                        root=root,
+                        surface="dynamic_lua",
+                        category=category,
+                        target=target,
+                        path=path,
+                        line_no=line_no,
+                        function_name=current_function,
+                        snippet=stripped,
+                        note="Line combines a target symbol with a dynamic-dispatch token.",
+                    )
+
+    cpp2il_root = root / "apk_static_index"
+    cpp2il_patterns = ("*.cs", "*.txt", "*.isil", "*.json", "*.tsv")
+    cpp2il_targets = ("DoupoTDPVPSceneView", "CheckList", "SaveEntityData", "CM_DoupoTDReportFun")
+    for cpp2il_dir in sorted(cpp2il_root.glob("cpp2il_*")):
+        if not cpp2il_dir.is_dir():
+            continue
+        for pattern in cpp2il_patterns:
+            for path in sorted(cpp2il_dir.rglob(pattern)):
+                if not path.is_file():
+                    continue
+                stats["cpp2il_scanned_file_count"] += 1
+                try:
+                    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except OSError:
+                    continue
+                for line_no, line in enumerate(lines, 1):
+                    if not any(target in line for target in cpp2il_targets):
+                        continue
+                    _doupotd_pvp_report_trigger_base_dynamic_add_row(
+                        rows,
+                        root=root,
+                        surface="cpp2il",
+                        category="cpp2il_target_symbol_hit",
+                        target="/".join(target for target in cpp2il_targets if target in line),
+                        path=path,
+                        line_no=line_no,
+                        function_name="",
+                        snippet=line,
+                        note="Readable Cpp2IL export contains a target trigger symbol.",
+                    )
+    return rows, stats
+
+
+def _write_doupotd_pvp_report_trigger_base_dynamic_gap_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report trigger base/dynamic gap",
+        "",
+        "This report extends the scene-level lifecycle probe by checking whether the visible parent class, global Lua callsites, dynamic-dispatch hints, or readable Cpp2IL exports provide an alternate trigger for `DoupoTDPVPSceneView:CheckList(...)`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Key Evidence", "", "| Surface | Category | Target | File | Line | Snippet |", "| --- | --- | --- | --- | ---: | --- |"])
+    priority = {
+        "activity_base_function",
+        "activity_base_update_tick_surface",
+        "activity_base_checklist_symbol",
+        "activity_base_save_entity_symbol",
+        "doupotd_scene_requires_activity_base",
+        "doupotd_scene_activity_base_class",
+        "doupotd_checklist_function",
+        "doupotd_checklist_report_call",
+        "global_doupotd_checklist_callsite",
+        "global_doupotd_save_entity_callsite",
+        "dynamic_doupotd_checklist_symbol",
+        "dynamic_doupotd_scene_symbol",
+        "cpp2il_target_symbol_hit",
+    }
+    for row in rows:
+        if row.get("category") not in priority:
+            continue
+        lines.append(
+            "| "
+            f"{row.get('surface', '')} | "
+            f"{row.get('category', '')} | "
+            f"{row.get('target', '')} | "
+            f"`{row.get('file', '')}` | "
+            f"{row.get('line', '')} | "
+            f"`{str(row.get('snippet', '')).replace('|', '\\|')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `ActivityBaseSceneView` is visible and only provides generic UI/list/update plumbing; no visible `CheckList` or `SaveEntityData` trigger is present there.",
+            "- The DoupoTD PVP scene does inherit that base and does define the report body, but the scan still finds no DoupoTD-context `:CheckList(...)` or `:SaveEntityData(...)` caller outside the already-known scene-local gap.",
+            "- No target `CheckList`/`SaveEntityData`/`DoupoTDPVPSceneView` dynamic-dispatch hint or readable Cpp2IL named trigger is visible in this export.",
+            "- The practical next evidence step remains runtime observation: either a focused packet capture of `CM_DoupoReport(93671)` or an observed Lua/runtime callback path that calls `CheckList`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    rows, collected_stats = _doupotd_pvp_report_trigger_base_dynamic_rows(root)
+    lifecycle_rows = _doupotd_pvp_report_trigger_lifecycle_rows(root)
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    stats = {
+        "lua_scanned_file_count": collected_stats["lua_scanned_file_count"],
+        "activity_base_scene_file_count": collected_stats["activity_base_scene_file_count"],
+        "evidence_row_count": len(rows),
+        "lifecycle_evidence_row_count": len(lifecycle_rows),
+        "visible_trigger_gap_from_lifecycle_rows": _doupotd_trigger_lifecycle_visible_gap_from_rows(lifecycle_rows),
+        "activity_base_function_rows": category_counts.get("activity_base_function", 0),
+        "activity_base_update_tick_rows": category_counts.get("activity_base_update_tick_surface", 0),
+        "activity_base_checklist_symbol_rows": category_counts.get("activity_base_checklist_symbol", 0),
+        "activity_base_save_entity_symbol_rows": category_counts.get("activity_base_save_entity_symbol", 0),
+        "doupotd_scene_activity_base_rows": category_counts.get("doupotd_scene_requires_activity_base", 0)
+        + category_counts.get("doupotd_scene_activity_base_class", 0),
+        "doupotd_scene_checklist_function_rows": category_counts.get("doupotd_checklist_function", 0),
+        "doupotd_scene_report_call_rows": category_counts.get("doupotd_checklist_report_call", 0),
+        "global_doupotd_checklist_call_rows": category_counts.get("global_doupotd_checklist_callsite", 0),
+        "global_doupotd_save_entity_call_rows": category_counts.get("global_doupotd_save_entity_callsite", 0),
+        "dynamic_doupotd_checklist_symbol_rows": category_counts.get("dynamic_doupotd_checklist_symbol", 0),
+        "dynamic_doupotd_scene_symbol_rows": category_counts.get("dynamic_doupotd_scene_symbol", 0),
+        "cpp2il_scanned_file_count": collected_stats["cpp2il_scanned_file_count"],
+        "cpp2il_target_symbol_hit_count": category_counts.get("cpp2il_target_symbol_hit", 0),
+    }
+    verdict = {
+        "visible_scene_trigger_gap_already_confirmed": stats["visible_trigger_gap_from_lifecycle_rows"],
+        "doupotd_inherits_activity_base": stats["doupotd_scene_activity_base_rows"] >= 2,
+        "activity_base_has_no_checklist_trigger": stats["activity_base_scene_file_count"] > 0
+        and stats["activity_base_checklist_symbol_rows"] == 0
+        and stats["activity_base_save_entity_symbol_rows"] == 0,
+        "activity_base_only_exposes_generic_update_tick": stats["activity_base_update_tick_rows"] > 0,
+        "global_lua_has_no_doupotd_checklist_callsite": stats["global_doupotd_checklist_call_rows"] == 0,
+        "global_lua_has_no_doupotd_save_entity_callsite": stats["global_doupotd_save_entity_call_rows"] == 0,
+        "dynamic_lua_generation_hint_absent_or_unresolved": stats["dynamic_doupotd_checklist_symbol_rows"] == 0
+        and stats["dynamic_doupotd_scene_symbol_rows"] == 0,
+        "readable_cpp2il_has_no_named_trigger": stats["cpp2il_target_symbol_hit_count"] == 0,
+        "static_base_dynamic_scan_only": True,
+    }
+    verdict["doupotd_pvp_report_trigger_base_dynamic_gap_confirmed"] = bool(
+        verdict["visible_scene_trigger_gap_already_confirmed"]
+        and verdict["doupotd_inherits_activity_base"]
+        and verdict["activity_base_has_no_checklist_trigger"]
+        and verdict["global_lua_has_no_doupotd_checklist_callsite"]
+        and verdict["global_lua_has_no_doupotd_save_entity_callsite"]
+        and verdict["dynamic_lua_generation_hint_absent_or_unresolved"]
+        and verdict["readable_cpp2il_has_no_named_trigger"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_trigger_base_dynamic_gap_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_trigger_base_dynamic_gap_report.md"
+    json_path = output_dir / "doupotd_pvp_report_trigger_base_dynamic_gap_report.json"
+    _write_tsv(evidence_tsv, rows, ["surface", "category", "target", "file", "line", "function", "snippet", "note"])
+    _write_doupotd_pvp_report_trigger_base_dynamic_gap_markdown(report_path, stats=stats, verdict=verdict, rows=rows)
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_trigger_base_dynamic_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_trigger_base_dynamic_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_pvp_report_trigger_delta_scene_files(root: Path) -> list[Path]:
+    patterns = [
+        "by_source/lscripts/gamesystem/game/doupotd_*/text_assets/DoupoTDPVPSceneView.lua",
+        "by_source/lscripts/gamesystem/game/digitdoor_*/text_assets/DigitDoorPVPSceneView.lua",
+        "by_source/lscripts/gamesystem/game/towerdefense_*/text_assets/TowerDefensePVPSceneView.lua",
+    ]
+    unique: dict[str, Path] = {}
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if path.is_file():
+                unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _doupotd_pvp_report_trigger_delta_rows(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _doupotd_pvp_report_trigger_delta_scene_files(root):
+        role = _doupotd_trigger_source_role(path)
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        current_function = ""
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            compact = _WHITESPACE_RE.sub("", line)
+            if not stripped or stripped.startswith("--"):
+                continue
+            categories: list[tuple[str, str, str]] = []
+
+            if current_function == "_M.AddEvent":
+                if "self.entityDead=function" in compact:
+                    categories.append(("death_handler_defined", "entityDead", "Death handler is defined."))
+                if "self:SaveEntityData(entityView)" in compact:
+                    categories.append(("death_handler_snapshots_entity", "SaveEntityData", "Death handler snapshots dead entity data."))
+                if "self:UpdateHp()" in compact:
+                    categories.append(("death_handler_updates_hp", "UpdateHp", "Death handler updates HP/report state."))
+                if "ENTITY_ENTER_DEAD" in line or "AFTER_ENTITY_DEAD_ANIM" in line:
+                    categories.append(("death_handler_registered", "entityDead", "Death handler is registered to entity-death events."))
+            elif current_function == "_M.UpdateHp":
+                if "FightMgr.Inst_get().UserFightComponent" in compact:
+                    categories.append(("updatehp_uses_user_fight_component", "UserFightComponent", "UpdateHp reads the module fight component."))
+                if "GetDefenseHPMsg()" in compact:
+                    categories.append(("updatehp_reads_defense_hp", "GetDefenseHPMsg", "UpdateHp reads defense-side HP."))
+                if "GetAttackHPMsg()" in compact:
+                    categories.append(("updatehp_reads_attack_hp", "GetAttackHPMsg", "UpdateHp reads attack-side HP."))
+                if "curHp==0" in compact:
+                    categories.append(("updatehp_zero_hp_gate", "curHp", "UpdateHp checks zero HP."))
+                if "GetUserId()" in compact:
+                    categories.append(("updatehp_user_id_lookup", "GetUserId", "UpdateHp reads current user id for winner gating."))
+                if "self.winnerId" in compact:
+                    categories.append(("updatehp_winner_guard", "winnerId", "UpdateHp gates report trigger against finish-VO winner."))
+                if "self:CheckList(fightComponent)" in compact:
+                    categories.append(("updatehp_triggers_checklist", "CheckList", "UpdateHp calls CheckList after a zero-HP/winner gate."))
+            elif current_function == "_M.SaveEntityData":
+                if "LuaEntityType.DoupoTDPartner" in compact:
+                    categories.append(("save_entity_partner_guard", "DoupoTDPartner", "SaveEntityData accepts DoupoTD partner entities."))
+                if "LuaEntityType.DigitDoorPartner" in compact:
+                    categories.append(("save_entity_partner_guard", "DigitDoorPartner", "SaveEntityData accepts DigitDoor partner entities."))
+                if "CampGroup.Attack" in compact:
+                    categories.append(("save_entity_attack_branch", "attackList", "SaveEntityData has an attack-side snapshot branch."))
+                if "self.attackList:Add(data)" in compact:
+                    categories.append(("save_entity_adds_attack_snapshot", "attackList", "SaveEntityData appends attack snapshot."))
+                if "self.defenseList:Add(data)" in compact:
+                    categories.append(("save_entity_adds_defense_snapshot", "defenseList", "SaveEntityData appends defense snapshot."))
+            elif current_function == "_M.CheckList":
+                if "fightComponent:GetDefenseViewList()" in compact:
+                    categories.append(("checklist_backfills_defense_views", "defenseList", "CheckList backfills remaining defense views."))
+                if "fightComponent:GetAttackViewList()" in compact:
+                    categories.append(("checklist_backfills_attack_views", "attackList", "CheckList backfills remaining attack views."))
+                if "clientWinnerId=" in compact:
+                    categories.append(("checklist_assigns_client_winner", "clientWinnerId", "CheckList assigns clientWinnerId."))
+                if "serverWinnerId=" in compact:
+                    categories.append(("checklist_assigns_server_winner", "serverWinnerId", "CheckList assigns serverWinnerId."))
+                if "CM_DoupoTDReportFun(" in line:
+                    categories.append(("checklist_sends_doupotd_report", "CM_DoupoTDReportFun", "CheckList calls the DoupoTD report sender surface."))
+                if "CM_DigitDoorReportFun(" in line:
+                    categories.append(("checklist_sends_digitdoor_report", "CM_DigitDoorReportFun", "CheckList calls the DigitDoor report sender surface."))
+
+            for category, target, note in categories:
+                _append_trigger_row(
+                    rows,
+                    root=root,
+                    path=path,
+                    role=role,
+                    category=category,
+                    target=target,
+                    line_no=line_no,
+                    function_name=current_function,
+                    snippet=stripped,
+                    note=note,
+                )
+    category_counts = Counter((str(row.get("role") or ""), str(row.get("category") or "")) for row in rows)
+
+    def count(role: str, category: str) -> int:
+        return category_counts.get((role, category), 0)
+
+    baseline_roles = ("digitdoor_baseline_scene", "towerdefense_baseline_scene")
+    baseline_death_snapshots = sum(count(role, "death_handler_snapshots_entity") for role in baseline_roles)
+    baseline_updatehp_triggers = sum(count(role, "updatehp_triggers_checklist") for role in baseline_roles)
+    baseline_winner_guards = sum(count(role, "updatehp_winner_guard") for role in baseline_roles)
+    doupotd_missing: list[tuple[str, str, str]] = []
+    if baseline_death_snapshots > 0 and count("doupotd_scene", "death_handler_snapshots_entity") == 0:
+        doupotd_missing.append(
+            (
+                "delta_missing_death_snapshot_edge",
+                "SaveEntityData",
+                "DigitDoor/TowerDefense death handlers snapshot dead entities, but DoupoTD death handler does not.",
+            )
+        )
+    if baseline_updatehp_triggers > 0 and count("doupotd_scene", "updatehp_triggers_checklist") == 0:
+        doupotd_missing.append(
+            (
+                "delta_missing_updatehp_checklist_edge",
+                "CheckList",
+                "DigitDoor/TowerDefense UpdateHp call CheckList after zero-HP/winner gates, but DoupoTD UpdateHp does not.",
+            )
+        )
+    if baseline_winner_guards > 0 and count("doupotd_scene", "updatehp_winner_guard") == 0:
+        doupotd_missing.append(
+            (
+                "delta_missing_updatehp_winner_guard",
+                "winnerId",
+                "DigitDoor/TowerDefense UpdateHp compare winner/user ids before report trigger, but DoupoTD UpdateHp has no visible winner guard.",
+            )
+        )
+    doupotd_paths = [path for path in _doupotd_pvp_report_trigger_delta_scene_files(root) if path.name == "DoupoTDPVPSceneView.lua"]
+    synthetic_path = doupotd_paths[0] if doupotd_paths else root
+    for category, target, note in doupotd_missing:
+        _append_trigger_row(
+            rows,
+            root=root,
+            path=synthetic_path,
+            role="doupotd_scene",
+            category=category,
+            target=target,
+            line_no="delta",
+            function_name="",
+            snippet=note,
+            note=note,
+        )
+    return rows
+
+
+def _write_doupotd_pvp_report_trigger_delta_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report trigger delta",
+        "",
+        "This report compares the trigger-relevant scene functions in `DoupoTDPVPSceneView` against the nearest visible PVP report baselines, `DigitDoorPVPSceneView` and `TowerDefensePVPSceneView`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Delta Evidence", "", "| Role | Category | Target | Function | Line | Snippet |", "| --- | --- | --- | --- | ---: | --- |"])
+    priority = {
+        "death_handler_snapshots_entity",
+        "death_handler_updates_hp",
+        "updatehp_zero_hp_gate",
+        "updatehp_winner_guard",
+        "updatehp_triggers_checklist",
+        "checklist_sends_doupotd_report",
+        "checklist_sends_digitdoor_report",
+        "delta_missing_death_snapshot_edge",
+        "delta_missing_updatehp_checklist_edge",
+        "delta_missing_updatehp_winner_guard",
+    }
+    for row in rows:
+        if row.get("category") not in priority:
+            continue
+        lines.append(
+            "| "
+            f"{row.get('role', '')} | "
+            f"{row.get('category', '')} | "
+            f"{row.get('target', '')} | "
+            f"`{row.get('function', '')}` | "
+            f"{row.get('line', '')} | "
+            f"`{str(row.get('snippet', '')).replace('|', '\\|')}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The three scene files share the same report-body skeleton: dead/live entity snapshots are accumulated, winner fields are assigned, and a report sender function is called.",
+            "- The divergence is before the body: visible DoupoTD lacks the death-handler snapshot edge and the UpdateHp-to-CheckList edge that exist in the nearby baselines.",
+            "- Treat this as a static trigger-delta finding, not as proof of server trust or runtime execution. Runtime capture is still the next evidence source for whether `93671/CM_DoupoReport` appears.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_trigger_delta_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    rows = _doupotd_pvp_report_trigger_delta_rows(root)
+    category_counts = Counter((str(row.get("role") or ""), str(row.get("category") or "")) for row in rows)
+
+    def count(role: str, category: str) -> int:
+        return category_counts.get((role, category), 0)
+
+    baseline_roles = ("digitdoor_baseline_scene", "towerdefense_baseline_scene")
+    stats = {
+        "source_file_count": len(_doupotd_pvp_report_trigger_delta_scene_files(root)),
+        "evidence_row_count": len(rows),
+        "doupotd_death_handler_snapshot_rows": count("doupotd_scene", "death_handler_snapshots_entity"),
+        "doupotd_death_handler_updatehp_rows": count("doupotd_scene", "death_handler_updates_hp"),
+        "doupotd_updatehp_zero_hp_gate_rows": count("doupotd_scene", "updatehp_zero_hp_gate"),
+        "doupotd_updatehp_winner_guard_rows": count("doupotd_scene", "updatehp_winner_guard"),
+        "doupotd_updatehp_checklist_rows": count("doupotd_scene", "updatehp_triggers_checklist"),
+        "doupotd_checklist_report_rows": count("doupotd_scene", "checklist_sends_doupotd_report"),
+        "baseline_death_handler_snapshot_rows": sum(count(role, "death_handler_snapshots_entity") for role in baseline_roles),
+        "baseline_updatehp_winner_guard_rows": sum(count(role, "updatehp_winner_guard") for role in baseline_roles),
+        "baseline_updatehp_checklist_rows": sum(count(role, "updatehp_triggers_checklist") for role in baseline_roles),
+        "baseline_checklist_report_rows": sum(count(role, "checklist_sends_digitdoor_report") for role in baseline_roles),
+        "delta_missing_edge_rows": count("doupotd_scene", "delta_missing_death_snapshot_edge")
+        + count("doupotd_scene", "delta_missing_updatehp_checklist_edge")
+        + count("doupotd_scene", "delta_missing_updatehp_winner_guard"),
+    }
+    verdict = {
+        "doupotd_report_body_visible": stats["doupotd_checklist_report_rows"] > 0,
+        "baseline_report_trigger_edges_visible": stats["baseline_death_handler_snapshot_rows"] > 0
+        and stats["baseline_updatehp_checklist_rows"] > 0,
+        "doupotd_death_snapshot_edge_missing_vs_baseline": stats["doupotd_death_handler_snapshot_rows"] == 0
+        and stats["baseline_death_handler_snapshot_rows"] > 0,
+        "doupotd_updatehp_checklist_edge_missing_vs_baseline": stats["doupotd_updatehp_checklist_rows"] == 0
+        and stats["baseline_updatehp_checklist_rows"] > 0,
+        "doupotd_updatehp_winner_guard_missing_vs_baseline": stats["doupotd_updatehp_winner_guard_rows"] == 0
+        and stats["baseline_updatehp_winner_guard_rows"] > 0,
+        "static_trigger_delta_only": True,
+    }
+    verdict["doupotd_pvp_report_trigger_delta_confirmed"] = bool(
+        verdict["doupotd_report_body_visible"]
+        and verdict["baseline_report_trigger_edges_visible"]
+        and verdict["doupotd_death_snapshot_edge_missing_vs_baseline"]
+        and verdict["doupotd_updatehp_checklist_edge_missing_vs_baseline"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_tsv = output_dir / "doupotd_pvp_report_trigger_delta_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_trigger_delta_report.md"
+    json_path = output_dir / "doupotd_pvp_report_trigger_delta_report.json"
+    _write_tsv(evidence_tsv, rows, ["role", "category", "target", "file", "line", "function", "snippet", "note"])
+    _write_doupotd_pvp_report_trigger_delta_markdown(report_path, stats=stats, verdict=verdict, rows=rows)
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_trigger_delta_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_trigger_delta_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "evidence": str(evidence_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_pvp_report_native_symbol_surface_files(root: Path) -> list[tuple[str, list[Path]]]:
+    output_dir = root / "apk_static_index"
+    cpp2il_dirs = [path for path in output_dir.glob("cpp2il_*") if path.is_dir()]
+    cpp2il_files: list[Path] = []
+    for cpp2il_dir in cpp2il_dirs:
+        cpp2il_files.extend(path for path in cpp2il_dir.rglob("*.txt") if path.is_file())
+    metadata_names = {
+        "il2cpp_types.tsv",
+        "il2cpp_methods.tsv",
+        "il2cpp_fields.tsv",
+        "il2cpp_parameters.tsv",
+        "il2cpp_strings.tsv",
+        "il2cpp_string_literals.tsv",
+        "il2cpp_keyword_hits.tsv",
+        "il2cpp_gameplay_symbol_types.tsv",
+        "il2cpp_gameplay_symbol_methods.tsv",
+        "il2cpp_gameplay_symbol_fields.tsv",
+        "il2cpp_gameplay_symbol_strings.tsv",
+    }
+    metadata_files = [output_dir / name for name in sorted(metadata_names) if (output_dir / name).is_file()]
+    binary_files = sorted(path for path in output_dir.glob("apk_il2cpp_binary_boundary_*.tsv") if path.is_file())
+    return [
+        ("il2cpp_metadata_tsv", metadata_files),
+        ("il2cpp_binary_boundary_tsv", binary_files),
+        ("cpp2il_isil_dump", sorted(cpp2il_files)),
+    ]
+
+
+def _collect_doupotd_pvp_report_native_symbol_hits(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    terms = ["CM_DoupoTDReport", "SM_DoupoTDReport", "CM_DoupoTDReportFun", "DoupoTDReport"]
+    term_re = re.compile("|".join(re.escape(term) for term in terms))
+    surfaces: list[dict[str, Any]] = []
+    hits: list[dict[str, Any]] = []
+    for surface_name, files in _doupotd_pvp_report_native_symbol_surface_files(root):
+        file_count = 0
+        hit_count = 0
+        for path in files:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            file_count += 1
+            if not term_re.search(text):
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                match = term_re.search(line)
+                if not match:
+                    continue
+                hit_count += 1
+                if len(hits) < 200:
+                    hits.append(
+                        {
+                            "surface": surface_name,
+                            "source": str(path.relative_to(root)),
+                            "line": line_no,
+                            "term": match.group(0),
+                            "snippet": line.strip()[:360],
+                        }
+                    )
+        surfaces.append(
+            {
+                "surface": surface_name,
+                "file_count": file_count,
+                "hit_count": hit_count,
+            }
+        )
+    return surfaces, hits
+
+
+def _write_doupotd_pvp_report_native_symbol_gap_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    surfaces: list[dict[str, Any]],
+    hits: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report native symbol gap report",
+        "",
+        "This is a static exact-symbol scan over readable IL2CPP metadata, binary-boundary TSVs, and Cpp2IL ISIL text dumps.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Surfaces", ""])
+    for row in surfaces:
+        lines.append(f"- `{row.get('surface')}` files `{row.get('file_count')}` hits `{row.get('hit_count')}`")
+    lines.extend(["", "## Hits", ""])
+    if hits:
+        for row in hits[:80]:
+            lines.append(
+                f"- `{row.get('surface')}` `{row.get('source')}:{row.get('line')}` `{row.get('term')}` `{row.get('snippet')}`"
+            )
+    else:
+        lines.append("- No exact native/metadata symbol hit for `CM_DoupoTDReport`, `SM_DoupoTDReport`, `CM_DoupoTDReportFun`, or `DoupoTDReport`.")
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "A zero exact-symbol hit only closes the current readable static surfaces. It does not disprove runtime dispatch through numeric ids, obfuscated tables, generated Lua not present in the export, or server-side handling.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    surfaces, hits = _collect_doupotd_pvp_report_native_symbol_hits(root)
+    stats = {
+        "surface_count": len(surfaces),
+        "surface_file_count": sum(int(row.get("file_count") or 0) for row in surfaces),
+        "exact_symbol_hit_count": len(hits),
+        "metadata_tsv_file_count": sum(
+            int(row.get("file_count") or 0) for row in surfaces if row.get("surface") == "il2cpp_metadata_tsv"
+        ),
+        "binary_boundary_tsv_file_count": sum(
+            int(row.get("file_count") or 0) for row in surfaces if row.get("surface") == "il2cpp_binary_boundary_tsv"
+        ),
+        "cpp2il_isil_file_count": sum(
+            int(row.get("file_count") or 0) for row in surfaces if row.get("surface") == "cpp2il_isil_dump"
+        ),
+    }
+    verdict = {
+        "native_readable_surfaces_scanned": stats["surface_file_count"] > 0,
+        "no_exact_doupotd_report_symbol_in_native_readable_surfaces": stats["exact_symbol_hit_count"] == 0,
+        "static_exact_symbol_boundary_only": True,
+    }
+    verdict["doupotd_pvp_native_symbol_gap_confirmed"] = bool(
+        verdict["native_readable_surfaces_scanned"]
+        and verdict["no_exact_doupotd_report_symbol_in_native_readable_surfaces"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    surfaces_tsv = output_dir / "doupotd_pvp_report_native_symbol_gap_surfaces.tsv"
+    hits_tsv = output_dir / "doupotd_pvp_report_native_symbol_gap_hits.tsv"
+    report_path = output_dir / "doupotd_pvp_report_native_symbol_gap_report.md"
+    json_path = output_dir / "doupotd_pvp_report_native_symbol_gap_report.json"
+    _write_tsv(surfaces_tsv, surfaces, ["surface", "file_count", "hit_count"])
+    _write_tsv(hits_tsv, hits, ["surface", "source", "line", "term", "snippet"])
+    _write_doupotd_pvp_report_native_symbol_gap_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        surfaces=surfaces,
+        hits=hits,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_native_symbol_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "surfaces": str(surfaces_tsv),
+                    "hits": str(hits_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_native_symbol_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "surfaces": str(surfaces_tsv),
+            "hits": str(hits_tsv),
+            "markdown": str(report_path),
+            "json": str(json_path),
+        },
+    }
+
+
+def _doupotd_cpp2il_assembly_surface_files(root: Path) -> list[tuple[str, list[Path]]]:
+    index_dir = root / "apk_static_index"
+    surfaces: list[tuple[str, list[Path]]] = []
+    for cpp2il_dir in sorted(path for path in index_dir.glob("cpp2il_*") if path.is_dir()):
+        name = cpp2il_dir.name.lower()
+        if "diffable" in name:
+            assembly_root = cpp2il_dir / "DiffableCs" / "Assembly-CSharp"
+            files = sorted(assembly_root.rglob("*.cs")) if assembly_root.is_dir() else sorted(cpp2il_dir.rglob("*.cs"))
+            surfaces.append(("cpp2il_diffable_cs_assembly", [path for path in files if path.is_file()]))
+        elif "isil" in name:
+            assembly_root = cpp2il_dir / "IsilDump" / "Assembly-CSharp"
+            files = sorted(assembly_root.rglob("*.txt")) if assembly_root.is_dir() else sorted(cpp2il_dir.rglob("*.txt"))
+            surfaces.append(("cpp2il_isil_assembly", [path for path in files if path.is_file()]))
+    return surfaces
+
+
+def _collect_doupotd_pvp_report_native_lua_bridge_boundary(
+    root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    evidence_rows: list[dict[str, Any]] = []
+    surface_rows: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {
+        "cpp2il_diffable_cs_file_count": 0,
+        "cpp2il_isil_file_count": 0,
+        "cpp2il_lua_singleton_surface_count": 0,
+        "cpp2il_lua_singleton_method_hit_count": 0,
+        "cpp2il_lua_table_lookup_hit_count": 0,
+        "cpp2il_lua_function_call_hit_count": 0,
+        "native_report_symbol_hit_count": 0,
+        "native_doupotd_netlogic_symbol_hit_count": 0,
+        "lua_engine_bridge_file_count": 0,
+        "lua_engine_bridge_addsingleton_count": 0,
+        "lua_engine_bridge_lifecycle_call_count": 0,
+        "lua_engine_bridge_netlogic_mutation_count": 0,
+    }
+    report_terms = ("CM_DoupoTDReportFun", "CM_DoupoTDReport", "SM_DoupoTDReport", "CM_DoupoReport")
+    lscript_root = root / "by_source" / "lscripts"
+
+    def add_evidence(category: str, surface: str, path: Path, line_no: int | str, target: str, snippet: str) -> None:
+        evidence_rows.append(
+            {
+                "category": category,
+                "surface": surface,
+                "source": str(path.relative_to(root)) if _is_relative_to(path, root) else str(path),
+                "line": line_no,
+                "target": target,
+                "snippet": snippet[:360],
+            }
+        )
+
+    for surface_name, files in _doupotd_cpp2il_assembly_surface_files(root):
+        if surface_name == "cpp2il_diffable_cs_assembly":
+            stats["cpp2il_diffable_cs_file_count"] += len(files)
+        if surface_name == "cpp2il_isil_assembly":
+            stats["cpp2il_isil_file_count"] += len(files)
+        hit_count = 0
+        for path in files:
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            text = "\n".join(lines)
+            is_lua_singleton_surface = "LuaSingleton" in path.name or "LuaBeginAddSingleton" in text
+            if is_lua_singleton_surface:
+                stats["cpp2il_lua_singleton_surface_count"] += 1
+                hit_count += 1
+                add_evidence("cpp2il_lua_singleton_surface", surface_name, path, "", "LuaSingleton", path.name)
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if "LuaBeginAddSingleton" in stripped or "LuaEndAddSingleton" in stripped:
+                    stats["cpp2il_lua_singleton_method_hit_count"] += 1
+                    hit_count += 1
+                    add_evidence("cpp2il_lua_singleton_method", surface_name, path, line_no, "LuaSingleton", stripped)
+                if "LuaTable.get_Item" in stripped:
+                    stats["cpp2il_lua_table_lookup_hit_count"] += 1
+                    hit_count += 1
+                    add_evidence("cpp2il_lua_table_lookup", surface_name, path, line_no, "LuaEngineBridge table lookup", stripped)
+                if "LuaFunction.Call" in stripped:
+                    stats["cpp2il_lua_function_call_hit_count"] += 1
+                    hit_count += 1
+                    add_evidence("cpp2il_lua_function_call", surface_name, path, line_no, "LuaEngineBridge function call", stripped)
+                for term in report_terms:
+                    if term in stripped:
+                        stats["native_report_symbol_hit_count"] += 1
+                        hit_count += 1
+                        add_evidence("native_report_symbol_hit", surface_name, path, line_no, term, stripped)
+                if "DoupoTDNetLogic" in stripped:
+                    stats["native_doupotd_netlogic_symbol_hit_count"] += 1
+                    hit_count += 1
+                    add_evidence("native_doupotd_netlogic_symbol_hit", surface_name, path, line_no, "DoupoTDNetLogic", stripped)
+        surface_rows.append(
+            {
+                "surface": surface_name,
+                "file_count": len(files),
+                "hit_count": hit_count,
+            }
+        )
+
+    if lscript_root.is_dir():
+        for bridge_path in sorted(lscript_root.glob("**/text_assets/LuaEngineBridge*.lua")):
+            stats["lua_engine_bridge_file_count"] += 1
+            try:
+                lines = bridge_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            for line_no, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if "function _M.AddSingleton" in stripped or "_sins[#_sins+1]=sin" in stripped:
+                    stats["lua_engine_bridge_addsingleton_count"] += 1
+                    add_evidence("lua_engine_bridge_addsingleton", "lua_text_asset", bridge_path, line_no, "AddSingleton", stripped)
+                if re.search(r":(InitSingleton|UnInitSingleton|Update|LateUpdate|FixedUpdate|Destroy)\(", stripped):
+                    stats["lua_engine_bridge_lifecycle_call_count"] += 1
+                    add_evidence("lua_engine_bridge_lifecycle_call", "lua_text_asset", bridge_path, line_no, "singleton lifecycle", stripped)
+                if re.search(r"NetLogic\s*=|CM_DoupoTDReportFun|CM_DoupoReport|rawset|__index|loadstring|load\(", stripped):
+                    stats["lua_engine_bridge_netlogic_mutation_count"] += 1
+                    add_evidence("lua_engine_bridge_netlogic_mutation", "lua_text_asset", bridge_path, line_no, "NetLogic/method mutation", stripped)
+
+    return surface_rows, evidence_rows, stats
+
+
+def _write_doupotd_pvp_report_native_lua_bridge_boundary_markdown(
+    path: Path,
+    *,
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+    surface_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+) -> None:
+    lines = [
+        "# DoupoTD PVP report native Lua bridge boundary",
+        "",
+        "This probe checks whether readable Cpp2IL Assembly-CSharp surfaces or the LuaEngineBridge singleton bridge expose a native/Lua bridge that could synthesize `CM_DoupoTDReportFun`.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Stats", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Surfaces", ""])
+    for row in surface_rows:
+        lines.append(f"- `{row.get('surface')}` files `{row.get('file_count')}` hits `{row.get('hit_count')}`")
+    lines.extend(["", "## Evidence", ""])
+    for row in evidence_rows[:120]:
+        location = row.get("source") or ""
+        if row.get("line"):
+            location = f"{location}:{row.get('line')}"
+        lines.append(
+            f"- `{row.get('category')}` `{row.get('surface')}` `{location}` `{row.get('target')}` `{row.get('snippet')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Boundary",
+            "",
+            "This is still a readable static-surface boundary. It does not replace a focused runtime packet capture and cannot prove server acceptance behavior.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_doupotd_pvp_report_native_lua_bridge_boundary_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    output_dir = root / "parsed_configs" / "doupotd_catalog"
+    surface_rows, evidence_rows, stats = _collect_doupotd_pvp_report_native_lua_bridge_boundary(root)
+    verdict = {
+        "cpp2il_assembly_surfaces_scanned": stats["cpp2il_diffable_cs_file_count"] > 0
+        or stats["cpp2il_isil_file_count"] > 0,
+        "cpp2il_lua_singleton_bridge_visible": stats["cpp2il_lua_singleton_surface_count"] > 0
+        and stats["cpp2il_lua_singleton_method_hit_count"] > 0,
+        "cpp2il_bridge_invokes_lua_functions": stats["cpp2il_lua_function_call_hit_count"] > 0,
+        "lua_engine_bridge_only_tracks_lifecycle_singletons": stats["lua_engine_bridge_file_count"] > 0
+        and stats["lua_engine_bridge_addsingleton_count"] > 0
+        and stats["lua_engine_bridge_lifecycle_call_count"] > 0
+        and stats["lua_engine_bridge_netlogic_mutation_count"] == 0,
+        "no_native_exact_report_symbol_hits": stats["native_report_symbol_hit_count"] == 0,
+        "no_native_doupotd_netlogic_symbol_hits": stats["native_doupotd_netlogic_symbol_hit_count"] == 0,
+        "static_readable_bridge_boundary_only": True,
+    }
+    verdict["doupotd_pvp_report_native_lua_bridge_gap_confirmed"] = bool(
+        verdict["cpp2il_assembly_surfaces_scanned"]
+        and verdict["cpp2il_lua_singleton_bridge_visible"]
+        and verdict["cpp2il_bridge_invokes_lua_functions"]
+        and verdict["lua_engine_bridge_only_tracks_lifecycle_singletons"]
+        and verdict["no_native_exact_report_symbol_hits"]
+        and verdict["no_native_doupotd_netlogic_symbol_hits"]
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    surfaces_tsv = output_dir / "doupotd_pvp_report_native_lua_bridge_boundary_surfaces.tsv"
+    evidence_tsv = output_dir / "doupotd_pvp_report_native_lua_bridge_boundary_evidence.tsv"
+    report_path = output_dir / "doupotd_pvp_report_native_lua_bridge_boundary_report.md"
+    json_path = output_dir / "doupotd_pvp_report_native_lua_bridge_boundary_report.json"
+    _write_tsv(surfaces_tsv, surface_rows, ["surface", "file_count", "hit_count"])
+    _write_tsv(evidence_tsv, evidence_rows, ["category", "surface", "source", "line", "target", "snippet"])
+    _write_doupotd_pvp_report_native_lua_bridge_boundary_markdown(
+        report_path,
+        stats=stats,
+        verdict=verdict,
+        surface_rows=surface_rows,
+        evidence_rows=evidence_rows,
+    )
+    json_path.write_text(
+        json.dumps(
+            {
+                "confirmed": verdict["doupotd_pvp_report_native_lua_bridge_gap_confirmed"],
+                "stats": stats,
+                "verdict": verdict,
+                "files": {
+                    "surfaces": str(surfaces_tsv),
+                    "evidence": str(evidence_tsv),
+                    "markdown": str(report_path),
+                    "json": str(json_path),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["doupotd_pvp_report_native_lua_bridge_gap_confirmed"],
+        "output_dir": str(output_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "surfaces": str(surfaces_tsv),
             "evidence": str(evidence_tsv),
             "markdown": str(report_path),
             "json": str(json_path),

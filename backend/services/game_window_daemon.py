@@ -35,6 +35,7 @@ class GameWindowClickRequest(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field(DEFAULT_MODE, pattern="^(auto|printwindow|screen)$")
     area: str = Field(DEFAULT_AREA, pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -53,6 +54,7 @@ class GameWindowDragRequest(BaseModel):
     end_y: float = Field(ge=0)
     duration_ms: int = Field(300, ge=50, le=3000)
     title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field(DEFAULT_MODE, pattern="^(auto|printwindow|screen)$")
     area: str = Field(DEFAULT_AREA, pattern="^(outer|client)$")
     crop: Optional[str] = None
@@ -113,6 +115,7 @@ def get_game_window_status():
 @router.get("/stream")
 def stream_game_window(
     title: Optional[str] = Query(None),
+    title_match: str = Query("contains", pattern="^(contains|exact)$"),
     fps: float = Query(DEFAULT_FPS, ge=1.0, le=30.0),
     quality: int = Query(DEFAULT_QUALITY, ge=1, le=100),
     mode: str = Query(DEFAULT_MODE, pattern="^(auto|printwindow|screen)$"),
@@ -128,6 +131,7 @@ def stream_game_window(
     try:
         frames = stream_sunlogin_rotate_mjpeg(
             title=(title or _default_target_title()).strip() or _default_target_title(),
+            title_match=title_match,
             fps=fps,
             quality=quality,
             mode=mode,
@@ -161,6 +165,7 @@ def click_game_window(req: GameWindowClickRequest):
             x=req.x,
             y=req.y,
             title=(req.title or _default_target_title()).strip() or _default_target_title(),
+            title_match=req.title_match,
             mode=req.mode,
             area=req.area,
             crop=req.crop or _env_text("CODEYUN_GAME_WINDOW_CROP", DEFAULT_CROP),
@@ -189,6 +194,7 @@ def drag_game_window(req: GameWindowDragRequest):
             end_y=req.end_y,
             duration_ms=req.duration_ms,
             title=(req.title or _default_target_title()).strip() or _default_target_title(),
+            title_match=req.title_match,
             mode=req.mode,
             area=req.area,
             crop=req.crop or _env_text("CODEYUN_GAME_WINDOW_CROP", DEFAULT_CROP),

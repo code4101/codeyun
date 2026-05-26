@@ -376,6 +376,10 @@ def _write_tsv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> Non
             writer.writerow(row)
 
 
+def _md_table_cell(value: Any) -> str:
+    return str(value or "").replace("|", "<br>").replace("\n", " ")
+
+
 def _as_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -5081,6 +5085,391 @@ def _collect_json_keys(value: Any, *, limit: int = 200) -> set[str]:
     return keys
 
 
+def _digitdoor_message_packet_files(root: Path) -> list[Path]:
+    candidates = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/*.lua"),
+        key=lambda item: str(item).lower(),
+    )
+    rows: list[Path] = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "mini.digitdoor" in text or "DigitDoor" in path.name or path.stem.startswith("DD"):
+            rows.append(path)
+    return rows
+
+
+def _digitdoor_packet_direction(packet_name: str) -> str:
+    if packet_name.startswith("CM_"):
+        return "c2s"
+    if packet_name.startswith("SM_"):
+        return "s2c"
+    return "embedded_or_unknown"
+
+
+def _digitdoor_message_field_rows(text: str) -> list[dict[str, str]]:
+    fields: dict[str, set[str]] = defaultdict(set)
+    for field in re.findall(r"\bself\.([A-Za-z_]\w*)\s*=", text):
+        fields[field].add("assigned_or_default")
+    for field, method in re.findall(r"self\.([A-Za-z_]\w*)\s*=\s*self:(read[A-Za-z0-9_]+)\(", text):
+        fields[field].add(method)
+    for method, field in re.findall(r"self:(read[A-Za-z0-9_]+)\(self\.([A-Za-z_]\w*)\)", text):
+        fields[field].add(method)
+    for method, field in re.findall(r"self:(write[A-Za-z0-9_]+)\(self\.([A-Za-z_]\w*)\)", text):
+        fields[field].add(method)
+    return [
+        {
+            "field": field,
+            "methods": " | ".join(sorted(methods)),
+        }
+        for field, methods in sorted(fields.items())
+        if field not in {"_super_"}
+    ]
+
+
+def _digitdoor_message_packet_schema_rows(root: Path) -> list[dict[str, Any]]:
+    candidates: dict[tuple[int, str], dict[str, Any]] = {}
+    for path in _digitdoor_message_packet_files(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        id_match = re.search(r"function\s+_M[:.]getId\s*\(\s*self\s*\)\s*return\s+(\d+)", text, re.S)
+        if not id_match:
+            continue
+        pro_id = int(id_match.group(1))
+        name_match = re.search(r"function\s+_M[:.]getName\s*\(\s*self\s*\)\s*return\s*\"([^\"]+)\"", text, re.S)
+        packet_name = name_match.group(1) if name_match else path.stem.split("__", 1)[0]
+        base_match = re.search(r"_M\s*=\s*class\s*\(\s*([^,\)\s]+)", text)
+        field_rows = _digitdoor_message_field_rows(text)
+        rel_path = path.relative_to(root) if path.is_relative_to(root) else path
+        canonical_score = 0 if "__" not in path.stem else 1
+        row = {
+            "pro_id": pro_id,
+            "packet": packet_name,
+            "direction": _digitdoor_packet_direction(packet_name),
+            "base_class": base_match.group(1) if base_match else "",
+            "field_count": len(field_rows),
+            "fields": " | ".join(row["field"] for row in field_rows),
+            "field_methods": " | ".join(f"{row['field']}:{row['methods']}" for row in field_rows),
+            "file": str(rel_path),
+            "_canonical_score": canonical_score,
+        }
+        key = (pro_id, packet_name)
+        old = candidates.get(key)
+        if old is None or canonical_score < int(old.get("_canonical_score", 99)):
+            candidates[key] = row
+    return [
+        {key: value for key, value in row.items() if key != "_canonical_score"}
+        for row in sorted(candidates.values(), key=lambda item: (int(item["pro_id"]), str(item["packet"])))
+    ]
+
+
+def _write_digitdoor_runtime_packet_coverage_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    target_rows: list[dict[str, Any]],
+    fixture_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+    errors: list[str],
+) -> None:
+    lines = [
+        "# DigitDoor runtime packet coverage",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- DigitDoor packet/VO targets: {len(target_rows)}",
+        f"- Decoded fixtures scanned: {len(fixture_rows)}",
+        f"- Target hit rows: {len(hit_rows)}",
+        "- Scope: scans existing decoded TCP fixture metadata against all visible DigitDoor Lua message ids. It does not read live traffic, hook the client, replay packets, or export parsed payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    if errors:
+        lines.extend(["", "## Fixture Errors", ""])
+        for error in errors[:12]:
+            lines.append(f"- `{error}`")
+    lines.extend(
+        [
+            "",
+            "## Coverage Summary",
+            "",
+            "| Direction | Targets | Covered Targets | Frames |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+    )
+    by_direction: dict[str, dict[str, int]] = defaultdict(lambda: {"targets": 0, "covered": 0, "frames": 0})
+    for row in target_rows:
+        direction = str(row.get("direction") or "")
+        by_direction[direction]["targets"] += 1
+        frame_count = int(row.get("frame_count") or 0)
+        by_direction[direction]["frames"] += frame_count
+        if frame_count:
+            by_direction[direction]["covered"] += 1
+    for direction, data in sorted(by_direction.items()):
+        lines.append(f"| {direction} | {data['targets']} | {data['covered']} | {data['frames']} |")
+    lines.extend(
+        [
+            "",
+            "## Covered Targets",
+            "",
+            "| ProId | Packet | Direction | Frames | Parsed | Fields |",
+            "| ---: | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    covered = [row for row in target_rows if int(row.get("frame_count") or 0) > 0]
+    if covered:
+        for row in covered[:80]:
+            lines.append(
+                "| "
+                f"{row.get('pro_id', '')} | "
+                f"{_md_table_cell(row.get('packet', ''))} | "
+                f"{row.get('direction', '')} | "
+                f"{row.get('frame_count', '')} | "
+                f"{row.get('parsed_count', '')} | "
+                f"{_md_table_cell(row.get('fields', ''))} |"
+            )
+    else:
+        lines.append("|  |  |  | 0 | 0 | no existing decoded DigitDoor frames |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- A zero covered-target count means existing decoded captures cannot answer DigitDoor packet-specific runtime questions; use static Lua/IL2CPP evidence or collect a new focused, privacy-filtered sample.",
+            "- VO/embedded ids may not appear as top-level frames even when nested lists exist, so treat embedded coverage as supporting evidence only.",
+            "- This report supersedes ad hoc checks of old captures for individual DigitDoor packet ids; rerun it after adding new decoded captures under `tcp_captures`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_runtime_packet_coverage_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    decoded_paths = _digitdoor_capture_decoded_jsons(root)
+    schema_rows = _digitdoor_message_packet_schema_rows(root)
+    target_by_id: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in schema_rows:
+        target_by_id[int(row["pro_id"])].append(row)
+    target_ids = set(target_by_id)
+    aggregate_counts: Counter[int] = Counter()
+    aggregate_parsed_counts: Counter[int] = Counter()
+    aggregate_files: dict[int, set[str]] = {pro_id: set() for pro_id in target_ids}
+    aggregate_offsets: dict[int, list[str]] = {pro_id: [] for pro_id in target_ids}
+    fixture_rows: list[dict[str, Any]] = []
+    hit_rows: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    errors: list[str] = []
+    total_frames = 0
+    for decoded_path in decoded_paths:
+        frames, error = _load_digitdoor_decoded_frames(decoded_path)
+        if error:
+            errors.append(f"{decoded_path.name}: {error}")
+        total_frames += len(frames)
+        fixture_target_ids: set[int] = set()
+        for index, frame in enumerate(frames):
+            pro_id = _as_int(frame.get("pro_id"))
+            direction = str(frame.get("direction") or "")
+            name = str(frame.get("name") or "")
+            if pro_id is not None:
+                protocol_counts[(direction, pro_id, name)] += 1
+            if pro_id not in target_ids:
+                continue
+            fixture_target_ids.add(pro_id)
+            aggregate_counts[pro_id] += 1
+            if frame.get("parsed"):
+                aggregate_parsed_counts[pro_id] += 1
+            aggregate_files.setdefault(pro_id, set()).add(decoded_path.name)
+            if len(aggregate_offsets.setdefault(pro_id, [])) < 8:
+                aggregate_offsets[pro_id].append(str(frame.get("offset", "")))
+            parsed_keys = _collect_json_keys(frame.get("parsed", {}))
+            packet_names = " | ".join(sorted({str(row.get("packet") or "") for row in target_by_id[pro_id]}))
+            hit_rows.append(
+                {
+                    "fixture": decoded_path.name,
+                    "index": index,
+                    "direction": direction,
+                    "offset": frame.get("offset", ""),
+                    "pro_id": pro_id,
+                    "packet_targets": packet_names,
+                    "frame_name": name,
+                    "frame_len": frame.get("frame_len", ""),
+                    "payload_len": frame.get("payload_len", ""),
+                    "zlib": frame.get("zlib", ""),
+                    "parsed": bool(frame.get("parsed")),
+                    "parsed_key_tokens": " | ".join(sorted(parsed_keys)[:80]),
+                    "privacy_note": "metadata_and_key_names_only_no_payload_values",
+                }
+            )
+        fixture_rows.append(
+            {
+                "fixture": decoded_path.name,
+                "path": str(decoded_path),
+                "frame_count": len(frames),
+                "c2s_frames": sum(1 for frame in frames if frame.get("direction") == "c2s"),
+                "s2c_frames": sum(1 for frame in frames if frame.get("direction") == "s2c"),
+                "parsed_frames": sum(1 for frame in frames if frame.get("parsed")),
+                "digitdoor_target_frames": sum(1 for frame in frames if _as_int(frame.get("pro_id")) in target_ids),
+                "target_ids_present": " | ".join(str(item) for item in sorted(fixture_target_ids)),
+                "error": error,
+            }
+        )
+    target_rows: list[dict[str, Any]] = []
+    for row in schema_rows:
+        pro_id = int(row["pro_id"])
+        count = aggregate_counts.get(pro_id, 0)
+        target_rows.append(
+            {
+                **row,
+                "frame_count": count,
+                "parsed_count": aggregate_parsed_counts.get(pro_id, 0),
+                "fixtures": " | ".join(sorted(aggregate_files.get(pro_id, set()))),
+                "first_offsets": " | ".join(aggregate_offsets.get(pro_id, [])),
+                "coverage_status": "present" if count else "absent",
+            }
+        )
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_digitdoor_target": pro_id in target_ids,
+        }
+        for (direction, pro_id, name), count in sorted(
+            protocol_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+        )
+    ]
+    _write_tsv(
+        out_dir / "runtime_packet_coverage_targets.tsv",
+        target_rows,
+        [
+            "pro_id",
+            "packet",
+            "direction",
+            "base_class",
+            "field_count",
+            "fields",
+            "field_methods",
+            "file",
+            "frame_count",
+            "parsed_count",
+            "fixtures",
+            "first_offsets",
+            "coverage_status",
+        ],
+    )
+    _write_tsv(
+        out_dir / "runtime_packet_coverage_fixtures.tsv",
+        fixture_rows,
+        [
+            "fixture",
+            "path",
+            "frame_count",
+            "c2s_frames",
+            "s2c_frames",
+            "parsed_frames",
+            "digitdoor_target_frames",
+            "target_ids_present",
+            "error",
+        ],
+    )
+    _write_tsv(
+        out_dir / "runtime_packet_coverage_hits.tsv",
+        hit_rows,
+        [
+            "fixture",
+            "index",
+            "direction",
+            "offset",
+            "pro_id",
+            "packet_targets",
+            "frame_name",
+            "frame_len",
+            "payload_len",
+            "zlib",
+            "parsed",
+            "parsed_key_tokens",
+            "privacy_note",
+        ],
+    )
+    _write_tsv(
+        out_dir / "runtime_packet_coverage_protocol_counts.tsv",
+        protocol_rows,
+        ["direction", "pro_id", "name", "count", "is_digitdoor_target"],
+    )
+    covered_packet_count = sum(1 for row in target_rows if int(row.get("frame_count") or 0) > 0)
+    verdict = {
+        "decoded_fixtures_found": bool(decoded_paths),
+        "digitdoor_packet_schemas_found": bool(schema_rows),
+        "existing_captures_cover_any_digitdoor_packet": covered_packet_count > 0,
+        "existing_captures_cover_no_digitdoor_packets": covered_packet_count == 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+    report_path = out_dir / "runtime_packet_coverage_report.md"
+    _write_digitdoor_runtime_packet_coverage_markdown(
+        report_path,
+        export_root=root,
+        target_rows=target_rows,
+        fixture_rows=fixture_rows,
+        hit_rows=hit_rows,
+        verdict=verdict,
+        errors=errors,
+    )
+    json_path = out_dir / "runtime_packet_coverage_report.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "stats": {
+                    "digitdoor_packet_target_count": len(target_rows),
+                    "decoded_fixture_count": len(decoded_paths),
+                    "total_frame_count": total_frames,
+                    "digitdoor_target_hit_count": len(hit_rows),
+                    "covered_digitdoor_packet_count": covered_packet_count,
+                    "protocol_count_rows": len(protocol_rows),
+                },
+                "verdict": verdict,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": bool(schema_rows) and bool(decoded_paths),
+        "output_dir": str(out_dir),
+        "stats": {
+            "digitdoor_packet_target_count": len(target_rows),
+            "decoded_fixture_count": len(decoded_paths),
+            "total_frame_count": total_frames,
+            "digitdoor_target_hit_count": len(hit_rows),
+            "covered_digitdoor_packet_count": covered_packet_count,
+            "protocol_count_rows": len(protocol_rows),
+        },
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "targets": str(out_dir / "runtime_packet_coverage_targets.tsv"),
+            "fixtures": str(out_dir / "runtime_packet_coverage_fixtures.tsv"),
+            "hits": str(out_dir / "runtime_packet_coverage_hits.tsv"),
+            "protocol_counts": str(out_dir / "runtime_packet_coverage_protocol_counts.tsv"),
+            "json": str(json_path),
+        },
+    }
+
+
 def _write_digitdoor_readyfight_runtime_sample_markdown(
     path: Path,
     *,
@@ -5340,6 +5729,7104 @@ def build_fanxiu_digitdoor_readyfight_runtime_sample_probe(
             "fixtures": str(out_dir / "readyfight_runtime_sample_fixtures.tsv"),
             "hits": str(out_dir / "readyfight_runtime_sample_hits.tsv"),
             "protocol_counts": str(out_dir / "readyfight_runtime_sample_protocol_counts.tsv"),
+        },
+    }
+
+
+def _digitdoor_startgame_runtime_sample_targets() -> list[dict[str, Any]]:
+    return [
+        {
+            "pro_id": 91622,
+            "packet": "CM_DigitDoorStartGame",
+            "expected_direction": "c2s",
+            "sample_use": "partner-list submit request",
+        },
+        {
+            "pro_id": 91623,
+            "packet": "SM_DigitDoorStartGame",
+            "expected_direction": "s2c",
+            "sample_use": "start ack plus indexList/skillVos runtime-shape calibration",
+        },
+        {
+            "pro_id": 91601,
+            "packet": "DDFightPartnerVO",
+            "expected_direction": "embedded_or_unknown",
+            "sample_use": "partner-list bean candidate if emitted as a top-level or nested decoded marker",
+        },
+        {
+            "pro_id": 91604,
+            "packet": "DDSkillVo",
+            "expected_direction": "embedded_or_unknown",
+            "sample_use": "skillVos bean candidate if emitted as a top-level or nested decoded marker",
+        },
+    ]
+
+
+def _write_digitdoor_startgame_runtime_sample_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    decoded_paths: list[Path],
+    target_rows: list[dict[str, Any]],
+    fixture_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+    errors: list[str],
+) -> None:
+    lines = [
+        "# DigitDoor StartGame runtime sample coverage",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Decoded fixtures scanned: {len(decoded_paths)}",
+        f"- Fixture rows: {len(fixture_rows)}",
+        f"- Target hit rows: {len(hit_rows)}",
+        "- Scope: scans existing decoded TCP fixture metadata for StartGame packet ids. It does not read live traffic, hook the client, or export parsed payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    if errors:
+        lines.extend(["", "## Fixture Errors", ""])
+        for error in errors[:12]:
+            lines.append(f"- `{error}`")
+    lines.extend(
+        [
+            "",
+            "## Target Coverage",
+            "",
+            "| ProId | Packet | Expected Direction | Frames | Parsed | Status |",
+            "| ---: | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for row in target_rows:
+        lines.append(
+            "| "
+            f"{row.get('pro_id', '')} | "
+            f"{row.get('packet', '')} | "
+            f"{row.get('expected_direction', '')} | "
+            f"{row.get('frame_count', '')} | "
+            f"{row.get('parsed_count', '')} | "
+            f"{row.get('coverage_status', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- If `SM_DigitDoorStartGame(91623)` is absent, existing captures cannot close the `skillVos` runtime-shape or response-field semantics.",
+            "- `DDFightPartnerVO(91601)` and `DDSkillVo(91604)` may not appear as top-level frames even when embedded lists are present; they are secondary supporting evidence only.",
+            "- If `91623` is present later, decode only that focused frame with privacy filtering before assigning runtime meaning to `indexList` or `skillVos`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_startgame_runtime_sample_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    decoded_paths = _digitdoor_capture_decoded_jsons(root)
+    targets = _digitdoor_startgame_runtime_sample_targets()
+    target_ids = {int(row["pro_id"]) for row in targets}
+    target_by_id = {int(row["pro_id"]): row for row in targets}
+    aggregate_counts: Counter[int] = Counter()
+    aggregate_parsed_counts: Counter[int] = Counter()
+    aggregate_files: dict[int, set[str]] = {int(row["pro_id"]): set() for row in targets}
+    aggregate_offsets: dict[int, list[str]] = {int(row["pro_id"]): [] for row in targets}
+    fixture_rows: list[dict[str, Any]] = []
+    hit_rows: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    errors: list[str] = []
+    total_frames = 0
+    for decoded_path in decoded_paths:
+        frames, error = _load_digitdoor_decoded_frames(decoded_path)
+        if error:
+            errors.append(f"{decoded_path.name}: {error}")
+        total_frames += len(frames)
+        fixture_target_ids: set[int] = set()
+        for index, frame in enumerate(frames):
+            pro_id = _as_int(frame.get("pro_id"))
+            direction = str(frame.get("direction") or "")
+            name = str(frame.get("name") or "")
+            if pro_id is not None:
+                protocol_counts[(direction, pro_id, name)] += 1
+            if pro_id not in target_ids:
+                continue
+            fixture_target_ids.add(pro_id)
+            aggregate_counts[pro_id] += 1
+            if frame.get("parsed"):
+                aggregate_parsed_counts[pro_id] += 1
+            aggregate_files.setdefault(pro_id, set()).add(decoded_path.name)
+            if len(aggregate_offsets.setdefault(pro_id, [])) < 8:
+                aggregate_offsets[pro_id].append(str(frame.get("offset", "")))
+            parsed_keys = _collect_json_keys(frame.get("parsed", {}))
+            spec = target_by_id[pro_id]
+            hit_rows.append(
+                {
+                    "fixture": decoded_path.name,
+                    "index": index,
+                    "direction": direction,
+                    "offset": frame.get("offset", ""),
+                    "pro_id": pro_id,
+                    "packet": spec["packet"],
+                    "name": name,
+                    "frame_len": frame.get("frame_len", ""),
+                    "payload_len": frame.get("payload_len", ""),
+                    "zlib": frame.get("zlib", ""),
+                    "parsed": bool(frame.get("parsed")),
+                    "parsed_key_tokens": " | ".join(
+                        sorted(key for key in parsed_keys if key in {"indexList", "skillVos", "id", "index", "num"})
+                    ),
+                    "privacy_note": "metadata_and_key_names_only_no_payload_values",
+                }
+            )
+        fixture_rows.append(
+            {
+                "fixture": decoded_path.name,
+                "path": str(decoded_path),
+                "frame_count": len(frames),
+                "c2s_frames": sum(1 for frame in frames if frame.get("direction") == "c2s"),
+                "s2c_frames": sum(1 for frame in frames if frame.get("direction") == "s2c"),
+                "parsed_frames": sum(1 for frame in frames if frame.get("parsed")),
+                "startgame_target_frames": sum(1 for frame in frames if _as_int(frame.get("pro_id")) in target_ids),
+                "target_ids_present": " | ".join(str(item) for item in sorted(fixture_target_ids)),
+                "error": error,
+            }
+        )
+    target_rows: list[dict[str, Any]] = []
+    for spec in targets:
+        pro_id = int(spec["pro_id"])
+        count = aggregate_counts.get(pro_id, 0)
+        target_rows.append(
+            {
+                "pro_id": pro_id,
+                "packet": spec["packet"],
+                "expected_direction": spec["expected_direction"],
+                "sample_use": spec["sample_use"],
+                "frame_count": count,
+                "parsed_count": aggregate_parsed_counts.get(pro_id, 0),
+                "fixtures": " | ".join(sorted(aggregate_files.get(pro_id, set()))),
+                "first_offsets": " | ".join(aggregate_offsets.get(pro_id, [])),
+                "coverage_status": "present" if count else "absent",
+                "interpretation": "usable existing sample candidate" if count else "no existing decoded sample for this packet id",
+            }
+        )
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_startgame_target": pro_id in target_ids,
+        }
+        for (direction, pro_id, name), count in sorted(
+            protocol_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+        )
+    ]
+    _write_tsv(
+        out_dir / "startgame_runtime_sample_targets.tsv",
+        target_rows,
+        [
+            "pro_id",
+            "packet",
+            "expected_direction",
+            "sample_use",
+            "frame_count",
+            "parsed_count",
+            "fixtures",
+            "first_offsets",
+            "coverage_status",
+            "interpretation",
+        ],
+    )
+    _write_tsv(
+        out_dir / "startgame_runtime_sample_fixtures.tsv",
+        fixture_rows,
+        [
+            "fixture",
+            "path",
+            "frame_count",
+            "c2s_frames",
+            "s2c_frames",
+            "parsed_frames",
+            "startgame_target_frames",
+            "target_ids_present",
+            "error",
+        ],
+    )
+    _write_tsv(
+        out_dir / "startgame_runtime_sample_hits.tsv",
+        hit_rows,
+        [
+            "fixture",
+            "index",
+            "direction",
+            "offset",
+            "pro_id",
+            "packet",
+            "name",
+            "frame_len",
+            "payload_len",
+            "zlib",
+            "parsed",
+            "parsed_key_tokens",
+            "privacy_note",
+        ],
+    )
+    _write_tsv(
+        out_dir / "startgame_runtime_sample_protocol_counts.tsv",
+        protocol_rows,
+        ["direction", "pro_id", "name", "count", "is_startgame_target"],
+    )
+    verdict = {
+        "decoded_fixtures_found": bool(decoded_paths),
+        "startgame_request_sample_present": aggregate_counts.get(91622, 0) > 0,
+        "startgame_response_sample_present": aggregate_counts.get(91623, 0) > 0,
+        "ddfightpartner_top_level_sample_present": aggregate_counts.get(91601, 0) > 0,
+        "ddskillvo_top_level_sample_present": aggregate_counts.get(91604, 0) > 0,
+        "existing_captures_cover_startgame_response": aggregate_counts.get(91623, 0) > 0,
+        "safe_to_skip_existing_fixtures_for_startgame_response": aggregate_counts.get(91623, 0) == 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+    report_path = out_dir / "startgame_runtime_sample_coverage_report.md"
+    _write_digitdoor_startgame_runtime_sample_markdown(
+        report_path,
+        export_root=root,
+        decoded_paths=decoded_paths,
+        target_rows=target_rows,
+        fixture_rows=fixture_rows,
+        hit_rows=hit_rows,
+        verdict=verdict,
+        errors=errors,
+    )
+    return {
+        "confirmed": bool(decoded_paths),
+        "output_dir": str(out_dir),
+        "stats": {
+            "decoded_fixture_count": len(decoded_paths),
+            "total_frame_count": total_frames,
+            "target_hit_count": len(hit_rows),
+            "startgame_request_frame_count": aggregate_counts.get(91622, 0),
+            "startgame_response_frame_count": aggregate_counts.get(91623, 0),
+            "ddfightpartner_top_level_frame_count": aggregate_counts.get(91601, 0),
+            "ddskillvo_top_level_frame_count": aggregate_counts.get(91604, 0),
+            "protocol_count_rows": len(protocol_rows),
+        },
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "targets": str(out_dir / "startgame_runtime_sample_targets.tsv"),
+            "fixtures": str(out_dir / "startgame_runtime_sample_fixtures.tsv"),
+            "hits": str(out_dir / "startgame_runtime_sample_hits.tsv"),
+            "protocol_counts": str(out_dir / "startgame_runtime_sample_protocol_counts.tsv"),
+        },
+    }
+
+
+def _digitdoor_gameplayer_runtime_sample_targets() -> list[dict[str, Any]]:
+    return [
+        {
+            "pro_id": 91626,
+            "packet": "CM_DigitDoorGamePlayer",
+            "expected_direction": "c2s",
+            "sample_use": "battle progress settlement request snapshot",
+        },
+        {
+            "pro_id": 91627,
+            "packet": "SM_DigitDoorGamePlayer",
+            "expected_direction": "s2c",
+            "sample_use": "battle settlement response and reward/pass-level display state",
+        },
+        {
+            "pro_id": 91607,
+            "packet": "DDBossVo",
+            "expected_direction": "embedded_or_unknown",
+            "sample_use": "boss hp-percent bean candidate if emitted as a top-level or nested decoded marker",
+        },
+    ]
+
+
+def _write_digitdoor_gameplayer_runtime_sample_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    decoded_paths: list[Path],
+    target_rows: list[dict[str, Any]],
+    fixture_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+    errors: list[str],
+) -> None:
+    lines = [
+        "# DigitDoor GamePlayer runtime sample coverage",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Decoded fixtures scanned: {len(decoded_paths)}",
+        f"- Fixture rows: {len(fixture_rows)}",
+        f"- Target hit rows: {len(hit_rows)}",
+        "- Scope: scans existing decoded TCP fixture metadata for GamePlayer settlement packet ids. It does not read live traffic, hook the client, replay packets, or export parsed payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    if errors:
+        lines.extend(["", "## Fixture Errors", ""])
+        for error in errors[:12]:
+            lines.append(f"- `{error}`")
+    lines.extend(
+        [
+            "",
+            "## Target Coverage",
+            "",
+            "| ProId | Packet | Expected Direction | Frames | Parsed | Status |",
+            "| ---: | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for row in target_rows:
+        lines.append(
+            "| "
+            f"{row.get('pro_id', '')} | "
+            f"{row.get('packet', '')} | "
+            f"{row.get('expected_direction', '')} | "
+            f"{row.get('frame_count', '')} | "
+            f"{row.get('parsed_count', '')} | "
+            f"{row.get('coverage_status', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- If `CM_DigitDoorGamePlayer(91626)` is present, existing captures can calibrate the request snapshot shape at the key-name level only.",
+            "- If `SM_DigitDoorGamePlayer(91627)` is present, existing captures can calibrate the settlement response key surface before any focused decoder work.",
+            "- `DDBossVo(91607)` may not appear as a top-level frame even when `bossVoList` exists; this probe treats it as secondary supporting evidence only.",
+            "- If `91627` appears later, decode only that focused frame with privacy filtering before assigning runtime meaning to rewards or pass-level lists.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_gameplayer_runtime_sample_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    decoded_paths = _digitdoor_capture_decoded_jsons(root)
+    targets = _digitdoor_gameplayer_runtime_sample_targets()
+    target_ids = {int(row["pro_id"]) for row in targets}
+    target_by_id = {int(row["pro_id"]): row for row in targets}
+    aggregate_counts: Counter[int] = Counter()
+    aggregate_parsed_counts: Counter[int] = Counter()
+    aggregate_files: dict[int, set[str]] = {int(row["pro_id"]): set() for row in targets}
+    aggregate_offsets: dict[int, list[str]] = {int(row["pro_id"]): [] for row in targets}
+    fixture_rows: list[dict[str, Any]] = []
+    hit_rows: list[dict[str, Any]] = []
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    errors: list[str] = []
+    total_frames = 0
+    key_whitelist = {
+        "_class",
+        "bossVoList",
+        "currWave",
+        "finishWave",
+        "gameType",
+        "hp",
+        "id",
+        "isSkipLevel",
+        "killNum",
+        "levelId",
+        "passLevelVOS",
+        "rewardResults",
+        "wavePercent",
+    }
+    for decoded_path in decoded_paths:
+        frames, error = _load_digitdoor_decoded_frames(decoded_path)
+        if error:
+            errors.append(f"{decoded_path.name}: {error}")
+        total_frames += len(frames)
+        fixture_target_ids: set[int] = set()
+        for index, frame in enumerate(frames):
+            pro_id = _as_int(frame.get("pro_id"))
+            direction = str(frame.get("direction") or "")
+            name = str(frame.get("name") or "")
+            if pro_id is not None:
+                protocol_counts[(direction, pro_id, name)] += 1
+            if pro_id not in target_ids:
+                continue
+            fixture_target_ids.add(pro_id)
+            aggregate_counts[pro_id] += 1
+            if frame.get("parsed"):
+                aggregate_parsed_counts[pro_id] += 1
+            aggregate_files.setdefault(pro_id, set()).add(decoded_path.name)
+            if len(aggregate_offsets.setdefault(pro_id, [])) < 8:
+                aggregate_offsets[pro_id].append(str(frame.get("offset", "")))
+            parsed_keys = _collect_json_keys(frame.get("parsed", {}))
+            spec = target_by_id[pro_id]
+            hit_rows.append(
+                {
+                    "fixture": decoded_path.name,
+                    "index": index,
+                    "direction": direction,
+                    "offset": frame.get("offset", ""),
+                    "pro_id": pro_id,
+                    "packet": spec["packet"],
+                    "name": name,
+                    "frame_len": frame.get("frame_len", ""),
+                    "payload_len": frame.get("payload_len", ""),
+                    "zlib": frame.get("zlib", ""),
+                    "parsed": bool(frame.get("parsed")),
+                    "parsed_key_tokens": " | ".join(sorted(key for key in parsed_keys if key in key_whitelist)),
+                    "privacy_note": "metadata_and_key_names_only_no_payload_values",
+                }
+            )
+        fixture_rows.append(
+            {
+                "fixture": decoded_path.name,
+                "path": str(decoded_path),
+                "frame_count": len(frames),
+                "c2s_frames": sum(1 for frame in frames if frame.get("direction") == "c2s"),
+                "s2c_frames": sum(1 for frame in frames if frame.get("direction") == "s2c"),
+                "parsed_frames": sum(1 for frame in frames if frame.get("parsed")),
+                "gameplayer_target_frames": sum(1 for frame in frames if _as_int(frame.get("pro_id")) in target_ids),
+                "target_ids_present": " | ".join(str(item) for item in sorted(fixture_target_ids)),
+                "error": error,
+            }
+        )
+    target_rows: list[dict[str, Any]] = []
+    for spec in targets:
+        pro_id = int(spec["pro_id"])
+        count = aggregate_counts.get(pro_id, 0)
+        target_rows.append(
+            {
+                "pro_id": pro_id,
+                "packet": spec["packet"],
+                "expected_direction": spec["expected_direction"],
+                "sample_use": spec["sample_use"],
+                "frame_count": count,
+                "parsed_count": aggregate_parsed_counts.get(pro_id, 0),
+                "fixtures": " | ".join(sorted(aggregate_files.get(pro_id, set()))),
+                "first_offsets": " | ".join(aggregate_offsets.get(pro_id, [])),
+                "coverage_status": "present" if count else "absent",
+                "interpretation": "usable existing sample candidate" if count else "no existing decoded sample for this packet id",
+            }
+        )
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_gameplayer_target": pro_id in target_ids,
+        }
+        for (direction, pro_id, name), count in sorted(
+            protocol_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2]),
+        )
+    ]
+    _write_tsv(
+        out_dir / "gameplayer_runtime_sample_targets.tsv",
+        target_rows,
+        [
+            "pro_id",
+            "packet",
+            "expected_direction",
+            "sample_use",
+            "frame_count",
+            "parsed_count",
+            "fixtures",
+            "first_offsets",
+            "coverage_status",
+            "interpretation",
+        ],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_runtime_sample_fixtures.tsv",
+        fixture_rows,
+        [
+            "fixture",
+            "path",
+            "frame_count",
+            "c2s_frames",
+            "s2c_frames",
+            "parsed_frames",
+            "gameplayer_target_frames",
+            "target_ids_present",
+            "error",
+        ],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_runtime_sample_hits.tsv",
+        hit_rows,
+        [
+            "fixture",
+            "index",
+            "direction",
+            "offset",
+            "pro_id",
+            "packet",
+            "name",
+            "frame_len",
+            "payload_len",
+            "zlib",
+            "parsed",
+            "parsed_key_tokens",
+            "privacy_note",
+        ],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_runtime_sample_protocol_counts.tsv",
+        protocol_rows,
+        ["direction", "pro_id", "name", "count", "is_gameplayer_target"],
+    )
+    verdict = {
+        "decoded_fixtures_found": bool(decoded_paths),
+        "gameplayer_request_sample_present": aggregate_counts.get(91626, 0) > 0,
+        "gameplayer_response_sample_present": aggregate_counts.get(91627, 0) > 0,
+        "ddbossvo_top_level_sample_present": aggregate_counts.get(91607, 0) > 0,
+        "existing_captures_cover_gameplayer_settlement": aggregate_counts.get(91627, 0) > 0,
+        "safe_to_skip_existing_fixtures_for_gameplayer_settlement": aggregate_counts.get(91627, 0) == 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+    report_path = out_dir / "gameplayer_runtime_sample_coverage_report.md"
+    _write_digitdoor_gameplayer_runtime_sample_markdown(
+        report_path,
+        export_root=root,
+        decoded_paths=decoded_paths,
+        target_rows=target_rows,
+        fixture_rows=fixture_rows,
+        hit_rows=hit_rows,
+        verdict=verdict,
+        errors=errors,
+    )
+    return {
+        "confirmed": bool(decoded_paths),
+        "output_dir": str(out_dir),
+        "stats": {
+            "decoded_fixture_count": len(decoded_paths),
+            "total_frame_count": total_frames,
+            "target_hit_count": len(hit_rows),
+            "gameplayer_request_frame_count": aggregate_counts.get(91626, 0),
+            "gameplayer_response_frame_count": aggregate_counts.get(91627, 0),
+            "ddbossvo_top_level_frame_count": aggregate_counts.get(91607, 0),
+            "protocol_count_rows": len(protocol_rows),
+        },
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "targets": str(out_dir / "gameplayer_runtime_sample_targets.tsv"),
+            "fixtures": str(out_dir / "gameplayer_runtime_sample_fixtures.tsv"),
+            "hits": str(out_dir / "gameplayer_runtime_sample_hits.tsv"),
+            "protocol_counts": str(out_dir / "gameplayer_runtime_sample_protocol_counts.tsv"),
+        },
+    }
+
+
+_DIGITDOOR_STARTGAME_CPP2IL_TERMS: dict[str, str] = {
+    "CM_DigitDoorStartGame": "direct_startgame_packet_symbol",
+    "SM_DigitDoorStartGame": "direct_startgame_packet_symbol",
+    "DDFightPartnerVO": "direct_startgame_partner_vo_symbol",
+    "DDSkillVo": "direct_startgame_skill_vo_symbol",
+    "skillVos": "direct_startgame_skillvos_field",
+    "indexList": "direct_startgame_indexlist_field",
+    "GetDigitDoorPartnerAttributes": "digitdoor_partner_attribute_bridge",
+    "DigitDoor": "digitdoor_generic_bridge_surface",
+}
+
+
+def _digitdoor_startgame_cpp2il_surfaces(root: Path) -> list[dict[str, Any]]:
+    index_dir = root / "apk_static_index"
+    return [
+        {
+            "surface": "cpp2il_diffable_cs",
+            "path": index_dir / "cpp2il_2022_1_pre21_arm64_diffable_cs",
+            "suffixes": {".cs"},
+        },
+        {
+            "surface": "cpp2il_isil",
+            "path": index_dir / "cpp2il_2022_1_pre21_arm64_isil",
+            "suffixes": {".txt"},
+        },
+        {
+            "surface": "il2cpp_metadata_tsv",
+            "path": index_dir,
+            "suffixes": {".tsv"},
+            "name_prefix": "il2cpp_",
+        },
+    ]
+
+
+def _iter_digitdoor_startgame_cpp2il_files(surface: dict[str, Any]) -> list[Path]:
+    path = Path(surface["path"])
+    suffixes = set(surface.get("suffixes") or ())
+    name_prefix = str(surface.get("name_prefix") or "")
+    if not path.exists():
+        return []
+    if path.is_file():
+        return [path] if path.suffix in suffixes else []
+    files: list[Path] = []
+    for item in path.rglob("*"):
+        if not item.is_file():
+            continue
+        if suffixes and item.suffix not in suffixes:
+            continue
+        if name_prefix and not item.name.startswith(name_prefix):
+            continue
+        files.append(item)
+    return sorted(files, key=lambda item: str(item).lower())
+
+
+def _classify_digitdoor_startgame_cpp2il_hit(category: str, term: str) -> str:
+    if category.startswith("direct_startgame"):
+        return "direct packet/field symbol candidate; would need line context before treating it as a consumer"
+    if term == "GetDigitDoorPartnerAttributes":
+        return "native-to-Lua helper surface for DigitDoor partner attributes, not a StartGame skillVos consumer by itself"
+    return "generic DigitDoor native-readable bridge surface"
+
+
+def _write_digitdoor_startgame_cpp2il_consumer_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    surface_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    bridge_lua_rows: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor StartGame Cpp2IL consumer surface",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Surfaces scanned: {len(surface_rows)}",
+        f"- Evidence rows: {len(hit_rows)}",
+        f"- Lua bridge target rows: {len(bridge_lua_rows)}",
+        "- Scope: static Cpp2IL/diffable C#/ISIL/metadata search for StartGame packet and `skillVos` consumer symbols. It does not hook, patch, replay, or modify the client.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Surface Summary",
+            "",
+            "| Surface | Exists | Files Scanned | Hit Rows |",
+            "| --- | --- | ---: | ---: |",
+        ]
+    )
+    for row in surface_rows:
+        lines.append(
+            "| "
+            f"{row.get('surface', '')} | "
+            f"{row.get('exists', '')} | "
+            f"{row.get('files_scanned', '')} | "
+            f"{row.get('hit_rows', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Term Summary",
+            "",
+            "| Term | Category | Hits |",
+            "| --- | --- | ---: |",
+        ]
+    )
+    for row in summary_rows:
+        lines.append(f"| {row.get('term', '')} | {row.get('category', '')} | {row.get('hit_count', '')} |")
+    if bridge_lua_rows:
+        lines.extend(
+            [
+                "",
+                "## Lua Bridge Target",
+                "",
+                "| File | Line | Term | Category |",
+                "| --- | ---: | --- | --- |",
+            ]
+        )
+        for row in bridge_lua_rows:
+            lines.append(
+                "| "
+                f"{row.get('file', '')} | "
+                f"{row.get('line', '')} | "
+                f"{row.get('term', '')} | "
+                f"{row.get('category', '')} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- No direct `SM_DigitDoorStartGame` / `skillVos` / `DDSkillVo` Cpp2IL hit means the native-readable surface does not currently close the StartGame response-field semantics.",
+            "- `CsCallLuaMgr.GetDigitDoorPartnerAttributes()` maps to `Core.Battle.Skill.Editor.SkillEditorBridge.GetDigitDoorPartnerAttributes`, which formats current `DigitDoorPartnerView`/`DigitDoorBotView` attributes for an editor/console surface.",
+            "- That Lua bridge reads runtime entity views and formatted attributes; it does not mention `SM_DigitDoorStartGame`, `skillVos`, or `DDSkillVo`.",
+            "- Keep the prior boundary: `skillVos` remains a server-returned schema candidate until a privacy-filtered `91623` runtime sample or a stronger native symbol appears.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _collect_digitdoor_startgame_cpp2il_bridge_lua_rows(root: Path) -> list[dict[str, Any]]:
+    terms = {
+        "GetDigitDoorPartnerAttributes": "bridge_lua_function",
+        "DigitDoorFightMgr.inst": "bridge_runtime_guard",
+        "GetDigitDoorPartnerViewList": "bridge_partner_view_list",
+        "GetDigitDoorBotViewList": "bridge_bot_view_list",
+        "FormatBaseAttr4ConsoleOutput": "bridge_base_attr_formatter",
+        "FormatBuffAddAttrOutput": "bridge_buff_attr_formatter",
+        "SM_DigitDoorStartGame": "unexpected_startgame_packet_reference",
+        "skillVos": "unexpected_skillvos_reference",
+        "DDSkillVo": "unexpected_ddskillvo_reference",
+    }
+    rows: list[dict[str, Any]] = []
+    candidates = sorted((root / "by_source" / "lscripts").glob("**/SkillEditorBridge*.lua"), key=lambda item: str(item).lower())
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = path.relative_to(root) if path.is_relative_to(root) else path
+        for line_no, line in enumerate(lines, 1):
+            for term, category in terms.items():
+                if term not in line:
+                    continue
+                rows.append(
+                    {
+                        "file": str(rel_path),
+                        "line": line_no,
+                        "term": term,
+                        "category": category,
+                        "snippet": line.strip()[:240],
+                    }
+                )
+    return rows
+
+
+def build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    terms = {term.lower(): (term, category) for term, category in _DIGITDOOR_STARTGAME_CPP2IL_TERMS.items()}
+    hit_rows: list[dict[str, Any]] = []
+    surface_rows: list[dict[str, Any]] = []
+    term_counts: Counter[tuple[str, str]] = Counter()
+    for surface in _digitdoor_startgame_cpp2il_surfaces(root):
+        surface_name = str(surface["surface"])
+        surface_path = Path(surface["path"])
+        files = _iter_digitdoor_startgame_cpp2il_files(surface)
+        surface_hit_count = 0
+        for file_path in files:
+            try:
+                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else file_path
+            for line_no, line in enumerate(lines, 1):
+                lowered = line.lower()
+                for lowered_term, (term, category) in terms.items():
+                    if lowered_term not in lowered:
+                        continue
+                    term_counts[(term, category)] += 1
+                    surface_hit_count += 1
+                    hit_rows.append(
+                        {
+                            "surface": surface_name,
+                            "file": str(rel_path),
+                            "line": line_no,
+                            "term": term,
+                            "category": category,
+                            "snippet": line.strip()[:240],
+                            "interpretation": _classify_digitdoor_startgame_cpp2il_hit(category, term),
+                        }
+                    )
+        surface_rows.append(
+            {
+                "surface": surface_name,
+                "path": str(surface_path),
+                "exists": surface_path.exists(),
+                "files_scanned": len(files),
+                "hit_rows": surface_hit_count,
+            }
+        )
+    direct_hits = [row for row in hit_rows if str(row.get("category", "")).startswith("direct_startgame")]
+    skillvos_hits = [row for row in hit_rows if row.get("term") == "skillVos"]
+    bridge_hits = [row for row in hit_rows if row.get("term") == "GetDigitDoorPartnerAttributes"]
+    bridge_lua_rows = _collect_digitdoor_startgame_cpp2il_bridge_lua_rows(root)
+    bridge_lua_terms = {str(row.get("term") or "") for row in bridge_lua_rows}
+    unexpected_bridge_lua_terms = {"SM_DigitDoorStartGame", "skillVos", "DDSkillVo"} & bridge_lua_terms
+    summary_rows = [
+        {
+            "term": term,
+            "category": category,
+            "hit_count": term_counts.get((term, category), 0),
+        }
+        for term, category in _DIGITDOOR_STARTGAME_CPP2IL_TERMS.items()
+    ]
+    verdict = {
+        "cpp2il_surfaces_found": any(bool(row["exists"]) for row in surface_rows),
+        "cpp2il_has_startgame_packet_or_field_symbols": bool(direct_hits),
+        "cpp2il_has_skillvos_symbol": bool(skillvos_hits),
+        "cpp2il_has_digitdoor_partner_attribute_bridge": bool(bridge_hits),
+        "cpp2il_bridge_is_not_skillvos_consumer": bool(bridge_hits) and not skillvos_hits,
+        "lua_bridge_target_found": "GetDigitDoorPartnerAttributes" in bridge_lua_terms,
+        "lua_bridge_reads_runtime_partner_and_bot_views": {"GetDigitDoorPartnerViewList", "GetDigitDoorBotViewList"}.issubset(
+            bridge_lua_terms
+        ),
+        "lua_bridge_mentions_startgame_skillvos_or_ddskillvo": bool(unexpected_bridge_lua_terms),
+        "native_readable_surface_closes_startgame_skillvos": bool(skillvos_hits),
+    }
+    _write_tsv(
+        out_dir / "startgame_cpp2il_consumer_surfaces.tsv",
+        surface_rows,
+        ["surface", "path", "exists", "files_scanned", "hit_rows"],
+    )
+    _write_tsv(
+        out_dir / "startgame_cpp2il_consumer_hits.tsv",
+        hit_rows,
+        ["surface", "file", "line", "term", "category", "snippet", "interpretation"],
+    )
+    _write_tsv(
+        out_dir / "startgame_cpp2il_consumer_summary.tsv",
+        summary_rows,
+        ["term", "category", "hit_count"],
+    )
+    _write_tsv(
+        out_dir / "startgame_cpp2il_bridge_lua_hits.tsv",
+        bridge_lua_rows,
+        ["file", "line", "term", "category", "snippet"],
+    )
+    report_path = out_dir / "startgame_cpp2il_consumer_report.md"
+    _write_digitdoor_startgame_cpp2il_consumer_markdown(
+        report_path,
+        export_root=root,
+        surface_rows=surface_rows,
+        hit_rows=hit_rows,
+        bridge_lua_rows=bridge_lua_rows,
+        summary_rows=summary_rows,
+        verdict=verdict,
+    )
+    json_path = out_dir / "startgame_cpp2il_consumer_report.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "stats": {
+                    "surface_count": len(surface_rows),
+                    "files_scanned": sum(int(row["files_scanned"]) for row in surface_rows),
+                    "hit_count": len(hit_rows),
+                    "direct_hit_count": len(direct_hits),
+                    "skillvos_hit_count": len(skillvos_hits),
+                    "bridge_hit_count": len(bridge_hits),
+                    "bridge_lua_hit_count": len(bridge_lua_rows),
+                },
+                "verdict": verdict,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["cpp2il_surfaces_found"],
+        "output_dir": str(out_dir),
+        "stats": {
+            "surface_count": len(surface_rows),
+            "files_scanned": sum(int(row["files_scanned"]) for row in surface_rows),
+            "hit_count": len(hit_rows),
+            "direct_hit_count": len(direct_hits),
+            "skillvos_hit_count": len(skillvos_hits),
+            "bridge_hit_count": len(bridge_hits),
+            "bridge_lua_hit_count": len(bridge_lua_rows),
+        },
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "surfaces": str(out_dir / "startgame_cpp2il_consumer_surfaces.tsv"),
+            "hits": str(out_dir / "startgame_cpp2il_consumer_hits.tsv"),
+            "summary": str(out_dir / "startgame_cpp2il_consumer_summary.tsv"),
+            "bridge_lua_hits": str(out_dir / "startgame_cpp2il_bridge_lua_hits.tsv"),
+            "json": str(json_path),
+        },
+    }
+
+
+_DIGITDOOR_READYFIGHT_CPP2IL_TERMS: dict[str, str] = {
+    "CM_DigitDoorReadyFight": "direct_readyfight_packet_symbol",
+    "SM_DigitDoorReadyFight": "direct_readyfight_packet_symbol",
+    "DDSkillVo": "direct_readyfight_skill_vo_symbol",
+    "skillList": "broad_skilllist_identifier",
+    "SetCouncilSkill2lvMap": "readyfight_lua_cache_symbol",
+    "GetCouncilSkillList": "readyfight_lua_cache_symbol",
+    "GetCouncilSkillById": "readyfight_lua_lookup_symbol",
+    "DigitDoor_CharacterSkillInfo": "readyfight_character_skill_config_symbol",
+    "DigitDoor_SkillEnhance": "readyfight_skill_enhance_config_symbol",
+    "DigitDoor": "digitdoor_generic_bridge_surface",
+}
+
+
+def _classify_digitdoor_readyfight_cpp2il_hit(category: str, term: str) -> str:
+    if category == "broad_skilllist_identifier":
+        return "broad identifier only; not enough to identify a ReadyFight consumer without packet or class context"
+    if category.startswith("direct_readyfight"):
+        return "direct ReadyFight packet/field symbol candidate; line context determines whether it is a real consumer"
+    if category.startswith("readyfight_lua"):
+        return "Lua-side cache or lookup symbol; useful if exported into a native-readable bridge"
+    return "generic DigitDoor native-readable surface"
+
+
+def _collect_digitdoor_readyfight_cpp2il_lua_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int, str, str]] = set()
+    for source, source_rows in [
+        ("consumer_probe", _digitdoor_readyfight_skilllist_consumer_rows(root, logic_dir)),
+        ("shape_probe", _digitdoor_readyfight_skilllist_shape_rows(root, logic_dir)),
+    ]:
+        for row in source_rows:
+            key = (
+                source,
+                str(row.get("file") or ""),
+                int(row.get("line") or 0),
+                str(row.get("category") or ""),
+                str(row.get("snippet") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "source": source,
+                    "category": row.get("category") or "",
+                    "file": row.get("file") or "",
+                    "line": row.get("line") or "",
+                    "function": row.get("function") or "",
+                    "snippet": row.get("snippet") or "",
+                }
+            )
+    return rows
+
+
+def _write_digitdoor_readyfight_cpp2il_consumer_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    surface_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    lua_rows: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor ReadyFight Cpp2IL consumer surface",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Surfaces scanned: {len(surface_rows)}",
+        f"- Cpp2IL/native-readable evidence rows: {len(hit_rows)}",
+        f"- Lua reference rows: {len(lua_rows)}",
+        "- Scope: static Cpp2IL/diffable C#/ISIL/metadata search for ReadyFight packet and `skillList` consumer symbols. It does not hook, patch, replay, or modify the client.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Surface Summary",
+            "",
+            "| Surface | Exists | Files Scanned | Hit Rows |",
+            "| --- | --- | ---: | ---: |",
+        ]
+    )
+    for row in surface_rows:
+        lines.append(
+            "| "
+            f"{row.get('surface', '')} | "
+            f"{row.get('exists', '')} | "
+            f"{row.get('files_scanned', '')} | "
+            f"{row.get('hit_rows', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Term Summary",
+            "",
+            "| Term | Category | Hits |",
+            "| --- | --- | ---: |",
+        ]
+    )
+    for row in summary_rows:
+        lines.append(f"| {row.get('term', '')} | {row.get('category', '')} | {row.get('hit_count', '')} |")
+    if lua_rows:
+        lines.extend(
+            [
+                "",
+                "## Lua Reference Boundary",
+                "",
+                "| Source | Category | File | Line | Function |",
+                "| --- | --- | --- | ---: | --- |",
+            ]
+        )
+        for row in lua_rows[:80]:
+            lines.append(
+                "| "
+                f"{row.get('source', '')} | "
+                f"{row.get('category', '')} | "
+                f"{row.get('file', '')} | "
+                f"{row.get('line', '')} | "
+                f"{row.get('function', '')} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- Lua evidence already shows `SM_DigitDoorReadyFight.skillList` is cached through `DigitDoorData:SetCouncilSkill2lvMap(msg.skillList)` and later read through council-skill helper functions.",
+            "- This report asks a narrower question: whether the Cpp2IL/native-readable surface contains direct ReadyFight packet, `DDSkillVo`, or cache-consumer symbols that close the static boundary.",
+            "- A standalone `skillList` identifier is deliberately treated as broad evidence only; without ReadyFight packet/class context it is not enough to prove the `91629` response shape.",
+            "- If direct ReadyFight Cpp2IL symbols stay absent, the remaining clean closure path is still a privacy-filtered `SM_DigitDoorReadyFight(91629)` runtime sample.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    terms = {term.lower(): (term, category) for term, category in _DIGITDOOR_READYFIGHT_CPP2IL_TERMS.items()}
+    hit_rows: list[dict[str, Any]] = []
+    surface_rows: list[dict[str, Any]] = []
+    term_counts: Counter[tuple[str, str]] = Counter()
+    for surface in _digitdoor_startgame_cpp2il_surfaces(root):
+        surface_name = str(surface["surface"])
+        surface_path = Path(surface["path"])
+        files = _iter_digitdoor_startgame_cpp2il_files(surface)
+        surface_hit_count = 0
+        for file_path in files:
+            try:
+                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else file_path
+            for line_no, line in enumerate(lines, 1):
+                lowered = line.lower()
+                for lowered_term, (term, category) in terms.items():
+                    if lowered_term not in lowered:
+                        continue
+                    term_counts[(term, category)] += 1
+                    surface_hit_count += 1
+                    hit_rows.append(
+                        {
+                            "surface": surface_name,
+                            "file": str(rel_path),
+                            "line": line_no,
+                            "term": term,
+                            "category": category,
+                            "snippet": line.strip()[:240],
+                            "interpretation": _classify_digitdoor_readyfight_cpp2il_hit(category, term),
+                        }
+                    )
+        surface_rows.append(
+            {
+                "surface": surface_name,
+                "path": str(surface_path),
+                "exists": surface_path.exists(),
+                "files_scanned": len(files),
+                "hit_rows": surface_hit_count,
+            }
+        )
+    lua_rows = _collect_digitdoor_readyfight_cpp2il_lua_rows(root, logic_dir)
+    direct_packet_hits = [row for row in hit_rows if row.get("category") == "direct_readyfight_packet_symbol"]
+    direct_skillvo_hits = [row for row in hit_rows if row.get("category") == "direct_readyfight_skill_vo_symbol"]
+    broad_skilllist_hits = [row for row in hit_rows if row.get("category") == "broad_skilllist_identifier"]
+    cache_symbol_hits = [row for row in hit_rows if str(row.get("category") or "").startswith("readyfight_lua")]
+    lua_categories = {str(row.get("category") or "") for row in lua_rows}
+    summary_rows = [
+        {
+            "term": term,
+            "category": category,
+            "hit_count": term_counts.get((term, category), 0),
+        }
+        for term, category in _DIGITDOOR_READYFIGHT_CPP2IL_TERMS.items()
+    ]
+    verdict = {
+        "cpp2il_surfaces_found": any(bool(row["exists"]) for row in surface_rows),
+        "cpp2il_has_readyfight_packet_symbol": bool(direct_packet_hits),
+        "cpp2il_has_ddskillvo_symbol": bool(direct_skillvo_hits),
+        "cpp2il_has_broad_skilllist_identifier": bool(broad_skilllist_hits),
+        "cpp2il_has_readyfight_cache_or_lookup_symbol": bool(cache_symbol_hits),
+        "lua_readyfight_skilllist_cache_found": "readyfight_msg_to_cache" in lua_categories,
+        "lua_readyfight_shape_still_ambiguous": "readyfight_read_message_list2list" in lua_categories
+        and "readyfight_write_int_list" in lua_categories,
+        "native_readable_surface_closes_readyfight_skilllist": bool(direct_packet_hits or direct_skillvo_hits),
+    }
+    _write_tsv(
+        out_dir / "readyfight_cpp2il_consumer_surfaces.tsv",
+        surface_rows,
+        ["surface", "path", "exists", "files_scanned", "hit_rows"],
+    )
+    _write_tsv(
+        out_dir / "readyfight_cpp2il_consumer_hits.tsv",
+        hit_rows,
+        ["surface", "file", "line", "term", "category", "snippet", "interpretation"],
+    )
+    _write_tsv(
+        out_dir / "readyfight_cpp2il_consumer_summary.tsv",
+        summary_rows,
+        ["term", "category", "hit_count"],
+    )
+    _write_tsv(
+        out_dir / "readyfight_cpp2il_lua_reference_hits.tsv",
+        lua_rows,
+        ["source", "category", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "readyfight_cpp2il_consumer_report.md"
+    _write_digitdoor_readyfight_cpp2il_consumer_markdown(
+        report_path,
+        export_root=root,
+        surface_rows=surface_rows,
+        hit_rows=hit_rows,
+        lua_rows=lua_rows,
+        summary_rows=summary_rows,
+        verdict=verdict,
+    )
+    json_path = out_dir / "readyfight_cpp2il_consumer_report.json"
+    stats = {
+        "surface_count": len(surface_rows),
+        "files_scanned": sum(int(row["files_scanned"]) for row in surface_rows),
+        "hit_count": len(hit_rows),
+        "direct_packet_hit_count": len(direct_packet_hits),
+        "direct_ddskillvo_hit_count": len(direct_skillvo_hits),
+        "broad_skilllist_hit_count": len(broad_skilllist_hits),
+        "cache_symbol_hit_count": len(cache_symbol_hits),
+        "lua_reference_hit_count": len(lua_rows),
+    }
+    json_path.write_text(
+        json.dumps({"stats": stats, "verdict": verdict}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["cpp2il_surfaces_found"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "surfaces": str(out_dir / "readyfight_cpp2il_consumer_surfaces.tsv"),
+            "hits": str(out_dir / "readyfight_cpp2il_consumer_hits.tsv"),
+            "summary": str(out_dir / "readyfight_cpp2il_consumer_summary.tsv"),
+            "lua_reference_hits": str(out_dir / "readyfight_cpp2il_lua_reference_hits.tsv"),
+            "json": str(json_path),
+        },
+    }
+
+
+def _parse_digitdoor_named_string_lua_table(text: str, table_name: str) -> dict[str, str]:
+    match = re.search(rf"_M\.{re.escape(table_name)}\s*=\s*\{{(?P<body>.*?)\}}", text, flags=re.S)
+    if not match:
+        return {}
+    return {
+        name: value
+        for name, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\"([^\"]+)\"", match.group("body"))
+    }
+
+
+def _digitdoor_partner_attribute_formatter_files(root: Path, logic_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    for name in [
+        "DigitDoorSceneView.lua",
+        "DigitDoorPartnerView.lua",
+        "DigitDoorEntityData.lua",
+        "DigitDoorBuffData.lua",
+        "DigitDoorBuffAddAttr.lua",
+        "DigitDoorFightComponent.lua",
+        "DigitDoorBaseSkill.lua",
+        "DigitDoorType.lua",
+    ]:
+        candidates.append(logic_dir / name)
+    candidates.extend((root / "by_source" / "lscripts").glob("**/SkillEditorBridge*.lua"))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _classify_digitdoor_partner_attribute_formatter_line(file_name: str, line: str) -> list[str]:
+    categories: list[str] = []
+    if "GetDigitDoorPartnerAttributes" in line:
+        categories.append("editor_bridge_entry")
+    if "LuaGlobal.IsDebugBuild" in line:
+        categories.append("debug_build_guard")
+    if "DigitDoorMgr.Inst_get():IsStartGame()" in line:
+        categories.append("startgame_state_guard")
+    if "GetDigitDoorPartnerViewList" in line:
+        categories.append("partner_view_source")
+    if "GetDigitDoorBotViewList" in line:
+        categories.append("bot_view_source")
+    if "FormatBaseAttr4ConsoleOutput" in line:
+        categories.append("base_attr_formatter")
+    if "FormatBuffAddAttrOutput" in line:
+        categories.append("buff_attr_formatter")
+    if "self.Entity.EntityData:FormatBaseAttr4ConsoleOutput()" in line:
+        categories.append("partner_delegates_to_entity_data")
+    if ":GetCurrentHp()" in line or ":GetMaxHp()" in line or ":GetAttack()" in line or ":GetSkillDamage()" in line:
+        categories.append("base_attr_runtime_getter")
+    if "DigitDoorType.BuffAddAttrType" in line:
+        categories.append("buff_add_attr_type_loop")
+    if "GetAddExtBattleAttr" in line and "GetLayer" in line:
+        categories.append("buff_add_attr_layer_aggregation")
+    elif "GetAddExtBattleAttr" in line:
+        categories.append("buff_add_attr_read")
+    if "SetAddExtBattleAttr" in line and "strengthVal*ratio" in line:
+        categories.append("buff_add_attr_strength_formula")
+    elif "SetAddExtBattleAttr" in line:
+        categories.append("buff_add_attr_store")
+    if "shieldValue=maxHp*shieldRatio*0.0001" in line:
+        categories.append("shield_value_formula")
+    if "injuredValue=injuredValue+value*layer" in line:
+        categories.append("injure_layer_aggregation")
+    if "local ratio=0.01" in line:
+        categories.append("percent_display_scale")
+    if "TestTimeTF:SetText" in line:
+        categories.append("debug_ui_output")
+    if any(token in line for token in ["SM_DigitDoorStartGame", "skillVos", "DDSkillVo"]):
+        categories.append("unexpected_startgame_skillvos_reference")
+    if file_name == "DigitDoorFightComponent.lua" and "GetAddExtBattleAttr" in line:
+        categories.append("combat_formula_consumer")
+    if file_name == "DigitDoorBaseSkill.lua" and "GetAddExtBattleAttr" in line:
+        categories.append("skill_cd_consumer")
+    return categories
+
+
+def _digitdoor_partner_attribute_formatter_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_partner_attribute_formatter_files(root, logic_dir):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel_path = path.relative_to(root) if path.is_relative_to(root) else path
+        for line_no, line in enumerate(lines, 1):
+            categories = _classify_digitdoor_partner_attribute_formatter_line(path.name, line)
+            for category in categories:
+                rows.append(
+                    {
+                        "file": path.name,
+                        "path": str(rel_path),
+                        "line": line_no,
+                        "category": category,
+                        "snippet": line.strip()[:260],
+                    }
+                )
+    return rows
+
+
+def _digitdoor_partner_attribute_field_rows(logic_dir: Path) -> list[dict[str, Any]]:
+    type_path = logic_dir / "DigitDoorType.lua"
+    buff_add_attr_types: dict[str, str] = {}
+    if type_path.is_file():
+        buff_add_attr_types = _parse_digitdoor_named_string_lua_table(
+            type_path.read_text(encoding="utf-8", errors="ignore"),
+            "BuffAddAttrType",
+        )
+    base_fields = [
+        ("currentHp", "当前血量", "self.Entity.EntityData:GetCurrentHp()", "raw integer"),
+        ("maxHp", "基础血量", "self.Entity.EntityData:GetMaxHp()", "raw integer"),
+        ("attack", "基础攻击", "self.Entity.EntityData:GetAttack()", "raw integer"),
+        ("pvpAttack", "pvp基础攻击", "self.Entity.EntityData:GetPVPAttack()", "raw integer"),
+        ("addDamage", "基础伤害加成", "self.Entity.EntityData:GetAddDamage()", "raw integer"),
+        ("attackSpeed", "基础攻速", "self.Entity.EntityData:GetAttackSpeed()", "raw integer"),
+        ("critical", "基础暴击", "self.Entity.EntityData:GetCritical()", "raw integer"),
+        ("criticalDamage", "基础暴击增伤", "self.Entity.EntityData:GetCriticalDamage()", "raw integer"),
+        ("antiCritical", "基础抗暴", "self.Entity.EntityData:GetAntiCritical()", "raw integer"),
+        ("increaseDamage", "基础伤害加深", "self.Entity.EntityData:GetIncreaseDamage()", "raw integer"),
+        ("reduceDamage", "基础伤害减免", "self.Entity.EntityData:GetReduceDamage()", "raw integer"),
+        ("skillDamage", "基础技能增伤", "self.Entity.EntityData:GetSkillDamage()", "raw integer"),
+        ("pvpIncreaseDamage", "pvp增伤", "self.Entity.EntityData:GetPVPIncreaseDamage()", "raw integer"),
+        ("pvpReduceDamage", "pvp减伤", "self.Entity.EntityData:GetPVPReduceDamage()", "raw integer"),
+        ("pvpWinnerReduceDamage", "pvp胜者减伤加成", "self.Entity.EntityData:GetPVPWinnerReduceDamage()", "raw integer"),
+    ]
+    buff_fields = [
+        ("Attack", "额外攻击", "extAttack", "percent display = sum(GetAddExtBattleAttr(ATTACK) * layer) * 0.01"),
+        ("AttackSpeed", "额外攻速", "extAttackSpeed", "percent display = sum(GetAddExtBattleAttr(ATKSPEED) * layer) * 0.01"),
+        ("CriticalRate", "额外暴击", "extCritical", "percent display = sum(GetAddExtBattleAttr(CRIT) * layer) * 0.01"),
+        ("CriticalDamage", "额外暴击增伤", "extCriticalDamage", "percent display = sum(GetAddExtBattleAttr(CRITDAMAGE) * layer) * 0.01"),
+        ("AntiCritical", "额外抗暴", "extAntiCritical", "percent display = sum(GetAddExtBattleAttr(ANTICIRT) * layer) * 0.01"),
+        ("IncreaseDamage", "额外伤害加深", "extIncreaseDamage", "percent display = sum(GetAddExtBattleAttr(INCDAMAGE) * layer) * 0.01"),
+        ("ReduceDamage", "额外伤害减免", "extReduceDamage", "percent display = sum(GetAddExtBattleAttr(REDUCEDAMAGE) * layer) * 0.01"),
+        ("AddDamage", "额外伤害加成", "extAddDamage", "percent display = sum(GetAddExtBattleAttr(ADDDAMAGE) * layer) * 0.01"),
+        ("SkillDamage", "额外技能增伤", "extSkillDamage", "percent display = sum(GetAddExtBattleAttr(SKILL_DAMAGE) * layer) * 0.01"),
+        ("Shield", "当前护盾值", "shieldValue", "maxHp * sum(GetShieldRatio()) * 0.0001"),
+        ("Injure", "易伤", "injuredValue", "percent display = sum(GetInjuredValue() * layer) * 0.01"),
+    ]
+    rows: list[dict[str, Any]] = []
+    for key, label, source, formula in base_fields:
+        rows.append(
+            {
+                "group": "base_attr",
+                "key": key,
+                "type_value": "",
+                "display_label": label,
+                "runtime_source": source,
+                "formula": formula,
+                "source_file": "DigitDoorEntityData.lua",
+            }
+        )
+    for key, label, source, formula in buff_fields:
+        rows.append(
+            {
+                "group": "buff_attr",
+                "key": key,
+                "type_value": buff_add_attr_types.get(key, ""),
+                "display_label": label,
+                "runtime_source": source,
+                "formula": formula,
+                "source_file": "DigitDoorPartnerView.lua",
+            }
+        )
+    return rows
+
+
+def _write_digitdoor_partner_attribute_formatter_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor partner attribute formatter",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the debug/editor attribute formatter. It does not read live account state, memory, or network payload values.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Counts",
+            "",
+        ]
+    )
+    for key, value in stats.items():
+        if isinstance(value, (str, int, bool)):
+            lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Projection",
+            "",
+            "| Group | Key | Type Value | Display | Formula |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{row.get('group', '')} | "
+            f"{row.get('key', '')} | "
+            f"{row.get('type_value', '')} | "
+            f"{row.get('display_label', '')} | "
+            f"{row.get('formula', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SkillEditorBridge.GetDigitDoorPartnerAttributes` and `DigitDoorSceneView` both format current entity views, not packet payload fields.",
+            "- `DigitDoorSceneView` is guarded by `LuaGlobal.IsDebugBuild` and writes to `TestTimeTF`, so this is a debug/editor display surface.",
+            "- The displayed numbers are still useful: base values come from `DigitDoorEntityData` getters, while buff values aggregate live `BuffDic` AddAttr/Shield/Injure buff data.",
+            "- Buff add-attr config values are scaled by `1 + strengthVal * 0.0001`, aggregated by buff layer, and displayed as percent with `* 0.01`; shield value is `maxHp * shieldRatio * 0.0001`.",
+            "- This surface does not close `SM_DigitDoorStartGame.skillVos`; it only explains how current local entity/buff attributes are formatted for inspection.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_partner_attribute_formatter_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_partner_attribute_formatter_rows(root, logic_dir)
+    field_rows = _digitdoor_partner_attribute_field_rows(logic_dir)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    source_rows = [
+        {
+            "file": path.name,
+            "path": str(path.relative_to(root) if path.is_relative_to(root) else path),
+            "role": "logic_source" if path.parent == logic_dir else "core_bridge_source",
+        }
+        for path in _digitdoor_partner_attribute_formatter_files(root, logic_dir)
+    ]
+    stats: dict[str, Any] = {
+        "source_file_count": len(source_rows),
+        "field_row_count": len(field_rows),
+        "evidence_row_count": len(evidence_rows),
+        "base_attr_field_count": sum(1 for row in field_rows if row.get("group") == "base_attr"),
+        "buff_attr_field_count": sum(1 for row in field_rows if row.get("group") == "buff_attr"),
+        "debug_guard_rows": category_counts.get("debug_build_guard", 0),
+        "debug_ui_output_rows": category_counts.get("debug_ui_output", 0),
+        "editor_bridge_entry_rows": category_counts.get("editor_bridge_entry", 0),
+        "base_attr_formatter_rows": category_counts.get("base_attr_formatter", 0),
+        "buff_attr_formatter_rows": category_counts.get("buff_attr_formatter", 0),
+        "buff_add_attr_layer_aggregation_rows": category_counts.get("buff_add_attr_layer_aggregation", 0),
+        "buff_add_attr_strength_formula_rows": category_counts.get("buff_add_attr_strength_formula", 0),
+        "shield_value_formula_rows": category_counts.get("shield_value_formula", 0),
+        "injure_layer_aggregation_rows": category_counts.get("injure_layer_aggregation", 0),
+        "unexpected_startgame_skillvos_reference_rows": category_counts.get("unexpected_startgame_skillvos_reference", 0),
+    }
+    verdict = {
+        "formatter_surface_found": stats["base_attr_formatter_rows"] > 0 and stats["buff_attr_formatter_rows"] > 0,
+        "debug_or_editor_display_surface": stats["debug_guard_rows"] > 0 and stats["editor_bridge_entry_rows"] > 0,
+        "reads_runtime_entity_views": category_counts.get("partner_view_source", 0) > 0
+        and category_counts.get("bot_view_source", 0) > 0,
+        "buff_add_attr_formula_confirmed": stats["buff_add_attr_layer_aggregation_rows"] > 0
+        and stats["buff_add_attr_strength_formula_rows"] > 0,
+        "shield_and_injure_formula_confirmed": stats["shield_value_formula_rows"] > 0
+        and stats["injure_layer_aggregation_rows"] > 0,
+        "mentions_startgame_skillvos_or_ddskillvo": stats["unexpected_startgame_skillvos_reference_rows"] > 0,
+        "safe_static_debug_formatter_boundary": stats["unexpected_startgame_skillvos_reference_rows"] == 0,
+    }
+    _write_tsv(
+        out_dir / "partner_attribute_formatter_sources.tsv",
+        source_rows,
+        ["file", "path", "role"],
+    )
+    _write_tsv(
+        out_dir / "partner_attribute_formatter_fields.tsv",
+        field_rows,
+        ["group", "key", "type_value", "display_label", "runtime_source", "formula", "source_file"],
+    )
+    _write_tsv(
+        out_dir / "partner_attribute_formatter_evidence.tsv",
+        evidence_rows,
+        ["file", "path", "line", "category", "snippet"],
+    )
+    report_path = out_dir / "partner_attribute_formatter_report.md"
+    _write_digitdoor_partner_attribute_formatter_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["formatter_surface_found"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "sources": str(out_dir / "partner_attribute_formatter_sources.tsv"),
+            "fields": str(out_dir / "partner_attribute_formatter_fields.tsv"),
+            "evidence": str(out_dir / "partner_attribute_formatter_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_combat_attribute_consumer_files(logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorFightComponent.lua",
+        "DigitDoorBaseSkill.lua",
+        "DigitDoorBuffAddAttr.lua",
+        "DigitDoorBuffData.lua",
+        "DigitDoorPartnerView.lua",
+    ]
+    return [path for path in (logic_dir / name for name in names) if path.is_file()]
+
+
+def _digitdoor_buff_attr_type_from_line(line: str) -> str:
+    match = re.search(r"BuffAddAttrType\.([A-Za-z_][A-Za-z0-9_]*)", line)
+    return match.group(1) if match else ""
+
+
+def _digitdoor_combat_attribute_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_combat_attribute_consumer_files(logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str]] = []
+            field = _digitdoor_buff_attr_type_from_line(line)
+            if "function _M.AddDamageResult" in line:
+                categories.append(("damage_result_entry", "", "combat_damage_pipeline"))
+            if current_function == "_M.AddDamageResult":
+                if "GetAttackerFinalAttr(casterView)" in line:
+                    categories.append(("attacker_final_attr_entry", "", "combat_damage_pipeline"))
+                if "GetDefenseFinalAttr(targetView)" in line:
+                    categories.append(("defense_final_attr_entry", "", "combat_damage_pipeline"))
+                if "realIncreaseDamage" in line or "damage=(" in line or "pvpDamage=(" in line:
+                    categories.append(("damage_formula", "", "combat_damage_pipeline"))
+                if "GetBuffListByType(DigitDoorType.SkillBuffType.Injure)" in line:
+                    categories.append(("combat_injure_buff_lookup", "Injure", "combat_damage_pipeline"))
+                if "GetInjuredValue()" in line:
+                    categories.append(("combat_injure_value_read", "Injure", "combat_damage_pipeline"))
+                if "CalculateCurrentHp" in line:
+                    categories.append(("hp_apply", "", "combat_damage_pipeline"))
+                if "DigitDoorHurtDataExecute" in line:
+                    categories.append(("hurt_projection", "", "combat_damage_pipeline"))
+            if current_function == "_M.GetShieldCost":
+                if "GetBuffListByType(DigitDoorType.SkillBuffType.Shield)" in line:
+                    categories.append(("combat_shield_buff_lookup", "Shield", "combat_damage_pipeline"))
+                if "GetShieldRatio()" in line:
+                    categories.append(("combat_shield_ratio_read", "Shield", "combat_damage_pipeline"))
+                if "SetShieldRatio" in line:
+                    categories.append(("combat_shield_ratio_mutation", "Shield", "combat_damage_pipeline"))
+            if current_function == "_M.GetAttackerFinalAttr" and "GetAddExtBattleAttr" in line:
+                categories.append(("combat_attacker_addattr_read", field, "combat_attr_consumer"))
+            if current_function == "_M.GetDefenseFinalAttr" and "GetAddExtBattleAttr" in line:
+                categories.append(("combat_defense_addattr_read", field, "combat_attr_consumer"))
+            if current_function == "_M.CalculateSkillSpeed":
+                if "GetBuffListByType(DigitDoorType.SkillBuffType.AddAttr)" in line:
+                    categories.append(("combat_skill_speed_addattr_lookup", "AttackSpeed", "combat_skill_timing"))
+                if "GetAddExtBattleAttr" in line:
+                    categories.append(("combat_skill_speed_addattr_read", field, "combat_skill_timing"))
+                if "self.speed=atkSpeed*(1/(1+extAtkSpeed*0.0001))" in line:
+                    categories.append(("combat_skill_speed_formula", "AttackSpeed", "combat_skill_timing"))
+            if current_function == "_M.FormatBuffAddAttrOutput":
+                if "GetAddExtBattleAttr" in line:
+                    categories.append(("debug_formatter_addattr_read", field, "debug_formatter_reference"))
+                if "GetShieldRatio()" in line:
+                    categories.append(("debug_formatter_shield_read", "Shield", "debug_formatter_reference"))
+                if "GetInjuredValue()" in line:
+                    categories.append(("debug_formatter_injure_read", "Injure", "debug_formatter_reference"))
+            if current_function == "_M.Start" and path.name == "DigitDoorBuffAddAttr.lua":
+                if "LuaGlobal.IsUnityEditor" in line:
+                    categories.append(("unity_editor_guard", "", "editor_only_mutation"))
+                if field == "MaxHp":
+                    categories.append(("editor_maxhp_addattr_read", "MaxHp", "editor_only_mutation"))
+                if "SetMaxHp" in line or "SetCurrentHp" in line:
+                    categories.append(("editor_maxhp_mutation", "MaxHp", "editor_only_mutation"))
+            for category, category_field, role in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "role": role,
+                        "field": category_field,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_combat_attribute_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_roles: dict[str, set[str]] = defaultdict(set)
+    field_categories: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        field = str(row.get("field") or "")
+        if not field:
+            continue
+        field_roles[field].add(str(row.get("role") or ""))
+        field_categories[field].add(str(row.get("category") or ""))
+    field_notes = {
+        "Attack": "attacker damage formula extAttack",
+        "AttackSpeed": "normal skill timing speed modifier",
+        "CriticalRate": "attacker critical chance after anti-critical",
+        "CriticalDamage": "attacker critical damage multiplier",
+        "AntiCritical": "defender anti-critical",
+        "IncreaseDamage": "attacker increase damage term",
+        "ReduceDamage": "defender reduce damage term",
+        "AddDamage": "attacker additive damage multiplier",
+        "SkillDamage": "attacker skill damage multiplier",
+        "Shield": "target shield cost before HP apply",
+        "Injure": "target injure multiplier against bots",
+        "MaxHp": "UnityEditor-only max HP mutation in DigitDoorBuffAddAttr",
+    }
+    return [
+        {
+            "field": field,
+            "roles": " | ".join(sorted(role for role in field_roles[field] if role)),
+            "categories": " | ".join(sorted(field_categories[field])),
+            "note": field_notes.get(field, ""),
+        }
+        for field in sorted(field_roles)
+    ]
+
+
+def _write_digitdoor_combat_attribute_consumer_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor combat attribute consumer",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for local DigitDoor combat calculation consumers. It does not patch, inject, replay packets, or assert server authority.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Usage",
+            "",
+            "| Field | Roles | Categories | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('roles', ''))} | "
+            f"{_md_table_cell(row.get('categories', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `DigitDoorFightComponent:AddDamageResult` is the local damage aggregation path and consumes `GetAttackerFinalAttr`, `GetDefenseFinalAttr`, Injure, Shield, damage share, HP apply, and hurt-data projection.",
+            "- `GetAttackerFinalAttr` consumes AddAttr fields `Attack/CriticalRate/CriticalDamage/IncreaseDamage/AddDamage/SkillDamage`; `GetDefenseFinalAttr` consumes `AntiCritical/ReduceDamage`.",
+            "- `DigitDoorBaseSkill:CalculateSkillSpeed` consumes AddAttr `AttackSpeed` and applies `atkSpeed * (1 / (1 + extAtkSpeed * 0.0001))` to normal-skill timing.",
+            "- `GetShieldCost` consumes and mutates Shield ratio before HP damage is applied; Injure is read from target buffs and multiplies damage against DigitDoor bots.",
+            "- `MaxHp` appears under `LuaGlobal.IsUnityEditor` in `DigitDoorBuffAddAttr`, so treat it as an editor-only mutation on the visible Lua surface, not the normal runtime combat path.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_combat_attribute_consumer_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_combat_attribute_rows(root, logic_dir)
+    field_rows = _digitdoor_combat_attribute_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    combat_fields = {
+        str(row.get("field") or "")
+        for row in evidence_rows
+        if str(row.get("role") or "") in {"combat_attr_consumer", "combat_skill_timing", "combat_damage_pipeline"}
+        and str(row.get("field") or "")
+    }
+    display_fields = {
+        str(row.get("field") or "")
+        for row in evidence_rows
+        if str(row.get("role") or "") == "debug_formatter_reference" and str(row.get("field") or "")
+    }
+    expected_combat_fields = {
+        "Attack",
+        "AttackSpeed",
+        "CriticalRate",
+        "CriticalDamage",
+        "AntiCritical",
+        "IncreaseDamage",
+        "ReduceDamage",
+        "AddDamage",
+        "SkillDamage",
+        "Shield",
+        "Injure",
+    }
+    stats = {
+        "source_file_count": len(_digitdoor_combat_attribute_consumer_files(logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "combat_field_count": len(combat_fields),
+        "debug_formatter_field_count": len(display_fields),
+        "combat_attacker_addattr_rows": category_counts.get("combat_attacker_addattr_read", 0),
+        "combat_defense_addattr_rows": category_counts.get("combat_defense_addattr_read", 0),
+        "combat_skill_speed_rows": category_counts.get("combat_skill_speed_addattr_read", 0),
+        "combat_shield_rows": category_counts.get("combat_shield_ratio_read", 0),
+        "combat_injure_rows": category_counts.get("combat_injure_value_read", 0),
+        "damage_formula_rows": category_counts.get("damage_formula", 0),
+        "hp_apply_rows": category_counts.get("hp_apply", 0),
+        "hurt_projection_rows": category_counts.get("hurt_projection", 0),
+        "editor_maxhp_rows": category_counts.get("editor_maxhp_addattr_read", 0)
+        + category_counts.get("editor_maxhp_mutation", 0),
+    }
+    verdict = {
+        "combat_damage_pipeline_found": category_counts.get("damage_result_entry", 0) > 0
+        and stats["hp_apply_rows"] > 0,
+        "addattr_fields_consumed_by_combat": expected_combat_fields.issubset(combat_fields),
+        "debug_formatter_fields_overlap_combat": bool(display_fields) and display_fields.issubset(combat_fields | {"MaxHp"}),
+        "attack_speed_affects_skill_timing": category_counts.get("combat_skill_speed_formula", 0) > 0,
+        "shield_consumed_before_hp_apply": stats["combat_shield_rows"] > 0 and stats["hp_apply_rows"] > 0,
+        "injure_consumed_in_damage_formula": stats["combat_injure_rows"] > 0 and stats["damage_formula_rows"] > 0,
+        "maxhp_visible_surface_is_editor_only": category_counts.get("unity_editor_guard", 0) > 0
+        and stats["editor_maxhp_rows"] > 0,
+    }
+    _write_tsv(
+        out_dir / "combat_attribute_consumer_fields.tsv",
+        field_rows,
+        ["field", "roles", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "combat_attribute_consumer_evidence.tsv",
+        evidence_rows,
+        ["category", "role", "field", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "combat_attribute_consumer_report.md"
+    _write_digitdoor_combat_attribute_consumer_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["combat_damage_pipeline_found"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "combat_attribute_consumer_fields.tsv"),
+            "evidence": str(out_dir / "combat_attribute_consumer_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_gameplayer_settlement_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorData.lua",
+        "DigitDoorEntityMgr.lua",
+        "DigitDoorFightComponent.lua",
+        "DigitDoorResultInfoView.lua",
+        "DigitDoorSceneView.lua",
+        "DigitDoorPauseView.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorGamePlayer.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorGamePlayer.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DDBossVo.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_gameplayer_settlement_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_gameplayer_settlement_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+            if path.name == "CM_DigitDoorGamePlayer.lua":
+                for field in ["currWave", "wavePercent", "killNum", "bossVoList"]:
+                    if f"self.{field}" in line:
+                        categories.append(("request_packet_schema", "request", field, "CM_DigitDoorGamePlayer"))
+                if "writeList(self.bossVoList)" in line or "readMessageList2List(self.bossVoList)" in line:
+                    categories.append(("request_boss_vo_list_wire", "request", "bossVoList", "CM_DigitDoorGamePlayer"))
+            elif path.name == "SM_DigitDoorGamePlayer.lua":
+                for field in ["finishWave", "rewardResults", "passLevelVOS", "levelId", "gameType", "isSkipLevel"]:
+                    if f"self.{field}" in line:
+                        categories.append(("response_packet_schema", "response", field, "SM_DigitDoorGamePlayer"))
+                if "writeIntList(self.passLevelVOS)" in line:
+                    categories.append(("response_pass_level_int_list_wire", "response", "passLevelVOS", "SM_DigitDoorGamePlayer"))
+                if "writeList(self.rewardResults)" in line or "readMessageList2List(self.rewardResults)" in line:
+                    categories.append(("response_reward_result_list_wire", "response", "rewardResults", "SM_DigitDoorGamePlayer"))
+            elif path.name == "DDBossVo.lua":
+                for field in ["id", "hp"]:
+                    if f"self.{field}" in line:
+                        categories.append(("boss_vo_schema", "request", field, "DDBossVo"))
+                if "writeDouble(self.hp)" in line or "readDouble()" in line:
+                    categories.append(("boss_hp_double_wire", "request", "hp", "DDBossVo"))
+
+            if path.name == "DigitDoorNetLogic.lua":
+                if current_function == "_M.CM_DigitDoorGamePlayerFun":
+                    if "GetMessageFromPools(_CM_DigitDoorGamePlayer)" in line:
+                        categories.append(("request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorGamePlayer.currWave" in line:
+                        categories.append(("request_fill_curr_wave", "request", "currWave", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorGamePlayer.wavePercent" in line:
+                        categories.append(("request_fill_wave_percent", "request", "wavePercent", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorGamePlayer.killNum" in line:
+                        categories.append(("request_fill_kill_num", "request", "killNum", "DigitDoorNetLogic"))
+                    if "GetTotalKillSmallMonsterNum()" in line:
+                        categories.append(("request_kill_num_from_local_counter", "request", "killNum", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorGamePlayer.bossVoList" in line:
+                        categories.append(("request_fill_boss_vo_list", "request", "bossVoList", "DigitDoorNetLogic"))
+                    if "GetTotalBossDamageList()" in line:
+                        categories.append(("request_boss_vo_from_local_hp_percent", "request", "bossVoList", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorGamePlayer)" in line:
+                        categories.append(("request_send", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorGamePlayerFun":
+                    if "DigitDoorExitGame(msg)" in line:
+                        categories.append(("response_handler_exit_game", "response", "", "DigitDoorNetLogic"))
+                    if "msg.isSkipLevel" in line:
+                        categories.append(("response_skip_branch", "response", "isSkipLevel", "DigitDoorNetLogic"))
+                    if "msg.rewardResults" in line:
+                        categories.append(("response_reward_results_popup", "response", "rewardResults", "DigitDoorNetLogic"))
+
+            if path.name == "DigitDoorMgr.lua":
+                if "function _M.DigitDoorExitGame" in line:
+                    categories.append(("exit_game_entry", "response", "", "DigitDoorMgr"))
+                if current_function == "_M.DigitDoorExitGame":
+                    if "SetIsSkipLevel(msg.isSkipLevel)" in line:
+                        categories.append(("exit_game_store_skip_state", "response", "isSkipLevel", "DigitDoorMgr"))
+                    if "SetFinishLevelInfo(msg)" in line:
+                        categories.append(("exit_game_store_finish_level_info", "response", "passLevelVOS", "DigitDoorMgr"))
+                if current_function == "_M.ReqFinishGame":
+                    if "CM_DigitDoorGamePlayerFun(wave,wavePercent)" in line:
+                        categories.append(("finish_request_send_entry", "request", "currWave|wavePercent", "DigitDoorMgr"))
+                    if "V_IsReqFinishGame" in line:
+                        categories.append(("finish_request_duplicate_guard", "request", "", "DigitDoorMgr"))
+
+            if path.name == "DigitDoorData.lua":
+                if "function _M.SetFinishLevelInfo" in line:
+                    categories.append(("finish_level_info_entry", "response", "", "DigitDoorData"))
+                if current_function == "_M.SetFinishLevelInfo" and "InitNewLevelDic(msg.passLevelVOS)" in line:
+                    categories.append(("pass_level_state_from_response", "response", "passLevelVOS", "DigitDoorData"))
+                if "GetDamageCache()" in line:
+                    categories.append(("local_damage_cache_read_for_display", "local", "DamageCache", "DigitDoorData"))
+
+            if path.name == "DigitDoorEntityMgr.lua":
+                if "function _M.GetTotalBossDamageList" in line:
+                    categories.append(("boss_damage_list_entry", "request", "bossVoList", "DigitDoorEntityMgr"))
+                if current_function == "_M.GetTotalBossDamageList":
+                    if "DDBossVo" in line or "DDBossVo.new" in line:
+                        categories.append(("boss_vo_construct", "request", "bossVoList", "DigitDoorEntityMgr"))
+                    if "GetMaxHp()" in line:
+                        categories.append(("boss_max_hp_read", "request", "bossVoList", "DigitDoorEntityMgr"))
+                    if "GetCurrentHp()/maxHp*10000" in line:
+                        categories.append(("boss_hp_percent_formula", "request", "bossVoList", "DigitDoorEntityMgr"))
+                    if "bossVoList:Add(vo)" in line:
+                        categories.append(("boss_vo_list_add", "request", "bossVoList", "DigitDoorEntityMgr"))
+                if "function _M.GetTotalKillSmallMonsterNum" in line:
+                    categories.append(("kill_small_monster_entry", "request", "killNum", "DigitDoorEntityMgr"))
+                if current_function == "_M.GetTotalKillSmallMonsterNum" and (
+                    "totalKillMonsterNum" in line and "skillMonsterNum" in line and "totalKillBossNum" in line
+                ):
+                    categories.append(("kill_small_monster_formula", "request", "killNum", "DigitDoorEntityMgr"))
+                if "totalKillMonsterNum=self.totalKillMonsterNum+1" in line:
+                    categories.append(("kill_total_monster_increment", "request", "killNum", "DigitDoorEntityMgr"))
+                if "skillMonsterNum=self.skillMonsterNum+1" in line:
+                    categories.append(("kill_skill_monster_increment", "request", "killNum", "DigitDoorEntityMgr"))
+                if "totalKillBossNum=self.totalKillBossNum+1" in line:
+                    categories.append(("kill_boss_increment", "request", "killNum", "DigitDoorEntityMgr"))
+                if "ReqFinishGame()" in line:
+                    categories.append(("finish_request_trigger", "request", "", "DigitDoorEntityMgr"))
+
+            if path.name == "DigitDoorFightComponent.lua":
+                if "self.DamageCache=Dictionary.new()" in line:
+                    categories.append(("damage_cache_init", "local", "DamageCache", "DigitDoorFightComponent"))
+                if "DamageCache" in line and "(pvpDamage>0 and pvpDamage or damage)" in line:
+                    categories.append(("damage_cache_accumulate", "local", "DamageCache", "DigitDoorFightComponent"))
+                if "function _M.GetDamageCache" in line:
+                    categories.append(("damage_cache_getter", "local", "DamageCache", "DigitDoorFightComponent"))
+
+            if path.name == "DigitDoorResultInfoView.lua":
+                if "msg.passLevelVOS" in line and "Contains(msg.levelId)" in line:
+                    categories.append(("result_win_state_from_pass_level", "response", "passLevelVOS|levelId", "DigitDoorResultInfoView"))
+                if "msg.rewardResults" in line:
+                    categories.append(("result_reward_display_from_response", "response", "rewardResults", "DigitDoorResultInfoView"))
+                if "finishWave=msg.finishWave" in line:
+                    categories.append(("result_finish_wave_from_response", "response", "finishWave", "DigitDoorResultInfoView"))
+
+            if path.name in {"DigitDoorSceneView.lua", "DigitDoorPauseView.lua"} and "ReqFinishGame" in line:
+                categories.append(("finish_request_trigger", "request", "", path.stem))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_gameplayer_settlement_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "currWave": "request progress snapshot wave",
+        "wavePercent": "request progress snapshot percent",
+        "killNum": "request local small-monster kill summary",
+        "bossVoList": "request local boss hp-percent summary",
+        "finishWave": "response result display wave",
+        "rewardResults": "response final reward display list",
+        "passLevelVOS": "response passed-level state/list used for win state",
+        "levelId": "response level id used with passLevelVOS",
+        "gameType": "response game type for result display",
+        "isSkipLevel": "response skip branch flag",
+        "id": "DDBossVo boss id",
+        "hp": "DDBossVo boss hp percentage as double",
+        "DamageCache": "local damage ranking/display cache; not part of CM_DigitDoorGamePlayer schema",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        fields = [item for item in str(row.get("field") or "").split("|") if item]
+        for field in fields:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_gameplayer_settlement_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor GamePlayer settlement boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor battle-settlement request/response boundary. It does not modify traffic, replay packets, or assert server behavior beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorGamePlayer` sends a local progress snapshot: `currWave`, `wavePercent`, `killNum`, and `bossVoList`.",
+            "- `killNum` is derived from local counters as `totalKillMonsterNum - skillMonsterNum - totalKillBossNum`; `bossVoList` uses `DDBossVo(id,hp)` where `hp` is `Floor(currentHp / maxHp * 10000)` for visible boss entities.",
+            "- `SM_DigitDoorGamePlayer` returns final settlement/display state: `finishWave`, `rewardResults`, `passLevelVOS`, `levelId`, `gameType`, and `isSkipLevel`.",
+            "- `DigitDoorData:SetFinishLevelInfo` rebuilds passed-level state only from `msg.passLevelVOS`; `DigitDoorResultInfoView` uses `passLevelVOS:Contains(levelId)` for win/fail display and `msg.rewardResults` for rewards.",
+            "- `DigitDoorFightComponent.DamageCache` is local display/ranking data and has no visible field in `CM_DigitDoorGamePlayer`.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_gameplayer_settlement_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_gameplayer_settlement_rows(root, logic_dir)
+    field_rows = _digitdoor_gameplayer_settlement_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    stats = {
+        "source_file_count": len(_digitdoor_gameplayer_settlement_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "request_schema_rows": category_counts.get("request_packet_schema", 0),
+        "response_schema_rows": category_counts.get("response_packet_schema", 0),
+        "request_fill_rows": sum(
+            category_counts.get(category, 0)
+            for category in [
+                "request_fill_curr_wave",
+                "request_fill_wave_percent",
+                "request_fill_kill_num",
+                "request_fill_boss_vo_list",
+            ]
+        ),
+        "local_kill_formula_rows": category_counts.get("kill_small_monster_formula", 0),
+        "boss_hp_percent_formula_rows": category_counts.get("boss_hp_percent_formula", 0),
+        "response_reward_display_rows": category_counts.get("response_reward_results_popup", 0)
+        + category_counts.get("result_reward_display_from_response", 0),
+        "pass_level_state_rows": category_counts.get("pass_level_state_from_response", 0)
+        + category_counts.get("result_win_state_from_pass_level", 0),
+        "damage_cache_rows": sum(count for category, count in category_counts.items() if "damage_cache" in category),
+    }
+    verdict = {
+        "request_progress_snapshot_confirmed": stats["request_schema_rows"] >= 4 and stats["request_fill_rows"] >= 4,
+        "request_uses_local_kill_and_boss_hp_summary": stats["local_kill_formula_rows"] > 0
+        and stats["boss_hp_percent_formula_rows"] > 0,
+        "response_settlement_fields_confirmed": stats["response_schema_rows"] >= 6,
+        "response_rewards_drive_display": stats["response_reward_display_rows"] > 0,
+        "response_pass_level_drives_state_and_win_display": stats["pass_level_state_rows"] >= 2,
+        "local_damage_cache_not_sent_in_gameplayer_schema": stats["damage_cache_rows"] > 0
+        and not any(row.get("source") == "CM_DigitDoorGamePlayer" and row.get("field") == "DamageCache" for row in evidence_rows),
+    }
+    _write_tsv(
+        out_dir / "gameplayer_settlement_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_settlement_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "gameplayer_settlement_report.md"
+    _write_digitdoor_gameplayer_settlement_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["request_progress_snapshot_confirmed"] and verdict["response_settlement_fields_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "gameplayer_settlement_fields.tsv"),
+            "evidence": str(out_dir / "gameplayer_settlement_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_info_snapshot_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorData.lua",
+        "DigitDoorInfoPanel.lua",
+        "DigitDoorType.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorInfo.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorInfo.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DDPartnerVO.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_info_snapshot_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_info_snapshot_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+
+            if path.name == "CM_DigitDoorInfo.lua":
+                if "return 91620" in line:
+                    categories.append(("request_packet_id", "request", "", "CM_DigitDoorInfo"))
+                if current_function == "_M._init_" and "_super_._init_" in line:
+                    categories.append(("request_empty_init_super_only", "request", "", "CM_DigitDoorInfo"))
+                if current_function == "_M.reading" and "_super_.reading" in line:
+                    categories.append(("request_empty_reading_super_only", "request", "", "CM_DigitDoorInfo"))
+                if current_function == "_M.writing" and "_super_.writing" in line:
+                    categories.append(("request_empty_writing_super_only", "request", "", "CM_DigitDoorInfo"))
+
+            elif path.name == "SM_DigitDoorInfo.lua":
+                for field in ["passList", "ddPartnerVOList"]:
+                    if f"self.{field}" in line:
+                        categories.append(("response_packet_schema", "response", field, "SM_DigitDoorInfo"))
+                if "readMessageList2List(self.passList)" in line:
+                    categories.append(("response_pass_list_read_helper", "response", "passList", "SM_DigitDoorInfo"))
+                if "writeIntList(self.passList)" in line:
+                    categories.append(("response_pass_list_int_wire", "response", "passList", "SM_DigitDoorInfo"))
+                if "readMessageList2List(self.ddPartnerVOList)" in line:
+                    categories.append(("response_partner_vo_list_read_helper", "response", "ddPartnerVOList", "SM_DigitDoorInfo"))
+                if "writeList(self.ddPartnerVOList)" in line:
+                    categories.append(("response_partner_vo_list_wire", "response", "ddPartnerVOList", "SM_DigitDoorInfo"))
+                if "return 91621" in line:
+                    categories.append(("response_packet_id", "response", "", "SM_DigitDoorInfo"))
+
+            elif path.name == "DDPartnerVO.lua":
+                for field in ["id", "lv"]:
+                    if f"self.{field}" in line:
+                        categories.append(("partner_vo_schema", "response", field, "DDPartnerVO"))
+                if "readInt()" in line and "self.id" in line:
+                    categories.append(("partner_vo_id_int_wire", "response", "id", "DDPartnerVO"))
+                if "readInt()" in line and "self.lv" in line:
+                    categories.append(("partner_vo_lv_int_wire", "response", "lv", "DDPartnerVO"))
+                if "writeInt(self.id)" in line:
+                    categories.append(("partner_vo_id_int_wire", "response", "id", "DDPartnerVO"))
+                if "writeInt(self.lv)" in line:
+                    categories.append(("partner_vo_lv_int_wire", "response", "lv", "DDPartnerVO"))
+                if "return 91600" in line:
+                    categories.append(("partner_vo_packet_id", "response", "", "DDPartnerVO"))
+
+            if path.name == "DigitDoorNetLogic.lua":
+                if "F_Register(_CM_DigitDoorInfo:getId()" in line:
+                    categories.append(("request_register", "request", "", "DigitDoorNetLogic"))
+                if "F_Register(_SM_DigitDoorInfo:getId()" in line:
+                    categories.append(("response_register", "response", "", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorInfoFun":
+                    if "GetMessageFromPools(_CM_DigitDoorInfo)" in line:
+                        categories.append(("request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorInfo)" in line:
+                        categories.append(("request_send", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorInfoFun":
+                    if "msg.code==0" in line:
+                        categories.append(("response_success_guard", "response", "code", "DigitDoorNetLogic"))
+                    if "SeDigitDoorInfoFun(msg)" in line:
+                        categories.append(("response_store_info_snapshot", "response", "V_DigitDoorInfo", "DigitDoorNetLogic"))
+                    if "DigitDoorInfoUpdate" in line and "RaiseEvent" in line:
+                        categories.append(("response_raise_info_update", "response", "DigitDoorInfoUpdate", "DigitDoorNetLogic"))
+                    if "UpdateRedDot()" in line:
+                        categories.append(("response_update_red_dot", "response", "", "DigitDoorNetLogic"))
+
+            if path.name == "DigitDoorMgr.lua":
+                if "CM_DigitDoorInfoFun()" in line:
+                    field = "activity_refresh" if current_function == "_M.UpdateActivationActivityVO" else "activity_state_change"
+                    categories.append(("request_trigger_activity_info", "request", field, "DigitDoorMgr"))
+                if "RaiseRedDotEvent" in line and "DigitDoor_Rank_Reward" in line:
+                    categories.append(("request_trigger_rank_red_dot", "request", "DigitDoor_Rank_Reward", "DigitDoorMgr"))
+
+            if path.name == "DigitDoorData.lua":
+                if "function _M.SeDigitDoorInfoFun" in line:
+                    categories.append(("info_snapshot_store_entry", "response", "V_DigitDoorInfo", "DigitDoorData"))
+                if current_function == "_M.SeDigitDoorInfoFun":
+                    if "ClearActivityData()" in line:
+                        categories.append(("info_clear_previous_activity_data", "response", "V_NewLevelIdDic|serverData", "DigitDoorData"))
+                    if "V_DigitDoorInfo=msg" in line:
+                        categories.append(("info_snapshot_store_msg", "response", "V_DigitDoorInfo", "DigitDoorData"))
+                    if "UpdateDDPartnerVos(msg.ddPartnerVOList)" in line:
+                        categories.append(("info_partner_list_to_state", "response", "ddPartnerVOList", "DigitDoorData"))
+                    if "InitNewLevelDic(msg.passList)" in line:
+                        categories.append(("info_pass_list_to_state", "response", "passList", "DigitDoorData"))
+                if current_function == "_M.ClearActivityData":
+                    if "V_NewLevelIdDic=nil" in line:
+                        categories.append(("info_clear_pass_level_state", "response", "V_NewLevelIdDic", "DigitDoorData"))
+                    if "SetServerData(nil)" in line:
+                        categories.append(("info_clear_partner_server_state", "response", "serverData", "DigitDoorData"))
+                if current_function == "_M.GeDigitDoorInfo" and "return self.V_DigitDoorInfo" in line:
+                    categories.append(("info_snapshot_getter", "response", "V_DigitDoorInfo", "DigitDoorData"))
+                if "function _M.UpdateDDPartnerVos" in line:
+                    categories.append(("partner_state_update_entry", "response", "ddPartnerVOList", "DigitDoorData"))
+                if current_function == "_M.UpdateDDPartnerVos" and "UpdateOneDigitDoorCharacterVo(v)" in line:
+                    categories.append(("partner_state_iterate_list", "response", "ddPartnerVOList", "DigitDoorData"))
+                if current_function == "_M.UpdateOneDigitDoorCharacterVo":
+                    if "GetDigitDoorCharacterVoById(msgVo.id)" in line:
+                        categories.append(("partner_state_lookup_by_id", "response", "id", "DigitDoorData"))
+                    if "SetServerData(msgVo)" in line:
+                        categories.append(("partner_state_store_server_vo", "response", "serverData", "DigitDoorData"))
+                if "function _M.InitNewLevelDic" in line:
+                    categories.append(("pass_level_state_update_entry", "response", "passList", "DigitDoorData"))
+                if current_function == "_M.InitNewLevelDic":
+                    if "Cipairs(passList)" in line:
+                        categories.append(("pass_level_state_iterate_pass_list", "response", "passList", "DigitDoorData"))
+                    if "ConfigName.DigitDoor_Level" in line:
+                        categories.append(("pass_level_state_lookup_level_cfg", "response", "passList", "DigitDoorData"))
+                    if "V_NewLevelIdDic[levelCfg.type][levelCfg.layer]=true" in line:
+                        categories.append(("pass_level_state_store_type_layer", "response", "V_NewLevelIdDic", "DigitDoorData"))
+
+            if path.name == "DigitDoorInfoPanel.lua":
+                if "onUpdateViewFunc=function" in line:
+                    categories.append(("panel_info_update_callback_entry", "ui", "DigitDoorInfoUpdate", "DigitDoorInfoPanel"))
+                if current_function == "" and "UpdateViewData()" in line:
+                    categories.append(("panel_refresh_view_data", "ui", "DigitDoorInfoUpdate", "DigitDoorInfoPanel"))
+                if "AddEventHandler(DigitDoorType.EventType.DigitDoorInfoUpdate" in line:
+                    categories.append(("panel_listen_info_update", "ui", "DigitDoorInfoUpdate", "DigitDoorInfoPanel"))
+                if "RemoveEventHandler(DigitDoorType.EventType.DigitDoorInfoUpdate" in line:
+                    categories.append(("panel_remove_info_update", "ui", "DigitDoorInfoUpdate", "DigitDoorInfoPanel"))
+
+            if path.name == "DigitDoorType.lua" and 'DigitDoorInfoUpdate="DigitDoorInfoUpdate"' in line:
+                categories.append(("event_constant_defined", "shared", "DigitDoorInfoUpdate", "DigitDoorType"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_info_snapshot_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "passList": "SM_DigitDoorInfo passed-level id list; `InitNewLevelDic` maps level config type/layer to finished state.",
+        "ddPartnerVOList": "SM_DigitDoorInfo partner server-state list; each entry is a DDPartnerVO.",
+        "id": "DDPartnerVO partner id used to locate DigitDoorCharacterVo.",
+        "lv": "DDPartnerVO partner level.",
+        "V_DigitDoorInfo": "cached whole info snapshot message.",
+        "V_NewLevelIdDic": "client-side finished-level lookup keyed by level type/layer.",
+        "serverData": "per-character server state set from DDPartnerVO and cleared before fresh info snapshots.",
+        "DigitDoorInfoUpdate": "model event raised after successful info response and listened to by DigitDoorInfoPanel.",
+        "DigitDoor_Rank_Reward": "red-dot refresh side effect around activity/info updates.",
+        "code": "response success guard before applying snapshot.",
+        "activity_refresh": "activity refresh trigger for CM_DigitDoorInfoFun.",
+        "activity_state_change": "activity state-change trigger for CM_DigitDoorInfoFun.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_info_snapshot_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor Info snapshot boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor activity-info request/response boundary. It does not modify traffic, replay packets, or assert server behavior beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorInfo` is a no-payload activity info request: the client allocates it from the message pool and immediately sends it.",
+            "- `SM_DigitDoorInfo` is the authoritative snapshot carrier for this entry point: `passList` rebuilds passed-level lookup state, and `ddPartnerVOList` updates each DigitDoor character's server data.",
+            "- `DDPartnerVO` is only `id` and `lv` in this static schema, so richer character display data comes from local config plus this server level overlay.",
+            "- A successful response raises `DigitDoorInfoUpdate`; `DigitDoorInfoPanel` listens to that event and refreshes view data.",
+            "- This complements the GamePlayer settlement probe: Info is the activity/home-screen snapshot, while GamePlayer is the battle-settlement boundary.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_info_snapshot_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_info_snapshot_rows(root, logic_dir)
+    field_rows = _digitdoor_info_snapshot_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    stats = {
+        "source_file_count": len(_digitdoor_info_snapshot_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "request_schema_field_rows": category_counts.get("request_packet_schema", 0),
+        "request_empty_super_only_rows": sum(
+            category_counts.get(category, 0)
+            for category in [
+                "request_empty_init_super_only",
+                "request_empty_reading_super_only",
+                "request_empty_writing_super_only",
+            ]
+        ),
+        "request_packet_id_rows": category_counts.get("request_packet_id", 0),
+        "request_send_rows": category_counts.get("request_send", 0),
+        "activity_trigger_rows": category_counts.get("request_trigger_activity_info", 0),
+        "response_schema_rows": category_counts.get("response_packet_schema", 0),
+        "response_pass_list_wire_rows": category_counts.get("response_pass_list_int_wire", 0),
+        "response_partner_list_wire_rows": category_counts.get("response_partner_vo_list_wire", 0),
+        "partner_vo_schema_rows": category_counts.get("partner_vo_schema", 0),
+        "snapshot_store_rows": category_counts.get("info_snapshot_store_msg", 0)
+        + category_counts.get("response_store_info_snapshot", 0),
+        "partner_state_rows": sum(count for category, count in category_counts.items() if category.startswith("partner_state_"))
+        + category_counts.get("info_partner_list_to_state", 0),
+        "pass_level_state_rows": sum(
+            count
+            for category, count in category_counts.items()
+            if category.startswith("pass_level_state_") or category == "info_pass_list_to_state"
+        ),
+        "info_update_event_rows": category_counts.get("response_raise_info_update", 0)
+        + category_counts.get("event_constant_defined", 0),
+        "panel_listener_rows": category_counts.get("panel_listen_info_update", 0),
+    }
+    verdict = {
+        "request_has_no_payload_fields": stats["request_schema_field_rows"] == 0
+        and stats["request_empty_super_only_rows"] >= 3
+        and stats["request_send_rows"] > 0,
+        "response_snapshot_fields_confirmed": stats["response_schema_rows"] >= 2
+        and stats["response_pass_list_wire_rows"] > 0
+        and stats["response_partner_list_wire_rows"] > 0,
+        "partner_vo_shape_confirmed": stats["partner_vo_schema_rows"] >= 2,
+        "response_updates_partner_state": stats["partner_state_rows"] >= 3,
+        "response_updates_pass_level_state": stats["pass_level_state_rows"] >= 4,
+        "info_update_event_raised": stats["info_update_event_rows"] > 0,
+        "info_panel_listens_to_info_update": stats["panel_listener_rows"] > 0,
+        "activity_state_triggers_info_request": stats["activity_trigger_rows"] > 0,
+    }
+    _write_tsv(
+        out_dir / "info_snapshot_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "info_snapshot_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "info_snapshot_report.md"
+    _write_digitdoor_info_snapshot_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["request_has_no_payload_fields"] and verdict["response_snapshot_fields_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "info_snapshot_fields.tsv"),
+            "evidence": str(out_dir / "info_snapshot_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_uplevel_state_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorData.lua",
+        "DigitDoorPartnerPanel.lua",
+        "DigitDoorPlayerView.lua",
+        "DigitDoorCharacterVo.lua",
+        "DigitDoorType.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorUpLevel.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorUpLevel.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DDPartnerVO.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_uplevel_state_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_uplevel_state_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+
+            if path.name == "CM_DigitDoorUpLevel.lua":
+                if "self.id" in line:
+                    categories.append(("request_packet_schema", "request", "id", "CM_DigitDoorUpLevel"))
+                if "readInt()" in line and "self.id" in line:
+                    categories.append(("request_id_int_wire", "request", "id", "CM_DigitDoorUpLevel"))
+                if "writeInt(self.id)" in line:
+                    categories.append(("request_id_int_wire", "request", "id", "CM_DigitDoorUpLevel"))
+                if "return 91637" in line:
+                    categories.append(("request_packet_id", "request", "", "CM_DigitDoorUpLevel"))
+
+            elif path.name == "SM_DigitDoorUpLevel.lua":
+                if "self.partnerList" in line:
+                    categories.append(("response_packet_schema", "response", "partnerList", "SM_DigitDoorUpLevel"))
+                if "readMessageList2List(self.partnerList)" in line:
+                    categories.append(("response_partner_list_read_helper", "response", "partnerList", "SM_DigitDoorUpLevel"))
+                if "writeList(self.partnerList)" in line:
+                    categories.append(("response_partner_list_wire", "response", "partnerList", "SM_DigitDoorUpLevel"))
+                if "return 91638" in line:
+                    categories.append(("response_packet_id", "response", "", "SM_DigitDoorUpLevel"))
+
+            elif path.name == "DDPartnerVO.lua":
+                for field in ["id", "lv"]:
+                    if f"self.{field}" in line:
+                        categories.append(("partner_vo_schema", "response", field, "DDPartnerVO"))
+                if "writeInt(self.id)" in line or ("readInt()" in line and "self.id" in line):
+                    categories.append(("partner_vo_id_int_wire", "response", "id", "DDPartnerVO"))
+                if "writeInt(self.lv)" in line or ("readInt()" in line and "self.lv" in line):
+                    categories.append(("partner_vo_lv_int_wire", "response", "lv", "DDPartnerVO"))
+
+            if path.name == "DigitDoorNetLogic.lua":
+                if "F_Register(_CM_DigitDoorUpLevel:getId()" in line:
+                    categories.append(("request_register", "request", "", "DigitDoorNetLogic"))
+                if "F_Register(_SM_DigitDoorUpLevel:getId()" in line:
+                    categories.append(("response_register", "response", "", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorUpLevelFun":
+                    if "GetMessageFromPools(_CM_DigitDoorUpLevel)" in line:
+                        categories.append(("request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorUpLevel.id=id" in line:
+                        categories.append(("request_fill_id", "request", "id", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorUpLevel)" in line:
+                        categories.append(("request_send", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorUpLevelFun":
+                    if "msg.code==0" in line:
+                        categories.append(("response_success_guard", "response", "code", "DigitDoorNetLogic"))
+                    if "UpdateDDPartnerVos(msg.partnerList)" in line:
+                        categories.append(("response_partner_list_to_state", "response", "partnerList", "DigitDoorNetLogic"))
+                    if "Update_Character_Info" in line and "RaiseEvent" in line:
+                        field = "partnerVO" if "msg.partnerVO" in line else "Update_Character_Info"
+                        categories.append(("response_raise_character_update", "response", field, "DigitDoorNetLogic"))
+                    if "msg.partnerVO" in line:
+                        categories.append(("response_event_partner_vo_reference", "response", "partnerVO", "DigitDoorNetLogic"))
+                    if "Digit_Door_Tips_27" in line:
+                        categories.append(("response_success_tip", "ui", "Digit_Door_Tips_27", "DigitDoorNetLogic"))
+                    if "UpdateRedDot()" in line:
+                        categories.append(("response_update_red_dot", "response", "", "DigitDoorNetLogic"))
+
+            if path.name == "DigitDoorPartnerPanel.lua":
+                if "AddEventHandler(DigitDoorType.EventType.Update_Character_Info" in line:
+                    categories.append(("panel_listen_character_update", "ui", "Update_Character_Info", "DigitDoorPartnerPanel"))
+                if "RemoveEventHandler(DigitDoorType.EventType.Update_Character_Info" in line:
+                    categories.append(("panel_remove_character_update", "ui", "Update_Character_Info", "DigitDoorPartnerPanel"))
+                if current_function == "_M.OnUpdateLevelClick":
+                    if "self.isMax" in line:
+                        categories.append(("panel_guard_max_level", "request", "isMax", "DigitDoorPartnerPanel"))
+                    if "not self.isEnough" in line:
+                        categories.append(("panel_guard_cost_enough", "request", "isEnough", "DigitDoorPartnerPanel"))
+                    if "CM_DigitDoorUpLevelFun(0)" in line:
+                        categories.append(("panel_request_global_id_zero", "request", "id", "DigitDoorPartnerPanel"))
+                if "ConfigName.DigitDoor_CharacterLevelCost" in line:
+                    categories.append(("panel_cost_config_lookup", "local", "DigitDoor_CharacterLevelCost", "DigitDoorPartnerPanel"))
+                if "GetCostInfo(levelCfg.cost,true)" in line:
+                    categories.append(("panel_cost_item_lookup", "local", "cost", "DigitDoorPartnerPanel"))
+
+            if path.name == "DigitDoorPlayerView.lua":
+                if current_function == "_M.OnUpdateLevelClick":
+                    if "GetIsMaxLevel()" in line:
+                        categories.append(("player_guard_max_level", "request", "GetIsMaxLevel", "DigitDoorPlayerView"))
+                    if "GetIsActive()" in line:
+                        categories.append(("player_guard_active", "request", "GetIsActive", "DigitDoorPlayerView"))
+                    if "not self.isEnough" in line:
+                        categories.append(("player_guard_cost_enough", "request", "isEnough", "DigitDoorPlayerView"))
+                    if "CM_DigitDoorUpLevelFun(self.defenseVo.id)" in line:
+                        categories.append(("player_request_selected_partner_id", "request", "id", "DigitDoorPlayerView"))
+
+            if path.name == "DigitDoorMgr.lua":
+                if "function _M.CheckCanLevelUp" in line:
+                    categories.append(("mgr_check_can_level_up_entry", "local", "cost", "DigitDoorMgr"))
+                if current_function == "_M.CheckCanLevelUp":
+                    if "GetCurCostLevel()" in line:
+                        categories.append(("mgr_current_cost_level_lookup", "local", "CurCostLevel", "DigitDoorMgr"))
+                    if "ConfigName.DigitDoor_CharacterLevelCost" in line:
+                        categories.append(("mgr_cost_config_lookup", "local", "DigitDoor_CharacterLevelCost", "DigitDoorMgr"))
+                    if "GetCostInfo(levelCfg.cost,true)" in line:
+                        categories.append(("mgr_cost_item_lookup", "local", "cost", "DigitDoorMgr"))
+                    if "hadNum>=costInfo.itemNum" in line:
+                        categories.append(("mgr_cost_enough_compare", "local", "isEnough", "DigitDoorMgr"))
+                if current_function == "_M.UpdateRedDot" and "DigitDoor_Character_Level" in line:
+                    categories.append(("mgr_character_level_red_dot", "ui", "DigitDoor_Character_Level", "DigitDoorMgr"))
+
+            if path.name == "DigitDoorData.lua":
+                if "function _M.UpdateDDPartnerVos" in line:
+                    categories.append(("partner_state_update_entry", "response", "partnerList", "DigitDoorData"))
+                if current_function == "_M.UpdateDDPartnerVos" and "UpdateOneDigitDoorCharacterVo(v)" in line:
+                    categories.append(("partner_state_iterate_list", "response", "partnerList", "DigitDoorData"))
+                if current_function == "_M.UpdateOneDigitDoorCharacterVo":
+                    if "GetDigitDoorCharacterVoById(msgVo.id)" in line:
+                        categories.append(("partner_state_lookup_by_id", "response", "id", "DigitDoorData"))
+                    if "SetServerData(msgVo)" in line:
+                        categories.append(("partner_state_store_server_vo", "response", "serverData", "DigitDoorData"))
+                if "function _M.GetCurCostLevel" in line:
+                    categories.append(("data_current_cost_level_entry", "local", "CurCostLevel", "DigitDoorData"))
+                if current_function == "_M.GetCurCostLevel":
+                    if "vo:GetIsActive()" in line:
+                        categories.append(("data_current_cost_level_active_filter", "local", "CurCostLevel", "DigitDoorData"))
+                    if "vo:GetCurLevel()" in line:
+                        categories.append(("data_current_cost_level_from_active_vo", "local", "CurCostLevel", "DigitDoorData"))
+
+            if path.name == "DigitDoorCharacterVo.lua":
+                if "function _M.GetIsMaxLevel" in line:
+                    categories.append(("character_max_level_guard_entry", "local", "maxLevel", "DigitDoorCharacterVo"))
+                if current_function == "_M.GetIsMaxLevel" and "curLevel>=maxLvl" in line:
+                    categories.append(("character_max_level_compare", "local", "maxLevel", "DigitDoorCharacterVo"))
+                if "function _M.CheckCanLevelUp" in line:
+                    categories.append(("character_check_can_level_up_entry", "local", "CheckCanLevelUp", "DigitDoorCharacterVo"))
+                if current_function == "_M.CheckCanLevelUp" and "return false" in line:
+                    categories.append(("character_check_can_level_up_stub_false", "local", "CheckCanLevelUp", "DigitDoorCharacterVo"))
+
+            if path.name == "DigitDoorType.lua" and 'Update_Character_Info="Update_Character_Info"' in line:
+                categories.append(("event_constant_defined", "shared", "Update_Character_Info", "DigitDoorType"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_uplevel_state_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "id": "CM_DigitDoorUpLevel request target id; visible UI sends either `0` from the partner panel or `defenseVo.id` from player view.",
+        "partnerList": "SM_DigitDoorUpLevel server-returned DDPartnerVO list used to refresh local partner server state.",
+        "partnerVO": "Referenced in the visible event payload but absent from the visible SM_DigitDoorUpLevel schema.",
+        "lv": "DDPartnerVO partner level.",
+        "code": "success guard before applying partner state.",
+        "serverData": "per-character server state set from returned DDPartnerVO rows.",
+        "Update_Character_Info": "model event used by partner UI to refresh after unlock/upgrade.",
+        "DigitDoor_CharacterLevelCost": "local config used for upgrade cost display/red-dot checks.",
+        "DigitDoor_Character_Level": "red-dot id raised after successful upgrade.",
+        "cost": "local cost lookup and enough-item comparison before sending upgrade request.",
+        "isEnough": "UI-side item sufficiency guard.",
+        "isMax": "partner panel max-level guard.",
+        "GetIsMaxLevel": "selected-player max-level guard.",
+        "GetIsActive": "selected-player active-state guard.",
+        "CurCostLevel": "aggregate current active-character level used to pick the upgrade cost row.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_uplevel_state_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor UpLevel state boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor partner-level request/response boundary. It does not modify traffic, replay packets, or assert server acceptance beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorUpLevel` sends one integer `id`; visible UI can send `0` from the partner panel or a selected `defenseVo.id` from player view.",
+            "- `SM_DigitDoorUpLevel` visibly returns `partnerList`, a list of `DDPartnerVO(id,lv)`, and the handler applies it through `UpdateDDPartnerVos`.",
+            "- The visible handler raises `Update_Character_Info(msg.partnerVO,true)`, but `partnerVO` is not in the visible `SM_DigitDoorUpLevel` schema. Treat that event payload as suspicious/loose UI context until runtime evidence proves otherwise.",
+            "- Cost/max/active checks are UI/local guards; they are useful for understanding intended flow but not proof of server-side acceptance rules.",
+            "- This boundary updates the same partner server-data layer established by the Info snapshot probe.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_uplevel_state_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_uplevel_state_rows(root, logic_dir)
+    field_rows = _digitdoor_uplevel_state_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    sm_schema_fields = {
+        str(row.get("field") or "")
+        for row in evidence_rows
+        if row.get("source") == "SM_DigitDoorUpLevel" and row.get("category") == "response_packet_schema"
+    }
+    stats = {
+        "source_file_count": len(_digitdoor_uplevel_state_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "request_schema_rows": category_counts.get("request_packet_schema", 0),
+        "request_send_rows": category_counts.get("request_send", 0),
+        "ui_global_zero_request_rows": category_counts.get("panel_request_global_id_zero", 0),
+        "ui_selected_partner_request_rows": category_counts.get("player_request_selected_partner_id", 0),
+        "cost_guard_rows": sum(count for category, count in category_counts.items() if "cost" in category or category.endswith("_enough")),
+        "max_or_active_guard_rows": sum(
+            count
+            for category, count in category_counts.items()
+            if "max_level" in category or category in {"panel_guard_max_level", "player_guard_active"}
+        ),
+        "response_schema_rows": category_counts.get("response_packet_schema", 0),
+        "response_partner_list_wire_rows": category_counts.get("response_partner_list_wire", 0),
+        "partner_vo_schema_rows": category_counts.get("partner_vo_schema", 0),
+        "partner_state_rows": sum(count for category, count in category_counts.items() if category.startswith("partner_state_"))
+        + category_counts.get("response_partner_list_to_state", 0),
+        "character_update_event_rows": category_counts.get("response_raise_character_update", 0)
+        + category_counts.get("event_constant_defined", 0),
+        "panel_listener_rows": category_counts.get("panel_listen_character_update", 0),
+        "event_partner_vo_reference_rows": category_counts.get("response_event_partner_vo_reference", 0),
+        "sm_schema_partner_vo_fields": 1 if "partnerVO" in sm_schema_fields else 0,
+    }
+    verdict = {
+        "request_id_schema_confirmed": stats["request_schema_rows"] > 0 and stats["request_send_rows"] > 0,
+        "ui_sends_zero_or_selected_partner_id": stats["ui_global_zero_request_rows"] > 0
+        and stats["ui_selected_partner_request_rows"] > 0,
+        "ui_cost_and_max_guards_visible": stats["cost_guard_rows"] > 0 and stats["max_or_active_guard_rows"] > 0,
+        "response_partner_list_confirmed": stats["response_schema_rows"] > 0
+        and stats["response_partner_list_wire_rows"] > 0,
+        "partner_vo_shape_confirmed": stats["partner_vo_schema_rows"] >= 2,
+        "response_updates_partner_state": stats["partner_state_rows"] >= 3,
+        "character_update_event_raised_and_listened": stats["character_update_event_rows"] > 0
+        and stats["panel_listener_rows"] > 0,
+        "event_partner_vo_reference_not_in_sm_schema": stats["event_partner_vo_reference_rows"] > 0
+        and stats["sm_schema_partner_vo_fields"] == 0,
+    }
+    _write_tsv(
+        out_dir / "uplevel_state_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "uplevel_state_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "uplevel_state_report.md"
+    _write_digitdoor_uplevel_state_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["request_id_schema_confirmed"] and verdict["response_partner_list_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "uplevel_state_fields.tsv"),
+            "evidence": str(out_dir / "uplevel_state_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_unlock_state_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorData.lua",
+        "DigitDoorPartnerPanel.lua",
+        "DigitDoorType.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorUnlock.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorUnlock.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DDPartnerVO.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_unlock_state_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_unlock_state_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+
+            if path.name == "CM_DigitDoorUnlock.lua":
+                if "self.Id" in line:
+                    categories.append(("request_packet_schema", "request", "Id", "CM_DigitDoorUnlock"))
+                if "readInt()" in line and "self.Id" in line:
+                    categories.append(("request_id_int_wire", "request", "Id", "CM_DigitDoorUnlock"))
+                if "writeInt(self.Id)" in line:
+                    categories.append(("request_id_int_wire", "request", "Id", "CM_DigitDoorUnlock"))
+                if "return 91630" in line:
+                    categories.append(("request_packet_id", "request", "", "CM_DigitDoorUnlock"))
+
+            elif path.name == "SM_DigitDoorUnlock.lua":
+                if "self.list" in line:
+                    categories.append(("response_packet_schema", "response", "list", "SM_DigitDoorUnlock"))
+                if "readMessageList2List(self.list)" in line:
+                    categories.append(("response_list_read_helper", "response", "list", "SM_DigitDoorUnlock"))
+                if "writeList(self.list)" in line:
+                    categories.append(("response_list_wire", "response", "list", "SM_DigitDoorUnlock"))
+                if "return 91631" in line:
+                    categories.append(("response_packet_id", "response", "", "SM_DigitDoorUnlock"))
+
+            elif path.name == "DDPartnerVO.lua":
+                for field in ["id", "lv"]:
+                    if f"self.{field}" in line:
+                        categories.append(("partner_vo_schema", "response", field, "DDPartnerVO"))
+                if "writeInt(self.id)" in line or ("readInt()" in line and "self.id" in line):
+                    categories.append(("partner_vo_id_int_wire", "response", "id", "DDPartnerVO"))
+                if "writeInt(self.lv)" in line or ("readInt()" in line and "self.lv" in line):
+                    categories.append(("partner_vo_lv_int_wire", "response", "lv", "DDPartnerVO"))
+
+            if path.name == "DigitDoorNetLogic.lua":
+                if "F_Register(_CM_DigitDoorUnlock:getId()" in line:
+                    categories.append(("request_register", "request", "", "DigitDoorNetLogic"))
+                if "F_Register(_SM_DigitDoorUnlock:getId()" in line:
+                    categories.append(("response_register", "response", "", "DigitDoorNetLogic"))
+                if "function _M.CM_DigitDoorUnlockFun" in line:
+                    categories.append(("request_handler_entry", "request", "", "DigitDoorNetLogic"))
+                elif "CM_DigitDoorUnlockFun(" in line:
+                    categories.append(("request_visible_callsite", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorUnlockFun":
+                    if "GetMessageFromPools(_CM_DigitDoorUnlock)" in line:
+                        categories.append(("request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    if "CM_DigitDoorUnlock.Id" in line:
+                        categories.append(("request_visible_id_assignment", "request", "Id", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorUnlock)" in line:
+                        categories.append(("request_send", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorUnlockFun":
+                    if "msg.code==0" in line:
+                        categories.append(("response_success_guard", "response", "code", "DigitDoorNetLogic"))
+                    if "UpdateDDPartnerVos(msg.list)" in line:
+                        categories.append(("response_list_to_partner_state", "response", "list", "DigitDoorNetLogic"))
+                    if "OpenDigitDoorNewCharacterView(msg.list,true)" in line:
+                        categories.append(("response_open_new_character_view", "ui", "list", "DigitDoorNetLogic"))
+                    if "Update_Character_Info" in line and "RaiseEvent" in line:
+                        categories.append(("response_raise_character_update", "response", "Update_Character_Info", "DigitDoorNetLogic"))
+
+            if path.name == "DigitDoorMgr.lua":
+                if "function _M.OpenDigitDoorNewCharacterView" in line:
+                    categories.append(("new_character_view_entry", "ui", "recordOpenCharacterIdList", "DigitDoorMgr"))
+                if current_function == "_M.OpenDigitDoorNewCharacterView":
+                    if "recordOpenCharacterIdList=CList.new()" in line:
+                        categories.append(("new_character_record_list_init", "ui", "recordOpenCharacterIdList", "DigitDoorMgr"))
+                    if "for _,v in Cipairs(list)" in line:
+                        categories.append(("new_character_iterate_msg_list", "ui", "list", "DigitDoorMgr"))
+                    if "recordOpenCharacterIdList:Add(v.id)" in line:
+                        categories.append(("new_character_record_id", "ui", "id", "DigitDoorMgr"))
+                    if "IsInDigitDoorPveScene()" in line or "GetIsSkipLevel()" in line:
+                        categories.append(("new_character_scene_or_skip_guard", "ui", "recordOpenCharacterIdList", "DigitDoorMgr"))
+                    if "F_ShowWin(Window.DigitDoorNewCharacterView" in line:
+                        categories.append(("new_character_popup_show", "ui", "Window.DigitDoorNewCharacterView", "DigitDoorMgr"))
+                    if "view:UpdateView(characterInfoVo)" in line:
+                        categories.append(("new_character_popup_update_view", "ui", "characterInfoVo", "DigitDoorMgr"))
+
+            if path.name == "DigitDoorData.lua":
+                if "function _M.UpdateDDPartnerVos" in line:
+                    categories.append(("partner_state_update_entry", "response", "list", "DigitDoorData"))
+                if current_function == "_M.UpdateDDPartnerVos" and "UpdateOneDigitDoorCharacterVo(v)" in line:
+                    categories.append(("partner_state_iterate_list", "response", "list", "DigitDoorData"))
+                if current_function == "_M.UpdateOneDigitDoorCharacterVo":
+                    if "GetDigitDoorCharacterVoById(msgVo.id)" in line:
+                        categories.append(("partner_state_lookup_by_id", "response", "id", "DigitDoorData"))
+                    if "SetServerData(msgVo)" in line:
+                        categories.append(("partner_state_store_server_vo", "response", "serverData", "DigitDoorData"))
+
+            if path.name == "DigitDoorPartnerPanel.lua":
+                if "AddEventHandler(DigitDoorType.EventType.Update_Character_Info" in line:
+                    categories.append(("panel_listen_character_update", "ui", "Update_Character_Info", "DigitDoorPartnerPanel"))
+                if "RemoveEventHandler(DigitDoorType.EventType.Update_Character_Info" in line:
+                    categories.append(("panel_remove_character_update", "ui", "Update_Character_Info", "DigitDoorPartnerPanel"))
+
+            if path.name == "DigitDoorType.lua" and 'Update_Character_Info="Update_Character_Info"' in line:
+                categories.append(("event_constant_defined", "shared", "Update_Character_Info", "DigitDoorType"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_unlock_state_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "Id": "CM_DigitDoorUnlock request field. Visible NetLogic sends the packet without assigning it.",
+        "list": "SM_DigitDoorUnlock returned DDPartnerVO list; used both for partner state and new-character popup recording.",
+        "id": "DDPartnerVO partner id; used to locate character state and record newly opened characters.",
+        "lv": "DDPartnerVO partner level.",
+        "code": "success guard before applying unlock state.",
+        "serverData": "per-character server state set from returned DDPartnerVO rows.",
+        "Update_Character_Info": "model event listened to by partner UI after unlock/upgrade.",
+        "recordOpenCharacterIdList": "manager-side list of newly opened character ids used for delayed popup display.",
+        "Window.DigitDoorNewCharacterView": "popup opened after unlocked character ids are recorded outside battle/skip flow.",
+        "characterInfoVo": "local character config/state passed into the new-character view.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_unlock_state_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor Unlock state boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor unlock request/response boundary. It does not modify traffic, replay packets, or assert server acceptance beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorUnlock` declares an integer `Id`, but visible `DigitDoorNetLogic.CM_DigitDoorUnlockFun` does not assign it before sending.",
+            "- No visible business Lua callsite for `CM_DigitDoorUnlockFun` is present in the selected DigitDoor logic surface; the caller may be native, unexported, unused, or left to defaults.",
+            "- `SM_DigitDoorUnlock` returns `list`, a `DDPartnerVO(id,lv)` list. The handler applies it to partner server state, opens/records newly unlocked characters, and raises `Update_Character_Info`.",
+            "- `OpenDigitDoorNewCharacterView` records ids from `msg.list`, skips popup while in PVE/skip flow, and eventually opens `Window.DigitDoorNewCharacterView` with local character info.",
+            "- This complements Info and UpLevel: all three update the same partner server-data layer, but Unlock has a visible request-field/callsite gap.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_unlock_state_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_unlock_state_rows(root, logic_dir)
+    field_rows = _digitdoor_unlock_state_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    stats = {
+        "source_file_count": len(_digitdoor_unlock_state_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "request_schema_rows": category_counts.get("request_packet_schema", 0),
+        "request_send_rows": category_counts.get("request_send", 0),
+        "request_visible_id_assignment_rows": category_counts.get("request_visible_id_assignment", 0),
+        "request_visible_callsite_rows": category_counts.get("request_visible_callsite", 0),
+        "response_schema_rows": category_counts.get("response_packet_schema", 0),
+        "response_list_wire_rows": category_counts.get("response_list_wire", 0),
+        "partner_vo_schema_rows": category_counts.get("partner_vo_schema", 0),
+        "partner_state_rows": sum(count for category, count in category_counts.items() if category.startswith("partner_state_"))
+        + category_counts.get("response_list_to_partner_state", 0),
+        "new_character_popup_rows": sum(count for category, count in category_counts.items() if category.startswith("new_character_"))
+        + category_counts.get("response_open_new_character_view", 0),
+        "character_update_event_rows": category_counts.get("response_raise_character_update", 0)
+        + category_counts.get("event_constant_defined", 0),
+        "panel_listener_rows": category_counts.get("panel_listen_character_update", 0),
+    }
+    verdict = {
+        "request_id_schema_confirmed": stats["request_schema_rows"] > 0 and stats["request_send_rows"] > 0,
+        "visible_request_id_assignment_missing": stats["request_schema_rows"] > 0
+        and stats["request_visible_id_assignment_rows"] == 0,
+        "visible_unlock_callsite_missing": stats["request_visible_callsite_rows"] == 0,
+        "response_list_confirmed": stats["response_schema_rows"] > 0 and stats["response_list_wire_rows"] > 0,
+        "partner_vo_shape_confirmed": stats["partner_vo_schema_rows"] >= 2,
+        "response_updates_partner_state": stats["partner_state_rows"] >= 3,
+        "new_character_popup_path_visible": stats["new_character_popup_rows"] >= 4,
+        "character_update_event_raised_and_listened": stats["character_update_event_rows"] > 0
+        and stats["panel_listener_rows"] > 0,
+    }
+    _write_tsv(
+        out_dir / "unlock_state_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "unlock_state_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "unlock_state_report.md"
+    _write_digitdoor_unlock_state_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["request_id_schema_confirmed"] and verdict["response_list_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "unlock_state_fields.tsv"),
+            "evidence": str(out_dir / "unlock_state_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_skip_level_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorInfoPanel.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorData.lua",
+        "DigitDoorResultInfoView.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorSkipLevel.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorSkipLevel.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorGamePlayer.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_skip_level_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_skip_level_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+
+            if path.name == "CM_DigitDoorSkipLevel.lua":
+                if "return 91624" in line:
+                    categories.append(("request_packet_id", "request", "", "CM_DigitDoorSkipLevel"))
+                if current_function == "_M._init_" and "_super_._init_" in line:
+                    categories.append(("request_empty_init_super_only", "request", "", "CM_DigitDoorSkipLevel"))
+                if current_function == "_M.reading" and "_super_.reading" in line:
+                    categories.append(("request_empty_reading_super_only", "request", "", "CM_DigitDoorSkipLevel"))
+                if current_function == "_M.writing" and "_super_.writing" in line:
+                    categories.append(("request_empty_writing_super_only", "request", "", "CM_DigitDoorSkipLevel"))
+                if "self." in line:
+                    categories.append(("request_packet_schema", "request", "unknown", "CM_DigitDoorSkipLevel"))
+
+            elif path.name == "SM_DigitDoorSkipLevel.lua":
+                categories.append(("dedicated_response_packet_visible", "response", "", "SM_DigitDoorSkipLevel"))
+
+            elif path.name == "SM_DigitDoorGamePlayer.lua":
+                if "self.isSkipLevel" in line:
+                    categories.append(("gameplayer_response_schema", "response", "isSkipLevel", "SM_DigitDoorGamePlayer"))
+                if "readBool()" in line and "self.isSkipLevel" in line:
+                    categories.append(("gameplayer_skip_bool_wire", "response", "isSkipLevel", "SM_DigitDoorGamePlayer"))
+                if "writeBool(self.isSkipLevel)" in line:
+                    categories.append(("gameplayer_skip_bool_wire", "response", "isSkipLevel", "SM_DigitDoorGamePlayer"))
+
+            if path.name == "DigitDoorInfoPanel.lua":
+                if "minimumLevel" in line and "totalLevel" in line:
+                    categories.append(("ui_minimum_level_guard", "ui", "minimumLevel|totalLevel", "DigitDoorInfoPanel"))
+                if "allowSkipLevel" in line and "totalLevel" in line:
+                    categories.append(("ui_allow_skip_level_guard", "ui", "allowSkipLevel|totalLevel", "DigitDoorInfoPanel"))
+                if "ShowCommonAlertTip(true" in line:
+                    categories.append(("ui_skip_confirm_dialog", "ui", "Digit_Door_Tips_7", "DigitDoorInfoPanel"))
+                if "CM_DigitDoorSkipLevelFun()" in line:
+                    categories.append(("ui_confirm_sends_skip_request", "request", "", "DigitDoorInfoPanel"))
+                if "ReqChangeMap(self.showLevelCfg.sceneId)" in line:
+                    categories.append(("ui_cancel_or_normal_enters_scene", "ui", "sceneId", "DigitDoorInfoPanel"))
+                if "IsFinishLevel" in line:
+                    categories.append(("ui_already_finished_guard", "ui", "IsFinishLevel", "DigitDoorInfoPanel"))
+
+            if path.name == "DigitDoorNetLogic.lua":
+                if "F_Register(_CM_DigitDoorSkipLevel:getId()" in line:
+                    categories.append(("request_register", "request", "", "DigitDoorNetLogic"))
+                if "function _M.CM_DigitDoorSkipLevelFun" in line:
+                    categories.append(("request_handler_entry", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorSkipLevelFun":
+                    if "GetMessageFromPools(_CM_DigitDoorSkipLevel)" in line:
+                        categories.append(("request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorSkipLevel)" in line:
+                        categories.append(("request_send", "request", "", "DigitDoorNetLogic"))
+                if "function _M.SM_DigitDoorActivityEndFun" in line:
+                    categories.append(("activity_end_handler_entry", "response", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorActivityEndFun" and "ReqFinishGame()" in line:
+                    categories.append(("activity_end_triggers_finish_request", "response", "ReqFinishGame", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorGamePlayerFun":
+                    if "DigitDoorExitGame(msg)" in line:
+                        categories.append(("gameplayer_response_exit_game", "response", "isSkipLevel", "DigitDoorNetLogic"))
+                    if "msg.isSkipLevel==false" in line:
+                        categories.append(("gameplayer_normal_result_branch", "response", "isSkipLevel", "DigitDoorNetLogic"))
+                    if "msg.rewardResults" in line:
+                        categories.append(("gameplayer_skip_reward_branch", "response", "rewardResults", "DigitDoorNetLogic"))
+                    if "SetIsSkipLevel(false)" in line:
+                        categories.append(("gameplayer_skip_reset_after_rewards", "response", "isSkipLevel", "DigitDoorNetLogic"))
+                    if "OpenDigitDoorNewCharacterView(recordIdList)" in line:
+                        categories.append(("gameplayer_skip_new_character_popup", "ui", "recordIdList", "DigitDoorNetLogic"))
+                    if "DigitDoorInfoUpdate" in line and "RaiseEvent" in line:
+                        categories.append(("gameplayer_raise_info_update", "response", "DigitDoorInfoUpdate", "DigitDoorNetLogic"))
+
+            if path.name == "DigitDoorMgr.lua":
+                if "function _M.DigitDoorExitGame" in line:
+                    categories.append(("exit_game_entry", "response", "isSkipLevel", "DigitDoorMgr"))
+                if current_function == "_M.DigitDoorExitGame":
+                    if "SetIsSkipLevel(msg.isSkipLevel)" in line:
+                        categories.append(("exit_game_store_skip_state", "response", "isSkipLevel", "DigitDoorMgr"))
+                    if "if not msg.isSkipLevel" in line:
+                        categories.append(("exit_game_normal_sets_finish_flag", "response", "isSkipLevel", "DigitDoorMgr"))
+                    if "SetFinishLevelInfo(msg)" in line:
+                        categories.append(("exit_game_store_finish_level_info", "response", "passLevelVOS", "DigitDoorMgr"))
+                if "function _M.SetIsSkipLevel" in line:
+                    categories.append(("skip_state_setter", "response", "isSkipLevel", "DigitDoorMgr"))
+                if "function _M.GetIsSkipLevel" in line:
+                    categories.append(("skip_state_getter", "response", "isSkipLevel", "DigitDoorMgr"))
+                if current_function == "_M.ReqFinishGame" and "CM_DigitDoorGamePlayerFun(wave,wavePercent)" in line:
+                    categories.append(("finish_request_sends_gameplayer", "request", "CM_DigitDoorGamePlayer", "DigitDoorMgr"))
+
+            if path.name == "DigitDoorData.lua":
+                if current_function == "_M.SetFinishLevelInfo" and "InitNewLevelDic(msg.passLevelVOS)" in line:
+                    categories.append(("finish_level_info_from_gameplayer", "response", "passLevelVOS", "DigitDoorData"))
+
+            if path.name == "DigitDoorResultInfoView.lua":
+                if "msg.isSkipLevel" in line:
+                    categories.append(("result_view_reads_skip_flag", "response", "isSkipLevel", "DigitDoorResultInfoView"))
+                if "msg.rewardResults" in line:
+                    categories.append(("result_view_reward_results", "response", "rewardResults", "DigitDoorResultInfoView"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_skip_level_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "allowSkipLevel": "DigitDoor level config threshold; skip prompt is enabled when not 999 and total level reaches it.",
+        "minimumLevel": "normal challenge level threshold checked before skip logic.",
+        "totalLevel": "local aggregate level used by challenge/skip guards.",
+        "sceneId": "normal/cancel path enters the configured level scene instead of sending skip intent.",
+        "isSkipLevel": "SM_DigitDoorGamePlayer result flag that carries the skip outcome; no visible dedicated SM_DigitDoorSkipLevel exists.",
+        "rewardResults": "server-returned reward list shown directly on skip branch.",
+        "recordIdList": "new-character ids shown after skip rewards are acknowledged.",
+        "DigitDoorInfoUpdate": "model event raised after GamePlayer settlement, including skip branch.",
+        "ReqFinishGame": "activity-end handler requests GamePlayer settlement.",
+        "CM_DigitDoorGamePlayer": "settlement request used after activity end / finish flow.",
+        "passLevelVOS": "GamePlayer response pass-level list stored by SetFinishLevelInfo.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_skip_level_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor SkipLevel boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor skip-level request/result boundary. It does not modify traffic, replay packets, or assert server acceptance beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorSkipLevel` is a no-payload skip intent request.",
+            "- Visible UI sends it only after the challenge is not already finished, activity is open, `minimumLevel` is satisfied, and `allowSkipLevel != 999` with total level high enough.",
+            "- The cancel/normal path uses `ReqChangeMap(sceneId)` rather than sending skip.",
+            "- There is no visible `SM_DigitDoorSkipLevel`; skip outcome is folded into `SM_DigitDoorGamePlayer.isSkipLevel` and the GamePlayer settlement flow.",
+            "- On the skip branch, rewards can be shown directly, skip state is reset after the reward callback, and newly opened characters are shown from the recorded id list.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_skip_level_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_skip_level_rows(root, logic_dir)
+    field_rows = _digitdoor_skip_level_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    visible_sm_skip_files = [path for path in _digitdoor_skip_level_files(root, logic_dir) if path.name == "SM_DigitDoorSkipLevel.lua"]
+    stats = {
+        "source_file_count": len(_digitdoor_skip_level_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "request_schema_rows": category_counts.get("request_packet_schema", 0),
+        "request_empty_super_only_rows": sum(
+            category_counts.get(category, 0)
+            for category in [
+                "request_empty_init_super_only",
+                "request_empty_reading_super_only",
+                "request_empty_writing_super_only",
+            ]
+        ),
+        "request_send_rows": category_counts.get("request_send", 0),
+        "visible_sm_skip_file_count": len(visible_sm_skip_files),
+        "ui_guard_rows": category_counts.get("ui_already_finished_guard", 0)
+        + category_counts.get("ui_minimum_level_guard", 0)
+        + category_counts.get("ui_allow_skip_level_guard", 0),
+        "ui_confirm_send_rows": category_counts.get("ui_confirm_sends_skip_request", 0),
+        "ui_cancel_or_normal_scene_rows": category_counts.get("ui_cancel_or_normal_enters_scene", 0),
+        "gameplayer_skip_schema_rows": category_counts.get("gameplayer_response_schema", 0),
+        "gameplayer_skip_branch_rows": category_counts.get("gameplayer_normal_result_branch", 0)
+        + category_counts.get("gameplayer_skip_reward_branch", 0),
+        "exit_game_skip_state_rows": category_counts.get("exit_game_store_skip_state", 0)
+        + category_counts.get("skip_state_setter", 0),
+        "finish_request_rows": category_counts.get("activity_end_triggers_finish_request", 0)
+        + category_counts.get("finish_request_sends_gameplayer", 0),
+        "skip_reward_and_new_character_rows": category_counts.get("gameplayer_skip_reward_branch", 0)
+        + category_counts.get("gameplayer_skip_new_character_popup", 0)
+        + category_counts.get("gameplayer_skip_reset_after_rewards", 0),
+    }
+    verdict = {
+        "request_has_no_payload_fields": stats["request_schema_rows"] == 0
+        and stats["request_empty_super_only_rows"] >= 3
+        and stats["request_send_rows"] > 0,
+        "ui_skip_conditions_visible": stats["ui_guard_rows"] >= 3 and stats["ui_confirm_send_rows"] > 0,
+        "ui_cancel_or_normal_enters_scene": stats["ui_cancel_or_normal_scene_rows"] > 0,
+        "no_visible_dedicated_sm_skip_packet": stats["visible_sm_skip_file_count"] == 0,
+        "skip_outcome_folded_into_gameplayer": stats["gameplayer_skip_schema_rows"] > 0
+        and stats["gameplayer_skip_branch_rows"] > 0,
+        "exit_game_stores_skip_state": stats["exit_game_skip_state_rows"] > 0,
+        "activity_end_to_gameplayer_finish_path_visible": stats["finish_request_rows"] >= 2,
+        "skip_rewards_and_new_character_popup_visible": stats["skip_reward_and_new_character_rows"] >= 3,
+    }
+    _write_tsv(
+        out_dir / "skip_level_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "skip_level_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "skip_level_report.md"
+    _write_digitdoor_skip_level_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["request_has_no_payload_fields"] and verdict["skip_outcome_folded_into_gameplayer"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "skip_level_fields.tsv"),
+            "evidence": str(out_dir / "skip_level_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_activity_end_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorSceneView.lua",
+        "DigitDoorEntityMgr.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorActivityEnd*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorActivityEnd*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorGamePlayer.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorGamePlayer.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/VO_URL.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_activity_end_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_activity_end_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+            name = path.name
+
+            if name.startswith("SM_DigitDoorActivityEnd"):
+                if "_M=class(ClientResult,_M)" in line:
+                    categories.append(("activity_end_clientresult_super", "response", "code", "SM_DigitDoorActivityEnd"))
+                if "return 91632" in line:
+                    categories.append(("activity_end_packet_id", "response", "", "SM_DigitDoorActivityEnd"))
+                if current_function == "_M._init_" and "_super_._init_" in line:
+                    categories.append(("activity_end_no_payload_init_super_only", "response", "", "SM_DigitDoorActivityEnd"))
+                if current_function == "_M.reading" and "_super_.reading" in line:
+                    categories.append(("activity_end_no_payload_reading_super_only", "response", "", "SM_DigitDoorActivityEnd"))
+                if current_function == "_M.writing" and "_super_.writing" in line:
+                    categories.append(("activity_end_no_payload_writing_super_only", "response", "", "SM_DigitDoorActivityEnd"))
+                if re.search(r"\bself\.[A-Za-z_]\w*\s*=", line):
+                    categories.append(("activity_end_response_schema", "response", "unknown", "SM_DigitDoorActivityEnd"))
+
+            elif name.startswith("CM_DigitDoorActivityEnd"):
+                categories.append(("visible_cm_activity_end_packet", "request", "", "CM_DigitDoorActivityEnd"))
+
+            elif name == "VO_URL.lua":
+                if "91632" in line and "SM_DigitDoorActivityEnd" in line:
+                    categories.append(("activity_end_vo_url_map", "response", "", "VO_URL"))
+                if "91626" in line and "CM_DigitDoorGamePlayer" in line:
+                    categories.append(("gameplayer_request_vo_url_map", "request", "", "VO_URL"))
+                if "91627" in line and "SM_DigitDoorGamePlayer" in line:
+                    categories.append(("gameplayer_response_vo_url_map", "response", "", "VO_URL"))
+
+            elif name == "CM_DigitDoorGamePlayer.lua":
+                for field in ["currWave", "wavePercent", "killNum", "bossVoList"]:
+                    if f"self.{field}" in line:
+                        categories.append(("gameplayer_request_schema", "request", field, "CM_DigitDoorGamePlayer"))
+                if "readInt()" in line:
+                    for field in ["currWave", "wavePercent", "killNum"]:
+                        if f"self.{field}" in line:
+                            categories.append(("gameplayer_request_int_wire", "request", field, "CM_DigitDoorGamePlayer"))
+                if "writeInt(self." in line:
+                    for field in ["currWave", "wavePercent", "killNum"]:
+                        if f"writeInt(self.{field})" in line:
+                            categories.append(("gameplayer_request_int_wire", "request", field, "CM_DigitDoorGamePlayer"))
+                if "readMessageList2List(self.bossVoList)" in line or "writeList(self.bossVoList)" in line:
+                    categories.append(("gameplayer_request_boss_list_wire", "request", "bossVoList", "CM_DigitDoorGamePlayer"))
+                if "return 91626" in line:
+                    categories.append(("gameplayer_request_packet_id", "request", "", "CM_DigitDoorGamePlayer"))
+
+            elif name == "SM_DigitDoorGamePlayer.lua":
+                for field in ["finishWave", "rewardResults", "passLevelVOS", "levelId", "gameType", "isSkipLevel"]:
+                    if f"self.{field}" in line:
+                        categories.append(("gameplayer_response_schema", "response", field, "SM_DigitDoorGamePlayer"))
+                if "readInt()" in line or "writeInt(self." in line:
+                    for field in ["finishWave", "levelId", "gameType"]:
+                        if f"self.{field}" in line:
+                            categories.append(("gameplayer_response_int_wire", "response", field, "SM_DigitDoorGamePlayer"))
+                if "readBool()" in line and "self.isSkipLevel" in line:
+                    categories.append(("gameplayer_response_bool_wire", "response", "isSkipLevel", "SM_DigitDoorGamePlayer"))
+                if "writeBool(self.isSkipLevel)" in line:
+                    categories.append(("gameplayer_response_bool_wire", "response", "isSkipLevel", "SM_DigitDoorGamePlayer"))
+                if "readMessageList2List(self.rewardResults)" in line or "writeList(self.rewardResults)" in line:
+                    categories.append(("gameplayer_response_reward_list_wire", "response", "rewardResults", "SM_DigitDoorGamePlayer"))
+                if "readMessageList2List(self.passLevelVOS)" in line or "writeIntList(self.passLevelVOS)" in line:
+                    categories.append(("gameplayer_response_pass_level_list_wire", "response", "passLevelVOS", "SM_DigitDoorGamePlayer"))
+                if "return 91627" in line:
+                    categories.append(("gameplayer_response_packet_id", "response", "", "SM_DigitDoorGamePlayer"))
+
+            if name == "DigitDoorNetLogic.lua":
+                if "_SM_DigitDoorActivityEnd" in line and "require" in line:
+                    categories.append(("activity_end_import", "response", "", "DigitDoorNetLogic"))
+                if "F_Register(_SM_DigitDoorActivityEnd:getId()" in line:
+                    categories.append(("activity_end_register", "response", "", "DigitDoorNetLogic"))
+                if "F_Unregister(_SM_DigitDoorActivityEnd:getId()" in line:
+                    categories.append(("activity_end_unregister", "response", "", "DigitDoorNetLogic"))
+                if "function _M.SM_DigitDoorActivityEndFun" in line:
+                    categories.append(("activity_end_handler_entry", "response", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorActivityEndFun":
+                    if "CheckCodeMessage(msg,3,true)" in line:
+                        categories.append(("activity_end_success_guard", "response", "code", "DigitDoorNetLogic"))
+                    if "ReqFinishGame()" in line:
+                        categories.append(("activity_end_triggers_req_finish_game", "response", "ReqFinishGame", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorGamePlayerFun":
+                    if "GetMessageFromPools(_CM_DigitDoorGamePlayer)" in line:
+                        categories.append(("gameplayer_request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    for field in ["currWave", "wavePercent"]:
+                        if f"CM_DigitDoorGamePlayer.{field}" in line:
+                            categories.append(("gameplayer_request_fill_arg", "request", field, "DigitDoorNetLogic"))
+                    if "GetTotalKillSmallMonsterNum()" in line:
+                        categories.append(("gameplayer_request_fill_runtime_summary", "request", "killNum", "DigitDoorNetLogic"))
+                    if "GetTotalBossDamageList()" in line:
+                        categories.append(("gameplayer_request_fill_runtime_summary", "request", "bossVoList", "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorGamePlayer)" in line:
+                        categories.append(("gameplayer_request_send", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorGamePlayerFun":
+                    if "CheckCodeMessage(msg,3,true)" in line:
+                        categories.append(("gameplayer_response_success_guard", "response", "code", "DigitDoorNetLogic"))
+                    if "DigitDoorExitGame(msg)" in line:
+                        categories.append(("gameplayer_response_exit_game", "response", "SM_DigitDoorGamePlayer", "DigitDoorNetLogic"))
+                    if "OpenDigitDoorResultInfoView(msg)" in line:
+                        categories.append(("gameplayer_response_open_result_view", "response", "SM_DigitDoorGamePlayer", "DigitDoorNetLogic"))
+                    if "msg.rewardResults" in line:
+                        categories.append(("gameplayer_response_reward_branch", "response", "rewardResults", "DigitDoorNetLogic"))
+                    if "DigitDoorInfoUpdate" in line and "RaiseEvent" in line:
+                        categories.append(("gameplayer_response_raise_info_update", "response", "DigitDoorInfoUpdate", "DigitDoorNetLogic"))
+
+            if name == "DigitDoorMgr.lua":
+                if "self:ReqFinishGame(true,true)" in line:
+                    categories.append(("finish_trigger_finish_level_event", "local", "FinishLevel", "DigitDoorMgr"))
+                if "function _M.OpenDigitDoorResultInfoView" in line:
+                    categories.append(("open_result_view_entry", "ui", "DigitDoorResultInfoView", "DigitDoorMgr"))
+                if current_function == "_M.OpenDigitDoorResultInfoView" and "IsInDigitDoorPveScene()" in line:
+                    categories.append(("open_result_view_scene_guard", "ui", "DigitDoorResultInfoView", "DigitDoorMgr"))
+                if "function _M.DigitDoorExitGame" in line:
+                    categories.append(("exit_game_entry", "response", "SM_DigitDoorGamePlayer", "DigitDoorMgr"))
+                if current_function == "_M.DigitDoorExitGame":
+                    if "SetIsSkipLevel(msg.isSkipLevel)" in line:
+                        categories.append(("exit_game_store_skip_flag", "response", "isSkipLevel", "DigitDoorMgr"))
+                    if "V_IsReqFinishGame=true" in line:
+                        categories.append(("exit_game_set_finish_flag", "response", "V_IsReqFinishGame", "DigitDoorMgr"))
+                    if "SetFinishLevelInfo(msg)" in line:
+                        categories.append(("exit_game_store_finish_info", "response", "passLevelVOS", "DigitDoorMgr"))
+                if "function _M.ReqFinishGame" in line:
+                    categories.append(("req_finish_game_entry", "request", "ReqFinishGame", "DigitDoorMgr"))
+                if current_function == "_M.ReqFinishGame":
+                    if "IsInDigitDoorPveScene()" in line:
+                        categories.append(("req_finish_game_scene_guard", "request", "ReqFinishGame", "DigitDoorMgr"))
+                    if "self.V_IsReqFinishGame then" in line:
+                        categories.append(("req_finish_game_duplicate_guard", "request", "V_IsReqFinishGame", "DigitDoorMgr"))
+                    if "V_ReqFinishSaveTime" in line:
+                        categories.append(("req_finish_game_time_throttle", "request", "V_ReqFinishSaveTime", "DigitDoorMgr"))
+                    if "Model:GetWave()" in line:
+                        categories.append(("req_finish_game_wave_snapshot", "request", "currWave", "DigitDoorMgr"))
+                    if "OpenDigitDoorResultInfoView()" in line:
+                        categories.append(("req_finish_game_open_pending_result_view", "ui", "DigitDoorResultInfoView", "DigitDoorMgr"))
+                    if "CM_DigitDoorGamePlayerFun(wave,wavePercent)" in line:
+                        categories.append(("req_finish_game_sends_gameplayer", "request", "CM_DigitDoorGamePlayer", "DigitDoorMgr"))
+                    if "UpdateDigitDoorThinkingData(result)" in line:
+                        categories.append(("req_finish_game_upload_thinking_data", "local", "activity_stage", "DigitDoorMgr"))
+                if current_function == "_M.UpdateDigitDoorThinkingData":
+                    if "GetCurLevelTime()" in line:
+                        categories.append(("thinking_data_uses_level_time", "local", "used_time", "DigitDoorMgr"))
+                    if "UploadThinkingDatas(\"activity_stage\"" in line:
+                        categories.append(("thinking_data_upload_activity_stage", "local", "activity_stage", "DigitDoorMgr"))
+
+            if name == "DigitDoorSceneView.lua":
+                if "isNeedFinish" in line:
+                    categories.append(("finish_trigger_scene_need_finish_flag", "local", "isNeedFinish", "DigitDoorSceneView"))
+                if "IsStartGame()" in line and "V_IsReqFinishGame" in line:
+                    categories.append(("finish_trigger_scene_guard", "local", "IsStartGame|V_IsReqFinishGame", "DigitDoorSceneView"))
+                if "ReqFinishGame(true)" in line:
+                    categories.append(("finish_trigger_scene_req_finish_game", "local", "ReqFinishGame", "DigitDoorSceneView"))
+
+            if name == "DigitDoorEntityMgr.lua":
+                if "function _M.CheckAutoLose" in line:
+                    categories.append(("finish_trigger_auto_lose_entry", "local", "CheckAutoLose", "DigitDoorEntityMgr"))
+                if current_function == "_M.CheckAutoLose":
+                    if "GetAutoLostTimeLimit()" in line:
+                        categories.append(("finish_trigger_auto_lose_time_limit", "local", "GetAutoLostTimeLimit", "DigitDoorEntityMgr"))
+                    if "ReqFinishGame()" in line:
+                        categories.append(("finish_trigger_auto_lose_req_finish_game", "local", "ReqFinishGame", "DigitDoorEntityMgr"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_activity_end_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "code": "ClientResult success/error status checked before applying ActivityEnd or GamePlayer response.",
+        "ReqFinishGame": "local finish-settlement entry reused by server ActivityEnd signal and local finish/loss triggers.",
+        "CM_DigitDoorGamePlayer": "settlement request sent after finish flow; carries local progress summary.",
+        "SM_DigitDoorGamePlayer": "settlement response that drives exit-game state, rewards, level progress, and result UI.",
+        "V_IsReqFinishGame": "client duplicate guard / finish-in-progress flag.",
+        "V_ReqFinishSaveTime": "client throttle used to avoid repeated finish requests within roughly one second.",
+        "currWave": "GamePlayer request wave snapshot, filled from DigitDoor model wave.",
+        "wavePercent": "GamePlayer request progress percent; visible finish path currently sends zero.",
+        "killNum": "GamePlayer request runtime kill summary from DigitDoorEntityMgr.",
+        "bossVoList": "GamePlayer request runtime boss-damage summary from DigitDoorEntityMgr.",
+        "finishWave": "GamePlayer response finished wave count.",
+        "rewardResults": "GamePlayer response reward list used by settlement/skip reward UI.",
+        "passLevelVOS": "GamePlayer response pass-level list persisted into DigitDoorData finish state.",
+        "levelId": "GamePlayer response level id.",
+        "gameType": "GamePlayer response game type.",
+        "isSkipLevel": "GamePlayer response branch flag for skip-level settlement handling.",
+        "DigitDoorInfoUpdate": "model event raised after GamePlayer settlement.",
+        "DigitDoorResultInfoView": "pending/final settlement UI view opened around finish/result flow.",
+        "activity_stage": "SDK thinking-data analytics event uploaded after finish request.",
+        "FinishLevel": "local model event that can also trigger ReqFinishGame(true,true).",
+        "isNeedFinish": "scene-side local finish flag that can trigger delayed ReqFinishGame(true).",
+        "CheckAutoLose": "entity-manager auto-loss timer entry.",
+        "GetAutoLostTimeLimit": "auto-loss threshold used before calling ReqFinishGame.",
+        "used_time": "thinking-data field filled from current level time.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_activity_end_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor ActivityEnd finish boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor ActivityEnd-to-finish-settlement boundary. It does not modify traffic, replay packets, or assert server behavior beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `SM_DigitDoorActivityEnd(91632)` is a server-to-client `ClientResult` signal with no visible business payload fields.",
+            "- The successful handler does not settle rewards directly; it calls `DigitDoorMgr:ReqFinishGame()`.",
+            "- `ReqFinishGame` is guarded by PVE-scene state, a duplicate flag, and a short time throttle before sending `CM_DigitDoorGamePlayer(91626)`.",
+            "- `CM_DigitDoorGamePlayer` carries a local progress snapshot: `currWave`, `wavePercent`, `killNum`, and `bossVoList`.",
+            "- The authoritative settlement surface remains `SM_DigitDoorGamePlayer(91627)`, which drives `DigitDoorExitGame`, reward/result UI, pass-level state, and `DigitDoorInfoUpdate`.",
+            "- Local finish triggers (`FinishLevel`, scene finish flag, auto-loss timer) reuse the same `ReqFinishGame` path, so ActivityEnd is best understood as one trigger into the shared finish pipeline.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_activity_end_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_activity_end_rows(root, logic_dir)
+    field_rows = _digitdoor_activity_end_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    visible_cm_activity_end_files = [
+        path for path in _digitdoor_activity_end_files(root, logic_dir) if path.name.startswith("CM_DigitDoorActivityEnd")
+    ]
+    stats = {
+        "source_file_count": len(_digitdoor_activity_end_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "activity_end_packet_id_rows": category_counts.get("activity_end_packet_id", 0)
+        + category_counts.get("activity_end_vo_url_map", 0),
+        "activity_end_schema_rows": category_counts.get("activity_end_response_schema", 0),
+        "activity_end_no_payload_super_rows": sum(
+            category_counts.get(category, 0)
+            for category in [
+                "activity_end_no_payload_init_super_only",
+                "activity_end_no_payload_reading_super_only",
+                "activity_end_no_payload_writing_super_only",
+            ]
+        ),
+        "visible_cm_activity_end_file_count": len(visible_cm_activity_end_files),
+        "activity_end_register_rows": category_counts.get("activity_end_register", 0),
+        "activity_end_success_guard_rows": category_counts.get("activity_end_success_guard", 0),
+        "activity_end_trigger_rows": category_counts.get("activity_end_triggers_req_finish_game", 0),
+        "req_finish_guard_rows": category_counts.get("req_finish_game_scene_guard", 0)
+        + category_counts.get("req_finish_game_duplicate_guard", 0)
+        + category_counts.get("req_finish_game_time_throttle", 0),
+        "req_finish_sends_gameplayer_rows": category_counts.get("req_finish_game_sends_gameplayer", 0),
+        "gameplayer_request_schema_rows": category_counts.get("gameplayer_request_schema", 0),
+        "gameplayer_request_fill_rows": category_counts.get("gameplayer_request_fill_arg", 0)
+        + category_counts.get("gameplayer_request_fill_runtime_summary", 0),
+        "gameplayer_request_send_rows": category_counts.get("gameplayer_request_send", 0),
+        "gameplayer_response_schema_rows": category_counts.get("gameplayer_response_schema", 0),
+        "gameplayer_response_settlement_rows": category_counts.get("gameplayer_response_exit_game", 0)
+        + category_counts.get("exit_game_store_finish_info", 0)
+        + category_counts.get("gameplayer_response_raise_info_update", 0),
+        "other_req_finish_trigger_rows": category_counts.get("finish_trigger_finish_level_event", 0)
+        + category_counts.get("finish_trigger_scene_req_finish_game", 0)
+        + category_counts.get("finish_trigger_auto_lose_req_finish_game", 0),
+        "thinking_data_rows": category_counts.get("req_finish_game_upload_thinking_data", 0)
+        + category_counts.get("thinking_data_upload_activity_stage", 0),
+    }
+    verdict = {
+        "activity_end_is_server_only_no_payload_response": stats["activity_end_packet_id_rows"] > 0
+        and stats["activity_end_schema_rows"] == 0
+        and stats["activity_end_no_payload_super_rows"] >= 3
+        and stats["visible_cm_activity_end_file_count"] == 0,
+        "activity_end_registered_and_guarded": stats["activity_end_register_rows"] > 0
+        and stats["activity_end_success_guard_rows"] > 0,
+        "activity_end_triggers_finish_request": stats["activity_end_trigger_rows"] > 0,
+        "finish_request_guarded_by_scene_duplicate_and_time": stats["req_finish_guard_rows"] >= 3,
+        "finish_request_sends_gameplayer_snapshot": stats["req_finish_sends_gameplayer_rows"] > 0
+        and stats["gameplayer_request_schema_rows"] >= 4
+        and stats["gameplayer_request_fill_rows"] >= 4
+        and stats["gameplayer_request_send_rows"] > 0,
+        "gameplayer_response_remains_settlement_authority": stats["gameplayer_response_schema_rows"] >= 6
+        and stats["gameplayer_response_settlement_rows"] >= 3,
+        "other_finish_triggers_share_same_req_finish": stats["other_req_finish_trigger_rows"] > 0,
+        "finish_flow_uploads_thinking_data": stats["thinking_data_rows"] > 0,
+    }
+    _write_tsv(
+        out_dir / "activity_end_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "activity_end_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "activity_end_report.md"
+    _write_digitdoor_activity_end_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["activity_end_is_server_only_no_payload_response"]
+        and verdict["activity_end_triggers_finish_request"]
+        and verdict["finish_request_sends_gameplayer_snapshot"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "activity_end_fields.tsv"),
+            "evidence": str(out_dir / "activity_end_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_report_gmbattle_files(root: Path, logic_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorNetLogic.lua",
+        "DigitDoorPVPSceneView.lua",
+        "DigitDoorMgr.lua",
+        "DigitDoorFightComponent.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorReport*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorReport*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorGMBattle*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorGMBattle*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DigitDoorSimpleVO*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/ImmortalBattleVO*.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/VO_URL.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_report_gmbattle_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    report_fields = [
+        "replayId",
+        "type",
+        "round",
+        "pkStage",
+        "zone",
+        "pkStep",
+        "time",
+        "atkVoList",
+        "defVoList",
+        "clientWinnerId",
+        "serverWinnerId",
+    ]
+    simple_vo_fields = ["ownerId", "resourceId", "index", "lv", "attrVOList"]
+    battle_vo_fields = ["id", "round", "winnerId", "startTime", "overTime", "sortTime", "replayId", "joiners", "statList"]
+    for path in _digitdoor_report_gmbattle_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        is_digitaldoor_battle_vo = "module.digitaldoor.immortaldigital.packet.bean.ImmortalBattleVO" in text
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+            name = path.name
+
+            if name.startswith("CM_DigitDoorReport"):
+                for field in report_fields:
+                    if f"self.{field}" in line:
+                        categories.append(("report_request_schema", "request", field, "CM_DigitDoorReport"))
+                for field in ["replayId", "time", "clientWinnerId", "serverWinnerId"]:
+                    if (f"self.{field}=self:readLong()" in line) or (f"writeLong(self.{field})" in line):
+                        categories.append(("report_request_long_wire", "request", field, "CM_DigitDoorReport"))
+                for field in ["type", "round", "pkStage", "zone", "pkStep"]:
+                    if (f"self.{field}=self:readInt()" in line) or (f"writeInt(self.{field})" in line):
+                        categories.append(("report_request_int_wire", "request", field, "CM_DigitDoorReport"))
+                for field in ["atkVoList", "defVoList"]:
+                    if f"readMessageList2List(self.{field})" in line or f"writeList(self.{field})" in line:
+                        categories.append(("report_request_digitdoor_simple_list_wire", "request", field, "CM_DigitDoorReport"))
+                if "return 91644" in line:
+                    categories.append(("report_request_packet_id", "request", "", "CM_DigitDoorReport"))
+
+            elif name.startswith("SM_DigitDoorReport"):
+                categories.append(("visible_sm_report_packet", "response", "", "SM_DigitDoorReport"))
+
+            elif name.startswith("SM_DigitDoorGMBattle"):
+                if "_M=class(ClientResult,_M)" in line:
+                    categories.append(("gmbattle_clientresult_super", "response", "code", "SM_DigitDoorGMBattle"))
+                if "self.battleVO" in line:
+                    categories.append(("gmbattle_response_schema", "response", "battleVO", "SM_DigitDoorGMBattle"))
+                if "self.type" in line:
+                    categories.append(("gmbattle_response_schema", "response", "type", "SM_DigitDoorGMBattle"))
+                if "readBean(typeof(ImmortalBattleVO))" in line or "writeBean(self.battleVO)" in line:
+                    categories.append(("gmbattle_battle_vo_wire", "response", "battleVO", "SM_DigitDoorGMBattle"))
+                if "self.type=self:readInt()" in line or "writeInt(self.type)" in line:
+                    categories.append(("gmbattle_type_int_wire", "response", "type", "SM_DigitDoorGMBattle"))
+                if "return 91643" in line:
+                    categories.append(("gmbattle_packet_id", "response", "", "SM_DigitDoorGMBattle"))
+
+            elif name.startswith("CM_DigitDoorGMBattle"):
+                categories.append(("visible_cm_gmbattle_packet", "request", "", "CM_DigitDoorGMBattle"))
+
+            elif name.startswith("DigitDoorSimpleVO"):
+                for field in simple_vo_fields:
+                    if f"self.{field}" in line:
+                        categories.append(("simple_vo_schema", "request", field, "DigitDoorSimpleVO"))
+                for field in ["ownerId"]:
+                    if f"self.{field}=self:readLong()" in line or f"writeLong(self.{field})" in line:
+                        categories.append(("simple_vo_long_wire", "request", field, "DigitDoorSimpleVO"))
+                for field in ["resourceId", "index", "lv"]:
+                    if f"self.{field}=self:readInt()" in line or f"writeInt(self.{field})" in line:
+                        categories.append(("simple_vo_int_wire", "request", field, "DigitDoorSimpleVO"))
+                if "readMessageList2List(self.attrVOList)" in line or "writeList(self.attrVOList)" in line:
+                    categories.append(("simple_vo_attr_list_wire", "request", "attrVOList", "DigitDoorSimpleVO"))
+                if "return 91605" in line:
+                    categories.append(("simple_vo_packet_id", "request", "", "DigitDoorSimpleVO"))
+
+            elif name.startswith("ImmortalBattleVO") and is_digitaldoor_battle_vo:
+                for field in battle_vo_fields:
+                    if f"self.{field}" in line:
+                        categories.append(("digitaldoor_battle_vo_schema", "response", field, "ImmortalBattleVO"))
+                for field in ["id", "winnerId", "startTime", "overTime", "sortTime", "replayId"]:
+                    if f"self.{field}=self:readLong()" in line or f"writeLong(self.{field})" in line:
+                        categories.append(("digitaldoor_battle_vo_long_wire", "response", field, "ImmortalBattleVO"))
+                if "self.round=self:readInt()" in line or "writeInt(self.round)" in line:
+                    categories.append(("digitaldoor_battle_vo_int_wire", "response", "round", "ImmortalBattleVO"))
+                for field in ["joiners", "statList"]:
+                    if f"readMessageList2List(self.{field})" in line or f"writeList(self.{field})" in line:
+                        categories.append(("digitaldoor_battle_vo_list_wire", "response", field, "ImmortalBattleVO"))
+                if "return 92034" in line:
+                    categories.append(("digitaldoor_battle_vo_packet_id", "response", "", "ImmortalBattleVO"))
+
+            elif name == "VO_URL.lua":
+                if "91644" in line and "CM_DigitDoorReport" in line:
+                    categories.append(("report_request_vo_url_map", "request", "", "VO_URL"))
+                if "91643" in line and "SM_DigitDoorGMBattle" in line:
+                    categories.append(("gmbattle_vo_url_map", "response", "", "VO_URL"))
+                if "91605" in line and "DigitDoorSimpleVO" in line:
+                    categories.append(("simple_vo_url_map", "request", "", "VO_URL"))
+                if "92034" in line and "module.digitaldoor.immortaldigital.packet.bean.ImmortalBattleVO" in line:
+                    categories.append(("digitaldoor_battle_vo_url_map", "response", "", "VO_URL"))
+
+            if name == "DigitDoorNetLogic.lua":
+                if "_SM_DigitDoorGMBattle" in line and "require" in line:
+                    categories.append(("gmbattle_import", "response", "", "DigitDoorNetLogic"))
+                if "_CM_DigitDoorReport" in line and "require" in line:
+                    categories.append(("report_import", "request", "", "DigitDoorNetLogic"))
+                if "F_Register(_SM_DigitDoorGMBattle:getId()" in line:
+                    categories.append(("gmbattle_register", "response", "", "DigitDoorNetLogic"))
+                if "F_Register(_CM_DigitDoorReport:getId()" in line:
+                    categories.append(("report_request_register", "request", "", "DigitDoorNetLogic"))
+                if "F_Unregister(_SM_DigitDoorGMBattle:getId()" in line:
+                    categories.append(("gmbattle_unregister", "response", "", "DigitDoorNetLogic"))
+                if "F_Unregister(_CM_DigitDoorReport:getId()" in line:
+                    categories.append(("report_request_unregister", "request", "", "DigitDoorNetLogic"))
+                if "function _M.CM_DigitDoorReportFun" in line:
+                    categories.append(("report_request_handler_entry", "request", "", "DigitDoorNetLogic"))
+                if current_function == "_M.CM_DigitDoorReportFun":
+                    if "GetMessageFromPools(_CM_DigitDoorReport)" in line:
+                        categories.append(("report_request_pool_message", "request", "", "DigitDoorNetLogic"))
+                    for field in report_fields:
+                        if f"CM_DigitDoorReport.{field}={field}" in line:
+                            categories.append(("report_request_fill_field", "request", field, "DigitDoorNetLogic"))
+                    if "F_SendMsg(CM_DigitDoorReport)" in line:
+                        categories.append(("report_request_send", "request", "", "DigitDoorNetLogic"))
+                if "function _M.SM_DigitDoorGMBattleFun" in line:
+                    categories.append(("gmbattle_handler_entry", "response", "", "DigitDoorNetLogic"))
+                if current_function == "_M.SM_DigitDoorGMBattleFun":
+                    if "EntityMgr.Inst_get().UserView" in line:
+                        categories.append(("gmbattle_user_view_guard", "response", "UserView", "DigitDoorNetLogic"))
+                    if "UpdateFinishVo(msg.battleVO)" in line:
+                        categories.append(("gmbattle_update_finish_vo", "response", "battleVO", "DigitDoorNetLogic"))
+                    if "ReqReplay" in line:
+                        categories.append(("gmbattle_req_replay", "response", "battleVO|type", "DigitDoorNetLogic"))
+                    if "msg.battleVO.replayId" in line:
+                        categories.append(("gmbattle_replay_id_to_req_replay", "response", "replayId", "DigitDoorNetLogic"))
+                    if "msg.type==1" in line and ("89504" in line or "87006" in line):
+                        categories.append(("gmbattle_type_selects_map_id", "response", "type", "DigitDoorNetLogic"))
+                    if "MapType.ReplayType.DigitDoorPVP" in line or "MapType.ReplayType.TowerDefensePVP" in line:
+                        categories.append(("gmbattle_type_selects_replay_type", "response", "type", "DigitDoorNetLogic"))
+
+            if name == "DigitDoorPVPSceneView.lua":
+                if current_function == "_M.CheckList":
+                    if "self.curFinishVo" in line:
+                        categories.append(("report_source_requires_finish_vo", "request", "curFinishVo", "DigitDoorPVPSceneView"))
+                    if "GetDefenseViewList()" in line:
+                        categories.append(("report_collect_defense_views", "request", "defVoList", "DigitDoorPVPSceneView"))
+                    if "GetAttackViewList()" in line:
+                        categories.append(("report_collect_attack_views", "request", "atkVoList", "DigitDoorPVPSceneView"))
+                    if "Scene_DigitDoorPVPIT" in line:
+                        categories.append(("report_source_pvpit_branch", "request", "type|round|time", "DigitDoorPVPSceneView"))
+                    if "Scene_DigitDoorPVP" in line:
+                        categories.append(("report_source_pvp_branch", "request", "type|pkStage|zone|pkStep|time", "DigitDoorPVPSceneView"))
+                    for field in ["replayId", "round", "pkStage", "zone", "pkStep", "startTime", "createTime"]:
+                        if f"curFinishVo.{field}" in line:
+                            categories.append(("report_source_finish_vo_field", "request", field, "DigitDoorPVPSceneView"))
+                    if "atkVoList=self.attackList" in line:
+                        categories.append(("report_attack_list_to_request", "request", "atkVoList", "DigitDoorPVPSceneView"))
+                    if "defVoList=self.defenseList" in line:
+                        categories.append(("report_defense_list_to_request", "request", "defVoList", "DigitDoorPVPSceneView"))
+                    if "clientWinnerId" in line and "winnerId" in line:
+                        categories.append(("report_client_winner_projection", "request", "clientWinnerId", "DigitDoorPVPSceneView"))
+                    if "serverWinnerId=self.winnerId" in line:
+                        categories.append(("report_server_winner_projection", "request", "serverWinnerId", "DigitDoorPVPSceneView"))
+                    if "CM_DigitDoorReportFun(" in line:
+                        categories.append(("report_pvp_scene_sends_report", "request", "", "DigitDoorPVPSceneView"))
+                if current_function == "_M.CreateEntityData":
+                    if "DigitDoorSimpleVO.new()" in line:
+                        categories.append(("report_create_simple_vo", "request", "DigitDoorSimpleVO", "DigitDoorPVPSceneView"))
+                    for field in ["ownerId", "resourceId", "index", "lv"]:
+                        if f"data.{field}" in line:
+                            categories.append(("report_fill_simple_vo_field", "request", field, "DigitDoorPVPSceneView"))
+                    if "self:GetAttr(entityView.Entity.EntityData,data.attrVOList)" in line:
+                        categories.append(("report_fill_simple_vo_attr_list", "request", "attrVOList", "DigitDoorPVPSceneView"))
+                if current_function == "_M.GetAttrCode":
+                    if "attrVo.type=id" in line:
+                        categories.append(("report_fill_attr_vo_type", "request", "attrVOList", "DigitDoorPVPSceneView"))
+                    if "attrVo.value=value" in line:
+                        categories.append(("report_fill_attr_vo_value", "request", "attrVOList", "DigitDoorPVPSceneView"))
+                if current_function == "_M.GetAttr" and "GetAttrCode(" in line:
+                    categories.append(("report_attr_code_emitted", "request", "attrVOList", "DigitDoorPVPSceneView"))
+
+            if name == "DigitDoorMgr.lua":
+                if current_function == "_M.OnEnterReplayScene":
+                    if "self.DigitDoorPVPReplayMsg=msg" in line:
+                        categories.append(("replay_scene_store_msg", "response", "DigitDoorPVPReplayMsg", "DigitDoorMgr"))
+                    if "DigitDoorPvpEntityMgr.Inst_get():SceneInfoSync()" in line:
+                        categories.append(("replay_scene_sync_pvp_entity_mgr", "response", "DigitDoorPVPReplayMsg", "DigitDoorMgr"))
+                    if "DigitDoorFightMgr.Inst_get():SceneInfoSync(msg)" in line:
+                        categories.append(("replay_scene_sync_fight_mgr", "response", "DigitDoorPVPReplayMsg", "DigitDoorMgr"))
+                if current_function == "_M.LeaveScene" and "DigitDoorPVPReplayMsg=nil" in line:
+                    categories.append(("replay_scene_clear_msg", "response", "DigitDoorPVPReplayMsg", "DigitDoorMgr"))
+
+            if name == "DigitDoorFightComponent.lua":
+                if current_function == "_M.GM_GetImmortalDigitPartnerVO":
+                    if "ImmortalBattleVO.new()" in line:
+                        categories.append(("gm_helper_builds_immortal_battle_vo", "local", "ImmortalBattleVO", "DigitDoorFightComponent"))
+                    if "data.winnerId" in line:
+                        categories.append(("gm_helper_sets_winner_id", "local", "winnerId", "DigitDoorFightComponent"))
+                    if "data.joiners:Add" in line:
+                        categories.append(("gm_helper_adds_joiners", "local", "joiners", "DigitDoorFightComponent"))
+
+            for category, direction, field, source in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "direction": direction,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_report_gmbattle_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        "replayId": "PVP report/replay identity; request-side comes from curFinishVo, GMBattle replay uses battleVO.replayId.",
+        "type": "PVP mode discriminator: visible code uses 1 for Scene_DigitDoorPVPIT and 2 for Scene_DigitDoorPVP; GMBattle type selects replay map/type.",
+        "round": "PVPIT round value copied from curFinishVo.round.",
+        "pkStage": "PVP stage copied from curFinishVo.pkStage.",
+        "zone": "PVP zone copied from curFinishVo.zone.",
+        "pkStep": "PVP step copied from curFinishVo.pkStep.",
+        "time": "Report timestamp/source time; PVPIT uses startTime and PVP uses createTime.",
+        "atkVoList": "Client-built attacker snapshot list of DigitDoorSimpleVO entries.",
+        "defVoList": "Client-built defender snapshot list of DigitDoorSimpleVO entries.",
+        "clientWinnerId": "Client-side winner projection, inverted against user id in visible PVPSceneView logic.",
+        "serverWinnerId": "Server/source winner id copied from self.winnerId.",
+        "ownerId": "DigitDoorSimpleVO owner id copied from entity data.",
+        "resourceId": "DigitDoorSimpleVO role/resource id.",
+        "index": "DigitDoorSimpleVO position index.",
+        "lv": "DigitDoorSimpleVO level.",
+        "attrVOList": "DigitDoorSimpleVO attribute snapshot list filled by GetAttr/GetAttrCode.",
+        "battleVO": "SM_DigitDoorGMBattle battle object; visible handler updates ImmortalData finish VO and requests replay.",
+        "UserView": "Handler guard: replay request only runs if a current user view exists.",
+        "DigitDoorPVPReplayMsg": "Mgr stores replay scene message and passes it into entity/fight scene sync.",
+        "ImmortalBattleVO": "DigitalDoor immortal battle bean used by SM_DigitDoorGMBattle and GM helper.",
+        "winnerId": "ImmortalBattleVO/server winner field and GM helper local winner setup.",
+        "joiners": "ImmortalBattleVO participant list; also built by GM helper.",
+        "statList": "ImmortalBattleVO stats list.",
+        "code": "SM_DigitDoorGMBattle inherits ClientResult, but visible handler has no CheckCodeMessage guard.",
+        "curFinishVo": "PVPSceneView finish-state source object used to build CM_DigitDoorReport.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"directions": set(), "categories": set(), "sources": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["directions"].add(str(row.get("direction") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+    return [
+        {
+            "field": field,
+            "directions": " | ".join(sorted(item for item in values["directions"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_report_gmbattle_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor Report/GMBattle boundary",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the DigitDoor PVP report upload and server-pushed replay boundary. It does not modify traffic, replay packets, or assert server acceptance beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Direction | Sources | Note |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('directions', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CM_DigitDoorReport(91644)` is a client-to-server PVP report upload, not a reward/settlement response.",
+            "- `DigitDoorPVPSceneView:CheckList` builds the request from `curFinishVo`, current attacker/defender entity snapshots, and visible winner ids.",
+            "- Entity snapshots are `DigitDoorSimpleVO(91605)` rows with owner/resource/index/lv plus an attribute list filled by `GetAttr/GetAttrCode`.",
+            "- There is no visible `SM_DigitDoorReport`; treat server acceptance/validation as outside this visible Lua surface.",
+            "- `SM_DigitDoorGMBattle(91643)` is a server-to-client `ClientResult` carrying `battleVO` and `type`; the handler updates ImmortalData finish VO and calls `ReqReplay` using `battleVO.replayId`.",
+            "- `SM_DigitDoorGMBattle.type` selects replay map/replay type (`DigitDoorPVP` versus `TowerDefensePVP` in visible code); it is a replay trigger, not the GamePlayer settlement authority.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_report_gmbattle_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_report_gmbattle_rows(root, logic_dir)
+    field_rows = _digitdoor_report_gmbattle_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    visible_sm_report_files = [
+        path for path in _digitdoor_report_gmbattle_files(root, logic_dir) if path.name.startswith("SM_DigitDoorReport")
+    ]
+    visible_cm_gmbattle_files = [
+        path for path in _digitdoor_report_gmbattle_files(root, logic_dir) if path.name.startswith("CM_DigitDoorGMBattle")
+    ]
+    stats = {
+        "source_file_count": len(_digitdoor_report_gmbattle_files(root, logic_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "report_request_packet_id_rows": category_counts.get("report_request_packet_id", 0)
+        + category_counts.get("report_request_vo_url_map", 0),
+        "report_request_schema_rows": category_counts.get("report_request_schema", 0),
+        "report_request_fill_rows": category_counts.get("report_request_fill_field", 0),
+        "report_request_send_rows": category_counts.get("report_request_send", 0),
+        "pvp_scene_report_call_rows": category_counts.get("report_pvp_scene_sends_report", 0),
+        "pvp_scene_source_rows": category_counts.get("report_source_finish_vo_field", 0)
+        + category_counts.get("report_source_pvpit_branch", 0)
+        + category_counts.get("report_source_pvp_branch", 0),
+        "simple_vo_schema_rows": category_counts.get("simple_vo_schema", 0),
+        "simple_vo_attr_projection_rows": category_counts.get("report_fill_simple_vo_attr_list", 0)
+        + category_counts.get("report_fill_attr_vo_type", 0)
+        + category_counts.get("report_fill_attr_vo_value", 0)
+        + category_counts.get("report_attr_code_emitted", 0),
+        "visible_sm_report_file_count": len(visible_sm_report_files),
+        "gmbattle_packet_id_rows": category_counts.get("gmbattle_packet_id", 0) + category_counts.get("gmbattle_vo_url_map", 0),
+        "gmbattle_schema_rows": category_counts.get("gmbattle_response_schema", 0),
+        "gmbattle_replay_rows": category_counts.get("gmbattle_update_finish_vo", 0)
+        + category_counts.get("gmbattle_req_replay", 0)
+        + category_counts.get("gmbattle_replay_id_to_req_replay", 0),
+        "gmbattle_type_branch_rows": category_counts.get("gmbattle_type_selects_map_id", 0)
+        + category_counts.get("gmbattle_type_selects_replay_type", 0),
+        "visible_cm_gmbattle_file_count": len(visible_cm_gmbattle_files),
+        "digitaldoor_battle_vo_schema_rows": category_counts.get("digitaldoor_battle_vo_schema", 0),
+        "replay_scene_sync_rows": category_counts.get("replay_scene_store_msg", 0)
+        + category_counts.get("replay_scene_sync_pvp_entity_mgr", 0)
+        + category_counts.get("replay_scene_sync_fight_mgr", 0),
+    }
+    verdict = {
+        "report_request_schema_confirmed": stats["report_request_packet_id_rows"] > 0
+        and stats["report_request_schema_rows"] >= 11
+        and stats["report_request_fill_rows"] >= 11
+        and stats["report_request_send_rows"] > 0,
+        "pvp_scene_builds_report_from_finish_state": stats["pvp_scene_report_call_rows"] > 0
+        and stats["pvp_scene_source_rows"] >= 6,
+        "report_entity_snapshot_shape_confirmed": stats["simple_vo_schema_rows"] >= 5
+        and stats["simple_vo_attr_projection_rows"] >= 3,
+        "no_visible_dedicated_sm_report_packet": stats["visible_sm_report_file_count"] == 0,
+        "gmbattle_response_schema_confirmed": stats["gmbattle_packet_id_rows"] > 0
+        and stats["gmbattle_schema_rows"] >= 2
+        and stats["digitaldoor_battle_vo_schema_rows"] >= 9,
+        "gmbattle_is_server_only_replay_trigger": stats["visible_cm_gmbattle_file_count"] == 0
+        and stats["gmbattle_replay_rows"] >= 3,
+        "gmbattle_type_selects_replay_context": stats["gmbattle_type_branch_rows"] >= 2,
+        "replay_scene_sync_path_visible": stats["replay_scene_sync_rows"] >= 3,
+    }
+    _write_tsv(
+        out_dir / "report_gmbattle_fields.tsv",
+        field_rows,
+        ["field", "directions", "sources", "categories", "note"],
+    )
+    _write_tsv(
+        out_dir / "report_gmbattle_evidence.tsv",
+        evidence_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "report_gmbattle_report.md"
+    _write_digitdoor_report_gmbattle_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["report_request_schema_confirmed"] and verdict["gmbattle_is_server_only_replay_trigger"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "report_gmbattle_fields.tsv"),
+            "evidence": str(out_dir / "report_gmbattle_evidence.tsv"),
+        },
+    }
+
+
+_DIGITDOOR_PVP_BALANCE_CONFIG_KEYS: dict[str, str] = {
+    "PVP_TIMELIMIT": "PVP scene time limit; visible PVP scene init reads it and falls back to 120 when absent.",
+    "FAKEPVP_REGULATION": "Comma pair consumed as PVP winner-side HP extension and reduce-damage extension rates.",
+    "FAKEPVP_REGULATION_WINNER": "Winner-side dynamic damage reduction rate used by UpdatePVPWinnerProtection.",
+    "WIN_TEAM_LOSTHP_LIMIT": "Winner-side per-period HP loss limit pair, split by front/back partner position.",
+    "FAIL_TEAM_LOSTHP_LIMIT": "Loser-side per-period HP loss limit pair, split by front/back partner position.",
+    "WIN_TEAM_attack": "Winner-side delayed attack extension added after the PVP winner max-time check.",
+}
+
+
+def _digitdoor_pvp_balance_files(root: Path, logic_dir: Path, config_dir: Path) -> list[Path]:
+    names = [
+        "DigitDoorFightComponent.lua",
+        "DigitDoorEntityData.lua",
+        "DigitDoorPartner.lua",
+        "DigitDoorPartnerView.lua",
+        "DigitDoorPVPSceneView.lua",
+    ]
+    candidates = [logic_dir / name for name in names]
+    candidates.extend(
+        [
+            config_dir / "ConfigValue.lua",
+            config_dir / "CharacterLevel.lua",
+            config_dir / "AttrName.lua",
+        ]
+    )
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_pvp_balance_config_rows(root: Path, config_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    config_path = config_dir / "ConfigValue.lua"
+    config_rows = _parse_config_rows(config_dir, "ConfigValue", None)
+    by_id = {str(row.get("id") or ""): row for row in config_rows}
+    for key, note in _DIGITDOOR_PVP_BALANCE_CONFIG_KEYS.items():
+        row = by_id.get(key)
+        if row is None:
+            continue
+        rows.append(
+            {
+                "category": "pvp_config_value",
+                "role": "config",
+                "field": key,
+                "source": "ConfigValue",
+                "file": _path_display(config_path, root),
+                "line": "",
+                "function": "",
+                "value": row.get("value", ""),
+                "snippet": f"{key}={row.get('value', '')}",
+                "note": note,
+            }
+        )
+
+    character_path = config_dir / "CharacterLevel.lua"
+    character_rows = _parse_config_rows(config_dir, "CharacterLevel", None)
+    if character_path.is_file() and character_rows:
+        for field in ["PVPATTACK", "PVPINCREASE", "PVPREDUCE", "PVP_WINREDUCE"]:
+            values = [str(row.get(field) or "") for row in character_rows if str(row.get(field) or "") != ""]
+            nonzero_values = [value for value in values if value not in {"0", "0.0"}]
+            if not values:
+                continue
+            sample_values = _dedupe_preserve(nonzero_values[:8] or values[:8])
+            rows.append(
+                {
+                    "category": "character_level_pvp_field_summary",
+                    "role": "config",
+                    "field": field,
+                    "source": "CharacterLevel",
+                    "file": _path_display(character_path, root),
+                    "line": "",
+                    "function": "",
+                    "value": ",".join(sample_values),
+                    "snippet": f"{field}: rows={len(values)}, nonzero={len(nonzero_values)}, samples={','.join(sample_values)}",
+                    "note": "CharacterLevel defines this PVP-related column; visible Lua currently consumes PVPATTACK/PVPINCREASE/PVPREDUCE directly.",
+                }
+            )
+    return rows
+
+
+def _digitdoor_pvp_balance_rows(root: Path, logic_dir: Path, config_dir: Path) -> list[dict[str, Any]]:
+    rows = _digitdoor_pvp_balance_config_rows(root, config_dir)
+    for path in _digitdoor_pvp_balance_files(root, logic_dir, config_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str, str]] = []
+            name = path.name
+
+            if name == "ConfigValue.lua":
+                for key in _DIGITDOOR_PVP_BALANCE_CONFIG_KEYS:
+                    if key in line:
+                        categories.append(("pvp_config_key_map", "config", key, "ConfigValue", "Generated config key/value mapping."))
+
+            elif name == "CharacterLevel.lua":
+                for field in ["PVPATTACK", "PVPINCREASE", "PVPREDUCE", "PVP_WINREDUCE"]:
+                    if field in line:
+                        categories.append(
+                            (
+                                "character_level_pvp_field_defined",
+                                "config",
+                                field,
+                                "CharacterLevel",
+                                "Character-level table exposes this PVP-related column.",
+                            )
+                        )
+
+            elif name == "AttrName.lua" and "PVPATTACK" in line:
+                categories.append(("pvp_attr_name_defined", "config", "PVPATTACK", "AttrName", "PVP attack has a visible display-name entry."))
+
+            elif name == "DigitDoorFightComponent.lua":
+                if "PVP_BALANCE_DURATION" in line:
+                    categories.append(
+                        (
+                            "pvp_balance_timer_const",
+                            "runtime",
+                            "PVP_BALANCE_DURATION",
+                            "DigitDoorFightComponent",
+                            "Winner-protection balance update cadence.",
+                        )
+                    )
+                if "PVP_WINNER_MAXTIME_CHECK" in line:
+                    categories.append(
+                        (
+                            "pvp_winner_attack_time_const",
+                            "runtime",
+                            "PVP_WINNER_MAXTIME_CHECK",
+                            "DigitDoorFightComponent",
+                            "Elapsed-time threshold before winner attack extension starts.",
+                        )
+                    )
+                if "PVP_WINNER_ATTACK_DURATION" in line:
+                    categories.append(
+                        (
+                            "pvp_winner_attack_duration_const",
+                            "runtime",
+                            "PVP_WINNER_ATTACK_DURATION",
+                            "DigitDoorFightComponent",
+                            "Interval for repeated winner attack extension.",
+                        )
+                    )
+                if current_function == "_M.InitBalanceValue":
+                    for key in _DIGITDOOR_PVP_BALANCE_CONFIG_KEYS:
+                        if key in line:
+                            categories.append(
+                                (
+                                    "init_balance_reads_config",
+                                    "runtime",
+                                    key,
+                                    "DigitDoorFightComponent",
+                                    "InitBalanceValue reads this ConfigValue key in PVP scenes.",
+                                )
+                            )
+                    init_terms = {
+                        "pvpHpExtRate": "Winner-side max-HP extension rate derived from FAKEPVP_REGULATION.",
+                        "pvpReduceDamageExtRate": "Winner-side reduce-damage extension rate derived from FAKEPVP_REGULATION.",
+                        "pvpWinnerReduceRate": "Dynamic winner-side reduction rate derived from FAKEPVP_REGULATION_WINNER.",
+                        "pvpWinnerDamageLimit": "Winner-side HP loss limit derived from WIN_TEAM_LOSTHP_LIMIT.",
+                        "pvpLoserDamageLimit": "Loser-side HP loss limit derived from FAIL_TEAM_LOSTHP_LIMIT.",
+                        "pvpWinnerExtAttack": "Delayed winner-side attack extension derived from WIN_TEAM_attack.",
+                    }
+                    for field, note in init_terms.items():
+                        if field in line:
+                            categories.append(("init_balance_runtime_field", "runtime", field, "DigitDoorFightComponent", note))
+                if current_function == "_M.CreateAttackerPartner":
+                    create_terms = {
+                        "pvpHpRate": "Winner-side HP rate is assigned before partner InitData.",
+                        "pvpReduceDamageRate": "Winner-side reduce-damage rate is assigned before partner InitData.",
+                        "pvpWinnerDamageLimit": "Winner team receives the winner HP-loss limit pair.",
+                        "pvpLoserDamageLimit": "Non-winner team receives the loser HP-loss limit pair.",
+                        "_Partner:InitData(partnerData,isPVE,pvpHpRate,pvpReduceDamageRate,damageLimit)": "PVP rates and damage limit are passed into partner initialization.",
+                    }
+                    for field, note in create_terms.items():
+                        if field in line:
+                            categories.append(("create_attacker_partner_pvp_init", "runtime", field, "DigitDoorFightComponent", note))
+                if current_function == "_M.AddDamageResult":
+                    read_terms = {
+                        "GetPVPWinnerExtAttack": "Caster winner attack extension is folded into extAttack before damage.",
+                        "GetPVPIncreaseDamage": "Caster PVP increase is read for the PVP damage multiplier.",
+                        "GetPVPReduceDamage": "Target PVP reduce is read for the PVP damage multiplier.",
+                        "GetPVPWinnerReduceDamage": "Target winner-protection reduce is read for the PVP damage multiplier.",
+                    }
+                    for field, note in read_terms.items():
+                        if field in line:
+                            categories.append(("pvp_damage_reads_runtime_attr", "runtime", field, "DigitDoorFightComponent", note))
+                    formula_terms = {
+                        "pvpIncreaseDamage=1+": "pvpIncreaseDamage = 1 + PVPINCREASE * Damage_Ratio.",
+                        "pvpReduceDamage=Mathf.Max": "pvpReduceDamage has a floor before multiplication.",
+                        "pvpWinnerReduceDamage=Mathf.Max": "pvpWinnerReduceDamage has a floor before multiplication.",
+                        "pvpDamage=": "Separate pvpDamage branch applies PVP multipliers before current-HP calculation.",
+                        "CalculateCurrentHp(pvpDamage)": "PVP branch applies pvpDamage into EntityData:CalculateCurrentHp.",
+                    }
+                    for field, note in formula_terms.items():
+                        if field in line:
+                            categories.append(("pvp_damage_formula", "runtime", field, "DigitDoorFightComponent", note))
+                if current_function == "_M.GetAttackerFinalAttr" and "GetPVPAttack()" in line:
+                    categories.append(
+                        (
+                            "pvp_attack_overrides_base_attack",
+                            "runtime",
+                            "PVPAttack",
+                            "DigitDoorFightComponent",
+                            "PVP partner attack uses EntityData:GetPVPAttack() instead of base attack.",
+                        )
+                    )
+                if current_function == "_M.UpdatePVPWinnerProtection":
+                    if "curWinnerHp/curLoserHp" in line:
+                        categories.append(
+                            (
+                                "winner_protection_hp_ratio_branch",
+                                "runtime",
+                                "curWinnerHp/curLoserHp",
+                                "DigitDoorFightComponent",
+                                "Winner protection branches on winner/loser current HP ratio.",
+                            )
+                        )
+                    if "SetPVPWinnerReduceDamage" in line:
+                        categories.append(
+                            (
+                                "winner_protection_reduce_update",
+                                "runtime",
+                                "PVPWinnerReduceDamage",
+                                "DigitDoorFightComponent",
+                                "Winner side receives dynamic PVP damage reduction.",
+                            )
+                        )
+                    if "PVP_WINNER_MAXTIME_CHECK" in line:
+                        categories.append(
+                            (
+                                "winner_protection_attack_after_time",
+                                "runtime",
+                                "PVP_WINNER_MAXTIME_CHECK",
+                                "DigitDoorFightComponent",
+                                "Winner attack extension only starts after the max-time check threshold.",
+                            )
+                        )
+                    if "SetPVPWinnerExtAttack" in line:
+                        categories.append(
+                            (
+                                "winner_protection_attack_update",
+                                "runtime",
+                                "PVPWinnerExtAttack",
+                                "DigitDoorFightComponent",
+                                "Winner side receives repeated PVP attack extension.",
+                            )
+                        )
+
+            elif name == "DigitDoorEntityData.lua":
+                if current_function == "_M.InitData":
+                    entity_terms = {
+                        "pvpHpRate": "PVP HP rate inflates CurrentHp and MaxHp from cfg.MAXHP.",
+                        "pvpReduceDamageRate": "PVP reduce-damage rate inflates REDUCEDAMAGE.",
+                        "cfg.PVPATTACK": "CharacterLevel.PVPATTACK is copied into EntityData.PVPAttack.",
+                        "cfg.PVPINCREASE": "CharacterLevel.PVPINCREASE is copied into EntityData.PVPIncreaseDamage.",
+                        "cfg.PVPREDUCE": "CharacterLevel.PVPREDUCE is copied into EntityData.PVPReduceDamage.",
+                    }
+                    for field, note in entity_terms.items():
+                        if field in line:
+                            categories.append(("entitydata_init_pvp_field", "runtime", field, "DigitDoorEntityData", note))
+                accessor_terms = {
+                    "SetPVPIncreaseDamage": "Encrypted state accessor for PVP increase.",
+                    "GetPVPIncreaseDamage": "Encrypted state accessor for PVP increase.",
+                    "SetPVPReduceDamage": "Encrypted state accessor for PVP reduce.",
+                    "GetPVPReduceDamage": "Encrypted state accessor for PVP reduce.",
+                    "SetPVPWinnerReduceDamage": "Encrypted state accessor for winner protection reduce.",
+                    "GetPVPWinnerReduceDamage": "Encrypted state accessor for winner protection reduce.",
+                    "SetPVPWinnerExtAttack": "Encrypted state accessor for winner attack extension.",
+                    "GetPVPWinnerExtAttack": "Encrypted state accessor for winner attack extension.",
+                    "SetPVPDamageLimit": "Encrypted state accessor for per-period PVP damage limit.",
+                    "GetPVPDamageLimit": "Encrypted state accessor for per-period PVP damage limit.",
+                    "SetDefaultPVPDamageLimit": "Encrypted state accessor for default per-period PVP damage limit.",
+                    "GetDefaultPVPDamageLimit": "Encrypted state accessor for default per-period PVP damage limit.",
+                    "SetPVPAttack": "Encrypted state accessor for PVP attack.",
+                    "GetPVPAttack": "Encrypted state accessor for PVP attack.",
+                }
+                for field, note in accessor_terms.items():
+                    if field in line:
+                        categories.append(("entitydata_pvp_accessor", "runtime", field, "DigitDoorEntityData", note))
+                if current_function == "_M.CalculateCurrentHp":
+                    for field in ["GetDefaultPVPDamageLimit", "GetPVPDamageLimit", "SetPVPDamageLimit"]:
+                        if field in line:
+                            categories.append(
+                                (
+                                    "entitydata_damage_limit_consumed",
+                                    "runtime",
+                                    field,
+                                    "DigitDoorEntityData",
+                                    "CalculateCurrentHp caps current damage by the remaining PVP damage-limit budget.",
+                                )
+                            )
+
+            elif name == "DigitDoorPartner.lua" and current_function == "_M.InitData":
+                partner_terms = {
+                    "limitRate=self.isFront": "Damage-limit pair selects front/back partner limit rate.",
+                    "limitVal=maxHp*limitRate*Ratio": "Configured limit rate is converted to a max-HP-scaled value.",
+                    "SetDefaultPVPDamageLimit": "Default PVP damage limit is initialized on EntityData.",
+                    "SetPVPDamageLimit": "Current PVP damage limit is initialized on EntityData.",
+                }
+                for field, note in partner_terms.items():
+                    if field in line:
+                        categories.append(("partner_damage_limit_init", "runtime", field, "DigitDoorPartner", note))
+
+            elif name == "DigitDoorPartnerView.lua":
+                if current_function == "_M.UpdatePVPDamageLimit":
+                    for field in ["GetDefaultPVPDamageLimit", "SetPVPDamageLimit", "damageLimit"]:
+                        if field in line:
+                            categories.append(
+                                (
+                                    "partnerview_damage_limit_periodic_reset",
+                                    "runtime",
+                                    field,
+                                    "DigitDoorPartnerView",
+                                    "PVP damage-limit budget is restored periodically from the default value.",
+                                )
+                            )
+
+            elif name == "DigitDoorPVPSceneView.lua":
+                if "PVP_TIMELIMIT" in line:
+                    categories.append(
+                        (
+                            "pvp_scene_reads_time_limit",
+                            "runtime",
+                            "PVP_TIMELIMIT",
+                            "DigitDoorPVPSceneView",
+                            "PVP scene init reads the configured time limit.",
+                        )
+                    )
+                if current_function == "_M.GetAttr":
+                    for field in ["PVPATTACK", "PVPINCREASE", "PVPREDUCE"]:
+                        if field in line:
+                            categories.append(
+                                (
+                                    "pvp_report_attr_code_emitted",
+                                    "request",
+                                    field,
+                                    "DigitDoorPVPSceneView",
+                                    "PVP report snapshot emits this attr code into attrVOList.",
+                                )
+                            )
+
+            for category, role, field, source, note in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "role": role,
+                        "field": field,
+                        "source": source,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "value": "",
+                        "snippet": stripped,
+                        "note": note,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_pvp_balance_field_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    field_notes = {
+        **_DIGITDOOR_PVP_BALANCE_CONFIG_KEYS,
+        "PVPATTACK": "CharacterLevel PVP attack field; EntityData stores it and PVP damage uses GetPVPAttack for partners.",
+        "PVPINCREASE": "CharacterLevel PVP increase field; damage formula multiplies by 1 + PVPINCREASE * Damage_Ratio.",
+        "PVPREDUCE": "CharacterLevel PVP reduce field; target-side damage formula multiplies by a floored reduce factor.",
+        "PVP_WINREDUCE": "CharacterLevel column is visible, but current Lua evidence does not show direct cfg.PVP_WINREDUCE consumption in EntityData.InitData.",
+        "PVPAttack": "Runtime PVP attack slot used instead of base attack in PVP partner damage.",
+        "PVPWinnerReduceDamage": "Runtime winner-protection reduce slot, dynamically adjusted by UpdatePVPWinnerProtection.",
+        "PVPWinnerExtAttack": "Runtime winner attack-extension slot, dynamically increased after the PVP time threshold.",
+        "PVP_BALANCE_DURATION": "Winner-protection update cadence.",
+        "PVP_WINNER_MAXTIME_CHECK": "Elapsed-time threshold before winner attack extension starts.",
+        "PVP_WINNER_ATTACK_DURATION": "Repeated winner attack-extension cadence.",
+        "curWinnerHp/curLoserHp": "Winner-protection branch compares total winner HP and loser HP.",
+    }
+    by_field: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"roles": set(), "categories": set(), "sources": set(), "values": set()})
+    for row in rows:
+        for field in [item for item in str(row.get("field") or "").split("|") if item]:
+            by_field[field]["roles"].add(str(row.get("role") or ""))
+            by_field[field]["categories"].add(str(row.get("category") or ""))
+            by_field[field]["sources"].add(str(row.get("source") or ""))
+            if row.get("value") not in (None, ""):
+                by_field[field]["values"].add(str(row.get("value")))
+    return [
+        {
+            "field": field,
+            "roles": " | ".join(sorted(item for item in values["roles"] if item)),
+            "sources": " | ".join(sorted(item for item in values["sources"] if item)),
+            "categories": " | ".join(sorted(values["categories"])),
+            "values": " | ".join(sorted(values["values"])),
+            "note": field_notes.get(field, ""),
+        }
+        for field, values in sorted(by_field.items())
+    ]
+
+
+def _write_digitdoor_pvp_balance_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    config_dir: Path,
+    field_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    config_rows = [row for row in evidence_rows if row.get("category") == "pvp_config_value"]
+    lines = [
+        "# DigitDoor PVP balance/formula probe",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Config dir: `{config_dir}`",
+        f"- Field rows: {len(field_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua/config evidence for DigitDoor PVP attribute initialization, local damage formula, and PVP report snapshot fields. It does not modify packets, memory, APKs, or assert server acceptance beyond visible client code.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Config Values", "", "| Key | Value | Note |", "| --- | --- | --- |"])
+    for row in config_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('value', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Field Boundary",
+            "",
+            "| Field | Role | Source | Values | Note |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in field_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('roles', ''))} | "
+            f"{_md_table_cell(row.get('sources', ''))} | "
+            f"{_md_table_cell(row.get('values', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- PVP-specific config is visible in `DigitDoor_ConfigValue` and consumed in `DigitDoorFightComponent:InitBalanceValue` only when the current scene is PVP.",
+            "- `FAKEPVP_REGULATION` feeds winner-side HP and reduce-damage extension rates; `WIN_TEAM_LOSTHP_LIMIT` and `FAIL_TEAM_LOSTHP_LIMIT` feed per-period HP loss caps.",
+            "- `CharacterLevel.PVPATTACK/PVPINCREASE/PVPREDUCE` are copied into `DigitDoorEntityData`; PVP partner attack uses `GetPVPAttack()` instead of base `GetAttack()`.",
+            "- `DigitDoorFightComponent:AddDamageResult` has a visible PVP branch: it reads PVP increase/reduce/winner-reduce/winner-attack slots, computes `pvpDamage`, and applies it through `CalculateCurrentHp(pvpDamage)`.",
+            "- `CalculateCurrentHp` consumes the remaining PVP damage-limit budget; `DigitDoorPartnerView:UpdatePVPDamageLimit` periodically restores that budget from the default limit.",
+            "- Winner protection is local and dynamic in visible Lua: it compares winner/loser current HP totals, adjusts `PVPWinnerReduceDamage`, and after the time threshold repeatedly adds `PVPWinnerExtAttack`.",
+            "- PVP report snapshots emit `PVPATTACK`, `PVPINCREASE`, and `PVPREDUCE` into `attrVOList`; whether a server trusts or rejects these snapshots remains outside this static Lua evidence.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_balance_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    digitdoor_config_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    config_dir = _resolve_export_dir(digitdoor_config_dir, export_root=export_root) or _find_default_config_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    evidence_rows = _digitdoor_pvp_balance_rows(root, logic_dir, config_dir)
+    field_rows = _digitdoor_pvp_balance_field_rows(evidence_rows)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    stats = {
+        "source_file_count": len(_digitdoor_pvp_balance_files(root, logic_dir, config_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "field_row_count": len(field_rows),
+        "config_value_rows": category_counts.get("pvp_config_value", 0),
+        "config_consumer_rows": category_counts.get("init_balance_reads_config", 0),
+        "character_level_pvp_field_rows": category_counts.get("character_level_pvp_field_defined", 0)
+        + category_counts.get("character_level_pvp_field_summary", 0),
+        "entitydata_pvp_init_rows": category_counts.get("entitydata_init_pvp_field", 0),
+        "create_attacker_pvp_init_rows": category_counts.get("create_attacker_partner_pvp_init", 0),
+        "pvp_attack_override_rows": category_counts.get("pvp_attack_overrides_base_attack", 0),
+        "pvp_damage_attr_read_rows": category_counts.get("pvp_damage_reads_runtime_attr", 0),
+        "pvp_damage_formula_rows": category_counts.get("pvp_damage_formula", 0),
+        "damage_limit_init_rows": category_counts.get("partner_damage_limit_init", 0),
+        "damage_limit_consume_rows": category_counts.get("entitydata_damage_limit_consumed", 0),
+        "damage_limit_reset_rows": category_counts.get("partnerview_damage_limit_periodic_reset", 0),
+        "winner_protection_rows": category_counts.get("winner_protection_hp_ratio_branch", 0)
+        + category_counts.get("winner_protection_reduce_update", 0)
+        + category_counts.get("winner_protection_attack_after_time", 0)
+        + category_counts.get("winner_protection_attack_update", 0),
+        "pvp_report_attr_rows": category_counts.get("pvp_report_attr_code_emitted", 0),
+        "pvp_scene_time_limit_rows": category_counts.get("pvp_scene_reads_time_limit", 0),
+    }
+    verdict = {
+        "pvp_config_values_confirmed": stats["config_value_rows"] >= len(_DIGITDOOR_PVP_BALANCE_CONFIG_KEYS)
+        and stats["config_consumer_rows"] >= len(_DIGITDOOR_PVP_BALANCE_CONFIG_KEYS) - 1,
+        "character_level_pvp_fields_visible": stats["character_level_pvp_field_rows"] >= 3,
+        "pvp_hp_reduce_init_chain_visible": stats["entitydata_pvp_init_rows"] >= 5
+        and stats["create_attacker_pvp_init_rows"] >= 4,
+        "pvp_attack_overrides_base_attack": stats["pvp_attack_override_rows"] > 0,
+        "pvp_damage_formula_visible": stats["pvp_damage_attr_read_rows"] >= 4 and stats["pvp_damage_formula_rows"] >= 5,
+        "pvp_damage_limit_chain_visible": stats["damage_limit_init_rows"] >= 3
+        and stats["damage_limit_consume_rows"] >= 3
+        and stats["damage_limit_reset_rows"] >= 2,
+        "pvp_winner_protection_visible": stats["winner_protection_rows"] >= 4,
+        "pvp_report_attr_codes_visible": stats["pvp_report_attr_rows"] >= 3,
+        "pvp_scene_time_limit_visible": stats["pvp_scene_time_limit_rows"] > 0,
+    }
+    verdict["pvp_balance_is_client_visible_local_formula"] = (
+        verdict["pvp_config_values_confirmed"]
+        and verdict["pvp_hp_reduce_init_chain_visible"]
+        and verdict["pvp_attack_overrides_base_attack"]
+        and verdict["pvp_damage_formula_visible"]
+        and verdict["pvp_damage_limit_chain_visible"]
+        and verdict["pvp_winner_protection_visible"]
+    )
+    _write_tsv(
+        out_dir / "pvp_balance_fields.tsv",
+        field_rows,
+        ["field", "roles", "sources", "categories", "values", "note"],
+    )
+    _write_tsv(
+        out_dir / "pvp_balance_evidence.tsv",
+        evidence_rows,
+        ["category", "role", "field", "source", "file", "line", "function", "value", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_balance_report.md"
+    _write_digitdoor_pvp_balance_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        config_dir=config_dir,
+        field_rows=field_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_balance_is_client_visible_local_formula"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "fields": str(out_dir / "pvp_balance_fields.tsv"),
+            "evidence": str(out_dir / "pvp_balance_evidence.tsv"),
+        },
+    }
+
+
+_DIGITDOOR_PVP_WINREDUCE_CPP2IL_TERMS: dict[str, str] = {
+    "PVP_WINREDUCE": "direct_character_level_column",
+    "PVPWINREDUCE": "direct_character_level_column_variant",
+    "PVPWinnerReduceDamage": "runtime_winner_reduce_slot",
+    "pvpWinnerReduceDamage": "runtime_winner_reduce_slot",
+    "PVP_WINNER_DAMAGE_REDUCE": "adjacent_towerdefense_style_config",
+    "pvpDamageReduce": "adjacent_towerdefense_style_runtime",
+}
+
+
+def _digitdoor_pvp_winreduce_files(root: Path, logic_dir: Path, config_dir: Path) -> list[Path]:
+    candidates = [config_dir / "CharacterLevel.lua", config_dir / "ConfigValue.lua"]
+    candidates.extend(sorted(logic_dir.glob("*.lua"), key=lambda item: item.name.lower()))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_pvp_winreduce_rows(root: Path, logic_dir: Path, config_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    character_path = config_dir / "CharacterLevel.lua"
+    character_rows = _parse_config_rows(config_dir, "CharacterLevel", None)
+    if character_rows:
+        values = [str(row.get("PVP_WINREDUCE") or "") for row in character_rows]
+        nonzero_values = [value for value in values if value not in {"", "0", "0.0"}]
+        samples = _dedupe_preserve(nonzero_values[:8] or values[:8])
+        rows.append(
+            {
+                "category": "character_level_pvp_winreduce_value_summary",
+                "surface": "lua_config",
+                "field": "PVP_WINREDUCE",
+                "source": "CharacterLevel",
+                "file": _path_display(character_path, root),
+                "line": "",
+                "function": "",
+                "value": ",".join(samples),
+                "row_count": len(values),
+                "nonzero_count": len(nonzero_values),
+                "snippet": f"PVP_WINREDUCE rows={len(values)}, nonzero={len(nonzero_values)}, samples={','.join(samples)}",
+                "note": "CharacterLevel declares the column; current values are summarized here before consumer checks.",
+            }
+        )
+
+    for path in _digitdoor_pvp_winreduce_files(root, logic_dir, config_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            categories: list[tuple[str, str, str, str]] = []
+            if "PVP_WINREDUCE" in line:
+                categories.append(
+                    (
+                        "direct_pvp_winreduce_symbol",
+                        "PVP_WINREDUCE",
+                        "Exact `PVP_WINREDUCE` symbol occurrence in visible Lua/config.",
+                        "lua_config" if path.name == "CharacterLevel.lua" else "lua_logic",
+                    )
+                )
+            if "cfg.PVP_WINREDUCE" in line:
+                categories.append(
+                    (
+                        "direct_pvp_winreduce_cfg_consumer",
+                        "cfg.PVP_WINREDUCE",
+                        "Direct runtime read of CharacterLevel.PVP_WINREDUCE.",
+                        "lua_logic",
+                    )
+                )
+            if "FAKEPVP_REGULATION_WINNER" in line or "pvpWinnerReduceRate" in line:
+                categories.append(
+                    (
+                        "dynamic_winner_reduce_config_source",
+                        "FAKEPVP_REGULATION_WINNER|pvpWinnerReduceRate",
+                        "Visible DigitDoor winner-reduce logic is sourced from ConfigValue, not CharacterLevel.PVP_WINREDUCE.",
+                        "lua_logic",
+                    )
+                )
+            if "SetPVPWinnerReduceDamage" in line or "GetPVPWinnerReduceDamage" in line or "pvpWinnerReduceDamage" in line:
+                categories.append(
+                    (
+                        "runtime_winner_reduce_slot",
+                        "PVPWinnerReduceDamage",
+                        "Runtime winner-reduce slot used by protection/damage formula.",
+                        "lua_logic",
+                    )
+                )
+            for category, field, note, surface in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "surface": surface,
+                        "field": field,
+                        "source": path.stem,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "value": "",
+                        "row_count": "",
+                        "nonzero_count": "",
+                        "snippet": stripped,
+                        "note": note,
+                    }
+                )
+    return rows
+
+
+def _digitdoor_pvp_winreduce_cpp2il_rows(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    hit_rows: list[dict[str, Any]] = []
+    surface_rows: list[dict[str, Any]] = []
+    terms = {term.lower(): (term, category) for term, category in _DIGITDOOR_PVP_WINREDUCE_CPP2IL_TERMS.items()}
+    for surface in _digitdoor_startgame_cpp2il_surfaces(root):
+        files = _iter_digitdoor_startgame_cpp2il_files(surface)
+        hit_count = 0
+        for file_path in files:
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            lower_text = text.lower()
+            if not any(term_lower in lower_text for term_lower in terms):
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                lower_line = line.lower()
+                matched = [(term, category) for term_lower, (term, category) in terms.items() if term_lower in lower_line]
+                if not matched:
+                    continue
+                hit_count += len(matched)
+                for term, category in matched:
+                    hit_rows.append(
+                        {
+                            "category": category,
+                            "surface": surface["surface"],
+                            "field": term,
+                            "source": "Cpp2IL",
+                            "file": _path_display(file_path, root),
+                            "line": line_no,
+                            "function": "",
+                            "value": "",
+                            "row_count": "",
+                            "nonzero_count": "",
+                            "snippet": _WHITESPACE_RE.sub(" ", line.strip()),
+                            "note": "Native-readable Cpp2IL/metadata hit; line context must be reviewed before assigning runtime ownership.",
+                        }
+                    )
+        surface_rows.append(
+            {
+                "surface": surface["surface"],
+                "path": str(surface["path"]),
+                "file_count": len(files),
+                "hit_count": hit_count,
+                "terms": ",".join(_DIGITDOOR_PVP_WINREDUCE_CPP2IL_TERMS),
+            }
+        )
+    return hit_rows, surface_rows
+
+
+def _write_digitdoor_pvp_winreduce_gap_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    config_dir: Path,
+    evidence_rows: list[dict[str, Any]],
+    surface_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor PVP_WINREDUCE gap probe",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Config dir: `{config_dir}`",
+        f"- Evidence rows: {len(evidence_rows)}",
+        f"- Cpp2IL surfaces: {len(surface_rows)}",
+        "- Scope: static Lua/config plus already-exported Cpp2IL-readable surface check for the `CharacterLevel.PVP_WINREDUCE` column. It does not modify APKs, memory, traffic, or infer server-side acceptance.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    summary_rows = [row for row in evidence_rows if row.get("category") == "character_level_pvp_winreduce_value_summary"]
+    lines.extend(["", "## CharacterLevel Summary", "", "| Field | Rows | Nonzero | Samples |", "| --- | ---: | ---: | --- |"])
+    for row in summary_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{row.get('row_count', '')} | "
+            f"{row.get('nonzero_count', '')} | "
+            f"{_md_table_cell(row.get('value', ''))} |"
+        )
+    lines.extend(["", "## Cpp2IL Surface Check", "", "| Surface | Files | Hits |", "| --- | ---: | ---: |"])
+    for row in surface_rows:
+        lines.append(f"| {_md_table_cell(row.get('surface', ''))} | {row.get('file_count', '')} | {row.get('hit_count', '')} |")
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `CharacterLevel.PVP_WINREDUCE` is declared in the current DigitDoor config schema, but the true resource rows have no nonzero values for that column.",
+            "- The visible DigitDoor Lua runtime does not read `cfg.PVP_WINREDUCE`; `DigitDoorEntityData:InitData` copies only `cfg.PVPATTACK`, `cfg.PVPINCREASE`, and `cfg.PVPREDUCE` into PVP-specific runtime slots.",
+            "- The winner-reduction slot used by the formula is `PVPWinnerReduceDamage`, but visible code drives it through `FAKEPVP_REGULATION_WINNER` and `UpdatePVPWinnerProtection`, not through the CharacterLevel column.",
+            "- The already-exported Cpp2IL-readable surfaces have no matching PVP win-reduce symbol hits in this probe. That does not prove the server has no concept of it; it only closes the current local readable surfaces.",
+            "- Practical next step: treat `PVP_WINREDUCE` as a declared-but-currently-inactive/legacy column until a future resource update gives it nonzero values or a focused runtime/native sample shows a consumer.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_winreduce_gap_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    digitdoor_config_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    config_dir = _resolve_export_dir(digitdoor_config_dir, export_root=export_root) or _find_default_config_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lua_rows = _digitdoor_pvp_winreduce_rows(root, logic_dir, config_dir)
+    cpp2il_rows, surface_rows = _digitdoor_pvp_winreduce_cpp2il_rows(root)
+    evidence_rows = lua_rows + cpp2il_rows
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    summary = next(
+        (row for row in lua_rows if row.get("category") == "character_level_pvp_winreduce_value_summary"),
+        {},
+    )
+    stats = {
+        "source_file_count": len(_digitdoor_pvp_winreduce_files(root, logic_dir, config_dir)),
+        "evidence_row_count": len(evidence_rows),
+        "character_level_row_count": int(summary.get("row_count") or 0),
+        "pvp_winreduce_nonzero_row_count": int(summary.get("nonzero_count") or 0),
+        "direct_pvp_winreduce_symbol_rows": category_counts.get("direct_pvp_winreduce_symbol", 0),
+        "direct_pvp_winreduce_cfg_consumer_rows": category_counts.get("direct_pvp_winreduce_cfg_consumer", 0),
+        "dynamic_winner_reduce_config_rows": category_counts.get("dynamic_winner_reduce_config_source", 0),
+        "runtime_winner_reduce_slot_rows": category_counts.get("runtime_winner_reduce_slot", 0),
+        "cpp2il_surface_count": len(surface_rows),
+        "cpp2il_scanned_file_count": sum(int(row.get("file_count") or 0) for row in surface_rows),
+        "cpp2il_hit_count": len(cpp2il_rows),
+    }
+    verdict = {
+        "pvp_winreduce_column_declared": stats["direct_pvp_winreduce_symbol_rows"] > 0
+        and stats["character_level_row_count"] > 0,
+        "pvp_winreduce_values_all_zero": stats["character_level_row_count"] > 0
+        and stats["pvp_winreduce_nonzero_row_count"] == 0,
+        "no_visible_lua_direct_cfg_consumer": stats["direct_pvp_winreduce_cfg_consumer_rows"] == 0,
+        "winner_reduce_runtime_slot_uses_dynamic_config": stats["runtime_winner_reduce_slot_rows"] > 0
+        and stats["dynamic_winner_reduce_config_rows"] > 0,
+        "no_cpp2il_readable_symbol_hit": stats["cpp2il_hit_count"] == 0,
+    }
+    verdict["treat_pvp_winreduce_as_currently_inactive_column"] = (
+        verdict["pvp_winreduce_column_declared"]
+        and verdict["pvp_winreduce_values_all_zero"]
+        and verdict["no_visible_lua_direct_cfg_consumer"]
+        and verdict["winner_reduce_runtime_slot_uses_dynamic_config"]
+        and verdict["no_cpp2il_readable_symbol_hit"]
+    )
+    _write_tsv(
+        out_dir / "pvp_winreduce_gap_evidence.tsv",
+        evidence_rows,
+        ["category", "surface", "field", "source", "file", "line", "function", "value", "row_count", "nonzero_count", "snippet", "note"],
+    )
+    _write_tsv(
+        out_dir / "pvp_winreduce_gap_surfaces.tsv",
+        surface_rows,
+        ["surface", "path", "file_count", "hit_count", "terms"],
+    )
+    report_path = out_dir / "pvp_winreduce_gap_report.md"
+    _write_digitdoor_pvp_winreduce_gap_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        config_dir=config_dir,
+        evidence_rows=evidence_rows,
+        surface_rows=surface_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["treat_pvp_winreduce_as_currently_inactive_column"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "evidence": str(out_dir / "pvp_winreduce_gap_evidence.tsv"),
+            "surfaces": str(out_dir / "pvp_winreduce_gap_surfaces.tsv"),
+        },
+    }
+
+
+_DIGITDOOR_PVP_REPORT_ATTR_NOTES: dict[str, str] = {
+    "HP": "Current HP from EntityData:GetCurrentHp().",
+    "MAXHP": "Max HP from EntityData:GetMaxHp().",
+    "ATTACK": "Base attack from EntityData:GetAttack().",
+    "PVPATTACK": "PVP attack from EntityData:GetPVPAttack(); PVP damage uses this for partners.",
+    "ATKSPEED": "Attack speed from EntityData:GetAttackSpeed().",
+    "CRITICAL": "Critical rate from EntityData:GetCritical().",
+    "ANTICRITICAL": "Anti-critical rate from EntityData:GetAntiCritical().",
+    "INCREASEDAMAGE": "General increase-damage slot from EntityData:GetIncreaseDamage().",
+    "REDUCEDAMAGE": "General reduce-damage slot from EntityData:GetReduceDamage().",
+    "PVPINCREASE": "PVP increase slot from EntityData:GetPVPIncreaseDamage().",
+    "PVPREDUCE": "PVP reduce slot from EntityData:GetPVPReduceDamage().",
+    "ADDDAMAGE": "Additional damage slot from EntityData:GetAddDamage().",
+}
+
+
+def _digitdoor_pvp_report_attr_files(root: Path, logic_dir: Path) -> list[Path]:
+    candidates = [logic_dir / "DigitDoorPVPSceneView.lua"]
+    patterns = [
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DigitDoorAttrVO.lua",
+        "by_source/lscripts/gamesystem/game/message_*/text_assets/DigitDoorSimpleVO.lua",
+    ]
+    for pattern in patterns:
+        candidates.extend(root.glob(pattern))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_pvp_report_attr_rows(root: Path, logic_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    attr_rows: list[dict[str, Any]] = []
+    evidence_rows: list[dict[str, Any]] = []
+    for path in _digitdoor_pvp_report_attr_files(root, logic_dir):
+        current_function = ""
+        getter_by_var: dict[str, str] = {}
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            name = path.name
+
+            if name == "DigitDoorPVPSceneView.lua" and current_function == "_M.GetAttr":
+                if match := re.search(r"local\s+([A-Za-z_]\w*)\s*=\s*EntityData:(Get[A-Za-z_]\w*)\(\)", line):
+                    local_var, getter = match.groups()
+                    getter_by_var[local_var] = getter
+                    evidence_rows.append(
+                        {
+                            "category": "getattr_local_getter",
+                            "attr_code": "",
+                            "local_var": local_var,
+                            "getter": getter,
+                            "source": "DigitDoorPVPSceneView",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "",
+                            "snippet": stripped,
+                            "note": "Local value source used before GetAttrCode emits report attrVOList.",
+                        }
+                    )
+                if match := re.search(r'GetAttrCode\("([^"]+)"\s*,\s*([A-Za-z_]\w*)\s*,\s*clist\)', line):
+                    attr_code, local_var = match.groups()
+                    attr_rows.append(
+                        {
+                            "order": len(attr_rows) + 1,
+                            "attr_code": attr_code,
+                            "local_var": local_var,
+                            "getter": getter_by_var.get(local_var, ""),
+                            "role": "pvp_specific" if attr_code.startswith("PVP") else "general_snapshot",
+                            "note": _DIGITDOOR_PVP_REPORT_ATTR_NOTES.get(attr_code, ""),
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                        }
+                    )
+                    evidence_rows.append(
+                        {
+                            "category": "report_attr_code_emitted",
+                            "attr_code": attr_code,
+                            "local_var": local_var,
+                            "getter": getter_by_var.get(local_var, ""),
+                            "source": "DigitDoorPVPSceneView",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "attrVOList",
+                            "snippet": stripped,
+                            "note": "GetAttr emits this code/value pair into attrVOList.",
+                        }
+                    )
+
+            if name == "DigitDoorPVPSceneView.lua" and current_function == "_M.GetAttrCode":
+                if "DigitDoorAttrVO.new()" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "attrvo_created",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorPVPSceneView",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "DigitDoorAttrVO",
+                            "snippet": stripped,
+                            "note": "Each report attr entry is a DigitDoorAttrVO.",
+                        }
+                    )
+                for field in ["type", "value"]:
+                    if f"attrVo.{field}" in line:
+                        evidence_rows.append(
+                            {
+                                "category": "attrvo_field_assigned",
+                                "attr_code": "",
+                                "local_var": "",
+                                "getter": "",
+                                "source": "DigitDoorPVPSceneView",
+                                "file": _path_display(path, root),
+                                "line": line_no,
+                                "function": current_function,
+                                "wire_field": field,
+                                "snippet": stripped,
+                                "note": "GetAttrCode assigns this DigitDoorAttrVO field.",
+                            }
+                        )
+                if "clist:Add(attrVo)" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "attrvo_added_to_list",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorPVPSceneView",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "attrVOList",
+                            "snippet": stripped,
+                            "note": "GetAttrCode appends the built DigitDoorAttrVO to the list.",
+                        }
+                    )
+
+            if name == "DigitDoorAttrVO.lua":
+                if "self.type" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "digitdoor_attrvo_schema",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorAttrVO",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "type",
+                            "snippet": stripped,
+                            "note": "DigitDoorAttrVO.type is the attr code string.",
+                        }
+                    )
+                if "self.value" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "digitdoor_attrvo_schema",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorAttrVO",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "value",
+                            "snippet": stripped,
+                            "note": "DigitDoorAttrVO.value is the numeric attr value.",
+                        }
+                    )
+                if "readString()" in line or "writeString(self.type)" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "digitdoor_attrvo_wire_type_string",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorAttrVO",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "type",
+                            "snippet": stripped,
+                            "note": "Wire type for attr code is string.",
+                        }
+                    )
+                if "readDouble()" in line or "writeDouble(self.value)" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "digitdoor_attrvo_wire_value_double",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorAttrVO",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "value",
+                            "snippet": stripped,
+                            "note": "Wire type for attr value is double.",
+                        }
+                    )
+                if "return 91606" in line:
+                    evidence_rows.append(
+                        {
+                            "category": "digitdoor_attrvo_packet_id",
+                            "attr_code": "",
+                            "local_var": "",
+                            "getter": "",
+                            "source": "DigitDoorAttrVO",
+                            "file": _path_display(path, root),
+                            "line": line_no,
+                            "function": current_function,
+                            "wire_field": "91606",
+                            "snippet": stripped,
+                            "note": "DigitDoorAttrVO packet/bean id.",
+                        }
+                    )
+
+            if name == "DigitDoorSimpleVO.lua" and "attrVOList" in line:
+                evidence_rows.append(
+                    {
+                        "category": "simple_vo_attr_list_schema",
+                        "attr_code": "",
+                        "local_var": "",
+                        "getter": "",
+                        "source": "DigitDoorSimpleVO",
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "wire_field": "attrVOList",
+                        "snippet": stripped,
+                        "note": "DigitDoorSimpleVO embeds the attrVOList snapshot.",
+                    }
+                )
+    return attr_rows, evidence_rows
+
+
+def _write_digitdoor_pvp_report_attr_snapshot_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    attr_rows: list[dict[str, Any]],
+    evidence_rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor PVP report attr snapshot",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Attr rows: {len(attr_rows)}",
+        f"- Evidence rows: {len(evidence_rows)}",
+        "- Scope: static Lua evidence for the `DigitDoorPVPSceneView:GetAttr -> DigitDoorAttrVO -> DigitDoorSimpleVO.attrVOList` report snapshot. It does not assert server trust or replay acceptance.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Attr Order", "", "| Order | Code | Getter | Role | Note |", "| ---: | --- | --- | --- | --- |"])
+    for row in attr_rows:
+        lines.append(
+            "| "
+            f"{row.get('order', '')} | "
+            f"{_md_table_cell(row.get('attr_code', ''))} | "
+            f"{_md_table_cell(row.get('getter', ''))} | "
+            f"{_md_table_cell(row.get('role', ''))} | "
+            f"{_md_table_cell(row.get('note', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `DigitDoorPVPSceneView:GetAttr` emits 12 attr codes in a fixed visible order: HP, MAXHP, ATTACK, PVPATTACK, ATKSPEED, CRITICAL, ANTICRITICAL, INCREASEDAMAGE, REDUCEDAMAGE, PVPINCREASE, PVPREDUCE, and ADDDAMAGE.",
+            "- Each entry is a `DigitDoorAttrVO(91606)` with `type` as a string and `value` as a double, appended to `DigitDoorSimpleVO.attrVOList`.",
+            "- The PVP-specific snapshot fields are `PVPATTACK`, `PVPINCREASE`, and `PVPREDUCE`. `PVP_WINREDUCE` is not emitted in the report snapshot.",
+            "- This describes the client-built report payload shape only. Report validation/acceptance remains outside the visible Lua surface because no visible `SM_DigitDoorReport` exists.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_report_attr_snapshot_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    attr_rows, evidence_rows = _digitdoor_pvp_report_attr_rows(root, logic_dir)
+    category_counts = Counter(str(row.get("category") or "") for row in evidence_rows)
+    attr_codes = [str(row.get("attr_code") or "") for row in attr_rows]
+    stats = {
+        "source_file_count": len(_digitdoor_pvp_report_attr_files(root, logic_dir)),
+        "attr_row_count": len(attr_rows),
+        "evidence_row_count": len(evidence_rows),
+        "pvp_specific_attr_count": sum(1 for code in attr_codes if code.startswith("PVP")),
+        "getattr_local_getter_rows": category_counts.get("getattr_local_getter", 0),
+        "attrvo_schema_rows": category_counts.get("digitdoor_attrvo_schema", 0),
+        "attrvo_type_string_rows": category_counts.get("digitdoor_attrvo_wire_type_string", 0),
+        "attrvo_value_double_rows": category_counts.get("digitdoor_attrvo_wire_value_double", 0),
+        "simple_vo_attr_list_rows": category_counts.get("simple_vo_attr_list_schema", 0),
+        "contains_pvp_winreduce_attr": "PVP_WINREDUCE" in attr_codes,
+    }
+    expected_order = [
+        "HP",
+        "MAXHP",
+        "ATTACK",
+        "PVPATTACK",
+        "ATKSPEED",
+        "CRITICAL",
+        "ANTICRITICAL",
+        "INCREASEDAMAGE",
+        "REDUCEDAMAGE",
+        "PVPINCREASE",
+        "PVPREDUCE",
+        "ADDDAMAGE",
+    ]
+    verdict = {
+        "attr_order_confirmed": attr_codes == expected_order,
+        "attr_getters_mapped": stats["getattr_local_getter_rows"] >= len(expected_order),
+        "pvp_specific_attrs_present": {"PVPATTACK", "PVPINCREASE", "PVPREDUCE"}.issubset(set(attr_codes)),
+        "pvp_winreduce_not_emitted": not stats["contains_pvp_winreduce_attr"],
+        "digitdoor_attrvo_wire_shape_confirmed": stats["attrvo_type_string_rows"] >= 2
+        and stats["attrvo_value_double_rows"] >= 2,
+        "simple_vo_embeds_attr_list": stats["simple_vo_attr_list_rows"] >= 3,
+    }
+    verdict["pvp_report_attr_snapshot_confirmed"] = (
+        verdict["attr_order_confirmed"]
+        and verdict["pvp_specific_attrs_present"]
+        and verdict["pvp_winreduce_not_emitted"]
+        and verdict["digitdoor_attrvo_wire_shape_confirmed"]
+        and verdict["simple_vo_embeds_attr_list"]
+    )
+    _write_tsv(
+        out_dir / "pvp_report_attr_snapshot_attrs.tsv",
+        attr_rows,
+        ["order", "attr_code", "local_var", "getter", "role", "note", "file", "line"],
+    )
+    _write_tsv(
+        out_dir / "pvp_report_attr_snapshot_evidence.tsv",
+        evidence_rows,
+        ["category", "attr_code", "local_var", "getter", "source", "file", "line", "function", "wire_field", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_report_attr_snapshot_report.md"
+    _write_digitdoor_pvp_report_attr_snapshot_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        attr_rows=attr_rows,
+        evidence_rows=evidence_rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_report_attr_snapshot_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "attrs": str(out_dir / "pvp_report_attr_snapshot_attrs.tsv"),
+            "evidence": str(out_dir / "pvp_report_attr_snapshot_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_pvp_winner_projection_files(root: Path, logic_dir: Path) -> list[Path]:
+    candidates = [
+        logic_dir / "DigitDoorPVPSceneView.lua",
+        logic_dir / "DigitDoorNetLogic.lua",
+        logic_dir / "DigitDoorFightComponent.lua",
+    ]
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorReport.lua"))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_pvp_winner_projection_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_pvp_winner_projection_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            name = path.name
+            categories: list[tuple[str, str, str]] = []
+            if name == "DigitDoorPVPSceneView.lua":
+                if current_function == "_M.InitDataInfo":
+                    if "Scene_DigitDoorPVPIT" in line:
+                        categories.append(("pvp_mode_pvpit_branch", "curMapType", "PVPIT branch uses ImmortalDigital finish VO."))
+                    if "Scene_DigitDoorPVP" in line:
+                        categories.append(("pvp_mode_club_branch", "curMapType", "Club PVP branch uses ClubPkDigital finish VO."))
+                    if "self.curFinishVo=ImmortalDigitalMgr" in line:
+                        categories.append(("pvpit_finish_vo_source", "curFinishVo", "PVPIT finish VO source."))
+                    if "self.curFinishVo=ClubPkDigitalMgr" in line:
+                        categories.append(("club_finish_vo_source", "curFinishVo", "Club PVP finish VO source."))
+                    if "self.winnerId=self.curFinishVo.winnerId" in line:
+                        categories.append(("pvpit_winner_from_finish_vo", "winnerId", "PVPIT winner id is copied directly from curFinishVo.winnerId."))
+                    if "self.curFinishVo.victory" in line:
+                        categories.append(("club_winner_victory_branch", "victory", "Club PVP winner derives from curFinishVo.victory."))
+                    if "self.winnerId=self.curFinishVo.attacker.id" in line:
+                        categories.append(("club_winner_attacker_when_victory", "winnerId", "Club PVP victory=true selects attacker id."))
+                    if "self.winnerId=self.curFinishVo.defender.id" in line:
+                        categories.append(("club_winner_defender_when_not_victory", "winnerId", "Club PVP victory=false selects defender id."))
+                    if "self.otherId=" in line:
+                        categories.append(("other_id_projection", "otherId", "Other participant id is projected from finish VO."))
+                if current_function == "_M.UpdateHp":
+                    if "GetDefenseHPMsg()" in line:
+                        categories.append(("updatehp_defense_hp_source", "defenseHp", "UpdateHp watches defense-side HP."))
+                    if "GetAttackHPMsg()" in line:
+                        categories.append(("updatehp_attack_hp_source", "attackHp", "UpdateHp watches attack-side HP."))
+                    if "curHp==0" in line:
+                        categories.append(("updatehp_zero_hp_gate", "curHp", "CheckList can be triggered after one side reaches zero HP."))
+                    if "not self.winnerId:Equal(userVID)" in line:
+                        categories.append(("defense_dead_requires_user_not_winner", "winnerId", "Defense-side death path reports only when winnerId is not the user id."))
+                    if "self.winnerId:Equal(userVID)" in line:
+                        categories.append(("attack_dead_requires_user_winner", "winnerId", "Attack-side death path reports only when winnerId equals the user id."))
+                    if "self:CheckList(fightComponent)" in line:
+                        categories.append(("updatehp_triggers_checklist", "CheckList", "UpdateHp calls CheckList when the visible winner/death guard matches."))
+                if current_function == "_M.CheckList":
+                    if "clientWinnerId=self.winnerId:Equal(userId)and self.otherId or userId" in line:
+                        categories.append(("client_winner_id_inverts_visible_winner", "clientWinnerId", "Despite the name, this expression selects the non-winner in the two-player local view."))
+                    if "serverWinnerId=self.winnerId" in line:
+                        categories.append(("server_winner_id_uses_finish_winner", "serverWinnerId", "serverWinnerId is the finish-VO-derived winnerId."))
+                    if "CM_DigitDoorReportFun(" in line:
+                        categories.append(("checklist_sends_report", "CM_DigitDoorReport", "CheckList sends the built report fields."))
+                    if "atkVoList=self.attackList" in line:
+                        categories.append(("checklist_attack_list_snapshot", "atkVoList", "Report uses accumulated attackList snapshot."))
+                    if "defVoList=self.defenseList" in line:
+                        categories.append(("checklist_defense_list_snapshot", "defVoList", "Report uses accumulated defenseList snapshot."))
+            elif name == "DigitDoorNetLogic.lua" and current_function == "_M.CM_DigitDoorReportFun":
+                for field in ["clientWinnerId", "serverWinnerId"]:
+                    if f"CM_DigitDoorReport.{field}={field}" in line:
+                        categories.append(("netlogic_report_winner_field_assignment", field, "NetLogic assigns this winner field into CM_DigitDoorReport."))
+                if "F_SendMsg(CM_DigitDoorReport)" in line:
+                    categories.append(("netlogic_sends_report", "CM_DigitDoorReport", "NetLogic sends CM_DigitDoorReport."))
+            elif name == "CM_DigitDoorReport.lua":
+                for field in ["clientWinnerId", "serverWinnerId"]:
+                    if f"self.{field}" in line:
+                        categories.append(("report_schema_winner_field", field, "CM_DigitDoorReport declares/serializes this winner field."))
+                    if f"self.{field}=self:readLong()" in line or f"writeLong(self.{field})" in line:
+                        categories.append(("report_wire_winner_long", field, "Winner field wire type is long."))
+            elif name == "DigitDoorFightComponent.lua":
+                if "self.winnerId=vo.winnerId" in line:
+                    categories.append(("fight_component_winner_from_scene_info", "winnerId", "FightComponent also receives winnerId from scene info for PVP balancing."))
+                if "return self.winnerId" in line:
+                    categories.append(("fight_component_winner_getter", "winnerId", "FightComponent exposes winnerId through getter."))
+            for category, field, note in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "field": field,
+                        "source": path.stem,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                        "note": note,
+                    }
+                )
+    return rows
+
+
+def _write_digitdoor_pvp_winner_projection_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor PVP winner projection",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Evidence rows: {len(rows)}",
+        "- Scope: static Lua evidence for how `winnerId`, `clientWinnerId`, and `serverWinnerId` are projected into `CM_DigitDoorReport`. It does not assert server acceptance or replay truth.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Key Evidence",
+            "",
+            "| Category | Field | File | Line | Snippet |",
+            "| --- | --- | --- | ---: | --- |",
+        ]
+    )
+    for row in rows:
+        if row.get("category") in {
+            "pvpit_winner_from_finish_vo",
+            "club_winner_attacker_when_victory",
+            "club_winner_defender_when_not_victory",
+            "client_winner_id_inverts_visible_winner",
+            "server_winner_id_uses_finish_winner",
+            "report_wire_winner_long",
+        }:
+            lines.append(
+                "| "
+                f"{_md_table_cell(row.get('category', ''))} | "
+                f"{_md_table_cell(row.get('field', ''))} | "
+                f"{_md_table_cell(row.get('file', ''))} | "
+                f"{row.get('line', '')} | "
+                f"{_md_table_cell(row.get('snippet', ''))} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- PVPIT mode copies `winnerId` directly from `ImmortalDigital` finish VO; Club PVP derives winner from `curFinishVo.victory`, selecting attacker id when true and defender id when false.",
+            "- `serverWinnerId` in the report is the finish-VO-derived `self.winnerId`.",
+            "- `clientWinnerId` is misleadingly named in visible Lua: `self.winnerId:Equal(userId) and self.otherId or userId` selects the opposite participant from the visible winner in the two-player local view.",
+            "- `UpdateHp` gates `CheckList` on zero HP plus a winner/user-id condition; it does not compute the winner from local damage totals.",
+            "- The report packet serializes both winner fields as long values. No visible `SM_DigitDoorReport` closes server-side acceptance.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_winner_projection_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = _digitdoor_pvp_winner_projection_rows(root, logic_dir)
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    stats = {
+        "source_file_count": len(_digitdoor_pvp_winner_projection_files(root, logic_dir)),
+        "evidence_row_count": len(rows),
+        "finish_vo_winner_source_rows": category_counts.get("pvpit_winner_from_finish_vo", 0)
+        + category_counts.get("club_winner_attacker_when_victory", 0)
+        + category_counts.get("club_winner_defender_when_not_victory", 0),
+        "other_id_projection_rows": category_counts.get("other_id_projection", 0),
+        "updatehp_checklist_trigger_rows": category_counts.get("updatehp_triggers_checklist", 0),
+        "client_winner_projection_rows": category_counts.get("client_winner_id_inverts_visible_winner", 0),
+        "server_winner_projection_rows": category_counts.get("server_winner_id_uses_finish_winner", 0),
+        "netlogic_winner_assignment_rows": category_counts.get("netlogic_report_winner_field_assignment", 0),
+        "report_schema_winner_rows": category_counts.get("report_schema_winner_field", 0),
+        "report_wire_winner_long_rows": category_counts.get("report_wire_winner_long", 0),
+    }
+    verdict = {
+        "winner_source_from_finish_vo_visible": stats["finish_vo_winner_source_rows"] >= 3,
+        "checklist_trigger_guard_visible": stats["updatehp_checklist_trigger_rows"] >= 2,
+        "client_winner_id_inverts_visible_winner": stats["client_winner_projection_rows"] > 0,
+        "server_winner_id_uses_finish_winner": stats["server_winner_projection_rows"] > 0,
+        "report_winner_fields_assigned_and_serialized": stats["netlogic_winner_assignment_rows"] >= 2
+        and stats["report_schema_winner_rows"] >= 2
+        and stats["report_wire_winner_long_rows"] >= 2,
+    }
+    verdict["pvp_winner_projection_confirmed"] = all(verdict.values())
+    _write_tsv(
+        out_dir / "pvp_winner_projection_evidence.tsv",
+        rows,
+        ["category", "field", "source", "file", "line", "function", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_winner_projection_report.md"
+    _write_digitdoor_pvp_winner_projection_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        rows=rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_winner_projection_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "evidence": str(out_dir / "pvp_winner_projection_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_pvp_report_list_lifecycle_files(root: Path, logic_dir: Path) -> list[Path]:
+    candidates = [
+        logic_dir / "DigitDoorPVPSceneView.lua",
+        logic_dir / "DigitDoorNetLogic.lua",
+    ]
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorReport.lua"))
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/DigitDoorSimpleVO.lua"))
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _digitdoor_pvp_report_list_lifecycle_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in _digitdoor_pvp_report_list_lifecycle_files(root, logic_dir):
+        current_function = ""
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if match := _LUA_FUNCTION_RE.search(line):
+                current_function = match.group(1).strip()
+            stripped = _WHITESPACE_RE.sub(" ", line.strip())
+            compact = _WHITESPACE_RE.sub("", line)
+            name = path.name
+            categories: list[tuple[str, str, str]] = []
+            if name == "DigitDoorPVPSceneView.lua":
+                if current_function == "_M._init_":
+                    if "self.tbAttack={}" in compact:
+                        categories.append(("dedupe_map_initialized", "tbAttack", "Attack-side role-id dedupe map is initialized."))
+                    if "self.tbDefense={}" in compact:
+                        categories.append(("dedupe_map_initialized", "tbDefense", "Defense-side role-id dedupe map is initialized."))
+                    if "self.attackList=CList.new()" in compact:
+                        categories.append(("snapshot_list_initialized", "attackList", "Attack snapshot list is initialized."))
+                    if "self.defenseList=CList.new()" in compact:
+                        categories.append(("snapshot_list_initialized", "defenseList", "Defense snapshot list is initialized."))
+                if current_function == "_M.AddEvent":
+                    if "self.entityDead=function" in compact:
+                        categories.append(("dead_event_handler_defined", "entityDead", "Shared entity-death handler is defined."))
+                    if "self:SaveEntityData(entityView)" in compact:
+                        categories.append(("dead_event_saves_entity_data", "SaveEntityData", "Death handler snapshots the dead entity."))
+                    if "self:UpdateHp()" in compact:
+                        categories.append(("dead_event_updates_hp", "UpdateHp", "Death handler re-checks HP/report conditions."))
+                    if "ENTITY_ENTER_DEAD" in line or "AFTER_ENTITY_DEAD_ANIM" in line:
+                        categories.append(("dead_event_registered", "entityDead", "Entity death event feeds the snapshot path."))
+                if current_function == "_M.SaveEntityData":
+                    if "V_EntityType==LuaEntityType.DigitDoorPartner" in compact:
+                        categories.append(("save_entity_partner_guard", "DigitDoorPartner", "Only DigitDoor partner entities are snapshot candidates."))
+                    if "campGroup==DigitDoorType.CampGroup.Attack" in compact:
+                        categories.append(("save_entity_attack_branch", "attackList", "Attack-side dead entity branch."))
+                    if "notself.tbAttack[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("save_entity_dedupe_guard", "tbAttack", "Attack-side snapshot is deduped by role id."))
+                    if "notself.tbDefense[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("save_entity_dedupe_guard", "tbDefense", "Defense-side snapshot is deduped by role id."))
+                    if "self.attackList:Add(data)" in compact:
+                        categories.append(("save_entity_adds_snapshot", "attackList", "Dead attack-side entity snapshot is appended."))
+                    if "self.defenseList:Add(data)" in compact:
+                        categories.append(("save_entity_adds_snapshot", "defenseList", "Dead defense-side entity snapshot is appended."))
+                    if "self:CreateEntityData(entityView)" in compact:
+                        categories.append(("save_entity_creates_simple_vo", "DigitDoorSimpleVO", "Dead entity is projected through CreateEntityData."))
+                if current_function == "_M.CheckList":
+                    if "ifnotself.curFinishVothen" in compact:
+                        categories.append(("checklist_requires_finish_vo", "curFinishVo", "Report build exits when finish VO is absent."))
+                    if "fightComponent:GetDefenseViewList()" in compact:
+                        categories.append(("checklist_view_source", "defenseList", "CheckList reads remaining defense-side live views."))
+                    if "fightComponent:GetAttackViewList()" in compact:
+                        categories.append(("checklist_view_source", "attackList", "CheckList reads remaining attack-side live views."))
+                    if "notself.tbDefense[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("checklist_dedupe_guard", "tbDefense", "CheckList backfill is deduped for defense role ids."))
+                    if "notself.tbAttack[entityView.Entity.V_RoleId]" in compact:
+                        categories.append(("checklist_dedupe_guard", "tbAttack", "CheckList backfill is deduped for attack role ids."))
+                    if "self.defenseList:Add(data)" in compact:
+                        categories.append(("checklist_backfills_snapshot", "defenseList", "CheckList appends remaining defense-side snapshot."))
+                    if "self.attackList:Add(data)" in compact:
+                        categories.append(("checklist_backfills_snapshot", "attackList", "CheckList appends remaining attack-side snapshot."))
+                    if "atkVoList=self.attackList" in compact:
+                        categories.append(("checklist_assigns_request_list", "atkVoList", "Report request uses accumulated attackList."))
+                    if "defVoList=self.defenseList" in compact:
+                        categories.append(("checklist_assigns_request_list", "defVoList", "Report request uses accumulated defenseList."))
+                    if "CM_DigitDoorReportFun(" in line:
+                        categories.append(("checklist_sends_report", "CM_DigitDoorReport", "CheckList sends the completed report request."))
+                if current_function == "_M.CreateEntityData":
+                    for field in ["ownerId", "resourceId", "index", "lv"]:
+                        if f"data.{field}" in line:
+                            categories.append(("simple_vo_field_projected", field, "CreateEntityData fills this DigitDoorSimpleVO field."))
+                    if "self:GetAttr(entityView.Entity.EntityData,data.attrVOList)" in compact:
+                        categories.append(("simple_vo_attr_list_filled", "attrVOList", "CreateEntityData fills attrVOList via GetAttr."))
+                    if "DigitDoorSimpleVO.new()" in compact:
+                        categories.append(("simple_vo_created", "DigitDoorSimpleVO", "CreateEntityData instantiates DigitDoorSimpleVO."))
+                if current_function == "_M.Destroy":
+                    if "self.attackList=CList:Recyle(self.attackList)" in compact:
+                        categories.append(("snapshot_list_recycled", "attackList", "Attack snapshot list is recycled on destroy."))
+                    if "self.defenseList=CList:Recyle(self.defenseList)" in compact:
+                        categories.append(("snapshot_list_recycled", "defenseList", "Defense snapshot list is recycled on destroy."))
+            elif name == "DigitDoorNetLogic.lua" and current_function == "_M.CM_DigitDoorReportFun":
+                for field in ["atkVoList", "defVoList"]:
+                    if f"CM_DigitDoorReport.{field}={field}" in compact:
+                        categories.append(("netlogic_assigns_request_list", field, "NetLogic assigns this list into CM_DigitDoorReport."))
+                if "F_SendMsg(CM_DigitDoorReport)" in line:
+                    categories.append(("netlogic_sends_report", "CM_DigitDoorReport", "NetLogic sends CM_DigitDoorReport."))
+            elif name == "CM_DigitDoorReport.lua":
+                for field in ["atkVoList", "defVoList"]:
+                    if f"self.{field}=CList.new()" in compact:
+                        categories.append(("request_list_schema_declared", field, "CM_DigitDoorReport declares this list field."))
+                    if f"readMessageList2List(self.{field})" in compact:
+                        categories.append(("request_list_read_wire", field, "CM_DigitDoorReport reads this list as a message list."))
+                    if f"writeList(self.{field})" in compact:
+                        categories.append(("request_list_write_wire", field, "CM_DigitDoorReport writes this list."))
+            elif name == "DigitDoorSimpleVO.lua":
+                for field in ["ownerId", "resourceId", "index", "lv", "attrVOList"]:
+                    if f"self.{field}" in line:
+                        categories.append(("simple_vo_schema_field", field, "DigitDoorSimpleVO exposes this snapshot field."))
+                if "readLong()" in line or "writeLong(" in line:
+                    categories.append(("simple_vo_long_wire", "ownerId", "DigitDoorSimpleVO owner id is long-shaped on wire."))
+                if "readInt()" in line or "writeInt(" in line:
+                    categories.append(("simple_vo_int_wire", "resourceId/index/lv", "DigitDoorSimpleVO numeric fields are int-shaped on wire."))
+                if "readMessageList2List(self.attrVOList)" in compact or "writeList(self.attrVOList)" in compact:
+                    categories.append(("simple_vo_attr_list_wire", "attrVOList", "DigitDoorSimpleVO attrVOList is a nested message list."))
+            for category, field, note in categories:
+                rows.append(
+                    {
+                        "category": category,
+                        "field": field,
+                        "source": path.stem,
+                        "file": _path_display(path, root),
+                        "line": line_no,
+                        "function": current_function,
+                        "snippet": stripped,
+                        "note": note,
+                    }
+                )
+    return rows
+
+
+def _write_digitdoor_pvp_report_list_lifecycle_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor PVP report list lifecycle",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Evidence rows: {len(rows)}",
+        "- Scope: static Lua evidence for how `attackList`/`defenseList` snapshots are collected into `CM_DigitDoorReport`. It does not assert server acceptance or replay truth.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Lifecycle Evidence",
+            "",
+            "| Category | Field | File | Line | Snippet |",
+            "| --- | --- | --- | ---: | --- |",
+        ]
+    )
+    priority_categories = {
+        "snapshot_list_initialized",
+        "dead_event_registered",
+        "save_entity_dedupe_guard",
+        "save_entity_adds_snapshot",
+        "checklist_view_source",
+        "checklist_backfills_snapshot",
+        "checklist_assigns_request_list",
+        "simple_vo_field_projected",
+        "simple_vo_attr_list_filled",
+        "request_list_read_wire",
+        "request_list_write_wire",
+        "snapshot_list_recycled",
+    }
+    for row in rows:
+        if row.get("category") in priority_categories:
+            lines.append(
+                "| "
+                f"{_md_table_cell(row.get('category', ''))} | "
+                f"{_md_table_cell(row.get('field', ''))} | "
+                f"{_md_table_cell(row.get('file', ''))} | "
+                f"{row.get('line', '')} | "
+                f"{_md_table_cell(row.get('snippet', ''))} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `DigitDoorPVPSceneView` initializes `tbAttack/tbDefense` dedupe maps and `attackList/defenseList` snapshot lists when the PVP scene view is created.",
+            "- Entity-death events first call `SaveEntityData`, which snapshots dead DigitDoor partner entities once per `V_RoleId` into the side-specific list.",
+            "- When `UpdateHp` decides the report should be built, `CheckList` backfills any still-live attack/defense views that were not already captured by the death-event path.",
+            "- Each entry is created by `CreateEntityData` as `DigitDoorSimpleVO(ownerId, resourceId, index, lv, attrVOList)`, with `attrVOList` filled by `GetAttr`.",
+            "- `CM_DigitDoorReport` carries `atkVoList` and `defVoList` as message lists; `DigitDoorNetLogic` assigns the accumulated lists and sends the request.",
+            "- The local lists are recycled in `Destroy`; there is no visible dedicated `SM_DigitDoorReport` in this static surface.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_report_list_lifecycle_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = _digitdoor_pvp_report_list_lifecycle_rows(root, logic_dir)
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    simple_vo_fields = {
+        str(row.get("field"))
+        for row in rows
+        if row.get("category") == "simple_vo_field_projected"
+    }
+    stats = {
+        "source_file_count": len(_digitdoor_pvp_report_list_lifecycle_files(root, logic_dir)),
+        "evidence_row_count": len(rows),
+        "dedupe_map_initialized_rows": category_counts.get("dedupe_map_initialized", 0),
+        "snapshot_list_initialized_rows": category_counts.get("snapshot_list_initialized", 0),
+        "dead_event_registered_rows": category_counts.get("dead_event_registered", 0),
+        "dead_event_saves_entity_data_rows": category_counts.get("dead_event_saves_entity_data", 0),
+        "save_entity_dedupe_guard_rows": category_counts.get("save_entity_dedupe_guard", 0),
+        "save_entity_adds_snapshot_rows": category_counts.get("save_entity_adds_snapshot", 0),
+        "checklist_view_source_rows": category_counts.get("checklist_view_source", 0),
+        "checklist_backfills_snapshot_rows": category_counts.get("checklist_backfills_snapshot", 0),
+        "checklist_assigns_request_list_rows": category_counts.get("checklist_assigns_request_list", 0),
+        "simple_vo_projected_field_count": len(simple_vo_fields),
+        "simple_vo_attr_list_filled_rows": category_counts.get("simple_vo_attr_list_filled", 0),
+        "netlogic_assigns_request_list_rows": category_counts.get("netlogic_assigns_request_list", 0),
+        "request_list_read_wire_rows": category_counts.get("request_list_read_wire", 0),
+        "request_list_write_wire_rows": category_counts.get("request_list_write_wire", 0),
+        "snapshot_list_recycled_rows": category_counts.get("snapshot_list_recycled", 0),
+    }
+    verdict = {
+        "lists_initialized_with_dedupe_maps": stats["dedupe_map_initialized_rows"] >= 2
+        and stats["snapshot_list_initialized_rows"] >= 2,
+        "dead_events_feed_snapshot_path": stats["dead_event_registered_rows"] >= 2
+        and stats["dead_event_saves_entity_data_rows"] > 0,
+        "save_entity_data_dedupes_dead_partner_snapshots": stats["save_entity_dedupe_guard_rows"] >= 2
+        and stats["save_entity_adds_snapshot_rows"] >= 2,
+        "checklist_backfills_live_views_before_report": stats["checklist_view_source_rows"] >= 2
+        and stats["checklist_backfills_snapshot_rows"] >= 2,
+        "simple_vo_projection_shape_visible": stats["simple_vo_projected_field_count"] >= 4
+        and stats["simple_vo_attr_list_filled_rows"] > 0,
+        "request_list_wire_shape_confirmed": stats["netlogic_assigns_request_list_rows"] >= 2
+        and stats["request_list_read_wire_rows"] >= 2
+        and stats["request_list_write_wire_rows"] >= 2,
+        "lists_recycled_on_destroy": stats["snapshot_list_recycled_rows"] >= 2,
+    }
+    verdict["pvp_report_list_lifecycle_confirmed"] = all(verdict.values())
+    _write_tsv(
+        out_dir / "pvp_report_list_lifecycle_evidence.tsv",
+        rows,
+        ["category", "field", "source", "file", "line", "function", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_report_list_lifecycle_report.md"
+    _write_digitdoor_pvp_report_list_lifecycle_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        rows=rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_report_list_lifecycle_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "evidence": str(out_dir / "pvp_report_list_lifecycle_evidence.tsv"),
+        },
+    }
+
+
+def _digitdoor_pvp_report_acceptance_gap_rows(root: Path, logic_dir: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def add_row(
+        category: str,
+        field: str,
+        source: str,
+        path: Path | None,
+        line: int | str,
+        snippet: str,
+        note: str,
+    ) -> None:
+        rows.append(
+            {
+                "category": category,
+                "field": field,
+                "source": source,
+                "file": _path_display(path, root) if path else "",
+                "line": line,
+                "snippet": _WHITESPACE_RE.sub(" ", snippet.strip()),
+                "note": note,
+            }
+        )
+
+    cm_files = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorReport*.lua"),
+        key=lambda item: str(item).lower(),
+    )
+    sm_files = sorted(
+        root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorReport*.lua"),
+        key=lambda item: str(item).lower(),
+    )
+    for path in cm_files:
+        add_row("lua_request_packet_file", "CM_DigitDoorReport", "LuaMessage", path, "", path.name, "Visible CM request packet file.")
+    for path in sm_files:
+        add_row("lua_response_packet_file", "SM_DigitDoorReport", "LuaMessage", path, "", path.name, "Visible SM response packet file.")
+    if not sm_files:
+        add_row("lua_response_packet_missing", "SM_DigitDoorReport", "LuaMessage", None, "", "", "No visible SM_DigitDoorReport Lua packet file found.")
+
+    netlogic_path = logic_dir / "DigitDoorNetLogic.lua"
+    if netlogic_path.is_file():
+        for line_no, line in enumerate(netlogic_path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            compact = _WHITESPACE_RE.sub("", line)
+            if "_CM_DigitDoorReport" in line and "F_Register" in line:
+                add_row("netlogic_request_registered", "CM_DigitDoorReport", "DigitDoorNetLogic", netlogic_path, line_no, line, "Request packet is registered.")
+            if "_CM_DigitDoorReport" in line and "F_Unregister" in line:
+                add_row("netlogic_request_unregistered", "CM_DigitDoorReport", "DigitDoorNetLogic", netlogic_path, line_no, line, "Request packet is unregistered on destroy.")
+            if "CM_DigitDoorReportFun" in line:
+                add_row("netlogic_request_send_function", "CM_DigitDoorReportFun", "DigitDoorNetLogic", netlogic_path, line_no, line, "Request send function exists.")
+            if "F_SendMsg(CM_DigitDoorReport)" in compact:
+                add_row("netlogic_request_sent", "CM_DigitDoorReport", "DigitDoorNetLogic", netlogic_path, line_no, line, "Request packet is sent.")
+            if "SM_DigitDoorReport" in line:
+                add_row("netlogic_response_symbol", "SM_DigitDoorReport", "DigitDoorNetLogic", netlogic_path, line_no, line, "Potential visible response symbol.")
+
+    index_dir = root / "apk_static_index"
+    indexed_files = [
+        index_dir / "lua_lscript_module_digitdoor_protocol_schemas.tsv",
+        index_dir / "lua_lscript_module_digitdoor_protocol_fields.tsv",
+        index_dir / "lua_lscript_module_digitdoor_netlogic_flow_edges.tsv",
+        index_dir / "lua_lscript_module_digitdoor_surface_protocol_refs.tsv",
+    ]
+    protocol_response_rows = 0
+    for path in indexed_files:
+        if not path.is_file():
+            continue
+        for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            if "CM_DigitDoorReport" in line:
+                add_row("index_request_report_row", "CM_DigitDoorReport", path.stem, path, line_no, line, "Existing generated index confirms request-side report surface.")
+            if "SM_DigitDoorReport" in line:
+                protocol_response_rows += 1
+                add_row("index_response_report_row", "SM_DigitDoorReport", path.stem, path, line_no, line, "Generated index surfaced a response-side report row.")
+    if protocol_response_rows == 0:
+        add_row("index_response_report_missing", "SM_DigitDoorReport", "apk_static_index", None, "", "", "Generated DigitDoor indexes contain no SM_DigitDoorReport row.")
+
+    decoded_paths = _digitdoor_capture_decoded_jsons(root)
+    for decoded_path in decoded_paths:
+        frames, error = _load_digitdoor_decoded_frames(decoded_path)
+        if error:
+            add_row("decoded_fixture_error", decoded_path.name, "tcp_captures", decoded_path, "", error, "Decoded fixture could not be read.")
+            continue
+        add_row("decoded_fixture_scanned", decoded_path.name, "tcp_captures", decoded_path, "", str(len(frames)), "Existing decoded TCP fixture scanned for report packet names/ids.")
+        for index, frame in enumerate(frames):
+            name = str(frame.get("name") or frame.get("packet_name") or frame.get("msg_name") or "")
+            pro_id = frame.get("pro_id")
+            if pro_id == 91644 or name in {"CM_DigitDoorReport", "SM_DigitDoorReport"}:
+                add_row(
+                    "decoded_report_packet_hit",
+                    name or str(pro_id),
+                    "tcp_captures",
+                    decoded_path,
+                    index,
+                    json.dumps({"pro_id": pro_id, "name": name}, ensure_ascii=False),
+                    "Existing decoded fixture contains a report packet candidate.",
+                )
+
+    cpp2il_terms = ["CM_DigitDoorReport", "SM_DigitDoorReport"]
+    for surface in _digitdoor_startgame_cpp2il_surfaces(root):
+        files = _iter_digitdoor_startgame_cpp2il_files(surface)
+        surface_hit_count = 0
+        for file_path in files:
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not any(term in text for term in cpp2il_terms):
+                continue
+            for line_no, line in enumerate(text.splitlines(), 1):
+                for term in cpp2il_terms:
+                    if term in line:
+                        surface_hit_count += 1
+                        add_row(
+                            "cpp2il_exact_report_symbol_hit",
+                            term,
+                            str(surface["surface"]),
+                            file_path,
+                            line_no,
+                            line,
+                            "Exact report packet symbol surfaced in native-readable output; line context must be reviewed.",
+                        )
+        add_row(
+            "cpp2il_surface_summary",
+            str(surface["surface"]),
+            "Cpp2IL",
+            Path(surface["path"]),
+            "",
+            f"files={len(files)} hits={surface_hit_count}",
+            "Cpp2IL/metadata surface exact-symbol scan summary.",
+        )
+    return rows
+
+
+def _write_digitdoor_pvp_report_acceptance_gap_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor PVP report acceptance gap",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Evidence rows: {len(rows)}",
+        "- Scope: static/index/runtime-fixture evidence for whether the visible client surface closes `CM_DigitDoorReport` acceptance. It does not send, replay, or modify packets.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            "| Category | Field | Source | File | Line | Snippet |",
+            "| --- | --- | --- | --- | ---: | --- |",
+        ]
+    )
+    priority_categories = {
+        "lua_request_packet_file",
+        "lua_response_packet_missing",
+        "netlogic_request_registered",
+        "netlogic_request_sent",
+        "index_request_report_row",
+        "index_response_report_missing",
+        "decoded_fixture_scanned",
+        "decoded_report_packet_hit",
+        "cpp2il_exact_report_symbol_hit",
+        "cpp2il_surface_summary",
+    }
+    for row in rows:
+        if row.get("category") in priority_categories:
+            lines.append(
+                "| "
+                f"{_md_table_cell(row.get('category', ''))} | "
+                f"{_md_table_cell(row.get('field', ''))} | "
+                f"{_md_table_cell(row.get('source', ''))} | "
+                f"{_md_table_cell(row.get('file', ''))} | "
+                f"{row.get('line', '')} | "
+                f"{_md_table_cell(row.get('snippet', ''))} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- The request side is visible and indexed: `CM_DigitDoorReport(91644)` exists, is registered by `DigitDoorNetLogic`, and is sent by `CM_DigitDoorReportFun`.",
+            "- The response/acceptance side is not visible in current Lua/index surfaces: no `SM_DigitDoorReport` packet file, schema row, or NetLogic handler was found.",
+            "- Existing decoded TCP fixtures do not contain `CM_DigitDoorReport`, `SM_DigitDoorReport`, or `pro_id=91644`, so they cannot prove runtime acceptance behavior.",
+            "- Exact-symbol Cpp2IL/metadata scan does not expose a readable native `SM_DigitDoorReport` consumer in the current surfaces.",
+            "- Treat server acceptance, validation, and replay truth as an unresolved external boundary unless a focused, privacy-filtered runtime sample or stronger native evidence is added later.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = _digitdoor_pvp_report_acceptance_gap_rows(root, logic_dir)
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    cpp2il_file_count = 0
+    cpp2il_surface_count = category_counts.get("cpp2il_surface_summary", 0)
+    for row in rows:
+        if row.get("category") != "cpp2il_surface_summary":
+            continue
+        match = re.search(r"files=(\d+)", str(row.get("snippet") or ""))
+        if match:
+            cpp2il_file_count += int(match.group(1))
+    stats = {
+        "evidence_row_count": len(rows),
+        "cm_lua_packet_file_count": category_counts.get("lua_request_packet_file", 0),
+        "sm_lua_packet_file_count": category_counts.get("lua_response_packet_file", 0),
+        "netlogic_request_registered_rows": category_counts.get("netlogic_request_registered", 0),
+        "netlogic_request_sent_rows": category_counts.get("netlogic_request_sent", 0),
+        "netlogic_response_symbol_rows": category_counts.get("netlogic_response_symbol", 0),
+        "index_request_report_rows": category_counts.get("index_request_report_row", 0),
+        "index_response_report_rows": category_counts.get("index_response_report_row", 0),
+        "decoded_fixture_count": category_counts.get("decoded_fixture_scanned", 0),
+        "decoded_report_packet_hit_count": category_counts.get("decoded_report_packet_hit", 0),
+        "cpp2il_surface_count": cpp2il_surface_count,
+        "cpp2il_scanned_file_count": cpp2il_file_count,
+        "cpp2il_exact_report_symbol_hit_count": category_counts.get("cpp2il_exact_report_symbol_hit", 0),
+    }
+    verdict = {
+        "request_report_surface_visible": stats["cm_lua_packet_file_count"] > 0
+        and stats["netlogic_request_registered_rows"] > 0
+        and stats["netlogic_request_sent_rows"] > 0
+        and stats["index_request_report_rows"] > 0,
+        "no_visible_sm_report_packet_or_handler": stats["sm_lua_packet_file_count"] == 0
+        and stats["netlogic_response_symbol_rows"] == 0
+        and stats["index_response_report_rows"] == 0,
+        "existing_decoded_fixtures_have_no_report_sample": stats["decoded_fixture_count"] > 0
+        and stats["decoded_report_packet_hit_count"] == 0,
+        "native_readable_surfaces_have_no_exact_report_symbol": stats["cpp2il_exact_report_symbol_hit_count"] == 0,
+    }
+    verdict["pvp_report_acceptance_gap_confirmed"] = all(verdict.values())
+    _write_tsv(
+        out_dir / "pvp_report_acceptance_gap_evidence.tsv",
+        rows,
+        ["category", "field", "source", "file", "line", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_report_acceptance_gap_report.md"
+    _write_digitdoor_pvp_report_acceptance_gap_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        rows=rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_report_acceptance_gap_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "evidence": str(out_dir / "pvp_report_acceptance_gap_evidence.tsv"),
+        },
+    }
+
+
+def _pvp_report_family_scene_module(path: Path) -> str:
+    name = path.name
+    if name == "DigitDoorPVPSceneView.lua":
+        return "digitdoor"
+    if name == "TowerDefensePVPSceneView.lua":
+        return "towerdefense"
+    if name == "DoupoTDPVPSceneView.lua":
+        return "doupotd"
+    return path.stem
+
+
+def _pvp_report_family_files(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    scene_names = {"DigitDoorPVPSceneView.lua", "TowerDefensePVPSceneView.lua", "DoupoTDPVPSceneView.lua"}
+    for path in root.glob("by_source/lscripts/gamesystem/game/*/text_assets/*PVPSceneView.lua"):
+        if path.name in scene_names:
+            candidates.append(path)
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/*/text_assets/*NetLogic.lua"))
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DigitDoorReport*.lua"))
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DigitDoorReport*.lua"))
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/CM_DoupoTDReport*.lua"))
+    candidates.extend(root.glob("by_source/lscripts/gamesystem/game/message_*/text_assets/SM_DoupoTDReport*.lua"))
+    index_dir = root / "apk_static_index"
+    candidates.extend(
+        [
+            index_dir / "lua_lscript_module_digitdoor_protocol_schemas.tsv",
+            index_dir / "lua_lscript_module_doupotd_protocol_schemas.tsv",
+            index_dir / "lua_lscript_module_digitdoor_netlogic_flow_edges.tsv",
+            index_dir / "lua_lscript_module_doupotd_netlogic_flow_edges.tsv",
+        ]
+    )
+    unique: dict[str, Path] = {}
+    for path in candidates:
+        if path.is_file():
+            unique[str(path).lower()] = path
+    return sorted(unique.values(), key=lambda item: str(item).lower())
+
+
+def _pvp_report_family_rows(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def add_row(
+        category: str,
+        module: str,
+        field: str,
+        path: Path | None,
+        line: int | str,
+        snippet: str,
+        note: str,
+    ) -> None:
+        rows.append(
+            {
+                "category": category,
+                "module": module,
+                "field": field,
+                "file": _path_display(path, root) if path else "",
+                "line": line,
+                "snippet": _WHITESPACE_RE.sub(" ", snippet.strip()),
+                "note": note,
+            }
+        )
+
+    files = _pvp_report_family_files(root)
+    for path in files:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        name = path.name
+        if name.endswith("PVPSceneView.lua"):
+            module = _pvp_report_family_scene_module(path)
+            current_function = ""
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if match := _LUA_FUNCTION_RE.search(line):
+                    current_function = match.group(1).strip()
+                compact = _WHITESPACE_RE.sub("", line)
+                if current_function == "_M.CheckList":
+                    if "CM_DigitDoorReportFun(" in line:
+                        add_row(
+                            "pvp_scene_uses_digitdoor_report_fun",
+                            module,
+                            "CM_DigitDoorReportFun",
+                            path,
+                            line_no,
+                            line,
+                            "PVP scene sends through DigitDoor report function.",
+                        )
+                    if "CM_DoupoTDReportFun(" in line:
+                        add_row(
+                            "pvp_scene_uses_doupotd_report_fun",
+                            module,
+                            "CM_DoupoTDReportFun",
+                            path,
+                            line_no,
+                            line,
+                            "PVP scene sends through DoupoTD report function.",
+                        )
+                    for field in ["atkVoList", "defVoList", "clientWinnerId", "serverWinnerId"]:
+                        if f"{field}=" in compact:
+                            add_row(
+                                "pvp_scene_common_report_field",
+                                module,
+                                field,
+                                path,
+                                line_no,
+                                line,
+                                "Scene fills a common PVP report argument.",
+                            )
+                    for scene_type in [
+                        "Scene_DigitDoorPVPIT",
+                        "Scene_DigitDoorPVP",
+                        "Scene_TowerDefensePVPIT",
+                        "Scene_TowerDefensePVP",
+                        "Scene_DoupoTDPVPIT",
+                        "Scene_DoupoTDPVP",
+                    ]:
+                        if scene_type in line:
+                            add_row(
+                                "pvp_scene_mode_branch",
+                                module,
+                                scene_type,
+                                path,
+                                line_no,
+                                line,
+                                "Scene branches report payload by PVP map type.",
+                            )
+                if current_function == "_M.CreateEntityData" and "DigitDoorSimpleVO.new()" in compact:
+                    add_row(
+                        "pvp_scene_uses_digitdoor_simple_vo",
+                        module,
+                        "DigitDoorSimpleVO",
+                        path,
+                        line_no,
+                        line,
+                        "Scene report snapshot row uses DigitDoorSimpleVO.",
+                    )
+        elif name.endswith("NetLogic.lua"):
+            module = "digitdoor" if name == "DigitDoorNetLogic.lua" else "doupotd" if name == "DoupoTDNetLogic.lua" else path.parent.parent.name
+            current_function = ""
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if match := _LUA_FUNCTION_RE.search(line):
+                    current_function = match.group(1).strip()
+                if "CM_DigitDoorReport" in line:
+                    add_row(
+                        "netlogic_digitdoor_report_symbol",
+                        module,
+                        "CM_DigitDoorReport",
+                        path,
+                        line_no,
+                        line,
+                        "NetLogic has DigitDoor report symbol evidence.",
+                    )
+                if "CM_DoupoTDReport" in line:
+                    add_row(
+                        "netlogic_doupotd_report_symbol",
+                        module,
+                        "CM_DoupoTDReport",
+                        path,
+                        line_no,
+                        line,
+                        "NetLogic has DoupoTD report symbol evidence.",
+                    )
+                if "function _M.CM_DigitDoorReportFun" in line:
+                    add_row(
+                        "netlogic_digitdoor_report_fun",
+                        module,
+                        "CM_DigitDoorReportFun",
+                        path,
+                        line_no,
+                        line,
+                        "DigitDoor report send function is visible.",
+                    )
+                if "function _M.CM_DoupoTDReportFun" in line:
+                    add_row(
+                        "netlogic_doupotd_report_fun",
+                        module,
+                        "CM_DoupoTDReportFun",
+                        path,
+                        line_no,
+                        line,
+                        "DoupoTD report send function is visible.",
+                    )
+                if current_function in {"_M.CM_DigitDoorReportFun", "_M.CM_DoupoTDReportFun"} and "F_SendMsg" in line:
+                    add_row(
+                        "netlogic_report_send",
+                        module,
+                        current_function,
+                        path,
+                        line_no,
+                        line,
+                        "Report send function sends a packet.",
+                    )
+        elif name.startswith(("CM_DigitDoorReport", "SM_DigitDoorReport", "CM_DoupoTDReport", "SM_DoupoTDReport")):
+            field = name.split("__", 1)[0].removesuffix(".lua")
+            module = "digitdoor" if "DigitDoor" in field else "doupotd"
+            add_row(
+                "report_packet_file",
+                module,
+                field,
+                path,
+                "",
+                name,
+                "Visible report packet file.",
+            )
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if "return" in line and ("91644" in line or "936" in line):
+                    add_row(
+                        "report_packet_id",
+                        module,
+                        field,
+                        path,
+                        line_no,
+                        line,
+                        "Report packet id candidate.",
+                    )
+        elif path.suffix == ".tsv":
+            for line_no, line in enumerate(text.splitlines(), 1):
+                if "CM_DigitDoorReport" in line or "SM_DigitDoorReport" in line:
+                    add_row(
+                        "index_digitdoor_report_row",
+                        "digitdoor",
+                        "DigitDoorReport",
+                        path,
+                        line_no,
+                        line,
+                        "Generated index row for DigitDoor report family.",
+                    )
+                if "CM_DoupoTDReport" in line or "SM_DoupoTDReport" in line:
+                    add_row(
+                        "index_doupotd_report_row",
+                        "doupotd",
+                        "DoupoTDReport",
+                        path,
+                        line_no,
+                        line,
+                        "Generated index row for DoupoTD report family.",
+                    )
+    if not any(row["category"] == "report_packet_file" and row["field"] == "CM_DoupoTDReport" for row in rows):
+        add_row(
+            "doupotd_report_packet_missing",
+            "doupotd",
+            "CM_DoupoTDReport",
+            None,
+            "",
+            "",
+            "No visible CM_DoupoTDReport packet file found.",
+        )
+    if not any(row["category"] == "netlogic_doupotd_report_fun" for row in rows):
+        add_row(
+            "doupotd_report_netlogic_fun_missing",
+            "doupotd",
+            "CM_DoupoTDReportFun",
+            None,
+            "",
+            "",
+            "No visible CM_DoupoTDReportFun implementation found.",
+        )
+    return rows
+
+
+def _write_pvp_report_family_reuse_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    rows: list[dict[str, Any]],
+    stats: dict[str, Any],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# PVP report family reuse",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Evidence rows: {len(rows)}",
+        "- Scope: static Lua/index evidence for PVP report reuse across DigitDoor, TowerDefense, and DoupoTD scene views. It does not send, replay, or modify packets.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(["", "## Counts", ""])
+    for key, value in stats.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            "| Category | Module | Field | File | Line | Snippet |",
+            "| --- | --- | --- | --- | ---: | --- |",
+        ]
+    )
+    priority_categories = {
+        "pvp_scene_uses_digitdoor_report_fun",
+        "pvp_scene_uses_doupotd_report_fun",
+        "pvp_scene_uses_digitdoor_simple_vo",
+        "netlogic_digitdoor_report_fun",
+        "netlogic_doupotd_report_fun",
+        "report_packet_file",
+        "doupotd_report_packet_missing",
+        "doupotd_report_netlogic_fun_missing",
+        "index_digitdoor_report_row",
+        "index_doupotd_report_row",
+    }
+    for row in rows:
+        if row.get("category") not in priority_categories:
+            continue
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('category', ''))} | "
+            f"{_md_table_cell(row.get('module', ''))} | "
+            f"{_md_table_cell(row.get('field', ''))} | "
+            f"{_md_table_cell(row.get('file', ''))} | "
+            f"{row.get('line', '')} | "
+            f"{_md_table_cell(row.get('snippet', ''))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- `DigitDoorPVPSceneView` builds a `CM_DigitDoorReport` request through `DigitDoorMgr.NetLogic:CM_DigitDoorReportFun`.",
+            "- `TowerDefensePVPSceneView` also calls the same `DigitDoorMgr.NetLogic:CM_DigitDoorReportFun`, so TowerDefense PVP reuses the DigitDoor report packet/path rather than a separate TowerDefense report packet in the visible Lua surface.",
+            "- `DoupoTDPVPSceneView` has a parallel call shape through `DoupoTDMgr.NetLogic:CM_DoupoTDReportFun`, but the current visible export lacks both `CM_DoupoTDReport.lua` and a `CM_DoupoTDReportFun` implementation/index row.",
+            "- All three scene views use the same visible argument shape (`replayId/type/round/pkStage/zone/pkStep/time/atkVoList/defVoList/clientWinnerId/serverWinnerId`) and `DigitDoorSimpleVO` snapshot rows.",
+            "- Treat the family as partially reused, not fully symmetric: DigitDoor/TowerDefense report path is closed on the request side; DoupoTD report path remains a source/export gap until a packet or runtime sample appears.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_pvp_report_family_reuse_probe(
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = _pvp_report_family_rows(root)
+    category_counts = Counter(str(row.get("category") or "") for row in rows)
+    scene_digitdoor_calls = sum(
+        1
+        for row in rows
+        if row.get("category") == "pvp_scene_uses_digitdoor_report_fun" and row.get("module") == "digitdoor"
+    )
+    scene_towerdefense_digitdoor_calls = sum(
+        1
+        for row in rows
+        if row.get("category") == "pvp_scene_uses_digitdoor_report_fun" and row.get("module") == "towerdefense"
+    )
+    scene_doupotd_calls = sum(
+        1
+        for row in rows
+        if row.get("category") == "pvp_scene_uses_doupotd_report_fun" and row.get("module") == "doupotd"
+    )
+    doupotd_packet_files = sum(
+        1
+        for row in rows
+        if row.get("category") == "report_packet_file" and row.get("field") == "CM_DoupoTDReport"
+    )
+    digitdoor_packet_files = sum(
+        1
+        for row in rows
+        if row.get("category") == "report_packet_file" and row.get("field") == "CM_DigitDoorReport"
+    )
+    stats = {
+        "source_file_count": len(_pvp_report_family_files(root)),
+        "evidence_row_count": len(rows),
+        "digitdoor_scene_digitdoor_report_call_count": scene_digitdoor_calls,
+        "towerdefense_scene_digitdoor_report_call_count": scene_towerdefense_digitdoor_calls,
+        "doupotd_scene_doupotd_report_call_count": scene_doupotd_calls,
+        "digitdoor_cm_report_packet_file_count": digitdoor_packet_files,
+        "doupotd_cm_report_packet_file_count": doupotd_packet_files,
+        "digitdoor_netlogic_report_fun_rows": category_counts.get("netlogic_digitdoor_report_fun", 0),
+        "doupotd_netlogic_report_fun_rows": category_counts.get("netlogic_doupotd_report_fun", 0),
+        "digitdoor_index_report_rows": category_counts.get("index_digitdoor_report_row", 0),
+        "doupotd_index_report_rows": category_counts.get("index_doupotd_report_row", 0),
+        "digitdoor_simple_vo_scene_rows": category_counts.get("pvp_scene_uses_digitdoor_simple_vo", 0),
+    }
+    verdict = {
+        "digitdoor_scene_uses_digitdoor_report": scene_digitdoor_calls > 0,
+        "towerdefense_scene_reuses_digitdoor_report": scene_towerdefense_digitdoor_calls > 0,
+        "doupotd_scene_has_parallel_report_call": scene_doupotd_calls > 0,
+        "digitdoor_report_request_surface_indexed": digitdoor_packet_files > 0
+        and stats["digitdoor_netlogic_report_fun_rows"] > 0
+        and stats["digitdoor_index_report_rows"] > 0,
+        "doupotd_report_request_surface_missing": doupotd_packet_files == 0
+        and stats["doupotd_netlogic_report_fun_rows"] == 0
+        and stats["doupotd_index_report_rows"] == 0,
+        "family_uses_common_digitdoor_simple_vo_shape": stats["digitdoor_simple_vo_scene_rows"] >= 3,
+    }
+    verdict["pvp_report_family_reuse_confirmed"] = all(verdict.values())
+    _write_tsv(
+        out_dir / "pvp_report_family_reuse_evidence.tsv",
+        rows,
+        ["category", "module", "field", "file", "line", "snippet", "note"],
+    )
+    report_path = out_dir / "pvp_report_family_reuse_report.md"
+    _write_pvp_report_family_reuse_markdown(
+        report_path,
+        export_root=root,
+        rows=rows,
+        stats=stats,
+        verdict=verdict,
+    )
+    return {
+        "confirmed": verdict["pvp_report_family_reuse_confirmed"],
+        "output_dir": str(out_dir),
+        "stats": stats,
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "evidence": str(out_dir / "pvp_report_family_reuse_evidence.tsv"),
+        },
+    }
+
+
+_DIGITDOOR_GAMEPLAYER_CPP2IL_TERMS: dict[str, str] = {
+    "CM_DigitDoorGamePlayer": "direct_gameplayer_packet_symbol",
+    "SM_DigitDoorGamePlayer": "direct_gameplayer_packet_symbol",
+    "DDBossVo": "direct_gameplayer_boss_vo_symbol",
+    "bossVoList": "gameplayer_request_field_symbol",
+    "passLevelVOS": "gameplayer_response_field_symbol",
+    "DigitDoorExitGame": "gameplayer_settlement_boundary_symbol",
+    "ReqFinishGame": "gameplayer_settlement_boundary_symbol",
+    "SetFinishLevelInfo": "gameplayer_settlement_boundary_symbol",
+    "GetTotalBossDamageList": "gameplayer_request_summary_symbol",
+    "GetTotalKillSmallMonsterNum": "gameplayer_request_summary_symbol",
+}
+
+
+def _classify_digitdoor_gameplayer_cpp2il_hit(category: str, term: str) -> str:
+    if category.startswith("direct_gameplayer"):
+        return "direct GamePlayer packet/bean symbol candidate; line context determines whether it is a real consumer"
+    if category.endswith("_field_symbol"):
+        return "GamePlayer request/response field-name candidate; useful only with adjacent packet or method context"
+    if category.endswith("_boundary_symbol"):
+        return "settlement request/response boundary helper candidate"
+    if category.endswith("_summary_symbol"):
+        return "local request-summary helper candidate"
+    return f"broad GamePlayer-related symbol candidate: {term}"
+
+
+def _write_digitdoor_gameplayer_cpp2il_consumer_markdown(
+    path: Path,
+    *,
+    export_root: Path,
+    logic_dir: Path,
+    surface_rows: list[dict[str, Any]],
+    hit_rows: list[dict[str, Any]],
+    lua_rows: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+    verdict: dict[str, Any],
+) -> None:
+    lines = [
+        "# DigitDoor GamePlayer Cpp2IL consumer surface",
+        "",
+        f"- Export root: `{export_root}`",
+        f"- Logic dir: `{logic_dir}`",
+        f"- Surfaces scanned: {len(surface_rows)}",
+        f"- Cpp2IL/native-readable evidence rows: {len(hit_rows)}",
+        f"- Lua settlement reference rows: {len(lua_rows)}",
+        "- Scope: static Cpp2IL/diffable C#/ISIL/metadata search for GamePlayer settlement packet and boundary symbols. It does not hook, patch, replay, or modify the client.",
+        "",
+        "## Verdict",
+        "",
+    ]
+    for key, value in verdict.items():
+        lines.append(f"- `{key}`: `{value}`")
+    lines.extend(
+        [
+            "",
+            "## Surface Summary",
+            "",
+            "| Surface | Exists | Files Scanned | Hit Rows |",
+            "| --- | --- | ---: | ---: |",
+        ]
+    )
+    for row in surface_rows:
+        lines.append(
+            "| "
+            f"{row.get('surface', '')} | "
+            f"{row.get('exists', '')} | "
+            f"{row.get('files_scanned', '')} | "
+            f"{row.get('hit_rows', '')} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Term Summary",
+            "",
+            "| Term | Category | Hits |",
+            "| --- | --- | ---: |",
+        ]
+    )
+    for row in summary_rows:
+        lines.append(
+            "| "
+            f"{_md_table_cell(row.get('term', ''))} | "
+            f"{_md_table_cell(row.get('category', ''))} | "
+            f"{row.get('hit_count', '')} |"
+        )
+    if lua_rows:
+        lines.extend(
+            [
+                "",
+                "## Lua Reference Boundary",
+                "",
+                "| Category | Direction | Field | File | Line | Function |",
+                "| --- | --- | --- | --- | ---: | --- |",
+            ]
+        )
+        for row in lua_rows[:80]:
+            lines.append(
+                "| "
+                f"{_md_table_cell(row.get('category', ''))} | "
+                f"{_md_table_cell(row.get('direction', ''))} | "
+                f"{_md_table_cell(row.get('field', ''))} | "
+                f"{_md_table_cell(row.get('file', ''))} | "
+                f"{row.get('line', '')} | "
+                f"{_md_table_cell(row.get('function', ''))} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "- Lua evidence already maps the visible settlement boundary: `CM_DigitDoorGamePlayer` submits local progress summary and `SM_DigitDoorGamePlayer` drives final result/reward/pass-level display state.",
+            "- This report asks whether the Cpp2IL/native-readable surface contains direct GamePlayer packet, `DDBossVo`, request-summary, or settlement-boundary symbols that add another consumer surface.",
+            "- Field-name hits without adjacent packet or method context are supporting evidence only; they do not override the Lua boundary or prove server behavior.",
+            "- If direct native-readable symbols stay absent, the remaining clean closure path is still a privacy-filtered `91626/91627` runtime sample.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe(
+    *,
+    digitdoor_logic_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    root = resolve_fanxiu_export_root(export_root)
+    logic_dir = _resolve_export_dir(digitdoor_logic_dir, export_root=export_root) or _find_default_logic_dir(root)
+    out_dir = root / "parsed_configs" / "digitdoor_catalog"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    terms = {term.lower(): (term, category) for term, category in _DIGITDOOR_GAMEPLAYER_CPP2IL_TERMS.items()}
+    hit_rows: list[dict[str, Any]] = []
+    surface_rows: list[dict[str, Any]] = []
+    term_counts: Counter[tuple[str, str]] = Counter()
+    for surface in _digitdoor_startgame_cpp2il_surfaces(root):
+        surface_name = str(surface["surface"])
+        surface_path = Path(surface["path"])
+        files = _iter_digitdoor_startgame_cpp2il_files(surface)
+        surface_hit_count = 0
+        for file_path in files:
+            try:
+                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else file_path
+            for line_no, line in enumerate(lines, 1):
+                lowered = line.lower()
+                for lowered_term, (term, category) in terms.items():
+                    if lowered_term not in lowered:
+                        continue
+                    term_counts[(term, category)] += 1
+                    surface_hit_count += 1
+                    hit_rows.append(
+                        {
+                            "surface": surface_name,
+                            "file": str(rel_path),
+                            "line": line_no,
+                            "term": term,
+                            "category": category,
+                            "snippet": line.strip()[:240],
+                            "interpretation": _classify_digitdoor_gameplayer_cpp2il_hit(category, term),
+                        }
+                    )
+        surface_rows.append(
+            {
+                "surface": surface_name,
+                "path": str(surface_path),
+                "exists": surface_path.exists(),
+                "files_scanned": len(files),
+                "hit_rows": surface_hit_count,
+            }
+        )
+    direct_packet_hits = [row for row in hit_rows if row.get("category") == "direct_gameplayer_packet_symbol"]
+    boss_vo_hits = [row for row in hit_rows if row.get("category") == "direct_gameplayer_boss_vo_symbol"]
+    field_hits = [row for row in hit_rows if str(row.get("category") or "").endswith("_field_symbol")]
+    boundary_hits = [row for row in hit_rows if row.get("category") == "gameplayer_settlement_boundary_symbol"]
+    request_summary_hits = [row for row in hit_rows if row.get("category") == "gameplayer_request_summary_symbol"]
+    lua_rows = _digitdoor_gameplayer_settlement_rows(root, logic_dir)
+    summary_rows = [
+        {
+            "term": term,
+            "category": category,
+            "hit_count": term_counts.get((term, category), 0),
+        }
+        for term, category in _DIGITDOOR_GAMEPLAYER_CPP2IL_TERMS.items()
+    ]
+    verdict = {
+        "cpp2il_surfaces_found": any(bool(row["exists"]) for row in surface_rows),
+        "cpp2il_has_gameplayer_packet_symbols": bool(direct_packet_hits),
+        "cpp2il_has_ddbossvo_symbol": bool(boss_vo_hits),
+        "cpp2il_has_gameplayer_field_symbols": bool(field_hits),
+        "cpp2il_has_settlement_boundary_symbols": bool(boundary_hits),
+        "cpp2il_has_request_summary_symbols": bool(request_summary_hits),
+        "lua_settlement_boundary_found": bool(lua_rows),
+        "native_readable_surface_closes_gameplayer_settlement": bool(direct_packet_hits)
+        and (bool(boundary_hits) or bool(field_hits) or bool(request_summary_hits)),
+    }
+    _write_tsv(
+        out_dir / "gameplayer_cpp2il_consumer_surfaces.tsv",
+        surface_rows,
+        ["surface", "path", "exists", "files_scanned", "hit_rows"],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_cpp2il_consumer_hits.tsv",
+        hit_rows,
+        ["surface", "file", "line", "term", "category", "snippet", "interpretation"],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_cpp2il_consumer_summary.tsv",
+        summary_rows,
+        ["term", "category", "hit_count"],
+    )
+    _write_tsv(
+        out_dir / "gameplayer_cpp2il_lua_reference_hits.tsv",
+        lua_rows,
+        ["category", "direction", "field", "source", "file", "line", "function", "snippet"],
+    )
+    report_path = out_dir / "gameplayer_cpp2il_consumer_report.md"
+    _write_digitdoor_gameplayer_cpp2il_consumer_markdown(
+        report_path,
+        export_root=root,
+        logic_dir=logic_dir,
+        surface_rows=surface_rows,
+        hit_rows=hit_rows,
+        lua_rows=lua_rows,
+        summary_rows=summary_rows,
+        verdict=verdict,
+    )
+    json_path = out_dir / "gameplayer_cpp2il_consumer_report.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "stats": {
+                    "surface_count": len(surface_rows),
+                    "files_scanned": sum(int(row["files_scanned"]) for row in surface_rows),
+                    "hit_count": len(hit_rows),
+                    "direct_packet_hit_count": len(direct_packet_hits),
+                    "boss_vo_hit_count": len(boss_vo_hits),
+                    "field_hit_count": len(field_hits),
+                    "boundary_hit_count": len(boundary_hits),
+                    "request_summary_hit_count": len(request_summary_hits),
+                    "lua_reference_hit_count": len(lua_rows),
+                },
+                "verdict": verdict,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "confirmed": verdict["cpp2il_surfaces_found"],
+        "output_dir": str(out_dir),
+        "stats": {
+            "surface_count": len(surface_rows),
+            "files_scanned": sum(int(row["files_scanned"]) for row in surface_rows),
+            "hit_count": len(hit_rows),
+            "direct_packet_hit_count": len(direct_packet_hits),
+            "boss_vo_hit_count": len(boss_vo_hits),
+            "field_hit_count": len(field_hits),
+            "boundary_hit_count": len(boundary_hits),
+            "request_summary_hit_count": len(request_summary_hits),
+            "lua_reference_hit_count": len(lua_rows),
+        },
+        "verdict": verdict,
+        "files": {
+            "markdown": str(report_path),
+            "surfaces": str(out_dir / "gameplayer_cpp2il_consumer_surfaces.tsv"),
+            "hits": str(out_dir / "gameplayer_cpp2il_consumer_hits.tsv"),
+            "summary": str(out_dir / "gameplayer_cpp2il_consumer_summary.tsv"),
+            "lua_reference_hits": str(out_dir / "gameplayer_cpp2il_lua_reference_hits.tsv"),
+            "json": str(json_path),
         },
     }
 

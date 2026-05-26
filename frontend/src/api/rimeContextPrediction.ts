@@ -37,7 +37,7 @@ export interface RimeContextPredictionTree {
   rows: RimeContextPredictionRow[];
 }
 
-export type RimeContextPredictionSource = 'snapshot' | 'hot' | 'seed';
+export type RimeContextPredictionSource = 'snapshot' | 'hot' | 'context_hot' | 'seed';
 
 export interface RimeContextArticle {
   id: string;

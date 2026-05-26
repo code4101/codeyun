@@ -592,6 +592,7 @@ export interface FanxiuGameWindow2ClickPayload {
   x: number;
   y: number;
   title?: string;
+  title_match?: 'contains' | 'exact';
   mode?: 'auto' | 'printwindow' | 'screen';
   area?: 'outer' | 'client';
   crop?: string;
@@ -611,6 +612,7 @@ export interface FanxiuGameWindow2DragPayload {
   end_y: number;
   duration_ms?: number;
   title?: string;
+  title_match?: 'contains' | 'exact';
   mode?: 'auto' | 'printwindow' | 'screen';
   area?: 'outer' | 'client';
   crop?: string;
@@ -625,6 +627,7 @@ export interface FanxiuGameWindow2DragPayload {
 export interface FanxiuGameWindow2SaveFramePayload {
   entry_id: string;
   title?: string;
+  title_match?: 'contains' | 'exact';
   mode?: 'auto' | 'printwindow' | 'screen';
   area?: 'outer' | 'client';
   crop?: string;
@@ -656,6 +659,7 @@ export interface FanxiuGameWindow2MatchBox {
 export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFramePayload {
   filename: string;
   box: FanxiuGameWindow2MatchBox;
+  pixel_tolerance?: number;
 }
 
 export interface FanxiuGameWindow2MatchResponse {
@@ -669,10 +673,13 @@ export interface FanxiuGameWindow2MatchResponse {
   score: number;
   fixed_similarity?: number;
   fixed_score?: number;
+  fixed_pixel_similarity?: number;
+  fixed_pixel_score?: number;
   template_similarity?: number;
   template_score?: number;
   template_crop_similarity?: number;
   template_crop_score?: number;
+  pixel_tolerance?: number;
   box: FanxiuGameWindow2MatchBox;
   current_box: FanxiuGameWindow2MatchBox;
   template_box?: FanxiuGameWindow2MatchBox;
@@ -723,6 +730,30 @@ export interface FanxiuPseudoCodeCompilePayload {
 
 export interface FanxiuPseudoCodeStartPayload {
   timeout?: number;
+}
+
+export interface FanxiuVisualScriptRunPayload {
+  entry_id: string;
+  card_id: string;
+  timeout?: number;
+  tick_interval?: number;
+  title?: string;
+  title_match?: 'contains' | 'exact';
+  mode?: 'auto' | 'printwindow' | 'screen';
+  area?: 'outer' | 'client';
+  crop?: string;
+  trim_border?: string;
+  rotate?: string;
+  fixed_width?: number;
+  fixed_height?: number;
+  frame_width?: number;
+  frame_height?: number;
+  quality?: number;
+}
+
+export interface FanxiuVisualScriptStopPayload {
+  entry_id: string;
+  card_id: string;
 }
 
 export interface FanxiuPseudoCodeRunResponse {
@@ -1184,6 +1215,199 @@ export interface FanxiuWikiGalleryResponse {
   offset: number;
   total: number;
   items: FanxiuWikiGalleryItem[];
+}
+
+export interface FanxiuStaticVisualManifestRow {
+  source_kind: string;
+  name: string;
+  category: string;
+  asset_group?: string;
+  width: number;
+  height: number;
+  atlas_key?: string;
+  source_path?: string;
+  path_id?: string;
+  bytes?: number;
+  media_path: string;
+  absolute_media_path?: string;
+  media_url?: string;
+  phash_distance?: number;
+  dhash_distance?: number | string;
+  aspect_similarity?: number;
+  similarity?: number;
+  similarity_percent?: number;
+  similarity_rank?: number;
+}
+
+export interface FanxiuStaticVisualManifestResponse {
+  manifest_root: string;
+  query: string;
+  category: string;
+  asset_group?: string;
+  source_kind: string;
+  total: number;
+  filtered: number;
+  offset: number;
+  limit: number;
+  stats: {
+    total?: number;
+    categories?: Record<string, number>;
+    asset_groups?: Record<string, number>;
+    query_asset_groups?: Record<string, number>;
+    query_total?: number;
+    source_kinds?: Record<string, number>;
+    filtered?: number;
+    prefiltered?: number;
+    max_prefilter?: number;
+    visual_similarity_index_count?: number;
+    visual_similarity_hash_error_count?: number;
+  };
+  query_hash?: {
+    phash?: string;
+    dhash?: string;
+    phash_algorithm?: string;
+    dhash_algorithm?: string;
+    normalized_width?: number;
+    normalized_height?: number;
+  };
+  rows: FanxiuStaticVisualManifestRow[];
+}
+
+export interface FanxiuStaticAssetManifestRow {
+  asset_id: string;
+  asset_group: string;
+  source_kind: string;
+  category: string;
+  name: string;
+  stem: string;
+  hash_suffix?: string;
+  relative_path: string;
+  bytes: number;
+  suffix?: string;
+  unity_magic?: string;
+  unity_offset?: number;
+  mesh_count?: number;
+  mesh_vertices?: number;
+  mesh_faces?: number;
+  material_count?: number;
+  texture_count?: number;
+  animation_count?: number;
+  ui_gameobject_count?: number;
+  visible_data_type?: string;
+  unity_object_count?: number;
+  unity_object_types?: string;
+  unity_primary_type?: string;
+  unity_named_objects?: string;
+  unity_script_names?: string;
+  unity_read_error_count?: number;
+  unity_parse_status?: string;
+  unity_parse_error?: string;
+  preview_url?: string;
+  preview_manifest_url?: string;
+  preview_kind?: string;
+  detail_status?: string;
+  semantic_id?: string;
+  semantic_group?: string;
+  semantic_type?: string;
+  semantic_name?: string;
+  semantic_summary?: string;
+  semantic_refs?: string;
+  semantic_visual_count?: number;
+  semantic_visual_names?: string;
+  semantic_visual_categories?: string;
+  semantic_visual_media_paths?: string;
+  semantic_visual_media_urls?: string[];
+  semantic_variant_count?: number;
+  semantic_variant_refs?: string;
+  linked_asset_count?: number;
+  linked_asset_groups?: string;
+  linked_asset_names?: string;
+  linked_asset_paths?: string;
+  primary_asset_path?: string;
+}
+
+export interface FanxiuStaticAssetPreviewItem {
+  name: string;
+  kind: string;
+  media_path: string;
+  media_url?: string;
+  object_type?: string;
+  path_id?: number;
+  width?: number;
+  height?: number;
+  is_original_image?: boolean;
+}
+
+export interface FanxiuStaticAssetPreviewManifestResponse {
+  resource_root: string;
+  relative_path: string;
+  cached?: boolean;
+  preview_kind: string;
+  items: FanxiuStaticAssetPreviewItem[];
+}
+
+export interface FanxiuStaticAssetManifestResponse {
+  manifest_root: string;
+  manifest: string;
+  query: string;
+  catalog_view?: string;
+  asset_group?: string;
+  source_kind?: string;
+  category?: string;
+  total: number;
+  filtered: number;
+  offset: number;
+  limit: number;
+  stats: {
+    total?: number;
+    asset_groups?: Record<string, number>;
+    source_kinds?: Record<string, number>;
+    categories?: Record<string, number>;
+    visible_data_types?: Record<string, number>;
+    unity_primary_types?: Record<string, number>;
+    catalog_views?: Record<string, number>;
+    query_asset_groups?: Record<string, number>;
+    query_source_kinds?: Record<string, number>;
+    query_categories?: Record<string, number>;
+    query_visible_data_types?: Record<string, number>;
+    query_unity_primary_types?: Record<string, number>;
+    query_catalog_views?: Record<string, number>;
+    query_total?: number;
+    raw_query_total?: number;
+  };
+  rows: FanxiuStaticAssetManifestRow[];
+}
+
+export interface FanxiuWwiseMp3ManifestRow {
+  source_bank: string;
+  kind: string;
+  wem_id: string;
+  entry_index: string;
+  wem_size: string;
+  sample_rate: string;
+  channels: string;
+  duration_seconds: string;
+  encoding: string;
+  mp3_path: string;
+  relative_mp3_path: string;
+  status: string;
+  error: string;
+  media_url?: string;
+  player_url?: string;
+}
+
+export interface FanxiuWwiseMp3ManifestResponse {
+  manifest: string;
+  total: number;
+  filtered: number;
+  offset: number;
+  limit: number;
+  stats?: {
+    kinds?: Record<string, number>;
+    query_kinds?: Record<string, number>;
+    query_total?: number;
+  };
+  rows: FanxiuWwiseMp3ManifestRow[];
 }
 
 export interface FanxiuGongfaStats {
@@ -3572,6 +3796,71 @@ export const searchFanxiuWikiGallery = (params: {
   return api.get<FanxiuWikiGalleryResponse>('/fanxiu/resources/wiki/gallery', { params }).then(res => res.data);
 };
 
+export const getFanxiuStaticVisualManifest = (params: {
+  query?: string;
+  category?: string;
+  asset_group?: string;
+  source_kind?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuStaticVisualManifestResponse>('/fanxiu/resources/visual/manifest', { params })
+    .then(res => res.data);
+};
+
+export const searchFanxiuStaticVisualByImage = (image: File, params: {
+  query?: string;
+  category?: string;
+  asset_group?: string;
+  source_kind?: string;
+  limit?: number;
+  offset?: number;
+  max_prefilter?: number;
+} = {}) => {
+  const form = new FormData();
+  form.append('image', image);
+  return api
+    .post<FanxiuStaticVisualManifestResponse>('/fanxiu/resources/visual/similarity', form, { params, timeout: 60000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuStaticAssetManifest = (params: {
+  query?: string;
+  catalog_view?: string;
+  asset_group?: string;
+  source_kind?: string;
+  category?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuStaticAssetManifestResponse>('/fanxiu/resources/asset/manifest', { params, timeout: 60000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuStaticAssetPreviewManifest = (params: {
+  path: string;
+  resource_root?: string;
+  export_root?: string;
+  force?: boolean;
+}): Promise<FanxiuStaticAssetPreviewManifestResponse> => {
+  return api
+    .get<FanxiuStaticAssetPreviewManifestResponse>('/fanxiu/resources/asset/preview-manifest', { params, timeout: 60000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuWwiseMp3Manifest = (params: {
+  query?: string;
+  kind?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuWwiseMp3ManifestResponse>('/fanxiu/resources/wwise/mp3-manifest', { params })
+    .then(res => res.data);
+};
+
 export const getFanxiuWikiMediaUrl = (path: string) => {
   return `/api/fanxiu/resources/wiki/media?path=${encodeURIComponent(path)}`;
 };
@@ -3907,6 +4196,14 @@ export const compileFanxiuPseudoCode = (payload: FanxiuPseudoCodeCompilePayload)
 
 export const startFanxiuPseudoCode = (payload: FanxiuPseudoCodeStartPayload = {}) => {
   return api.post<FanxiuPseudoCodeRunResponse>('/fanxiu/game-window2/pseudocode/start', payload).then(res => res.data);
+};
+
+export const runFanxiuVisualScript = (payload: FanxiuVisualScriptRunPayload) => {
+  return api.post<FanxiuPseudoCodeRunResponse>('/fanxiu/game-window2/visual-script/run', payload, { timeout: 0 }).then(res => res.data);
+};
+
+export const stopFanxiuVisualScript = (payload: FanxiuVisualScriptStopPayload) => {
+  return api.post<{ ok: boolean; stopped: boolean }>('/fanxiu/game-window2/visual-script/stop', payload).then(res => res.data);
 };
 
 export const listFanxiuGameWindow2Screenshots = (entryId: string) => {
