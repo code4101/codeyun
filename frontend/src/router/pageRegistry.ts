@@ -115,6 +115,13 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
     skipFeatureAccess: true,
   },
   {
+    scope: 'main',
+    path: '/notes/wechat',
+    redirect: '/notes/wechat-data',
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
     scope: 'root',
     path: '/attendance-feedback',
     redirect: '/standalone/attendance/questionnaire/collect',

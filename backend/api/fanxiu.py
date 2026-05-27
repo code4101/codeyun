@@ -30,8 +30,6 @@ from backend.core.feature_access_guard import ensure_feature_access, require_fea
 from backend.core.game_window_service_runtime import (
     GameWindowServiceError,
     open_game_window_service_stream,
-    send_game_window_service_click,
-    send_game_window_service_drag,
 )
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
@@ -46,8 +44,11 @@ from backend.core.fanxiu_status import (
     save_status_config,
 )
 from backend.core.fanxiu_sunlogin_rotate import (
+    activate_sunlogin_rotate_window,
     capture_sunlogin_rotate_frame,
+    click_sunlogin_rotate_processed_point,
     delete_fanxiu_screenshot,
+    drag_sunlogin_rotate_processed_points,
     get_fanxiu_match_frame_path,
     get_fanxiu_screenshot_path,
     get_sunlogin_rotate_status,
@@ -875,6 +876,19 @@ class FanxiuGameWindow2ServiceClickRequest(BaseModel):
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
 
 
+class FanxiuGameWindow2ActivateRequest(BaseModel):
+    entry_id: str
+    title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
+    click_title: bool = True
+
+
+class FanxiuGameWindow2ServiceActivateRequest(BaseModel):
+    title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
+    click_title: bool = True
+
+
 class FanxiuGameWindow2DragRequest(BaseModel):
     entry_id: str
     start_x: float = Field(ge=0)
@@ -926,6 +940,7 @@ class FanxiuGameWindow2SaveFrameRequest(BaseModel):
     fixed_width: int = Field(0, ge=0, le=4096)
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
+    current_frame_data_url: Optional[str] = None
 
 
 class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
@@ -939,6 +954,7 @@ class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
     fixed_width: int = Field(0, ge=0, le=4096)
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
+    current_frame_data_url: Optional[str] = None
 
 
 class FanxiuGameWindow2MatchBox(BaseModel):
@@ -964,6 +980,7 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     fixed_width: int = Field(0, ge=0, le=4096)
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
+    current_frame_data_url: Optional[str] = None
 
 
 class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
@@ -979,6 +996,7 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
     fixed_width: int = Field(0, ge=0, le=4096)
     fixed_height: int = Field(0, ge=0, le=4096)
+    current_frame_data_url: Optional[str] = None
     quality: int = Field(82, ge=1, le=100)
 
 
@@ -5025,6 +5043,12 @@ def _game_window2_click_payload(req: FanxiuGameWindow2ClickRequest | FanxiuGameW
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
 
+def _game_window2_activate_payload(
+    req: FanxiuGameWindow2ActivateRequest | FanxiuGameWindow2ServiceActivateRequest,
+) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
 def _game_window2_drag_payload(req: FanxiuGameWindow2DragRequest | FanxiuGameWindow2ServiceDragRequest) -> dict[str, Any]:
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
@@ -5043,16 +5067,54 @@ def _game_window2_match_payload(
 
 def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return send_game_window_service_click(payload)
-    except GameWindowServiceError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return click_sunlogin_rotate_processed_point(
+            x=float(payload.get("x") or 0),
+            y=float(payload.get("y") or 0),
+            title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
+            mode=payload.get("mode"),
+            area=payload.get("area"),
+            crop=payload.get("crop"),
+            trim_border=payload.get("trim_border"),
+            rotate=payload.get("rotate"),
+            fixed_width=int(payload.get("fixed_width") or 0),
+            fixed_height=int(payload.get("fixed_height") or 0),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _activate_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return activate_sunlogin_rotate_window(
+            title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
+            click_title=bool(payload.get("click_title", True)),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        return send_game_window_service_drag(payload)
-    except GameWindowServiceError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return drag_sunlogin_rotate_processed_points(
+            start_x=float(payload.get("start_x") or 0),
+            start_y=float(payload.get("start_y") or 0),
+            end_x=float(payload.get("end_x") or 0),
+            end_y=float(payload.get("end_y") or 0),
+            duration_ms=int(payload.get("duration_ms") or 300),
+            title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
+            mode=payload.get("mode"),
+            area=payload.get("area"),
+            crop=payload.get("crop"),
+            trim_border=payload.get("trim_border"),
+            rotate=payload.get("rotate"),
+            fixed_width=int(payload.get("fixed_width") or 0),
+            fixed_height=int(payload.get("fixed_height") or 0),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5068,6 +5130,7 @@ def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_width=int(payload.get("fixed_width") or 0),
             fixed_height=int(payload.get("fixed_height") or 0),
             quality=int(payload.get("quality") or 82),
+            current_frame_data_url=payload.get("current_frame_data_url"),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5114,6 +5177,34 @@ def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> di
         raise HTTPException(status_code=502, detail="远程游戏操作服务响应不是 JSON") from exc
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="远程游戏操作服务响应格式不支持")
+    return data
+
+
+def _activate_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/activate"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 12.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏窗口激活服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=502,
+                detail="远程 codeyun 缺少激活窗口接口，请更新并重启远程 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
+            )
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程游戏窗口激活服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="远程游戏窗口激活服务响应格式不支持")
     return data
 
 
@@ -5637,12 +5728,26 @@ def run_fanxiu_game_window2_visual_script(
     def run_drag(payload: dict[str, Any]) -> dict[str, Any]:
         return _drag_game_window2_service(payload) if entry.mode == "local" else _drag_remote_game_window2(entry, payload)
 
+    def run_activate(payload: dict[str, Any]) -> dict[str, Any]:
+        return (
+            _activate_game_window2_service(payload)
+            if entry.mode == "local"
+            else _activate_remote_game_window2(entry, payload)
+        )
+
     run_key = _visual_macro_run_key(current_user.id, req.entry_id, req.card_id)
     stop_event = begin_visual_macro_run(run_key)
 
     def run_operation() -> dict[str, Any]:
         try:
-            return run_fanxiu_visual_script(
+            activate_result = run_activate(
+                {
+                    "title": base_payload.get("title"),
+                    "title_match": base_payload.get("title_match") or "contains",
+                    "click_title": True,
+                }
+            )
+            result = run_fanxiu_visual_script(
                 cards,
                 selected_card_id=req.card_id,
                 base_payload=base_payload,
@@ -5651,6 +5756,9 @@ def run_fanxiu_game_window2_visual_script(
                 tick_interval=req.tick_interval,
                 stop_event=stop_event,
             )
+            title = activate_result.get("window_title") or activate_result.get("title") or "目标窗口"
+            result["log"] = f"{time.strftime('%H:%M:%S')} 激活窗口：{title}\n{result.get('log') or ''}".rstrip()
+            return result
         finally:
             end_visual_macro_run(run_key, stop_event)
 
@@ -5784,6 +5892,28 @@ def click_fanxiu_game_window2(
     if entry.mode == "local":
         return _click_game_window2_service(payload)
     return _click_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/input/activate")
+def activate_fanxiu_game_window2(
+    req: FanxiuGameWindow2ActivateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_activate_payload(req)
+    if entry.mode == "local":
+        return _activate_game_window2_service(payload)
+    return _activate_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-input/activate")
+def activate_fanxiu_game_window2_service(
+    req: FanxiuGameWindow2ServiceActivateRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _activate_game_window2_service(_game_window2_activate_payload(req))
 
 
 @status_router.post("/game-window2/service-input/click")

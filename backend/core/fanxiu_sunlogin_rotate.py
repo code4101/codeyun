@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import base64
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from pyxllib.cv.rgbfmt import (
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.sunlogin_rotate_preview import (
     WindowCapture,
+    activate_window,
+    click_window_title_bar,
     click_window_raw_point,
     drag_window_raw_points,
     encode_jpeg,
@@ -51,6 +54,9 @@ SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
 _SCREENSHOT_FRAME_LOCK = threading.Lock()
 _MATCH_FRAME_LOCK = threading.Lock()
+_LATEST_FRAME_LOCK = threading.Lock()
+_LATEST_FRAME_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_LATEST_FRAME_MAX_AGE_SECONDS = 3.0
 _SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.jpe?g$", re.IGNORECASE)
 _SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg"}
 
@@ -161,6 +167,21 @@ def _read_image_bgr(path: Path):
     import numpy as np
 
     data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _decode_image_data_url_bgr(data_url: str):
+    import cv2
+    import numpy as np
+
+    text = str(data_url or "").strip()
+    if not text:
+        return None
+    if "," in text and text.lower().startswith("data:"):
+        text = text.split(",", 1)[1]
+    data = np.frombuffer(base64.b64decode(text, validate=False), dtype=np.uint8)
     if data.size == 0:
         return None
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -597,25 +618,90 @@ def stream_sunlogin_rotate_mjpeg(
     auto_dismiss_popup: bool = False,
     popup_check_interval: float = 3.0,
 ):
+    resolved_title = (title or get_target_title()).strip() or get_target_title()
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
+    resolved_fixed_width = int(
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+    )
+    resolved_fixed_height = int(
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+    )
+    cache_key = _latest_frame_cache_key(
+        resolved_title,
+        title_match,
+        resolved_mode,
+        resolved_area,
+        resolved_crop,
+        resolved_trim_border,
+        resolved_rotate,
+        resolved_fixed_width,
+        resolved_fixed_height,
+    )
+
     return iter_mjpeg_frames(
-        title=(title or get_target_title()).strip() or get_target_title(),
+        title=resolved_title,
         fps=float(fps or os.getenv("CODEYUN_FANXIU_SUNLOGIN_FPS", DEFAULT_FPS)),
-        crop=parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP)),
-        trim_border=parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)),
-        rotate=normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE)),
-        area=area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer"),
-        mode=mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
+        crop=resolved_crop,
+        trim_border=resolved_trim_border,
+        rotate=resolved_rotate,
+        area=resolved_area,
+        mode=resolved_mode,
         max_width=0,
         max_height=0,
         scale=1.0,
-        fixed_width=int(fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)),
-        fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
         refind_interval=1.0,
         quality=quality,
         title_match=title_match,
         auto_dismiss_popup=auto_dismiss_popup,
         popup_check_interval=popup_check_interval,
+        on_frame=lambda frame: _store_latest_frame(cache_key, frame),
     )
+
+
+def _latest_frame_cache_key(
+    title: str,
+    title_match: str,
+    mode: str,
+    area: str,
+    crop: tuple[int, int, int, int],
+    trim_border: tuple[int, int, int, int],
+    rotate: str,
+    fixed_width: int,
+    fixed_height: int,
+) -> tuple[Any, ...]:
+    return (
+        title,
+        title_match,
+        mode,
+        area,
+        crop,
+        trim_border,
+        rotate,
+        int(fixed_width),
+        int(fixed_height),
+    )
+
+
+def _store_latest_frame(cache_key: tuple[Any, ...], frame: Any) -> None:
+    with _LATEST_FRAME_LOCK:
+        _LATEST_FRAME_CACHE[cache_key] = (time.monotonic(), frame.copy())
+
+
+def _load_latest_frame(cache_key: tuple[Any, ...]) -> Any | None:
+    with _LATEST_FRAME_LOCK:
+        item = _LATEST_FRAME_CACHE.get(cache_key)
+    if item is None:
+        return None
+    captured_at, frame = item
+    if time.monotonic() - captured_at > _LATEST_FRAME_MAX_AGE_SECONDS:
+        return None
+    return frame.copy()
 
 
 def capture_sunlogin_rotate_frame(
@@ -629,16 +715,45 @@ def capture_sunlogin_rotate_frame(
     rotate: str | None = None,
     fixed_width: int | None = None,
     fixed_height: int | None = None,
+    prefer_cached: bool = False,
 ):
     ensure_windows_runtime()
     set_dpi_awareness()
 
     normalized_title = (title or get_target_title()).strip() or get_target_title()
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+    resolved_fixed_width = int(
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+    )
+    resolved_fixed_height = int(
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+    )
+    if prefer_cached:
+        cached = _load_latest_frame(
+            _latest_frame_cache_key(
+                normalized_title,
+                title_match,
+                resolved_mode,
+                resolved_area,
+                resolved_crop,
+                resolved_trim_border,
+                resolved_rotate,
+                resolved_fixed_width,
+                resolved_fixed_height,
+            )
+        )
+        if cached is not None:
+            return cached
+
     target = find_window(normalized_title, title_match)
     capturer = WindowCapture(
         target.hwnd,
-        area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer"),
-        mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
+        resolved_area,
+        resolved_mode,
         normalized_title,
         title_match,
         refind_interval=1.0,
@@ -649,14 +764,14 @@ def capture_sunlogin_rotate_frame(
 
     return process_frame(
         frame,
-        parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP)),
-        parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)),
-        normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE)),
+        resolved_crop,
+        resolved_trim_border,
+        resolved_rotate,
         max_width=0,
         max_height=0,
         scale=1.0,
-        fixed_width=int(fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)),
-        fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
 
 
@@ -672,18 +787,22 @@ def save_fanxiu_screenshot_frame(
     fixed_width: int | None = None,
     fixed_height: int | None = None,
     quality: int = 82,
+    current_frame_data_url: str | None = None,
 ) -> dict[str, Any]:
-    frame = capture_sunlogin_rotate_frame(
-        title=title,
-        title_match=title_match,
-        mode=mode,
-        area=area,
-        crop=crop,
-        trim_border=trim_border,
-        rotate=rotate,
-        fixed_width=fixed_width,
-        fixed_height=fixed_height,
-    )
+    frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
+    if frame is None:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            title_match=title_match,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            prefer_cached=True,
+        )
     height, width = frame.shape[:2]
     data = encode_jpeg(frame, quality)
 
@@ -845,6 +964,45 @@ def _match_template_frame(
     }
 
 
+def _match_local_template_frame(
+    reference_crop: Any,
+    current_frame: Any,
+    current_box: dict[str, Any],
+    pixel_tolerance: int = 5,
+) -> dict[str, Any]:
+    frame = _ensure_bgr_frame(current_frame)
+    frame_height, frame_width = frame.shape[:2]
+    radius = max(8, min(24, round(max(int(current_box["w"]), int(current_box["h"])) * 0.25)))
+    x1 = max(0, int(current_box["x"]) - radius)
+    y1 = max(0, int(current_box["y"]) - radius)
+    x2 = min(frame_width, int(current_box["x"]) + int(current_box["w"]) + radius)
+    y2 = min(frame_height, int(current_box["y"]) + int(current_box["h"]) + radius)
+    region = frame[y1:y2, x1:x2]
+    match = _match_template_frame(
+        reference_crop,
+        region,
+        {"name": current_box.get("name", ""), "x": 0, "y": 0, "w": current_box["w"], "h": current_box["h"]},
+        pixel_tolerance,
+    )
+    local_box = match["box"]
+    box = _normalize_match_box(
+        {
+            "name": current_box.get("name", ""),
+            "x": local_box["x"] + x1,
+            "y": local_box["y"] + y1,
+            "w": local_box["w"],
+            "h": local_box["h"],
+        },
+        frame_width,
+        frame_height,
+    )
+    return {
+        **match,
+        "box": box,
+        "search_radius": radius,
+    }
+
+
 def match_fanxiu_screenshot_box_frame(
     *,
     filename: str,
@@ -860,6 +1018,7 @@ def match_fanxiu_screenshot_box_frame(
     fixed_height: int | None = None,
     quality: int = 82,
     pixel_tolerance: int = 5,
+    current_frame_data_url: str | None = None,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
     reference_frame = _read_image_bgr(source_path)
@@ -869,23 +1028,27 @@ def match_fanxiu_screenshot_box_frame(
     source_box = _normalize_match_box(box, source_width, source_height)
     reference_crop = _crop_frame_box(reference_frame, source_box)
 
-    current_frame = capture_sunlogin_rotate_frame(
-        title=title,
-        title_match=title_match,
-        mode=mode,
-        area=area,
-        crop=crop,
-        trim_border=trim_border,
-        rotate=rotate,
-        fixed_width=fixed_width,
-        fixed_height=fixed_height,
-    )
+    current_frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
+    if current_frame is None:
+        current_frame = capture_sunlogin_rotate_frame(
+            title=title,
+            title_match=title_match,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            prefer_cached=True,
+        )
     current_frame, data = _jpeg_normalize_frame(current_frame, quality)
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
-    fixed_similarity, fixed_score = _correlate_frame_crops(reference_crop, current_crop)
-    fixed_pixel_similarity, fixed_pixel_score = _compare_frame_crops(reference_crop, current_crop, pixel_tolerance)
+    fixed_exact_similarity, fixed_exact_score = _correlate_frame_crops(reference_crop, current_crop)
+    fixed_exact_pixel_similarity, fixed_exact_pixel_score = _compare_frame_crops(reference_crop, current_crop, pixel_tolerance)
+    fixed_match = _match_local_template_frame(reference_crop, current_frame, current_box, pixel_tolerance)
     template_match = _match_template_frame(reference_crop, current_frame, current_box, pixel_tolerance)
 
     output_dir = get_fanxiu_match_frame_dir()
@@ -904,18 +1067,24 @@ def match_fanxiu_screenshot_box_frame(
         "match_filename": output.name,
         "path": os.fspath(output),
         "directory": os.fspath(output_dir),
-        "similarity": fixed_similarity,
-        "score": fixed_score,
-        "fixed_similarity": fixed_similarity,
-        "fixed_score": fixed_score,
-        "fixed_pixel_similarity": fixed_pixel_similarity,
-        "fixed_pixel_score": fixed_pixel_score,
+        "similarity": fixed_match["similarity"],
+        "score": fixed_match["score"],
+        "fixed_similarity": fixed_match["similarity"],
+        "fixed_score": fixed_match["score"],
+        "fixed_pixel_similarity": fixed_match["crop_similarity"],
+        "fixed_pixel_score": fixed_match["crop_score"],
+        "fixed_exact_similarity": fixed_exact_similarity,
+        "fixed_exact_score": fixed_exact_score,
+        "fixed_exact_pixel_similarity": fixed_exact_pixel_similarity,
+        "fixed_exact_pixel_score": fixed_exact_pixel_score,
+        "fixed_search_radius": fixed_match["search_radius"],
         "template_similarity": template_match["similarity"],
         "template_score": template_match["score"],
         "template_crop_similarity": template_match["crop_similarity"],
         "template_crop_score": template_match["crop_score"],
         "box": source_box,
         "current_box": current_box,
+        "fixed_box": fixed_match["box"],
         "template_box": template_match["box"],
         "source_width": source_width,
         "source_height": source_height,
@@ -948,9 +1117,6 @@ def click_sunlogin_rotate_processed_point(
     resolved_fixed_height = int(
         fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
-    if resolved_fixed_width > 0 or resolved_fixed_height > 0:
-        raise RuntimeError("固定画布模式暂不支持反向点击坐标映射")
-
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
     resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
@@ -974,8 +1140,8 @@ def click_sunlogin_rotate_processed_point(
         max_width=0,
         max_height=0,
         scale=1.0,
-        fixed_width=0,
-        fixed_height=0,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
     frame_x = int(round(x))
@@ -989,6 +1155,8 @@ def click_sunlogin_rotate_processed_point(
         crop=resolved_crop,
         trim_border=resolved_trim_border,
         rotate=resolved_rotate,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
     if raw_point is None:
         raise RuntimeError("点击坐标无法映射到原始窗口坐标")
@@ -1007,6 +1175,34 @@ def click_sunlogin_rotate_processed_point(
         "area": resolved_area,
         "mode": resolved_mode,
         "rotate": resolved_rotate,
+    }
+
+
+def activate_sunlogin_rotate_window(
+    *,
+    title: str | None = None,
+    title_match: str = "contains",
+    click_title: bool = True,
+) -> dict[str, Any]:
+    ensure_windows_runtime()
+    set_dpi_awareness()
+
+    normalized_title = (title or get_target_title()).strip() or get_target_title()
+    target = find_window(normalized_title, title_match)
+    point: tuple[int, int] | None = None
+    if click_title:
+        point = click_window_title_bar(target.hwnd)
+    else:
+        activate_window(target.hwnd)
+        time.sleep(0.03)
+    return {
+        "ok": True,
+        "title": normalized_title,
+        "hwnd": target.hwnd,
+        "window_title": target.title,
+        "clicked_title": bool(click_title),
+        "screen_x": point[0] if point is not None else None,
+        "screen_y": point[1] if point is not None else None,
     }
 
 
@@ -1036,9 +1232,6 @@ def drag_sunlogin_rotate_processed_points(
     resolved_fixed_height = int(
         fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
-    if resolved_fixed_width > 0 or resolved_fixed_height > 0:
-        raise RuntimeError("固定画布模式暂不支持反向拖拽坐标映射")
-
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
     resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
@@ -1062,8 +1255,8 @@ def drag_sunlogin_rotate_processed_points(
         max_width=0,
         max_height=0,
         scale=1.0,
-        fixed_width=0,
-        fixed_height=0,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
     frame_start_x = int(round(start_x))
@@ -1083,6 +1276,8 @@ def drag_sunlogin_rotate_processed_points(
         crop=resolved_crop,
         trim_border=resolved_trim_border,
         rotate=resolved_rotate,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
     end_raw_point = map_processed_point_to_raw_point(
         (frame_end_x, frame_end_y),
@@ -1090,6 +1285,8 @@ def drag_sunlogin_rotate_processed_points(
         crop=resolved_crop,
         trim_border=resolved_trim_border,
         rotate=resolved_rotate,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
     )
     if start_raw_point is None or end_raw_point is None:
         raise RuntimeError("拖拽坐标无法映射到原始窗口坐标")

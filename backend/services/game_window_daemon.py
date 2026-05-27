@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.core.fanxiu_sunlogin_rotate import (
+    activate_sunlogin_rotate_window,
     click_sunlogin_rotate_processed_point,
     drag_sunlogin_rotate_processed_points,
     stream_sunlogin_rotate_mjpeg,
@@ -64,6 +65,12 @@ class GameWindowDragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class GameWindowActivateRequest(BaseModel):
+    title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
+    click_title: bool = True
 
 
 def _env_text(name: str, default: str) -> str:
@@ -182,6 +189,18 @@ def click_game_window(req: GameWindowClickRequest):
     if req.frame_height is not None:
         result["client_frame_height"] = req.frame_height
     return result
+
+
+@router.post("/input/activate")
+def activate_game_window(req: GameWindowActivateRequest):
+    try:
+        return activate_sunlogin_rotate_window(
+            title=(req.title or _default_target_title()).strip() or _default_target_title(),
+            title_match=req.title_match,
+            click_title=req.click_title,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/input/drag")

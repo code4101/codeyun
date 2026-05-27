@@ -9,7 +9,7 @@ export const getDeviceEntryPath = (entryId: string, path = '') => {
 // Default instance (Local Backend)
 const api = axios.create({
   baseURL: '/api', // Proxied to http://localhost:8000 via Vite proxy or similar
-  timeout: 60000,
+  timeout: 10000,
 });
 
 // Request interceptor for API calls
