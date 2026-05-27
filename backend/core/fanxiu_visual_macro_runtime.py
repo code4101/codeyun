@@ -45,8 +45,17 @@ class VisualMacroRunContext:
     events: list[dict[str, Any]] = field(default_factory=list)
     results: dict[str, Any] = field(default_factory=dict)
 
-    def log(self, message: str, **extra: Any) -> None:
-        self.events.append({"type": "log", "message": message, "time": time.time(), **extra})
+    def log(self, message: str, *, level: str = "INFO", depth: int = 0, **extra: Any) -> None:
+        self.events.append(
+            {
+                "type": "log",
+                "level": level,
+                "depth": max(0, int(depth)),
+                "message": message,
+                "time": time.time(),
+                **extra,
+            }
+        )
 
     def yield_tick(self, reason: str) -> None:
         self.raise_if_stopped()
@@ -100,6 +109,43 @@ def _last_result_path() -> Path:
 
 def _json_dumps(payload: Any, *, indent: int | None = None) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=indent)
+
+
+def _format_event_time(value: Any) -> str:
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(float(value)))
+    except (TypeError, ValueError, OSError):
+        return "--:--:--"
+
+
+def _format_runtime_log(events: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    pending_match: dict[int, str] = {}
+    for event in events:
+        if event.get("type") != "log":
+            continue
+        message = str(event.get("message") or "").strip()
+        if not message or message.startswith("指令集结束：") or message == "脚本完成":
+            continue
+        depth = max(0, int(event.get("depth") or 0))
+        indent = "  " * depth
+        current_line = f"{_format_event_time(event.get('time'))} {indent}{message}"
+        if "：匹配 " in message:
+            pending_match[depth] = current_line
+            continue
+        if "：点击 " in message:
+            prefix = message.split("：点击 ", 1)[0]
+            pending = pending_match.pop(depth, "")
+            if pending and f"{prefix}：匹配 " in pending:
+                lines.append(f"{pending}；{message.split('：', 1)[1]}")
+                continue
+        stale_depths = [key for key in pending_match if key >= depth]
+        for key in sorted(stale_depths):
+            lines.append(pending_match.pop(key))
+        lines.append(current_line)
+    for key in sorted(pending_match):
+        lines.append(pending_match[key])
+    return "\n".join(lines)
 
 
 def _parse_visual_program(body: str) -> dict[str, Any]:
@@ -262,7 +308,7 @@ def _match_score(operation: dict[str, Any], match_result: dict[str, Any]) -> int
     if scan == "fixed":
         value = match_result.get("fixed_similarity", match_result.get("similarity", 0))
     else:
-        value = match_result.get("template_similarity", match_result.get("similarity", 0))
+        value = match_result.get("template_similarity", match_result.get("template_crop_similarity", match_result.get("similarity", 0)))
     try:
         return int(round(float(value)))
     except (TypeError, ValueError):
@@ -272,7 +318,7 @@ def _match_score(operation: dict[str, Any], match_result: dict[str, Any]) -> int
 def _image_target_matches(ctx: VisualMacroRunContext, operation: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
     filename = str(operation.get("frame") or "").strip()
     if not filename:
-        ctx.log(f"{_operation_title(operation)}：未绑定截图")
+        ctx.log(f"{_operation_title(operation)}：未绑定截图", level="WARNING", depth=2)
         return False, None
     payload = {
         **ctx.base_payload,
@@ -284,7 +330,8 @@ def _image_target_matches(ctx: VisualMacroRunContext, operation: dict[str, Any])
     score = _match_score(operation, result)
     threshold = int(round(float(operation.get("threshold") or 0.8) * 100))
     matched = score >= threshold
-    ctx.log(f"{_operation_title(operation)}：图像相似度 {score}% / 阈值 {threshold}%", matched=matched, match=result)
+    relation = "通过" if matched else "未通过"
+    ctx.log(f"{_operation_title(operation)}：匹配 {score}% / {threshold}% {relation}", depth=2, matched=matched, match=result)
     return matched, result
 
 
@@ -294,7 +341,7 @@ def _target_matches(ctx: VisualMacroRunContext, operation: dict[str, Any]) -> tu
         return True, None
     if target == "image":
         return _image_target_matches(ctx, operation)
-    ctx.log(f"{_operation_title(operation)}：文本目标暂未接入 OCR 执行器")
+    ctx.log(f"{_operation_title(operation)}：文本目标暂未接入 OCR 执行器", level="WARNING", depth=2)
     return False, None
 
 
@@ -302,7 +349,7 @@ def _click_operation(ctx: VisualMacroRunContext, operation: dict[str, Any]) -> d
     x, y = _point_with_jitter(_pointer_start(operation))
     payload = {**ctx.base_payload, "x": x, "y": y}
     result = ctx.callbacks.click(payload)
-    ctx.log(f"{_operation_title(operation)}：点击 ({x}, {y})", click=result)
+    ctx.log(f"{_operation_title(operation)}：点击 ({x}, {y})", depth=2, click=result)
     ctx.yield_tick("click")
     return result
 
@@ -321,7 +368,7 @@ def _drag_operation(ctx: VisualMacroRunContext, operation: dict[str, Any]) -> di
         "duration_ms": duration_ms,
     }
     result = ctx.callbacks.drag(payload)
-    ctx.log(f"{_operation_title(operation)}：拖拽 ({start_x}, {start_y}) -> ({end_x}, {end_y})", drag=result)
+    ctx.log(f"{_operation_title(operation)}：拖拽 ({start_x}, {start_y}) -> ({end_x}, {end_y})", depth=2, drag=result)
     ctx.yield_tick("drag")
     return result
 
@@ -340,7 +387,7 @@ def _run_normal_instruction(ctx: VisualMacroRunContext, operation: dict[str, Any
         if matched:
             ctx.results[operation.get("id") or _operation_title(operation)] = _click_operation(ctx, operation)
         else:
-            ctx.log(f"{_operation_title(operation)}：对象不存在，跳过")
+            ctx.log(f"{_operation_title(operation)}：对象不存在，跳过", depth=2)
         return
     if action == "find" or action == "findAll":
         matched, result = _target_matches(ctx, operation)
@@ -352,7 +399,7 @@ def _run_normal_instruction(ctx: VisualMacroRunContext, operation: dict[str, Any
         timeout = max(0.0, float(operation.get("timeout") or 0))
         if str(operation.get("target") or "coordinate") == "coordinate":
             sleep_seconds = timeout if timeout > 0 else ctx.tick_interval
-            ctx.log(f"{_operation_title(operation)}：等待 {sleep_seconds:g} 秒")
+            ctx.log(f"{_operation_title(operation)}：等待 {sleep_seconds:g} 秒", depth=2)
             time.sleep(min(max(0.0, sleep_seconds), max(0.0, deadline - time.time())))
             ctx.yield_tick("wait")
             return
@@ -375,7 +422,7 @@ def _run_normal_instruction(ctx: VisualMacroRunContext, operation: dict[str, Any
                 return
             ctx.yield_tick("waitClick")
         raise RuntimeError(f"{_operation_title(operation)} 等待超时")
-    ctx.log(f"{_operation_title(operation)}：暂不支持的动作 {action}")
+    ctx.log(f"{_operation_title(operation)}：暂不支持的动作 {action}", level="WARNING", depth=2)
 
 
 def _run_instruction(
@@ -393,16 +440,16 @@ def _run_instruction(
     ref_name = str(operation.get("refName") or "").strip()
     target_kind = str(operation.get("refTargetKind") or "instruction")
     if not ref_name:
-        ctx.log("调用：未选择目标，跳过")
+        ctx.log("调用：未选择目标，跳过", level="WARNING", depth=2)
         return
     stack_key = f"{target_kind}:{ref_name}"
     if stack_key in stack:
         raise RuntimeError(f"检测到递归调用：{' -> '.join([*stack, stack_key])}")
     target = reference_index.get(target_kind, {}).get(ref_name)
     if not target:
-        ctx.log(f"调用：找不到唯一目标 {ref_name}")
+        ctx.log(f"调用：找不到唯一目标 {ref_name}", level="WARNING", depth=2)
         return
-    ctx.log(f"调用：{ref_name}")
+    ctx.log(f"调用：{ref_name}", depth=2)
     if target_kind == "instructionSet":
         _run_instruction_set(ctx, target["set"], reference_index, [*stack, stack_key], deadline)
     else:
@@ -417,13 +464,13 @@ def _run_instruction_set(
     deadline: float,
 ) -> None:
     ctx.raise_if_stopped()
-    ctx.log(f"指令集开始：{_set_title(instruction_set)}")
+    ctx.log(f"指令集：{_set_title(instruction_set)}", depth=1)
     for operation in instruction_set.get("instructions") or []:
         ctx.raise_if_stopped()
         if time.time() > deadline:
             raise RuntimeError("视觉脚本运行超时")
         _run_instruction(ctx, operation, reference_index, stack, deadline)
-    ctx.log(f"指令集结束：{_set_title(instruction_set)}")
+    ctx.log(f"指令集结束：{_set_title(instruction_set)}", depth=1)
 
 
 def _build_structured_python(cards: list[dict[str, Any]], selected_card_id: str) -> str:
@@ -482,16 +529,16 @@ def run_fanxiu_visual_script(
     reference_index = _build_reference_index(cards)
     status = "completed"
     try:
-        ctx.log(f"脚本开始：{selected.get('title') or '未命名脚本'}")
+        ctx.log(f"脚本：{selected.get('title') or '未命名脚本'}")
         for instruction_set in _instruction_sets(selected):
             ctx.raise_if_stopped()
             if time.time() > deadline:
                 raise RuntimeError("视觉脚本运行超时")
             _run_instruction_set(ctx, instruction_set, reference_index, [], deadline)
-        ctx.log(f"脚本结束：{selected.get('title') or '未命名脚本'}")
+        ctx.log("脚本完成")
     except VisualMacroStopped as exc:
         status = "stopped"
-        ctx.log(str(exc))
+        ctx.log(str(exc), level="WARNING")
 
     payload = {
         "ok": True,
@@ -511,7 +558,7 @@ def run_fanxiu_visual_script(
         "cache_hits": 0,
         "cache_misses": 0,
         "compiled_cards": 1,
-        "log": "\n".join(str(event.get("message") or event.get("reason") or event.get("type")) for event in ctx.events),
+        "log": _format_runtime_log(ctx.events),
         "result": _json_dumps(payload, indent=2),
         "updated_at": payload["updated_at"],
     }

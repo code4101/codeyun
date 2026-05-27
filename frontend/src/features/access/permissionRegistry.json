@@ -623,12 +623,12 @@
     },
     {
       "key": "notes.wechat",
-      "title": "微信",
+      "title": "微信数据",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 40,
-      "route_paths": ["/notes/wechat"],
-      "menu_paths": ["/notes/wechat"],
+      "route_paths": ["/notes/wechat-data", "/notes/wechat"],
+      "menu_paths": ["/notes/wechat-data"],
       "api_scopes": ["note-tools.wechat"],
       "default_anonymous_allow": false
     },

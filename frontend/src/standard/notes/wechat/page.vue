@@ -1,85 +1,165 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, QuestionFilled, Refresh, Search, Timer } from '@element-plus/icons-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { ArrowLeft, Download, Refresh, Search } from '@element-plus/icons-vue'
 
 import {
-  fetchWeChatArchiveChats,
-  fetchWeChatArchiveMessageTypes,
-  fetchWeChatArchiveMessages,
-  fetchWeChatArchiveSyncPlan,
-  fetchWeChatArchiveSyncStatus,
-  fetchWeChatArchiveStatus,
-  importWeChatArchive,
-  startWeChatArchiveSync,
-  type WeChatArchiveChat,
-  type WeChatArchiveImportResult,
-  type WeChatArchiveMessage,
-  type WeChatArchiveMessageType,
-  type WeChatArchiveSyncPlanItem,
-  type WeChatArchiveSyncStatus,
-  type WeChatArchiveStatus,
+  downloadWeChatDbMedia,
+  fetchWeChatDbChats,
+  fetchWeChatDbMessageCount,
+  fetchWeChatDbMessageTypes,
+  fetchWeChatDbMessages,
+  fetchWeChatDbStatus,
+  syncWeChatDbFromLive,
+  weChatDbMediaUrl,
+  type WeChatDbChat,
+  type WeChatDbLiveSyncResult,
+  type WeChatDbMessage,
+  type WeChatDbMessageType,
+  type WeChatDbResourceExport,
+  type WeChatDbStatus,
 } from '@/api/wechatArchive'
 
-const status = ref<WeChatArchiveStatus | null>(null)
-const chats = ref<WeChatArchiveChat[]>([])
-const messages = ref<WeChatArchiveMessage[]>([])
-const messageTypes = ref<WeChatArchiveMessageType[]>([])
-const selectedChatId = ref<number | null>(null)
-const keyword = ref('')
-const directionFilter = ref('')
+const SELF_USERNAMES = new Set(['wxid_m1cd4f5aahut22'])
+
+const status = ref<WeChatDbStatus | null>(null)
+const chats = ref<WeChatDbChat[]>([])
+const messages = ref<WeChatDbMessage[]>([])
+const messageTypes = ref<WeChatDbMessageType[]>([])
+const selectedUsername = ref('')
+const selectedChatCache = ref<WeChatDbChat | null>(null)
+const chatKeyword = ref('')
+const messageKeyword = ref('')
 const typeFilter = ref('')
+const chatPageSize = ref(50)
+const currentChatPage = ref(1)
+const totalChats = ref(0)
 const pageSize = ref(80)
 const currentPage = ref(1)
 const totalMessages = ref(0)
 const loading = ref(false)
+const chatLoading = ref(false)
 const messageLoading = ref(false)
-const importing = ref(false)
-const syncStartingMode = ref('')
-const importChatName = ref('文件传输助手')
-const importScrolls = ref(1)
-const saveMedia = ref(false)
-const lastImportResult = ref<WeChatArchiveImportResult | null>(null)
-const syncPlan = ref<WeChatArchiveSyncPlanItem[]>([])
-const syncStatus = ref<WeChatArchiveSyncStatus | null>(null)
-const seenSyncFinishedAt = ref<number | null>(null)
-let syncStatusTimer: number | undefined
+const resourceLoading = ref(false)
+const resourceLoadingSlow = ref(false)
+const liveSyncLoading = ref(false)
+const lastLiveSyncResult = ref<WeChatDbLiveSyncResult | null>(null)
+const messageStreamRef = ref<HTMLElement | null>(null)
+const previewImage = ref<WeChatDbResourceExport | null>(null)
+const foldedListOpen = ref(false)
+const suppressMessagePageChange = ref(false)
+let messageRequestSerial = 0
+let resourceRequestSerial = 0
+let resourceSlowTimer: number | undefined
 
-const selectedChat = computed(() => (
-  chats.value.find((chat) => chat.id === selectedChatId.value) ?? null
-))
-
-const summaryItems = computed(() => [
-  ['账号', status.value?.accounts ?? 0],
-  ['会话', status.value?.chats ?? 0],
-  ['消息', status.value?.messages ?? 0],
-  ['最近采集', status.value?.latest_collected_at || '-'],
-])
-
-const selectedChatName = computed(() => selectedChat.value?.name || '')
-const syncActive = computed(() => Boolean(syncStatus.value?.active))
-const syncQueueText = computed(() => {
-  if (!syncStatus.value) return '未读取'
-  const running = syncStatus.value.queue.running
-  const pending = syncStatus.value.queue.pending.length
-  if (running) return pending ? `运行中，待执行 ${pending}` : '运行中'
-  if (pending) return `待执行 ${pending}`
-  return '空闲'
+const selectedChat = computed(() => {
+  const current = chats.value.find((item) => item.username === selectedUsername.value)
+  if (current) return current
+  return selectedChatCache.value?.username === selectedUsername.value ? selectedChatCache.value : null
 })
-const latestSyncResult = computed<Record<string, any> | null>(() => syncStatus.value?.latest_result?.result ?? null)
+const visibleMessages = computed(() => messages.value)
+const lastChatPage = computed(() => Math.max(1, Math.ceil(totalChats.value / chatPageSize.value)))
+const lastPage = computed(() => Math.max(1, Math.ceil(totalMessages.value / pageSize.value)))
 
-const directionOptions = [
-  { label: '全部方向', value: '' },
-  { label: '发出', value: 'out' },
-  { label: '收到', value: 'in' },
-  { label: '系统', value: 'system' },
-]
+const WECHAT_BUILTIN_EMOJI_MAP: Record<string, string> = {
+  '[微笑]': '\u{1f642}',
+  '[撇嘴]': '\u{1f615}',
+  '[色]': '\u{1f60d}',
+  '[发呆]': '\u{1f636}',
+  '[得意]': '\u{1f60e}',
+  '[流泪]': '\u{1f622}',
+  '[害羞]': '\u{1f60a}',
+  '[闭嘴]': '\u{1f910}',
+  '[睡]': '\u{1f634}',
+  '[大哭]': '\u{1f62d}',
+  '[尴尬]': '\u{1f613}',
+  '[发怒]': '\u{1f620}',
+  '[调皮]': '\u{1f61c}',
+  '[呲牙]': '\u{1f601}',
+  '[惊讶]': '\u{1f632}',
+  '[难过]': '\u{1f61e}',
+  '[酷]': '\u{1f60e}',
+  '[冷汗]': '\u{1f605}',
+  '[抓狂]': '\u{1f616}',
+  '[吐]': '\u{1f92e}',
+  '[偷笑]': '\u{1f92d}',
+  '[愉快]': '\u{1f60a}',
+  '[白眼]': '\u{1f644}',
+  '[傲慢]': '\u{1f928}',
+  '[困]': '\u{1f62a}',
+  '[惊恐]': '\u{1f628}',
+  '[流汗]': '\u{1f613}',
+  '[憨笑]': '\u{1f604}',
+  '[悠闲]': '\u{1f60c}',
+  '[奋斗]': '\u{1f4aa}',
+  '[咒骂]': '\u{1f92c}',
+  '[疑问]': '\u{1f914}',
+  '[嘘]': '\u{1f92b}',
+  '[晕]': '\u{1f635}',
+  '[衰]': '\u{1f635}',
+  '[骷髅]': '\u{1f480}',
+  '[敲打]': '\u{1f528}',
+  '[再见]': '\u{1f44b}',
+  '[擦汗]': '\u{1f605}',
+  '[抠鼻]': '\u{1f443}',
+  '[鼓掌]': '\u{1f44f}',
+  '[坏笑]': '\u{1f608}',
+  '[左哼哼]': '\u{1f624}',
+  '[右哼哼]': '\u{1f624}',
+  '[哈欠]': '\u{1f971}',
+  '[鄙视]': '\u{1f612}',
+  '[委屈]': '\u{1f97a}',
+  '[快哭了]': '\u{1f97a}',
+  '[阴险]': '\u{1f60f}',
+  '[亲亲]': '\u{1f618}',
+  '[可怜]': '\u{1f97a}',
+  '[拥抱]': '\u{1fac2}',
+  '[强]': '\u{1f44d}',
+  '[弱]': '\u{1f44e}',
+  '[握手]': '\u{1f91d}',
+  '[胜利]': '\u270c\ufe0f',
+  '[抱拳]': '\u{1f64f}',
+  '[勾引]': '\u261d\ufe0f',
+  '[拳头]': '\u270a',
+  '[OK]': '\u{1f44c}',
+  '[合十]': '\u{1f64f}',
+  '[玫瑰]': '\u{1f339}',
+  '[凋谢]': '\u{1f940}',
+  '[嘴唇]': '\u{1f48b}',
+  '[爱心]': '\u2764\ufe0f',
+  '[心碎]': '\u{1f494}',
+  '[蛋糕]': '\u{1f382}',
+  '[炸弹]': '\u{1f4a3}',
+  '[便便]': '\u{1f4a9}',
+  '[月亮]': '\u{1f319}',
+  '[太阳]': '\u2600\ufe0f',
+  '[礼物]': '\u{1f381}',
+  '[红包]': '\u{1f9e7}',
+  '[庆祝]': '\u{1f389}',
+  '[發]': '\u{1f9e7}',
+  '[福]': '\u{1f9e7}',
+  '[奸笑]': '\u{1f60f}',
+  '[机智]': '\u{1f609}',
+  '[皱眉]': '\u{1f928}',
+  '[耶]': '\u270c\ufe0f',
+  '[吃瓜]': '\u{1f349}',
+  '[加油]': '\u{1f4aa}',
+  '[Facepalm]': '\u{1f926}',
+  '[Onlooker]': '\u{1f440}',
+  '[Lol]': '\u{1f606}',
+  '[Terror]': '\u{1f631}',
+  '[Concerned]': '\u{1f61f}',
+  '[Hurt]': '\u{1f915}',
+  '/::>': '\u{1f60a}',
+  '/:dig': '\u{1f443}',
+  '/:moon': '\u{1f319}',
+}
 
 const messageTypeOptions = computed(() => [
   { label: '全部类型', value: '' },
   ...messageTypes.value.map((item) => ({
-    label: `${typeLabel(item.message_type)} ${item.count}`,
-    value: item.message_type || '',
+    label: `${typeLabel(item.local_type)} ${formatNumber(item.count)}`,
+    value: String(item.local_type),
   })),
 ])
 
@@ -87,34 +167,263 @@ function formatNumber(value: number | null | undefined) {
   return Number(value || 0).toLocaleString()
 }
 
-function typeLabel(value: string | null | undefined) {
-  const map: Record<string, string> = {
-    text: '文本',
-    time: '时间',
-    sys: '系统',
-    recall: '撤回',
-    image: '图片',
-    video: '视频',
-    file: '文件',
-    voice: '语音',
-    link: '链接',
-    music: '音乐',
-    location: '位置',
+function toDate(value: number | null | undefined) {
+  if (!value) return null
+  const date = new Date(value * 1000)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function formatChatTime(value: number | null | undefined) {
+  const date = toDate(value)
+  if (!date) return ''
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  if (sameDay) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
-  return value ? (map[value] || value) : '未分类'
+  if (date.getFullYear() === now.getFullYear()) {
+    return date.toLocaleDateString([], { month: '2-digit', day: '2-digit' })
+  }
+  return date.toLocaleDateString()
 }
 
-function directionLabel(value: string | null | undefined) {
-  if (value === 'out') return '发出'
-  if (value === 'in') return '收到'
-  if (value === 'system') return '系统'
-  return value || '-'
+function formatMessageTime(value: number | null | undefined) {
+  const date = toDate(value)
+  if (!date) return ''
+  const now = new Date()
+  const options: Intl.DateTimeFormatOptions = {
+    hour: '2-digit',
+    minute: '2-digit',
+  }
+  if (date.toDateString() !== now.toDateString()) {
+    options.month = '2-digit'
+    options.day = '2-digit'
+  }
+  if (date.getFullYear() !== now.getFullYear()) {
+    options.year = 'numeric'
+  }
+  return date.toLocaleString([], options)
 }
 
-function directionTagType(value: string | null | undefined): 'success' | 'info' | 'warning' {
-  if (value === 'out') return 'success'
-  if (value === 'system') return 'warning'
-  return 'info'
+function typeLabel(value: number | string | null | undefined) {
+  const key = Number(value)
+  const map: Record<number, string> = {
+    1: '文本',
+    3: '图片',
+    34: '语音',
+    37: '好友验证',
+    42: '名片',
+    43: '视频',
+    47: '表情',
+    48: '位置',
+    49: '链接/文件',
+    50: '通话',
+    51: '状态',
+    10000: '系统',
+    10002: '撤回',
+  }
+  return Number.isFinite(key) ? (map[key] || String(key)) : '-'
+}
+
+function messageType(row: WeChatDbMessage) {
+  return row.local_type_normalized ?? row.local_type
+}
+
+function chatPreview(chat: WeChatDbChat) {
+  return renderWechatEmojiText(chat.summary || chat.table_name || chat.username)
+}
+
+function avatarText(value: string | null | undefined) {
+  const text = (value || '').trim()
+  if (!text) return '?'
+  return Array.from(text).slice(0, 2).join('')
+}
+
+function avatarUrl(value: string | null | undefined) {
+  return value || ''
+}
+
+function extractXmlTag(text: string, tag: string) {
+  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i'))
+  return match?.[1]?.replace(/<!\[CDATA\[|\]\]>/g, '').trim() || ''
+}
+
+function resourceSuffix(row: WeChatDbMessage) {
+  if (!row.resource?.resource_count) return ''
+  return ` · ${row.resource.resource_count} 个资源 / ${formatNumber(row.resource.total_size)}B`
+}
+
+function renderWechatEmojiText(text: string) {
+  return text.replace(/\[[^\]\r\n]{1,16}\]|\/::>|\/:dig|\/:moon/g, (token) => WECHAT_BUILTIN_EMOJI_MAP[token] || token)
+}
+
+function resourceExports(row: WeChatDbMessage) {
+  return row.resource?.items?.map((item) => item.export).filter(Boolean) as WeChatDbResourceExport[] | undefined
+}
+
+function mediaResources(row: WeChatDbMessage, kind?: WeChatDbResourceExport['kind']) {
+  const items = resourceExports(row) || []
+  return kind ? items.filter((item) => item.kind === kind) : items
+}
+
+function inlineMediaResources(row: WeChatDbMessage) {
+  return mediaResources(row).filter((item) => item.kind === 'video' || (item.kind === 'image' && !isWechatImageDat(item)))
+}
+
+function downloadableResources(row: WeChatDbMessage) {
+  const primaryFile = appMessageFile(row)?.download_name
+  return mediaResources(row).filter(
+    (item) => item.download_name !== primaryFile && item.kind === 'file',
+  )
+}
+
+function mediaUrl(item: WeChatDbResourceExport) {
+  return weChatDbMediaUrl(item)
+}
+
+const previewImageUrl = computed(() => (previewImage.value ? mediaUrl(previewImage.value) : ''))
+
+function resourceName(item: WeChatDbResourceExport) {
+  if (item.kind === 'image') return isWechatImageDat(item) ? '微信图片缓存' : '图片'
+  if (item.kind === 'video') return '视频'
+  if (item.kind === 'file') return item.file_name
+  return item.file_name
+}
+
+function isWechatImageDat(item: WeChatDbResourceExport) {
+  return item.kind === 'image' && /\.dat$/i.test(item.file_name || item.download_name)
+}
+
+function appMessageTitle(row: WeChatDbMessage) {
+  return renderWechatEmojiText(row.appmsg?.title || '')
+}
+
+function appMessageDescription(row: WeChatDbMessage) {
+  const text = row.appmsg?.description || ''
+  return renderWechatEmojiText(text)
+}
+
+function appMessageUrl(row: WeChatDbMessage) {
+  return row.appmsg?.url || ''
+}
+
+function appMessageFile(row: WeChatDbMessage) {
+  return mediaResources(row, 'file')[0]
+}
+
+function appMessageKind(row: WeChatDbMessage) {
+  const appType = row.appmsg?.app_type
+  if (appType === 6 || appMessageFile(row)) return '文件'
+  if (appType === 57) return '引用'
+  if (appType === 4) return '视频链接'
+  if (appType === 5) return '链接'
+  if (appType === 36) return '小程序'
+  if (appType === 51) return '特殊内容'
+  return typeLabel(messageType(row))
+}
+
+function quoteContent(row: WeChatDbMessage) {
+  const fallback = row.appmsg?.refer_content || ''
+  const fallbackText = /<\/?[a-z][\s\S]*>/i.test(fallback) ? '' : fallback
+  return renderWechatEmojiText(row.appmsg?.refer?.content || fallbackText)
+}
+
+function quoteAuthor(row: WeChatDbMessage) {
+  return row.appmsg?.refer?.display_name || row.appmsg?.refer?.from_user || ''
+}
+
+function quoteLabel(row: WeChatDbMessage) {
+  const author = quoteAuthor(row)
+  const content = quoteContent(row)
+  return author ? `${author}: ${content}` : content
+}
+
+function openAppMessage(row: WeChatDbMessage) {
+  const file = appMessageFile(row)
+  if (file) {
+    void downloadResource(file)
+    return
+  }
+  const url = appMessageUrl(row)
+  if (url) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
+function shouldShowAppCard(row: WeChatDbMessage) {
+  return row.appmsg?.app_type !== 57 && Boolean(row.appmsg?.title || row.appmsg?.description || row.appmsg?.url || appMessageFile(row))
+}
+
+function shouldShowQuoteMessage(row: WeChatDbMessage) {
+  return row.appmsg?.app_type === 57 && Boolean(appMessageTitle(row) || quoteContent(row))
+}
+
+function compactXmlContent(text: string, row: WeChatDbMessage) {
+  const lower = text.toLowerCase()
+  if (!lower.includes('<msg') && !lower.includes('<?xml') && !lower.includes('<appmsg')) return ''
+  if (lower.includes('<appmsg')) {
+    const title = extractXmlTag(text, 'title')
+    const description = extractXmlTag(text, 'des')
+    if (title) return `[${typeLabel(messageType(row))}] ${title}${description ? `\n${description}` : ''}`
+  }
+  if (lower.includes('<img ')) return '<图片>'
+  if (lower.includes('<videomsg')) return '<视频>'
+  if (lower.includes('<voicemsg')) return '<语音>'
+  if (lower.includes('<emoji')) return '<表情>'
+  if (lower.includes('<location')) return '<位置>'
+  const revoke = extractXmlTag(text, 'replacemsg')
+  if (revoke) return revoke
+  return `<${typeLabel(messageType(row))}>`
+}
+
+function stripSenderPrefix(text: string, row: WeChatDbMessage) {
+  let result = text.trim()
+  const candidates = [row.sender_username, row.sender_name].filter(Boolean) as string[]
+  for (const candidate of candidates) {
+    for (const separator of [':\n', ':\r\n', ': ']) {
+      const prefix = `${candidate}${separator}`
+      if (result.startsWith(prefix)) {
+        result = result.slice(prefix.length).trim()
+      }
+    }
+  }
+  return result
+}
+
+function messageContent(row: WeChatDbMessage) {
+  if (shouldShowAppCard(row)) return ''
+  if (shouldShowQuoteMessage(row)) return appMessageTitle(row)
+  const rawText = row.message_text || row.message_content || row.compress_content || row.source_text || row.source || ''
+  const text = stripSenderPrefix(rawText, row)
+  const resource = resourceSuffix(row)
+  const compactXml = compactXmlContent(text, row)
+  if (compactXml) return renderWechatEmojiText(`${compactXml}${resource}`)
+  if (text) return renderWechatEmojiText(`${text}${resource}`)
+  return `<${typeLabel(messageType(row))}${resource}>`
+}
+
+function shouldShowMessageBubble(row: WeChatDbMessage) {
+  const content = messageContent(row)
+  return Boolean(content) && (!inlineMediaResources(row).length || !/^<图片|^<视频|^<表情/.test(content))
+}
+
+function isOutgoing(row: WeChatDbMessage) {
+  return SELF_USERNAMES.has(row.sender_username || '')
+}
+
+function showSenderName(row: WeChatDbMessage) {
+  return selectedChat.value?.chat_type === 'chatroom' && !isOutgoing(row)
+}
+
+function shouldShowTime(index: number) {
+  const row = visibleMessages.value[index]
+  const previous = visibleMessages.value[index - 1]
+  if (!row || !row.create_time) return false
+  if (!previous || !previous.create_time) return true
+  const gapSeconds = Math.abs(row.create_time - previous.create_time)
+  const rowDate = toDate(row.create_time)
+  const previousDate = toDate(previous.create_time)
+  return gapSeconds > 600 || rowDate?.toDateString() !== previousDate?.toDateString()
 }
 
 function getErrorMessage(error: unknown) {
@@ -122,73 +431,238 @@ function getErrorMessage(error: unknown) {
   return candidate.response?.data?.detail || candidate.message || '读取失败'
 }
 
-function syncImportChatName() {
-  if (selectedChatName.value) {
-    importChatName.value = selectedChatName.value
+async function downloadResource(item: WeChatDbResourceExport) {
+  try {
+    const blob = await downloadWeChatDbMedia(item)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = item.file_name
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  }
+}
+
+function handleInlineMediaClick(item: WeChatDbResourceExport) {
+  if (item.kind === 'image' && mediaUrl(item)) {
+    previewImage.value = item
+    return
+  }
+  void downloadResource(item)
+}
+
+function closeImagePreview() {
+  previewImage.value = null
+}
+
+function handlePreviewKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && previewImage.value) {
+    closeImagePreview()
+  }
+}
+
+async function loadInlineMedia() {
+  if (currentPage.value === lastPage.value) {
+    await scrollMessagesToBottom()
   }
 }
 
 async function loadStatus() {
-  status.value = await fetchWeChatArchiveStatus()
+  status.value = await fetchWeChatDbStatus()
 }
 
 async function loadChats() {
-  const payload = await fetchWeChatArchiveChats()
-  chats.value = payload.items
-  if (!selectedChatId.value && chats.value.length) {
-    selectedChatId.value = chats.value[0].id
+  chatLoading.value = true
+  try {
+    const payload = await fetchWeChatDbChats({
+      q: chatKeyword.value.trim() || undefined,
+      limit: chatPageSize.value,
+      offset: (currentChatPage.value - 1) * chatPageSize.value,
+      scope: foldedListOpen.value ? 'folded' : 'main',
+    })
+    chats.value = payload.items
+    totalChats.value = payload.total
+    if (currentChatPage.value > lastChatPage.value) {
+      currentChatPage.value = lastChatPage.value
+      await loadChats()
+      return
+    }
+    const firstSelectable = chats.value.find((item) => !item.is_folded_entry)
+    const selectedStillVisible = chats.value.some((item) => item.username === selectedUsername.value && !item.is_folded_entry)
+    if (!selectedUsername.value && firstSelectable) {
+      selectedChatCache.value = firstSelectable
+      selectedUsername.value = firstSelectable.username
+    } else if (selectedUsername.value && !selectedStillVisible && !selectedChat.value && firstSelectable) {
+      selectedChatCache.value = firstSelectable
+      selectedUsername.value = firstSelectable.username
+    }
+  } finally {
+    chatLoading.value = false
   }
 }
 
 async function loadMessageTypes() {
-  const payload = await fetchWeChatArchiveMessageTypes({
-    chat_id: selectedChatId.value || undefined,
-  })
+  const username = selectedUsername.value
+  if (!username) {
+    messageTypes.value = []
+    return
+  }
+  const payload = await fetchWeChatDbMessageTypes({ chat_username: username })
   messageTypes.value = payload.items
-  if (typeFilter.value && !messageTypes.value.some((item) => item.message_type === typeFilter.value)) {
+  if (typeFilter.value && !messageTypes.value.some((item) => String(item.local_type) === typeFilter.value)) {
     typeFilter.value = ''
   }
 }
 
-async function loadSyncStatus() {
-  const payload = await fetchWeChatArchiveSyncStatus()
-  const finishedAt = payload.latest_result?.finished_at ?? null
-  const shouldRefreshArchive = Boolean(
-    finishedAt && seenSyncFinishedAt.value && finishedAt !== seenSyncFinishedAt.value && !payload.active,
-  )
-  syncStatus.value = payload
-  seenSyncFinishedAt.value = finishedAt
-  if (shouldRefreshArchive) {
-    await loadStatus()
-    await loadChats()
-    await loadSyncPlan()
-    await loadMessageTypes()
-    await loadMessages()
+async function loadMessages() {
+  const username = selectedUsername.value
+  const requestId = ++messageRequestSerial
+  const targetPage = currentPage.value
+  if (!username) {
+    messages.value = []
+    totalMessages.value = 0
+    resourceRequestSerial += 1
+    resourceLoading.value = false
+    return
+  }
+  messageLoading.value = true
+  try {
+    const payload = await fetchWeChatDbMessages({
+      chat_username: username,
+      q: messageKeyword.value.trim() || undefined,
+      message_type: typeFilter.value || undefined,
+      limit: pageSize.value,
+      offset: (targetPage - 1) * pageSize.value,
+      order: 'asc',
+      include_resources: false,
+    })
+    if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
+    if (!payload.items.length && payload.total > 0 && targetPage > Math.ceil(payload.total / pageSize.value)) {
+      currentPage.value = Math.max(1, Math.ceil(payload.total / pageSize.value))
+      void loadMessages().then(scrollMessagesToBottom)
+      return
+    }
+    messages.value = payload.items
+    totalMessages.value = payload.total
+    void loadMessageResources(requestId, username, targetPage)
+  } catch (error) {
+    if (requestId !== messageRequestSerial) return
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    if (requestId === messageRequestSerial) {
+      messageLoading.value = false
+    }
   }
 }
 
-async function loadSyncPlan() {
-  const payload = await fetchWeChatArchiveSyncPlan({ max_chats: 8, kind: 'history' })
-  syncPlan.value = payload.items
+async function setMessagePageSilently(page: number) {
+  suppressMessagePageChange.value = true
+  currentPage.value = page
+  await nextTick()
+  suppressMessagePageChange.value = false
 }
 
-async function loadMessages() {
-  messageLoading.value = true
+function handleMessagePageChange() {
+  if (suppressMessagePageChange.value) return
+  void loadMessages().then(scrollMessagesToBottom)
+}
+
+function handleMessagePageSizeChange() {
+  if (suppressMessagePageChange.value) return
+  reloadMessages()
+}
+
+async function loadMessageResources(requestId: number, username: string, targetPage: number) {
+  const resourceId = ++resourceRequestSerial
+  resourceLoading.value = true
+  resourceLoadingSlow.value = false
+  window.clearTimeout(resourceSlowTimer)
+  resourceSlowTimer = window.setTimeout(() => {
+    if (resourceId === resourceRequestSerial && resourceLoading.value) {
+      resourceLoadingSlow.value = true
+    }
+  }, 2500)
   try {
-    const payload = await fetchWeChatArchiveMessages({
-      chat_id: selectedChatId.value || undefined,
-      q: keyword.value.trim() || undefined,
-      direction: directionFilter.value || undefined,
+    const payload = await fetchWeChatDbMessages({
+      chat_username: username,
+      q: messageKeyword.value.trim() || undefined,
       message_type: typeFilter.value || undefined,
       limit: pageSize.value,
-      offset: (currentPage.value - 1) * pageSize.value,
+      offset: (targetPage - 1) * pageSize.value,
+      order: 'asc',
+      include_resources: true,
     })
+    if (requestId !== messageRequestSerial || resourceId !== resourceRequestSerial || username !== selectedUsername.value) return
+    const byId = new Map(payload.items.map((item) => [item.local_id, item]))
+    messages.value = messages.value.map((item) => byId.get(item.local_id) || item)
+    totalMessages.value = payload.total
+    await loadInlineMedia()
+  } catch (error) {
+    if (resourceId === resourceRequestSerial) {
+      ElMessage.warning(`图片资源仍在本地同步/解析，可稍后刷新：${getErrorMessage(error)}`)
+    }
+  } finally {
+    if (resourceId === resourceRequestSerial) {
+      window.clearTimeout(resourceSlowTimer)
+      resourceLoading.value = false
+      resourceLoadingSlow.value = false
+    }
+  }
+}
+
+async function loadLatestMessages() {
+  const username = selectedUsername.value
+  const requestId = ++messageRequestSerial
+  if (!username) {
+    messages.value = []
+    totalMessages.value = 0
+    resourceRequestSerial += 1
+    resourceLoading.value = false
+    return
+  }
+  messageLoading.value = true
+  messages.value = []
+  try {
+    const countPayload = await fetchWeChatDbMessageCount({
+      chat_username: username,
+      q: messageKeyword.value.trim() || undefined,
+      message_type: typeFilter.value || undefined,
+    })
+    if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
+    totalMessages.value = countPayload.total
+    const targetPage = Math.max(1, Math.ceil(countPayload.total / pageSize.value))
+    await setMessagePageSilently(targetPage)
+    const payload = await fetchWeChatDbMessages({
+      chat_username: username,
+      q: messageKeyword.value.trim() || undefined,
+      message_type: typeFilter.value || undefined,
+      limit: pageSize.value,
+      offset: (targetPage - 1) * pageSize.value,
+      order: 'asc',
+      include_resources: false,
+    })
+    if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
     messages.value = payload.items
     totalMessages.value = payload.total
+    void loadMessageResources(requestId, username, targetPage)
   } catch (error) {
+    if (requestId !== messageRequestSerial) return
     ElMessage.error(getErrorMessage(error))
   } finally {
-    messageLoading.value = false
+    if (requestId === messageRequestSerial) {
+      messageLoading.value = false
+    }
+  }
+  await scrollMessagesToBottom()
+}
+
+async function scrollMessagesToBottom() {
+  await nextTick()
+  const el = messageStreamRef.value
+  if (el) {
+    el.scrollTop = el.scrollHeight
   }
 }
 
@@ -198,9 +672,7 @@ async function refreshAll() {
     await loadStatus()
     await loadChats()
     await loadMessageTypes()
-    await loadMessages()
-    await loadSyncStatus()
-    await loadSyncPlan()
+    await loadLatestMessages()
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -208,688 +680,937 @@ async function refreshAll() {
   }
 }
 
-function resetAndLoadMessages() {
-  currentPage.value = 1
-  void loadMessageTypes()
-  void loadMessages()
-}
-
-async function runImport(mode: 'loaded' | 'scroll' | 'full') {
-  const chatName = importChatName.value.trim()
-  if (!chatName) {
-    ElMessage.warning('请填写会话名')
-    return
-  }
-
-  if (mode === 'full') {
-    try {
-      await ElMessageBox.confirm(
-        '全量导入会持续控制微信窗口并向上加载历史，期间不要同时运行其他微信自动化。',
-        '确认全量导入',
-        { type: 'warning', confirmButtonText: '开始', cancelButtonText: '取消' },
-      )
-    } catch {
-      return
-    }
-  }
-
-  importing.value = true
+async function syncLiveData() {
+  liveSyncLoading.value = true
   try {
-    const result = await importWeChatArchive({
-      chat_name: chatName,
-      mode,
-      max_scrolls: mode === 'scroll' ? importScrolls.value : 0,
-      exact: true,
-      save_media: saveMedia.value,
-    })
-    lastImportResult.value = result
-    ElMessage.success(`导入完成：新增 ${result.inserted} 条，读取 ${result.seen} 条`)
+    const result = await syncWeChatDbFromLive()
+    lastLiveSyncResult.value = result
     await refreshAll()
-    const matched = chats.value.find((chat) => chat.name === (result.matched_name || result.chat_name))
-    if (matched) {
-      selectedChatId.value = matched.id
-    }
+    const copied = result.copy.copied
+    const decrypted = result.decrypt.decrypted
+    const newMedia = result.media?.new_files ?? 0
+    ElMessage.success(`同步完成：复制 ${copied}，解密 ${decrypted}，新增资源 ${newMedia}`)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
-    importing.value = false
+    liveSyncLoading.value = false
   }
 }
 
-async function runSync(mode: 'incremental' | 'history_current' | 'history_auto') {
-  if (mode === 'history_current' && !selectedChatName.value) {
-    ElMessage.warning('请先选择会话')
-    return
-  }
+function reloadChats() {
+  currentChatPage.value = 1
+  selectedUsername.value = ''
+  selectedChatCache.value = null
+  void loadChats().then(() => {
+    void loadMessageTypes()
+    void loadLatestMessages()
+  })
+}
 
-  if (mode !== 'incremental') {
-    try {
-      const targetText = mode === 'history_current' ? `“${selectedChatName.value}”` : '清仓计划里的下一个会话'
-      await ElMessageBox.confirm(
-        `将连续控制微信窗口清仓 ${targetText} 的历史消息，直到到顶或预算耗尽。`,
-        '确认历史清仓',
-        { type: 'warning', confirmButtonText: '开始', cancelButtonText: '取消' },
-      )
-    } catch {
-      return
-    }
-  }
+function reloadMessages() {
+  void loadMessageTypes()
+  void loadLatestMessages()
+}
 
-  const payload = {
-    mode: mode === 'incremental' ? 'incremental' : 'history_clearance',
-    chat_name: mode === 'history_current' ? selectedChatName.value : undefined,
-    max_runtime: mode === 'incremental' ? 90 : 1800,
-    max_chats: mode === 'incremental' ? 6 : 1,
-    max_scrolls_total: mode === 'incremental' ? 8 : 200,
-    max_scrolls_per_chat: mode === 'incremental' ? 1 : 200,
-    exact: true,
-    save_media: saveMedia.value,
+function selectChat(chat: WeChatDbChat) {
+  const changed = chat.username !== selectedUsername.value
+  if (changed) {
+    suppressMessagePageChange.value = true
+    messageRequestSerial += 1
+    resourceRequestSerial += 1
+    resourceLoading.value = false
+    resourceLoadingSlow.value = false
+    messages.value = []
+    messageTypes.value = []
+    currentPage.value = 1
+    void nextTick(() => {
+      suppressMessagePageChange.value = false
+    })
   }
-
-  syncStartingMode.value = mode
-  try {
-    await startWeChatArchiveSync(payload)
-    ElMessage.success('同步任务已加入后台队列')
-    await loadSyncStatus()
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error))
-  } finally {
-    syncStartingMode.value = ''
+  selectedChatCache.value = chat
+  selectedUsername.value = chat.username
+  if (!changed) {
+    void loadLatestMessages()
   }
 }
 
-watch(selectedChatId, () => {
-  syncImportChatName()
-  currentPage.value = 1
+function loadChatPage() {
+  void loadChats()
+}
+
+function openFoldedList() {
+  foldedListOpen.value = true
+  currentChatPage.value = 1
+  void loadChats().then(() => {
+    const first = chats.value.find((item) => !item.is_folded_entry)
+    if (first) selectChat(first)
+  })
+}
+
+function closeFoldedList() {
+  foldedListOpen.value = false
+  currentChatPage.value = 1
+  void loadChats().then(() => {
+    const first = chats.value.find((item) => !item.is_folded_entry)
+    if (selectedChat.value?.is_folded && first) selectChat(first)
+  })
+}
+
+watch(selectedUsername, () => {
   typeFilter.value = ''
   void loadMessageTypes()
-  void loadMessages()
+  void loadLatestMessages()
 })
 
-watch([directionFilter, typeFilter], () => {
-  currentPage.value = 1
-  void loadMessages()
+watch(typeFilter, () => {
+  void loadLatestMessages()
+})
+
+watch(visibleMessages, () => {
+  void loadInlineMedia()
 })
 
 onMounted(() => {
+  window.addEventListener('keydown', handlePreviewKeydown)
   void refreshAll()
-  syncStatusTimer = window.setInterval(() => {
-    void loadSyncStatus()
-  }, 5000)
 })
 
 onBeforeUnmount(() => {
-  if (syncStatusTimer) {
-    window.clearInterval(syncStatusTimer)
-  }
+  window.clearTimeout(resourceSlowTimer)
+  window.removeEventListener('keydown', handlePreviewKeydown)
 })
 </script>
 
 <template>
-  <div class="wechat-archive-page">
-    <header class="page-toolbar">
-      <div class="title-line">
-        <h1>微信</h1>
-        <el-tooltip placement="bottom-start">
-          <template #content>
-            <div class="tooltip-content">
-              这里查看本机微信 GUI 归档库；导入会复用当前登录的微信窗口，只采集当前账号能加载到的会话内容。
-            </div>
-          </template>
-          <el-icon class="help-icon"><QuestionFilled /></el-icon>
-        </el-tooltip>
-        <el-tag v-if="status?.exists" size="small" effect="plain" type="success">已建库</el-tag>
-        <el-tag v-else size="small" effect="plain" type="info">未建库</el-tag>
+  <div class="wechat-db-page">
+    <aside class="conversation-sidebar">
+      <div v-if="foldedListOpen" class="folded-list-header">
+        <button type="button" class="folded-back" title="返回" @click="closeFoldedList">
+          <el-icon><ArrowLeft /></el-icon>
+        </button>
+        <span>折叠的聊天</span>
       </div>
-      <div class="toolbar-actions">
+      <div class="sidebar-search">
         <el-input
-          v-model="importChatName"
-          class="chat-input"
+          v-model="chatKeyword"
+          :prefix-icon="Search"
           size="small"
-          placeholder="会话名"
-          :disabled="importing"
-          @keyup.enter="runImport('loaded')"
+          clearable
+          placeholder="搜索"
+          @keyup.enter="reloadChats"
+          @clear="reloadChats"
         />
-        <el-button :icon="Download" :loading="importing" size="small" plain @click="runImport('loaded')">
-          导入当前
-        </el-button>
-        <el-input-number
-          v-model="importScrolls"
-          :min="1"
-          :max="10000"
-          :disabled="importing"
-          size="small"
-          controls-position="right"
-        />
-        <el-button :loading="importing" size="small" plain @click="runImport('scroll')">
-          上翻导入
-        </el-button>
-        <el-button :loading="importing" size="small" type="primary" @click="runImport('full')">
-          全量
-        </el-button>
-        <el-checkbox v-model="saveMedia" :disabled="importing || syncActive" size="small">
-          保存媒体
-        </el-checkbox>
-        <el-button :icon="Refresh" :loading="loading" size="small" text @click="refreshAll">
-          刷新
-        </el-button>
+        <el-button :icon="Refresh" :loading="loading" size="small" text @click="refreshAll" />
       </div>
-    </header>
-
-    <section class="summary-strip">
-      <div v-for="[label, value] in summaryItems" :key="label" class="summary-item">
-        <span>{{ label }}</span>
-        <strong>{{ typeof value === 'number' ? formatNumber(value) : value }}</strong>
+      <div class="sidebar-meta">
+        <span>{{ formatNumber(totalChats) }} 个会话</span>
+        <span>第 {{ currentChatPage }} 页</span>
       </div>
-    </section>
-
-    <section class="sync-strip">
-      <div class="sync-actions">
-        <el-button
-          :icon="Timer"
-          :loading="syncStartingMode === 'incremental'"
-          :disabled="syncActive"
-          size="small"
-          plain
-          @click="runSync('incremental')"
-        >
-          增量同步
-        </el-button>
-        <el-button
-          :loading="syncStartingMode === 'history_current'"
-          :disabled="syncActive || !selectedChatName"
-          size="small"
-          plain
-          @click="runSync('history_current')"
-        >
-          清仓当前
-        </el-button>
-        <el-button
-          :loading="syncStartingMode === 'history_auto'"
-          :disabled="syncActive || !syncPlan.length"
-          size="small"
-          type="primary"
-          plain
-          @click="runSync('history_auto')"
-        >
-          自动清仓下一个
-        </el-button>
-      </div>
-      <div class="sync-state">
-        <span>队列：{{ syncQueueText }}</span>
-        <span v-if="latestSyncResult">最近新增 {{ formatNumber(Number(latestSyncResult.inserted || 0)) }} 条</span>
-      </div>
-    </section>
-
-    <section v-if="syncPlan.length" class="sync-plan">
-      <div class="panel-title compact">
-        <h2>清仓计划</h2>
-        <span>{{ syncPlan.length }} 个</span>
-      </div>
-      <div class="plan-list">
-        <div v-for="item in syncPlan.slice(0, 6)" :key="item.name" class="plan-row">
-          <strong>{{ item.name }}</strong>
-          <span>{{ formatNumber(item.message_count) }} 条</span>
-          <span>{{ item.first_message_time || '未知起点' }}</span>
-          <span>分值 {{ item.score }}</span>
-          <el-tag v-if="item.consecutive_failures" size="small" effect="plain" type="warning">
-            失败 {{ item.consecutive_failures }}
-          </el-tag>
-          <el-tag v-if="!item.reached_top" size="small" effect="plain" type="info">待补历史</el-tag>
-        </div>
-      </div>
-    </section>
-
-    <main class="archive-layout">
-      <aside class="chat-panel">
-        <div class="panel-title">
-          <h2>会话</h2>
-          <span>{{ chats.length }} 个</span>
-        </div>
-        <div v-if="!chats.length" class="empty-state">
-          暂无归档会话
-        </div>
+      <div v-loading="chatLoading" class="conversation-list">
         <button
           v-for="chat in chats"
-          :key="chat.id"
+          :key="chat.username"
           type="button"
-          class="chat-row"
-          :class="{ active: chat.id === selectedChatId }"
-          @click="selectedChatId = chat.id"
+          class="conversation-row"
+          :class="{ active: !chat.is_folded_entry && chat.username === selectedUsername, 'folded-entry': chat.is_folded_entry }"
+          @click="chat.is_folded_entry ? openFoldedList() : selectChat(chat)"
         >
-          <div class="chat-main">
-            <strong>{{ chat.name }}</strong>
-            <span>{{ chat.chat_type || 'chat' }}</span>
-          </div>
-          <div class="chat-meta">
-            <span>{{ formatNumber(chat.message_count) }} 条</span>
-            <el-tag v-if="chat.reached_top" size="small" effect="plain" type="success">到顶</el-tag>
-          </div>
+          <template v-if="chat.is_folded_entry">
+            <div class="folded-entry-icon">{{ chat.message_count }}</div>
+            <div class="conversation-main">
+              <div class="conversation-title">
+                <strong>折叠的聊天</strong>
+                <time>{{ formatChatTime(chat.last_time) }}</time>
+              </div>
+              <div class="conversation-preview">
+                <span>{{ chatPreview(chat) }}</span>
+                <em>{{ formatNumber(chat.unread_count) }}</em>
+              </div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="avatar" :class="{ group: chat.chat_type === 'chatroom' }">
+              <img v-if="avatarUrl(chat.avatar_data_url)" :src="avatarUrl(chat.avatar_data_url)" :alt="chat.name" />
+              <span v-else>{{ avatarText(chat.name) }}</span>
+            </div>
+            <div class="conversation-main">
+              <div class="conversation-title">
+                <strong>{{ chat.name }}</strong>
+                <time>{{ formatChatTime(chat.last_time) }}</time>
+              </div>
+              <div class="conversation-preview">
+                <span>{{ chatPreview(chat) }}</span>
+                <em v-if="chat.message_count">{{ formatNumber(chat.message_count) }}</em>
+              </div>
+            </div>
+          </template>
         </button>
-      </aside>
+        <div v-if="!chats.length" class="empty-state">暂无会话</div>
+      </div>
+      <div class="conversation-footer">
+        <el-pagination
+          v-model:current-page="currentChatPage"
+          v-model:page-size="chatPageSize"
+          background
+          small
+          layout="prev, pager, next"
+          :page-sizes="[50, 80, 120]"
+          :total="totalChats"
+          @current-change="loadChatPage"
+          @size-change="reloadChats"
+        />
+      </div>
+    </aside>
 
-      <section class="message-panel">
-        <div class="message-toolbar">
-          <div class="panel-title">
-            <h2>{{ selectedChatName || '全部消息' }}</h2>
-            <span>{{ formatNumber(totalMessages) }} 条</span>
-          </div>
-          <div class="message-filters">
-            <el-input
-              v-model="keyword"
-              class="keyword-input"
-              size="small"
-              placeholder="搜索内容"
-              :prefix-icon="Search"
-              clearable
-              @keyup.enter="resetAndLoadMessages"
-              @clear="resetAndLoadMessages"
-            />
-            <el-select v-model="directionFilter" class="filter-select" size="small">
-              <el-option
-                v-for="option in directionOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-            <el-select v-model="typeFilter" class="filter-select" size="small">
-              <el-option
-                v-for="option in messageTypeOptions"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-            <el-button :icon="Search" size="small" plain @click="resetAndLoadMessages">
-              查询
-            </el-button>
-          </div>
+    <section class="chat-shell">
+      <header class="chat-header">
+        <div class="chat-title">
+          <h1>{{ selectedChat?.name || '微信数据' }}</h1>
+          <span :title="status?.db_storage_path || ''">
+            {{ selectedChat?.username || status?.db_storage_path || '未读取' }}
+          </span>
         </div>
-
-        <el-table
-          v-loading="messageLoading"
-          class="message-table"
-          :data="messages"
-          row-key="id"
-          table-layout="auto"
-          :fit="false"
-          height="calc(100vh - 278px)"
-          empty-text="暂无消息"
-        >
-          <el-table-column prop="normalized_time" label="时间" min-width="148" />
-          <el-table-column label="方向" width="78">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="directionTagType(row.direction)">
-                {{ directionLabel(row.direction) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="sender" label="发送人" min-width="120" />
-          <el-table-column label="类型" width="86">
-            <template #default="{ row }">
-              {{ typeLabel(row.message_type) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="内容" min-width="420">
-            <template #default="{ row }">
-              <span class="message-content">{{ row.content || row.media_path || '-' }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="collected_at" label="采集时间" min-width="148" />
-        </el-table>
-
-        <div class="table-footer">
-          <span class="db-path">{{ status?.db_path }}</span>
-          <el-pagination
-            v-model:current-page="currentPage"
-            v-model:page-size="pageSize"
-            background
-            layout="sizes, prev, pager, next, total"
-            :page-sizes="[50, 80, 120, 200]"
-            :total="totalMessages"
-            @current-change="loadMessages"
-            @size-change="resetAndLoadMessages"
+        <div class="chat-tools">
+          <el-input
+            v-model="messageKeyword"
+            class="message-search"
+            :prefix-icon="Search"
+            size="small"
+            clearable
+            placeholder="搜索消息"
+            @keyup.enter="reloadMessages"
+            @clear="reloadMessages"
           />
+          <el-select v-model="typeFilter" class="type-select" size="small">
+            <el-option
+              v-for="option in messageTypeOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-button :icon="Search" size="small" plain @click="reloadMessages">查询</el-button>
+          <el-button
+            :icon="Refresh"
+            :loading="liveSyncLoading"
+            :title="
+              lastLiveSyncResult
+                ? `上次同步 ${lastLiveSyncResult.elapsed_seconds}s，新增资源 ${lastLiveSyncResult.media?.new_files ?? 0}`
+                : '复制本机微信数据库快照、解密并导出新增资源'
+            "
+            size="small"
+            plain
+            @click="syncLiveData"
+          >
+            同步本机
+          </el-button>
         </div>
-      </section>
-    </main>
+      </header>
 
-    <div v-if="lastImportResult" class="import-result">
-      <span>最近导入</span>
-      <strong>{{ lastImportResult.matched_name || lastImportResult.chat_name }}</strong>
-      <span>新增 {{ lastImportResult.inserted }} 条</span>
-      <span>读取 {{ lastImportResult.seen }} 条</span>
-      <span>上翻 {{ lastImportResult.scroll_count }} 次</span>
+      <main ref="messageStreamRef" v-loading="messageLoading" class="message-stream">
+        <div v-if="resourceLoading" class="resource-loading" :class="{ slow: resourceLoadingSlow }">
+          {{ resourceLoadingSlow ? '图片资源还在解析，消息可先查看' : '正在补齐图片资源...' }}
+        </div>
+        <div v-if="!messageLoading && !visibleMessages.length" class="stream-empty">暂无消息</div>
+        <template v-for="(row, index) in visibleMessages" :key="row.local_id">
+          <div v-if="shouldShowTime(index)" class="time-separator">
+            {{ formatMessageTime(row.create_time) }}
+          </div>
+          <div class="message-row" :class="{ outgoing: isOutgoing(row) }">
+            <div v-if="!isOutgoing(row)" class="avatar message-avatar">
+              <img
+                v-if="avatarUrl(row.sender_avatar_data_url)"
+                :src="avatarUrl(row.sender_avatar_data_url)"
+                :alt="row.sender_name || row.sender_username || ''"
+              />
+              <span v-else>{{ avatarText(row.sender_name || row.sender_username) }}</span>
+            </div>
+            <div class="bubble-wrap">
+              <div v-if="showSenderName(row)" class="sender-name">
+                {{ row.sender_name || row.sender_username }}
+              </div>
+              <button
+                v-if="shouldShowAppCard(row)"
+                type="button"
+                class="app-message-card"
+                :class="{ clickable: Boolean(appMessageUrl(row) || appMessageFile(row)) }"
+                @click="openAppMessage(row)"
+              >
+                <strong>{{ appMessageTitle(row) || appMessageKind(row) }}</strong>
+                <span v-if="appMessageDescription(row)">{{ appMessageDescription(row) }}</span>
+                <em>
+                  {{ appMessageKind(row) }}
+                  <template v-if="appMessageFile(row)">
+                    · {{ resourceName(appMessageFile(row)!) }} · {{ formatNumber(appMessageFile(row)!.size) }}B
+                  </template>
+                  <template v-else-if="row.appmsg?.total_size">
+                    · {{ formatNumber(row.appmsg.total_size) }}B
+                  </template>
+                </em>
+              </button>
+              <div v-if="shouldShowMessageBubble(row)" class="message-bubble" :title="typeLabel(messageType(row))">
+                {{ messageContent(row) }}
+                <div v-if="shouldShowQuoteMessage(row) && quoteLabel(row)" class="quote-preview">
+                  {{ quoteLabel(row) }}
+                </div>
+              </div>
+              <div v-if="inlineMediaResources(row).length" class="inline-media-list">
+                <button
+                  v-for="item in inlineMediaResources(row)"
+                  :key="item.download_name"
+                  type="button"
+                  class="inline-media"
+                  :class="item.kind"
+                  :title="item.stored_path"
+                  @click="handleInlineMediaClick(item)"
+                >
+                  <img v-if="item.kind === 'image' && mediaUrl(item)" :src="mediaUrl(item)" :alt="item.file_name" />
+                  <video v-else-if="item.kind === 'video' && mediaUrl(item)" :src="mediaUrl(item)" controls />
+                  <span v-else>{{ resourceName(item) }}</span>
+                </button>
+              </div>
+              <div v-if="downloadableResources(row).length" class="resource-actions">
+                <button
+                  v-for="item in downloadableResources(row)"
+                  :key="`${item.kind}-${item.file_name}`"
+                  type="button"
+                  class="resource-button"
+                  :title="item.stored_path"
+                  @click="downloadResource(item)"
+                >
+                  <el-icon><Download /></el-icon>
+                  <span>{{ resourceName(item) }}</span>
+                  <em>{{ formatNumber(item.size) }}B</em>
+                </button>
+              </div>
+            </div>
+            <div v-if="isOutgoing(row)" class="avatar message-avatar self">我</div>
+          </div>
+        </template>
+      </main>
+
+      <footer class="chat-footer">
+        <span>第 {{ currentPage }} 页 · {{ formatNumber(totalMessages) }} 条</span>
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          background
+          small
+          layout="sizes, prev, pager, next"
+          :page-sizes="[50, 80, 120, 200]"
+          :total="totalMessages"
+          @current-change="handleMessagePageChange"
+          @size-change="handleMessagePageSizeChange"
+        />
+      </footer>
+    </section>
+
+    <div v-if="previewImage && previewImageUrl" class="image-preview" @click.self="closeImagePreview">
+      <button type="button" class="image-preview-close" aria-label="关闭预览" @click="closeImagePreview">×</button>
+      <img :src="previewImageUrl" :alt="previewImage.file_name" />
+      <button type="button" class="image-preview-download" @click="downloadResource(previewImage)">下载</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.wechat-archive-page {
-  min-height: 100%;
-  padding: 18px 20px 14px;
-  background: #f6f8fb;
+.wechat-db-page {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #ededed;
   color: #1f2937;
 }
 
-.page-toolbar {
+.conversation-sidebar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.title-line,
-.toolbar-actions,
-.message-filters,
-.panel-title,
-.chat-main,
-.chat-meta,
-.table-footer,
-.import-result,
-.sync-strip,
-.sync-actions,
-.sync-state,
-.plan-row {
-  display: flex;
-  align-items: center;
-}
-
-.title-line {
-  gap: 8px;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  border-right: 1px solid #d6d6d6;
+  background: #f7f7f7;
 }
 
-h1,
-h2 {
-  margin: 0;
-  line-height: 1.2;
+.sidebar-search,
+.chat-header,
+.chat-tools,
+.conversation-title,
+.conversation-preview,
+.message-row,
+.chat-footer {
+  display: flex;
+  align-items: center;
 }
 
-h1 {
-  font-size: 22px;
-  font-weight: 650;
+.sidebar-search {
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 15px 12px 9px;
 }
 
-h2 {
+.folded-list-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f7f7f7;
+  color: #111827;
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 500;
 }
 
-.help-icon {
-  color: #64748b;
-  cursor: help;
+.folded-back {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #374151;
+  cursor: pointer;
 }
 
-.tooltip-content {
-  max-width: 320px;
-  line-height: 1.6;
+.folded-back:hover {
+  background: #eeeeee;
 }
 
-.toolbar-actions {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.chat-input {
-  width: 180px;
-}
-
-.toolbar-actions :deep(.el-input-number) {
-  width: 92px;
-}
-
-.summary-strip {
+.sidebar-meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 1px;
-  margin-bottom: 12px;
-  border: 1px solid #dfe5ee;
-  background: #dfe5ee;
-}
-
-.summary-item {
-  min-width: 132px;
-  padding: 8px 12px;
-  background: #fff;
-}
-
-.summary-item span {
-  display: block;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.summary-item strong {
-  display: block;
-  margin-top: 3px;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.sync-strip {
+  flex: 0 0 auto;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-  padding: 8px 10px;
-  border: 1px solid #dfe5ee;
-  background: #fff;
-}
-
-.sync-actions,
-.sync-state {
-  gap: 10px;
-}
-
-.sync-label,
-.sync-state,
-.plan-row span {
-  color: #64748b;
+  padding: 0 14px 8px;
+  color: #8a8f98;
   font-size: 12px;
 }
 
-.sync-plan {
-  margin-bottom: 12px;
-  border: 1px solid #dfe5ee;
-  background: #fff;
-}
-
-.panel-title.compact {
-  padding: 8px 10px;
-}
-
-.plan-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 1px;
-  background: #edf1f6;
-}
-
-.plan-row {
-  min-width: 0;
-  gap: 8px;
-  padding: 8px 10px;
-  background: #fff;
-}
-
-.plan-row strong {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
-.archive-layout {
-  display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  gap: 14px;
-  min-height: calc(100vh - 186px);
-}
-
-.chat-panel,
-.message-panel {
-  min-width: 0;
-  border: 1px solid #dfe5ee;
-  background: #fff;
-}
-
-.chat-panel {
+.conversation-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
 }
 
-.panel-title {
-  justify-content: space-between;
-  gap: 12px;
-  padding: 11px 12px;
-  border-bottom: 1px solid #edf1f6;
+.conversation-footer {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 8px 6px;
+  border-top: 1px solid #e5e7eb;
+  background: #f7f7f7;
 }
 
-.panel-title span,
-.chat-main span,
-.chat-meta,
-.db-path,
-.import-result {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.empty-state {
-  padding: 18px 12px;
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.chat-row {
-  display: block;
+.conversation-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
   width: 100%;
+  min-height: 68px;
   padding: 10px 12px;
   border: 0;
-  border-bottom: 1px solid #edf1f6;
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
 
-.chat-row:hover {
-  background: #f8fafc;
+.conversation-row:hover {
+  background: #eeeeee;
 }
 
-.chat-row.active {
-  background: #eef6ff;
+.conversation-row.active {
+  background: #dcdcdc;
 }
 
-.chat-main {
+.conversation-row.folded-entry {
+  background: #f1f1f1;
+}
+
+.folded-entry-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  background: #e5e7eb;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar.group {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.conversation-main {
+  min-width: 0;
+}
+
+.conversation-title {
   justify-content: space-between;
   gap: 10px;
 }
 
-.chat-main strong {
+.conversation-title strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.conversation-title time {
+  flex: 0 0 auto;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.conversation-preview {
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.conversation-preview span {
+  min-width: 0;
+  overflow: hidden;
+  color: #8a8f98;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-preview em {
+  flex: 0 0 auto;
+  color: #111827;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.chat-shell {
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr) 54px;
+  min-width: 0;
+  min-height: 0;
+  background: #f2f2f2;
+}
+
+.chat-header {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  border-bottom: 1px solid #d8d8d8;
+  background: #f5f5f5;
+}
+
+.chat-title {
+  min-width: 0;
+}
+
+.chat-title h1 {
+  margin: 0;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.chat-title span {
+  display: block;
+  max-width: 54vw;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #8a8f98;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tools {
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.message-search {
+  width: 220px;
+}
+
+.type-select {
+  width: 150px;
+}
+
+.message-stream {
+  min-height: 0;
+  padding: 20px 28px 28px;
+  overflow: auto;
+}
+
+.resource-loading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto 12px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.resource-loading.slow {
+  color: #b45309;
+}
+
+.stream-empty,
+.empty-state {
+  padding: 24px 14px;
+  color: #9ca3af;
   font-size: 13px;
 }
 
-.chat-meta {
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 6px;
+.time-separator {
+  margin: 14px 0;
+  color: #a2a2a2;
+  font-size: 12px;
+  text-align: center;
 }
 
-.message-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid #edf1f6;
+.message-row {
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0;
 }
 
-.message-toolbar .panel-title {
-  flex: 1;
-  border-bottom: 0;
-}
-
-.message-filters {
+.message-row.outgoing {
   justify-content: flex-end;
-  gap: 8px;
-  padding-right: 12px;
 }
 
-.keyword-input {
-  width: 190px;
+.message-avatar {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  background: #d1d5db;
+  color: #374151;
+  font-size: 12px;
 }
 
-.filter-select {
-  width: 128px;
+.message-avatar.self {
+  background: #111827;
+  color: #fff;
 }
 
-.message-table {
-  width: 100%;
+.bubble-wrap {
+  max-width: min(560px, 68%);
 }
 
-.message-content {
-  display: block;
-  max-width: 760px;
+.sender-name {
+  margin: 0 0 4px 2px;
+  color: #858585;
+  font-size: 12px;
+}
+
+.message-bubble {
+  position: relative;
+  padding: 9px 11px;
+  border-radius: 4px;
+  background: #fff;
+  color: #111827;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message-bubble::before {
+  position: absolute;
+  top: 10px;
+  left: -5px;
+  width: 10px;
+  height: 10px;
+  background: inherit;
+  content: '';
+  transform: rotate(45deg);
+}
+
+.app-message-card {
+  display: flex;
+  width: min(360px, 100%);
+  min-height: 76px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  color: #111827;
+  cursor: default;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+}
+
+.app-message-card.clickable {
+  cursor: pointer;
+}
+
+.app-message-card strong {
   overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.app-message-card span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.app-message-card em {
+  margin-top: auto;
+  color: #9ca3af;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.app-message-card.clickable:hover {
+  background: #f9fafb;
+}
+
+.quote-preview {
+  max-width: 320px;
+  margin-top: 7px;
+  padding: 7px 9px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #ededed;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.table-footer {
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  border-top: 1px solid #edf1f6;
+.message-row.outgoing .quote-preview {
+  background: rgba(255, 255, 255, 0.45);
 }
 
-.db-path {
+.inline-media-list {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.inline-media {
+  display: block;
+  max-width: min(320px, 100%);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.inline-media img,
+.inline-media video {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.inline-media span {
+  display: inline-block;
+  padding: 9px 11px;
+  border-radius: 4px;
+  background: #fff;
+  color: #374151;
+  font-size: 13px;
+}
+
+.resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.resource-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 260px;
+  padding: 4px 7px;
+  border: 1px solid #d6d6d6;
+  border-radius: 4px;
+  background: #fff;
+  color: #374151;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.resource-button span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.import-result {
-  gap: 10px;
-  margin-top: 10px;
+.resource-button em {
+  flex: 0 0 auto;
+  color: #8a8f98;
+  font-style: normal;
 }
 
-.import-result strong {
-  color: #334155;
+.resource-button:hover {
+  border-color: #9ca3af;
+  background: #f9fafb;
 }
 
-@media (max-width: 900px) {
-  .page-toolbar,
-  .message-toolbar,
-  .table-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
+.message-row.outgoing .message-bubble {
+  background: #95ec69;
+}
 
-  .archive-layout {
+.message-row.outgoing .inline-media-list {
+  justify-items: end;
+}
+
+.image-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: grid;
+  place-items: center;
+  padding: 48px;
+  background: rgba(0, 0, 0, 0.78);
+}
+
+.image-preview img {
+  max-width: 94vw;
+  max-height: 88vh;
+  object-fit: contain;
+}
+
+.image-preview-close,
+.image-preview-download {
+  position: fixed;
+  border: 0;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  cursor: pointer;
+}
+
+.image-preview-close {
+  top: 18px;
+  right: 24px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 26px;
+  line-height: 34px;
+}
+
+.image-preview-download {
+  right: 24px;
+  bottom: 24px;
+  padding: 8px 13px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.image-preview-close:hover,
+.image-preview-download:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.message-row.outgoing .message-bubble::before {
+  right: -5px;
+  left: auto;
+}
+
+.chat-footer {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  border-top: 1px solid #d8d8d8;
+  background: #f5f5f5;
+}
+
+.chat-footer > span {
+  color: #8a8f98;
+  font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .wechat-db-page {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
   }
 
-  .sync-strip {
+  .conversation-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #d6d6d6;
+  }
+
+  .conversation-list {
+    height: 280px;
+  }
+
+  .chat-shell {
+    min-height: 680px;
+  }
+
+  .chat-header,
+  .chat-footer {
     align-items: stretch;
     flex-direction: column;
+    height: auto;
+    padding: 12px;
   }
 
-  .message-filters {
+  .chat-tools {
     flex-wrap: wrap;
-    justify-content: flex-start;
-    padding: 0 12px 10px;
   }
 
-  .keyword-input,
-  .filter-select {
+  .message-search,
+  .type-select {
     width: 100%;
+  }
+
+  .bubble-wrap {
+    max-width: calc(100% - 48px);
   }
 }
 </style>

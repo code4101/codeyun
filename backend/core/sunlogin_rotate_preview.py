@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from pyxllib.cv.rgbfmt import encode_jpeg_bytes
 
@@ -154,6 +155,32 @@ def activate_window(hwnd: int) -> None:
         win32gui.SetForegroundWindow(hwnd)
     except Exception:
         pass
+
+
+def click_window_title_bar(hwnd: int) -> tuple[int, int]:
+    activate_window(hwnd)
+    rect = get_extended_window_rect(hwnd)
+    left, top, right, bottom = rect
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    try:
+        client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    except Exception:
+        client_left, client_top = left, top
+
+    title_height = max(0, min(height, int(client_top) - top))
+    if title_height >= 10:
+        y = top + max(4, title_height // 2)
+    else:
+        y = top + min(12, max(1, height // 4))
+    x = left + min(max(80, width // 3), max(1, width - 80))
+
+    win32api.SetCursorPos((int(x), int(y)))
+    time.sleep(0.03)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.03)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return int(x), int(y)
 
 
 def capture_by_printwindow(hwnd: int, area: str) -> np.ndarray | None:
@@ -459,18 +486,45 @@ def map_processed_point_to_raw_point(
     crop: tuple[int, int, int, int],
     trim_border: tuple[int, int, int, int],
     rotate: str,
+    fixed_width: int = 0,
+    fixed_height: int = 0,
 ) -> tuple[int, int] | None:
     raw_height, raw_width = raw_shape[:2]
     crop_left, crop_top, crop_right, crop_bottom = crop
-    trim_left, trim_top, _trim_right, _trim_bottom = trim_border
+    trim_left, trim_top, trim_right, trim_bottom = trim_border
     cropped_width = raw_width - crop_left - crop_right
     cropped_height = raw_height - crop_top - crop_bottom
     if cropped_width <= 0 or cropped_height <= 0:
         return None
 
-    x_rotated = int(point[0] + trim_left)
-    y_rotated = int(point[1] + trim_top)
     rotate = normalize_rotate(rotate)
+    if rotate in {"90", "270"}:
+        rotated_width, rotated_height = cropped_height, cropped_width
+    else:
+        rotated_width, rotated_height = cropped_width, cropped_height
+
+    processed_width = rotated_width - trim_left - trim_right
+    processed_height = rotated_height - trim_top - trim_bottom
+    if processed_width <= 0 or processed_height <= 0:
+        return None
+
+    point_x = float(point[0])
+    point_y = float(point[1])
+    if fixed_width > 0 and fixed_height > 0:
+        ratio = min(fixed_width / processed_width, fixed_height / processed_height)
+        if ratio <= 0:
+            return None
+        fitted_width = max(1, int(processed_width * ratio))
+        fitted_height = max(1, int(processed_height * ratio))
+        offset_x = (fixed_width - fitted_width) // 2
+        offset_y = (fixed_height - fitted_height) // 2
+        if not (offset_x <= point_x < offset_x + fitted_width and offset_y <= point_y < offset_y + fitted_height):
+            return None
+        point_x = (point_x - offset_x) / ratio
+        point_y = (point_y - offset_y) / ratio
+
+    x_rotated = int(round(point_x + trim_left))
+    y_rotated = int(round(point_y + trim_top))
     if rotate == "0":
         x_cropped, y_cropped = x_rotated, y_rotated
     elif rotate == "90":
@@ -551,6 +605,7 @@ def iter_mjpeg_frames(
     title_match: str = "contains",
     auto_dismiss_popup: bool = False,
     popup_check_interval: float = 3.0,
+    on_frame: Callable[[np.ndarray], None] | None = None,
 ):
     ensure_windows_runtime()
     set_dpi_awareness()
@@ -571,6 +626,8 @@ def iter_mjpeg_frames(
             continue
 
         frame = process_frame(raw_frame, crop, trim_border, rotate, max_width, max_height, scale, fixed_width, fixed_height)
+        if on_frame is not None:
+            on_frame(frame)
         now = time.perf_counter()
         can_auto_click = (
             auto_dismiss_popup

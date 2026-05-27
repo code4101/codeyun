@@ -1196,6 +1196,8 @@ interface WindowSceneDefaults {
   quality: number;
   autoDismissPopup: boolean;
   displayScale: number;
+  fixedWidth: number;
+  fixedHeight: number;
 }
 
 interface WindowSceneConfig {
@@ -1367,6 +1369,8 @@ const windowScenes: WindowScene[] = [
       quality: 82,
       autoDismissPopup: false,
       displayScale: 100,
+      fixedWidth: 0,
+      fixedHeight: 0,
     },
   },
   {
@@ -1383,6 +1387,8 @@ const windowScenes: WindowScene[] = [
       quality: 80,
       autoDismissPopup: true,
       displayScale: 100,
+      fixedWidth: 0,
+      fixedHeight: 0,
     },
   },
   {
@@ -1399,6 +1405,8 @@ const windowScenes: WindowScene[] = [
       quality: 82,
       autoDismissPopup: false,
       displayScale: 60,
+      fixedWidth: 900,
+      fixedHeight: 1600,
     },
   },
 ];
@@ -1543,6 +1551,8 @@ const targetTitle = computed(() => selectedWindowScene.value.defaults.targetTitl
 const titleMatch = computed(() => selectedWindowScene.value.defaults.titleMatch);
 const cropText = computed(() => selectedWindowScene.value.defaults.cropText);
 const captureArea = computed(() => selectedWindowScene.value.defaults.captureArea);
+const fixedFrameWidth = computed(() => selectedWindowScene.value.defaults.fixedWidth);
+const fixedFrameHeight = computed(() => selectedWindowScene.value.defaults.fixedHeight);
 const serviceItem = computed<RuntimeItem | null>(() => (
   runtimeStatus.value?.items.find((item) => item.source === 'builtin' && item.key === GAME_WINDOW_SERVICE_KEY) ?? null
 ));
@@ -1646,7 +1656,7 @@ const controlReady = computed(() => Boolean(
 const naturalSizeText = computed(() => {
   if (!selectedEntryId.value) return '未连接';
   if (!naturalWidth.value || !naturalHeight.value) return '等待画面';
-  return `${naturalHeight.value} x ${naturalWidth.value}`;
+  return `${naturalWidth.value} x ${naturalHeight.value}`;
 });
 const liveCanvasStyle = computed(() => {
   const width = naturalWidth.value || 0;
@@ -3101,6 +3111,11 @@ const toggleCodeCard = (id: string) => {
 };
 
 const applyPseudoCodeRunResponse = (actionLabel: string, response: FanxiuPseudoCodeRunResponse) => {
+  if (actionLabel === '执行') {
+    pseudoExecutionLog.value = response.log || '执行完成';
+    pseudoExecutionResult.value = response.result || '';
+    return;
+  }
   const summary = [
     `${actionLabel}完成`,
     response.script_path ? `脚本：${response.script_path}` : '',
@@ -3172,14 +3187,14 @@ const runVisualScript = async (card: CodeCard) => {
       crop: cropText.value.trim(),
       trim_border: trimBorderText.value.trim(),
       rotate: rotateDegrees.value,
-      fixed_width: 0,
-      fixed_height: 0,
+      fixed_width: fixedFrameWidth.value,
+      fixed_height: fixedFrameHeight.value,
       frame_width: naturalWidth.value || undefined,
       frame_height: naturalHeight.value || undefined,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     });
     applyPseudoCodeRunResponse('执行', response);
-    if (response.result) pseudoOutputTab.value = 'result';
+    pseudoOutputTab.value = 'log';
     if (response.status === 'stopped') {
       ElMessage.info('脚本已停止');
     } else {
@@ -3226,6 +3241,8 @@ const streamUrl = computed(() => {
     crop: cropText.value.trim(),
     trim_border: trimBorderText.value.trim(),
     rotate: rotateDegrees.value,
+    fixed_width: String(fixedFrameWidth.value),
+    fixed_height: String(fixedFrameHeight.value),
     auto_dismiss_popup: selectedWindowKey.value === 'sunlogin' && autoDismissPopup.value ? 'true' : 'false',
     popup_check_interval: '3',
     nonce: String(streamNonce.value),
@@ -4094,6 +4111,20 @@ const handleImageLoad = () => {
   void nextTick(syncCanvas);
 };
 
+const captureCurrentLiveFrameDataUrl = () => {
+  const image = streamImageRef.value;
+  if (!image || !image.naturalWidth || !image.naturalHeight) return '';
+  const targetWidth = fixedFrameWidth.value || image.naturalWidth;
+  const targetHeight = fixedFrameHeight.value || image.naturalHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', Math.max(0.1, Math.min(1, Number(quality.value || 82) / 100)));
+};
+
 const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
@@ -4158,9 +4189,10 @@ const saveCurrentFrame = async () => {
       crop: cropText.value.trim(),
       trim_border: trimBorderText.value.trim(),
       rotate: rotateDegrees.value,
-      fixed_width: 0,
-      fixed_height: 0,
+      fixed_width: fixedFrameWidth.value,
+      fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
     });
     ElMessage.success(`已保存 截图/${result.filename}`);
     if (screenshotPanelOpen.value) {
@@ -4183,8 +4215,8 @@ const captureVisualMacroFrame = async () => {
     crop: cropText.value.trim(),
     trim_border: trimBorderText.value.trim(),
     rotate: rotateDegrees.value,
-    fixed_width: 0,
-    fixed_height: 0,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
     quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
   });
   if (screenshotPanelOpen.value) {
@@ -4355,7 +4387,7 @@ const selectedVisualInstructionMatchBox = (instruction = selectedVisualInstructi
   };
 };
 
-const formatFrameSize = (width: number, height: number) => `${Math.round(height)}x${Math.round(width)}`;
+const formatFrameSize = (width: number, height: number) => `${Math.round(width)}x${Math.round(height)}`;
 
 const selectedScreenshotSourceSize = (filename: string) => {
   const item = screenshotImages.value.find((screenshot) => screenshot.filename === filename);
@@ -4431,9 +4463,10 @@ const runVisualSimilarityProbeOnce = async () => {
       crop: cropText.value.trim(),
       trim_border: trimBorderText.value.trim(),
       rotate: rotateDegrees.value,
-      fixed_width: 0,
-      fixed_height: 0,
+      fixed_width: fixedFrameWidth.value,
+      fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
     });
     if (
       requestSeq !== visualSimilarityProbeSeq
@@ -4450,7 +4483,7 @@ const runVisualSimilarityProbeOnce = async () => {
     }
     const similarity = instruction.scan === 'fixed'
       ? response.fixed_similarity ?? response.similarity
-      : response.template_crop_similarity ?? response.template_similarity ?? response.similarity;
+      : response.template_similarity ?? response.template_crop_similarity ?? response.similarity;
     visualSimilarityProbeText.value = `${Math.round(Number(similarity) || 0)}%`;
   } catch (error) {
     visualSimilarityProbeText.value = getErrorMessage(error);
@@ -4520,8 +4553,8 @@ const runScreenshotBoxMatch = async (box: OverlayBox) => {
       crop: cropText.value.trim(),
       trim_border: trimBorderText.value.trim(),
       rotate: rotateDegrees.value,
-      fixed_width: 0,
-      fixed_height: 0,
+      fixed_width: fixedFrameWidth.value,
+      fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     });
     const matchGeometryIssue = matchFrameAspectMismatchText(response);
@@ -4936,8 +4969,8 @@ const buildRemoteInputPayloadBase = () => ({
   crop: cropText.value.trim(),
   trim_border: trimBorderText.value.trim(),
   rotate: rotateDegrees.value,
-  fixed_width: 0,
-  fixed_height: 0,
+  fixed_width: fixedFrameWidth.value,
+  fixed_height: fixedFrameHeight.value,
   frame_width: naturalWidth.value,
   frame_height: naturalHeight.value,
 });

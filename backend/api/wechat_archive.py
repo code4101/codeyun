@@ -7,6 +7,7 @@ import time
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.core.background_task_queue import background_task_queue
@@ -43,6 +44,13 @@ class WeChatArchiveSyncStartRequest(BaseModel):
     max_scrolls_per_chat: int = Field(default=1, ge=0, le=1000)
     exact: bool = True
     save_media: bool = False
+
+
+def _settings_wechat_db_storage_path() -> Path:
+    env_path = (os.environ.get("CODEYUN_WECHAT_DB_STORAGE") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path(r"D:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
 
 
 def _settings_archive_db_path() -> Path:
@@ -238,9 +246,155 @@ def _ensure_archive_schema_if_exists() -> None:
     WeChatArchive(db_path)
 
 
+def _open_wechat_db_storage():
+    from pyxllib.autogui.wechat_db import WeChatDbStorage
+
+    return WeChatDbStorage(_settings_wechat_db_storage_path())
+
+
 @router.get("/status")
 def get_wechat_archive_status():
     return _archive_status_payload()
+
+
+@router.get("/db-status")
+def get_wechat_db_status():
+    storage = _open_wechat_db_storage()
+    try:
+        return storage.status()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库读取失败：{exc}") from exc
+
+
+@router.post("/db-sync-live")
+def sync_wechat_db_from_live():
+    storage = _open_wechat_db_storage()
+    try:
+        return storage.sync_from_live(export_media=True)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库同步失败：{exc}") from exc
+
+
+@router.get("/db-schema")
+def get_wechat_db_schema():
+    storage = _open_wechat_db_storage()
+    try:
+        return {"items": storage.schema_overview(), "db_storage_path": os.fspath(storage.root)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库 schema 读取失败：{exc}") from exc
+
+
+@router.get("/db-chats")
+def list_wechat_db_chats(
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    scope: Annotated[Literal["main", "folded", "all"], Query()] = "main",
+):
+    storage = _open_wechat_db_storage()
+    try:
+        folded = True if scope == "folded" else None
+        include_folded_entry = scope == "main"
+        return {
+            "items": storage.list_chats(
+                limit=limit,
+                offset=offset,
+                q=q,
+                folded=folded,
+                include_folded_entry=include_folded_entry,
+            ),
+            "total": storage.count_chats(q=q, folded=folded, include_folded_entry=include_folded_entry),
+            "db_storage_path": os.fspath(storage.root),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库会话读取失败：{exc}") from exc
+
+
+@router.get("/db-messages")
+def list_wechat_db_messages(
+    chat_username: Annotated[str, Query(min_length=1, max_length=200)],
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    message_type: Annotated[str | None, Query(max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    include_resources: bool = True,
+):
+    storage = _open_wechat_db_storage()
+    try:
+        payload = storage.list_messages(
+            chat_username=chat_username,
+            q=q,
+            message_type=message_type,
+            limit=limit,
+            offset=offset,
+            order=order,
+            include_resources=include_resources,
+        )
+        return {**payload, "db_storage_path": os.fspath(storage.root)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库消息读取失败：{exc}") from exc
+
+
+@router.get("/db-message-count")
+def count_wechat_db_messages(
+    chat_username: Annotated[str, Query(min_length=1, max_length=200)],
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    message_type: Annotated[str | None, Query(max_length=40)] = None,
+):
+    storage = _open_wechat_db_storage()
+    try:
+        payload = storage.count_messages(
+            chat_username=chat_username,
+            q=q,
+            message_type=message_type,
+        )
+        return {**payload, "db_storage_path": os.fspath(storage.root)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库消息计数失败：{exc}") from exc
+
+
+@router.get("/db-message-types")
+def list_wechat_db_message_types(chat_username: Annotated[str | None, Query(max_length=200)] = None):
+    storage = _open_wechat_db_storage()
+    try:
+        return {"items": storage.message_types(chat_username=chat_username)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库消息类型读取失败：{exc}") from exc
+
+
+@router.get("/db-media/{kind}/{file_name}")
+def get_wechat_db_media_file(kind: Literal["image", "video", "file"], file_name: str):
+    storage = _open_wechat_db_storage()
+    root = (storage.root.parent / "exported_media" / kind).resolve()
+    path = (root / file_name).resolve()
+    if not str(path).startswith(str(root)) or not path.exists():
+        raise HTTPException(status_code=404, detail="资源文件不存在或尚未导出")
+    return FileResponse(path, filename=file_name)
+
+
+@router.get("/db-tables")
+def list_wechat_db_tables(database: Annotated[str, Query(min_length=1, max_length=40)]):
+    storage = _open_wechat_db_storage()
+    try:
+        return {"items": storage.list_tables(database)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库表读取失败：{exc}") from exc
+
+
+@router.get("/db-table-rows")
+def list_wechat_db_table_rows(
+    database: Annotated[str, Query(min_length=1, max_length=40)],
+    table: Annotated[str, Query(min_length=1, max_length=120)],
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    storage = _open_wechat_db_storage()
+    try:
+        return storage.browse_table(database=database, table=table, q=q, limit=limit, offset=offset)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"微信数据库表数据读取失败：{exc}") from exc
 
 
 @router.get("/chats")

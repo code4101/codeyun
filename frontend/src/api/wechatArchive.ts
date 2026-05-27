@@ -141,8 +141,269 @@ export interface WeChatArchiveSyncStatus {
   status: WeChatArchiveStatus
 }
 
+export interface WeChatDbStatus {
+  db_storage_path: string
+  exists: boolean
+  ready: boolean
+  databases: Record<string, boolean>
+}
+
+export interface WeChatDbLiveSyncResult {
+  live_account_root: string
+  elapsed_seconds: number
+  copy: {
+    source: string
+    target: string
+    copied: number
+    unchanged: number
+    errors: string[]
+    error_count: number
+  }
+  decrypt: {
+    source: string
+    target: string
+    decrypted: number
+    skipped: number
+    failed: string[]
+    failed_count: number
+  }
+  media: {
+    scanned_chats: number
+    exported_files: number
+    new_files: number
+    errors: string[]
+    error_count: number
+  } | null
+}
+
+export interface WeChatDbSchemaItem {
+  name: string
+  path: string
+  exists: boolean
+  objects: number
+  tables: string[]
+}
+
+export interface WeChatDbChat {
+  username: string
+  name: string
+  table_name: string
+  chat_type: string
+  is_folded?: boolean
+  is_folded_entry?: boolean
+  message_count: number
+  first_time: number | null
+  last_time: number | null
+  summary: string | null
+  unread_count: number | null
+  last_msg_type: number | null
+  last_msg_type_normalized: number | null
+  last_msg_sender: string | null
+  last_msg_sender_name: string | null
+  avatar_data_url?: string | null
+}
+
+export interface WeChatDbResourceExport {
+  kind: 'image' | 'video' | 'file'
+  file_name: string
+  size: number
+  source_path: string
+  stored_path: string
+  download_name: string
+  md5: string
+}
+
+export interface WeChatDbResourceItem {
+  resource_id: number | null
+  type: number | null
+  size: number
+  data_index: string | null
+  packed_text: string | null
+  export?: WeChatDbResourceExport
+}
+
+export interface WeChatDbAppMessage {
+  title?: string
+  description?: string
+  url?: string
+  app_type?: number | null
+  file_ext?: string
+  total_size?: number | null
+  md5?: string
+  thumb_url?: string
+  refer_content?: string
+  refer?: {
+    content?: string
+    display_name?: string
+    from_user?: string
+    chat_user?: string
+    type?: number | null
+    create_time?: number | null
+  }
+}
+
+export interface WeChatDbMessage {
+  local_id: number
+  server_id: number | null
+  local_type: number | null
+  local_type_normalized: number | null
+  sort_seq: number | null
+  sender_username: string | null
+  sender_name: string | null
+  sender_avatar_data_url?: string | null
+  create_time: number | null
+  create_time_text: string | null
+  status: number | null
+  upload_status: number | null
+  download_status: number | null
+  server_seq: number | null
+  origin_source: number | null
+  source: string | null
+  message_content: string | null
+  message_text: string | null
+  compress_content: string | null
+  source_text: string | null
+  appmsg?: WeChatDbAppMessage | null
+  packed_info_size: number | null
+  resource: {
+    resource_count: number
+    total_size: number
+    resource_types: string | null
+    data_indexes: string | null
+    items?: WeChatDbResourceItem[]
+  } | null
+}
+
+export interface WeChatDbMessagePage {
+  total: number
+  items: WeChatDbMessage[]
+  table_name: string
+  db_storage_path: string
+}
+
+export interface WeChatDbMessageType {
+  local_type: number
+  count: number
+}
+
+export interface WeChatDbTableInfo {
+  name: string
+  count: number
+  columns: string[]
+}
+
+export interface WeChatDbTablePage {
+  database: string
+  table: string
+  columns: string[]
+  total: number
+  items: Record<string, unknown>[]
+}
+
 export async function fetchWeChatArchiveStatus() {
   const response = await api.get<WeChatArchiveStatus>('/wechat-archive/status')
+  return response.data
+}
+
+export async function fetchWeChatDbStatus() {
+  const response = await api.get<WeChatDbStatus>('/wechat-archive/db-status')
+  return response.data
+}
+
+export async function syncWeChatDbFromLive() {
+  const response = await api.post<WeChatDbLiveSyncResult>('/wechat-archive/db-sync-live', undefined, {
+    timeout: 5 * 60 * 1000,
+  })
+  return response.data
+}
+
+export async function fetchWeChatDbSchema() {
+  const response = await api.get<{ items: WeChatDbSchemaItem[]; db_storage_path: string }>('/wechat-archive/db-schema')
+  return response.data
+}
+
+export async function fetchWeChatDbChats(params: {
+  q?: string
+  limit?: number
+  offset?: number
+  scope?: 'main' | 'folded' | 'all'
+} = {}) {
+  const response = await api.get<{ items: WeChatDbChat[]; total: number; db_storage_path: string }>(
+    '/wechat-archive/db-chats',
+    {
+      params,
+    },
+  )
+  return response.data
+}
+
+export async function fetchWeChatDbMessages(params: {
+  chat_username: string
+  q?: string
+  message_type?: string
+  limit?: number
+  offset?: number
+  order?: 'asc' | 'desc'
+  include_resources?: boolean
+}) {
+  const response = await api.get<WeChatDbMessagePage>('/wechat-archive/db-messages', {
+    params,
+    timeout: params.include_resources === false ? 15000 : 2 * 60 * 1000,
+  })
+  return response.data
+}
+
+export async function fetchWeChatDbMessageCount(params: {
+  chat_username: string
+  q?: string
+  message_type?: string
+}) {
+  const response = await api.get<{ total: number; table_name: string; db_storage_path: string }>(
+    '/wechat-archive/db-message-count',
+    {
+      params,
+    },
+  )
+  return response.data
+}
+
+export async function fetchWeChatDbMessageTypes(params: { chat_username?: string } = {}) {
+  const response = await api.get<{ items: WeChatDbMessageType[] }>('/wechat-archive/db-message-types', {
+    params,
+  })
+  return response.data
+}
+
+export async function downloadWeChatDbMedia(item: WeChatDbResourceExport) {
+  const [kind, storedName] = item.download_name.split('/')
+  const response = await api.get<Blob>(`/wechat-archive/db-media/${kind}/${encodeURIComponent(storedName)}`, {
+    responseType: 'blob',
+  })
+  return response.data
+}
+
+export function weChatDbMediaUrl(item: WeChatDbResourceExport) {
+  const [kind, storedName] = item.download_name.split('/')
+  return `/api/wechat-archive/db-media/${kind}/${encodeURIComponent(storedName)}`
+}
+
+export async function fetchWeChatDbTables(params: { database: string }) {
+  const response = await api.get<{ items: WeChatDbTableInfo[] }>('/wechat-archive/db-tables', {
+    params,
+  })
+  return response.data
+}
+
+export async function fetchWeChatDbTableRows(params: {
+  database: string
+  table: string
+  q?: string
+  limit?: number
+  offset?: number
+}) {
+  const response = await api.get<WeChatDbTablePage>('/wechat-archive/db-table-rows', {
+    params,
+  })
   return response.data
 }
 

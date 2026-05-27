@@ -3312,11 +3312,10 @@ def _order_registration_rows_by_dynamic_expiration(
         "columns": columns,
     }, next_rows)
     if isinstance(normalized.get("cell_meta"), dict):
-        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
             row_index_map,
-            row_offset=row_offset,
+            row_offset=_normalize_document_data_start_row(normalized),
         )
     next_document = _remap_document_entity_data_rows(
         next_document,
@@ -3401,12 +3400,11 @@ def _insert_document_data_rows_for_excel_import(
     ]
     next_document = _replace_document_data_rows(normalized, next_rows)
     if isinstance(normalized.get("cell_meta"), dict) and normalized_import_rows:
-        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _shift_cell_meta_rows_for_insert(
             normalized.get("cell_meta"),
             safe_insert_index,
             len(normalized_import_rows),
-            row_offset=row_offset,
+            row_offset=_normalize_document_data_start_row(normalized),
         )
     if safe_insert_index < len(existing_rows):
         next_document = _filter_entity_model_for_document_row_prefix(
@@ -7421,11 +7419,10 @@ def _set_attendance_summary_row_completed(
         "columns": columns,
     }, next_rows)
     if isinstance(normalized.get("cell_meta"), dict):
-        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
             row_index_map,
-            row_offset=row_offset,
+            row_offset=_normalize_document_data_start_row(normalized),
         )
     return next_document, row_index_map[row_index]
 
@@ -7611,6 +7608,17 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
             return 0, 0
 
         current_document = _normalize_document_json(dict(document.document_json or {}))
+        current_document, repaired = _repair_attendance_summary_cell_meta(current_document)
+        if repaired:
+            document.document_json = current_document
+            document.version = max(int(document.version or 1), 1) + 1
+            document.updated_by_user_id = document.owner_user_id
+            document.updated_at = time.time()
+            session.add(document)
+            session.commit()
+            session.refresh(document)
+            current_document = _normalize_document_json(dict(document.document_json or {}))
+
         next_document, generated, skipped = _generate_attendance_next_month_templates(
             current_document,
             target_date=_get_next_month_first_day(),
@@ -7629,6 +7637,97 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
                 f"generated={len(generated)} skipped={len(skipped)}"
             )
         return len(generated), len(skipped)
+
+
+def _repair_attendance_summary_cell_meta(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """修复因插入课程模板导致的 cell_meta 超链接错位。
+
+    检测当前文档中是否存在本应无 cell_meta 的新课程行却持有
+    旧数据行超链接的情况，若检测到则重新执行正确的移位。
+    返回 (修复后文档, 是否执行了修复)。
+    """
+    normalized = _normalize_document_json(document_json)
+    if "cell_meta" not in normalized:
+        return normalized, False
+
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    cell_meta = dict(normalized["cell_meta"])
+    if not isinstance(cell_meta, dict) or not rows:
+        return normalized, False
+
+    type_index = _find_attendance_column_index(columns, "course_type")
+    start_date_index = _find_attendance_column_index(columns, "start_date")
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    grid_rows = _extract_document_grid_rows(normalized)
+    column_count = len(columns)
+
+    # 找到所有本应有模板 target_date 的新插入课程行
+    next_month = _get_next_month_first_day()
+    targets = _get_attendance_batch_course_targets(next_month)
+    new_course_data_indices: list[int] = []
+    for course_type, target_date in targets:
+        for row_index, row in enumerate(rows):
+            row_values = _normalize_sheet_row(row, column_count)
+            if type_index is not None and _normalize_sheet_text(row_values[type_index]) != course_type:
+                continue
+            row_date = _extract_attendance_row_start_date(
+                row_values,
+                row_index=row_index,
+                columns=columns,
+                rows=rows,
+                start_date_index=start_date_index,
+                reference_row_offset=formula_row_offset,
+                grid_rows=grid_rows,
+            )
+            if row_date == target_date:
+                new_course_data_indices.append(row_index)
+                break
+
+    if not new_course_data_indices:
+        return normalized, False
+
+    # 检测错位: 新课程行不应有任何 cell_meta 或 entity_row，如果存在则说明移位未生效
+    corrupted = False
+    for data_idx in new_course_data_indices:
+        doc_row = data_start_row + data_idx
+        prefix = f"{doc_row}:"
+        if any(key.startswith(prefix) for key in cell_meta):
+            corrupted = True
+            break
+
+    entity_rows = _extract_document_entity_rows(normalized)
+    if not corrupted and entity_rows:
+        for data_idx in new_course_data_indices:
+            doc_row = data_start_row + data_idx
+            if doc_row < len(entity_rows) and _get_document_entity_row_id(entity_rows[doc_row]):
+                corrupted = True
+                break
+
+    if not corrupted:
+        return normalized, False
+
+    # 执行修复: 以正确的 row_offset 重做移位
+    # 新课程行一定在数据区最前面（insert_index=0）
+    amount = len(new_course_data_indices)
+    repaired_meta = _shift_cell_meta_rows_for_insert(
+        cell_meta,
+        insert_index=0,
+        amount=amount,
+        row_offset=data_start_row,
+    )
+    normalized["cell_meta"] = repaired_meta
+
+    # 同步修复 entity_rows: 在 data_start_row 处插入空条目，旧条目后移
+    if entity_rows:
+        normalized["entity_rows"] = [
+            *entity_rows[:data_start_row],
+            *([{}] * amount),
+            *entity_rows[data_start_row:],
+        ]
+
+    return normalized, True
 
 
 def init_attendance_summary_scheduler() -> None:
@@ -7791,8 +7890,18 @@ def _generate_attendance_course_templates(
             normalized.get("cell_meta"),
             insert_index,
             len(inserted_rows),
-            row_offset=_normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0,
+            row_offset=_normalize_document_data_start_row(normalized),
         )
+
+    entity_rows = _extract_document_entity_rows(normalized)
+    if entity_rows:
+        data_start_row = _normalize_document_data_start_row(normalized)
+        next_document["entity_rows"] = [
+            *entity_rows[:data_start_row + insert_index],
+            *([{}] * len(inserted_rows)),
+            *entity_rows[data_start_row + insert_index:],
+        ]
+
     return next_document, generated, skipped
 
 
@@ -7950,6 +8059,11 @@ def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, c
     if not isinstance(cell_meta, dict):
         return ""
     for candidate_row in (document_row_index, row_index):
+        # 跳过可能与表头行碰撞的 data-relative 备选查找：
+        # row_index < data_start_row 时，它和表头行的文档索引重合，
+        # 会误把表头的链接返回给数据行。
+        if candidate_row == row_index and row_index < data_start_row:
+            continue
         url = _get_document_cell_meta_link_url(cell_meta.get(f"{candidate_row}:{column_index}"))
         if url:
             return url
@@ -8690,11 +8804,10 @@ def _sort_sheet_document_rows(
     ]
     next_document = _replace_document_data_rows(normalized, next_rows)
     if isinstance(normalized.get("cell_meta"), dict):
-        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
             row_index_map,
-            row_offset=row_offset,
+            row_offset=_normalize_document_data_start_row(normalized),
         )
     return next_document
 
@@ -11895,6 +12008,56 @@ def generate_attendance_summary_course_template(
         ),
         generated=generated,
         skipped=skipped,
+    )
+
+
+@router.post(
+    "/sheets/{sheet_id}/attendance-summary/repair-cell-meta",
+    response_model=NoteSheetAttendanceTemplateGenerationResponse,
+)
+def repair_attendance_summary_cell_meta(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    """修复因插入课程模板导致的 cell_meta 超链接错位。"""
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if not _is_attendance_summary_document(session, document):
+        raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+
+    current_document = _normalize_document_json(dict(document.document_json or {}))
+    next_document, repaired = _repair_attendance_summary_cell_meta(current_document)
+
+    if repaired:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+    else:
+        next_document = current_document
+
+    return NoteSheetAttendanceTemplateGenerationResponse(
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
+        generated=[],
+        skipped=[],
     )
 
 

@@ -346,6 +346,29 @@ def send_game_window_service_click(payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def send_game_window_service_activate(payload: dict[str, Any]) -> dict[str, Any]:
+    ensure_game_window_service_running()
+    try:
+        response = requests.post(
+            _endpoint("/api/services/game-window/input/activate"),
+            json=payload,
+            timeout=(_request_timeout(default=5.0), _request_timeout(default=8.0)),
+        )
+    except requests.RequestException as exc:
+        raise GameWindowServiceError(f"游戏画面流服务激活窗口请求失败：{exc}") from exc
+    if response.status_code >= 400:
+        if response.status_code == 404:
+            raise GameWindowServiceError("游戏画面流服务缺少激活窗口接口，请停止并重新启动“凡修游戏画面流”服务。")
+        raise GameWindowServiceError(_extract_service_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise GameWindowServiceError("游戏画面流服务激活窗口响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise GameWindowServiceError("游戏画面流服务激活窗口响应格式不支持")
+    return data
+
+
 def send_game_window_service_drag(payload: dict[str, Any]) -> dict[str, Any]:
     ensure_game_window_service_running()
     try:

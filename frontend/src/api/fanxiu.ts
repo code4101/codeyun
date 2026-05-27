@@ -636,6 +636,7 @@ export interface FanxiuGameWindow2SaveFramePayload {
   fixed_width?: number;
   fixed_height?: number;
   quality?: number;
+  current_frame_data_url?: string;
 }
 
 export interface FanxiuGameWindow2SaveFrameResponse {
@@ -660,6 +661,7 @@ export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFram
   filename: string;
   box: FanxiuGameWindow2MatchBox;
   pixel_tolerance?: number;
+  current_frame_data_url?: string;
 }
 
 export interface FanxiuGameWindow2MatchResponse {
@@ -675,6 +677,11 @@ export interface FanxiuGameWindow2MatchResponse {
   fixed_score?: number;
   fixed_pixel_similarity?: number;
   fixed_pixel_score?: number;
+  fixed_exact_similarity?: number;
+  fixed_exact_score?: number;
+  fixed_exact_pixel_similarity?: number;
+  fixed_exact_pixel_score?: number;
+  fixed_search_radius?: number;
   template_similarity?: number;
   template_score?: number;
   template_crop_similarity?: number;
@@ -682,6 +689,7 @@ export interface FanxiuGameWindow2MatchResponse {
   pixel_tolerance?: number;
   box: FanxiuGameWindow2MatchBox;
   current_box: FanxiuGameWindow2MatchBox;
+  fixed_box?: FanxiuGameWindow2MatchBox;
   template_box?: FanxiuGameWindow2MatchBox;
   source_width: number;
   source_height: number;
