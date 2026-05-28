@@ -3,7 +3,7 @@
     <section class="stage-pane">
       <div class="topbar">
         <div class="topbar-content">
-          <h2>游戏窗口</h2>
+          <h2>游戏窗口3</h2>
           <div class="stream-controls">
             <div class="control-row">
               <div class="control-group source-controls">
@@ -185,902 +185,414 @@
               </div>
             </div>
 
-            <aside class="code-panel">
-              <div class="code-panel-head">
-                <div class="code-panel-title">
-                  <span>视觉宏</span>
-                  <el-popover trigger="click" placement="bottom-start" width="360">
-                    <template #reference>
-                      <el-button
-                        circle
-                        plain
-                        size="small"
-                        :icon="Setting"
-                    title="配置新指令集默认模板"
-                    aria-label="配置新指令集默认模板"
-                      />
-                    </template>
-                    <div class="visual-macro-config">
-                      <div class="visual-macro-config-title">新指令集默认模板</div>
-                      <label class="visual-macro-config-row">
-                        <span>点击位置允许随机波动半径r</span>
-                        <el-input-number
-                          v-model="visualMacroDefaultPointRadius"
-                          class="visual-number-input"
-                          size="small"
-                          :min="0"
-                          :max="200"
-                          :step="1"
-                          controls-position="right"
-                        />
-                      </label>
-                      <label class="visual-macro-config-row">
-                        <span>图像匹配相似度阈值</span>
-                        <el-input-number
-                          :model-value="thresholdRatioToPercent(visualMacroDefaultThreshold)"
-                          class="visual-number-input"
-                          size="small"
-                          :min="50"
-                          :max="100"
-                          :step="1"
-                          controls-position="right"
-                          @change="value => setVisualMacroDefaultThreshold(thresholdPercentToRatio(value))"
-                        >
-                          <template #suffix>%</template>
-                        </el-input-number>
-                      </label>
-                      <label class="visual-macro-config-row">
-                        <span>单通道像素容差</span>
-                        <el-input-number
-                          v-model="visualMacroDefaultPixelTolerance"
-                          class="visual-number-input"
-                          size="small"
-                          :min="0"
-                          :max="255"
-                          :step="1"
-                          controls-position="right"
-                        />
-                      </label>
-                    </div>
-                  </el-popover>
+            <aside class="annotation-panel">
+              <div class="annotation-panel-head">
+                <span>文件树</span>
+                <div class="annotation-panel-actions">
+                  <el-button size="small" :icon="Plus" title="新建目录" aria-label="新建目录" @click="addAssetFolder" />
+                  <el-button
+                    size="small"
+                    :icon="Picture"
+                    title="保存帧"
+                    aria-label="保存帧"
+                    :loading="saveFrameLoading"
+                    :disabled="!selectedEntryId"
+                    @click="saveCurrentFrame"
+                  />
+                  <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="!selectedAssetNode" @click="deleteSelectedAsset" />
                 </div>
               </div>
-              <div class="code-scope-list">
-                <section class="code-scope">
-                  <div class="code-scope-head">
-                    <span>脚本</span>
-                    <button
-                      type="button"
-                      class="code-add"
-                      title="新建脚本"
-                      aria-label="新建脚本"
-                      @click="addCodeCard"
-                    >
-                      +
-                    </button>
-                  </div>
-                  <div ref="codeCardListRef" class="code-card-list">
-                    <section
-                      v-for="(card, index) in sortedCodeCards"
-                      :key="card.id"
-                      class="code-card"
-                      :class="{ 'is-expanded': isCodeCardExpanded(card.id) }"
-                      :data-card-id="card.id"
-                    >
-                      <div v-if="isCodeCardExpanded(card.id)" class="code-card-head">
-                        <SortableOrderHandle
-                          class="code-card-order-handle"
-                          :index="index"
-                          :total="sortedCodeCards.length"
-                          size="sm"
-                          :pad="false"
-                        />
-                        <el-input
-                          v-model="card.title"
-                          class="code-card-title-input"
-                          size="small"
-                          placeholder="标题"
-                          @input="scheduleCodeCardSave(card)"
-                          @blur="saveCodeCardNow(card)"
-                        />
-                        <button
-                          type="button"
-                          class="code-card-collapse"
-                          title="折叠卡片"
-                          aria-label="折叠卡片"
-                          @click="toggleCodeCard(card.id)"
-                        >
-                          ^
-                        </button>
-                        <el-button
-                          class="code-card-run"
-                          :class="{ 'is-running': visualScriptRunningCardId === card.id }"
-                          :icon="visualScriptRunningCardId === card.id ? VideoPause : VideoPlay"
-                          text
-                          size="small"
-                          :disabled="Boolean(visualScriptRunningCardId) && visualScriptRunningCardId !== card.id"
-                          :title="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
-                          :aria-label="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
-                          @click.stop="visualScriptRunningCardId === card.id ? stopVisualScript(card) : runVisualScript(card)"
-                        />
-                        <button
-                          type="button"
-                          class="code-card-record"
-                          :class="{ 'is-recording': activeVisualMacroCardId === card.id }"
-                          :title="activeVisualMacroCardId === card.id ? '停止录制指令集' : '录制指令集'"
-                          :aria-label="activeVisualMacroCardId === card.id ? '停止录制指令集' : '录制指令集'"
-                          @click="toggleVisualMacroRecording(card.id)"
-                        >
-                          {{ activeVisualMacroCardId === card.id ? '停止录制' : '录制' }}
-                        </button>
-                        <button
-                          type="button"
-                          class="code-card-delete"
-                          title="删除卡片"
-                          aria-label="删除卡片"
-                          @click="deleteCodeCard(card.id)"
-                        >
-                          -
-                        </button>
-                      </div>
-                      <div v-else class="code-card-summary-row">
-                        <SortableOrderHandle
-                          class="code-card-order-handle"
-                          :index="index"
-                          :total="sortedCodeCards.length"
-                          size="sm"
-                          :pad="false"
-                        />
-                        <button
-                          type="button"
-                          class="code-card-title-button"
-                          @click="toggleCodeCard(card.id)"
-                        >
-                          <span>{{ codeCardTitle(card) }}</span>
-                        </button>
-                        <el-button
-                          class="code-card-run"
-                          :class="{ 'is-running': visualScriptRunningCardId === card.id }"
-                          :icon="visualScriptRunningCardId === card.id ? VideoPause : VideoPlay"
-                          text
-                          size="small"
-                          :disabled="Boolean(visualScriptRunningCardId) && visualScriptRunningCardId !== card.id"
-                          :title="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
-                          :aria-label="visualScriptRunningCardId === card.id ? '停止脚本' : '执行脚本'"
-                          @click.stop="visualScriptRunningCardId === card.id ? stopVisualScript(card) : runVisualScript(card)"
-                        />
-                        <button
-                          type="button"
-                          class="code-card-delete"
-                          title="删除卡片"
-                          aria-label="删除卡片"
-                          @click="deleteCodeCard(card.id)"
-                        >
-                          -
-                        </button>
-                      </div>
-                      <div v-if="isCodeCardExpanded(card.id)" class="visual-action-editor">
-                        <div v-if="activeVisualMacroCardId === card.id" class="visual-recording-hint">
-                          {{ visualMacroCapturePending ? '正在保存点击前画面...' : '录制中：在左侧直播画面点击或拖拽，会追加一组指令集。' }}
-                        </div>
-                        <div
-                          :ref="element => setVisualInstructionSetListRef(element, card.id)"
-                          class="visual-instruction-set-list"
-                          :data-card-id="card.id"
-                        >
-                          <div
-                            v-for="(instructionSet, instructionSetIndex) in visualInstructionSetsOf(card)"
-                            :key="instructionSet.id"
-                            class="visual-instruction-set"
-                            :data-set-id="instructionSet.id"
-                            @contextmenu.prevent.stop="openVisualInstructionSetContextMenu($event, card, instructionSet)"
-                          >
-                            <div
-                              v-if="firstInstructionOfSet(instructionSet)"
-                              :key="firstInstructionOfSet(instructionSet)?.id"
-                              class="visual-operation"
-                              :class="{ 'is-selected': selectedVisualInstructionSetKey === visualInstructionSetKey(card.id, instructionSet.id) }"
-                              @click.stop="selectVisualInstructionFrame(card, firstInstructionOfSet(instructionSet)!)"
-                            >
-                              <div class="visual-action-row">
-                                <SortableOrderHandle
-                                  :index="instructionSetIndex"
-                                  :total="visualInstructionSetsOf(card).length"
-                                  size="sm"
-                                  :pad="false"
-                                />
-                                <span
-                                  class="visual-summary-text"
-                                  :class="{ 'is-unique-title': isVisualInstructionSetLabelUnique(instructionSet) || (!instructionSet.label.trim() && isVisualInstructionLabelUnique(firstInstructionOfSet(instructionSet)!)) }"
-                                >
-                                  {{ visualInstructionSetDisplayTitle(instructionSet) }}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                        <div v-if="!visualInstructionSetsOf(card).length" class="visual-empty">
-                          点击本脚本右上角“录制”后，在直播画面点击或拖拽，会追加指令集。
-                        </div>
-                      </div>
-                    </section>
-                    <div v-if="!sortedCodeCards.length && !codeCardsLoading" class="code-card-empty">
-                      暂无脚本
-                    </div>
-                  </div>
-                </section>
+
+              <el-tree
+                class="asset-tree"
+                :data="assetTree"
+                :props="assetTreeProps"
+                node-key="id"
+                default-expand-all
+                highlight-current
+                draggable
+                :current-node-key="selectedAssetId"
+                :allow-drop="allowAssetDrop"
+                @node-click="selectAssetNode"
+                @node-contextmenu="openAssetContextMenu"
+              >
+                <template #default="{ data }">
+                  <span class="asset-tree-node" :class="{ 'is-image': data.type === 'image' }">
+                    <el-icon v-if="data.type === 'folder'"><Folder /></el-icon>
+                    <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
+                    <span>{{ data.title }}</span>
+                  </span>
+                </template>
+              </el-tree>
+
+              <div
+                v-if="assetContextMenu.visible"
+                class="asset-context-menu"
+                :style="{ left: `${assetContextMenu.x}px`, top: `${assetContextMenu.y}px` }"
+                @click.stop
+                @contextmenu.prevent
+              >
+                <button type="button" @click="renameAssetFromContextMenu">
+                  重命名
+                </button>
+                <button type="button" class="is-danger" @click="deleteAssetFromContextMenu">
+                  删除
+                </button>
               </div>
-              <div class="code-output-panel">
-                <div class="code-output-tabs">
-                  <button
-                    type="button"
-                    class="code-output-tab"
-                    :class="{ 'is-active': pseudoOutputTab === 'log' }"
-                    @click="pseudoOutputTab = 'log'"
-                  >
-                    日志
-                  </button>
-                  <button
-                    type="button"
-                    class="code-output-tab"
-                    :class="{ 'is-active': pseudoOutputTab === 'result' }"
-                    @click="pseudoOutputTab = 'result'"
-                  >
-                    结果
-                  </button>
-                </div>
-                <pre class="code-output-box">{{ pseudoOutputText }}</pre>
-              </div>
+
             </aside>
           </div>
 
-          <section class="screenshot-panel">
-            <div class="screenshot-head">
-              <button type="button" class="screenshot-toggle" @click="toggleScreenshotPanel">
-                <span class="screenshot-caret">{{ screenshotPanelOpen ? '▼' : '▶' }}</span>
-                <span>指令集详情</span>
-              </button>
-              <el-popover trigger="click" placement="right-start" width="260">
-                <template #reference>
-                  <button
-                    type="button"
-                    class="screenshot-help"
-                    title="查看操作文档"
-                    aria-label="查看指令集详情操作文档"
-                    @click.stop
-                  >
-                    ?
-                  </button>
-                </template>
-                <div class="screenshot-help-doc">
-                  <div>Ctrl + 滚轮：以鼠标位置缩放</div>
-                  <div>Ctrl + + / -：放大或缩小</div>
-                  <div>Ctrl + 0：适应视口</div>
-                  <div>空格 + 左键拖拽：拖动画面</div>
-                  <div>中键拖拽：拖动画面</div>
-                  <div>左键拖拽：新建标注框</div>
-                </div>
-              </el-popover>
-              <span class="screenshot-summary">{{ screenshotPanelSummary }}</span>
-            </div>
-            <div v-if="screenshotPanelOpen" class="screenshot-body">
-              <div v-if="screenshotLoading && !screenshotImages.length" class="screenshot-empty">加载中</div>
-              <div v-else-if="!selectedRawVisualInstruction && !selectedScreenshotFilename" class="screenshot-empty">选择一组带帧的指令集</div>
-              <div v-else-if="selectedScreenshotFilename && !selectedScreenshotImage" class="screenshot-empty">未找到绑定截图</div>
-              <div v-if="selectedRawVisualInstruction || selectedScreenshotImage" class="screenshot-editor">
-                <div class="screenshot-preview-column">
-                  <div class="screenshot-detail-head">
-                    <div class="screenshot-detail-title">截图</div>
-                    <button
-                      type="button"
-                      class="screenshot-rebind-frame"
-                      :disabled="saveFrameLoading || !selectedVisualEditInstructionContext"
-                      @click="rebindSelectedVisualInstructionFrame"
-                    >
-                      重绑当前帧
-                    </button>
-                  </div>
-                  <div v-if="selectedScreenshotGeometryText" class="screenshot-geometry-warning">
-                    <span>{{ selectedScreenshotGeometryText }}</span>
-                  </div>
-                  <div
-                    v-if="selectedScreenshotImage"
-                    ref="screenshotViewportRef"
-                    class="screenshot-preview"
-                    :class="screenshotViewportClasses"
-                    :style="screenshotCanvasStyle"
-                    @wheel="handleScreenshotWheel"
-                    @mousedown.capture="handleScreenshotViewportMouseDown"
-                  >
-                    <div class="screenshot-workspace" :style="screenshotCanvasStyle">
-                      <div ref="screenshotImageWrapRef" class="screenshot-image-wrap" :style="screenshotContentStyle">
-                        <img
-                          v-if="screenshotImageUrl"
-                          ref="screenshotImageRef"
-                          class="screenshot-image"
-                          :src="screenshotImageUrl"
-                          :style="screenshotCanvasStyle"
-                          alt="截图"
-                          draggable="false"
-                          @load="handleScreenshotImageLoad"
-                          @error="handleScreenshotImageError"
-                        />
-                        <div v-else class="screenshot-image-placeholder">加载图片</div>
-                        <canvas
-                          ref="screenshotOverlayCanvasRef"
-                          class="screenshot-overlay-canvas"
-                          @pointerdown="handleScreenshotPointerDown"
-                          @pointermove="handleScreenshotPointerMove"
-                          @pointerup="handleScreenshotPointerUp"
-                          @pointerleave="handleScreenshotPointerLeave"
-                          @contextmenu.prevent="handleScreenshotContextMenu"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                  <div v-else class="screenshot-empty">未绑定截图</div>
-                </div>
-
-                <div class="screenshot-pre-panel" @contextmenu.prevent.stop="openScreenshotBoxListPanelContextMenu">
-                  <div v-if="selectedVisualInstruction" class="screenshot-instruction-panel">
-                    <div v-if="selectedVisualInstructionSet" class="screenshot-config-group">
-                      <div class="screenshot-panel-title-row">
-                        <div class="screenshot-panel-title">指令集</div>
-                        <button
-                          type="button"
-                          class="instruction-sequence-add"
-                          title="添加指令"
-                          aria-label="添加指令"
-                          @click="selectedVisualInstructionSetContext && addInstructionToSet(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id)"
-                        >
-                          +
-                        </button>
-                      </div>
-                      <div class="screenshot-config-row">
-                        <label class="screenshot-box-metric">
-                          <span>名称</span>
-                          <input
-                            class="instruction-sequence-title instruction-set-title-input"
-                            :class="{ 'is-unique-title': isVisualInstructionSetLabelUnique(selectedVisualInstructionSet) && !isVisualInstructionSetLabelEditing(selectedVisualInstructionSet.id) }"
-                            :value="visualInstructionSetLabelInputValue(selectedVisualInstructionSet)"
-                            placeholder="指令集名称"
-                            @click.stop
-                            @mousedown.stop
-                            @keydown.stop
-                            @keyup.stop
-                            @compositionstart="beginVisualTitleComposition(`set:${selectedVisualInstructionSet.id}`)"
-                            @compositionend="event => selectedVisualInstructionSetContext && commitVisualInstructionSetLabelInput(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
-                            @input="event => selectedVisualInstructionSetContext && handleVisualInstructionSetLabelInput(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
-                            @focus="beginVisualInstructionSetLabelEdit(selectedVisualInstructionSet)"
-                            @keydown.enter.stop.prevent="event => selectedVisualInstructionSetContext && commitVisualInstructionSetLabelByEnter(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id, event)"
-                            @blur="selectedVisualInstructionSetContext && commitVisualInstructionSetLabelDraft(selectedVisualInstructionSetContext.card, selectedVisualInstructionSet.id)"
-                          />
-                        </label>
-                      </div>
-                      <div class="instruction-sequence">
-                        <div
-                          v-for="(instruction, index) in selectedVisualInstructionSet.instructions"
-                          :key="instruction.id"
-                          role="button"
-                          tabindex="0"
-                          class="instruction-sequence-row"
-                          :class="{ 'is-active': selectedVisualInstructionSetContext && selectedVisualInstructionKey === visualInstructionKey(selectedVisualInstructionSetContext.card.id, instruction.id) }"
-                          @click="selectVisualInstructionFromSelectedSet(instruction)"
-                          @keydown.enter.prevent="selectVisualInstructionFromSelectedSet(instruction)"
-                          @keydown.space.prevent="selectVisualInstructionFromSelectedSet(instruction)"
-                          >
-                            <span>{{ index + 1 }}</span>
-                            <input
-                              v-if="instruction.kind !== 'ref'"
-                              class="instruction-sequence-title"
-                              :class="{ 'is-unique-title': isVisualInstructionLabelUnique(instruction) && !isVisualInstructionTitleEditing(instruction.id) }"
-                              :value="visualInstructionTitleInputValue(instruction)"
-                              :placeholder="visualInstructionFallbackTitle(instruction)"
-                              @click.stop
-                              @mousedown.stop
-                              @keydown.stop
-                              @keyup.stop
-                              @compositionstart="beginVisualTitleComposition(`instruction:${instruction.id}`)"
-                              @compositionend="event => commitVisualInstructionTitleComposition(instruction, event)"
-                              @input="event => handleVisualInstructionTitleInput(instruction.id, event)"
-                              @focus="beginVisualInstructionTitleEdit(instruction)"
-                              @keydown.enter.stop.prevent="event => commitVisualInstructionTitleDraftByEnter(instruction, event)"
-                              @blur="commitVisualInstructionTitleDraft(instruction)"
-                            />
-                            <template v-if="instruction.kind === 'ref'">
-                              <span class="instruction-reference-title">调用：{{ instruction.refName || '未选择' }}</span>
-                            </template>
-                          <button
-                            type="button"
-                            class="instruction-sequence-delete"
-                            title="删除指令"
-                            aria-label="删除指令"
-                            @click.stop="selectedVisualInstructionSetContext && confirmDeleteVisualInstruction(selectedVisualInstructionSetContext.card, instruction)"
-                          >
-                            -
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="screenshot-config-group">
-                      <div class="screenshot-config-row visual-call-config-row">
-                        <label class="screenshot-box-metric">
-                          <span class="visual-primary-label">类型</span>
-                          <el-select
-                            :model-value="selectedRawVisualInstruction?.kind ?? 'normal'"
-                            class="visual-target-kind-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstructionKind(value as VisualInstructionKind)"
-                          >
-                            <el-option label="普通" value="normal" />
-                            <el-option label="调用" value="ref" />
-                          </el-select>
-                        </label>
-                        <label v-if="selectedVisualReferenceInstruction" class="screenshot-box-metric">
-                          <span>目标</span>
-                          <el-select
-                            :model-value="selectedVisualReferenceInstruction.refTargetKind"
-                            class="visual-target-kind-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstructionReferenceTargetKind(value as VisualReferenceTargetKind)"
-                          >
-                            <el-option label="指令" value="instruction" />
-                            <el-option label="指令集" value="instructionSet" />
-                          </el-select>
-                        </label>
-                        <label v-if="selectedVisualReferenceInstruction" class="screenshot-box-metric">
-                          <span>调用</span>
-                          <el-select
-                            :model-value="selectedVisualReferenceInstruction.refName"
-                            class="visual-reference-select"
-                            size="small"
-                            filterable
-                            placeholder="选择唯一名称"
-                            @change="value => updateSelectedVisualInstructionReference(String(value))"
-                          >
-                            <el-option
-                              v-for="candidate in selectedVisualReferenceCandidates"
-                              :key="candidate.id"
-                              :label="candidate.name"
-                              :value="candidate.name"
-                            />
-                          </el-select>
-                        </label>
-                        <span v-if="selectedVisualReferenceInstruction" class="visual-reference-note">
-                          修改下方参数会影响所有调用
-                        </span>
-                      </div>
-                      <div class="screenshot-config-row">
-                        <label class="screenshot-box-metric">
-                          <span class="visual-primary-label">动作</span>
-                          <el-select
-                            :model-value="selectedVisualInstruction.action"
-                            class="visual-action-kind-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstruction({ action: value as VisualActionKind })"
-                          >
-                            <el-option label="等待点击" value="waitClick" />
-                            <el-option label="守护点击" value="guardClick" />
-                            <el-option label="点击" value="click" />
-                            <el-option label="拖拽" value="drag" />
-                            <el-option label="等待" value="wait" />
-                            <el-option label="查找" value="find" />
-                            <el-option label="批量查找" value="findAll" />
-                          </el-select>
-                        </label>
-                      </div>
-                      <div v-if="visualActionUsesPointer(selectedVisualInstruction.action)" class="pointer-config-table">
-                        <div class="pointer-config-row">
-                          <span class="screenshot-metric-group-label">起点</span>
-                          <label class="screenshot-box-metric">
-                            <span>x1</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.start?.x ?? 0"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerPoint('start', 'x', value)"
-                            />
-                          </label>
-                          <label class="screenshot-box-metric">
-                            <span>y1</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.start?.y ?? 0"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerPoint('start', 'y', value)"
-                            />
-                          </label>
-                          <label class="screenshot-box-metric">
-                            <span>r1</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.start?.r ?? visualMacroDefaultPointRadius"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerRadius('start', value)"
-                            />
-                          </label>
-                        </div>
-                        <div v-if="selectedVisualInstruction.action === 'drag'" class="pointer-config-row">
-                          <span class="screenshot-metric-group-label">终点</span>
-                          <label class="screenshot-box-metric">
-                            <span>x2</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.end?.x ?? 0"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerPoint('end', 'x', value)"
-                            />
-                          </label>
-                          <label class="screenshot-box-metric">
-                            <span>y2</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.end?.y ?? 0"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerPoint('end', 'y', value)"
-                            />
-                          </label>
-                          <label class="screenshot-box-metric">
-                            <span>r2</span>
-                            <el-input-number
-                              :model-value="selectedVisualInstruction.pointer.end?.r ?? visualMacroDefaultPointRadius"
-                              size="small"
-                              :controls="false"
-                              :step="1"
-                              @change="value => updateSelectedVisualInstructionPointerRadius('end', value)"
-                            />
-                          </label>
-                        </div>
-                        <label v-if="selectedVisualInstruction.action === 'drag'" class="screenshot-config-line">
-                          <span>拖拽时间ms</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.pointer.durationMs"
-                            class="screenshot-duration-input"
-                            size="small"
-                            :min="0"
-                            :max="5000"
-                            :step="50"
-                            controls-position="right"
-                            @change="value => updateSelectedVisualInstructionPointerDuration(value)"
-                          />
-                        </label>
-                      </div>
-                      <div v-else-if="selectedVisualInstruction.action === 'wait'" class="screenshot-config-row">
-                        <label class="screenshot-box-metric">
-                          <span>条件</span>
-                          <el-select
-                            :model-value="selectedVisualInstruction.condition"
-                            class="visual-scan-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstruction({ condition: value as VisualCondition })"
-                          >
-                            <el-option label="出现" value="appear" />
-                            <el-option label="消失" value="disappear" />
-                            <el-option label="稳定" value="stable" />
-                            <el-option label="变化" value="changed" />
-                          </el-select>
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>超时</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.timeout"
-                            class="visual-small-number-input"
-                            size="small"
-                            :min="0"
-                            :max="120"
-                            controls-position="right"
-                            @change="value => updateSelectedVisualInstruction({ timeout: Number(value) || 0 })"
-                          />
-                        </label>
-                        <span class="visual-inline-label">秒</span>
-                      </div>
-                    </div>
-
-                    <div class="screenshot-config-group">
-                      <div class="screenshot-config-row">
-                        <label class="screenshot-box-metric">
-                          <span class="visual-primary-label">对象</span>
-                          <el-select
-                            :model-value="selectedVisualInstruction.target"
-                            class="visual-target-kind-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstruction({ target: value as VisualTargetKind })"
-                          >
-                            <el-option label="图片" value="image" />
-                            <el-option label="文本" value="text" />
-                            <el-option label="坐标" value="coordinate" />
-                          </el-select>
-                        </label>
-                      </div>
-                      <label v-if="visualInstructionUsesTargetConfig(selectedVisualInstruction)" class="screenshot-config-line">
-                        <span>搜索范围</span>
-                        <el-select
-                          :model-value="selectedVisualInstruction.scan"
-                          class="visual-scan-select"
-                          size="small"
-                          @change="value => updateSelectedVisualInstructionScan(value as VisualScanMode)"
-                        >
-                          <el-option label="固定位置" value="fixed" />
-                          <el-option label="范围搜索" value="range" />
-                          <el-option label="全图搜索" value="full" />
-                        </el-select>
-                      </label>
-                      <div
-                        v-if="selectedVisualInstruction.scan === 'range'"
-                        class="visual-box-config"
-                        @focusin="activeVisualShapeRole = 'scan'"
-                        @pointerdown="activeVisualShapeRole = 'scan'"
-                      >
-                        <label class="screenshot-box-metric visual-box-mode-field">
-                          <span>搜索区域</span>
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>x</span>
-                          <el-input-number
-                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).x"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionScanBoxMetric('x', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>y</span>
-                          <el-input-number
-                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).y"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionScanBoxMetric('y', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>w</span>
-                          <el-input-number
-                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).w"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionScanBoxMetric('w', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>h</span>
-                          <el-input-number
-                            :model-value="visualScanBoxOrDefault(selectedVisualInstruction).h"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionScanBoxMetric('h', value)"
-                          />
-                        </label>
-                      </div>
-                      <label v-if="selectedVisualInstruction.target === 'text'" class="screenshot-config-line">
-                        <span>识别文本</span>
-                        <el-input
-                          :model-value="selectedVisualInstruction.text"
-                          class="visual-text-input"
-                          size="small"
-                          placeholder="文本"
-                          @input="value => updateSelectedVisualInstruction({ text: String(value) })"
-                          @blur="saveSelectedVisualInstructionCardNow"
-                        />
-                      </label>
-                      <label v-if="selectedVisualInstruction.target === 'text'" class="screenshot-config-line">
-                        <span>文本匹配</span>
-                        <el-select
-                          :model-value="selectedVisualInstruction.textMatch"
-                          class="visual-scan-select"
-                          size="small"
-                          @change="value => updateSelectedVisualInstruction({ textMatch: value as VisualTextMatch })"
-                        >
-                          <el-option label="包含" value="contains" />
-                          <el-option label="精确" value="exact" />
-                          <el-option label="正则" value="regex" />
-                        </el-select>
-                      </label>
-                      <div
-                        v-if="selectedVisualInstruction.target === 'image'"
-                        class="visual-box-config"
-                        @focusin="activeVisualShapeRole = 'target'"
-                        @pointerdown="activeVisualShapeRole = 'target'"
-                      >
-                        <label class="screenshot-box-metric visual-box-mode-field">
-                          <span>图片区域</span>
-                          <el-select
-                            :model-value="selectedVisualInstruction.imageBoxMode"
-                            class="visual-image-box-mode-select"
-                            size="small"
-                            @change="value => updateSelectedVisualInstructionImageBoxMode(value as VisualImageBoxMode)"
-                          >
-                            <el-option label="中心矩形" value="anchor" />
-                            <el-option label="手动画框" value="manual" />
-                          </el-select>
-                        </label>
-                        <label v-if="selectedVisualInstruction.imageBoxMode === 'manual'" class="screenshot-box-metric">
-                          <span>x</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.box?.x ?? 0"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionBoxMetric('x', value)"
-                          />
-                        </label>
-                        <label v-if="selectedVisualInstruction.imageBoxMode === 'manual'" class="screenshot-box-metric">
-                          <span>y</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.box?.y ?? 0"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionBoxMetric('y', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>w</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.box?.w ?? 50"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionBoxMetric('w', value)"
-                          />
-                        </label>
-                        <label class="screenshot-box-metric">
-                          <span>h</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.box?.h ?? 50"
-                            size="small"
-                            :controls="false"
-                            :step="1"
-                            @change="value => updateSelectedVisualInstructionBoxMetric('h', value)"
-                          />
-                        </label>
-                      </div>
-                      <div v-if="selectedVisualInstruction.target === 'image'" class="visual-match-config">
-                        <label class="screenshot-config-line visual-threshold-line">
-                          <span>图像匹配相似度阈值</span>
-                          <el-input-number
-                            :model-value="thresholdRatioToPercent(selectedVisualInstruction.threshold)"
-                            class="screenshot-wide-number-input"
-                            size="small"
-                            :min="50"
-                            :max="100"
-                            :step="1"
-                            controls-position="right"
-                            @change="updateSelectedVisualInstructionThreshold"
-                          >
-                            <template #suffix>%</template>
-                          </el-input-number>
-                        </label>
-                        <label
-                          v-if="selectedVisualInstruction.scan === 'fixed'"
-                          class="screenshot-config-line"
-                        >
-                          <span>单通道像素容差</span>
-                          <el-input-number
-                            :model-value="selectedVisualInstruction.pixelTolerance"
-                            class="screenshot-wide-number-input"
-                            size="small"
-                            :min="0"
-                            :max="255"
-                            :step="1"
-                            controls-position="right"
-                            @change="updateSelectedVisualInstructionPixelTolerance"
-                          />
-                        </label>
-                      </div>
-                      <div v-if="selectedVisualInstruction.target === 'image'" class="visual-probe-line">
-                        <button
-                          type="button"
-                          class="visual-threshold-probe"
-                          :class="{ 'is-active': visualSimilarityProbeActive }"
-                          :disabled="visualSimilarityProbeLoading"
-                          @click="toggleVisualSimilarityProbe"
-                        >
-                          {{ visualSimilarityProbeActive ? '停止' : '检测' }}
-                        </button>
-                        <span v-if="visualSimilarityProbeText" class="visual-threshold-probe-result">
-                          {{ visualSimilarityProbeText }}
-                        </span>
-                      </div>
-                    </div>
-
-                  </div>
-                </div>
+          <section class="annotation-workbench">
+            <div class="annotation-workbench-head">
+              <span>{{ selectedImageTitleText }}</span>
+              <div class="annotation-panel-actions">
+                <el-button size="small" :icon="Plus" :disabled="!selectedImageNode" title="新建 shape" aria-label="新建 shape" @click="addAnnotationShape" />
+                <el-button size="small" :icon="Delete" :disabled="!selectedShape" title="删除 shape" aria-label="删除 shape" @click="deleteSelectedShape" />
               </div>
             </div>
-          </section>
 
-          <section v-if="matchResults.length" class="match-panel">
-            <div class="match-head">
-              <span>匹配</span>
-              <span class="match-summary">共{{ matchResults.length }}次</span>
-            </div>
-            <div class="match-body">
-              <div class="match-preview">
-                <div ref="matchImageWrapRef" class="match-image-wrap">
-                  <img
-                    v-if="selectedMatchResult"
-                    ref="matchImageRef"
-                    class="match-image"
-                    :src="selectedMatchResult.imageUrl"
-                    alt="匹配帧"
-                    draggable="false"
-                    @load="handleMatchImageLoad"
-                  />
-                  <canvas ref="matchOverlayCanvasRef" class="match-overlay-canvas" />
-                </div>
-              </div>
-              <div class="match-list">
-                <button
-                  v-for="(entry, index) in matchResultEntries"
-                  :key="entry.id"
-                  type="button"
-                  class="match-row"
-                  :class="{
-                    'is-active': selectedMatchEntry?.id === entry.id,
-                    'is-fixed': entry.kind === 'fixed',
-                    'is-template': entry.kind === 'template',
-                  }"
-                  @click="selectMatchEntry(entry.id)"
+            <div v-if="selectedImageNode" class="annotation-editor">
+              <div class="annotation-main-row">
+                <div
+                  ref="screenshotViewportRef"
+                  class="screenshot-preview annotation-preview"
+                  :class="screenshotViewportClasses"
+                  :style="annotationCanvasStyle"
+                  @wheel="handleScreenshotWheel"
+                  @mousedown.capture="handleScreenshotViewportMouseDown"
                 >
-                  <span class="match-number">{{ index + 1 }}</span>
-                  <span class="match-name">{{ entry.name }}</span>
-                  <span class="match-kind">{{ entry.label }}</span>
-                  <strong class="match-score">{{ entry.similarity }}%</strong>
-                </button>
+                  <div class="screenshot-workspace" :style="annotationCanvasStyle">
+                    <div
+                      ref="annotationCanvasRef"
+                      class="screenshot-image-wrap annotation-image-wrap"
+                      :style="annotationContentStyle"
+                      @pointerdown="startShapeDraft"
+                    >
+                      <img
+                        v-if="selectedImageNode.imageDataUrl"
+                        class="screenshot-image annotation-image"
+                        :src="selectedImageNode.imageDataUrl"
+                        :style="annotationCanvasStyle"
+                        :alt="selectedImageNode.title"
+                        draggable="false"
+                      />
+                      <div v-else class="empty-image-surface">
+                        <span>空图</span>
+                      </div>
+                      <div
+                        v-for="shape in annotationShapes"
+                        :key="shape.id"
+                        class="annotation-shape"
+                        :class="{ 'is-active': selectedShapeId === shape.id }"
+                        :style="shapeBoxStyle(shape)"
+                        @pointerdown.stop="startShapeMove($event, shape.id)"
+                        @contextmenu.prevent.stop="openShapeContextMenu($event, shape.id)"
+                      >
+                        <button
+                          type="button"
+                          class="shape-corner-handle is-top-left"
+                          title="拖拽调整左上角"
+                          aria-label="拖拽调整左上角"
+                          @pointerdown.stop="startShapeResize($event, shape.id, 'top-left')"
+                        />
+                        <button
+                          type="button"
+                          class="shape-corner-handle is-bottom-right"
+                          title="拖拽调整右下角"
+                          aria-label="拖拽调整右下角"
+                          @pointerdown.stop="startShapeResize($event, shape.id, 'bottom-right')"
+                        />
+                      </div>
+                      <div
+                        v-if="shapeDraftBox"
+                        class="annotation-shape is-draft"
+                        :style="shapeBoxStyle(shapeDraftBox)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <el-tree
+                  class="shape-tree"
+                  :data="selectedImageShapes"
+                  :props="shapeTreeProps"
+                  node-key="id"
+                  default-expand-all
+                  highlight-current
+                  draggable
+                  :current-node-key="selectedShapeId"
+                  @node-click="node => selectShape(node.id)"
+                  @node-contextmenu="openShapeTreeContextMenu"
+                >
+                  <template #default="{ data }">
+                    <span class="shape-tree-node" :class="{ 'is-group': data.kind === 'group' }">
+                      {{ data.title || 'shape' }}
+                    </span>
+                  </template>
+                </el-tree>
+
+                <div
+                  v-if="shapeContextMenu.visible"
+                  class="asset-context-menu shape-context-menu"
+                  :style="{ left: `${shapeContextMenu.x}px`, top: `${shapeContextMenu.y}px` }"
+                  @click.stop
+                  @contextmenu.prevent
+                >
+                  <button type="button" class="is-danger" @click="deleteShapeFromContextMenu">
+                    删除
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="selectedShape" class="shape-fields">
+                <el-input v-model="selectedShape.title" size="small" placeholder="标题" />
+                <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
+                  <el-checkbox v-model="selectedShape.isSceneIdentity">
+                    场景标识
+                  </el-checkbox>
+                  <div class="shape-jump-field">
+                    <span>场景跳转</span>
+                    <el-input-number
+                      v-model="selectedShape.sceneJumpTarget"
+                      size="small"
+                      :min="0"
+                      :controls="false"
+                      placeholder="图片ID"
+                    />
+                  </div>
+                  <div class="shape-action-group">
+                    <el-checkbox v-model="selectedShape.maskEnabled" title="启用抠图" aria-label="启用抠图" />
+                    <el-button size="small" :disabled="!selectedShape" @click="openShapeMaskDialog">
+                      抠图
+                    </el-button>
+                  </div>
+                  <div class="shape-action-group">
+                    <el-checkbox v-model="selectedShape.toleranceEnabled" title="启用容差" aria-label="启用容差" />
+                    <el-button size="small" :disabled="!selectedShape" @click="openShapeToleranceDialog">
+                      容差
+                    </el-button>
+                  </div>
+                  <div class="shape-action-group">
+                    <el-checkbox v-model="selectedShape.discriminatorEnabled" title="启用区分" aria-label="启用区分" />
+                    <el-button size="small" :disabled="!selectedShape" @click="openShapeDiscriminatorDialog">
+                      区分
+                    </el-button>
+                  </div>
+                </div>
+                <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
+                  <div class="shape-action-group shape-detect-group">
+                    <el-button
+                      size="small"
+                      :loading="shapeDetectingId === selectedShape.id"
+                      :disabled="!canDetectSelectedShape"
+                      @click="detectSelectedShape"
+                    >
+                      检测
+                    </el-button>
+                    <span v-if="selectedShapeDetectResult" class="shape-detect-result">
+                      {{ selectedShapeDetectResult }}
+                    </span>
+                  </div>
+                </div>
+                <el-input v-model="selectedShape.description" type="textarea" :rows="4" placeholder="说明" />
               </div>
             </div>
+
+            <div v-else class="annotation-empty">选择一个图片节点后编辑标注</div>
           </section>
+
+
+
+
         </div>
       </div>
 
-      <div
-        v-if="screenshotBoxContextMenu.visible"
-        class="screenshot-box-menu"
-        :style="{ left: `${screenshotBoxContextMenu.x}px`, top: `${screenshotBoxContextMenu.y}px` }"
-        @click.stop
-        @pointerdown.stop
-      >
-        <button type="button" :disabled="matchingBoxId === screenshotBoxContextMenu.boxId" @click="runScreenshotBoxContextMatch">
-          匹配
-        </button>
-      </div>
 
-      <div
-        v-if="screenshotBoxListContextMenu.visible"
-        class="screenshot-box-menu"
-        :style="{ left: `${screenshotBoxListContextMenu.x}px`, top: `${screenshotBoxListContextMenu.y}px` }"
-        @click.stop
-        @pointerdown.stop
-      >
-        <button v-if="screenshotBoxListContextMenu.boxId" type="button" @click="copyScreenshotBoxFromListContext">
-          复制
-        </button>
-        <button type="button" :disabled="!copiedScreenshotBox" @click="pasteScreenshotBoxFromListContext">
-          粘贴
-        </button>
-      </div>
 
-      <div
-        v-if="visualInstructionSetContextMenu.visible"
-        class="screenshot-box-menu visual-instruction-set-menu"
-        :style="{ left: `${visualInstructionSetContextMenu.x}px`, top: `${visualInstructionSetContextMenu.y}px` }"
-        @click.stop
-        @pointerdown.stop
-      >
-        <button type="button" class="is-danger" @click="confirmDeleteVisualInstructionSetFromContext">
-          删除指令集
-        </button>
-      </div>
+
+
+
     </section>
+    <el-dialog
+      v-model="shapeMaskDialogVisible"
+      class="shape-mask-dialog"
+      width="780px"
+      append-to-body
+      @closed="stopShapeMaskSampling"
+    >
+      <template #header>
+        <div class="shape-dialog-head">
+          <span>方框抠图</span>
+          <button type="button" class="shape-help-button" title="查看说明" aria-label="查看抠图说明" @click="showShapeMaskHelp">
+            ?
+          </button>
+        </div>
+      </template>
+      <div class="shape-mask-tool">
+        <div class="shape-mask-previews">
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">当前直播</div>
+            <img v-if="shapeMaskLivePreviewUrl" :src="shapeMaskLivePreviewUrl" alt="当前直播" />
+            <div v-else class="shape-mask-empty">等待采样</div>
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">抠图结果</div>
+            <img v-if="shapeMaskResultPreviewUrl" :src="shapeMaskResultPreviewUrl" alt="抠图结果" />
+            <div v-else class="shape-mask-empty">等待采样</div>
+          </div>
+        </div>
+        <div class="shape-mask-controls">
+          <span>采样 {{ shapeMaskFrameCount }} 帧</span>
+          <div class="shape-mask-slider">
+            <span>阈值 {{ shapeMaskThreshold }}</span>
+            <el-slider v-model="shapeMaskThreshold" :min="0" :max="120" :step="1" @input="refreshShapeMaskPreview" />
+          </div>
+          <el-button size="small" type="primary" plain :disabled="shapeMaskRunning" @click="startShapeMaskSampling">
+            开始
+          </el-button>
+          <el-button size="small" :disabled="!shapeMaskRunning" @click="pauseShapeMaskSampling">
+            暂停
+          </el-button>
+          <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="shapeMaskDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :disabled="!shapeMaskAlphaDataUrl" @click="saveShapeMaskAndClose">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+    <el-dialog
+      v-model="shapeToleranceDialogVisible"
+      class="shape-mask-dialog"
+      width="780px"
+      append-to-body
+      @closed="stopShapeToleranceSampling"
+    >
+      <template #header>
+        <div class="shape-dialog-head">
+          <span>方框容差</span>
+          <button type="button" class="shape-help-button" title="查看说明" aria-label="查看容差说明" @click="showShapeToleranceHelp">
+            ?
+          </button>
+        </div>
+      </template>
+      <div class="shape-mask-tool">
+        <div class="shape-mask-previews">
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">最小值</div>
+            <img v-if="shapeToleranceMinPreviewUrl" :src="shapeToleranceMinPreviewUrl" alt="最小值" />
+            <div v-else class="shape-mask-empty">等待采样</div>
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">最大值</div>
+            <img v-if="shapeToleranceMaxPreviewUrl" :src="shapeToleranceMaxPreviewUrl" alt="最大值" />
+            <div v-else class="shape-mask-empty">等待采样</div>
+          </div>
+        </div>
+        <div class="shape-mask-controls">
+          <span>采样 {{ shapeToleranceFrameCount }} 帧</span>
+          <el-button size="small" type="primary" plain :disabled="shapeToleranceRunning" @click="startShapeToleranceSampling">
+            开始
+          </el-button>
+          <el-button size="small" :disabled="!shapeToleranceRunning" @click="pauseShapeToleranceSampling">
+            暂停
+          </el-button>
+          <el-button size="small" @click="resetShapeToleranceSampling">重置</el-button>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="shapeToleranceDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :disabled="!shapeToleranceMinPreviewUrl || !shapeToleranceMaxPreviewUrl" @click="saveShapeToleranceAndClose">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+    <el-dialog
+      v-model="shapeDiscriminatorDialogVisible"
+      class="shape-mask-dialog"
+      width="920px"
+      append-to-body
+      @closed="stopShapeDiscriminatorSampling"
+    >
+      <template #header>
+        <div class="shape-dialog-head">
+          <span>方框区分</span>
+          <button type="button" class="shape-help-button" title="查看说明" aria-label="查看区分说明" @click="showShapeDiscriminatorHelp">
+            ?
+          </button>
+        </div>
+      </template>
+      <div class="shape-mask-tool">
+        <div class="shape-mask-controls">
+          <div class="shape-jump-field">
+            <span>组名</span>
+            <el-input v-model="shapeDiscriminatorGroupTitle" size="small" placeholder="区分组" />
+          </div>
+          <el-checkbox v-model="shapeDiscriminatorSyncBox">同步框选</el-checkbox>
+        </div>
+        <div class="shape-mask-controls">
+          <div class="shape-jump-field">
+            <span>添加状态</span>
+            <el-input-number
+              v-model="shapeDiscriminatorNewImageId"
+              size="small"
+              :min="0"
+              :controls="false"
+              placeholder="图片ID"
+            />
+          </div>
+          <el-input v-model="shapeDiscriminatorNewLabel" class="shape-discriminator-label-input" size="small" placeholder="状态名" />
+          <el-button size="small" @click="addShapeDiscriminatorMember">添加</el-button>
+          <el-button size="small" @click="resetShapeDiscriminator">刷新</el-button>
+          <el-button size="small" type="primary" plain :disabled="shapeDiscriminatorRunning || !shapeDiscriminatorReady" @click="startShapeDiscriminatorSampling">
+            开始
+          </el-button>
+          <el-button size="small" :disabled="!shapeDiscriminatorRunning" @click="pauseShapeDiscriminatorSampling">
+            暂停
+          </el-button>
+          <span v-if="shapeDiscriminatorResultText" class="shape-detect-result">
+            {{ shapeDiscriminatorResultText }}
+          </span>
+        </div>
+        <div class="shape-discriminator-members">
+          <div
+            v-for="member in shapeDiscriminatorMembers"
+            :key="member.shapeId"
+            class="shape-discriminator-member"
+          >
+            <span>#{{ member.imageId }}</span>
+            <el-input v-model="member.label" size="small" placeholder="状态名" />
+            <el-button size="small" text type="danger" @click="removeShapeDiscriminatorMember(member.shapeId)">删除</el-button>
+          </div>
+        </div>
+        <div class="shape-mask-previews is-three">
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">当前状态</div>
+            <img v-if="shapeDiscriminatorSourcePreviewUrl" :src="shapeDiscriminatorSourcePreviewUrl" alt="当前图" />
+            <div v-else class="shape-mask-empty">等待配置</div>
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">成员状态</div>
+            <img v-if="shapeDiscriminatorTargetPreviewUrl" :src="shapeDiscriminatorTargetPreviewUrl" alt="对照图" />
+            <div v-else class="shape-mask-empty">等待配置</div>
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">差异权重</div>
+            <img v-if="shapeDiscriminatorWeightPreviewUrl" :src="shapeDiscriminatorWeightPreviewUrl" alt="差异权重" />
+            <div v-else class="shape-mask-empty">等待配置</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="shapeDiscriminatorDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :disabled="!shapeDiscriminatorReady" @click="saveShapeDiscriminatorAndClose">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1091,7 +603,11 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowLeft,
   ArrowRight,
+  Delete,
   Download,
+  Folder,
+  Picture,
+  Plus,
   Refresh,
   Setting,
   VideoPause,
@@ -4258,6 +3774,7 @@ const saveCurrentFrame = async () => {
   if (!selectedEntryId.value) return;
   saveFrameLoading.value = true;
   try {
+    const currentFrameDataUrl = captureCurrentLiveFrameDataUrl();
     const result = await saveFanxiuGameWindow2Frame({
       entry_id: selectedEntryId.value,
       title: targetTitle.value.trim(),
@@ -4270,12 +3787,22 @@ const saveCurrentFrame = async () => {
       fixed_width: fixedFrameWidth.value,
       fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
+      current_frame_data_url: currentFrameDataUrl,
     });
-    ElMessage.success(`已保存 截图/${result.filename}`);
-    if (screenshotPanelOpen.value) {
-      await loadScreenshotList(result.filename);
+    let imageDataUrl = currentFrameDataUrl;
+    try {
+      const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, result.filename);
+      imageDataUrl = await blobToDataUrl(blob);
+    } catch {
+      // 保存帧已经成功；预览读取失败时退回当前直播帧。
     }
+    addSavedFrameToAssetTree(createAssetImageNode(result.filename, {
+      filename: result.filename,
+      imageDataUrl,
+      width: result.width,
+      height: result.height,
+    }));
+    ElMessage.success(`已保存到文件树：${result.filename}`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -5658,7 +5185,7 @@ const handleKeydown = (event: KeyboardEvent) => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey) {
     if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
       event.preventDefault();
-      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+      if (screenshotPanelOpen.value && (selectedScreenshotImage.value || selectedImageNode.value)) {
         void setScreenshotZoomPercent(screenshotZoomPercent.value + SCREENSHOT_ZOOM_STEP);
       } else {
         void setLiveContentZoomPercent(liveContentZoomPercent.value + 5);
@@ -5667,7 +5194,7 @@ const handleKeydown = (event: KeyboardEvent) => {
     }
     if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') {
       event.preventDefault();
-      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+      if (screenshotPanelOpen.value && (selectedScreenshotImage.value || selectedImageNode.value)) {
         void setScreenshotZoomPercent(screenshotZoomPercent.value - SCREENSHOT_ZOOM_STEP);
       } else {
         void setLiveContentZoomPercent(liveContentZoomPercent.value - 5);
@@ -5676,7 +5203,7 @@ const handleKeydown = (event: KeyboardEvent) => {
     }
     if (event.key === '0' || event.code === 'Numpad0') {
       event.preventDefault();
-      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+      if (screenshotPanelOpen.value && (selectedScreenshotImage.value || selectedImageNode.value)) {
         void resetScreenshotContentView();
       } else {
         void resetLiveContentView();
@@ -5684,9 +5211,13 @@ const handleKeydown = (event: KeyboardEvent) => {
       return;
     }
   }
-  if (!screenshotPanelOpen.value || !selectedScreenshotImage.value) return;
+  if (!screenshotPanelOpen.value || (!selectedScreenshotImage.value && !selectedImageNode.value)) return;
   if (event.key === 'Delete' || event.key === 'Backspace') {
-    deleteSelectedScreenshotBox();
+    if (selectedImageNode.value) {
+      deleteSelectedShape();
+    } else {
+      deleteSelectedScreenshotBox();
+    }
     event.preventDefault();
     return;
   }
@@ -5767,14 +5298,12 @@ watch(visualMacroDefaultPixelTolerance, (value) => {
 });
 
 onMounted(async () => {
-  loadVisualMacroDefaults();
-  applyVisualMacroUiState();
   window.addEventListener('keydown', handleKeydown);
   window.addEventListener('keyup', handleKeyup);
   window.addEventListener('blur', handleWindowBlur);
   window.addEventListener('resize', handleWindowResize);
-  window.addEventListener('click', closeScreenshotContextMenus);
-  void loadCodeCards();
+  window.addEventListener('click', closeAssetContextMenu);
+  window.addEventListener('click', closeShapeContextMenu);
   resizeObserver = new ResizeObserver(syncCanvas);
   if (imageWrapRef.value) resizeObserver.observe(imageWrapRef.value);
 
@@ -5788,7 +5317,6 @@ onMounted(async () => {
     if (windowViewMode.value !== 'off') {
       await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
     }
-    if (screenshotPanelOpen.value) void loadScreenshotList();
   }
   startPolling();
   void nextTick(syncCanvas);
@@ -5796,22 +5324,1541 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopPolling();
-  stopVisualSimilarityProbe();
-  destroyVisualInstructionSetSortables();
-  if (screenshotDirty.value) void flushScreenshotAutosave();
-  void flushCodeCardSaves();
   window.removeEventListener('keydown', handleKeydown);
   window.removeEventListener('keyup', handleKeyup);
   window.removeEventListener('blur', handleWindowBlur);
   window.removeEventListener('resize', handleWindowResize);
+  window.removeEventListener('click', closeAssetContextMenu);
+  window.removeEventListener('click', closeShapeContextMenu);
   stopLivePan();
   stopScreenshotPan();
-  window.removeEventListener('click', closeScreenshotContextMenus);
+  stopShapeMaskSampling();
+  stopShapeToleranceSampling();
+  stopShapeDiscriminatorSampling();
+  cancelShapeDraft();
+  finishShapeDrag();
   resizeObserver?.disconnect();
   if (streamImageRef.value) streamImageRef.value.src = '';
   revokeScreenshotImageUrl();
   clearMatchResults();
 });
+
+type GameWindow3AssetNode = {
+  id: string;
+  type: 'folder' | 'image';
+  title: string;
+  children?: GameWindow3AssetNode[];
+  filename?: string;
+  imageDataUrl?: string;
+  width?: number;
+  height?: number;
+  shapes?: GameWindow3Shape[];
+};
+
+type GameWindow3Shape = {
+  id: string;
+  kind?: 'shape' | 'group';
+  title: string;
+  description: string;
+  isSceneIdentity?: boolean;
+  sceneJumpTarget?: number | null;
+  maskEnabled?: boolean;
+  alphaMask?: ShapeAlphaMask | null;
+  toleranceEnabled?: boolean;
+  toleranceRange?: ShapeToleranceRange | null;
+  discriminatorEnabled?: boolean;
+  discriminator?: ShapeDiscriminator | null;
+  discriminatorGroupId?: string | null;
+  discriminatorValue?: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  children?: GameWindow3Shape[];
+};
+
+type ShapeAlphaMask = {
+  width: number;
+  height: number;
+  dataUrl: string;
+};
+
+type ShapeToleranceRange = {
+  width: number;
+  height: number;
+  minDataUrl: string;
+  maxDataUrl: string;
+};
+
+type ShapeDiscriminator = {
+  targetImageId: number | null;
+};
+
+type DiscriminatorGroupMember = {
+  imageId: number;
+  shapeId: string;
+  label: string;
+};
+
+type DiscriminatorGroup = {
+  id: string;
+  title: string;
+  syncBox: boolean;
+  members: DiscriminatorGroupMember[];
+};
+
+type ShapeDragState = {
+  pointerId: number;
+  shapeId: string;
+  mode: 'move' | 'top-left' | 'bottom-right';
+  startClientX: number;
+  startClientY: number;
+  startBox: Pick<GameWindow3Shape, 'x' | 'y' | 'w' | 'h'>;
+};
+
+type ShapeDraftState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+};
+
+const GAME_WINDOW3_STORAGE_KEY = 'fanxiu.gameWindow3.assetTree.v1';
+const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorGroups.v1';
+const annotationCanvasRef = ref<HTMLElement | null>(null);
+const selectedAssetId = ref<string | null>(null);
+const selectedShapeId = ref<string | null>(null);
+const shapeDragState = ref<ShapeDragState | null>(null);
+const shapeDraftState = ref<ShapeDraftState | null>(null);
+const shapeDraftBox = ref<GameWindow3Shape | null>(null);
+const shapeDetectingId = ref<string | null>(null);
+const shapeDetectResults = ref<Record<string, string>>({});
+const shapeMaskDialogVisible = ref(false);
+const shapeMaskFrameCount = ref(0);
+const shapeMaskThreshold = ref(36);
+const shapeMaskLivePreviewUrl = ref('');
+const shapeMaskResultPreviewUrl = ref('');
+const shapeMaskAlphaDataUrl = ref('');
+const shapeMaskRunning = ref(false);
+const shapeMaskSamplingFrame = ref<number | null>(null);
+const shapeMaskStats = ref<{
+  width: number;
+  height: number;
+  min: Uint8ClampedArray;
+  max: Uint8ClampedArray;
+  reference: ImageData | null;
+} | null>(null);
+const shapeToleranceDialogVisible = ref(false);
+const shapeToleranceFrameCount = ref(0);
+const shapeToleranceMinPreviewUrl = ref('');
+const shapeToleranceMaxPreviewUrl = ref('');
+const shapeToleranceRunning = ref(false);
+const shapeToleranceSamplingFrame = ref<number | null>(null);
+const shapeToleranceStats = ref<{
+  width: number;
+  height: number;
+  min: Uint8ClampedArray;
+  max: Uint8ClampedArray;
+} | null>(null);
+const shapeDiscriminatorDialogVisible = ref(false);
+const shapeDiscriminatorGroupId = ref<string | null>(null);
+const shapeDiscriminatorGroupTitle = ref('');
+const shapeDiscriminatorSyncBox = ref(true);
+const shapeDiscriminatorMembers = ref<DiscriminatorGroupMember[]>([]);
+const shapeDiscriminatorNewImageId = ref<number | null>(null);
+const shapeDiscriminatorNewLabel = ref('');
+const shapeDiscriminatorSourcePreviewUrl = ref('');
+const shapeDiscriminatorTargetPreviewUrl = ref('');
+const shapeDiscriminatorWeightPreviewUrl = ref('');
+const shapeDiscriminatorResultText = ref('');
+const shapeDiscriminatorRunning = ref(false);
+const shapeDiscriminatorSamplingFrame = ref<number | null>(null);
+const shapeDiscriminatorReady = ref(false);
+const shapeDiscriminatorState = ref<{
+  width: number;
+  height: number;
+  variants: Array<{
+    imageId: number;
+    label: string;
+    shapeId: string;
+    reference: ImageData;
+  }>;
+  weights: Float32Array;
+  activePixels: number;
+} | null>(null);
+const assetContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  nodeId: '',
+});
+const shapeContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  shapeId: '',
+});
+const assetTreeProps = {
+  children: 'children',
+  label: 'title',
+};
+const shapeTreeProps = {
+  children: 'children',
+  label: 'title',
+};
+
+const createAssetId = (prefix: string) => prefix + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+
+const createAssetImageNode = (
+  title: string,
+  options: Partial<Pick<GameWindow3AssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height'>> = {},
+): GameWindow3AssetNode => ({
+  id: createAssetId('image'),
+  type: 'image',
+  title,
+  ...options,
+  shapes: [],
+});
+
+const createDefaultAssetTree = (): GameWindow3AssetNode[] => ([
+  {
+    id: createAssetId('folder'),
+    type: 'folder',
+    title: '默认分组',
+    children: [createAssetImageNode('空图')],
+  },
+]);
+
+const normalizeShapes = (shapes: GameWindow3Shape[] = []): GameWindow3Shape[] => shapes.flatMap((shape) => {
+  if (shape.id === 'scene-identity') {
+    return normalizeShapes(shape.children ?? []);
+  }
+  return [{
+    ...shape,
+    kind: shape.kind === 'group' ? 'group' : 'shape',
+    title: typeof shape.title === 'string' ? shape.title : '',
+    description: typeof shape.description === 'string' ? shape.description : '',
+    isSceneIdentity: Boolean(shape.isSceneIdentity),
+    sceneJumpTarget: typeof shape.sceneJumpTarget === 'number' ? shape.sceneJumpTarget : null,
+    maskEnabled: Boolean(shape.maskEnabled),
+    alphaMask: shape.alphaMask && typeof shape.alphaMask === 'object'
+      ? {
+          width: Number(shape.alphaMask.width) || 0,
+          height: Number(shape.alphaMask.height) || 0,
+          dataUrl: typeof shape.alphaMask.dataUrl === 'string' ? shape.alphaMask.dataUrl : '',
+        }
+      : null,
+    toleranceEnabled: Boolean(shape.toleranceEnabled),
+    toleranceRange: shape.toleranceRange && typeof shape.toleranceRange === 'object'
+      ? {
+          width: Number(shape.toleranceRange.width) || 0,
+          height: Number(shape.toleranceRange.height) || 0,
+          minDataUrl: typeof shape.toleranceRange.minDataUrl === 'string' ? shape.toleranceRange.minDataUrl : '',
+          maxDataUrl: typeof shape.toleranceRange.maxDataUrl === 'string' ? shape.toleranceRange.maxDataUrl : '',
+        }
+      : null,
+    discriminatorEnabled: Boolean(shape.discriminatorEnabled),
+    discriminator: shape.discriminator && typeof shape.discriminator === 'object'
+      ? {
+          targetImageId: typeof shape.discriminator.targetImageId === 'number' ? shape.discriminator.targetImageId : null,
+        }
+      : null,
+    discriminatorGroupId: typeof shape.discriminatorGroupId === 'string' ? shape.discriminatorGroupId : null,
+    discriminatorValue: typeof shape.discriminatorValue === 'string' ? shape.discriminatorValue : '',
+    x: typeof shape.x === 'number' ? shape.x : 0,
+    y: typeof shape.y === 'number' ? shape.y : 0,
+    w: typeof shape.w === 'number' ? shape.w : 0.1,
+    h: typeof shape.h === 'number' ? shape.h : 0.1,
+    children: normalizeShapes(shape.children ?? []),
+  }];
+});
+
+const normalizeAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.map((node) => {
+  if (node.type === 'folder') {
+    return {
+      ...node,
+      children: normalizeAssetTree(node.children ?? []),
+    };
+  }
+  return {
+    ...node,
+    filename: typeof node.filename === 'string' ? node.filename : undefined,
+    imageDataUrl: typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
+    width: typeof node.width === 'number' ? node.width : undefined,
+    height: typeof node.height === 'number' ? node.height : undefined,
+    shapes: normalizeShapes(node.shapes ?? []),
+    children: normalizeAssetTree(node.children ?? []),
+  };
+});
+
+const loadAssetTree = (): GameWindow3AssetNode[] => {
+  if (typeof window === 'undefined') return createDefaultAssetTree();
+  const raw = window.localStorage.getItem(GAME_WINDOW3_STORAGE_KEY);
+  if (!raw) return createDefaultAssetTree();
+  try {
+    const parsed = JSON.parse(raw) as GameWindow3AssetNode[];
+    return Array.isArray(parsed) && parsed.length ? normalizeAssetTree(parsed) : createDefaultAssetTree();
+  } catch {
+    return createDefaultAssetTree();
+  }
+};
+
+const assetTree = ref<GameWindow3AssetNode[]>(loadAssetTree());
+
+const normalizeDiscriminatorGroups = (groups: DiscriminatorGroup[] = []): DiscriminatorGroup[] => groups.map((group) => ({
+  id: typeof group.id === 'string' ? group.id : createAssetId('disc-group'),
+  title: typeof group.title === 'string' ? group.title : '区分组',
+  syncBox: group.syncBox !== false,
+  members: Array.isArray(group.members)
+    ? group.members
+        .map((member) => ({
+          imageId: Number(member.imageId),
+          shapeId: typeof member.shapeId === 'string' ? member.shapeId : '',
+          label: typeof member.label === 'string' ? member.label : '',
+        }))
+        .filter((member) => Number.isFinite(member.imageId) && member.shapeId)
+    : [],
+}));
+
+const loadDiscriminatorGroups = (): DiscriminatorGroup[] => {
+  if (typeof window === 'undefined') return [];
+  const raw = window.localStorage.getItem(GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as DiscriminatorGroup[];
+    return Array.isArray(parsed) ? normalizeDiscriminatorGroups(parsed) : [];
+  } catch {
+    return [];
+  }
+};
+
+const discriminatorGroups = ref<DiscriminatorGroup[]>(loadDiscriminatorGroups());
+
+const findAssetNode = (nodes: GameWindow3AssetNode[], id: string | null): GameWindow3AssetNode | null => {
+  if (!id) return null;
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const found = findAssetNode(node.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+
+const findFirstImageNode = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode | null => {
+  for (const node of nodes) {
+    if (node.type === 'image') return node;
+    const found = findFirstImageNode(node.children ?? []);
+    if (found) return found;
+  }
+  return null;
+};
+
+const assetImageIdMark = (node: GameWindow3AssetNode) => {
+  const source = node.filename || node.id;
+  const filenameNumber = node.filename?.match(/(\d+)(?=\.[^.]+$|$)/)?.[1];
+  if (filenameNumber) return '#' + String(Number(filenameNumber));
+  const idTail = source.match(/([a-zA-Z0-9]{2,})$/)?.[1] || source;
+  return '#' + idTail.slice(-6);
+};
+
+const assetNumericImageId = (node: GameWindow3AssetNode) => {
+  if (node.type !== 'image') return null;
+  const filenameNumber = node.filename?.match(/(\d+)(?=\.[^.]+$|$)/)?.[1];
+  return filenameNumber ? Number(filenameNumber) : null;
+};
+
+const findAssetImageByNumericId = (nodes: GameWindow3AssetNode[], id: number | null): GameWindow3AssetNode | null => {
+  if (id === null) return null;
+  for (const node of nodes) {
+    if (assetNumericImageId(node) === id) return node;
+    const found = findAssetImageByNumericId(node.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+
+const findImageNodeByShapeId = (nodes: GameWindow3AssetNode[], shapeId: string): GameWindow3AssetNode | null => {
+  for (const node of nodes) {
+    if (node.type === 'image' && findShapeById(node.shapes ?? [], shapeId)) return node;
+    const found = findImageNodeByShapeId(node.children ?? [], shapeId);
+    if (found) return found;
+  }
+  return null;
+};
+
+const findShapeGlobal = (shapeId: string) => {
+  const image = findImageNodeByShapeId(assetTree.value, shapeId);
+  const shape = image ? findShapeById(image.shapes ?? [], shapeId) : null;
+  return image && shape ? { image, shape } : null;
+};
+
+const findAssetParentChildren = (
+  nodes: GameWindow3AssetNode[],
+  id: string | null,
+): GameWindow3AssetNode[] | null => {
+  if (!id) return null;
+  if (nodes.some((node) => node.id === id)) return nodes;
+  for (const node of nodes) {
+    const found = findAssetParentChildren(node.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+
+const selectedAssetNode = computed(() => findAssetNode(assetTree.value, selectedAssetId.value));
+const selectedImageNode = computed(() => {
+  const node = selectedAssetNode.value;
+  return node?.type === 'image' ? node : null;
+});
+const selectedImageTitleText = computed(() => (
+  selectedImageNode.value
+    ? `${assetImageIdMark(selectedImageNode.value)} ${selectedImageNode.value.title}`
+    : '未选择图片'
+));
+const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
+const isDrawableShape = (shape: GameWindow3Shape) => shape.kind !== 'group';
+const flattenShapes = (shapes: GameWindow3Shape[]): GameWindow3Shape[] => shapes.flatMap((shape) => [
+  shape,
+  ...flattenShapes(shape.children ?? []),
+]);
+const findShapeById = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape | null => {
+  if (!id) return null;
+  for (const shape of shapes) {
+    if (shape.id === id) return shape;
+    const found = findShapeById(shape.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape[] | null => {
+  if (!id) return null;
+  if (shapes.some((shape) => shape.id === id)) return shapes;
+  for (const shape of shapes) {
+    const found = findShapeParentChildren(shape.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+const annotationShapes = computed(() => flattenShapes(selectedImageShapes.value).filter(isDrawableShape));
+const selectedShape = computed(() => findShapeById(selectedImageShapes.value, selectedShapeId.value));
+const selectedShapeDetectResult = computed(() => (
+  selectedShapeId.value ? shapeDetectResults.value[selectedShapeId.value] || '' : ''
+));
+const canDetectSelectedShape = computed(() => Boolean(
+  selectedEntryId.value
+  && selectedImageNode.value?.filename
+  && selectedShape.value
+  && isDrawableShape(selectedShape.value)
+  && !shapeDetectingId.value
+));
+const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): FanxiuGameWindow2MatchBox => {
+  const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  return {
+    name: shape.title || 'shape',
+    x: Math.round(shape.x * width),
+    y: Math.round(shape.y * height),
+    w: Math.round(shape.w * width),
+    h: Math.round(shape.h * height),
+  };
+};
+const annotationCanvasStyle = computed(() => {
+  const width = selectedImageNode.value?.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 9;
+  const height = selectedImageNode.value?.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 16;
+  const scale = displayScale.value / 100;
+  const stageWidth = Math.max(1, Math.round(width * scale));
+  const stageHeight = Math.max(1, Math.round(height * scale));
+  return {
+    width: `${stageWidth}px`,
+    height: `${stageHeight}px`,
+    aspectRatio: `${Math.max(width, 1)} / ${Math.max(height, 1)}`,
+  };
+});
+const annotationContentStyle = computed(() => ({
+  ...annotationCanvasStyle.value,
+  transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
+}));
+
+selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
+
+watch(assetTree, (value) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_WINDOW3_STORAGE_KEY, JSON.stringify(value));
+}, { deep: true });
+
+watch(discriminatorGroups, (value) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY, JSON.stringify(value));
+}, { deep: true });
+
+watch(selectedImageNode, (node) => {
+  const firstShape = node ? flattenShapes(node.shapes ?? [])[0] ?? null : null;
+  selectedShapeId.value = firstShape?.id ?? null;
+  resetScreenshotViewState();
+});
+
+const getAssetInsertTarget = () => {
+  const selected = selectedAssetNode.value;
+  if (selected) {
+    selected.children ??= [];
+    return selected.children;
+  }
+  return findAssetParentChildren(assetTree.value, selectedAssetId.value) ?? assetTree.value;
+};
+
+const addAssetFolder = () => {
+  const target = getAssetInsertTarget();
+  const folderCount = target.filter((node) => node.type === 'folder').length + 1;
+  const node: GameWindow3AssetNode = {
+    id: createAssetId('folder'),
+    type: 'folder',
+    title: '分组' + folderCount,
+    children: [],
+  };
+  target.push(node);
+  selectedAssetId.value = node.id;
+};
+
+const addAssetImage = () => {
+  const target = getAssetInsertTarget();
+  const imageCount = target.filter((node) => node.type === 'image').length + 1;
+  const node = createAssetImageNode('图片' + imageCount);
+  target.push(node);
+  selectedAssetId.value = node.id;
+};
+
+const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(blob);
+});
+
+const addSavedFrameToAssetTree = (node: GameWindow3AssetNode) => {
+  const target = getAssetInsertTarget();
+  target.push(node);
+  selectedAssetId.value = node.id;
+};
+
+const deleteSelectedAsset = async () => {
+  const node = selectedAssetNode.value;
+  const parent = findAssetParentChildren(assetTree.value, selectedAssetId.value);
+  if (!node || !parent) return;
+  await ElMessageBox.confirm('删除“' + node.title + '”？', '删除节点', { type: 'warning' });
+  const index = parent.findIndex((item) => item.id === node.id);
+  if (index >= 0) parent.splice(index, 1);
+  selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
+};
+
+const selectAssetNode = (node: GameWindow3AssetNode) => {
+  closeAssetContextMenu();
+  selectedAssetId.value = node.id;
+};
+
+const closeAssetContextMenu = () => {
+  if (!assetContextMenu.value.visible) return;
+  assetContextMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    nodeId: '',
+  };
+};
+
+const openAssetContextMenu = (event: MouseEvent, node: GameWindow3AssetNode) => {
+  event.preventDefault();
+  selectedAssetId.value = node.id;
+  assetContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    nodeId: node.id,
+  };
+};
+
+const allowAssetDrop = (
+  _draggingNode: { data?: GameWindow3AssetNode },
+  _dropNode: { data?: GameWindow3AssetNode },
+  _type: 'prev' | 'inner' | 'next',
+) => true;
+
+const deleteAssetFromContextMenu = async () => {
+  selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
+  closeAssetContextMenu();
+  await deleteSelectedAsset();
+};
+
+const renameAssetFromContextMenu = async () => {
+  selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
+  const node = selectedAssetNode.value;
+  closeAssetContextMenu();
+  if (!node) return;
+  const nodeKindText = node.type === 'folder' ? '目录' : '图片';
+  try {
+    const result = await ElMessageBox.prompt(nodeKindText + '名称', '重命名' + nodeKindText, {
+      inputValue: node.title,
+      inputPattern: /\S+/,
+      inputErrorMessage: '请输入' + nodeKindText + '名称',
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    });
+    const nextTitle = String(result.value ?? '').trim();
+    if (nextTitle) node.title = nextTitle;
+  } catch {
+    // User cancelled.
+  }
+};
+
+const addAnnotationShape = () => {
+  const image = selectedImageNode.value;
+  if (!image) return;
+  image.shapes ??= [];
+  const shape: GameWindow3Shape = {
+    id: createAssetId('shape'),
+    kind: 'shape',
+    title: 'shape ' + (flattenShapes(image.shapes).filter(isDrawableShape).length + 1),
+    description: '',
+    isSceneIdentity: false,
+    sceneJumpTarget: null,
+    maskEnabled: false,
+    alphaMask: null,
+    toleranceEnabled: false,
+    toleranceRange: null,
+    discriminatorEnabled: false,
+    discriminator: null,
+    discriminatorGroupId: null,
+    discriminatorValue: '',
+    x: 0.16,
+    y: 0.16,
+    w: 0.36,
+    h: 0.18,
+    children: [],
+  };
+  image.shapes.push(shape);
+  selectedShapeId.value = shape.id;
+};
+
+const deleteSelectedShape = () => {
+  const image = selectedImageNode.value;
+  if (!image?.shapes || !selectedShapeId.value) return;
+  const parent = findShapeParentChildren(image.shapes, selectedShapeId.value);
+  const index = parent?.findIndex((shape) => shape.id === selectedShapeId.value) ?? -1;
+  if (parent && index >= 0) parent.splice(index, 1);
+  selectedShapeId.value = flattenShapes(image.shapes)[0]?.id ?? null;
+};
+
+const selectShape = (id: string | null) => {
+  selectedShapeId.value = id;
+};
+
+const closeShapeContextMenu = () => {
+  shapeContextMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    shapeId: '',
+  };
+};
+
+const openShapeContextMenu = (event: MouseEvent, shapeId: string) => {
+  event.preventDefault();
+  selectedShapeId.value = shapeId;
+  shapeContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    shapeId,
+  };
+};
+
+const openShapeTreeContextMenu = (event: MouseEvent, data: GameWindow3Shape) => {
+  openShapeContextMenu(event, data.id);
+};
+
+const deleteShapeFromContextMenu = () => {
+  selectedShapeId.value = shapeContextMenu.value.shapeId || selectedShapeId.value;
+  closeShapeContextMenu();
+  deleteSelectedShape();
+};
+
+const detectSelectedShape = async () => {
+  const image = selectedImageNode.value;
+  const shape = selectedShape.value;
+  if (!selectedEntryId.value || !image || !shape || !isDrawableShape(shape)) return;
+  if (!image.filename) {
+    ElMessage.warning('当前图片没有原始帧文件，无法检测');
+    return;
+  }
+  const box = shapeToMatchBox(shape, image);
+  if (box.w <= 0 || box.h <= 0) {
+    ElMessage.warning('请先框选有效区域');
+    return;
+  }
+  shapeDetectingId.value = shape.id;
+  try {
+    const response = await matchFanxiuGameWindow2Screenshot({
+      entry_id: selectedEntryId.value,
+      filename: image.filename,
+      box,
+      pixel_tolerance: visualMacroDefaultPixelTolerance.value,
+      alpha_mask_data_url: shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined,
+      tolerance_min_data_url: shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
+      tolerance_max_data_url: shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
+      title: targetTitle.value.trim(),
+      title_match: titleMatch.value,
+      mode: 'screen',
+      area: captureArea.value,
+      crop: cropText.value.trim(),
+      trim_border: trimBorderText.value.trim(),
+      rotate: rotateDegrees.value,
+      fixed_width: fixedFrameWidth.value,
+      fixed_height: fixedFrameHeight.value,
+      fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
+      quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+      auto_dismiss_popup: autoDismissPopup.value,
+      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
+    });
+    const geometryIssue = matchFrameAspectMismatchText(response);
+    if (geometryIssue) ElMessage.warning(geometryIssue);
+    const resultText = `原位 ${response.fixed_similarity ?? response.similarity}%`;
+    shapeDetectResults.value[shape.id] = resultText;
+    ElMessage.success(resultText);
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    shapeDetectingId.value = null;
+  }
+};
+
+const getSelectedShapePixelSize = () => {
+  const image = selectedImageNode.value;
+  const shape = selectedShape.value;
+  if (!image || !shape) return null;
+  const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  return {
+    width: Math.max(1, Math.round(shape.w * width)),
+    height: Math.max(1, Math.round(shape.h * height)),
+  };
+};
+
+const loadMaskImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error('图片加载失败'));
+  image.src = src;
+});
+
+const cropImageDataUrlByShape = async (imageDataUrl: string, shape: GameWindow3Shape | null, width: number, height: number) => {
+  if (!shape) return null;
+  const image = await loadMaskImage(imageDataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(
+    image,
+    shape.x * image.naturalWidth,
+    shape.y * image.naturalHeight,
+    shape.w * image.naturalWidth,
+    shape.h * image.naturalHeight,
+    0,
+    0,
+    width,
+    height,
+  );
+  return context.getImageData(0, 0, width, height);
+};
+
+const cropImageDataUrlToShape = async (imageDataUrl: string, width: number, height: number) => {
+  return cropImageDataUrlByShape(imageDataUrl, selectedShape.value, width, height);
+};
+
+const captureLiveShapeImageData = (width: number, height: number) => {
+  const shape = selectedShape.value;
+  const image = streamImageRef.value;
+  if (!shape || !image?.naturalWidth || !image.naturalHeight) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(
+    image,
+    shape.x * image.naturalWidth,
+    shape.y * image.naturalHeight,
+    shape.w * image.naturalWidth,
+    shape.h * image.naturalHeight,
+    0,
+    0,
+    width,
+    height,
+  );
+  return context.getImageData(0, 0, width, height);
+};
+
+const imageDataToDataUrl = (imageData: ImageData) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const context = canvas.getContext('2d');
+  if (!context) return '';
+  context.putImageData(imageData, 0, 0);
+  return canvas.toDataURL('image/png');
+};
+
+const refreshShapeMaskPreview = () => {
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) return;
+  const total = stats.width * stats.height;
+  const maskImage = new ImageData(stats.width, stats.height);
+  const resultImage = new ImageData(new Uint8ClampedArray(stats.reference.data), stats.width, stats.height);
+  for (let index = 0; index < total; index += 1) {
+    const volatility = stats.max[index] - stats.min[index];
+    const alpha = volatility <= shapeMaskThreshold.value
+      ? 255
+      : Math.max(0, 255 - Math.round((volatility - shapeMaskThreshold.value) * 5));
+    const offset = index * 4;
+    maskImage.data[offset] = alpha;
+    maskImage.data[offset + 1] = alpha;
+    maskImage.data[offset + 2] = alpha;
+    maskImage.data[offset + 3] = 255;
+    resultImage.data[offset + 3] = alpha;
+  }
+  shapeMaskAlphaDataUrl.value = imageDataToDataUrl(maskImage);
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(resultImage);
+};
+
+const updateShapeMaskStats = (frame: ImageData) => {
+  const stats = shapeMaskStats.value;
+  if (!stats) return;
+  const total = stats.width * stats.height;
+  for (let index = 0; index < total; index += 1) {
+    const offset = index * 4;
+    const gray = Math.round(
+      frame.data[offset] * 0.299
+      + frame.data[offset + 1] * 0.587
+      + frame.data[offset + 2] * 0.114,
+    );
+    stats.min[index] = Math.min(stats.min[index], gray);
+    stats.max[index] = Math.max(stats.max[index], gray);
+  }
+  shapeMaskFrameCount.value += 1;
+  if (shapeMaskFrameCount.value % 5 === 1) {
+    shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
+  }
+  refreshShapeMaskPreview();
+};
+
+const scheduleShapeMaskSampling = () => {
+  shapeMaskSamplingFrame.value = window.requestAnimationFrame(() => {
+    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !shapeMaskRunning.value) return;
+    const frame = captureLiveShapeImageData(shapeMaskStats.value.width, shapeMaskStats.value.height);
+    if (frame) updateShapeMaskStats(frame);
+    scheduleShapeMaskSampling();
+  });
+};
+
+const pauseShapeMaskSampling = () => {
+  shapeMaskRunning.value = false;
+  if (shapeMaskSamplingFrame.value !== null) {
+    window.cancelAnimationFrame(shapeMaskSamplingFrame.value);
+    shapeMaskSamplingFrame.value = null;
+  }
+};
+
+const stopShapeMaskSampling = pauseShapeMaskSampling;
+
+const resetShapeMaskSampling = async () => {
+  pauseShapeMaskSampling();
+  const image = selectedImageNode.value;
+  const size = getSelectedShapePixelSize();
+  if (!image?.imageDataUrl || !size) return;
+  const reference = await cropImageDataUrlToShape(image.imageDataUrl, size.width, size.height);
+  if (!reference) return;
+  const total = size.width * size.height;
+  shapeMaskFrameCount.value = 0;
+  shapeMaskLivePreviewUrl.value = '';
+  shapeMaskAlphaDataUrl.value = '';
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(reference);
+  shapeMaskStats.value = {
+    width: size.width,
+    height: size.height,
+    min: new Uint8ClampedArray(total).fill(255),
+    max: new Uint8ClampedArray(total),
+    reference,
+  };
+};
+
+const startShapeMaskSampling = async () => {
+  if (!shapeMaskStats.value) await resetShapeMaskSampling();
+  if (!shapeMaskStats.value || shapeMaskRunning.value) return;
+  shapeMaskRunning.value = true;
+  scheduleShapeMaskSampling();
+};
+
+const openShapeMaskDialog = async () => {
+  if (!selectedShape.value || selectedShape.value.kind === 'group') return;
+  shapeMaskDialogVisible.value = true;
+  await nextTick();
+  await resetShapeMaskSampling();
+};
+
+const saveShapeMaskAndClose = () => {
+  const shape = selectedShape.value;
+  const stats = shapeMaskStats.value;
+  if (!shape || !stats || !shapeMaskAlphaDataUrl.value) return;
+  shape.alphaMask = {
+    width: stats.width,
+    height: stats.height,
+    dataUrl: shapeMaskAlphaDataUrl.value,
+  };
+  shape.maskEnabled = true;
+  shapeMaskDialogVisible.value = false;
+};
+
+const toleranceStatsToImageData = (data: Uint8ClampedArray, width: number, height: number) => {
+  const image = new ImageData(width, height);
+  const total = width * height;
+  for (let index = 0; index < total; index += 1) {
+    const sourceOffset = index * 3;
+    const targetOffset = index * 4;
+    image.data[targetOffset] = data[sourceOffset];
+    image.data[targetOffset + 1] = data[sourceOffset + 1];
+    image.data[targetOffset + 2] = data[sourceOffset + 2];
+    image.data[targetOffset + 3] = 255;
+  }
+  return image;
+};
+
+const refreshShapeTolerancePreview = () => {
+  const stats = shapeToleranceStats.value;
+  if (!stats) return;
+  shapeToleranceMinPreviewUrl.value = imageDataToDataUrl(toleranceStatsToImageData(stats.min, stats.width, stats.height));
+  shapeToleranceMaxPreviewUrl.value = imageDataToDataUrl(toleranceStatsToImageData(stats.max, stats.width, stats.height));
+};
+
+const updateShapeToleranceStats = (frame: ImageData) => {
+  const stats = shapeToleranceStats.value;
+  if (!stats) return;
+  const total = stats.width * stats.height;
+  for (let index = 0; index < total; index += 1) {
+    const sourceOffset = index * 4;
+    const targetOffset = index * 3;
+    stats.min[targetOffset] = Math.min(stats.min[targetOffset], frame.data[sourceOffset]);
+    stats.min[targetOffset + 1] = Math.min(stats.min[targetOffset + 1], frame.data[sourceOffset + 1]);
+    stats.min[targetOffset + 2] = Math.min(stats.min[targetOffset + 2], frame.data[sourceOffset + 2]);
+    stats.max[targetOffset] = Math.max(stats.max[targetOffset], frame.data[sourceOffset]);
+    stats.max[targetOffset + 1] = Math.max(stats.max[targetOffset + 1], frame.data[sourceOffset + 1]);
+    stats.max[targetOffset + 2] = Math.max(stats.max[targetOffset + 2], frame.data[sourceOffset + 2]);
+  }
+  shapeToleranceFrameCount.value += 1;
+  if (shapeToleranceFrameCount.value % 5 === 1) refreshShapeTolerancePreview();
+};
+
+const scheduleShapeToleranceSampling = () => {
+  shapeToleranceSamplingFrame.value = window.requestAnimationFrame(() => {
+    if (!shapeToleranceDialogVisible.value || !shapeToleranceStats.value || !shapeToleranceRunning.value) return;
+    const frame = captureLiveShapeImageData(shapeToleranceStats.value.width, shapeToleranceStats.value.height);
+    if (frame) updateShapeToleranceStats(frame);
+    scheduleShapeToleranceSampling();
+  });
+};
+
+const pauseShapeToleranceSampling = () => {
+  shapeToleranceRunning.value = false;
+  if (shapeToleranceSamplingFrame.value !== null) {
+    window.cancelAnimationFrame(shapeToleranceSamplingFrame.value);
+    shapeToleranceSamplingFrame.value = null;
+  }
+};
+
+const stopShapeToleranceSampling = pauseShapeToleranceSampling;
+
+const resetShapeToleranceSampling = async () => {
+  pauseShapeToleranceSampling();
+  const image = selectedImageNode.value;
+  const size = getSelectedShapePixelSize();
+  if (!image?.imageDataUrl || !size) return;
+  const reference = await cropImageDataUrlToShape(image.imageDataUrl, size.width, size.height);
+  if (!reference) return;
+  const total = size.width * size.height;
+  const min = new Uint8ClampedArray(total * 3);
+  const max = new Uint8ClampedArray(total * 3);
+  for (let index = 0; index < total; index += 1) {
+    const sourceOffset = index * 4;
+    const targetOffset = index * 3;
+    min[targetOffset] = reference.data[sourceOffset];
+    min[targetOffset + 1] = reference.data[sourceOffset + 1];
+    min[targetOffset + 2] = reference.data[sourceOffset + 2];
+    max[targetOffset] = reference.data[sourceOffset];
+    max[targetOffset + 1] = reference.data[sourceOffset + 1];
+    max[targetOffset + 2] = reference.data[sourceOffset + 2];
+  }
+  shapeToleranceFrameCount.value = 0;
+  shapeToleranceStats.value = {
+    width: size.width,
+    height: size.height,
+    min,
+    max,
+  };
+  refreshShapeTolerancePreview();
+};
+
+const startShapeToleranceSampling = async () => {
+  if (!shapeToleranceStats.value) await resetShapeToleranceSampling();
+  if (!shapeToleranceStats.value || shapeToleranceRunning.value) return;
+  shapeToleranceRunning.value = true;
+  scheduleShapeToleranceSampling();
+};
+
+const openShapeToleranceDialog = async () => {
+  if (!selectedShape.value || selectedShape.value.kind === 'group') return;
+  shapeToleranceDialogVisible.value = true;
+  await nextTick();
+  await resetShapeToleranceSampling();
+};
+
+const saveShapeToleranceAndClose = () => {
+  const shape = selectedShape.value;
+  const stats = shapeToleranceStats.value;
+  if (!shape || !stats || !shapeToleranceMinPreviewUrl.value || !shapeToleranceMaxPreviewUrl.value) return;
+  shape.toleranceRange = {
+    width: stats.width,
+    height: stats.height,
+    minDataUrl: shapeToleranceMinPreviewUrl.value,
+    maxDataUrl: shapeToleranceMaxPreviewUrl.value,
+  };
+  shape.toleranceEnabled = true;
+  shapeToleranceDialogVisible.value = false;
+};
+
+const buildDiscriminatorWeightPreview = (weights: Float32Array, width: number, height: number) => {
+  const image = new ImageData(width, height);
+  const total = width * height;
+  for (let index = 0; index < total; index += 1) {
+    const value = Math.round(Math.min(1, weights[index]) * 255);
+    const offset = index * 4;
+    image.data[offset] = value;
+    image.data[offset + 1] = value;
+    image.data[offset + 2] = value;
+    image.data[offset + 3] = 255;
+  }
+  return imageDataToDataUrl(image);
+};
+
+const computeDiscriminatorWeightedError = (sample: ImageData, reference: ImageData, weights: Float32Array) => {
+  let weightedDiff = 0;
+  let totalWeight = 0;
+  const total = sample.width * sample.height;
+  for (let index = 0; index < total; index += 1) {
+    const offset = index * 4;
+    const weight = weights[index];
+    if (weight <= 0) continue;
+    const diff = Math.max(
+      Math.abs(sample.data[offset] - reference.data[offset]),
+      Math.abs(sample.data[offset + 1] - reference.data[offset + 1]),
+      Math.abs(sample.data[offset + 2] - reference.data[offset + 2]),
+    );
+    weightedDiff += diff * weight;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? weightedDiff / totalWeight : 0;
+};
+
+const currentDiscriminatorGroup = () => (
+  discriminatorGroups.value.find((group) => group.id === shapeDiscriminatorGroupId.value) ?? null
+);
+
+const ensureDiscriminatorCurrentMember = () => {
+  const shape = selectedShape.value;
+  const image = selectedImageNode.value;
+  if (!shape || !image) return;
+  const imageId = assetNumericImageId(image);
+  if (imageId === null) return;
+  if (!shapeDiscriminatorMembers.value.some((member) => member.shapeId === shape.id)) {
+    shapeDiscriminatorMembers.value.unshift({
+      imageId,
+      shapeId: shape.id,
+      label: shape.discriminatorValue || shape.title || image.title || `#${imageId}`,
+    });
+  }
+};
+
+const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number, label: string) => {
+  const source = selectedShape.value;
+  image.shapes ??= [];
+  const existing = image.shapes.find((shape) => shape.discriminatorGroupId === shapeDiscriminatorGroupId.value);
+  if (existing) return existing;
+  const shape: GameWindow3Shape = {
+    id: createAssetId('shape'),
+    kind: 'shape',
+    title: label || source?.title || image.title,
+    description: '',
+    isSceneIdentity: false,
+    sceneJumpTarget: null,
+    maskEnabled: false,
+    alphaMask: null,
+    toleranceEnabled: false,
+    toleranceRange: null,
+    discriminatorEnabled: true,
+    discriminator: null,
+    discriminatorGroupId: shapeDiscriminatorGroupId.value,
+    discriminatorValue: label || image.title || `#${imageId}`,
+    x: source?.x ?? 0,
+    y: source?.y ?? 0,
+    w: source?.w ?? 0.1,
+    h: source?.h ?? 0.1,
+    children: [],
+  };
+  image.shapes.push(shape);
+  return shape;
+};
+
+const addShapeDiscriminatorMember = () => {
+  const imageId = shapeDiscriminatorNewImageId.value;
+  if (imageId === null) return;
+  const image = findAssetImageByNumericId(assetTree.value, imageId);
+  if (!image) {
+    ElMessage.warning(`没有找到 #${imageId}`);
+    return;
+  }
+  ensureDiscriminatorCurrentMember();
+  const label = shapeDiscriminatorNewLabel.value.trim() || image.title || `#${imageId}`;
+  const shape = createLinkedShapeForImage(image, imageId, label);
+  if (!shapeDiscriminatorMembers.value.some((member) => member.shapeId === shape.id)) {
+    shapeDiscriminatorMembers.value.push({ imageId, shapeId: shape.id, label });
+  }
+  shape.discriminatorValue = label;
+  shapeDiscriminatorNewImageId.value = null;
+  shapeDiscriminatorNewLabel.value = '';
+  void resetShapeDiscriminator();
+};
+
+const removeShapeDiscriminatorMember = (shapeId: string) => {
+  shapeDiscriminatorMembers.value = shapeDiscriminatorMembers.value.filter((member) => member.shapeId !== shapeId);
+  void resetShapeDiscriminator();
+};
+
+const resetShapeDiscriminator = async () => {
+  pauseShapeDiscriminatorSampling();
+  ensureDiscriminatorCurrentMember();
+  const size = getSelectedShapePixelSize();
+  shapeDiscriminatorReady.value = false;
+  shapeDiscriminatorResultText.value = '';
+  shapeDiscriminatorSourcePreviewUrl.value = '';
+  shapeDiscriminatorTargetPreviewUrl.value = '';
+  shapeDiscriminatorWeightPreviewUrl.value = '';
+  shapeDiscriminatorState.value = null;
+  if (!size || shapeDiscriminatorMembers.value.length < 2) return;
+  const variants: NonNullable<typeof shapeDiscriminatorState.value>['variants'] = [];
+  for (const member of shapeDiscriminatorMembers.value) {
+    const found = findShapeGlobal(member.shapeId);
+    if (!found?.image.imageDataUrl) continue;
+    const reference = await cropImageDataUrlByShape(found.image.imageDataUrl, found.shape, size.width, size.height);
+    if (!reference) continue;
+    variants.push({
+      imageId: member.imageId,
+      label: member.label || found.shape.title || `#${member.imageId}`,
+      shapeId: member.shapeId,
+      reference,
+    });
+  }
+  if (variants.length < 2) return;
+  const total = size.width * size.height;
+  const weights = new Float32Array(total);
+  const rawDiffs = new Float32Array(total);
+  let maxDiff = 0;
+  for (let index = 0; index < total; index += 1) {
+    const offset = index * 4;
+    let minR = 255;
+    let minG = 255;
+    let minB = 255;
+    let maxR = 0;
+    let maxG = 0;
+    let maxB = 0;
+    for (const variant of variants) {
+      minR = Math.min(minR, variant.reference.data[offset]);
+      minG = Math.min(minG, variant.reference.data[offset + 1]);
+      minB = Math.min(minB, variant.reference.data[offset + 2]);
+      maxR = Math.max(maxR, variant.reference.data[offset]);
+      maxG = Math.max(maxG, variant.reference.data[offset + 1]);
+      maxB = Math.max(maxB, variant.reference.data[offset + 2]);
+    }
+    const diff = Math.max(maxR - minR, maxG - minG, maxB - minB);
+    rawDiffs[index] = diff;
+    maxDiff = Math.max(maxDiff, diff);
+  }
+  const sortedDiffs = Array.from(rawDiffs).sort((a, b) => a - b);
+  const percentileIndex = Math.max(0, Math.floor(sortedDiffs.length * 0.88));
+  const activeThreshold = Math.max(12, sortedDiffs[percentileIndex] ?? 0);
+  let activePixels = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (rawDiffs[index] < activeThreshold || maxDiff <= 0) {
+      weights[index] = 0;
+      continue;
+    }
+    weights[index] = rawDiffs[index] / maxDiff;
+    activePixels += 1;
+  }
+  shapeDiscriminatorState.value = {
+    width: size.width,
+    height: size.height,
+    variants,
+    weights,
+    activePixels,
+  };
+  shapeDiscriminatorSourcePreviewUrl.value = imageDataToDataUrl(variants[0].reference);
+  shapeDiscriminatorTargetPreviewUrl.value = imageDataToDataUrl(variants[1].reference);
+  shapeDiscriminatorWeightPreviewUrl.value = buildDiscriminatorWeightPreview(weights, size.width, size.height);
+  shapeDiscriminatorReady.value = true;
+};
+
+const updateShapeDiscriminatorResult = (frame: ImageData) => {
+  const state = shapeDiscriminatorState.value;
+  if (!state) return;
+  const results = state.variants
+    .map((variant) => ({
+      ...variant,
+      error: computeDiscriminatorWeightedError(frame, variant.reference, state.weights),
+    }))
+    .sort((a, b) => a.error - b.error);
+  const best = results[0];
+  const second = results[1];
+  const gap = second ? second.error - best.error : 0;
+  const enoughSignal = state.activePixels >= 3;
+  const confident = enoughSignal && gap >= 4;
+  const prefix = confident ? `更像 #${best.imageId}` : '不确定';
+  const signalText = enoughSignal ? '' : '，差异像素太少';
+  const rankText = results.map((item) => `#${item.imageId} ${item.error.toFixed(1)}`).join('，');
+  shapeDiscriminatorResultText.value = `${prefix}，${rankText}，差距 ${gap.toFixed(1)}${signalText}`;
+};
+
+const scheduleShapeDiscriminatorSampling = () => {
+  shapeDiscriminatorSamplingFrame.value = window.requestAnimationFrame(() => {
+    const state = shapeDiscriminatorState.value;
+    if (!shapeDiscriminatorDialogVisible.value || !state || !shapeDiscriminatorRunning.value) return;
+    const frame = captureLiveShapeImageData(state.width, state.height);
+    if (frame) updateShapeDiscriminatorResult(frame);
+    scheduleShapeDiscriminatorSampling();
+  });
+};
+
+const pauseShapeDiscriminatorSampling = () => {
+  shapeDiscriminatorRunning.value = false;
+  if (shapeDiscriminatorSamplingFrame.value !== null) {
+    window.cancelAnimationFrame(shapeDiscriminatorSamplingFrame.value);
+    shapeDiscriminatorSamplingFrame.value = null;
+  }
+};
+
+const stopShapeDiscriminatorSampling = pauseShapeDiscriminatorSampling;
+
+const startShapeDiscriminatorSampling = async () => {
+  if (!shapeDiscriminatorState.value) await resetShapeDiscriminator();
+  if (!shapeDiscriminatorState.value || shapeDiscriminatorRunning.value) return;
+  shapeDiscriminatorRunning.value = true;
+  scheduleShapeDiscriminatorSampling();
+};
+
+const openShapeDiscriminatorDialog = async () => {
+  const shape = selectedShape.value;
+  if (!shape || shape.kind === 'group') return;
+  const imageId = assetNumericImageId(selectedImageNode.value as GameWindow3AssetNode);
+  let group = shape.discriminatorGroupId
+    ? discriminatorGroups.value.find((item) => item.id === shape.discriminatorGroupId) ?? null
+    : null;
+  if (!group) {
+    const legacyTarget = shape.discriminator?.targetImageId ?? shape.sceneJumpTarget ?? null;
+    group = {
+      id: createAssetId('disc-group'),
+      title: shape.title ? `${shape.title}区分` : '区分组',
+      syncBox: true,
+      members: [],
+    };
+    discriminatorGroups.value.push(group);
+    shape.discriminatorGroupId = group.id;
+    if (imageId !== null) group.members.push({ imageId, shapeId: shape.id, label: shape.discriminatorValue || shape.title || `#${imageId}` });
+    if (legacyTarget !== null) {
+      const image = findAssetImageByNumericId(assetTree.value, legacyTarget);
+      if (image) {
+        const linked = createLinkedShapeForImage(image, legacyTarget, image.title || `#${legacyTarget}`);
+        group.members.push({ imageId: legacyTarget, shapeId: linked.id, label: linked.discriminatorValue || image.title || `#${legacyTarget}` });
+      }
+    }
+  }
+  shapeDiscriminatorGroupId.value = group.id;
+  shapeDiscriminatorGroupTitle.value = group.title;
+  shapeDiscriminatorSyncBox.value = group.syncBox !== false;
+  shapeDiscriminatorMembers.value = group.members.map((member) => ({ ...member }));
+  shapeDiscriminatorNewImageId.value = null;
+  shapeDiscriminatorNewLabel.value = '';
+  shapeDiscriminatorDialogVisible.value = true;
+  await nextTick();
+  await resetShapeDiscriminator();
+};
+
+const saveShapeDiscriminatorAndClose = () => {
+  const shape = selectedShape.value;
+  if (!shape || !shapeDiscriminatorReady.value) return;
+  let group = currentDiscriminatorGroup();
+  if (!group) {
+    group = { id: createAssetId('disc-group'), title: '', syncBox: true, members: [] };
+    discriminatorGroups.value.push(group);
+    shapeDiscriminatorGroupId.value = group.id;
+  }
+  ensureDiscriminatorCurrentMember();
+  group.title = shapeDiscriminatorGroupTitle.value.trim() || '区分组';
+  group.syncBox = shapeDiscriminatorSyncBox.value;
+  group.members = shapeDiscriminatorMembers.value.map((member) => ({ ...member }));
+  if (group.syncBox) {
+    for (const member of group.members) {
+      const found = findShapeGlobal(member.shapeId);
+      if (!found) continue;
+      found.shape.x = shape.x;
+      found.shape.y = shape.y;
+      found.shape.w = shape.w;
+      found.shape.h = shape.h;
+    }
+  }
+  for (const member of group.members) {
+    const found = findShapeGlobal(member.shapeId);
+    if (!found) continue;
+    found.shape.discriminatorGroupId = group.id;
+    found.shape.discriminatorValue = member.label;
+    found.shape.discriminatorEnabled = true;
+  }
+  shape.discriminatorEnabled = true;
+  shape.discriminatorGroupId = group.id;
+  shapeDiscriminatorDialogVisible.value = false;
+};
+
+const showShapeMaskHelp = () => {
+  ElMessageBox.alert(
+    [
+      '抠图用于解决“背景在变，但前景锚点稳定”的情况。',
+      '',
+      '打开弹窗后会持续采样直播画面。每个像素会记录一段时间内的波动，波动越大的像素越容易被判定为动态背景，并在 alpha 通道里变透明。',
+      '',
+      '保存后，检测时透明像素会被跳过，不参与相似度计算。等待越久，动态背景识别通常越精细；随时保存就是固化当前结果。',
+    ].join('\n'),
+    '方框抠图说明',
+    { confirmButtonText: '知道了' },
+  );
+};
+
+const showShapeToleranceHelp = () => {
+  ElMessageBox.alert(
+    [
+      '容差用于解决“同一个目标区域本身有灯光、特效、轻微抖动”的情况。',
+      '',
+      '打开弹窗后会持续采样直播画面，并为每个像素记录 RGB 最小值图和最大值图。检测时，只要当前像素落在这个范围内，就算 0 误差；超出范围才计算超出的部分。',
+      '',
+      '它和抠图可以同时使用：抠图负责跳过不可靠背景，容差负责兼容仍要参与匹配的正常波动。',
+    ].join('\n'),
+    '方框容差说明',
+    { confirmButtonText: '知道了' },
+  );
+};
+
+const showShapeDiscriminatorHelp = () => {
+  ElMessageBox.alert(
+    [
+      '区分用于解决“两张图整体很像，但有极小状态差异”的情况。',
+      '',
+      '它会比较当前图和对照图在同一个 shape 区域里的差异，生成差异权重图。越亮的像素越能区分两个状态，检测时权重越高。',
+      '',
+      '开始后会实时截取直播区域，分别计算它更接近当前图还是对照图，并显示两边误差和差距。它不是判断像不像单张图，而是判断更像哪一个状态。',
+    ].join('\n'),
+    '方框区分说明',
+    { confirmButtonText: '知道了' },
+  );
+};
+
+const shapeBoxStyle = (shape: GameWindow3Shape) => ({
+  left: (shape.x * 100) + '%',
+  top: (shape.y * 100) + '%',
+  width: (shape.w * 100) + '%',
+  height: (shape.h * 100) + '%',
+});
+
+const buildShapeBox = (startX: number, startY: number, endX: number, endY: number): GameWindow3Shape => ({
+  id: 'draft-shape',
+  kind: 'shape',
+  title: '',
+  description: '',
+  isSceneIdentity: false,
+  sceneJumpTarget: null,
+  maskEnabled: false,
+  alphaMask: null,
+  toleranceEnabled: false,
+  toleranceRange: null,
+  discriminatorEnabled: false,
+  discriminator: null,
+  discriminatorGroupId: null,
+  discriminatorValue: '',
+  x: Math.min(startX, endX),
+  y: Math.min(startY, endY),
+  w: Math.abs(endX - startX),
+  h: Math.abs(endY - startY),
+  children: [],
+});
+
+const getAnnotationPoint = (event: PointerEvent) => {
+  const canvas = annotationCanvasRef.value;
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
+    y: clamp((event.clientY - rect.top) / rect.height, 0, 1),
+  };
+};
+
+const clampShapeBox = (shape: GameWindow3Shape) => {
+  shape.w = Math.min(Math.max(shape.w, 0), 1);
+  shape.h = Math.min(Math.max(shape.h, 0), 1);
+  shape.x = Math.min(Math.max(shape.x, 0), 1 - shape.w);
+  shape.y = Math.min(Math.max(shape.y, 0), 1 - shape.h);
+};
+
+const updateShapeDraft = (event: PointerEvent) => {
+  const state = shapeDraftState.value;
+  const point = getAnnotationPoint(event);
+  if (!state || state.pointerId !== event.pointerId || !point) return;
+  shapeDraftBox.value = buildShapeBox(state.startX, state.startY, point.x, point.y);
+};
+
+const finishShapeDraft = (event: PointerEvent) => {
+  const state = shapeDraftState.value;
+  if (!state || state.pointerId !== event.pointerId) return;
+  updateShapeDraft(event);
+  const draft = shapeDraftBox.value;
+  const image = selectedImageNode.value;
+  shapeDraftState.value = null;
+  shapeDraftBox.value = null;
+  window.removeEventListener('pointermove', updateShapeDraft);
+  window.removeEventListener('pointerup', finishShapeDraft);
+  window.removeEventListener('pointercancel', cancelShapeDraft);
+  try {
+    annotationCanvasRef.value?.releasePointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture may already be released by the browser.
+  }
+  if (!draft || !image) {
+    selectedShapeId.value = null;
+    return;
+  }
+  image.shapes ??= [];
+  const shape: GameWindow3Shape = {
+    ...draft,
+    id: createAssetId('shape'),
+    kind: 'shape',
+    title: 'shape ' + (flattenShapes(image.shapes ?? []).filter(isDrawableShape).length + 1),
+    description: '',
+    isSceneIdentity: false,
+    sceneJumpTarget: null,
+    maskEnabled: false,
+    alphaMask: null,
+    toleranceEnabled: false,
+    toleranceRange: null,
+    discriminatorEnabled: false,
+    discriminator: null,
+    discriminatorGroupId: null,
+    discriminatorValue: '',
+    children: [],
+  };
+  clampShapeBox(shape);
+  image.shapes ??= [];
+  image.shapes.push(shape);
+  selectedShapeId.value = shape.id;
+};
+
+const cancelShapeDraft = () => {
+  shapeDraftState.value = null;
+  shapeDraftBox.value = null;
+  window.removeEventListener('pointermove', updateShapeDraft);
+  window.removeEventListener('pointerup', finishShapeDraft);
+  window.removeEventListener('pointercancel', cancelShapeDraft);
+};
+
+const startShapeDraft = (event: PointerEvent) => {
+  if (event.button !== 0 || !selectedImageNode.value || shapeDragState.value || screenshotSpacePressed.value || screenshotPanState.value) return;
+  const point = getAnnotationPoint(event);
+  if (!point) return;
+  selectedShapeId.value = null;
+  annotationCanvasRef.value?.setPointerCapture(event.pointerId);
+  shapeDraftState.value = {
+    pointerId: event.pointerId,
+    startX: point.x,
+    startY: point.y,
+  };
+  shapeDraftBox.value = buildShapeBox(point.x, point.y, point.x, point.y);
+  window.addEventListener('pointermove', updateShapeDraft);
+  window.addEventListener('pointerup', finishShapeDraft);
+  window.addEventListener('pointercancel', cancelShapeDraft);
+};
+
+const startShapeDrag = (event: PointerEvent, shapeId: string, mode: ShapeDragState['mode']) => {
+  const shape = findShapeById(selectedImageShapes.value, shapeId);
+  if (!shape) return;
+  selectedShapeId.value = shapeId;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  shapeDragState.value = {
+    pointerId: event.pointerId,
+    shapeId,
+    mode,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startBox: {
+      x: shape.x,
+      y: shape.y,
+      w: shape.w,
+      h: shape.h,
+    },
+  };
+  window.addEventListener('pointermove', moveShapeDrag);
+  window.addEventListener('pointerup', finishShapeDrag, { once: true });
+};
+
+const startShapeMove = (event: PointerEvent, shapeId: string) => startShapeDrag(event, shapeId, 'move');
+const startShapeResize = (event: PointerEvent, shapeId: string, mode: Extract<ShapeDragState['mode'], 'top-left' | 'bottom-right'>) => {
+  startShapeDrag(event, shapeId, mode);
+};
+
+const moveShapeDrag = (event: PointerEvent) => {
+  const state = shapeDragState.value;
+  const canvas = annotationCanvasRef.value;
+  if (!state || state.pointerId !== event.pointerId || !canvas) return;
+  const shape = findShapeById(selectedImageShapes.value, state.shapeId);
+  if (!shape) return;
+  const rect = canvas.getBoundingClientRect();
+  const dx = (event.clientX - state.startClientX) / Math.max(rect.width, 1);
+  const dy = (event.clientY - state.startClientY) / Math.max(rect.height, 1);
+  if (state.mode === 'move') {
+    shape.x = state.startBox.x + dx;
+    shape.y = state.startBox.y + dy;
+    clampShapeBox(shape);
+  } else if (state.mode === 'bottom-right') {
+    shape.w = state.startBox.w + dx;
+    shape.h = state.startBox.h + dy;
+    clampShapeBox(shape);
+  } else {
+    const right = state.startBox.x + state.startBox.w;
+    const bottom = state.startBox.y + state.startBox.h;
+    const nextX = clamp(state.startBox.x + dx, 0, right);
+    const nextY = clamp(state.startBox.y + dy, 0, bottom);
+    shape.x = nextX;
+    shape.y = nextY;
+    shape.w = right - nextX;
+    shape.h = bottom - nextY;
+  }
+};
+
+const finishShapeDrag = () => {
+  window.removeEventListener('pointermove', moveShapeDrag);
+  shapeDragState.value = null;
+};
 </script>
 
 <style scoped>
@@ -5998,8 +7045,9 @@ onBeforeUnmount(() => {
 
 .live-workspace {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 14px;
+  width: 100%;
 }
 
 .live-viewport {
@@ -7400,6 +8448,7 @@ onBeforeUnmount(() => {
 
   .live-workspace {
     flex-direction: column;
+    align-items: flex-start;
   }
 
   .stream-image,
@@ -7437,4 +8486,437 @@ onBeforeUnmount(() => {
     max-width: calc(100vw - 32px);
   }
 }
+
+.annotation-panel {
+  flex: 1 1 0;
+  min-width: 280px;
+  border-left: 1px solid #dcdfe6;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.annotation-panel-head,
+.annotation-workbench-head {
+  min-height: 40px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #ebeef5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.annotation-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.asset-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px;
+  overflow: auto;
+}
+
+.asset-tree-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.asset-tree-node.is-image {
+  color: #409eff;
+}
+
+.asset-node-id {
+  flex: 0 0 auto;
+  min-width: 28px;
+  color: #909399;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.asset-context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 96px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.asset-context-menu button {
+  width: 100%;
+  padding: 6px 10px;
+  color: #303133;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.asset-context-menu button:hover {
+  background: #f5f7fa;
+}
+
+.asset-context-menu button.is-danger {
+  color: #dc2626;
+}
+
+.shape-context-menu {
+  min-width: 72px;
+}
+
+.annotation-workbench {
+  width: 100%;
+  margin-top: 12px;
+  border-top: 1px solid #dcdfe6;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.annotation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+  overflow: auto;
+}
+
+.annotation-main-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.annotation-canvas {
+  position: relative;
+  align-self: start;
+  flex: 0 0 auto;
+  border: 1px solid #dcdfe6;
+  background: #f5f7fa;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.annotation-image {
+  pointer-events: none;
+}
+
+.annotation-preview {
+  align-self: start;
+}
+
+.annotation-image-wrap {
+  cursor: crosshair;
+}
+
+.empty-image-surface {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  font-size: 13px;
+  background-image:
+    linear-gradient(45deg, rgba(144, 147, 153, 0.12) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(144, 147, 153, 0.12) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(144, 147, 153, 0.12) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(144, 147, 153, 0.12) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+  pointer-events: none;
+}
+
+.annotation-shape {
+  position: absolute;
+  border: 2px solid #409eff;
+  background: transparent;
+  box-sizing: border-box;
+  cursor: move;
+  overflow: visible;
+}
+
+.annotation-shape.is-active {
+  border-color: #e6a23c;
+}
+
+.annotation-shape.is-draft {
+  border-color: #e6a23c;
+  background: rgba(230, 162, 60, 0.12);
+  color: transparent;
+  pointer-events: none;
+}
+
+.shape-corner-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  background: #fff;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.shape-corner-handle.is-top-left {
+  left: -5px;
+  top: -5px;
+  cursor: nwse-resize;
+}
+
+.shape-corner-handle.is-bottom-right {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
+}
+
+.shape-tree {
+  flex: 1 1 0;
+  min-width: 180px;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #ebeef5;
+}
+
+.shape-tree-node.is-group {
+  font-weight: 600;
+  color: #303133;
+}
+
+.shape-tree-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shape-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #ebeef5;
+}
+
+.shape-detect-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 24px;
+  flex-wrap: wrap;
+}
+
+.shape-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shape-jump-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.shape-jump-field span {
+  white-space: nowrap;
+}
+
+.shape-jump-field .el-input-number {
+  width: 84px;
+}
+
+.shape-jump-field :deep(.el-input__wrapper) {
+  min-height: 24px;
+}
+
+.shape-jump-field :deep(.el-input__inner) {
+  height: 22px;
+  line-height: 22px;
+  font-size: 12px;
+}
+
+.shape-detect-group {
+  min-height: 24px;
+}
+
+.shape-detect-result {
+  color: #606266;
+  font-size: 12px;
+}
+
+.shape-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shape-help-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #cdd6e1;
+  border-radius: 50%;
+  background: #fff;
+  color: #8a96a3;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.shape-help-button:hover {
+  color: #409eff;
+  border-color: #409eff;
+}
+
+.shape-mask-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shape-mask-previews {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.shape-mask-previews.is-three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.shape-discriminator-label-input {
+  width: 120px;
+}
+
+.shape-discriminator-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.shape-discriminator-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+}
+
+.shape-discriminator-member > span {
+  color: #909399;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shape-discriminator-member .el-input {
+  width: 110px;
+}
+
+.shape-mask-preview {
+  min-height: 220px;
+  border: 1px solid #dcdfe6;
+  background:
+    linear-gradient(45deg, #f2f3f5 25%, transparent 25%),
+    linear-gradient(-45deg, #f2f3f5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f2f3f5 75%),
+    linear-gradient(-45deg, transparent 75%, #f2f3f5 75%);
+  background-color: #fff;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.shape-mask-label {
+  padding: 6px 8px;
+  border-bottom: 1px solid #dcdfe6;
+  background: #fff;
+  font-size: 12px;
+  color: #606266;
+}
+
+.shape-mask-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.shape-mask-empty {
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  font-size: 12px;
+}
+
+.shape-mask-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.shape-mask-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 300px;
+}
+
+.shape-mask-slider span {
+  flex: 0 0 56px;
+  white-space: nowrap;
+}
+
+.shape-mask-slider .el-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.annotation-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #909399;
+  font-size: 13px;
+}
+
+@media (max-width: 1180px) {
+  .annotation-panel {
+    width: 100%;
+    min-width: 0;
+    border-left: 0;
+    border-top: 1px solid #dcdfe6;
+  }
+
+  .annotation-main-row {
+    flex-direction: column;
+  }
+
+  .shape-tree {
+    width: 100%;
+    max-width: none;
+    max-height: 220px;
+  }
+}
+
 </style>

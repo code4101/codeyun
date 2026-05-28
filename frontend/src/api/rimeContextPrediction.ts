@@ -200,6 +200,31 @@ export interface RimeRuntimeConfigResponse {
   } | null;
 }
 
+export interface RimePerformanceSection {
+  count: number;
+  total_ms: number;
+  avg_ms: number;
+  max_ms: number;
+  last_ms: number;
+}
+
+export interface RimePerformanceResponse {
+  available: boolean;
+  status: string;
+  message: string;
+  rime_dir: string | null;
+  source: string | null;
+  source_path: string | null;
+  updated_at: number | null;
+  files: RimeContextPredictionFileInfo[];
+  config: Record<string, RimeRuntimeConfigValue>;
+  runtime: Record<string, number | string | boolean | null>;
+  sections: Record<string, RimePerformanceSection>;
+  started_at?: number | null;
+  clock_ms?: number | null;
+  version?: number;
+}
+
 export interface RimeWeightCompareGroup {
   key: string;
   weight: number;
@@ -364,6 +389,24 @@ export async function updateRimeRuntimeConfig(
   const response = await api.patch<RimeRuntimeConfigResponse>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/runtime-config'),
     payload,
+  );
+  return response.data;
+}
+
+export async function fetchRimePerformanceStats(
+  entryId: string,
+): Promise<RimePerformanceResponse> {
+  const response = await api.get<RimePerformanceResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/performance'),
+  );
+  return response.data;
+}
+
+export async function resetRimePerformanceStats(
+  entryId: string,
+): Promise<RimePerformanceResponse> {
+  const response = await api.post<RimePerformanceResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/performance/reset'),
   );
   return response.data;
 }

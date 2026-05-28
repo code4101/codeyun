@@ -187,6 +187,21 @@ def _decode_image_data_url_bgr(data_url: str):
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
+def _decode_image_data_url_gray(data_url: str):
+    import cv2
+    import numpy as np
+
+    text = str(data_url or "").strip()
+    if not text:
+        return None
+    if "," in text and text.lower().startswith("data:"):
+        text = text.split(",", 1)[1]
+    data = np.frombuffer(base64.b64decode(text, validate=False), dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+
+
 def _screenshot_path(filename: str) -> Path:
     output_dir = get_fanxiu_screenshot_frame_dir()
     image_path = (output_dir / _normalize_screenshot_filename(filename)).resolve(strict=False)
@@ -875,12 +890,86 @@ def _scale_box(box: dict[str, Any], source_width: int, source_height: int, targe
     )
 
 
-def _compare_frame_crops(reference_crop: Any, current_crop: Any, pixel_tolerance: int = 5) -> tuple[int, float]:
-    return compare_bgr_pixel_tolerance(reference_crop, current_crop, pixel_tolerance)
-
-
-def _correlate_frame_crops(reference_crop: Any, current_crop: Any) -> tuple[int, float]:
+def _normalize_alpha_mask(alpha_mask: Any, width: int, height: int):
+    if alpha_mask is None:
+        return None
     import cv2
+    import numpy as np
+
+    mask = np.asarray(alpha_mask)
+    if mask.size == 0:
+        return None
+    if len(mask.shape) == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    if mask.shape[:2] != (height, width):
+        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_LINEAR)
+    return mask.astype("float32") / 255.0
+
+
+def _normalize_tolerance_frames(tolerance_min: Any, tolerance_max: Any, width: int, height: int):
+    if tolerance_min is None or tolerance_max is None:
+        return None, None
+    import cv2
+
+    min_frame = _ensure_bgr_frame(tolerance_min)
+    max_frame = _ensure_bgr_frame(tolerance_max)
+    if min_frame.size == 0 or max_frame.size == 0:
+        return None, None
+    if min_frame.shape[:2] != (height, width):
+        min_frame = cv2.resize(min_frame, (width, height), interpolation=cv2.INTER_AREA)
+    if max_frame.shape[:2] != (height, width):
+        max_frame = cv2.resize(max_frame, (width, height), interpolation=cv2.INTER_AREA)
+    return min_frame, max_frame
+
+
+def _compare_frame_crops(
+    reference_crop: Any,
+    current_crop: Any,
+    pixel_tolerance: int = 5,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
+) -> tuple[int, float]:
+    if alpha_mask is None and (tolerance_min is None or tolerance_max is None):
+        return compare_bgr_pixel_tolerance(reference_crop, current_crop, pixel_tolerance)
+    import cv2
+    import numpy as np
+
+    reference = _ensure_bgr_frame(reference_crop)
+    current = _ensure_bgr_frame(current_crop)
+    if reference.size == 0 or current.size == 0:
+        raise ValueError("匹配图片为空")
+    if reference.shape[:2] != current.shape[:2]:
+        current = cv2.resize(current, (reference.shape[1], reference.shape[0]), interpolation=cv2.INTER_AREA)
+    height, width = reference.shape[:2]
+    mask = _normalize_alpha_mask(alpha_mask, width, height)
+    min_frame, max_frame = _normalize_tolerance_frames(tolerance_min, tolerance_max, width, height)
+    if (mask is None or float(mask.sum()) <= 1e-6) and (min_frame is None or max_frame is None):
+        return compare_bgr_pixel_tolerance(reference, current, pixel_tolerance)
+    if min_frame is not None and max_frame is not None:
+        current_i = current.astype("int16")
+        min_i = np.minimum(min_frame, max_frame).astype("int16")
+        max_i = np.maximum(min_frame, max_frame).astype("int16")
+        diff = np.maximum(min_i - current_i, current_i - max_i)
+        diff = np.max(np.maximum(diff, 0), axis=2).astype("float32")
+    else:
+        diff = np.max(np.abs(reference.astype("int16") - current.astype("int16")), axis=2).astype("float32")
+    matched = (diff <= max(0, min(255, int(pixel_tolerance)))).astype("float32")
+    if mask is None:
+        mask = np.ones((height, width), dtype="float32")
+    score = float((matched * mask).sum() / mask.sum())
+    return int(round(score * 100)), score
+
+
+def _correlate_frame_crops(
+    reference_crop: Any,
+    current_crop: Any,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
+) -> tuple[int, float]:
+    import cv2
+    import numpy as np
 
     template = _ensure_bgr_frame(reference_crop)
     crop = _ensure_bgr_frame(current_crop)
@@ -891,6 +980,27 @@ def _correlate_frame_crops(reference_crop: Any, current_crop: Any) -> tuple[int,
 
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    mask = _normalize_alpha_mask(alpha_mask, template_gray.shape[1], template_gray.shape[0])
+    tolerance_min_frame, tolerance_max_frame = _normalize_tolerance_frames(
+        tolerance_min,
+        tolerance_max,
+        template.shape[1],
+        template.shape[0],
+    )
+    if tolerance_min_frame is not None and tolerance_max_frame is not None:
+        if mask is None:
+            mask = np.ones(template_gray.shape, dtype="float32")
+        min_gray = cv2.cvtColor(np.minimum(tolerance_min_frame, tolerance_max_frame), cv2.COLOR_BGR2GRAY).astype("float32")
+        max_gray = cv2.cvtColor(np.maximum(tolerance_min_frame, tolerance_max_frame), cv2.COLOR_BGR2GRAY).astype("float32")
+        current_gray = crop_gray.astype("float32")
+        diff = np.maximum(min_gray - current_gray, current_gray - max_gray)
+        diff = np.maximum(diff, 0)
+        score = max(0.0, min(1.0, 1.0 - float((diff * mask).sum() / (255.0 * mask.sum()))))
+        return int(round(score * 100)), score
+    if mask is not None and float(mask.sum()) > 1e-6:
+        diff = np.abs(template_gray.astype("float32") - crop_gray.astype("float32"))
+        score = max(0.0, min(1.0, 1.0 - float((diff * mask).sum() / (255.0 * mask.sum()))))
+        return int(round(score * 100)), score
     if float(template_gray.std()) > 1e-6 and float(crop_gray.std()) > 1e-6:
         result = cv2.matchTemplate(crop_gray, template_gray, cv2.TM_CCOEFF_NORMED)
         _, max_value, _, _ = cv2.minMaxLoc(result)
@@ -911,6 +1021,9 @@ def _match_template_frame(
     current_frame: Any,
     current_box: dict[str, Any],
     pixel_tolerance: int = 5,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
 ) -> dict[str, Any]:
     import cv2
     import numpy as np
@@ -925,13 +1038,22 @@ def _match_template_frame(
     template_height = min(max(1, int(current_box["h"])), frame_height)
     if template.shape[:2] != (template_height, template_width):
         template = cv2.resize(template, (template_width, template_height), interpolation=cv2.INTER_AREA)
+    mask = _normalize_alpha_mask(alpha_mask, template_width, template_height)
+    min_frame, max_frame = _normalize_tolerance_frames(tolerance_min, tolerance_max, template_width, template_height)
 
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    template_for_search = ((np.minimum(min_frame, max_frame).astype("uint16") + np.maximum(min_frame, max_frame).astype("uint16")) // 2).astype("uint8") if min_frame is not None and max_frame is not None else template
+    template_gray = cv2.cvtColor(template_for_search, cv2.COLOR_BGR2GRAY)
     if template_gray.shape[0] > frame_gray.shape[0] or template_gray.shape[1] > frame_gray.shape[1]:
         raise ValueError("模板尺寸大于当前画面")
 
-    if float(template_gray.std()) > 1e-6 and float(frame_gray.std()) > 1e-6:
+    if mask is not None and float(mask.sum()) > 1e-6:
+        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCORR_NORMED, mask=(mask * 255).astype("uint8"))
+        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+        _, max_value, _, max_loc = cv2.minMaxLoc(result)
+        score = max(0.0, min(1.0, float(max_value)))
+        x, y = max_loc
+    elif float(template_gray.std()) > 1e-6 and float(frame_gray.std()) > 1e-6:
         result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
         _, max_value, _, max_loc = cv2.minMaxLoc(result)
         score = max(0.0, min(1.0, float(max_value)))
@@ -954,7 +1076,14 @@ def _match_template_frame(
         frame_height,
     )
     matched_crop = _crop_frame_box(frame, box)
-    crop_similarity, crop_score = _compare_frame_crops(template, matched_crop, pixel_tolerance)
+    crop_similarity, crop_score = _compare_frame_crops(
+        template,
+        matched_crop,
+        pixel_tolerance,
+        mask,
+        min_frame,
+        max_frame,
+    )
     return {
         "box": box,
         "similarity": int(round(score * 100)),
@@ -969,6 +1098,9 @@ def _match_local_template_frame(
     current_frame: Any,
     current_box: dict[str, Any],
     pixel_tolerance: int = 5,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
 ) -> dict[str, Any]:
     frame = _ensure_bgr_frame(current_frame)
     frame_height, frame_width = frame.shape[:2]
@@ -983,6 +1115,9 @@ def _match_local_template_frame(
         region,
         {"name": current_box.get("name", ""), "x": 0, "y": 0, "w": current_box["w"], "h": current_box["h"]},
         pixel_tolerance,
+        alpha_mask,
+        tolerance_min,
+        tolerance_max,
     )
     local_box = match["box"]
     box = _normalize_match_box(
@@ -1018,6 +1153,9 @@ def match_fanxiu_screenshot_box_frame(
     fixed_height: int | None = None,
     quality: int = 82,
     pixel_tolerance: int = 5,
+    alpha_mask_data_url: str | None = None,
+    tolerance_min_data_url: str | None = None,
+    tolerance_max_data_url: str | None = None,
     current_frame_data_url: str | None = None,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
@@ -1027,6 +1165,9 @@ def match_fanxiu_screenshot_box_frame(
     source_height, source_width = reference_frame.shape[:2]
     source_box = _normalize_match_box(box, source_width, source_height)
     reference_crop = _crop_frame_box(reference_frame, source_box)
+    alpha_mask = _decode_image_data_url_gray(alpha_mask_data_url or "") if alpha_mask_data_url else None
+    tolerance_min = _decode_image_data_url_bgr(tolerance_min_data_url or "") if tolerance_min_data_url else None
+    tolerance_max = _decode_image_data_url_bgr(tolerance_max_data_url or "") if tolerance_max_data_url else None
 
     current_frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if current_frame is None:
@@ -1046,10 +1187,39 @@ def match_fanxiu_screenshot_box_frame(
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
-    fixed_exact_similarity, fixed_exact_score = _correlate_frame_crops(reference_crop, current_crop)
-    fixed_exact_pixel_similarity, fixed_exact_pixel_score = _compare_frame_crops(reference_crop, current_crop, pixel_tolerance)
-    fixed_match = _match_local_template_frame(reference_crop, current_frame, current_box, pixel_tolerance)
-    template_match = _match_template_frame(reference_crop, current_frame, current_box, pixel_tolerance)
+    fixed_exact_similarity, fixed_exact_score = _correlate_frame_crops(
+        reference_crop,
+        current_crop,
+        alpha_mask,
+        tolerance_min,
+        tolerance_max,
+    )
+    fixed_exact_pixel_similarity, fixed_exact_pixel_score = _compare_frame_crops(
+        reference_crop,
+        current_crop,
+        pixel_tolerance,
+        alpha_mask,
+        tolerance_min,
+        tolerance_max,
+    )
+    fixed_match = _match_local_template_frame(
+        reference_crop,
+        current_frame,
+        current_box,
+        pixel_tolerance,
+        alpha_mask,
+        tolerance_min,
+        tolerance_max,
+    )
+    template_match = _match_template_frame(
+        reference_crop,
+        current_frame,
+        current_box,
+        pixel_tolerance,
+        alpha_mask,
+        tolerance_min,
+        tolerance_max,
+    )
 
     output_dir = get_fanxiu_match_frame_dir()
     with _MATCH_FRAME_LOCK:

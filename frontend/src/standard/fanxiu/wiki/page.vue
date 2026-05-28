@@ -474,6 +474,7 @@ const gongfaHomeMakeBuffParameterSemanticsCache = new Map<string, FanxiuGongfaHo
 const gongfaHomeMakeFormulaCatalogCache = new Map<string, FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse | null>()
 const gongfaSpecialFazeCatalogCache = new Map<string, FanxiuGongfaSpecialFazeCatalogResponse | null>()
 const itemDetailCache = new Map<string, FanxiuItemCard>()
+const itemDetailRefreshAttempts = new Map<string, string>()
 const activityDetailCache = new Map<string, FanxiuActivityCard>()
 const lingjieDetailCache = new Map<string, FanxiuLingjieFeatureCard>()
 const digitDoorDetailCache = new Map<string, FanxiuDigitDoorCharacterCard>()
@@ -918,6 +919,32 @@ const selectedListItem = computed(() => {
   }
   return gongfaItems.value.find(item => String(item.id) === selectedId.value) ?? null
 })
+
+function shouldRefetchItemDetail(itemId: string | number, cached: FanxiuItemCard | null | undefined) {
+  if (!cached) return true
+  const summary = itemItems.value.find(item => String(item.id) === String(itemId))
+  return Boolean((summary?.effect_detail_preview || cached.effect_detail_preview) && !cached.effect_details?.length)
+}
+
+function getItemDetailRefreshSignature(itemId: string | number, cached: FanxiuItemCard | null | undefined) {
+  const summary = itemItems.value.find(item => String(item.id) === String(itemId))
+  return [
+    summary?.effect_detail_preview || cached?.effect_detail_preview || '',
+    itemStats.value?.item_with_effect_detail_count ?? '',
+    itemStats.value?.item_with_talisman_detail_count ?? '',
+  ].join('|')
+}
+
+function ensureSelectedItemDetailFresh() {
+  if (activeTab.value !== 'item' || !selectedId.value || loadingDetail.value) return
+  const current = selectedItem.value
+  if (!current || String(current.id) !== selectedId.value || !shouldRefetchItemDetail(selectedId.value, current)) return
+  const signature = getItemDetailRefreshSignature(selectedId.value, current)
+  if (itemDetailRefreshAttempts.get(selectedId.value) === signature) return
+  itemDetailRefreshAttempts.set(selectedId.value, signature)
+  itemDetailCache.delete(selectedId.value)
+  void selectItem(selectedId.value)
+}
 
 const selectedVisualAsset = computed(() => visualItems.value.find(item => getVisualAssetKey(item) === selectedId.value) ?? null)
 const selectedStaticAsset = computed(() => staticAssetItems.value.find(item => getStaticAssetKey(item) === selectedId.value) ?? null)
@@ -5478,7 +5505,11 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     clearHomeMakeStaticDetail()
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
-      if (!selectedItem.value || String(selectedItem.value.id) !== selectedId.value) {
+      if (
+        !selectedItem.value ||
+        String(selectedItem.value.id) !== selectedId.value ||
+        shouldRefetchItemDetail(selectedId.value, selectedItem.value)
+      ) {
         void selectItem(selectedId.value)
       }
       return
@@ -6306,7 +6337,7 @@ async function selectItem(itemId: string | number) {
   selectedId.value = nextId
   const requestSeq = ++detailRequestSeq
   const cached = itemDetailCache.get(nextId)
-  if (cached) {
+  if (cached && !shouldRefetchItemDetail(nextId, cached)) {
     selectedItem.value = cached
     selectedCard.value = null
     selectedActivity.value = null
@@ -6316,11 +6347,17 @@ async function selectItem(itemId: string | number) {
     loadingDetail.value = false
     return
   }
+  if (cached) {
+    itemDetailCache.delete(nextId)
+  }
   loadingDetail.value = true
   try {
     const response = await getFanxiuItemCard(nextId)
     if (requestSeq !== detailRequestSeq) return
     itemDetailCache.set(nextId, response.card)
+    if (response.card.effect_details?.length) {
+      itemDetailRefreshAttempts.delete(nextId)
+    }
     selectedItem.value = response.card
     selectedCard.value = null
     selectedActivity.value = null
@@ -6891,7 +6928,39 @@ function selectObject(objectId: string | number) {
 
 function reloadFromFirstPage() {
   page.value = 1
+  clearDetailCaches()
   loadCurrentCards()
+}
+
+function clearDetailCaches() {
+  gongfaDetailCache.clear()
+  gongfaHomeMakeStaticDetailCache.clear()
+  gongfaHomeMakeBuffParameterSemanticsCache.clear()
+  gongfaHomeMakeFormulaCatalogCache.clear()
+  gongfaSpecialFazeCatalogCache.clear()
+  itemDetailCache.clear()
+  itemDetailRefreshAttempts.clear()
+  activityDetailCache.clear()
+  lingjieDetailCache.clear()
+  digitDoorDetailCache.clear()
+  digitDoorLevelDetailCache.clear()
+  digitDoorEnhanceDetailCache.clear()
+  doupoTDDetailCache.clear()
+  doupoTDRewardDetailCache.clear()
+}
+
+function clearSelectedDetailsForReload() {
+  selectedCard.value = null
+  selectedItem.value = null
+  selectedActivity.value = null
+  selectedLingjieCard.value = null
+  selectedDigitDoorCharacter.value = null
+  selectedDigitDoorLevel.value = null
+  selectedDigitDoorStage.value = null
+  selectedDigitDoorEnhanceGroup.value = null
+  selectedDoupoTDPartner.value = null
+  selectedDoupoTDReward.value = null
+  clearHomeMakeStaticDetail()
 }
 
 function revokeVisualSimilarityPreview() {
@@ -6945,6 +7014,8 @@ function handleVisualSimilarityPaste(event: ClipboardEvent) {
 }
 
 function refreshCurrentCards() {
+  clearDetailCaches()
+  clearSelectedDetailsForReload()
   if (activeTab.value === 'gongfa') {
     void loadHomeMakeBuffOverview({ force: true })
   }
@@ -7141,6 +7212,18 @@ watch(activeTab, tab => {
   }
 })
 watch([activeTab, selectedId], syncRouteState)
+watch(
+  () => [
+    activeTab.value,
+    selectedId.value,
+    itemItems.value.find(item => String(item.id) === selectedId.value)?.effect_detail_preview ?? '',
+    selectedItem.value?.id ?? '',
+    selectedItem.value?.effect_details?.length ?? 0,
+    loadingDetail.value,
+  ],
+  ensureSelectedItemDetailFresh,
+  { flush: 'post' },
+)
 watch(selectedStaticAsset, item => {
   void loadStaticAssetPreviewManifest(item)
 })
@@ -7179,9 +7262,6 @@ onBeforeUnmount(() => {
     <header class="page-header">
       <div>
         <h2>凡修图鉴</h2>
-        <div v-if="catalogPath" class="page-subline">
-          <span>{{ catalogPath }}</span>
-        </div>
       </div>
       <el-button :icon="Refresh" :loading="loadingList || loadingHomeMakeBuffOverview" @click="refreshCurrentCards">刷新</el-button>
     </header>
@@ -8188,7 +8268,7 @@ onBeforeUnmount(() => {
                   {{ getItemMeta(item) }}
                   <template v-if="getFirstTimelineShortLabel(item)"> · {{ getFirstTimelineShortLabel(item) }}</template>
                 </span>
-                <span class="object-row-preview">{{ compactText(item.effect_preview || item.description_preview, 96) }}</span>
+                <span class="object-row-preview">{{ compactText(item.effect_detail_preview || item.effect_preview || item.description_preview, 96) }}</span>
               </span>
             </button>
             <div v-if="!loadingList && !itemItems.length" class="empty-state">没有匹配道具</div>
@@ -10431,9 +10511,16 @@ onBeforeUnmount(() => {
             <div class="plain-rich-text" v-html="renderFanxiuText(selectedItem.description, { tone: 'light' })" />
           </section>
 
-          <section v-if="selectedItem.effect_description || selectedItem.optional_gift_rewards?.length" class="object-section">
+          <section v-if="selectedItem.effect_description || selectedItem.effect_details?.length || selectedItem.optional_gift_rewards?.length" class="object-section">
             <h4>效果</h4>
             <div v-if="selectedItem.effect_description" class="game-rich-text" v-html="renderFanxiuText(selectedItem.effect_description)" />
+            <div v-for="detail in selectedItem.effect_details || []" :key="`${detail.kind || 'effect'}-${detail.source_id || detail.title}`" class="item-effect-detail">
+              <div class="item-effect-detail-title">
+                <strong>{{ detail.title || '详细效果' }}</strong>
+                <span v-if="detail.subtitle">{{ detail.subtitle }}</span>
+              </div>
+              <div class="game-rich-text" v-html="renderFanxiuText(detail.description || detail.plain_description || '')" />
+            </div>
             <div v-if="selectedItem.optional_gift_rewards?.length" class="linked-item-strip detail-items optional-gift-items">
               <FanxiuLinkedItemChip
                 v-for="item in getDisplayLinkedItems(selectedItem.optional_gift_rewards)"
@@ -10603,18 +10690,10 @@ onBeforeUnmount(() => {
 }
 
 .page-header h2 {
-  margin: 0 0 7px;
+  margin: 0;
   color: #0f1f35;
   font-size: 24px;
   line-height: 1.2;
-}
-
-.page-subline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  color: #667085;
-  font-size: 13px;
 }
 
 .wiki-tabs {
@@ -12519,6 +12598,29 @@ onBeforeUnmount(() => {
 
 .game-rich-text {
   padding-top: 12px;
+}
+
+.item-effect-detail {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(239, 217, 143, 0.3);
+}
+
+.item-effect-detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  color: #f7f0df;
+}
+
+.item-effect-detail-title strong {
+  font-size: 16px;
+}
+
+.item-effect-detail-title span {
+  color: rgba(247, 240, 223, 0.68);
+  font-size: 13px;
 }
 
 .plain-rich-text.compact {

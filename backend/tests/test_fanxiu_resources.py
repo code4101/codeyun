@@ -1306,7 +1306,7 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
 
     result = build_fanxiu_item_catalog(export_root=export_root)
     catalog = json.loads(Path(result["files"]["catalog"]).read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == 10
+    assert catalog["schema_version"] == 47
     assert catalog["cards"][0]["quality_name"] == "红色品质"
     assert catalog["cards"][0]["type_name"] == "材料"
     assert catalog["cards"][0]["sub_type_key"] == "5:2"
@@ -1447,6 +1447,7 @@ def test_fanxiu_item_catalog_links_optional_gift_rewards(tmp_path):
     result = build_fanxiu_item_catalog(export_root=export_root)
     assert result["stats"]["optional_gift_group_count"] == 1
     assert result["stats"]["item_with_optional_gift_count"] == 1
+    assert result["stats"]["item_with_optional_gift_detail_count"] == 1
 
     detail = get_fanxiu_item_card(400003001, export_root=export_root)
     card = detail["card"]
@@ -1455,8 +1456,3754 @@ def test_fanxiu_item_catalog_links_optional_gift_rewards(tmp_path):
         (29810, "废料·荒道残卷", 2),
         (29806, "废料·魔修残魂", 5),
     ]
+    assert card["effect_details"][0]["kind"] == "optional_gift_rewards"
+    assert "废料·荒道残卷 x2" in card["effect_details"][0]["plain_description"]
     searched = search_fanxiu_item_cards(query="魔修残魂", export_root=export_root)
     assert any(item["id"] == 400003001 for item in searched["items"])
+
+
+def test_fanxiu_item_catalog_links_redbag_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    redbag_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "redbag_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    redbag_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 1101,
+                    "id": 1101,
+                    "name_plain": "社团豪华红包",
+                    "descript_plain": "可在社团频道发放专属红包",
+                    "effDescript_plain": "每个红包可以开出10-200灵石",
+                    "icon": "icon_redbag_union",
+                    "type": 45,
+                    "subType": 1,
+                    "quality": 5,
+                    "effectValue": 2002,
+                },
+                {
+                    "_row_key": 1,
+                    "id": 1,
+                    "name_plain": "灵石",
+                    "descript_plain": "通用货币",
+                    "icon": "icon_item_lingshi",
+                    "type": 9,
+                    "subType": 1,
+                    "quality": 5,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [{"_row_key": 5, "id": 5, "name_plain": "黄色品质", "color": "864c00"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (redbag_dir / "RedBag.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,showType=3,eventType=4,eventParameter1=5,idChat=6,dailyNumType=7,dailyNum=8,receiveCondition=9,unableTips=10,showItem=11,quantity=12,rewarType=13,parameter1=14,parameter2=15,rewardDefs=16,chatId=17}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[5]='',[6]=0,[7]=0,[8]=0,[9]='',[10]='',[11]=0,[12]='',[13]=0,[14]='',[15]='',[16]=nil,[17]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=1,[11]=0,[12]=0,[13]=0,[14]=0,[15]=0,[16]=0,[17]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[2002]=setmetatable({[1]=2002,[2]='社团豪华红包',[4]=15,[5]='34,42,104',[6]=6,[7]=1,[8]=-1,[9]='CL|10',[12]='35',[13]=2,[14]='1|10_200',[15]='7300|10_20,2500|50_60,200|200_200'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_redbag_detail_count"] == 1
+    assert result["stats"]["redbag_row_count"] == 1
+    assert result["stats"]["redbag_detail_count"] == 1
+
+    detail = get_fanxiu_item_card(1101, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_redbag_id"] == 2002
+    redbag_detail = card["effect_details"][0]
+    assert redbag_detail["kind"] == "redbag"
+    assert redbag_detail["redbag_reward_text"] == "灵石 10-200"
+    assert redbag_detail["redbag_tier_text"] == "73%：灵石 10-20；25%：灵石 50-60；2%：灵石 200"
+    assert "领取条件：CL|10" in redbag_detail["plain_description"]
+    assert "奖励档位：73%：灵石 10-20；25%：灵石 50-60；2%：灵石 200" in card["effect_detail_preview"]
+
+    searched = search_fanxiu_item_cards(query="奖励档位 社团豪华红包 73%", export_root=export_root)
+    assert searched["items"][0]["id"] == 1101
+
+
+def test_fanxiu_item_catalog_links_equipment_and_gem_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    equipment_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "equipment_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    equipment_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 11010001,
+                    "id": 11010001,
+                    "name_plain": "乾元环",
+                    "descript_plain": "采苍天之云雾混以五行灵气凝练而成的仙环",
+                    "icon": "icon_equipment_ring",
+                    "type": 48,
+                    "subType": 29,
+                    "quality": 5,
+                    "effectValue": 0,
+                },
+                {
+                    "_row_key": 13010000,
+                    "id": 13010000,
+                    "name_plain": "一阶离火灵环",
+                    "descript_plain": "可镶嵌在初灵装备上",
+                    "icon": "icon_equipment_gem",
+                    "type": 48,
+                    "subType": 38,
+                    "quality": 4,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"_row_key": 5, "id": 5, "name_plain": "黄色品质", "color": "864c00"},
+                {"_row_key": 4, "id": 4, "name_plain": "紫色品质", "color": "73123a"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3,group=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='ATTACK',[3]='攻击',[4]='Value'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]='MAXMP_RATE',[3]='灵力加成',[4]='RatioAttribute'},_P),\n"
+        "[3]=setmetatable({[1]=3,[2]='ALL_SKILL_DAMAGE_FIX',[3]='全技能增伤',[4]='Value'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "Equipment.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,titleName=2,suitEquip=3,suitTitle=4,equipType=5,name=6,defaultItem=7,gemItem=8,specialGemItem=9,sort=10,levelGroup=11,starGroup=12}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]=0,[6]='',[7]=0,[8]=0,[9]=0,[10]=0,[11]=0,[12]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0,[12]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]='仙环',[3]=1,[4]='初灵',[5]=1,[6]='仙环',[7]=11010001,[8]=13010000,[9]=13900000,[10]=1,[11]=301,[12]=301},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "EquipmentTag.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,describe=3,effect=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]='',[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]='灭',[3]='装备属性+10%'},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "EquipmentItem.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,type=2,attr=3,preAffix=4,affix=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=nil,[4]=nil,[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[11010001]=setmetatable({[1]=11010001,[2]=1,[3]={ATTACK=25000,MAXMP_RATE=300},[4]={1},[5]={'1:100'}},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "GemDevelop.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,gemType=2,special=3,gemLevel=4,gemSyn=5,subscript=6,quality=7,equipLocation=8,attr=9,skill=10,equipattr=11,allEquipAttrAdd=12,gemAdd=13,MAXMP_ASSEMBLY_RATE=14,adAttr=15,skillDesc=16,gemScore=17,CoreTitle=18,CoreContent=19}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]='',[7]=0,[8]='',[9]=nil,[10]=0,[11]=0,[12]=0,[13]=0,[14]=0,[15]=nil,[16]='',[17]=0,[18]='',[19]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0,[12]=0,[13]=0,[14]=0,[15]=0,[16]=0,[17]=0,[18]=0,[19]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[13010000]=setmetatable({[1]=13010000,[2]=1,[4]=1,[6]='一阶',[7]=4,[8]='1_1,1_2',[9]={ATTACK=5000,ALL_SKILL_DAMAGE_FIX=1200},[10]=861008000,[16]='战斗中获得【灵环之心】加持',[17]=25},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "GemSuit.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,gemSet=2,gemType=3,gemSuitTitleShow=4,gemSuitContentShow=5,group=6,detailGroup=7,groupTitle=8,belongTap=9,logoImage=10,groupAttrCondition=11,condition=12,appearCondition=13,conditionText=14,conditionTitle=15,specialName=16,package=17,attr=18,skillList=19,skillDesc=20,iconPath=21,icon=22,skill=23}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]='',[9]=0,[10]='',[11]='',[12]='',[13]='',[14]='',[15]='',[16]='',[17]='',[18]=nil,[19]='',[20]='',[21]='',[22]='',[23]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0,[12]=0,[13]=0,[14]=0,[15]=0,[16]=0,[17]=0,[18]=0,[19]=0,[20]=0,[21]=0,[22]=0,[23]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[10]=setmetatable({[1]=10,[2]='1',[6]=1,[15]='离火灵环',[17]='离火流炎一阶',[20]='神通攻击时25%概率触发【神环之威】'},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["equipment_item_detail_count"] == 1
+    assert result["stats"]["equipment_gem_detail_count"] == 1
+    assert result["stats"]["item_with_equipment_detail_count"] == 2
+
+    equipment_card = get_fanxiu_item_card(11010001, export_root=export_root)["card"]
+    equipment_detail = equipment_card["effect_details"][0]
+    assert equipment_detail["kind"] == "equipment_item"
+    assert equipment_card["linked_equipment_item_id"] == 11010001
+    assert "装备部位：初灵仙环" in equipment_detail["plain_description"]
+    assert "装备属性：攻击 +25000；灵力加成 +3%" in equipment_detail["plain_description"]
+    assert "固定灵纹：灭" in equipment_detail["plain_description"]
+    assert "默认灵环：一阶离火灵环" in equipment_detail["plain_description"]
+
+    gem_card = get_fanxiu_item_card(13010000, export_root=export_root)["card"]
+    gem_detail = gem_card["effect_details"][0]
+    assert gem_detail["kind"] == "equipment_gem"
+    assert gem_card["linked_equipment_gem_item_id"] == 13010000
+    assert "灵环评分：25" in gem_detail["plain_description"]
+    assert "可镶嵌：仙环 2孔" in gem_detail["plain_description"]
+    assert "离火流炎一阶" in gem_detail["plain_description"]
+    assert "神环之威" in gem_detail["plain_description"]
+    assert "战斗中获得【灵环之心】加持" in gem_detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="初灵仙环 灵纹 灭", export_root=export_root)
+    assert searched["items"][0]["id"] == 11010001
+    gem_searched = search_fanxiu_item_cards(query="离火流炎 神环之威", export_root=export_root)
+    assert gem_searched["items"][0]["id"] == 13010000
+
+
+def test_fanxiu_item_catalog_links_talisman_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    talisman_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "talisman_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    talisman_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 4130053,
+                    "id": 4130053,
+                    "name_plain": "古·玄阴宝盒",
+                    "descript_plain": "玄天冥宝，盒内自成阴司空间。",
+                    "effDescript_plain": "点击使用前往认主古宝",
+                    "icon": "talisman2_icon_0146",
+                    "type": 5,
+                    "subType": 6,
+                    "quality": 8,
+                    "effectValue": "2778_2052",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 8, "id": 8, "name_plain": "萤光绿品质", "color": "017077"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (talisman_dir / "Talisman.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,talismanType=3,initStage=4,iconPatch=8,icon=9,descript=13}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[8]='',[9]='',[13]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0,[8]=0,[9]=0,[13]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='古·玄阴宝盒',\n"
+        "[2]='talisman2',\n"
+        "[3]='talisman2_icon_0146',\n"
+        "[4]='<color=#864c00>【玄天冥宝】</color>\\n<color=#864c00>【无尽阴域】</color> 每次施放神通时复制伤害。',\n"
+        "}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[2052]=setmetatable({[1]=2052,[2]=_A[1],[3]=1,[4]=50,[8]=_A[2],[9]=_A[3],[13]=_A[4]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (talisman_dir / "TalismanGrade.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,stage=2,stagename=3,qualityname=4,Talismanid=5,descript=18}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]='',[5]=0,[18]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1,[4]=1,[5]=0,[18]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='五十阶',\n[2]='神品一星',\n[3]='备用详情',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[210900]=setmetatable({[1]=210900,[2]=50,[3]=_A[1],[4]=_A[2],[5]=2052,[18]=_A[3]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_effect_detail_count"] == 1
+    detail = get_fanxiu_item_card(4130053, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_talisman_id"] == 2052
+    assert card["effect_details"][0]["title"] == "古·玄阴宝盒"
+    assert card["effect_details"][0]["subtitle"] == "神品一星 · 五十阶"
+    assert "【玄天冥宝】" in card["effect_details"][0]["description"]
+    assert "无尽阴域" in card["effect_detail_preview"]
+
+    searched = search_fanxiu_item_cards(query="无尽阴域", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 4130053
+    assert "无尽阴域" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_links_spiritware_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    spiritware_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "spiritware_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    spiritware_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 14000002,
+                    "id": 14000002,
+                    "name_plain": "洗灵奇石",
+                    "descript_plain": "可用于洗炼灵器部位。",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 4,
+                    "effectValue": "1990",
+                },
+                {
+                    "_row_key": 14000003,
+                    "id": 14000003,
+                    "name_plain": "摩诃真龙·器灵",
+                    "descript_plain": "血晶摩诃剑中之魂。",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 6,
+                    "effectValue": "1990",
+                },
+                {
+                    "_row_key": 14000006,
+                    "id": 14000006,
+                    "name_plain": "洗灵·引仙石",
+                    "descript_plain": "洗灵材料。",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 6,
+                    "effectValue": "1",
+                },
+                {
+                    "_row_key": 14000013,
+                    "id": 14000013,
+                    "name_plain": "摩诃剑柄曜仙镜",
+                    "descript_plain": "可助血晶摩诃剑柄升品。",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 6,
+                    "effectValue": "1990",
+                },
+                {
+                    "_row_key": 14000101,
+                    "id": 14000101,
+                    "name_plain": "血晶摩诃剑·柄",
+                    "descript_plain": "血晶摩诃剑柄。",
+                    "type": 55,
+                    "subType": 34,
+                    "quality": 6,
+                    "effectValue": "0",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3,group=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='ATK_RATE',[3]='攻击加成',[4]='RatioAttribute'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]='MAXHP',[3]='气血',[4]='Value'},_P),\n"
+        "[3]=setmetatable({[1]=3,[2]='CRI_ADDDAMAGE',[3]='暴击增伤',[4]='Ratio'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWare.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,type=3,desc=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]='血晶摩诃剑',[3]=1,[4]='开启混沌灵塔解锁'},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWareItem.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,type=2,parts=3,quality=4,qualityName=5,cleanseItem=6,initialNum=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[6]='',[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[14000101]=setmetatable({[1]=14000101,[2]=1,[3]=1,[4]=6,[5]='仙品',[6]='Item|14000002_10',[7]=5},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWareBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partsItem=2,grade=3,attr=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=14000101,[3]=1,[4]={MAXHP=7200000,ATK_RATE=400}},_P),\n"
+        "[1030]=setmetatable({[1]=1030,[2]=14000101,[3]=30,[4]={MAXHP=33300000,ATK_RATE=1850}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWareUltra.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partsItem=2,grade=3,nodeText=4,consume=5,attr=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]='',[6]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=14000101,[3]=1,[4]='【1境】可洗出2条灵器无双',[5]='Item|14000013_1',[6]={MAXHP=36000000,CRI_ADDDAMAGE=1000}},_P),\n"
+        "[1010]=setmetatable({[1]=1010,[2]=14000101,[3]=10,[4]='【10境】增强效果：血晶连魂',[5]='Item|14000013_1',[6]={MAXHP=360000000,CRI_ADDDAMAGE=10000}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWareSoul.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,text=3,grade=4,consume=5,attr=6,skill=7,skillDesc=8,name=9}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]='',[6]=nil,[7]=0,[8]='',[9]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=1,[3]='血晶摩诃剑·器灵一阶',[4]=1,[5]='Item|14000003_1',[6]={CRI_ADDDAMAGE=1500,ATK_RATE=200},[7]=841001010,[8]='神通暴击2次后触发【龙威】',[9]='血晶摩诃剑'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]=1,[3]='血晶摩诃剑·器灵二阶',[4]=2,[5]='Item|14000003_1',[6]={CRI_ADDDAMAGE=1500,ATK_RATE=200},[7]=841001020,[8]='【龙威】增伤30%',[9]='血晶摩诃剑'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritware_dir / "SpiritWareCleanseItem.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,item=2,shortDes=3,useDes=4,type=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]='',[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=14000006,[3]='必定洗出仙品或以上品质的属性',[4]='使用1个洗灵·引仙石洗炼未上锁词条',[5]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_spiritware_detail_count"] == 5
+    assert result["stats"]["spiritware_part_detail_count"] == 1
+    assert result["stats"]["spiritware_soul_detail_count"] == 1
+    assert result["stats"]["spiritware_cleanse_item_detail_count"] == 1
+    assert result["stats"]["spiritware_cleanse_material_detail_count"] == 1
+    assert result["stats"]["spiritware_ultra_material_detail_count"] == 1
+
+    part_card = get_fanxiu_item_card(14000101, export_root=export_root)["card"]
+    part_detail = part_card["effect_details"][0]
+    assert part_detail["kind"] == "spiritware_part"
+    assert "所属灵器：血晶摩诃剑" in part_detail["plain_description"]
+    assert "满境属性（30境）" in part_detail["plain_description"]
+    assert "攻击加成 +18.5%" in part_detail["plain_description"]
+    assert "洗灵消耗：洗灵奇石 x10" in part_detail["plain_description"]
+    assert "【10境】增强效果：血晶连魂" in part_detail["plain_description"]
+
+    soul_card = get_fanxiu_item_card(14000003, export_root=export_root)["card"]
+    soul_detail = soul_card["effect_details"][0]
+    assert soul_detail["kind"] == "spiritware_soul"
+    assert "暴击增伤 +15%" in soul_detail["plain_description"]
+    assert "龙威" in soul_detail["plain_description"]
+
+    cleanse_card = get_fanxiu_item_card(14000006, export_root=export_root)["card"]
+    assert cleanse_card["effect_details"][0]["kind"] == "spiritware_cleanse_item"
+    assert "必定洗出仙品" in cleanse_card["effect_details"][0]["plain_description"]
+
+    material_card = get_fanxiu_item_card(14000002, export_root=export_root)["card"]
+    assert material_card["effect_details"][0]["kind"] == "spiritware_cleanse_material"
+    assert "覆盖部件：1 个" in material_card["effect_details"][0]["plain_description"]
+
+    ultra_material_card = get_fanxiu_item_card(14000013, export_root=export_root)["card"]
+    ultra_material_detail = ultra_material_card["effect_details"][0]
+    assert ultra_material_detail["kind"] == "spiritware_ultra_material"
+    assert "目标部件：血晶摩诃剑·柄" in ultra_material_detail["plain_description"]
+    assert "覆盖境界：1-10境" in ultra_material_detail["plain_description"]
+    assert "10境属性" in ultra_material_detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="龙威 摩诃真龙", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 14000003
+
+
+def test_fanxiu_item_catalog_links_talisman_refine_material_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 4400000,
+                    "id": 4400000,
+                    "name_plain": "神炼元炁·青竹",
+                    "descript_plain": "伴随天地初开伊始所生的一抹元炁。",
+                    "effDescript": "可用于神炼【法宝·青竹蜂云剑】，将其提升为后天古宝\n神炼效果：贯穿几率提升5%",
+                    "effDescript_plain": "可用于神炼【法宝·青竹蜂云剑】，将其提升为后天古宝\n神炼效果：贯穿几率提升5%",
+                    "type": 1,
+                    "subType": 35,
+                    "quality": 6,
+                    "effectValue": "3097_8",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_talisman_refine_material_detail_count"] == 1
+    card = get_fanxiu_item_card(4400000, export_root=export_root)["card"]
+    assert card["linked_talisman_refine_target_id"] == 8
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "talisman_refine_material"
+    assert detail["target_talisman_id"] == 8
+    assert detail["target_talisman_name"] == "青竹蜂云剑"
+    assert "目标法宝：青竹蜂云剑" in detail["plain_description"]
+    assert "贯穿几率提升5%" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="后天古宝 青竹蜂云剑", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 4400000
+
+
+def test_fanxiu_item_catalog_links_swordsoul_awakening_material_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    swordsoul_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "swordsoul_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    swordsoul_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 36060001,
+                    "id": 36060001,
+                    "name_plain": "丹田道蕴·苍龙",
+                    "descript_plain": "苍龙剑灵丹田部位的道蕴。",
+                    "effDescript_plain": "使用后可将【丹田·苍龙】剑纹部位提升至神品",
+                    "type": 1,
+                    "subType": 88,
+                    "quality": 6,
+                    "effectValue": "1_1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,openCondition=3,showCondition=4,lockDes=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]='',[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='剑灵·苍龙',[3]='CL|171',[4]='CL|151',[5]='合体前期壹层解锁'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulLines.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,soulID=2,name=3,part=4,unlockTips=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[101]=setmetatable({[1]=101,[2]=1,[3]='丹田',[4]=1,[5]='完成剑灵引导后解锁'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulAwakening.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,soulId=2,part=3,quality=4,costItem=5,skillDesc=6,skillShow=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[6]='',[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[101]=setmetatable({[1]=101,[2]=1,[3]=1,[4]=0,[5]='Item|36060001_1',[6]='【0境】激活效果：敬请期待'},_P),\n"
+        "[102]=setmetatable({[1]=102,[2]=1,[3]=1,[4]=1,[5]='Item|36060001_1',[6]='【1境】激活效果：激活苍龙道契',[7]='属性·龙契：可激活剑灵效果·天道苍龙'},_P),\n"
+        "[103]=setmetatable({[1]=103,[2]=1,[3]=1,[4]=2,[5]='Item|36060001_1',[6]='【2境】增强效果：苍龙道契·初窥',[7]='造成神通伤害的12%转化为【苍龙剑灵伤害】再次攻击目标'},_P),\n"
+        "[116]=setmetatable({[1]=116,[2]=1,[3]=1,[4]=15,[6]='【15境】增强：苍龙道契·灵明',[7]='该部位剑纹新增属性·龙契+5000'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_swordsoul_detail_count"] == 1
+    assert result["stats"]["swordsoul_awakening_detail_count"] == 1
+    assert result["stats"]["swordsoul_awakening_empty_cost_row_count"] == 1
+
+    card = get_fanxiu_item_card(36060001, export_root=export_root)["card"]
+    assert card["linked_swordsoul_item_id"] == 36060001
+    assert card["linked_swordsoul_id"] == 1
+    assert card["linked_swordsoul_part"] == 1
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "swordsoul_awakening_material"
+    assert detail["swordsoul_name"] == "剑灵·苍龙"
+    assert detail["swordsoul_part_name"] == "丹田"
+    assert detail["swordsoul_stage_count"] == 4
+    assert "苍龙剑灵伤害" in detail["plain_description"]
+    assert "【15境】增强：苍龙道契·灵明" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="苍龙剑灵伤害 丹田", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 36060001
+    assert "苍龙剑灵伤害" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_links_swordsoul_line_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    swordsoul_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "swordsoul_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    swordsoul_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 32000211,
+                    "id": 32000211,
+                    "name_plain": "丹田剑纹·白虎",
+                    "descript_plain": "白虎剑灵丹田部位剑纹。",
+                    "type": 83,
+                    "subType": 83,
+                    "quality": 4,
+                    "effectValue": "0",
+                },
+                {
+                    "_row_key": 33200000,
+                    "id": 33200000,
+                    "name_plain": "本命剑韵",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 4,
+                },
+                {
+                    "_row_key": 33200002,
+                    "id": 33200002,
+                    "name_plain": "剑意道晶·白虎",
+                    "descript_plain": "可定向洗炼白虎剑纹。",
+                    "type": 1,
+                    "subType": 1,
+                    "quality": 6,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"_row_key": 4, "id": 4, "name_plain": "珍品"},
+                {"_row_key": 5, "id": 5, "name_plain": "绝品"},
+                {"_row_key": 6, "id": 6, "name_plain": "仙品"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[121]=setmetatable({[1]=121,[2]='SWORDSOUL_ATK_DEF',[3]='锋御'},_P),\n"
+        "[122]=setmetatable({[1]=122,[2]='SWORDSOUL_ATK_MAXHP',[3]='锋气'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,lockDes=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[2]=setmetatable({[1]=2,[2]='剑灵·白虎',[3]='合体后期伍层解锁'},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulLines.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,soulID=2,name=3,part=4,unlockTips=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[201]=setmetatable({[1]=201,[2]=2,[3]='丹田',[4]=1,[5]='白虎剑灵解锁后开放'},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordLinesBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,soulId=2,part=3,quality=4,entryNum=5,levelGroup=6,breakDown=7,breakDownPerLevel=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]='',[8]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[32000211]=setmetatable({[1]=32000211,[2]=2,[3]=1,[4]=4,[5]=3,[6]=5,[7]='Item|33200000_15',[8]='Item|33200000_15'},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordLinesLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,group=2,level=3,cost=4,amplification=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[50001]=setmetatable({[1]=50001,[2]=5,[5]=10000},_P),\n"
+        "[50002]=setmetatable({[1]=50002,[2]=5,[3]=1,[4]='Item|33200000_60',[5]=10000},_P),\n"
+        "[50401]=setmetatable({[1]=50401,[2]=5,[3]=400,[4]='Item|33200000_60',[5]=12000},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordLinesAttr.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,group=2,attrId=3,weight=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=201,[3]=121,[4]=1000},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]=201,[3]=122,[4]=1000},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordLinesAttrQuality.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,soulId=2,attrId=3,quality=4,wordQuality=5,initial=6,levelup=7,scoreValue=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=2,[3]=121,[4]=4,[5]=4,[6]=6200,[7]=124,[8]=5000},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]=2,[3]=121,[4]=4,[5]=4,[6]=9300,[7]=186,[8]=7000},_P),\n"
+        "[3]=setmetatable({[1]=3,[2]=2,[3]=122,[4]=4,[5]=4,[6]=5000,[7]=100,[8]=4000},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordSoulEff.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,soulId=2,group=3,groupTitle=4,sort=5,des=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[201]=setmetatable({[1]=201,[2]=2,[3]=201,[4]='白虎剑心几率',[5]=1,[6]='【剑罡·一阶】：白虎剑心几率+2%'},_P),\n"
+        "[202]=setmetatable({[1]=202,[2]=2,[3]=201,[4]='白虎剑心几率',[5]=1,[6]='【剑罡·二阶】：白虎剑心几率+3.5%'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (swordsoul_dir / "SwordLinesWash.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,souls=2,parts=3,shortDes=4,useDes=5,costAmount=6}\n"
+        "local _key2null={[1]=0,[2]=nil,[3]=nil,[4]='',[5]='',[6]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[33200002]=setmetatable({[1]=33200002,[2]={2},[3]={1},[4]='将一条评分最低的属性洗炼为仙品属性',[5]='可洗炼白虎丹田剑纹',[6]=1},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["swordsoul_line_detail_count"] == 1
+    assert result["stats"]["swordsoul_line_wash_detail_count"] == 1
+    assert result["stats"]["item_with_swordsoul_detail_count"] == 2
+
+    card = get_fanxiu_item_card(32000211, export_root=export_root)["card"]
+    assert card["linked_swordsoul_line_item_id"] == 32000211
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "swordsoul_line"
+    assert detail["swordsoul_name"] == "剑灵·白虎"
+    assert detail["swordsoul_part_name"] == "丹田"
+    assert "白虎剑心几率" in detail["plain_description"]
+    assert "锋御" in detail["plain_description"]
+    assert "最高 400级" in detail["plain_description"]
+
+    wash_card = get_fanxiu_item_card(33200002, export_root=export_root)["card"]
+    assert wash_card["effect_details"][0]["kind"] == "swordsoul_line_wash_item"
+    assert "可洗炼白虎丹田剑纹" in wash_card["effect_details"][0]["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="白虎剑心 锋御 丹田", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 32000211
+
+
+def test_fanxiu_item_catalog_links_special_gongfa_jie_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    gongfa_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "gongfa_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    gongfa_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 39001001,
+                    "id": 39001001,
+                    "name_plain": "1阶·符",
+                    "descript_plain": "镇物符部位",
+                    "type": 98,
+                    "subType": 99,
+                    "quality": 2,
+                    "effectValue": "0",
+                },
+                {
+                    "_row_key": 3200010,
+                    "id": 3200010,
+                    "name_plain": "雷动残章",
+                    "type": 5,
+                    "subType": 1,
+                    "quality": 4,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 2, "id": 2, "name_plain": "上品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "['MAXHP']=setmetatable({[1]='MAXHP',[2]='气血'},_P),\n"
+        "['ATTACK']=setmetatable({[1]='ATTACK',[2]='攻击'},_P),\n"
+        "['DEFENSE']=setmetatable({[1]='DEFENSE',[2]='守御'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "Special-GongfaJie.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,gid=2,pin=3,name=4,jie=5,skill=6,consume=7,describe=8,attr=9}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]='',[7]=nil,[8]='',[9]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[39001001]=setmetatable({[1]=39001001,[2]=390010,[3]=1,[4]='1重',[5]=1,[6]='881007010',[8]='【雷闪】：每施放2次神通后偷袭，造成100%的斗气伤害',[9]={MAXHP=60000,ATTACK=600,DEFENSE=600}},_P),\n"
+        "[39001060]=setmetatable({[1]=39001060,[2]=390010,[3]=1,[4]='60重',[5]=60,[6]='881007600',[7]={'Item|3200010_1'},[8]='【雷闪】：每施放2次神通后偷袭，造成1280%的斗气伤害',[9]={MAXHP=600000,ATTACK=6000,DEFENSE=6000}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "GongfaSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,pin=2,group=3,skillName=4,describe=5,cd=6,origin=7}\n"
+        "local _key2null={[1]='',[2]=0,[3]=0,[4]='',[5]='',[6]='',[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "['881007010_1']=setmetatable({[1]='881007010_1',[2]=1,[3]=881007010,[4]='三千雷动',[5]='【雷闪】：每施放2次神通后偷袭，造成100%的斗气伤害',[6]='无冷却时间',[7]='参悟三千雷动所领悟的神通'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_special_gongfa_jie_detail_count"] == 1
+    assert result["stats"]["special_gongfa_jie_detail_count"] == 1
+
+    card = get_fanxiu_item_card(39001001, export_root=export_root)["card"]
+    assert card["linked_special_gongfa_item_id"] == 39001001
+    assert card["linked_special_gongfa_gid"] == 390010
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "special_gongfa_jie_item"
+    assert detail["special_gongfa_skill_name"] == "三千雷动"
+    assert "雷闪" in detail["plain_description"]
+    assert "攻击 +600" in detail["plain_description"]
+    assert "造成1280%的斗气伤害" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="三千雷动 雷闪 镇物", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 39001001
+
+
+def test_fanxiu_item_catalog_links_coreware_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    core_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "core_demo" / "text_assets"
+    attribute_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "attribute_demo" / "text_assets"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 20000111,
+                    "id": 20000111,
+                    "name_plain": "玄鹤·天璇琮",
+                    "descript_plain": "玄鹤仙窍道纹。",
+                    "type": 5,
+                    "subType": 53,
+                    "quality": 3,
+                    "effectValue": "0",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 3, "id": 3, "name_plain": "蓝色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,group=3}\n"
+        "local _key2null={[1]='',[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={['CHAOS_CRI_RATE']=setmetatable({[1]='CHAOS_CRI_RATE',[2]='神识暴击几率',[3]='Ratio'},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (core_dir / "CoreMap.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,type=3,desc=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[1]=setmetatable({[1]=1,[2]='玄鹤·真仙前期',[3]=1,[4]='境界需达真仙前期拾层'},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (core_dir / "CoreBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,parts=3,name=4,title=5,coreWareWay=6,unlockDes=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]='',[6]=0,[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[101]=setmetatable({[1]=101,[2]=1,[3]=1,[4]='天  璇',[5]='天璇',[6]=20000111},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (core_dir / "CoreWareBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,type=2,parts=3,quality=4,elementNumLimit=5,initialMainAttr=6,expOff=7,exp=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]='',[7]=0,[8]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[20000111]=setmetatable({[1]=20000111,[2]=1,[3]=1,[4]=3,[5]=3,[6]='CHAOS_CRI_RATE',[7]=8000,[8]=250},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (core_dir / "CoreWareLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemId=2,level=3,consumeExp=4,unlockElement=5,randomSideAttr=6,addMainAttr=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[10000]=setmetatable({[1]=10000,[2]=20000111,[7]=160},_P),\n"
+        "[10005]=setmetatable({[1]=10005,[2]=20000111,[3]=5,[4]=130,[6]=1,[7]=320},_P),\n"
+        "[10010]=setmetatable({[1]=10010,[2]=20000111,[3]=10,[4]=280,[5]=1,[7]=480},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_coreware_detail_count"] == 1
+    assert result["stats"]["coreware_detail_count"] == 1
+
+    card = get_fanxiu_item_card(20000111, export_root=export_root)["card"]
+    assert card["linked_coreware_item_id"] == 20000111
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "coreware_item"
+    assert detail["coreware_part_name"] == "天璇"
+    assert "神识暴击几率 +1.6%" in detail["plain_description"]
+    assert "神识暴击几率 +4.8%" in detail["plain_description"]
+    assert "元素解锁等级：10" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="玄鹤 天璇 神识暴击", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 20000111
+
+
+def test_fanxiu_item_catalog_links_partner_weapon_stone_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    weapon_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "partnerweapon_demo" / "text_assets"
+    attribute_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "attribute_demo" / "text_assets"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    weapon_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 20401006,
+                    "id": 20401006,
+                    "name_plain": "攻击玉·陈巧倩",
+                    "descript_plain": "仙侣玉。",
+                    "type": 5,
+                    "subType": 74,
+                    "quality": 6,
+                    "effectValue": "0",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "红色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,group=3}\n"
+        "local _key2null={[1]='',[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "['MAXHP']=setmetatable({[1]='MAXHP',[2]='气血',[3]='Value'},_P),\n"
+        "['DEFENSE']=setmetatable({[1]='DEFENSE',[2]='守御',[3]='Value'},_P),\n"
+        "['MAXHP_RATE']=setmetatable({[1]='MAXHP_RATE',[2]='气血加成',[3]='RatioAttribute'},_P),\n"
+        "['ATK_RATE']=setmetatable({[1]='ATK_RATE',[2]='攻击加成',[3]='RatioAttribute'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (weapon_dir / "WeaponBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemId=2,name=3,stoneType=4,partner=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=nil,[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[1]=setmetatable({[1]=1,[2]=20431101,[3]='天海如意',[4]={1},[5]=1},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (weapon_dir / "WeaponStoneBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={itemId=1,type=2,quality=3,qualityName=4,defaultExp=5,canUpgrade=6,canConsume=7,belong=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[20401006]=setmetatable({[1]=20401006,[2]=1,[3]=6,[4]='仙品',[5]=600,[6]=1,[8]=1},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (weapon_dir / "WeaponStoneLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,stoneItem=2,level=3,exp=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[11000]=setmetatable({[1]=11000,[2]=20401006,[4]=100,[5]={MAXHP=7200000,DEFENSE=20000,MAXHP_RATE=400}},_P),\n"
+        "[11030]=setmetatable({[1]=11030,[2]=20401006,[3]=30,[4]=3000,[5]={MAXHP=34200000,DEFENSE=95000,MAXHP_RATE=1900}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (weapon_dir / "WeaponStoneUpgrade.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,stoneItem=2,grade=3,consume=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[1]=setmetatable({[1]=1,[2]=20401006,[3]=1,[4]='Item|20401006_1',[5]={MAXHP=7200000,DEFENSE=20000,MAXHP_RATE=400}},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (weapon_dir / "WeaponStoneCombination.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,weaponId=2,type=3,params=4,des=5,attr=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]='',[6]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={[100]=setmetatable({[1]=100,[2]=1,[3]=1,[4]='10',[5]='玉石总强化等级达10级',[6]={ATK_RATE=200}},_P)}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_partner_weapon_stone_detail_count"] == 1
+    assert result["stats"]["partner_weapon_stone_detail_count"] == 1
+
+    card = get_fanxiu_item_card(20401006, export_root=export_root)["card"]
+    assert card["linked_partner_weapon_stone_item_id"] == 20401006
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "partner_weapon_stone"
+    assert detail["partner_weapon_name"] == "天海如意"
+    assert "守御 +20000" in detail["plain_description"]
+    assert "气血加成 +19%" in detail["plain_description"]
+    assert "玉石总强化等级达10级" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="陈巧倩 天海如意 守御", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 20401006
+
+
+def test_fanxiu_item_catalog_links_sword_base_activation_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    sword_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "swordsoul_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    sword_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 33220001,
+                    "id": 33220001,
+                    "name_plain": "本命飞剑·龙霄",
+                    "descript_plain": "龙霄飞剑激活道具。",
+                    "effDescript_plain": "使用后可以激活本命飞剑·龙霄",
+                    "type": 1,
+                    "subType": 84,
+                    "quality": 7,
+                    "effectValue": "3443",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 7, "id": 7, "name_plain": "神品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (sword_dir / "SwordBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,model=3,cost=4,eff=5,showCondition=6,sort=7}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]='',[6]='',[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]='本命飞剑·龙霄',[3]=120000,[4]='Item|33220001_1',[5]='pre_eff_SwordSpirit_feijian01',[6]='CL|151;Item|33220001_1',[7]=1},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (sword_dir / "SwordLevelUp.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,swordId=2,stage=3,level=4,cost=5,desc=6,fazeId=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[6]='',[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=1001,[3]=1,[4]=1,[5]='Item|33220001_1',[6]='【飞剑效果】:苍龙剑心几率提升8%',[7]=1210011},_P),\n"
+        "[1002]=setmetatable({[1]=1002,[2]=1001,[3]=2,[4]=2,[5]='Item|33220001_1',[6]='【飞剑效果】:苍龙剑心几率提升8.5%',[7]=1210012},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (sword_dir / "SwordKeyPoint.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,swordId=2,pin=3,skillName=4,des=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=1001,[3]=1,[4]='觉醒一阶',[5]='仙府【本命金身】的全属性提升效果加强10%'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]=1001,[3]=2,[4]='觉醒二阶',[5]='仙府【本命金身】的全属性提升效果加强15%'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_sword_base_detail_count"] == 1
+    assert result["stats"]["sword_base_detail_count"] == 1
+
+    card = get_fanxiu_item_card(33220001, export_root=export_root)["card"]
+    assert card["linked_sword_item_id"] == 33220001
+    assert card["linked_sword_id"] == 1001
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "sword_base_activation"
+    assert detail["sword_name"] == "本命飞剑·龙霄"
+    assert detail["sword_level_count"] == 2
+    assert detail["sword_key_point_count"] == 2
+    assert "苍龙剑心几率提升8%" in detail["plain_description"]
+    assert "觉醒二阶" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="苍龙剑心 觉醒二阶 龙霄", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 33220001
+
+
+def test_fanxiu_item_catalog_links_flame_square_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    flame_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "flamesquare_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    flame_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 37070001,
+                    "id": 37070001,
+                    "name_plain": "万兽灵火",
+                    "descript_plain": "可在异火广场中统御的异火。",
+                    "effDescript_plain": "用于激活万兽灵火",
+                    "type": 86,
+                    "subType": 6,
+                    "quality": 6,
+                    "effectValue": 1001,
+                },
+                {
+                    "_row_key": 37070025,
+                    "id": 37070025,
+                    "name_plain": "异火本源",
+                    "descript_plain": "异火升级材料。",
+                    "type": 90,
+                    "subType": 1,
+                    "quality": 5,
+                    "effectValue": 0,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3,group=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='DOUPO_GOOD_SMITE_ADDDAMAGE',[3]='斗破破击抵御',[4]='Ratio'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (flame_dir / "FlameLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,flameId=2,condition=3,conditionDes=4,level=5,cost=6,attr=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]='',[5]=0,[6]='',[7]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[100101]=setmetatable({[1]=100101,[2]=1001,[3]='BUILD|1',[4]='异火广场达到1级',[5]=1,[6]='Item|37070025_10',[7]={DOUPO_GOOD_SMITE_ADDDAMAGE=20}},_P),\n"
+        "[100150]=setmetatable({[1]=100150,[2]=1001,[3]='BUILD|1',[4]='异火广场达到1级',[5]=50,[6]='Item|37070025_10',[7]={DOUPO_GOOD_SMITE_ADDDAMAGE=1000}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (flame_dir / "FlameSquareBuild.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,des=3,unlockDes=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='异火广场',[3]='统御万火，万焱归源',[4]='每日首领奖励解锁'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (flame_dir / "FlameSquareLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,buildId=2,level=3,cost=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=1,[3]=1,[4]='item|37070024_1',[5]={DOUPO_GOOD_SMITE_ADDDAMAGE=20}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_flame_square_detail_count"] == 1
+    assert result["stats"]["flame_square_detail_count"] == 1
+    assert result["stats"]["flame_level_row_count"] == 2
+    assert result["stats"]["flame_square_level_row_count"] == 1
+
+    card = get_fanxiu_item_card(37070001, export_root=export_root)["card"]
+    assert card["linked_flame_item_id"] == 37070001
+    assert card["linked_flame_id"] == 1001
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "flame_square_flame"
+    assert detail["flame_name"] == "万兽灵火"
+    assert detail["flame_level_count"] == 2
+    assert detail["flame_cost_text"] == "异火本源 x10"
+    assert "斗破破击抵御 +0.2%" in detail["plain_description"]
+    assert "满级属性（50级）：斗破破击抵御 +10%" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="斗破破击抵御 万兽灵火", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 37070001
+    assert "斗破破击抵御" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_parses_show_effect_and_take_medicine_detail(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    medicine_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "takemedicine_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    medicine_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 1300716,
+                    "id": 1300716,
+                    "name_plain": "糯白粽",
+                    "descript_plain": "食用后可增加角色属性",
+                    "effDescript_plain": "直接食用可提升以下属性：",
+                    "showEffect_plain": "气血_480|攻击力_4",
+                    "icon": "icon2_item_9059",
+                    "type": 7,
+                    "subType": 1,
+                    "quality": 3,
+                    "effectValue": "514010",
+                },
+                {
+                    "_row_key": 9020001,
+                    "id": 9020001,
+                    "name_plain": "凝血丹·珍",
+                    "descript_plain": "蕴含一丝仙灵之力的丹药",
+                    "effDescript_plain": "点击使用按钮可前往服用，服用可获得：\n气血+2880",
+                    "icon": "icon_item_0089",
+                    "type": 22,
+                    "subType": 1,
+                    "quality": 4,
+                    "effectValue": "9020001",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"_row_key": 3, "id": 3, "name_plain": "绿色品质"},
+                {"_row_key": 4, "id": 4, "name_plain": "紫色品质"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (medicine_dir / "TakeMedicine.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemId=2,typeId=3,sort=4,maxTimes=5,time=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=9020001,[3]=15,[4]=993,[5]=-1,[6]=6000},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medicine_dir / "TakeMedicineType.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,sort=3,condition=4,realm=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='仙药',\n[2]='CL|1',\n}\n"
+        "local _M={\n"
+        "[15]=setmetatable({[1]=15,[2]=_A[1],[3]=15,[4]=_A[2],[5]=1},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_show_effect_detail_count"] == 1
+    assert result["stats"]["item_with_take_medicine_detail_count"] == 1
+
+    food_card = get_fanxiu_item_card(1300716, export_root=export_root)["card"]
+    assert food_card["effect_details"][0]["kind"] == "item_show_effect"
+    assert food_card["effect_details"][0]["plain_description"] == "显示属性：气血 +480；攻击力 +4"
+
+    medicine_card = get_fanxiu_item_card(9020001, export_root=export_root)["card"]
+    assert medicine_card["effect_details"][0]["kind"] == "take_medicine"
+    assert "服药分类：仙药" in medicine_card["effect_details"][0]["plain_description"]
+    assert "服用上限：不限" in medicine_card["effect_details"][0]["plain_description"]
+    assert "服用间隔：6 秒" in medicine_card["effect_details"][0]["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="服用上限 不限", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 9020001
+
+
+def test_fanxiu_item_catalog_links_medical_recipe_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    medical_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "medical_demo"
+        / "text_assets"
+    )
+    medicine_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "takemedicine_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    medical_dir.mkdir(parents=True)
+    medicine_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 9010001,
+                    "id": 9010001,
+                    "name_plain": "凝气散丹方",
+                    "descript_plain": "使用后可学会炼制凝气散",
+                    "effDescript_plain": "使用后可学会炼制凝气散，服用可获得：\n气血+960",
+                    "icon": "icon_formula",
+                    "type": 6,
+                    "subType": 1,
+                    "quality": 4,
+                    "effectValue": 80101,
+                },
+                {
+                    "_row_key": 9070101,
+                    "id": 9070101,
+                    "name_plain": "凝气散",
+                    "descript_plain": "筑基丹药",
+                    "effDescript_plain": "点击使用按钮可前往服用，服用可获得：\n气血+960",
+                    "icon": "icon_medicine",
+                    "type": 22,
+                    "subType": 1,
+                    "quality": 4,
+                    "effectValue": 9070101,
+                },
+                {
+                    "_row_key": 9030001,
+                    "id": 9030001,
+                    "name_plain": "药草",
+                    "descript_plain": "炼丹材料",
+                    "icon": "icon_material",
+                    "type": 5,
+                    "subType": 1,
+                    "quality": 3,
+                    "effectValue": 401,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"_row_key": 3, "id": 3, "name_plain": "绿色品质"},
+                {"_row_key": 4, "id": 4, "name_plain": "紫色品质"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (medical_dir / "Medical.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,sort=2,item1=3,item2=4,formula=5,anyMaterial=6,proficiency=7,waitingTime=8,typeId=9,medicalLimit=10}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=nil,[6]='',[7]=0,[8]=0,[9]=0,[10]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='Item|9030001_20',\n}\n"
+        "local _M={\n"
+        "[80101]=setmetatable({[1]=80101,[2]=1000,[3]=9010001,[4]=9070101,[5]=_A[1],[7]=40,[8]=3000,[9]=2,[10]=1},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medical_dir / "MedicalType.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,sort=3,condition=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='筑基',\n[2]='CL|1',\n}\n"
+        "local _M={\n[2]=setmetatable({[1]=2,[2]=_A[1],[3]=2,[4]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medical_dir / "MedicalEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,attributes=2}\n"
+        "local _key2null={[1]=0,[2]=nil}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[9070101]=setmetatable({[1]=9070101,[2]={MAXHP=960,MAXHP_RATE=5}},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medical_dir / "MedicalEffectIndex.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,index=2,color=3}\n"
+        "local _key2null={[1]='',[2]=0,[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "['MAXHP']=setmetatable({[1]='MAXHP',[2]=1,[3]='2a4b10'},_P),\n"
+        "['MAXHP_RATE']=setmetatable({[1]='MAXHP_RATE',[2]=2,[3]='2a4b10'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=0,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='气血',\n[2]='气血加成',\n}\n"
+        "local _M={\n"
+        "['MAXHP']=setmetatable({[1]='MAXHP',[2]=_A[1]},_P),\n"
+        "['MAXHP_RATE']=setmetatable({[1]='MAXHP_RATE',[2]=_A[2]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medicine_dir / "TakeMedicine.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemId=2,typeId=3,maxTimes=4,time=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[20199]=setmetatable({[1]=20199,[2]=9070101,[3]=2,[4]=120,[5]=6000},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (medicine_dir / "TakeMedicineType.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,condition=3,realm=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='筑基',\n[2]='CL|1',\n}\n"
+        "local _M={\n[2]=setmetatable({[1]=2,[2]=_A[1],[3]=_A[2],[4]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_medical_recipe_detail_count"] == 1
+    assert result["stats"]["medical_detail_count"] == 1
+
+    card = get_fanxiu_item_card(9010001, export_root=export_root)["card"]
+    assert card["linked_medical_id"] == 80101
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "medical_recipe"
+    assert detail["product_item_id"] == 9070101
+    assert "产物：凝气散" in detail["plain_description"]
+    assert "材料：药草 x20" in detail["plain_description"]
+    assert "炼制时间：3 秒" in detail["plain_description"]
+    assert "服用效果：气血+960；气血加成+0.05%" in detail["plain_description"]
+    assert "服用上限：120 次" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="药草 熟练度 40", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 9010001
+
+
+def test_fanxiu_item_catalog_links_wallet_resource_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    resource_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "resource_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    resource_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 1,
+                    "id": 1,
+                    "name_plain": "灵石",
+                    "descript_plain": "修仙界的通用货币",
+                    "icon": "icon_item_0047",
+                    "subType": 1,
+                    "quality": 5,
+                    "effectValue": "WALLET|1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (resource_dir / "Resource.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,alias=2,sort=3,name=4,itemId=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=1,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='SpirtStone',\n[2]='灵石',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1],[3]=1,[4]=_A[2],[5]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_wallet_resource_detail_count"] == 1
+    assert result["stats"]["wallet_resource_detail_count"] == 1
+
+    card = get_fanxiu_item_card(1, export_root=export_root)["card"]
+    assert card["linked_wallet_resource_id"] == 1
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "wallet_resource"
+    assert "钱包资源：灵石" in detail["plain_description"]
+    assert "资源别名：SpirtStone" in detail["plain_description"]
+    assert "映射道具：灵石（Item 1）" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="SpirtStone 钱包资源", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 1
+
+
+def test_fanxiu_item_catalog_links_boss_kill_effect_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    boss_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "bosskilleffect_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    boss_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 8065,
+                    "id": 8065,
+                    "name_plain": "斗师斗丹",
+                    "descript_plain": "凝天地精粹，合异火之灵。",
+                    "icon": "icon_doudan",
+                    "quality": 5,
+                    "effectValue": "DOU_PO_FELLING_TREE_ITEM|8065",
+                },
+                {
+                    "_row_key": 8094,
+                    "id": 8094,
+                    "name_plain": "鼎火本源",
+                    "descript_plain": "古帝洞府中万兽鼎所加持鼎火。",
+                    "icon": "icon_tree_fire",
+                    "quality": 5,
+                    "effectValue": "FELLING_TREE_ITEM|8094",
+                },
+                {
+                    "_row_key": 10000001,
+                    "id": 10000001,
+                    "name_plain": "玄铁",
+                    "descript_plain": "可用其对装备进行强化。",
+                    "icon": "icon_equipment_stone",
+                    "type": 5,
+                    "subType": 30,
+                    "quality": 5,
+                    "effectValue": "1327",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='ATK_RATE',[3]='攻击加成'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]='MAXHP_RATE',[3]='气血加成'},_P),\n"
+        "[3]=setmetatable({[1]=3,[2]='ATK_ASSEMBLY_RATE',[3]='攻击资质'},_P),\n"
+        "[4]=setmetatable({[1]=4,[2]='SKILL_DAMAGE_RATE',[3]='技能伤害加深'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (boss_dir / "BossKillEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,attr=3,maxValue=4,param=5,titile=6,desc=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]={},[4]='',[5]='',[6]='',[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=2,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[8065]=setmetatable({[1]=8065,[2]=59,[3]={'ATK_RATE|500','MAXHP_RATE|500'},[4]='59_25',[5]='8330020',[6]='追命魔箓',[7]='攻击加成累计提升：$ATK_RATE$\\n气血加成累计提升：$MAXHP_RATE$'},_P),\n"
+        "[8094]=setmetatable({[1]=8094,[2]=191,[3]={'ATK_ASSEMBLY_RATE|500'},[4]='191_999999999',[5]='177_17',[6]='仙语·吕布',[7]='随机狙击榜单上的玩家，并获得攻击资质提升'},_P),\n"
+        "[1327]=setmetatable({[1]=1327,[2]=58,[3]={'SKILL_DAMAGE_RATE|200'},[4]='58_109',[5]='910030',[6]='引魂钟效果提升',[7]='技能伤害加深累计提升：$SKILL_DAMAGE_RATE$'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_boss_kill_effect_detail_count"] == 2
+    assert result["stats"]["item_with_equipment_material_effect_detail_count"] == 1
+    assert result["stats"]["boss_kill_effect_detail_count"] == 3
+
+    card = get_fanxiu_item_card(8065, export_root=export_root)["card"]
+    assert card["linked_boss_kill_effect_id"] == 8065
+    detail = card["effect_details"][0]
+    assert detail["kind"] == "boss_kill_effect"
+    assert detail["title"] == "追命魔箓"
+    assert "攻击加成累计提升" in detail["plain_description"]
+    assert "累计属性：攻击加成 +500；气血加成 +500" in detail["plain_description"]
+    assert "最大值：59_25" in detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="追命魔箓 气血加成", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 8065
+
+    material_card = get_fanxiu_item_card(10000001, export_root=export_root)["card"]
+    assert material_card["linked_equipment_material_effect_id"] == 1327
+    material_detail = material_card["effect_details"][0]
+    assert material_detail["kind"] == "equipment_material_effect"
+    assert material_detail["equipment_material_effect_title"] == "引魂钟效果提升"
+    assert "用途：可用其对装备进行强化" in material_detail["plain_description"]
+    assert "技能伤害加深累计提升：200" in material_detail["plain_description"]
+
+    material_searched = search_fanxiu_item_cards(query="玄铁 技能伤害加深", export_root=export_root)
+    assert material_searched["total"] == 1
+    assert material_searched["items"][0]["id"] == 10000001
+
+
+def test_fanxiu_item_catalog_decodes_known_prefixed_effect_values(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 7391,
+                    "id": 7391,
+                    "name_plain": "2%灵石池",
+                    "descript_plain": "可获得2%总灵石池内的灵石。",
+                    "icon": "icon_bonus_pool",
+                    "quality": 5,
+                    "effectValue": "BONUS_POOL_WALLET_RATE|200",
+                },
+                {
+                    "_row_key": 22001,
+                    "id": 22001,
+                    "name_plain": "仙花坊光阴砂",
+                    "descript_plain": "额外获得仙花坊1日产量的1%",
+                    "icon": "icon_building_time",
+                    "quality": 5,
+                    "effectValue": "BUILDING_EFFECT|16_25#2000",
+                },
+                {
+                    "_row_key": 605,
+                    "id": 605,
+                    "name_plain": "粮食",
+                    "descript_plain": "百族大战中的粮食资源，用于征兵",
+                    "icon": "icon_races_food",
+                    "quality": 5,
+                    "effectValue": "RACES_BATTLE_RESOURCE|1|605",
+                },
+                {
+                    "_row_key": 17030802,
+                    "id": 17030802,
+                    "name_plain": "钧心我心",
+                    "descript_plain": "限时称号",
+                    "effDescript_plain": "使用后可激活3天期限称号",
+                    "icon": "icon_title",
+                    "quality": 5,
+                    "effectValue": "2_DRT|259200",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_prefixed_effect_detail_count"] == 4
+
+    bonus_card = get_fanxiu_item_card(7391, export_root=export_root)["card"]
+    bonus_detail = bonus_card["effect_details"][0]
+    assert bonus_detail["kind"] == "prefixed_item_effect"
+    assert bonus_detail["effect_prefix"] == "BONUS_POOL_WALLET_RATE"
+    assert "奖池比例：2%" in bonus_detail["plain_description"]
+
+    building_card = get_fanxiu_item_card(22001, export_root=export_root)["card"]
+    building_detail = building_card["effect_details"][0]
+    assert "建筑ID：16" in building_detail["plain_description"]
+    assert "效果参数：2000" in building_detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="百族大战 资源类型 1", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 605
+    duration_card = get_fanxiu_item_card(17030802, export_root=export_root)["card"]
+    assert "有效期：3天" in duration_card["effect_details"][0]["plain_description"]
+
+
+def test_fanxiu_item_catalog_links_hidden_world_and_pet_gift_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    hidden_world_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "hiddenworld_demo"
+        / "text_assets"
+    )
+    pet_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "pet_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    hidden_world_dir.mkdir(parents=True)
+    pet_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 201,
+                    "id": 201,
+                    "name_plain": "神识秘术",
+                    "descript_plain": "记载着封魔秘术的古籍",
+                    "icon": "icon_hidden_world_skill",
+                    "quality": 5,
+                    "effectValue": "HIDDEN_WORLD_SKILL|201",
+                },
+                {
+                    "_row_key": 16,
+                    "id": 16,
+                    "name_plain": "驭首",
+                    "descript_plain": "灵兽的部位能力",
+                    "icon": "icon_pet_gift",
+                    "quality": 5,
+                    "effectValue": "PET_GIFT|1",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (hidden_world_dir / "HiddenWorldItem.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemId=2,type=3,param=4,allowDrop=5,deathDrop=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]={},[5]='',[6]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=2,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=201,[3]=2,[4]={'2:1119','1:1122'},[5]='1,2',[6]=10000},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (hidden_world_dir / "HiddenWorldSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,skillDesc=3,cd=4,effect=5,skillIcon=6,sort=7}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=0,[5]='',[6]='',[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1119]=setmetatable({[1]=1119,[2]='鬼雾',[3]='召唤鬼雾遮挡视野',[4]=180,[5]='SummonFog|30',[6]='skill_icon2_6607',[7]=1},_P),\n"
+        "[1122]=setmetatable({[1]=1122,[2]='神念',[3]='探查自身视野范围内角色中是否有潜行者',[4]=180,[5]='ShowUnit|10',[6]='skill_icon2_6803',[7]=2},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (hidden_world_dir / "HiddenWorldCampBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,des=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='道祖阵营',[3]='修复封魔柱'},_P),\n"
+        "[2]=setmetatable({[1]=2,[2]='天魔阵营',[3]='破坏封魔柱'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (pet_dir / "PetGift.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,sort=3,rate=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[5]={}}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=3}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]='驭首',[3]=1,[4]=12,[5]={ATTACK=48,ATK_RATE=2}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_hidden_world_detail_count"] == 1
+    assert result["stats"]["item_with_pet_gift_detail_count"] == 1
+
+    hidden_card = get_fanxiu_item_card(201, export_root=export_root)["card"]
+    assert hidden_card["linked_hidden_world_item_id"] == 201
+    hidden_detail = hidden_card["effect_details"][0]
+    assert hidden_detail["kind"] == "hidden_world_item"
+    assert hidden_detail["skill_ids"] == [1119, 1122]
+    assert "天魔阵营：鬼雾" in hidden_detail["plain_description"]
+    assert "道祖阵营：神念" in hidden_detail["plain_description"]
+
+    pet_card = get_fanxiu_item_card(16, export_root=export_root)["card"]
+    assert pet_card["linked_pet_gift_id"] == 1
+    pet_detail = pet_card["effect_details"][0]
+    assert pet_detail["kind"] == "pet_gift"
+    assert "部位属性：ATK_RATE +2；ATTACK +48" in pet_detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="鬼雾 神念 秘境封魔杀", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 201
+    pet_search = search_fanxiu_item_cards(query="灵兽部位 驭首 ATTACK", export_root=export_root)
+    assert pet_search["total"] == 1
+    assert pet_search["items"][0]["id"] == 16
+
+
+def test_fanxiu_item_catalog_links_faze_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    faze_dir = export_root / "parsed_configs" / "FazeResource"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    faze_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 10080012,
+                    "id": 10080012,
+                    "name_plain": "魔道法则",
+                    "descript_plain": "率宗门众人诛灭魔道。",
+                    "effDescript_plain": "使用后会获得对应法则",
+                    "icon": "rule_icon_other_0029",
+                    "type": 23,
+                    "quality": 7,
+                    "effectValue": "10010_0",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 7, "id": 7, "name_plain": "彩色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (faze_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 10010,
+                    "id": 10010,
+                    "showName_plain": "魔道法则",
+                    "describe_plain": "魔道入侵榜单第一名可获得该法则",
+                    "effectsDes_plain": "进入坠魔谷、镇邪台时会激发诛魔之力，使自身体型增大60%。",
+                    "effectDescribe_plain": "战斗",
+                    "activityDescribe_plain": "魔道入侵",
+                    "maxNumber": 1,
+                    "showCondition": "ActivityPassed|1040101_1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_faze_detail_count"] == 1
+    card = get_fanxiu_item_card(10080012, export_root=export_root)["card"]
+    assert card["linked_faze_id"] == 10010
+    assert card["effect_details"][0]["kind"] == "faze"
+    assert card["effect_details"][0]["subtitle"] == "战斗 · 魔道入侵 · 上限 1"
+    assert "诛魔之力" in card["effect_details"][0]["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="诛魔之力 魔道入侵", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 10080012
+
+
+def test_fanxiu_item_catalog_links_partner_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    partner_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "partner_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    partner_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 9001,
+                    "id": 9001,
+                    "name_plain": "誓约·陈巧倩",
+                    "descript_plain": "可与仙侣结缘。",
+                    "effDescript_plain": "获得后，可与【陈巧倩】结为仙侣",
+                    "icon": "npcicon_pic_0016",
+                    "subType": 69,
+                    "quality": 5,
+                    "effectValue": "PARTNER|1",
+                },
+                {
+                    "_row_key": 19600001,
+                    "id": 19600001,
+                    "name_plain": "碎片·陈巧倩",
+                    "descript_plain": "可用于陈巧倩升星。",
+                    "effDescript_plain": "可用于【仙侣】陈巧倩提升星级",
+                    "icon": "head_icon_0016",
+                    "type": 1,
+                    "subType": 47,
+                    "quality": 5,
+                    "effectValue": "PartnerFragment|1",
+                },
+                {
+                    "_row_key": 19710001,
+                    "id": 19710001,
+                    "name_plain": "绝技·断玉崩山",
+                    "descript_plain": "可提升陈巧倩绝技。",
+                    "effDescript_plain": "可用于【仙侣】陈巧倩提升绝技阶级",
+                    "icon": "skill2_beast_5100",
+                    "type": 1,
+                    "subType": 94,
+                    "quality": 5,
+                    "effectValue": "PartnerFragment|1",
+                },
+                {
+                    "_row_key": 19610001,
+                    "id": 19610001,
+                    "name_plain": "邀约函·陈巧倩",
+                    "descript_plain": "可邀请陈巧倩同游传道。",
+                    "effDescript_plain": "使用后可邀请陈巧倩同游传道，必定获得一名弟子",
+                    "icon": "item_invite_chen",
+                    "type": 1,
+                    "subType": 66,
+                    "quality": 5,
+                    "effectValue": "1",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质", "color": "864c00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=0,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='灵力',\n[2]='全技能伤害加深',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "['MAXMP']=setmetatable({[1]='MAXMP',[2]=_A[1]},_P),\n"
+        "['ALL_SKILL_DAMAGE_FIX']=setmetatable({[1]='ALL_SKILL_DAMAGE_FIX',[2]=_A[2]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "Partner.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,itemId=10,initStage=11,quality=12,type=13,icon=17,model=18,obtainAgain=7,convertItem=21,recommendTalisman=31,skillItemId=40}\n"
+        "local _key2null={[1]=0,[2]='',[7]='',[10]=0,[11]=0,[12]=0,[13]=0,[17]='',[18]=0,[21]='',[31]='',[40]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[7]=0,[10]=0,[11]=0,[12]=0,[13]=0,[17]=0,[18]=0,[21]=0,[31]=0,[40]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='陈巧倩',\n[2]='npcicon_pic_0016',\n[3]='19600001_1',\n[4]='Item|19610001_2',\n[5]='4_9',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=_A[1],[7]=_A[3],[10]=9001,[11]=1,[12]=5,[13]=1,[17]=_A[2],[18]=19500,[21]=_A[4],[31]=_A[5],[40]=19710001},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerQuality.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=7}\n"
+        "local _key2null={[1]=0,[7]=''}\n"
+        "local _key2type={[1]=0,[7]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='绝品',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[5]=setmetatable({[1]=5,[7]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerGrade.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,stage=2,stagename=3,quality=5,partnerid=8,skillShowName=18,shortDesc=20,descript=23,attr=26}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[5]=0,[8]=0,[18]='',[20]='',[23]='',[26]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1,[5]=0,[8]=0,[18]=1,[20]=1,[23]=1,[26]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='一阶',\n"
+        "[2]='断情忘忧',\n"
+        "[3]='主角命中3次神通后，获得1层【忘忧】。',\n"
+        "[4]='二阶',\n"
+        "[5]='主角命中3次神通后，获得2层【忘忧】。',\n"
+        "}\n"
+        "local _B={\n[1]={MAXMP=360000,ALL_SKILL_DAMAGE_FIX=18000},\n[2]={MAXMP=720000,ALL_SKILL_DAMAGE_FIX=36000},\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=1,[3]=_A[1],[5]=5,[8]=1,[18]=_A[2],[20]=_A[3],[23]=_A[3],[26]=_B[1]},_P),\n"
+        "[1002]=setmetatable({[1]=1002,[2]=2,[3]=_A[4],[5]=5,[8]=1,[18]=_A[2],[20]=_A[5],[23]=_A[5],[26]=_B[2]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerShowSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,groupId=2,partnerId=3,sort=4,unLockDesc=6,skillName=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[6]='',[8]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[6]=1,[8]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='炼气壹层解锁',\n[2]='陈家古训',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=1,[4]=2,[6]=_A[1],[8]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerSkillLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillGroup=2,level=3,skillName=5,skillDesc=6,unLockDesc=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[5]='',[6]='',[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[5]=1,[6]=1,[7]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='陈家古训·壹',\n[2]='进入战斗后，气血与灵力提升至上限的1.8倍。',\n[3]='[炼气壹层解锁]',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[1001]=setmetatable({[1]=1001,[2]=1,[3]=1,[5]=_A[1],[6]=_A[2],[7]=_A[3]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerActiveSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partnerId=2,quality=3,sort=4,skillName=5,skillId=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[6]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=1,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='通天剑诀',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=6,[4]=1,[5]=_A[1],[6]=306105000},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "PartnerAraneResource.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partnerId=2,level=7,skillName=8,describe=9,attr=13}\n"
+        "local _key2null={[1]=0,[2]=0,[7]=0,[8]='',[9]='',[13]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[7]=0,[8]=1,[9]=1,[13]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='断玉崩山·一阶',\n[2]='仙侣·陈巧倩归属于【追影】体系。\\n【心诀】剑影造成伤害。',\n}\n"
+        "local _B={\n[1]={MAX_QI=40},\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[101]=setmetatable({[1]=101,[2]=1,[7]=1,[8]=_A[1],[9]=_A[2],[13]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["partner_detail_count"] == 1
+    assert result["stats"]["item_with_partner_detail_count"] == 4
+    assert result["stats"]["item_with_effect_detail_count"] == 4
+
+    detail = get_fanxiu_item_card(9001, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_partner_id"] == 1
+    assert card["effect_details"][0]["kind"] == "partner"
+    assert card["effect_details"][0]["title"] == "陈巧倩"
+    assert card["effect_details"][0]["subtitle"] == "绝品 · 一阶 · 追影"
+    assert "断情忘忧" in card["effect_details"][0]["description"]
+    assert "陈家古训" in card["effect_details"][0]["description"]
+    assert "通天剑诀" in card["effect_details"][0]["description"]
+    assert "断玉崩山" in card["effect_details"][0]["description"]
+    assert "满阶属性：" in card["effect_details"][0]["plain_description"]
+    assert "灵力 +720000" in card["effect_details"][0]["plain_description"]
+
+    skill_card = get_fanxiu_item_card(19710001, export_root=export_root)["card"]
+    assert skill_card["linked_partner_id"] == 1
+    assert skill_card["effect_details"][0]["title"] == "陈巧倩"
+
+    invite_card = get_fanxiu_item_card(19610001, export_root=export_root)["card"]
+    assert invite_card["linked_partner_id"] == 1
+    assert invite_card["effect_details"][0]["title"] == "陈巧倩"
+    assert "同游传道" in invite_card["effect_description"]
+
+    searched = search_fanxiu_item_cards(query="追影 断玉崩山", export_root=export_root)
+    assert searched["total"] == 4
+    assert {item["id"] for item in searched["items"]} == {9001, 19600001, 19710001, 19610001}
+    assert all(item["effect_detail_preview"] for item in searched["items"])
+
+
+def test_fanxiu_item_catalog_links_npc_gift_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    npc_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "npc_demo"
+        / "text_assets"
+    )
+    partner_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "partner_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    npc_dir.mkdir(parents=True)
+    partner_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 2005000,
+                    "id": 2005000,
+                    "name_plain": "祈福·福光明灯",
+                    "descript_plain": "祈福道具。",
+                    "icon": "qf_icon_0015",
+                    "type": 20,
+                    "subType": 16,
+                    "quality": 5,
+                    "effectValue": "4001",
+                },
+                {
+                    "_row_key": 7020005,
+                    "id": 7020005,
+                    "name_plain": "红尘轶事",
+                    "descript_plain": "记录红尘故事。",
+                    "effDescript_plain": "赠送给韩立、古或今可提升友好度",
+                    "icon": "gift_icon_0001",
+                    "type": 20,
+                    "subType": 16,
+                    "quality": 5,
+                    "effectValue": "1002_1050",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 5, "id": 5, "name_plain": "黄色品质"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (npc_dir / "NpcGift.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,npcId=2,npcGiftId=4,des=12,effectTips=17,Text=20,textItem=25}\n"
+        "local _key2null={[1]=0,[2]=0,[4]='',[12]='',[17]='',[20]='',[25]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[4]=0,[12]=1,[17]=1,[20]=1,[25]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='2005000,2005001',\n"
+        "[2]='朝圣尊祈福可获取奖励',\n"
+        "[3]='使用祈福礼物向圣尊<color=#8de349>祈福</color>可获<color=#8de349>祈福幸运值</color>',\n"
+        "[4]='祈福幸运值：',\n"
+        "[5]='提交可增加%s幸运值',\n"
+        "}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=4001,[4]=_A[1],[12]=_A[2],[17]=_A[3],[20]=_A[4],[25]=_A[5]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (npc_dir / "Npc.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='韩立',\n[2]='古或今',\n[3]='圣尊',\n}\n"
+        "local _M={\n"
+        "[1002]=setmetatable({[1]=1002,[2]=_A[1]},_P),\n"
+        "[1050]=setmetatable({[1]=1050,[2]=_A[2]},_P),\n"
+        "[4001]=setmetatable({[1]=4001,[2]=_A[3]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (partner_dir / "Partner.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,quality=12,model=18}\n"
+        "local _key2null={[1]=0,[2]='',[12]=0,[18]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[12]=0,[18]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='仙侣韩立',\n[2]='仙侣古或今',\n}\n"
+        "local _M={\n"
+        "[1002]=setmetatable({[1]=1002,[2]=_A[1],[12]=5,[18]=1002},_P),\n"
+        "[1050]=setmetatable({[1]=1050,[2]=_A[2],[12]=5,[18]=1050},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_npc_gift_detail_count"] == 2
+    assert result["stats"]["npc_gift_detail_count"] == 2
+    assert result["stats"]["npc_gift_activity_detail_count"] == 1
+    assert result["stats"]["partner_gift_target_detail_count"] == 1
+
+    npc_card = get_fanxiu_item_card(2005000, export_root=export_root)["card"]
+    npc_detail = npc_card["effect_details"][0]
+    assert npc_detail["kind"] == "npc_gift_activity"
+    assert npc_detail["npc_id"] == 4001
+    assert "目标NPC：圣尊（Npc 4001）" in npc_detail["plain_description"]
+    assert "提交可增加%s幸运值" in npc_detail["plain_description"]
+
+    partner_card = get_fanxiu_item_card(7020005, export_root=export_root)["card"]
+    partner_detail = partner_card["effect_details"][0]
+    assert partner_detail["kind"] == "partner_gift_targets"
+    assert partner_detail["target_partner_ids"] == [1002, 1050]
+    assert partner_detail["target_partner_names"] == ["韩立", "古或今"]
+    assert "赠礼对象：韩立、古或今" in partner_detail["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="圣尊 祈福", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 2005000
+    searched = search_fanxiu_item_cards(query="古或今 仙缘赠礼", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 7020005
+
+
+def test_fanxiu_item_catalog_links_member_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    member_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "dragonmember_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    member_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 30090000,
+                    "id": 30090000,
+                    "name_plain": "信物·万小山",
+                    "descript_plain": "伙伴·万小山的信物。",
+                    "icon": "head_icon_0010",
+                    "subType": 32,
+                    "quality": 4,
+                    "effectValue": "MEMBER|1",
+                },
+                {
+                    "_row_key": 30092001,
+                    "id": 30092001,
+                    "name_plain": "信物·万小山",
+                    "descript_plain": "节日伙伴·万小山的信物。",
+                    "icon": "head_icon_0010",
+                    "subType": 32,
+                    "quality": 4,
+                    "effectValue": "JIERIMEMBER|2001",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 4, "id": 4, "name_plain": "紫色品质", "color": "73123a"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (member_dir / "MemberBase.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=4,itemId=6,headIcon=9,photo=11,model=14,initGrade=16,quality=17,type=18,jieRi=19}\n"
+        "local _key2null={[1]=0,[4]='',[6]=0,[9]='',[11]='',[14]=0,[16]=0,[17]=0,[18]='',[19]=0}\n"
+        "local _key2type={[1]=0,[4]=1,[6]=0,[9]=0,[11]=0,[14]=0,[16]=0,[17]=0,[18]=1,[19]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='万小山',\n[2]='head_icon_0010',\n[3]='npcicon_pic_0010',\n[4]='乘风',\n}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[4]=_A[1],[6]=30090000,[9]=_A[2],[11]=_A[3],[14]=3803,[16]=4,[17]=4,[18]=_A[4]},_P),\n"
+        "[2001]=setmetatable({[1]=2001,[4]=_A[1],[6]=30092001,[9]=_A[2],[11]=_A[3],[14]=3803,[16]=4,[17]=4,[18]=_A[4],[19]=1},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (member_dir / "MemberStar.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,baseId=2,grade=3,stars=4,consume=5,addSpeedDes=8,skillName=11,skillDes=12,skillDesNew=14,skillLevel=15}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[8]='',[11]='',[12]='',[14]='',[15]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[8]=1,[11]=1,[12]=1,[14]=1,[15]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='仙舟基础速度：+%s里/秒  +12',\n"
+        "[2]='乘风·初阶',\n"
+        "[3]='【乘风·初阶】\\n初始：额外提升自身仙舟60里/秒的基础速度',\n"
+        "[4]='【乘风·初阶】：额外提升自身仙舟60里/秒的基础速度',\n"
+        "[5]='【乘风·初阶】：额外提升自身仙舟360里/秒的基础速度',\n"
+        "[6]='初阶',\n"
+        "}\n"
+        "local _B={\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=1,[2]=1,[3]=4,[5]='Item|30090000_1',[8]=_A[1],[11]=_A[2],[12]=_A[3],[14]=_A[4],[15]=_A[6]},_P),\n"
+        "[6]=setmetatable({[1]=6,[2]=1,[3]=4,[4]=5,[5]='Item|30090000_1',[8]=_A[1],[11]=_A[2],[12]=_A[3],[14]=_A[5],[15]=_A[6]},_P),\n"
+        "[200101]=setmetatable({[1]=200101,[2]=2001,[3]=4,[5]='Item|30092001_1',[8]=_A[1],[11]=_A[2],[12]=_A[3],[14]=_A[4],[15]=_A[6]},_P),\n"
+        "[200106]=setmetatable({[1]=200106,[2]=2001,[3]=4,[4]=5,[5]='Item|30092001_1',[8]=_A[1],[11]=_A[2],[12]=_A[3],[14]=_A[5],[15]=_A[6]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["member_detail_count"] == 2
+    assert result["stats"]["item_with_member_detail_count"] == 2
+    card = get_fanxiu_item_card(30090000, export_root=export_root)["card"]
+    assert card["linked_member_id"] == 1
+    assert card["effect_details"][0]["kind"] == "member"
+    assert card["effect_details"][0]["title"] == "万小山"
+    assert card["effect_details"][0]["subtitle"] == "紫色品质 · 乘风"
+    assert "仙舟基础速度" in card["effect_details"][0]["description"]
+    assert "最高星级效果" in card["effect_details"][0]["description"]
+
+    jie_ri_card = get_fanxiu_item_card(30092001, export_root=export_root)["card"]
+    assert jie_ri_card["linked_member_id"] == 2001
+    assert jie_ri_card["effect_details"][0]["kind"] == "member"
+    assert jie_ri_card["effect_details"][0]["item_id"] == 30092001
+
+    searched = search_fanxiu_item_cards(query="乘风 仙舟基础速度", export_root=export_root)
+    assert searched["total"] == 2
+    assert {item["id"] for item in searched["items"]} == {30090000, 30092001}
+
+
+def test_fanxiu_item_catalog_links_member_equipment_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    equipment_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "dragonboatfestival_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    equipment_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 30091001,
+                    "id": 30091001,
+                    "name_plain": "神风翼",
+                    "descript_plain": "风起仙翼展，神行太虚间。",
+                    "icon": "icon5_item_9594",
+                    "type": 1,
+                    "subType": 72,
+                    "quality": 4,
+                    "effectValue": "1",
+                },
+                {
+                    "_row_key": 30093001,
+                    "id": 30093001,
+                    "name_plain": "神风翼",
+                    "descript_plain": "仙舟竞速伙伴装备，上阵后可在比赛中获得以下效果：\n\n开局8秒内，额外获得710移动速度",
+                    "icon": "icon5_item_9594",
+                    "subType": 32,
+                    "quality": 3,
+                    "effectValue": "JIERIMEMBEREUIPMENT|20001",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"_row_key": 3, "id": 3, "name_plain": "蓝色品质", "color": "2778c8"},
+                {"_row_key": 4, "id": 4, "name_plain": "紫色品质", "color": "73123a"},
+                {"_row_key": 5, "id": 5, "name_plain": "橙色品质", "color": "864c00"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (equipment_dir / "DragonBoatEquipment.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,groupId=2,name=3,skillName=4,grade=5,level=6,levelDes=9,upgradeTip=12,des=13,skill=15,sideSkill=16,item=17}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]='',[5]=0,[6]=0,[9]='',[12]='',[13]='',[15]=0,[16]=nil,[17]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1,[4]=1,[5]=0,[6]=0,[9]=1,[12]=1,[13]=1,[15]=0,[16]=0,[17]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='神风翼',\n[2]='神风',\n[3]='珍品一阶',\n[4]='（升到珍品四阶可升品）',\n"
+        "[5]='风起仙翼展，神行太虚间\\n推荐装备伙伴：呼庆雷等加速型伙伴',\n[6]='绝品一阶',\n}\n"
+        "local _B={\n[1]={2000101},\n}\n"
+        "local _M={\n"
+        "[101]=setmetatable({[1]=101,[2]=1,[3]=_A[1],[4]=_A[2],[5]=4,[6]=1,[9]=_A[3],[12]=_A[4],[13]=_A[5],[15]=1000101,[17]=30091001},_P),\n"
+        "[105]=setmetatable({[1]=105,[2]=1,[3]=_A[1],[4]=_A[2],[5]=5,[6]=5,[9]=_A[6],[13]=_A[5],[15]=1000105,[16]=_B[1]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (equipment_dir / "BoatSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,quality=3,skillDes=5,currentSkillDes=6,icon=7,sideSkillUnlockDes=8}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[5]='',[6]='',[7]='',[8]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[5]=1,[6]=1,[7]=0,[8]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='神风',\n[2]='开局提升装备伙伴的基础移动速度2448→9792里/秒，持续8秒',\n"
+        "[3]='开局提升装备伙伴的基础移动速度2448里/秒，持续8秒',\n"
+        "[4]='开局提升装备伙伴的基础移动速度3800→15200里/秒，持续8秒',\n"
+        "[5]='开局提升装备伙伴的基础移动速度3800里/秒，持续8秒',\n"
+        "[6]='神风翔天',\n[7]='该装备技能生效时，会立刻向前瞬移23632里',\n[8]='（绝品解锁）',\n}\n"
+        "local _M={\n"
+        "[1000101]=setmetatable({[1]=1000101,[2]=_A[1],[3]=4,[5]=_A[2],[6]=_A[3]},_P),\n"
+        "[1000105]=setmetatable({[1]=1000105,[2]=_A[1],[3]=5,[5]=_A[4],[6]=_A[5]},_P),\n"
+        "[2000101]=setmetatable({[1]=2000101,[2]=_A[6],[3]=5,[5]=_A[7],[6]=_A[7],[8]=_A[8]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["member_equipment_detail_count"] == 1
+    assert result["stats"]["item_with_member_equipment_detail_count"] == 2
+
+    card = get_fanxiu_item_card(30091001, export_root=export_root)["card"]
+    assert card["linked_member_equipment_group_id"] == 1
+    assert card["effect_details"][0]["kind"] == "member_equipment"
+    assert card["effect_details"][0]["title"] == "神风翼"
+    assert "开局提升装备伙伴" in card["effect_details"][0]["plain_description"]
+    assert "最高阶主技能" in card["effect_details"][0]["plain_description"]
+    assert "神风翔天" in card["effect_details"][0]["plain_description"]
+
+    temporary_card = get_fanxiu_item_card(30093001, export_root=export_root)["card"]
+    assert temporary_card["linked_member_equipment_item_id"] == 20001
+    assert temporary_card["effect_details"][0]["kind"] == "member_equipment_item"
+    assert "额外获得710移动速度" in temporary_card["effect_details"][0]["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="神风翔天 最高阶", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 30091001
+
+
+def test_fanxiu_item_catalog_links_spiritual_body_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    spiritual_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "spiritualbody_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    spiritual_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 16000100,
+                    "id": 16000100,
+                    "name_plain": "疏影花仙契约",
+                    "descript_plain": "使用后契约灵体疏影花仙。",
+                    "effDescript_plain": "点击使用前往契约灵体",
+                    "icon": "head_icon_9147",
+                    "type": 5,
+                    "subType": 37,
+                    "quality": 6,
+                    "effectValue": "2625_2001",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品", "color": "864c00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (spiritual_dir / "SpiritualBody.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,type=3,actCost=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='疏影花仙',\n[2]='Item|16000100_1',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[2001]=setmetatable({[1]=2001,[2]=_A[1],[3]=2,[4]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritual_dir / "SpiritualQuality.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='绝品',\n[2]='仙品',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[5]=setmetatable({[1]=5,[2]=_A[1]},_P),\n"
+        "[6]=setmetatable({[1]=6,[2]=_A[2]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (spiritual_dir / "SpiritualBodyJie.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,lingID=2,name=3,revealJie=4,jie=5,quality=6,premiumTips=7,describe=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]=0,[6]=0,[7]='',[8]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1,[4]=0,[5]=0,[6]=0,[7]=1,[8]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='一阶',\n"
+        "[2]='升至<color=#2a4b10>五阶</color>，将进化为仙品',\n"
+        "[3]='<color=#864c00>【花繁】</color>：进入战斗8秒后恢复气血。',\n"
+        "[4]='五阶',\n"
+        "[5]='五阶：<color=#864c00>【暗香】</color>：发动花繁时额外恢复最大气血。',\n"
+        "}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[201]=setmetatable({[1]=201,[2]=2001,[3]=_A[1],[4]=0,[5]=1,[6]=5,[7]=_A[2],[8]=_A[3]},_P),\n"
+        "[205]=setmetatable({[1]=205,[2]=2001,[3]=_A[4],[4]=0,[5]=5,[6]=6,[8]=_A[5]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_spiritual_body_detail_count"] == 1
+    assert result["stats"]["spiritual_body_detail_count"] == 1
+    detail = get_fanxiu_item_card(16000100, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_spiritual_body_id"] == 2001
+    assert card["effect_details"][0]["kind"] == "spiritual_body"
+    assert card["effect_details"][0]["title"] == "疏影花仙"
+    assert card["effect_details"][0]["subtitle"] == "万灵类型：仙灵 · 绝品 · 一阶"
+    assert "【花繁】" in card["effect_details"][0]["description"]
+    assert "【暗香】" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="暗香", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 16000100
+    assert "暗香" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_links_title_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    title_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "title_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    title_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 1050022,
+                    "id": 1050022,
+                    "name_plain": "富甲一方",
+                    "descript_plain": "使用后激活永久称号【富甲一方】",
+                    "effDescript_plain": "使用后激活永久称号【富甲一方】",
+                    "icon": "title_icon_0001",
+                    "type": 15,
+                    "quality": 6,
+                    "effectValue": "300_-1",
+                },
+                {
+                    "_row_key": 17010108,
+                    "id": 17010108,
+                    "name_plain": "天籁之音",
+                    "descript_plain": "使用后激活永久称号【天籁之音】",
+                    "effDescript_plain": "使用后激活永久称号【天籁之音】",
+                    "icon": "title_icon_0002",
+                    "type": 15,
+                    "quality": 6,
+                    "effectValue": "106_-1",
+                },
+                {
+                    "_row_key": 17010109,
+                    "id": 17010109,
+                    "name_plain": "上界仙使",
+                    "descript_plain": "受上界真仙所派，专程降临此界的仙使。",
+                    "effDescript_plain": "使用后激活永久称号【上界仙使】",
+                    "icon": "title_icon_0003",
+                    "type": 15,
+                    "quality": 6,
+                    "effectValue": "107_-1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品", "color": "864c00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='ATTACK',\n[2]='攻击',\n[3]='ATK_RATE',\n[4]='攻击加成',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[2001]=setmetatable({[1]=2001,[2]=_A[1],[3]=_A[2]},_P),\n"
+        "[2002]=setmetatable({[1]=2002,[2]=_A[3],[3]=_A[4]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (title_dir / "Title.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,quality=6,titleEffect=7,titleText=8,itemId=13,descript=16,tips=17,attr=20}\n"
+        "local _key2null={[1]=0,[2]='',[6]=0,[7]='',[8]='',[13]=nil,[16]='',[17]='',[20]=nil}\n"
+        "local _key2type={[1]=0,[2]=1,[6]=0,[7]=0,[8]=1,[13]=0,[16]=1,[17]=1,[20]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='富甲一方',\n"
+        "[2]='<color=#ffe588>富甲一方</color>',\n"
+        "[3]='《云州寻宝》剧情中达成结局【富甲一方】可获此称号',\n"
+        "[4]='《云州寻宝》剧情达成结局获得',\n"
+        "[5]='pre_eff_Title_icon_0022',\n"
+        "}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[300]=setmetatable({[1]=300,[2]=_A[1],[6]=6,[7]=_A[5],[8]=_A[2],[13]={1050022},[16]=_A[3],[17]=_A[4],[20]={ATTACK=400,ATK_RATE=10}},_P),\n"
+        "[301]=setmetatable({[1]=301,[2]='天籁之音',[6]=6,[7]=_A[5],[8]='<color=#ffe588>天籁之音</color>',[13]={17010108},[16]='乐声动九霄，可获称号天籁之音',[17]='仙音活动获得',[20]={ATTACK=800}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_title_detail_count"] == 2
+    assert result["stats"]["item_with_title_local_detail_count"] == 1
+    assert result["stats"]["title_detail_count"] == 2
+    assert result["stats"]["title_item_link_count"] == 2
+    detail = get_fanxiu_item_card(1050022, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_title_id"] == 300
+    assert card["effect_details"][0]["kind"] == "title"
+    assert card["effect_details"][0]["title"] == "富甲一方"
+    assert card["effect_details"][0]["subtitle"] == "仙品"
+    assert "剧情中达成结局【富甲一方】" in card["effect_details"][0]["description"]
+    assert "攻击 +400" in card["effect_details"][0]["description"]
+    assert "攻击加成 +10" in card["effect_details"][0]["description"]
+
+    alias_card = get_fanxiu_item_card(17010108, export_root=export_root)["card"]
+    assert alias_card["linked_title_id"] == 301
+    assert alias_card["effect_details"][0]["kind"] == "title"
+    assert alias_card["effect_details"][0]["title"] == "天籁之音"
+    assert "乐声动九霄" in alias_card["effect_details"][0]["plain_description"]
+
+    local_card = get_fanxiu_item_card(17010109, export_root=export_root)["card"]
+    assert local_card["linked_title_id"] == 107
+    assert local_card["effect_details"][0]["kind"] == "title_item_local"
+    assert local_card["effect_details"][0]["title"] == "上界仙使"
+    assert "Title引用：107" in local_card["effect_details"][0]["plain_description"]
+
+    searched = search_fanxiu_item_cards(query="云州寻宝", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 1050022
+    assert "云州寻宝" in searched["items"][0]["effect_detail_preview"]
+
+    alias_searched = search_fanxiu_item_cards(query="乐声动九霄", export_root=export_root)
+    assert alias_searched["total"] == 1
+    assert alias_searched["items"][0]["id"] == 17010108
+
+    local_searched = search_fanxiu_item_cards(query="上界真仙 Title引用", export_root=export_root)
+    assert local_searched["total"] == 1
+    assert local_searched["items"][0]["id"] == 17010109
+
+
+def test_fanxiu_item_catalog_links_fashion_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    fashion_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "fashion_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    fashion_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 18010001,
+                    "id": 18010001,
+                    "name_plain": "时装·穿星点梦",
+                    "descript_plain": "我想和穿成这样的人来场约会。",
+                    "icon": "fashionicon_icon_1002",
+                    "type": 8,
+                    "quality": 6,
+                    "effectValue": "1001_-1",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 6, "id": 6, "name_plain": "仙品", "color": "864c00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='MAXHP',\n[2]='气血',\n[3]='MAXHP_RATE',\n[4]='气血加成',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=_A[1],[3]=_A[2]},_P),\n"
+        "[1002]=setmetatable({[1]=1002,[2]=_A[3],[3]=_A[4]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (fashion_dir / "FashionType.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='时装',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (fashion_dir / "Fashion.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=3,condition=7,initLevel=9,type=11,item=12,describe=20,upTalk=24,modelMan=15,modelWoman=16}\n"
+        "local _key2null={[1]=0,[3]='',[7]='',[9]=0,[11]=0,[12]=0,[15]=0,[16]=0,[20]='',[24]=''}\n"
+        "local _key2type={[1]=0,[3]=1,[7]=0,[9]=0,[11]=0,[12]=0,[15]=0,[16]=0,[20]=1,[24]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='时装·穿星点梦',\n"
+        "[2]='FunctionOpen|8002',\n"
+        "[3]='约会主题衣装',\n"
+        "[4]='道友衣装不凡',\n"
+        "}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[3]=_A[1],[7]=_A[2],[9]=1,[11]=1,[12]=18010001,[15]=40104,[16]=30104,[20]=_A[3],[24]=_A[4]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (fashion_dir / "FashionLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,fashion=2,level=3,levelName=4,item=8,describe=9,attr=11}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[8]='',[9]='',[11]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=1,[8]=0,[9]=1,[11]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='一级',\n[2]='Item|18010001_1',\n[3]='基础形态',\n[4]='二级',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[10001]=setmetatable({[1]=10001,[2]=1001,[3]=1,[4]=_A[1],[8]=_A[2],[9]=_A[3],[11]={MAXHP=120000,MAXHP_RATE=100}},_P),\n"
+        "[10002]=setmetatable({[1]=10002,[2]=1001,[3]=2,[4]=_A[4],[8]=_A[2],[11]={MAXHP=240000,MAXHP_RATE=200}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_fashion_detail_count"] == 1
+    assert result["stats"]["fashion_detail_count"] == 1
+    detail = get_fanxiu_item_card(18010001, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_fashion_id"] == 1001
+    assert card["effect_details"][0]["kind"] == "fashion"
+    assert card["effect_details"][0]["title"] == "时装·穿星点梦"
+    assert card["effect_details"][0]["subtitle"] == "时装 · 等级 1-2"
+    assert "初始属性：气血 +120000；气血加成 +100" in card["effect_details"][0]["description"]
+    assert "满级属性：气血 +240000；气血加成 +200" in card["effect_details"][0]["description"]
+    assert "男模 40104" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="气血加成", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 18010001
+    assert "气血加成" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_links_gongfa_book_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    gongfa_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "gongfa_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    gongfa_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 3010006,
+                    "id": 3010006,
+                    "name_plain": "黄枫剑诀",
+                    "descript_plain": "黄枫谷入门剑诀。",
+                    "effDescript_plain": "使用后学习功法",
+                    "icon": "icon_skill_zw_0076",
+                    "type": 3,
+                    "subType": 8,
+                    "quality": 3,
+                    "effectValue": "303101",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 3, "id": 3, "name_plain": "蓝色品质", "color": "193970"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='ATTACK',\n[2]='攻击',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[2001]=setmetatable({[1]=2001,[2]=_A[1],[3]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "GongfaPin.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,typeName=3,typeId=4,quality=5}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=0,[5]=0}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=1,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='上品功法',\n[2]='剑修',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[101]=setmetatable({[1]=101,[2]=_A[1],[3]=_A[2],[4]=1,[5]=3},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "GongfaCareer.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,careerDesc=3,careerDesc1=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=1,[4]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='剑修',\n[2]='剑气·剑阵',\n[3]='剑修以剑气结成剑阵',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1],[3]=_A[2],[4]=_A[3]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "Gongfa.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,skillType=3,condition=4,quality=5,consume=6,descript=7,levelGroup=8,model=9,gongfaExp=10,attr=11}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]=0,[6]=nil,[7]='',[8]=0,[9]=0,[10]=0,[11]=nil}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0,[5]=0,[6]=0,[7]=1,[8]=0,[9]=0,[10]=0,[11]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='黄枫剑诀',\n"
+        "[2]='CL|1',\n"
+        "[3]='Item|3010006_1',\n"
+        "[4]='黄枫谷入门剑诀，粗浅不堪，只有刚入门的弟子才会学习。',\n"
+        "}\n"
+        "local _B={\n[1]={_A[3]},\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[303101]=setmetatable({[1]=303101,[2]=_A[1],[3]=2,[4]=_A[2],[5]=101,[6]=_B[1],[7]=_A[4],[8]=101,[9]=9001,[10]=20,[11]={ATTACK=80}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_gongfa_detail_count"] == 1
+    assert result["stats"]["gongfa_detail_count"] == 1
+    detail = get_fanxiu_item_card(3010006, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_gongfa_id"] == 303101
+    assert card["effect_details"][0]["kind"] == "gongfa_book"
+    assert card["effect_details"][0]["title"] == "黄枫剑诀"
+    assert card["effect_details"][0]["subtitle"] == "上品功法 · 剑修"
+    assert "黄枫谷入门剑诀" in card["effect_details"][0]["description"]
+    assert "攻击 +80" in card["effect_details"][0]["description"]
+    assert "解锁条件：CL|1" in card["effect_details"][0]["description"]
+    assert "功法经验：20" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="剑气 剑阵", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 3010006
+    assert "剑阵" in searched["items"][0]["effect_detail_preview"]
+
+
+def test_fanxiu_item_catalog_links_gongfa_jie_book_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    gongfa_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "gongfa_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    gongfa_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 3011101,
+                    "id": 3011101,
+                    "name_plain": "青蟠剑阵",
+                    "descript_plain": "韩立自青元子处得到的新·青元剑诀中的剑阵之一。",
+                    "icon": "icon_skill_zw_6508",
+                    "type": 3,
+                    "subType": 8,
+                    "quality": 7,
+                    "effectValue": "307101",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 7, "id": 7, "name_plain": "彩色品质", "color": "ffcc00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]='',[2]=''}\n"
+        "local _key2type={[1]=1,[2]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='ATTACK',\n[2]='攻击',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=_A[1],[2]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "Gongfa.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,descript=3,consume=4}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]=nil}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=1,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='春黎剑阵',\n"
+        "[2]='需将剑阵中的剑重新祭炼，并在体内培养多年后才可使用。',\n"
+        "[3]='Item|3011101_1',\n"
+        "}\n"
+        "local _B={\n[1]={_A[3]},\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n[306102]=setmetatable({[1]=306102,[2]=_A[1],[3]=_A[2],[4]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "Renjie-GongfaJie.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,gid=2,pin=3,name=4,jie=5,consume=6,describe=7,attr=8,topDescribe=9}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=nil,[7]='',[8]=nil,[9]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=1,[5]=0,[6]=0,[7]=1,[8]=0,[9]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='1重',\n[2]='2重',\n[3]='10重',\n"
+        "[4]='Item|3011101_1',\n"
+        "[5]='第2重：本神通增加200%攻击力的伤害',\n"
+        "[6]='第10重：本神通增加1800%攻击力的伤害',\n"
+        "[7]='第6重激活',\n"
+        "}\n"
+        "local _B={\n[1]={_A[4]},\n}\n"
+        "local _C={\n}\n"
+        "local _M={\n"
+        "[307101001]=setmetatable({[1]=307101001,[2]=306102,[3]=2,[4]=_A[1],[5]=1,[8]={ATTACK=500},[9]=_A[7]},_P),\n"
+        "[307101002]=setmetatable({[1]=307101002,[2]=306102,[3]=2,[4]=_A[2],[5]=2,[6]=_B[1],[7]=_A[5],[8]={ATTACK=1000},[9]=_A[7]},_P),\n"
+        "[307101010]=setmetatable({[1]=307101010,[2]=306102,[3]=2,[4]=_A[3],[5]=10,[7]=_A[6],[8]={ATTACK=5000},[9]=_A[7]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (gongfa_dir / "GongfaSkill.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,sort=2,skillName=3,effectDescribe=4,describe=5,origin=6,originId=7,additionalDescribe=8}\n"
+        "local _key2null={[1]='',[2]=0,[3]='',[4]='',[5]='',[6]='',[7]=0,[8]=''}\n"
+        "local _key2type={[1]=1,[2]=0,[3]=1,[4]=1,[5]=1,[6]=1,[7]=0,[8]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='307101000_1',\n[2]='307101000_10',\n"
+        "[3]='神·春黎剑阵',\n"
+        "[4]='1阶',\n[5]='10阶',\n"
+        "[6]='引剑雨布春黎之阵，对目标造成九段共计670%攻击力的伤害',\n"
+        "[7]='引剑雨布春黎之阵，对目标造成九段共计760%攻击力的伤害',\n"
+        "[8]='点亮春黎剑阵所领悟的神通',\n"
+        "[9]='剑气会持续穿刺目标',\n"
+        "}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[1]=setmetatable({[1]=_A[1],[2]=1,[3]=_A[3],[4]=_A[4],[5]=_A[6],[6]=_A[8],[7]=306102,[8]=_A[9]},_P),\n"
+        "[2]=setmetatable({[1]=_A[2],[2]=10,[3]=_A[3],[4]=_A[5],[5]=_A[7],[6]=_A[8],[7]=306102,[8]=_A[9]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_gongfa_jie_book_detail_count"] == 1
+    assert result["stats"]["gongfa_jie_book_detail_count"] == 1
+    detail = get_fanxiu_item_card(3011101, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_gongfa_id"] == 307101
+    assert card["linked_gongfa_jie_effect_id"] == 307101
+    assert card["linked_gongfa_jie_gid"] == 306102
+    assert card["effect_details"][0]["kind"] == "gongfa_jie_book"
+    assert card["effect_details"][0]["title"] == "春黎剑阵"
+    assert card["effect_details"][0]["gongfa_jie_skill_name"] == "神·春黎剑阵"
+    assert "第10重：本神通增加1800%攻击力的伤害" in card["effect_details"][0]["description"]
+    assert "最高阶神通：10阶：引剑雨布春黎之阵" in card["effect_details"][0]["description"]
+    assert "攻击 +5000" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="春黎剑阵 1800 神通", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 3011101
+
+
+def test_fanxiu_item_catalog_links_gongfa_feature_probe_book_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    feature_probe_dir = export_root / "parsed_configs" / "gongfa_feature_probe"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    feature_probe_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 3020501,
+                    "id": 3020501,
+                    "name_plain": "赤书玄鸟卷",
+                    "descript_plain": "仙书一脉功法书。",
+                    "icon": "icon2_skill_ljst_7601",
+                    "type": 3,
+                    "subType": 8,
+                    "quality": 7,
+                    "effectValue": "316501",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 7, "id": 7, "name_plain": "彩色品质", "color": "ffcc00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (feature_probe_dir / "feature_families.tsv").write_text(
+        "source_gid\tstatus\tfeature_prefixes\tfeature_count\tfeatures\tsource_jie\tsource_names\tsource_describe\tcandidate_count\tcandidate_ids\tcandidate_descriptions\tcandidate_timelines\tcandidate_effect_paths\tcandidate_sound_ids\tconsume_item_names\tlinked_item_ids\tlinked_item_names\n"
+        "316501\tdirect_luaconfig\t357601\t10\t35760101、35760102\t1、2\t1重、2重\t二重：仙书玄鸟【玄鸟】：存在期间每5秒攻击自身选中的目标，造成225%攻击力的仙灵伤害\t1\t357601014\t仙书-彩-01-二级仙鹤\tTimeLine357601014\tskill/eff_skill_fen_06_01_buff_attack\t201010001\t赤书玄鸟卷\t3020501\t赤书玄鸟卷\n",
+        encoding="utf-8",
+    )
+    (feature_probe_dir / "feature_links.tsv").write_text(
+        "feature\tsource_gid\tsource_jie\tsource_name\tsource_describe\tdirect_match_count\tfamily_match_count\tmatch_kind\tconfig_ids\tconfig_descriptions\ttimelines\teffect_paths\tsound_ids\n"
+        "35760101\t316501\t2\t2重\t二重：仙书玄鸟造成225%攻击力的仙灵伤害\t1\t2\tdirect_prefix8\t357601014\t仙书-彩-01-二级仙鹤\tTimeLine357601014\tskill/eff_skill_fen_06_01_buff_attack\t201010001\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_gongfa_feature_probe_detail_count"] == 1
+    assert result["stats"]["gongfa_feature_probe_detail_count"] == 1
+    detail = get_fanxiu_item_card(3020501, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_gongfa_id"] == 316501
+    assert card["linked_gongfa_feature_gid"] == 316501
+    assert card["effect_details"][0]["kind"] == "gongfa_feature_probe_book"
+    assert card["effect_details"][0]["title"] == "赤书玄鸟卷"
+    assert "仙书玄鸟" in card["effect_details"][0]["description"]
+    assert "225%攻击力" in card["effect_details"][0]["description"]
+    assert "仙书-彩-01-二级仙鹤" in card["effect_details"][0]["description"]
+    assert "skill/eff_skill_fen_06_01_buff_attack" in card["effect_details"][0]["description"]
+    assert "TimeLine357601014" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="赤书玄鸟 225 二级仙鹤", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 3020501
+
+
+def test_fanxiu_item_catalog_adds_gongfa_local_description_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 3021501,
+                    "id": 3021501,
+                    "name_plain": "星辰巨猿",
+                    "descript": "<color=#73123a>心法·归一式</color>，玄剑门绝学之一。适合性格<color=#282828>刚正</color>之人修行",
+                    "descript_plain": "心法·归一式，玄剑门绝学之一。适合性格刚正之人修行",
+                    "icon": "icon_skill_zw_0080",
+                    "type": 3,
+                    "subType": 8,
+                    "quality": 8,
+                    "effectValue": "317501",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 8, "id": 8, "name_plain": "神品品质", "color": "ffcc00"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_gongfa_local_description_detail_count"] == 1
+    detail = get_fanxiu_item_card(3021501, export_root=export_root)
+    card = detail["card"]
+    assert card["effect_details"][0]["kind"] == "gongfa_local_description"
+    assert card["effect_details"][0]["gongfa_local_personality"] == "刚正"
+    assert card["effect_details"][0]["gongfa_local_terms"] == ["心法·归一式", "刚正"]
+    assert "性格倾向：刚正" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="归一式 刚正", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 3021501
+
+
+def test_fanxiu_item_catalog_links_physical_exercise_detail_text(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    physical_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "physicalexercise_demo"
+        / "text_assets"
+    )
+    attribute_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "cfg"
+        / "attribute_demo"
+        / "text_assets"
+    )
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    physical_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "_row_key": 5010001,
+                    "id": 5010001,
+                    "name_plain": "附灵咒",
+                    "descript_plain": "不知名古修所创之功法。",
+                    "effDescript_plain": "点击使用前往领悟炼体秘术",
+                    "icon": "skill_icon2_9001",
+                    "type": 3,
+                    "subType": 9,
+                    "quality": 4,
+                    "effectValue": "910401_0_2",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (quality_dir / "rows.json").write_text(
+        json.dumps([{"_row_key": 4, "id": 4, "name_plain": "紫色品质", "color": "73123a"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "Attribute.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={code=1,id=2,name=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='MAXHP',\n[2]='气血',\n[3]='ATTACK',\n[4]='攻击',\n[5]='SKILL_REDUCE_FIX',\n[6]='功法减伤',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=_A[1],[3]=_A[2]},_P),\n"
+        "[1002]=setmetatable({[1]=1002,[2]=_A[3],[3]=_A[4]},_P),\n"
+        "[1003]=setmetatable({[1]=1003,[2]=_A[5],[3]=_A[6]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (physical_dir / "Physical.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,quality=3,initJie=4,consume=5,normalConsume=6,breakConsume=7,nodeNum=8,rawImg=9,eff=10}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[5]=nil,[6]=0,[7]=0,[8]=0,[9]='',[10]=''}\n"
+        "local _key2type={[1]=0,[2]=1,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='附灵咒',\n[2]='Item|5010001_1',\n[3]='role_role_0135',\n[4]='pre_eff_ui_PhysicalExercise_long',\n}\n"
+        "local _B={\n[1]={_A[2]},\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[910401]=setmetatable({[1]=910401,[2]=_A[1],[3]=4,[4]=1,[5]=_B[1],[6]=5030001,[7]=5030002,[8]=10,[9]=_A[3],[10]=_A[4]},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (physical_dir / "PhysicalJie.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,gid=2,name=3,jie=4,describe=5,attributes=6,skill=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]='',[6]=nil,[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=1,[4]=0,[5]=1,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='一重',\n"
+        "[2]='<color=#864c00>【灵御】</color>：受到2次神通攻击后，为自身添加护盾。',\n"
+        "[3]='五重',\n"
+        "[4]='五重：<color=#864c00>【附灵】</color>：本炼体发动时恢复气血。',\n"
+        "[5]='二十重',\n"
+        "[6]='二十重：气血上限+108000',\n"
+        "}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n"
+        "[1001]=setmetatable({[1]=1001,[2]=910401,[3]=_A[1],[4]=1,[5]=_A[2],[6]={MAXHP=36000,ATTACK=300},[7]=902201000},_P),\n"
+        "[1005]=setmetatable({[1]=1005,[2]=910401,[3]=_A[3],[4]=5,[5]=_A[4],[6]={MAXHP=36000,ATTACK=300,SKILL_REDUCE_FIX=2700},[7]=902201010},_P),\n"
+        "[1020]=setmetatable({[1]=1020,[2]=910401,[3]=_A[5],[4]=20,[5]=_A[6],[6]={MAXHP=108000,ATTACK=900,SKILL_REDUCE_FIX=2700},[7]=902201020},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (physical_dir / "Comprehension.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,physicalId=2,grade=3,maxGrade=4,consume=5,noumenonAddition=6,attributes=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]='',[6]=0,[7]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='Item|5050001_1',\n}\n"
+        "local _B={\n}\nlocal _C={\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=910401,[3]=1,[4]=300,[5]=_A[1],[6]=100,[7]={MAXHP=19200,ATTACK=160,SKILL_REDUCE_FIX=480}},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_item_catalog(export_root=export_root)
+    assert result["stats"]["item_with_physical_exercise_detail_count"] == 1
+    assert result["stats"]["physical_exercise_detail_count"] == 1
+    detail = get_fanxiu_item_card(5010001, export_root=export_root)
+    card = detail["card"]
+    assert card["linked_physical_exercise_id"] == 910401
+    assert card["effect_details"][0]["kind"] == "physical_exercise"
+    assert card["effect_details"][0]["title"] == "附灵咒"
+    assert card["effect_details"][0]["subtitle"] == "紫色品质 · 3重"
+    assert "【灵御】" in card["effect_details"][0]["description"]
+    assert "【附灵】" in card["effect_details"][0]["description"]
+    assert "满重属性：" in card["effect_details"][0]["description"]
+    assert "气血 +108000" in card["effect_details"][0]["description"]
+    assert "攻击 +900" in card["effect_details"][0]["description"]
+    assert "功法减伤 +2700" in card["effect_details"][0]["description"]
+    assert "领悟：等级 1-300；本体加成 100；消耗 Item|5050001_1" in card["effect_details"][0]["description"]
+
+    searched = search_fanxiu_item_cards(query="灵御 附灵", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["id"] == 5010001
+    assert "灵御" in searched["items"][0]["effect_detail_preview"]
 
 
 def test_fanxiu_lua_config_report_resolves_language_fields(tmp_path):
