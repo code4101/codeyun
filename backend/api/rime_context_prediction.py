@@ -12,6 +12,7 @@ from backend.core.rime_context_prediction import (
     RimeContextPredictionError,
     adjust_rime_context_weight_compare_candidate,
     collect_rime_runtime_config,
+    collect_rime_performance_stats,
     collect_rime_context_weight_compare,
     collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
@@ -23,6 +24,7 @@ from backend.core.rime_context_prediction import (
     import_rime_context_prediction_article,
     rebuild_rime_context_prediction_snapshot,
     refresh_rime_context_prediction_tree,
+    reset_rime_performance_stats,
     save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
     update_rime_runtime_config,
@@ -164,6 +166,23 @@ def patch_rime_runtime_config(
 ):
     try:
         return update_rime_runtime_config(req.config)
+    except RimeContextPredictionError as exc:
+        _raise_rime_error(exc)
+
+
+@router.get("/context-prediction/performance")
+def get_rime_performance_stats(
+    _: BaseDevice = Depends(verify_api_token),
+):
+    return collect_rime_performance_stats()
+
+
+@router.post("/context-prediction/performance/reset")
+def post_rime_performance_stats_reset(
+    _: BaseDevice = Depends(verify_api_token),
+):
+    try:
+        return reset_rime_performance_stats()
     except RimeContextPredictionError as exc:
         _raise_rime_error(exc)
 

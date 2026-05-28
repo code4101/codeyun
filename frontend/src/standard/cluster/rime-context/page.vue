@@ -12,10 +12,12 @@ import {
   fetchRimeContextArticles,
   fetchRimeContextHistoryArticle,
   fetchRimeContextLint,
+  fetchRimePerformanceStats,
   fetchRimeContextPredictionTree,
   fetchRimeRuntimeConfig,
   importRimeContextArticle,
   refreshRimeContextPredictionTree,
+  resetRimePerformanceStats,
   saveRimeContextArticleContent,
   saveRimeContextHistoryArticle,
   updateRimeRuntimeConfig,
@@ -30,6 +32,8 @@ import {
   type RimeContextPredictionRow,
   type RimeContextPredictionSource,
   type RimeContextPredictionTree,
+  type RimePerformanceResponse,
+  type RimePerformanceSection,
   type RimeRuntimeConfigField,
   type RimeRuntimeConfigResponse,
   type RimeWeightCompareGroup,
@@ -59,7 +63,7 @@ interface ContextTailGroup {
   totalWeight: number;
 }
 
-type RimeView = 'index' | 'weight' | 'history' | 'articles' | 'lint' | 'config';
+type RimeView = 'index' | 'weight' | 'history' | 'articles' | 'lint' | 'config' | 'perf';
 type IndexScope = 'summary' | 'detail';
 type PrefixScope = 'summary' | 'detail';
 type ArticleSourceType = 'imported_article' | 'lexicon' | 'negative_lexicon';
@@ -118,6 +122,13 @@ const runtimeConfigGroups: { title: string; keys: string[] }[] = [
       'capture_to_disk',
     ],
   },
+  {
+    title: '性能调试',
+    keys: [
+      'enable_perf_debug',
+      'perf_flush_interval_seconds',
+    ],
+  },
 ];
 
 const runtimeConfigHints: Record<string, string> = {
@@ -137,6 +148,99 @@ const runtimeConfigHints: Record<string, string> = {
   enable_context_keys: '是否刷新运行时上下文键。',
   enable_realtime_learning: '是否启用小狼毫侧实时学习。',
   capture_to_disk: '是否在输入期间直接写入历史文件。',
+  enable_perf_debug: '开启后小狼毫会累计各环节耗时，并按间隔写入调试快照。',
+  perf_flush_interval_seconds: '性能调试快照最短写入间隔。',
+};
+
+const performanceSectionLabels: Record<string, string> = {
+  translator_total: '候选生成总耗时',
+  translator_load_index: '输入兜底加载索引',
+  init_load_index_total: '初始化加载索引',
+  input_fallback_load_index: '输入兜底加载索引',
+  translator_split_syllables: '拆分拼音',
+  translator_yield_candidates: '输出候选',
+  load_index_total: '加载索引总耗时',
+  load_index_skip: '跳过索引加载',
+  build_completion_index: '构建补全索引',
+  ingest_hot_index: '加载全局词频',
+  ingest_runtime_index: '加载运行词频',
+  ingest_seed_index: '加载种子词库',
+  ingest_context_hot_index: '加载上下文词频',
+  ingest_runtime_context_index: '加载运行上下文',
+  sort_index_lists: '排序索引列表',
+  score_candidates_total: '候选评分总耗时',
+  score_context_lookup: '查询上下文权重',
+  score_global_lookup: '查询全局权重',
+  score_sort: '候选排序',
+  commit_hook_total: '提交捕捉总耗时',
+  commit_get_text: '读取提交文本',
+  commit_normalize: '规范化提交文本',
+  commit_memory_buffer: '写入内存缓冲',
+  note_history_token: '记录最近输入',
+  append_history_buffer: '写入历史缓冲',
+  append_history_disk: '写入历史文件',
+  append_events_buffer: '写入事件缓冲',
+  append_events_disk: '写入事件文件',
+  maybe_flush_buffers: '检查缓冲落盘',
+  flush_pending_rows: '写入待处理事件',
+  flush_history_rows: '写入历史正文',
+  flush_buffers: '缓冲落盘总耗时',
+};
+
+type PerformancePhaseKey = 'init' | 'input' | 'save' | 'other';
+
+const performancePhaseOrder: PerformancePhaseKey[] = ['init', 'input', 'save', 'other'];
+const performancePhaseLabels: Record<PerformancePhaseKey, { title: string; detail: string }> = {
+  init: {
+    title: '初始化阶段',
+    detail: '加载或构建运行索引，尽量在输入前完成。',
+  },
+  input: {
+    title: '输入阶段',
+    detail: '拼音到候选的实时路径，最影响输入手感。',
+  },
+  save: {
+    title: '保存阶段',
+    detail: '提交捕捉、内存缓冲和落盘，原则上不应阻塞输入。',
+  },
+  other: {
+    title: '其他环节',
+    detail: '暂未归类的调试项。',
+  },
+};
+const performanceSectionPhase: Record<string, PerformancePhaseKey> = {
+  init_load_index_total: 'init',
+  load_index_total: 'init',
+  load_index_skip: 'init',
+  build_completion_index: 'init',
+  ingest_hot_index: 'init',
+  ingest_runtime_index: 'init',
+  ingest_seed_index: 'init',
+  ingest_context_hot_index: 'init',
+  ingest_runtime_context_index: 'init',
+  sort_index_lists: 'init',
+  translator_load_index: 'input',
+  input_fallback_load_index: 'input',
+  translator_total: 'input',
+  translator_split_syllables: 'input',
+  translator_yield_candidates: 'input',
+  score_candidates_total: 'input',
+  score_context_lookup: 'input',
+  score_global_lookup: 'input',
+  score_sort: 'input',
+  commit_hook_total: 'save',
+  commit_get_text: 'save',
+  commit_normalize: 'save',
+  commit_memory_buffer: 'save',
+  note_history_token: 'save',
+  append_history_buffer: 'save',
+  append_history_disk: 'save',
+  append_events_buffer: 'save',
+  append_events_disk: 'save',
+  maybe_flush_buffers: 'save',
+  flush_pending_rows: 'save',
+  flush_history_rows: 'save',
+  flush_buffers: 'save',
 };
 
 const runtimeModeInfo: Record<string, { rank: number; label: string; detail: string }> = {
@@ -184,6 +288,7 @@ const routeView = (value: unknown): RimeView => {
   if (value === 'index') return 'index';
   if (value === 'weight') return 'weight';
   if (value === 'config') return 'config';
+  if (value === 'perf') return 'perf';
   return 'articles';
 };
 
@@ -196,9 +301,12 @@ const loadingArticleContent = ref(false);
 const loadingHistory = ref(false);
 const loadingLint = ref(false);
 const loadingRuntimeConfig = ref(false);
+const loadingPerformance = ref(false);
 const savingHistory = ref(false);
 const savingArticleContent = ref(false);
 const savingRuntimeConfig = ref(false);
+const savingPerfDebug = ref(false);
+const resettingPerformance = ref(false);
 const adjustingWeightKey = ref('');
 const selectedEntryId = ref(
   Array.isArray(route.query.entry_id)
@@ -222,6 +330,7 @@ const articleContentState = ref<RimeContextArticleContentResponse | null>(null);
 const historyState = ref<RimeContextHistoryArticleResponse | null>(null);
 const lintState = ref<RimeContextLintResponse | null>(null);
 const runtimeConfigState = ref<RimeRuntimeConfigResponse | null>(null);
+const performanceState = ref<RimePerformanceResponse | null>(null);
 const runtimeConfigDraft = ref<Record<string, any>>({});
 const lintSource = ref<'all' | 'history' | 'articles'>('all');
 const lintMode = ref<'rules' | 'ai'>('rules');
@@ -259,6 +368,7 @@ const candidateForm = ref({
 let articleContentSaveTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingArticleContentSave: PendingArticleContentSave | null = null;
 let articleContentDraftVersion = 0;
+let performanceRefreshTimer: ReturnType<typeof window.setInterval> | null = null;
 
 const currentDevice = computed(() => devices.value.find((device) => device.id === selectedEntryId.value) || null);
 const hasDevices = computed(() => devices.value.length > 0);
@@ -332,6 +442,43 @@ const visibleRuntimeConfigGroups = computed(() => (
     }))
     .filter((group) => group.keys.length)
 ));
+const performanceEnabled = computed(() => Boolean(performanceState.value?.config?.enable_perf_debug));
+const performanceSections = computed(() => (
+  Object.entries(performanceState.value?.sections || {})
+    .map(([key, value]) => ({
+      key,
+      ...(value as RimePerformanceSection),
+    }))
+    .sort((left, right) => Number(right.total_ms || 0) - Number(left.total_ms || 0) || left.key.localeCompare(right.key))
+));
+const performancePhaseGroups = computed(() => (
+  performancePhaseOrder
+    .map((phaseKey) => {
+      const sections = performanceSections.value.filter((item) => (
+        (performanceSectionPhase[item.key] || 'other') === phaseKey
+      ));
+      return {
+        key: phaseKey,
+        ...performancePhaseLabels[phaseKey],
+        sections,
+        maxTotalMs: sections.reduce((maxValue, item) => Math.max(maxValue, Number(item.total_ms || 0)), 0),
+      };
+    })
+    .filter((group) => group.sections.length)
+));
+
+const findPerformanceSection = (key: string) => performanceSections.value.find((item) => item.key === key) || null;
+const performanceSummary = computed(() => ({
+  sectionCount: performanceSections.value.length,
+  inputCount: Number(findPerformanceSection('translator_total')?.count || 0),
+  inputTotalMs: Number(findPerformanceSection('translator_total')?.total_ms || 0),
+  initTotalMs: Number(
+    findPerformanceSection('init_load_index_total')?.total_ms
+    || findPerformanceSection('load_index_total')?.total_ms
+    || 0,
+  ),
+  saveTotalMs: Number(findPerformanceSection('commit_hook_total')?.total_ms || 0),
+}));
 
 function isGlobalContext(value: string) {
   return value === '__global';
@@ -476,6 +623,20 @@ const unavailableRuntimeConfig = (message: string, status = 'request_failed'): R
   fields: {},
   missing_keys: [],
   requires_reload: false,
+});
+
+const unavailablePerformance = (message: string, status = 'request_failed'): RimePerformanceResponse => ({
+  available: false,
+  status,
+  message,
+  rime_dir: null,
+  source: null,
+  source_path: null,
+  updated_at: null,
+  files: [],
+  config: {},
+  runtime: {},
+  sections: {},
 });
 
 const unavailableWeightCompare = (message: string, status = 'request_failed'): RimeWeightCompareResponse => ({
@@ -839,6 +1000,31 @@ const formatBytes = (value: number | null | undefined) => {
   }
   return `${current >= 10 || unitIndex === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[unitIndex]}`;
 };
+
+const formatMs = (value: number | null | undefined) => {
+  const numberValue = Number(value || 0);
+  if (!Number.isFinite(numberValue)) return '0 ms';
+  if (Math.abs(numberValue) >= 1000) return `${(numberValue / 1000).toFixed(2)} s`;
+  if (numberValue > 0 && numberValue < 1) return '<1 ms';
+  return `${Math.round(numberValue)} ms`;
+};
+
+const formatPerfRatio = (value: number | null | undefined, denominator: number) => {
+  const numberValue = Number(value || 0);
+  if (!Number.isFinite(numberValue) || !Number.isFinite(denominator) || denominator <= 0) return '0%';
+  return `${Math.min(100, (numberValue / denominator) * 100).toPrecision(4)}%`;
+};
+
+const getPerfBarWidth = (value: number | null | undefined, denominator: number) => {
+  const numberValue = Number(value || 0);
+  if (!Number.isFinite(numberValue) || !Number.isFinite(denominator) || denominator <= 0 || numberValue <= 0) {
+    return '0%';
+  }
+  const percent = (numberValue / denominator) * 100;
+  return `${Math.max(2, Math.min(100, percent))}%`;
+};
+
+const displayPerformanceSection = (key: string) => performanceSectionLabels[key] || key;
 
 const formatDateTime = (value: number | null | undefined) => {
   if (!value) return '无';
@@ -1223,6 +1409,78 @@ const loadRuntimeConfig = async () => {
   }
 };
 
+const loadPerformance = async (options: { silent?: boolean } = {}) => {
+  if (!selectedEntryId.value) {
+    performanceState.value = null;
+    return;
+  }
+  if (!options.silent) {
+    loadingPerformance.value = true;
+  }
+  try {
+    performanceState.value = await fetchRimePerformanceStats(selectedEntryId.value);
+  } catch (err: any) {
+    performanceState.value = unavailablePerformance(
+      err.response?.data?.detail || err.message || '读取性能统计失败。',
+    );
+  } finally {
+    if (!options.silent) {
+      loadingPerformance.value = false;
+    }
+  }
+};
+
+const clearPerformancePolling = () => {
+  if (!performanceRefreshTimer) return;
+  window.clearInterval(performanceRefreshTimer);
+  performanceRefreshTimer = null;
+};
+
+const startPerformancePolling = () => {
+  clearPerformancePolling();
+  performanceRefreshTimer = window.setInterval(() => {
+    if (activeView.value === 'perf' && performanceEnabled.value) {
+      void loadPerformance({ silent: true });
+    }
+  }, 2500);
+};
+
+const setPerformanceDebug = async (enabled: boolean) => {
+  if (!selectedEntryId.value || savingPerfDebug.value) return;
+  savingPerfDebug.value = true;
+  try {
+    await updateRimeRuntimeConfig(selectedEntryId.value, {
+      config: { enable_perf_debug: enabled },
+    });
+    await loadPerformance({ silent: true });
+    if (enabled) {
+      startPerformancePolling();
+      ElMessage.success('性能调试已开启并重新部署');
+    } else {
+      clearPerformancePolling();
+      ElMessage.success('性能调试已关闭并重新部署');
+    }
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '切换性能调试失败');
+    await loadPerformance({ silent: true });
+  } finally {
+    savingPerfDebug.value = false;
+  }
+};
+
+const resetPerformance = async () => {
+  if (!selectedEntryId.value || resettingPerformance.value) return;
+  resettingPerformance.value = true;
+  try {
+    performanceState.value = await resetRimePerformanceStats(selectedEntryId.value);
+    ElMessage.success(performanceState.value.message || '性能统计已清零');
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '清零性能统计失败');
+  } finally {
+    resettingPerformance.value = false;
+  }
+};
+
 const resetRuntimeConfigDraft = () => {
   syncRuntimeConfigDraft();
 };
@@ -1275,6 +1533,13 @@ const loadActiveView = async () => {
     await loadRuntimeConfig();
     return;
   }
+  if (activeView.value === 'perf') {
+    await loadPerformance();
+    if (performanceEnabled.value) {
+      startPerformancePolling();
+    }
+    return;
+  }
   if (activeView.value === 'weight') {
     await loadWeightCompare();
     return;
@@ -1296,6 +1561,8 @@ const handleDeviceChange = async () => {
   historyDraft.value = '';
   runtimeConfigState.value = null;
   runtimeConfigDraft.value = {};
+  performanceState.value = null;
+  clearPerformancePolling();
   weightCompareState.value = null;
   resetArticleContent();
   selectedTailKey.value = '';
@@ -1319,6 +1586,10 @@ const handleRefresh = async () => {
   }
   if (activeView.value === 'config') {
     await loadRuntimeConfig();
+    return;
+  }
+  if (activeView.value === 'perf') {
+    await loadPerformance();
     return;
   }
   if (activeView.value === 'weight') {
@@ -1414,6 +1685,9 @@ const handleUpdateIndex = async () => {
 };
 
 const switchView = async (view: RimeView) => {
+  if (activeView.value === 'perf' && view !== 'perf') {
+    clearPerformancePolling();
+  }
   activeView.value = view;
   syncRouteQuery();
   await loadActiveView();
@@ -1679,6 +1953,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearPerformancePolling();
   void saveArticleContentNow();
 });
 </script>
@@ -1773,6 +2048,13 @@ onBeforeUnmount(() => {
           @click="switchView('config')"
         >
           运行配置
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'perf' }"
+          @click="switchView('perf')"
+        >
+          性能调试
         </button>
       </nav>
 
@@ -2164,6 +2446,109 @@ onBeforeUnmount(() => {
                   />
                 </td>
                 <td class="config-hint">{{ runtimeConfigHint(key) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </section>
+
+      <section v-else-if="activeView === 'perf'" class="rime-performance" v-loading="loadingPerformance">
+        <section class="rime-section-head">
+          <div class="rime-section-title">
+            <strong>性能调试</strong>
+            <span v-if="performanceState?.rime_dir" class="rime-section-path" :title="performanceState.rime_dir">
+              目录 {{ performanceState.rime_dir }}
+            </span>
+          </div>
+          <div class="rime-section-actions">
+            <span class="perf-switch-label">调试</span>
+            <el-switch
+              :model-value="performanceEnabled"
+              :loading="savingPerfDebug"
+              :disabled="!selectedEntryId"
+              @change="(value: string | number | boolean) => setPerformanceDebug(Boolean(value))"
+            />
+            <el-button
+              size="small"
+              :loading="resettingPerformance"
+              :disabled="!performanceState?.available"
+              @click="resetPerformance"
+            >
+              清零
+            </el-button>
+            <el-button
+              size="small"
+              :loading="loadingPerformance"
+              :disabled="!selectedEntryId"
+              @click="loadPerformance"
+            >
+              刷新
+            </el-button>
+          </div>
+        </section>
+
+        <section class="rime-summary">
+          <span><strong>状态</strong>{{ performanceEnabled ? '开启' : '关闭' }}</span>
+          <span><strong>初始化</strong>{{ formatMs(performanceSummary.initTotalMs) }}</span>
+          <span><strong>输入</strong>{{ formatMs(performanceSummary.inputTotalMs) }}</span>
+          <span><strong>输入次数</strong>{{ formatNumber(performanceSummary.inputCount) }}</span>
+          <span><strong>保存</strong>{{ formatMs(performanceSummary.saveTotalMs) }}</span>
+          <span><strong>统计项</strong>{{ formatNumber(performanceSummary.sectionCount) }}</span>
+          <span v-if="performanceState?.updated_at" class="summary-time">
+            <strong>更新</strong>{{ formatDateTime(performanceState.updated_at) }}
+          </span>
+        </section>
+
+        <section v-if="!performanceState?.available" class="rime-unavailable">
+          <p>{{ performanceState?.message || '请选择设备查看性能统计。' }}</p>
+        </section>
+
+        <section v-else-if="performanceState.status === 'empty'" class="rime-unavailable">
+          <p>{{ performanceState.message }}</p>
+        </section>
+
+        <template v-else>
+          <section v-for="group in performancePhaseGroups" :key="group.key" class="perf-table-block">
+            <div class="perf-block-head">
+              <strong>{{ group.title }}</strong>
+              <span>{{ group.detail }}</span>
+            </div>
+            <table class="rime-performance-table" :aria-label="`小狼毫${group.title}性能统计`">
+              <thead>
+                <tr>
+                  <th>环节</th>
+                  <th>次数</th>
+                  <th>耗时</th>
+                  <th>平均</th>
+                  <th>最大</th>
+                  <th>最近</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="section in group.sections" :key="section.key">
+                  <td :title="section.key">{{ displayPerformanceSection(section.key) }}</td>
+                  <td>{{ formatNumber(section.count) }}</td>
+                  <td>
+                    <div class="perf-time-bar" :title="`${displayPerformanceSection(section.key)} · ${section.key} · 累计 ${formatMs(section.total_ms)}，相对本阶段最慢环节 ${formatPerfRatio(section.total_ms, group.maxTotalMs)}`">
+                      <span class="perf-time-fill" :style="{ width: getPerfBarWidth(section.total_ms, group.maxTotalMs) }"></span>
+                      <span class="perf-time-text">
+                        <strong>{{ formatMs(section.total_ms) }}</strong>
+                        <small>{{ formatPerfRatio(section.total_ms, group.maxTotalMs) }}</small>
+                      </span>
+                    </div>
+                  </td>
+                  <td>{{ formatMs(section.avg_ms) }}</td>
+                  <td>{{ formatMs(section.max_ms) }}</td>
+                  <td>{{ formatMs(section.last_ms) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+          <table v-if="performanceState.runtime && Object.keys(performanceState.runtime).length" class="rime-performance-runtime" aria-label="小狼毫运行快照">
+            <tbody>
+              <tr v-for="(value, key) in performanceState.runtime" :key="key">
+                <th>{{ key }}</th>
+                <td>{{ typeof value === 'number' ? formatNumber(value) : value }}</td>
               </tr>
             </tbody>
           </table>
@@ -2743,6 +3128,8 @@ onBeforeUnmount(() => {
 .rime-candidate-table,
 .rime-article-table,
 .rime-weight-table,
+.rime-performance-table,
+.rime-performance-runtime,
 .rime-config-table {
   border-collapse: collapse;
   table-layout: auto;
@@ -2760,6 +3147,10 @@ onBeforeUnmount(() => {
 .rime-article-table td,
 .rime-weight-table th,
 .rime-weight-table td,
+.rime-performance-table th,
+.rime-performance-table td,
+.rime-performance-runtime th,
+.rime-performance-runtime td,
 .rime-config-table th,
 .rime-config-table td {
   padding: 7px 10px;
@@ -2772,6 +3163,8 @@ onBeforeUnmount(() => {
 .rime-candidate-table th,
 .rime-article-table th,
 .rime-weight-table th,
+.rime-performance-table th,
+.rime-performance-runtime th,
 .rime-config-table th {
   color: #667085;
   font-weight: 500;
@@ -2850,6 +3243,97 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+.rime-performance {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.perf-switch-label {
+  color: #667085;
+  font-size: 13px;
+}
+
+.perf-table-block {
+  margin: 12px 14px 18px;
+}
+
+.perf-table-block + .perf-table-block {
+  margin-top: 4px;
+}
+
+.perf-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.perf-block-head strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.perf-block-head span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.rime-performance-table {
+  margin: 0;
+}
+
+.rime-performance-table td:first-child {
+  color: #111827;
+}
+
+.rime-performance-table th:nth-child(3),
+.rime-performance-table td:nth-child(3) {
+  min-width: 230px;
+}
+
+.perf-time-bar {
+  position: relative;
+  width: 220px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px #e2e8f0;
+}
+
+.perf-time-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #dbeafe, #bfdbfe);
+}
+
+.perf-time-text {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  gap: 12px;
+  padding: 0 8px;
+  color: #1f2937;
+  white-space: nowrap;
+}
+
+.perf-time-text strong {
+  font-weight: 500;
+}
+
+.perf-time-text small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.rime-performance-runtime {
+  margin: 0 14px 24px;
 }
 
 .rime-weight-input {

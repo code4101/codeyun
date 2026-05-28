@@ -970,6 +970,9 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     filename: str
     box: FanxiuGameWindow2MatchBox
     pixel_tolerance: int = Field(5, ge=0, le=255)
+    alpha_mask_data_url: Optional[str] = None
+    tolerance_min_data_url: Optional[str] = None
+    tolerance_max_data_url: Optional[str] = None
     title: Optional[str] = None
     title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
@@ -987,6 +990,9 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     filename: str
     box: FanxiuGameWindow2MatchBox
     pixel_tolerance: int = Field(5, ge=0, le=255)
+    alpha_mask_data_url: Optional[str] = None
+    tolerance_min_data_url: Optional[str] = None
+    tolerance_max_data_url: Optional[str] = None
     title: Optional[str] = None
     title_match: str = Field("contains", pattern="^(contains|exact)$")
     mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
@@ -5142,6 +5148,9 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             filename=payload["filename"],
             box=payload["box"],
             pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
+            alpha_mask_data_url=payload.get("alpha_mask_data_url"),
+            tolerance_min_data_url=payload.get("tolerance_min_data_url"),
+            tolerance_max_data_url=payload.get("tolerance_max_data_url"),
             title=payload.get("title"),
             title_match=payload.get("title_match") or "contains",
             mode=payload.get("mode"),
@@ -5152,6 +5161,7 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_width=int(payload.get("fixed_width") or 0),
             fixed_height=int(payload.get("fixed_height") or 0),
             quality=int(payload.get("quality") or 82),
+            current_frame_data_url=payload.get("current_frame_data_url"),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

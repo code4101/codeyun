@@ -172,6 +172,7 @@ from backend.core.rime_context_prediction import (
     RimeContextPredictionError,
     adjust_rime_context_weight_compare_candidate,
     collect_rime_runtime_config,
+    collect_rime_performance_stats,
     collect_rime_context_weight_compare,
     collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
@@ -188,8 +189,10 @@ from backend.core.rime_context_prediction import (
     make_rime_context_prediction_unavailable,
     make_rime_context_weight_compare_unavailable,
     make_rime_runtime_config_unavailable,
+    make_rime_performance_unavailable,
     rebuild_rime_context_prediction_snapshot,
     refresh_rime_context_prediction_tree,
+    reset_rime_performance_stats,
     save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
     update_rime_runtime_config,
@@ -2966,7 +2969,7 @@ def get_rime_runtime_config_for_entry(
             timeout=20,
         )
     except HTTPException as exc:
-        return make_rime_runtime_config_unavailable(
+        return make_rime_performance_unavailable(
             status="remote_unreachable",
             message=f"远程设备接口不可用：{exc.detail}",
         )
@@ -3015,6 +3018,76 @@ def patch_rime_runtime_config_for_entry(
             return make_rime_runtime_config_unavailable(
                 status="remote_unsupported",
                 message="该设备尚未部署小狼毫运行配置保存接口。",
+            )
+        _raise_remote_json_error(error_response)
+    return payload
+
+
+@router.get("/{entry_id}/rime/context-prediction/performance")
+def get_rime_performance_stats_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return collect_rime_performance_stats()
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "GET",
+            "/rime/context-prediction/performance",
+            timeout=20,
+        )
+    except HTTPException as exc:
+        return make_rime_runtime_config_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫性能调试接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_performance_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_performance_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫性能统计数据。",
+        )
+
+    return payload
+
+
+@router.post("/{entry_id}/rime/context-prediction/performance/reset")
+def post_rime_performance_stats_reset_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return reset_rime_performance_stats()
+        except RimeContextPredictionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/rime/context-prediction/performance/reset",
+        timeout=20,
+    )
+    if error_response is not None:
+        if error_response.status_code == 404:
+            return make_rime_performance_unavailable(
+                status="remote_unsupported",
+                message="该设备尚未部署小狼毫性能统计清零接口。",
             )
         _raise_remote_json_error(error_response)
     return payload

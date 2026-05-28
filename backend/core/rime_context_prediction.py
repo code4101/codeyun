@@ -43,6 +43,8 @@ ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
 ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 RIME_LUA_FILE = "rime.lua"
+PERF_FILE = "context_prediction_perf.json"
+PERF_RESET_FILE = "context_prediction_perf_reset.flag"
 
 ARTICLE_EXTRACTOR_VERSION = 7
 MAX_CONTEXT_TOKENS = 4
@@ -104,6 +106,8 @@ RIME_RUNTIME_CONFIG_FIELDS: dict[str, dict[str, Any]] = {
     "enable_realtime_learning": {"type": "bool", "label": "实时学习"},
     "capture_to_disk": {"type": "bool", "label": "实时写盘"},
     "enable_context_keys": {"type": "bool", "label": "上下文索引"},
+    "enable_perf_debug": {"type": "bool", "label": "性能调试"},
+    "perf_flush_interval_seconds": {"type": "int", "min": 1, "max": 60, "label": "调试刷新"},
 }
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]+")
@@ -406,6 +410,8 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
             ARTICLE_CONTRIBUTIONS_FILE,
             DELETED_CANDIDATES_FILE,
             REFRESH_META_FILE,
+            PERF_FILE,
+            PERF_RESET_FILE,
             ENGLISH_DICT_FILE,
             ENGLISH_BASE_DICT_FILE,
             ENGLISH_LEARNED_DICT_FILE,
@@ -797,6 +803,123 @@ def update_rime_runtime_config(values: dict[str, Any], *, deploy: bool = True) -
     else:
         payload["message"] = "运行配置已保存，重新部署或重新加载小狼毫后生效。"
         payload["requires_reload"] = True
+    return payload
+
+
+def make_rime_performance_unavailable(
+    *,
+    status: str,
+    message: str,
+    rime_dir: str | None = None,
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "status": status,
+        "message": message,
+        "rime_dir": rime_dir,
+        "source": PERF_FILE,
+        "source_path": None,
+        "updated_at": None,
+        "files": files or [],
+        "config": {},
+        "runtime": {},
+        "sections": {},
+    }
+
+
+def _runtime_config_from_path(rime_dir: Path) -> dict[str, Any]:
+    path = _runtime_config_path(rime_dir)
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    config, _present = _read_runtime_config_values(text)
+    return config
+
+
+def collect_rime_performance_stats() -> dict[str, Any]:
+    rime_dir = _resolve_rime_dir()
+    files = _tracked_files(rime_dir)
+    if not rime_dir:
+        return make_rime_performance_unavailable(
+            status="unsupported_platform",
+            message="当前系统没有可识别的 Rime 用户目录位置。",
+            files=files,
+        )
+    if not rime_dir.exists():
+        return make_rime_performance_unavailable(
+            status="rime_missing",
+            message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+
+    config = _runtime_config_from_path(rime_dir)
+    path = rime_dir / PERF_FILE
+    if not path.exists():
+        return {
+            "available": True,
+            "status": "empty",
+            "message": "暂无性能统计。开启性能调试后，输入几次拼音再刷新。",
+            "rime_dir": str(rime_dir),
+            "source": PERF_FILE,
+            "source_path": str(path),
+            "updated_at": None,
+            "files": files,
+            "config": config,
+            "runtime": {},
+            "sections": {},
+        }
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return make_rime_performance_unavailable(
+            status="read_failed",
+            message=f"读取性能统计失败：{exc}",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+    if not isinstance(payload, dict):
+        payload = {}
+
+    stat = path.stat()
+    sections = payload.get("sections")
+    runtime = payload.get("runtime")
+    return {
+        "available": True,
+        "status": "ready",
+        "message": "已读取小狼毫性能统计。",
+        "rime_dir": str(rime_dir),
+        "source": PERF_FILE,
+        "source_path": str(path),
+        "updated_at": float(payload.get("updated_at") or stat.st_mtime),
+        "files": files,
+        "config": config,
+        "runtime": runtime if isinstance(runtime, dict) else {},
+        "sections": sections if isinstance(sections, dict) else {},
+        "started_at": payload.get("started_at"),
+        "clock_ms": payload.get("clock_ms"),
+        "version": payload.get("version") or 1,
+    }
+
+
+def reset_rime_performance_stats() -> dict[str, Any]:
+    rime_dir = _ensure_writable_rime_dir()
+    reset_path = rime_dir / PERF_RESET_FILE
+    reset_path.write_text(str(time.time()), encoding="utf-8")
+    perf_path = rime_dir / PERF_FILE
+    try:
+        perf_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    payload = collect_rime_performance_stats()
+    payload["message"] = "性能统计清零请求已写入；下一次输入后会重新生成统计。"
     return payload
 
 

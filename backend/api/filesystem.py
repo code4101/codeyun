@@ -2140,6 +2140,13 @@ def _build_everything_directory_stats_by_name(
 ) -> dict[str, dict[str, int | None]]:
     if os.name != "nt" or not directory_items:
         return {}
+    if (os.environ.get("CODEYUN_ENABLE_EVERYTHING3_DIRECTORY_STATS") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return {}
 
     dll = _load_everything3_dll()
     if dll is None:
