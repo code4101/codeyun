@@ -59,6 +59,183 @@ _LATEST_FRAME_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
 _LATEST_FRAME_MAX_AGE_SECONDS = 3.0
 _SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.jpe?g$", re.IGNORECASE)
 _SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg"}
+MUMU_ADB_PORTS = (7555, 16416, 5555)
+
+
+def _is_mumu_target(*values: str | None) -> bool:
+    return any("mumu" in str(value or "").lower() for value in values)
+
+
+def _parse_adb_wm_size(value: str) -> tuple[int, int] | None:
+    match = re.search(r"Physical size:\s*(\d+)x(\d+)", value)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _map_frame_point_to_adb(
+    x: int,
+    y: int,
+    *,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+    adb_width: int | None = None,
+    adb_height: int | None = None,
+) -> tuple[int, int]:
+    if frame_width and frame_height and adb_width and adb_height and frame_width > 0 and frame_height > 0:
+        return (
+            max(0, min(adb_width - 1, int(round(x * adb_width / frame_width)))),
+            max(0, min(adb_height - 1, int(round(y * adb_height / frame_height)))),
+        )
+    return x, y
+
+
+def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
+    try:
+        from adb_shell.adb_device import AdbDeviceTcp
+    except Exception as exc:
+        raise RuntimeError(f"ADB 输入依赖不可用：{exc}") from exc
+
+    errors: list[str] = []
+    for port in MUMU_ADB_PORTS:
+        device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+        try:
+            device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
+            size_text = device.shell("wm size", transport_timeout_s=5, read_timeout_s=5)
+            device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s)
+            device.close()
+            return {"input": "adb", "adb_port": port, "adb_size": size_text.strip()}
+        except Exception as exc:
+            errors.append(f"{port}: {exc}")
+            try:
+                device.close()
+            except Exception:
+                pass
+    raise RuntimeError("ADB 输入失败：" + "; ".join(errors))
+
+
+def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    try:
+        from adb_shell.adb_device import AdbDeviceTcp
+    except Exception as exc:
+        raise RuntimeError(f"ADB 依赖不可用：{exc}") from exc
+
+    errors: list[str] = []
+    for port in MUMU_ADB_PORTS:
+        device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+        try:
+            device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
+            size_text = device.shell("wm size", transport_timeout_s=5, read_timeout_s=5)
+            data = device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
+            device.close()
+            return bytes(data), {"input": "adb", "adb_port": port, "adb_size": size_text.strip()}
+        except Exception as exc:
+            errors.append(f"{port}: {exc}")
+            try:
+                device.close()
+            except Exception:
+                pass
+    raise RuntimeError("ADB 命令失败：" + "; ".join(errors))
+
+
+def keyevent_mumu_adb(key: str | int) -> dict[str, Any]:
+    raw = str(key).strip()
+    if not raw:
+        raise RuntimeError("keyevent 不能为空")
+    if raw.isdigit():
+        key_arg = raw
+    else:
+        normalized = raw.upper()
+        normalized = normalized if normalized.startswith("KEYCODE_") else f"KEYCODE_{normalized}"
+        if not re.fullmatch(r"KEYCODE_[A-Z0-9_]+", normalized):
+            raise RuntimeError(f"keyevent 格式非法：{raw}")
+        key_arg = normalized
+    result = _run_mumu_adb_input(f"input keyevent {key_arg}")
+    return {**result, "keyevent": key_arg}
+
+
+def text_mumu_adb(text: str) -> dict[str, Any]:
+    value = str(text or "")
+    if not value:
+        raise RuntimeError("text 不能为空")
+    # Android `input text` is reliable for ASCII-style text. Spaces must be encoded as %s.
+    escaped = value.replace("%", "%25").replace(" ", "%s")
+    if not re.fullmatch(r"[A-Za-z0-9_@.%:+\\-]+(?:%s[A-Za-z0-9_@.%:+\\-]+)*", escaped):
+        raise RuntimeError("ADB text 当前仅支持英文、数字和常见账号字符；中文输入后续需要专用 IME 通道")
+    result = _run_mumu_adb_input(f"input text {escaped}")
+    return {**result, "text_length": len(value)}
+
+
+def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
+    data, meta = _run_mumu_adb_shell_bytes("screencap -p", timeout_s=10)
+    # Some adb stacks emit CRLF around PNG chunks; normalize only the common corruption pattern.
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        data = data.replace(b"\r\n", b"\n")
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("ADB screencap 返回的不是 PNG 数据")
+    return data, meta
+
+
+def _tap_mumu_adb(
+    x: int,
+    y: int,
+    *,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+) -> dict[str, Any]:
+    probe = _run_mumu_adb_input("echo ok")
+    adb_size = _parse_adb_wm_size(str(probe.get("adb_size") or ""))
+    adb_x, adb_y = _map_frame_point_to_adb(
+        x,
+        y,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        adb_width=adb_size[0] if adb_size else None,
+        adb_height=adb_size[1] if adb_size else None,
+    )
+    result = _run_mumu_adb_input(f"input tap {adb_x} {adb_y}")
+    return {**result, "adb_x": adb_x, "adb_y": adb_y}
+
+
+def _swipe_mumu_adb(
+    start_x: int,
+    start_y: int,
+    end_x: int,
+    end_y: int,
+    *,
+    duration_ms: int = 300,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
+) -> dict[str, Any]:
+    probe = _run_mumu_adb_input("echo ok")
+    adb_size = _parse_adb_wm_size(str(probe.get("adb_size") or ""))
+    adb_start_x, adb_start_y = _map_frame_point_to_adb(
+        start_x,
+        start_y,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        adb_width=adb_size[0] if adb_size else None,
+        adb_height=adb_size[1] if adb_size else None,
+    )
+    adb_end_x, adb_end_y = _map_frame_point_to_adb(
+        end_x,
+        end_y,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        adb_width=adb_size[0] if adb_size else None,
+        adb_height=adb_size[1] if adb_size else None,
+    )
+    result = _run_mumu_adb_input(
+        f"input swipe {adb_start_x} {adb_start_y} {adb_end_x} {adb_end_y} {max(50, min(3000, int(duration_ms)))}",
+        timeout_s=8,
+    )
+    return {
+        **result,
+        "adb_start_x": adb_start_x,
+        "adb_start_y": adb_start_y,
+        "adb_end_x": adb_end_x,
+        "adb_end_y": adb_end_y,
+    }
 
 
 @dataclass(frozen=True)
@@ -1277,10 +1454,9 @@ def click_sunlogin_rotate_processed_point(
     rotate: str | None = None,
     fixed_width: int | None = None,
     fixed_height: int | None = None,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
 ) -> dict[str, Any]:
-    ensure_windows_runtime()
-    set_dpi_awareness()
-
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
@@ -1288,6 +1464,26 @@ def click_sunlogin_rotate_processed_point(
         fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     normalized_title = (title or get_target_title()).strip() or get_target_title()
+    frame_x = int(round(x))
+    frame_y = int(round(y))
+    if _is_mumu_target(normalized_title):
+        input_result = _tap_mumu_adb(
+            frame_x,
+            frame_y,
+            frame_width=frame_width or resolved_fixed_width or None,
+            frame_height=frame_height or resolved_fixed_height or None,
+        )
+        return {
+            "ok": True,
+            "title": normalized_title,
+            **input_result,
+            "frame_x": frame_x,
+            "frame_y": frame_y,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+        }
+    ensure_windows_runtime()
+    set_dpi_awareness()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
     resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
     resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
@@ -1314,8 +1510,6 @@ def click_sunlogin_rotate_processed_point(
         fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
-    frame_x = int(round(x))
-    frame_y = int(round(y))
     if not (0 <= frame_x < frame_width and 0 <= frame_y < frame_height):
         raise RuntimeError(f"点击坐标超出画面范围：({frame_x}, {frame_y}) / {frame_width}x{frame_height}")
 
@@ -1331,11 +1525,19 @@ def click_sunlogin_rotate_processed_point(
     if raw_point is None:
         raise RuntimeError("点击坐标无法映射到原始窗口坐标")
 
-    click_window_raw_point(capturer.hwnd, resolved_area, raw_point)
+    input_result: dict[str, Any] = {"input": "window"}
+    try:
+        click_window_raw_point(capturer.hwnd, resolved_area, raw_point)
+    except Exception as exc:
+        if "mumu" not in normalized_title.lower() and "mumu" not in target.title.lower():
+            raise
+        input_result = _tap_mumu_adb(frame_x, frame_y, frame_width=frame_width, frame_height=frame_height)
+        input_result["window_input_error"] = str(exc)
     return {
         "ok": True,
         "title": normalized_title,
         "hwnd": capturer.hwnd,
+        **input_result,
         "frame_x": frame_x,
         "frame_y": frame_y,
         "frame_width": frame_width,
@@ -1392,10 +1594,9 @@ def drag_sunlogin_rotate_processed_points(
     rotate: str | None = None,
     fixed_width: int | None = None,
     fixed_height: int | None = None,
+    frame_width: int | None = None,
+    frame_height: int | None = None,
 ) -> dict[str, Any]:
-    ensure_windows_runtime()
-    set_dpi_awareness()
-
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
@@ -1403,6 +1604,34 @@ def drag_sunlogin_rotate_processed_points(
         fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     normalized_title = (title or get_target_title()).strip() or get_target_title()
+    frame_start_x = int(round(start_x))
+    frame_start_y = int(round(start_y))
+    frame_end_x = int(round(end_x))
+    frame_end_y = int(round(end_y))
+    if _is_mumu_target(normalized_title):
+        input_result = _swipe_mumu_adb(
+            frame_start_x,
+            frame_start_y,
+            frame_end_x,
+            frame_end_y,
+            duration_ms=duration_ms,
+            frame_width=frame_width or resolved_fixed_width or None,
+            frame_height=frame_height or resolved_fixed_height or None,
+        )
+        return {
+            "ok": True,
+            "title": normalized_title,
+            **input_result,
+            "frame_start_x": frame_start_x,
+            "frame_start_y": frame_start_y,
+            "frame_end_x": frame_end_x,
+            "frame_end_y": frame_end_y,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+            "duration_ms": duration_ms,
+        }
+    ensure_windows_runtime()
+    set_dpi_awareness()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
     resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
     resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
@@ -1429,10 +1658,6 @@ def drag_sunlogin_rotate_processed_points(
         fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
-    frame_start_x = int(round(start_x))
-    frame_start_y = int(round(start_y))
-    frame_end_x = int(round(end_x))
-    frame_end_y = int(round(end_y))
     for label, point_x, point_y in (
         ("起点", frame_start_x, frame_start_y),
         ("终点", frame_end_x, frame_end_y),
@@ -1461,11 +1686,27 @@ def drag_sunlogin_rotate_processed_points(
     if start_raw_point is None or end_raw_point is None:
         raise RuntimeError("拖拽坐标无法映射到原始窗口坐标")
 
-    drag_window_raw_points(capturer.hwnd, resolved_area, start_raw_point, end_raw_point, duration_ms=duration_ms)
+    input_result: dict[str, Any] = {"input": "window"}
+    try:
+        drag_window_raw_points(capturer.hwnd, resolved_area, start_raw_point, end_raw_point, duration_ms=duration_ms)
+    except Exception as exc:
+        if not _is_mumu_target(normalized_title, target.title):
+            raise
+        input_result = _swipe_mumu_adb(
+            frame_start_x,
+            frame_start_y,
+            frame_end_x,
+            frame_end_y,
+            duration_ms=duration_ms,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+        input_result["window_input_error"] = str(exc)
     return {
         "ok": True,
         "title": normalized_title,
         "hwnd": capturer.hwnd,
+        **input_result,
         "frame_start_x": frame_start_x,
         "frame_start_y": frame_start_y,
         "frame_end_x": frame_end_x,

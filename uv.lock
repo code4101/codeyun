@@ -34,6 +34,17 @@ members = [
 ]
 
 [[package]]
+name = "adb-shell"
+version = "0.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pyasn1" },
+    { name = "rsa" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/73/d246034db6f3e374dad9a35ee3f61345a6b239d4febd2a41ab69df9936fe/adb_shell-0.4.4.tar.gz", hash = "sha256:04c305f30a2ca25d5c54b3cd6ce9bb64c36e5f07967b23b3fb6aaecc851b90b6", size = 61822, upload-time = "2023-09-01T03:48:40.348Z" }
+
+[[package]]
 name = "aistudio-sdk"
 version = "0.3.8"
 source = { registry = "https://pypi.org/simple" }
@@ -738,6 +749,7 @@ name = "codeyun-backend"
 version = "0.1.0"
 source = { editable = "backend" }
 dependencies = [
+    { name = "adb-shell" },
     { name = "apscheduler" },
     { name = "beautifulsoup4" },
     { name = "chardet" },
@@ -778,6 +790,7 @@ ocr-cpu = [
 
 [package.metadata]
 requires-dist = [
+    { name = "adb-shell", specifier = ">=0.4.4" },
     { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
     { name = "beautifulsoup4", specifier = ">=4.14.3" },
     { name = "black", marker = "extra == 'dev'" },

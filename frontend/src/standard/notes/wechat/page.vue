@@ -6,6 +6,7 @@ import { ArrowLeft, Download, Refresh, Search } from '@element-plus/icons-vue'
 import {
   downloadWeChatDbMedia,
   fetchWeChatDbChats,
+  fetchWeChatDbDevices,
   fetchWeChatDbMessageCount,
   fetchWeChatDbMessageTypes,
   fetchWeChatDbMessages,
@@ -13,6 +14,7 @@ import {
   syncWeChatDbFromLive,
   weChatDbMediaUrl,
   type WeChatDbChat,
+  type WeChatDbDevice,
   type WeChatDbLiveSyncResult,
   type WeChatDbMessage,
   type WeChatDbMessageType,
@@ -20,9 +22,11 @@ import {
   type WeChatDbStatus,
 } from '@/api/wechatArchive'
 
-const SELF_USERNAMES = new Set(['wxid_m1cd4f5aahut22'])
+const DEFAULT_SELF_USERNAMES = new Set(['wxid_m1cd4f5aahut22'])
 
 const status = ref<WeChatDbStatus | null>(null)
+const devices = ref<WeChatDbDevice[]>([])
+const selectedDeviceId = ref('')
 const chats = ref<WeChatDbChat[]>([])
 const messages = ref<WeChatDbMessage[]>([])
 const messageTypes = ref<WeChatDbMessageType[]>([])
@@ -56,6 +60,13 @@ const selectedChat = computed(() => {
   const current = chats.value.find((item) => item.username === selectedUsername.value)
   if (current) return current
   return selectedChatCache.value?.username === selectedUsername.value ? selectedChatCache.value : null
+})
+const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedDeviceId.value) || null)
+const activeDeviceId = computed(() => selectedDeviceId.value || status.value?.device_id || '')
+const selfUsernames = computed(() => {
+  const names = new Set(DEFAULT_SELF_USERNAMES)
+  if (status.value?.self_username) names.add(status.value.self_username)
+  return names
 })
 const visibleMessages = computed(() => messages.value)
 const lastChatPage = computed(() => Math.max(1, Math.ceil(totalChats.value / chatPageSize.value)))
@@ -225,6 +236,17 @@ function typeLabel(value: number | string | null | undefined) {
   return Number.isFinite(key) ? (map[key] || String(key)) : '-'
 }
 
+function deviceSourceText(value: string | null | undefined) {
+  if (value === 'wechat_3') return '微信 3.x'
+  if (value === 'wechat_4') return '微信 4.x'
+  return '微信数据'
+}
+
+function deviceOptionLabel(device: WeChatDbDevice) {
+  const state = device.ready ? '' : ' · 未就绪'
+  return `${device.label} · ${deviceSourceText(device.source_format)}${state}`
+}
+
 function messageType(row: WeChatDbMessage) {
   return row.local_type_normalized ?? row.local_type
 }
@@ -278,7 +300,7 @@ function downloadableResources(row: WeChatDbMessage) {
 }
 
 function mediaUrl(item: WeChatDbResourceExport) {
-  return weChatDbMediaUrl(item)
+  return weChatDbMediaUrl(item, activeDeviceId.value || undefined)
 }
 
 const previewImageUrl = computed(() => (previewImage.value ? mediaUrl(previewImage.value) : ''))
@@ -408,7 +430,7 @@ function shouldShowMessageBubble(row: WeChatDbMessage) {
 }
 
 function isOutgoing(row: WeChatDbMessage) {
-  return SELF_USERNAMES.has(row.sender_username || '')
+  return selfUsernames.value.has(row.sender_username || '')
 }
 
 function showSenderName(row: WeChatDbMessage) {
@@ -433,7 +455,7 @@ function getErrorMessage(error: unknown) {
 
 async function downloadResource(item: WeChatDbResourceExport) {
   try {
-    const blob = await downloadWeChatDbMedia(item)
+    const blob = await downloadWeChatDbMedia(item, activeDeviceId.value || undefined)
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -470,13 +492,22 @@ async function loadInlineMedia() {
 }
 
 async function loadStatus() {
-  status.value = await fetchWeChatDbStatus()
+  status.value = await fetchWeChatDbStatus({ device_id: activeDeviceId.value || undefined })
+}
+
+async function loadDevices() {
+  const payload = await fetchWeChatDbDevices()
+  devices.value = payload.items
+  const selectedStillExists = devices.value.some((item) => item.id === selectedDeviceId.value)
+  if (selectedDeviceId.value && selectedStillExists) return
+  selectedDeviceId.value = devices.value.find((item) => item.current)?.id || devices.value.find((item) => item.ready)?.id || devices.value[0]?.id || ''
 }
 
 async function loadChats() {
   chatLoading.value = true
   try {
     const payload = await fetchWeChatDbChats({
+      device_id: activeDeviceId.value || undefined,
       q: chatKeyword.value.trim() || undefined,
       limit: chatPageSize.value,
       offset: (currentChatPage.value - 1) * chatPageSize.value,
@@ -509,7 +540,7 @@ async function loadMessageTypes() {
     messageTypes.value = []
     return
   }
-  const payload = await fetchWeChatDbMessageTypes({ chat_username: username })
+  const payload = await fetchWeChatDbMessageTypes({ device_id: activeDeviceId.value || undefined, chat_username: username })
   messageTypes.value = payload.items
   if (typeFilter.value && !messageTypes.value.some((item) => String(item.local_type) === typeFilter.value)) {
     typeFilter.value = ''
@@ -530,6 +561,7 @@ async function loadMessages() {
   messageLoading.value = true
   try {
     const payload = await fetchWeChatDbMessages({
+      device_id: activeDeviceId.value || undefined,
       chat_username: username,
       q: messageKeyword.value.trim() || undefined,
       message_type: typeFilter.value || undefined,
@@ -586,6 +618,7 @@ async function loadMessageResources(requestId: number, username: string, targetP
   }, 2500)
   try {
     const payload = await fetchWeChatDbMessages({
+      device_id: activeDeviceId.value || undefined,
       chat_username: username,
       q: messageKeyword.value.trim() || undefined,
       message_type: typeFilter.value || undefined,
@@ -626,6 +659,7 @@ async function loadLatestMessages() {
   messages.value = []
   try {
     const countPayload = await fetchWeChatDbMessageCount({
+      device_id: activeDeviceId.value || undefined,
       chat_username: username,
       q: messageKeyword.value.trim() || undefined,
       message_type: typeFilter.value || undefined,
@@ -635,6 +669,7 @@ async function loadLatestMessages() {
     const targetPage = Math.max(1, Math.ceil(countPayload.total / pageSize.value))
     await setMessagePageSilently(targetPage)
     const payload = await fetchWeChatDbMessages({
+      device_id: activeDeviceId.value || undefined,
       chat_username: username,
       q: messageKeyword.value.trim() || undefined,
       message_type: typeFilter.value || undefined,
@@ -669,6 +704,7 @@ async function scrollMessagesToBottom() {
 async function refreshAll() {
   loading.value = true
   try {
+    await loadDevices()
     await loadStatus()
     await loadChats()
     await loadMessageTypes()
@@ -683,8 +719,9 @@ async function refreshAll() {
 async function syncLiveData() {
   liveSyncLoading.value = true
   try {
-    const result = await syncWeChatDbFromLive()
+    const result = await syncWeChatDbFromLive({ device_id: activeDeviceId.value || undefined })
     lastLiveSyncResult.value = result
+    await loadDevices()
     await refreshAll()
     const copied = result.copy.copied
     const decrypted = result.decrypt.decrypted
@@ -695,6 +732,30 @@ async function syncLiveData() {
   } finally {
     liveSyncLoading.value = false
   }
+}
+
+function resetConversationState() {
+  chats.value = []
+  messages.value = []
+  messageTypes.value = []
+  selectedUsername.value = ''
+  selectedChatCache.value = null
+  currentChatPage.value = 1
+  currentPage.value = 1
+  totalChats.value = 0
+  totalMessages.value = 0
+  foldedListOpen.value = false
+  typeFilter.value = ''
+  lastLiveSyncResult.value = null
+  messageRequestSerial += 1
+  resourceRequestSerial += 1
+  resourceLoading.value = false
+  resourceLoadingSlow.value = false
+}
+
+function handleDeviceChange() {
+  resetConversationState()
+  void refreshAll()
 }
 
 function reloadChats() {
@@ -784,6 +845,23 @@ onBeforeUnmount(() => {
 <template>
   <div class="wechat-db-page">
     <aside class="conversation-sidebar">
+      <div class="device-switcher">
+        <el-select
+          v-model="selectedDeviceId"
+          class="device-select"
+          size="small"
+          placeholder="选择设备"
+          @change="handleDeviceChange"
+        >
+          <el-option
+            v-for="device in devices"
+            :key="device.id"
+            :label="deviceOptionLabel(device)"
+            :value="device.id"
+            :disabled="!device.ready && !device.current"
+          />
+        </el-select>
+      </div>
       <div v-if="foldedListOpen" class="folded-list-header">
         <button type="button" class="folded-back" title="返回" @click="closeFoldedList">
           <el-icon><ArrowLeft /></el-icon>
@@ -896,10 +974,13 @@ onBeforeUnmount(() => {
             :title="
               lastLiveSyncResult
                 ? `上次同步 ${lastLiveSyncResult.elapsed_seconds}s，新增资源 ${lastLiveSyncResult.media?.new_files ?? 0}`
-                : '复制本机微信数据库快照、解密并导出新增资源'
+                : selectedDevice?.can_sync_live
+                  ? '复制本机微信数据库快照、解密并导出新增资源'
+                  : '只能同步本机微信数据'
             "
             size="small"
             plain
+            :disabled="!selectedDevice?.can_sync_live"
             @click="syncLiveData"
           >
             同步本机
@@ -1033,6 +1114,11 @@ onBeforeUnmount(() => {
   background: #f7f7f7;
 }
 
+.device-switcher {
+  flex: 0 0 auto;
+  padding: 12px 12px 0;
+}
+
 .sidebar-search,
 .chat-header,
 .chat-tools,
@@ -1047,7 +1133,7 @@ onBeforeUnmount(() => {
 .sidebar-search {
   flex: 0 0 auto;
   gap: 8px;
-  padding: 15px 12px 9px;
+  padding: 9px 12px;
 }
 
 .folded-list-header {
@@ -1256,6 +1342,10 @@ onBeforeUnmount(() => {
 
 .message-search {
   width: 220px;
+}
+
+.device-select {
+  width: 100%;
 }
 
 .type-select {
@@ -1605,6 +1695,7 @@ onBeforeUnmount(() => {
   }
 
   .message-search,
+  .device-select,
   .type-select {
     width: 100%;
   }

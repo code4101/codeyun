@@ -26,6 +26,7 @@ from backend.core.attendance_progress_style import (
     ThresholdRefundRule,
     highlight_percentage_refund_progress,
     highlight_presence_progress,
+    highlight_text_refund_progress,
     highlight_threshold_refund_progress,
     parse_progress_percent,
     set_cell_background,
@@ -138,6 +139,11 @@ DEFAULT_VIDEO_RULES: dict[str, str] = {
     LEGACY_AFTER_20250522_RULE: "50%=20",
     LEGACY_BEFORE_20250522_RULE: "90%=10;150%=15;200%=20",
 }
+DEFAULT_TIMED_VIDEO_RULES: dict[str, dict[str, int]] = {
+    CURRENT_RULE: {"当堂": 20, "第1天": 15, "第2天": 10, "第3天": 5, "回放": 0},
+    LEGACY_AFTER_20250522_RULE: {"当堂": 20, "第1天": 15, "第2天": 10, "第3天": 5, "回放": 0},
+    LEGACY_BEFORE_20250522_RULE: {"当堂": 20, "第1天": 15, "第2天": 10, "第3天": 5, "回放": 0},
+}
 DEFAULT_CLOCKIN_RULE = "5=100;10=150;15=200"
 
 
@@ -159,6 +165,7 @@ class VideoConfigItem:
     participates_refund: bool
     participates_score: bool
     rules_by_version: dict[str, list[PercentageRefundRule]]
+    text_rules_by_version: dict[str, dict[str, int]]
     video_duration: float = 0.0
     start_date: datetime | None = None
     course_name: str = ""
@@ -278,6 +285,13 @@ def _video_completed_count(value: Any) -> int:
     return 1 if (_video_refund_progress_percent(value) or 0) >= 100 else 0
 
 
+def _video_completed_count_for_item(item: VideoConfigItem, rule_version: str, value: Any) -> int:
+    if _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE):
+        text = _normalize_text(value)
+        return 1 if "完成" in text or "回放" in text else 0
+    return _video_completed_count(value)
+
+
 def _highlight_video_refund_progress(
     rules: list[PercentageRefundRule],
     value: Any,
@@ -286,6 +300,20 @@ def _highlight_video_refund_progress(
     if progress_percent is None:
         return 0, None
     return highlight_percentage_refund_progress(rules, f"{progress_percent}%")
+
+
+def _highlight_video_refund_for_item(
+    item: VideoConfigItem,
+    rule_version: str,
+    value: Any,
+) -> tuple[float, str | None]:
+    text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
+    if text_rules:
+        return highlight_text_refund_progress(text_rules, value)
+    return _highlight_video_refund_progress(
+        _rules_for_version(item.rules_by_version, rule_version),
+        value,
+    )
 
 
 def _strip_progress_title(value: Any) -> str:
@@ -599,6 +627,29 @@ def _parse_threshold_rules(value: Any) -> list[ThresholdRefundRule]:
         if threshold_value > 0 and amount_value > 0:
             rules.append(ThresholdRefundRule(threshold_value, amount_value))
     return sorted(rules, key=lambda item: item.threshold)
+
+
+def _parse_timed_text_rules(value: Any) -> dict[str, int]:
+    if isinstance(value, dict):
+        result: dict[str, int] = {}
+        for key, amount in value.items():
+            label = _normalize_text(key)
+            if not label:
+                continue
+            numeric_amount = int(_to_float(amount))
+            if numeric_amount >= 0:
+                result[label] = numeric_amount
+        return result
+
+    text = _normalize_text(value)
+    if not text:
+        return {}
+    result: dict[str, int] = {}
+    for label, amount in re.findall(r"([^=;；:：]+?)\s*(?:=|:|：)\s*(\d+)", text):
+        label_text = label.strip()
+        if label_text:
+            result[label_text] = int(amount)
+    return result
 
 
 def _parse_clockin_rule_from_formula(value: Any) -> str:
@@ -1926,15 +1977,31 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
         is_zen_stage_video = _is_zen_stage_course_text(f"{course_name} {lesson_name}") and not is_qa_item
         item_type = "课次" if lesson_number is not None or is_zen_stage_video else ("答疑" if is_qa_item else "视频")
         participates_refund = lesson_number is not None or is_zen_stage_video
+        refund_rule_mode = _normalize_text(source_meta.get("video_refund_rule_mode"))
         rules_by_version: dict[str, list[PercentageRefundRule]] = {
-            CURRENT_RULE: _parse_percentage_rules(DEFAULT_VIDEO_RULES[CURRENT_RULE] if participates_refund else ""),
+            CURRENT_RULE: _parse_percentage_rules(
+                DEFAULT_VIDEO_RULES[CURRENT_RULE]
+                if participates_refund and refund_rule_mode != "timed_text"
+                else "",
+            ),
             LEGACY_AFTER_20250522_RULE: _parse_percentage_rules(
-                DEFAULT_VIDEO_RULES[LEGACY_AFTER_20250522_RULE] if participates_refund else "",
+                DEFAULT_VIDEO_RULES[LEGACY_AFTER_20250522_RULE]
+                if participates_refund and refund_rule_mode != "timed_text"
+                else "",
             ),
             LEGACY_BEFORE_20250522_RULE: _parse_percentage_rules(
-                DEFAULT_VIDEO_RULES[LEGACY_BEFORE_20250522_RULE] if participates_refund else "",
+                DEFAULT_VIDEO_RULES[LEGACY_BEFORE_20250522_RULE]
+                if participates_refund and refund_rule_mode != "timed_text"
+                else "",
             ),
         }
+        custom_text_rules = _parse_timed_text_rules(source_meta.get("timed_video_rules"))
+        text_rules_by_version: dict[str, dict[str, int]] = {}
+        for version, rules in DEFAULT_TIMED_VIDEO_RULES.items():
+            if participates_refund and refund_rule_mode == "timed_text":
+                text_rules_by_version[version] = dict(custom_text_rules or rules)
+            else:
+                text_rules_by_version[version] = {}
         try:
             order_index = int(_to_float(lesson_id))
         except ValueError:
@@ -1949,6 +2016,7 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
             participates_refund=participates_refund,
             participates_score=bool(lesson_number is not None and lesson_number >= 12),
             rules_by_version=rules_by_version,
+            text_rules_by_version=text_rules_by_version,
             video_duration=_to_float(row.get("video_duration")),
             start_date=_parse_datetime_cell(row.get("start_date")),
             course_name=course_name,
@@ -2281,10 +2349,10 @@ def _select_video_progress_for_identity_keys(
     rules = _rules_for_version(item.rules_by_version, rule_version)
 
     def sort_key(value: str) -> tuple[float, int, float, int]:
-        refund_amount, _color = _highlight_video_refund_progress(rules, value)
+        refund_amount, _color = _highlight_video_refund_for_item(item, rule_version, value)
         return (
             refund_amount,
-            _video_completed_count(value),
+            _video_completed_count_for_item(item, rule_version, value),
             _video_refund_progress_percent(value) or 0,
             len(value),
         )
@@ -2708,13 +2776,10 @@ def rebuild_nianzhu_attendance_from_course_sheets(
 
             color: str | None = None
             if item.participates_refund:
-                completed_count = _video_completed_count(value)
+                completed_count = _video_completed_count_for_item(item, rule_version, value)
                 if completed_count > 0:
                     completed_video_count += 1
-                refund_amount, color = _highlight_video_refund_progress(
-                    _rules_for_version(item.rules_by_version, rule_version),
-                    value,
-                )
+                refund_amount, color = _highlight_video_refund_for_item(item, rule_version, value)
                 video_refund += refund_amount
                 if item.participates_score and refund_amount > 0:
                     score += max(completed_count - 1, 0)

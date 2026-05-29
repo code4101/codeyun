@@ -52,13 +52,16 @@ from backend.core.fanxiu_sunlogin_rotate import (
     get_fanxiu_match_frame_path,
     get_fanxiu_screenshot_path,
     get_sunlogin_rotate_status,
+    keyevent_mumu_adb,
     list_fanxiu_screenshots,
     match_fanxiu_screenshot_box_frame,
     read_fanxiu_screenshot_pre_label,
     save_fanxiu_screenshot_frame,
+    screencap_mumu_adb_png,
     start_sunlogin_rotate_preview,
     stop_sunlogin_rotate_preview,
     stream_sunlogin_rotate_mjpeg,
+    text_mumu_adb,
     write_fanxiu_screenshot_pre_label,
 )
 from backend.core.fanxiu_pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
@@ -926,6 +929,28 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class FanxiuGameWindow2KeyeventRequest(BaseModel):
+    entry_id: str
+    key: str
+
+
+class FanxiuGameWindow2ServiceKeyeventRequest(BaseModel):
+    key: str
+
+
+class FanxiuGameWindow2TextRequest(BaseModel):
+    entry_id: str
+    text: str = Field(min_length=1, max_length=256)
+
+
+class FanxiuGameWindow2ServiceTextRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=256)
+
+
+class FanxiuGameWindow2ScreencapRequest(BaseModel):
+    entry_id: str
 
 
 class FanxiuGameWindow2SaveFrameRequest(BaseModel):
@@ -5059,6 +5084,16 @@ def _game_window2_drag_payload(req: FanxiuGameWindow2DragRequest | FanxiuGameWin
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
 
+def _game_window2_keyevent_payload(
+    req: FanxiuGameWindow2KeyeventRequest | FanxiuGameWindow2ServiceKeyeventRequest,
+) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
+def _game_window2_text_payload(req: FanxiuGameWindow2TextRequest | FanxiuGameWindow2ServiceTextRequest) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
 def _game_window2_save_frame_payload(
     req: FanxiuGameWindow2SaveFrameRequest | FanxiuGameWindow2ServiceSaveFrameRequest,
 ) -> dict[str, Any]:
@@ -5085,6 +5120,8 @@ def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             rotate=payload.get("rotate"),
             fixed_width=int(payload.get("fixed_width") or 0),
             fixed_height=int(payload.get("fixed_height") or 0),
+            frame_width=int(payload.get("frame_width") or 0) or None,
+            frame_height=int(payload.get("frame_height") or 0) or None,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5118,9 +5155,42 @@ def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             rotate=payload.get("rotate"),
             fixed_width=int(payload.get("fixed_width") or 0),
             fixed_height=int(payload.get("fixed_height") or 0),
+            frame_width=int(payload.get("frame_width") or 0) or None,
+            frame_height=int(payload.get("frame_height") or 0) or None,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _keyevent_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return keyevent_mumu_adb(str(payload.get("key") or ""))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _text_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return text_mumu_adb(str(payload.get("text") or ""))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _screencap_game_window2_service() -> Response:
+    try:
+        data, meta = screencap_mumu_adb_png()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-CodeYun-Input": str(meta.get("input") or ""),
+            "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
+            "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
+        },
+    )
 
 
 def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5244,6 +5314,37 @@ def _drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dic
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="远程游戏拖拽服务响应格式不支持")
     return data
+
+
+def _post_remote_game_window2_json(entry: UserDevice, service_path: str, payload: dict[str, Any], action: str) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/{service_path}"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 12.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应格式不支持")
+    return data
+
+
+def _keyevent_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_remote_game_window2_json(entry, "service-input/keyevent", payload, "按键")
+
+
+def _text_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    return _post_remote_game_window2_json(entry, "service-input/text", payload, "文本输入")
 
 
 def _save_remote_game_window2_frame(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5404,6 +5505,26 @@ def _remote_game_window2_screenshot_image(entry: UserDevice, filename: str) -> R
     return Response(
         content=response.content,
         media_type=response.headers.get("content-type") or "image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _remote_game_window2_screencap(entry: UserDevice) -> Response:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-screencap"
+    try:
+        response = requests.get(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 20.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏 ADB 截图服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    return Response(
+        content=response.content,
+        media_type=response.headers.get("content-type") or "image/png",
         headers={"Cache-Control": "no-store"},
     )
 
@@ -5954,6 +6075,70 @@ def drag_fanxiu_game_window2_service(
     _token_device: Any = Depends(verify_api_token),
 ):
     return _drag_game_window2_service(_game_window2_drag_payload(req))
+
+
+@status_router.post("/game-window2/input/keyevent")
+def keyevent_fanxiu_game_window2(
+    req: FanxiuGameWindow2KeyeventRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_keyevent_payload(req)
+    if entry.mode == "local":
+        return _keyevent_game_window2_service(payload)
+    return _keyevent_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-input/keyevent")
+def keyevent_fanxiu_game_window2_service(
+    req: FanxiuGameWindow2ServiceKeyeventRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _keyevent_game_window2_service(_game_window2_keyevent_payload(req))
+
+
+@status_router.post("/game-window2/input/text")
+def text_fanxiu_game_window2(
+    req: FanxiuGameWindow2TextRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_text_payload(req)
+    if entry.mode == "local":
+        return _text_game_window2_service(payload)
+    return _text_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-input/text")
+def text_fanxiu_game_window2_service(
+    req: FanxiuGameWindow2ServiceTextRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _text_game_window2_service(_game_window2_text_payload(req))
+
+
+@status_router.post("/game-window2/screencap")
+def screencap_fanxiu_game_window2(
+    req: FanxiuGameWindow2ScreencapRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode == "local":
+        return _screencap_game_window2_service()
+    return _remote_game_window2_screencap(entry)
+
+
+@status_router.get("/game-window2/service-screencap")
+def screencap_fanxiu_game_window2_service(
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _screencap_game_window2_service()
 
 
 @status_router.post("/game-window2/save-frame")

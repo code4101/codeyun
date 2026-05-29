@@ -358,9 +358,9 @@ def main():
 
         # ── Links ──
         session.add(WorkbookSheetLink(
-            workbook_id=workbook.id, sheet_id=att.id, order_index=10, created_at=now))
+            workbook_id=workbook.id, sheet_id=att.id, order_index=5, created_at=now))
         session.add(WorkbookSheetLink(
-            workbook_id=workbook.id, sheet_id=reg.id, order_index=5, created_at=now))
+            workbook_id=workbook.id, sheet_id=reg.id, order_index=10, created_at=now))
         print(f"[4] Linked to workbook {workbook.numeric_id}")
 
         session.commit()

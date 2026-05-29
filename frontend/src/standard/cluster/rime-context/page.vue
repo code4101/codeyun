@@ -94,6 +94,7 @@ const runtimeConfigGroups: { title: string; keys: string[] }[] = [
   {
     title: '候选生成',
     keys: [
+      'enable_candidate_prediction',
       'max_candidates',
       'max_source_candidates',
       'min_input_length',
@@ -105,7 +106,7 @@ const runtimeConfigGroups: { title: string; keys: string[] }[] = [
     ],
   },
   {
-    title: '输入捕捉',
+    title: '语料捕捉',
     keys: [
       'enable_commit_capture',
       'commit_capture_mode',
@@ -132,6 +133,7 @@ const runtimeConfigGroups: { title: string; keys: string[] }[] = [
 ];
 
 const runtimeConfigHints: Record<string, string> = {
+  enable_candidate_prediction: '是否启用小狼毫侧智能候选。关闭后不加载预测索引，也不会插入带 * 的候选。',
   max_candidates: '每次插入到候选栏里的智能推荐数量。',
   max_source_candidates: '参与融合排序的来源候选数量。',
   min_input_length: '拼音长度达到这个值后才启用预测。',
@@ -141,7 +143,7 @@ const runtimeConfigHints: Record<string, string> = {
   initials_completion_min_length: '首字母缩写补全的起效长度。',
   initials_completion_weight_ratio: '首字母补全候选相对完整拼音的折扣。',
   enable_commit_capture: '是否捕捉已提交文本，用于后续周期性提炼语料。',
-  commit_capture_mode: '输入捕捉的轻重模式。',
+  commit_capture_mode: '只控制提交捕捉/保存链路的轻重，不控制候选生成。',
   flush_batch_size: '内存缓冲达到多少条后才允许落盘。',
   flush_interval_seconds: '距离上次落盘多久后才允许落盘。',
   max_buffer_rows: '内存里最多保留多少条待写入输入事件。',

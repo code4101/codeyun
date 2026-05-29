@@ -419,7 +419,7 @@ def _build_documents(xlsx_path: Path) -> list[tuple[str, str, dict[str, Any]]]:
     workbook = load_workbook(xlsx_path, read_only=False, data_only=False)
     try:
         documents: list[tuple[str, str, dict[str, Any]]] = []
-        ordered_names = ["报名表", "考勤表"]
+        ordered_names = ["考勤表", "报名表"]
         ordered_names.extend(name for name in workbook.sheetnames if name not in ordered_names)
         for sheet_name in ordered_names:
             if sheet_name not in workbook.sheetnames:

@@ -30,6 +30,7 @@ dependencies = [
     "pypinyin>=0.55.0",
     "jieba>=0.42.1",
     "futu-api>=10.5.6508",
+    "adb-shell>=0.4.4",
 ]
 
 [project.optional-dependencies]
