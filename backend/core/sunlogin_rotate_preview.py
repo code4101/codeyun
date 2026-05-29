@@ -550,10 +550,20 @@ def click_window_raw_point(hwnd: int, area: str, raw_point: tuple[int, int]) -> 
     screen_y = int(rect[1] + raw_point[1])
     activate_window(hwnd)
     time.sleep(0.03)
-    win32api.SetCursorPos((screen_x, screen_y))
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.03)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    try:
+        win32api.SetCursorPos((screen_x, screen_y))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.03)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        return
+    except Exception:
+        # Some desktop sessions reject cursor movement while screenshots still work.
+        # Fall back to posting a client-area click to the target window.
+        client_x, client_y = win32gui.ScreenToClient(hwnd, (screen_x, screen_y))
+        lparam = win32api.MAKELONG(int(client_x), int(client_y))
+        win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+        time.sleep(0.03)
+        win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
 
 
 def drag_window_raw_points(

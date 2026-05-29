@@ -143,9 +143,25 @@ export interface WeChatArchiveSyncStatus {
 
 export interface WeChatDbStatus {
   db_storage_path: string
+  device_id?: string
+  source_format?: string
+  self_username?: string | null
   exists: boolean
   ready: boolean
   databases: Record<string, boolean>
+}
+
+export interface WeChatDbDevice {
+  id: string
+  label: string
+  current: boolean
+  ready: boolean
+  exists: boolean
+  source_format: string
+  db_storage_path: string
+  self_username?: string | null
+  can_sync_live: boolean
+  error?: string | null
 }
 
 export interface WeChatDbLiveSyncResult {
@@ -305,24 +321,34 @@ export async function fetchWeChatArchiveStatus() {
   return response.data
 }
 
-export async function fetchWeChatDbStatus() {
-  const response = await api.get<WeChatDbStatus>('/wechat-archive/db-status')
+export async function fetchWeChatDbDevices() {
+  const response = await api.get<{ items: WeChatDbDevice[] }>('/wechat-archive/db-devices')
   return response.data
 }
 
-export async function syncWeChatDbFromLive() {
+export async function fetchWeChatDbStatus(params: { device_id?: string } = {}) {
+  const response = await api.get<WeChatDbStatus>('/wechat-archive/db-status', { params })
+  return response.data
+}
+
+export async function syncWeChatDbFromLive(params: { device_id?: string } = {}) {
   const response = await api.post<WeChatDbLiveSyncResult>('/wechat-archive/db-sync-live', undefined, {
+    params,
     timeout: 5 * 60 * 1000,
   })
   return response.data
 }
 
-export async function fetchWeChatDbSchema() {
-  const response = await api.get<{ items: WeChatDbSchemaItem[]; db_storage_path: string }>('/wechat-archive/db-schema')
+export async function fetchWeChatDbSchema(params: { device_id?: string } = {}) {
+  const response = await api.get<{ items: WeChatDbSchemaItem[]; db_storage_path: string; device_id?: string }>(
+    '/wechat-archive/db-schema',
+    { params },
+  )
   return response.data
 }
 
 export async function fetchWeChatDbChats(params: {
+  device_id?: string
   q?: string
   limit?: number
   offset?: number
@@ -338,6 +364,7 @@ export async function fetchWeChatDbChats(params: {
 }
 
 export async function fetchWeChatDbMessages(params: {
+  device_id?: string
   chat_username: string
   q?: string
   message_type?: string
@@ -354,6 +381,7 @@ export async function fetchWeChatDbMessages(params: {
 }
 
 export async function fetchWeChatDbMessageCount(params: {
+  device_id?: string
   chat_username: string
   q?: string
   message_type?: string
@@ -367,27 +395,29 @@ export async function fetchWeChatDbMessageCount(params: {
   return response.data
 }
 
-export async function fetchWeChatDbMessageTypes(params: { chat_username?: string } = {}) {
+export async function fetchWeChatDbMessageTypes(params: { device_id?: string; chat_username?: string } = {}) {
   const response = await api.get<{ items: WeChatDbMessageType[] }>('/wechat-archive/db-message-types', {
     params,
   })
   return response.data
 }
 
-export async function downloadWeChatDbMedia(item: WeChatDbResourceExport) {
+export async function downloadWeChatDbMedia(item: WeChatDbResourceExport, deviceId?: string) {
   const [kind, storedName] = item.download_name.split('/')
   const response = await api.get<Blob>(`/wechat-archive/db-media/${kind}/${encodeURIComponent(storedName)}`, {
+    params: deviceId ? { device_id: deviceId } : undefined,
     responseType: 'blob',
   })
   return response.data
 }
 
-export function weChatDbMediaUrl(item: WeChatDbResourceExport) {
+export function weChatDbMediaUrl(item: WeChatDbResourceExport, deviceId?: string) {
   const [kind, storedName] = item.download_name.split('/')
-  return `/api/wechat-archive/db-media/${kind}/${encodeURIComponent(storedName)}`
+  const query = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ''
+  return `/api/wechat-archive/db-media/${kind}/${encodeURIComponent(storedName)}${query}`
 }
 
-export async function fetchWeChatDbTables(params: { database: string }) {
+export async function fetchWeChatDbTables(params: { device_id?: string; database: string }) {
   const response = await api.get<{ items: WeChatDbTableInfo[] }>('/wechat-archive/db-tables', {
     params,
   })
@@ -395,6 +425,7 @@ export async function fetchWeChatDbTables(params: { database: string }) {
 }
 
 export async function fetchWeChatDbTableRows(params: {
+  device_id?: string
   database: string
   table: string
   q?: string

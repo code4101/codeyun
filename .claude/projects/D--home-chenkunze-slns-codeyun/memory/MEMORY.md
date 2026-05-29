@@ -1,0 +1,1 @@
+- [pyxllib 版本标记规范](pyxllib_versioning.md) — 每次 pyxllib commit 前递增 __version__ 并用 v4.xx 标记 commit message

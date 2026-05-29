@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import ipaddress
 import os
 from pathlib import Path
 import sqlite3
 import time
+from urllib.parse import quote, unquote, urlparse
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+import requests
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import object_session
+from sqlmodel import Session, select
+from starlette.background import BackgroundTask
 
 from backend.core.background_task_queue import background_task_queue
-from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
+from backend.core.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
+from backend.db import get_session
+from backend.models import User, UserDevice
 
 
 FEATURE_KEY = "notes.wechat"
@@ -20,10 +30,34 @@ DEFAULT_PAGE_SIZE = 80
 MAX_PAGE_SIZE = 500
 WECHAT_ARCHIVE_SYNC_TASK_NAME = "wechat_archive_incremental_sync"
 _WECHAT_ARCHIVE_LAST_SYNC_RESULT: dict[str, Any] | None = None
+REMOTE_DEVICE_DIRECT_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
+REMOTE_WECHAT_DEVICE_PREFIX = "entry:"
 
-router = APIRouter(
-    dependencies=[Depends(require_feature_access_dependency(FEATURE_KEY))],
-)
+
+async def require_wechat_archive_access(
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+    authorization: str | None = Header(None),
+    x_device_token: str | None = Header(None),
+    token: str | None = Query(None),
+    sec_websocket_protocol: str | None = Header(None),
+) -> User | None:
+    api_token = extract_api_token(
+        authorization=authorization,
+        x_device_token=x_device_token,
+        token=token,
+        sec_websocket_protocol=sec_websocket_protocol,
+    )
+    if api_token:
+        try:
+            validate_api_token_value(api_token)
+            return current_user
+        except HTTPException:
+            pass
+    return ensure_feature_access(session, feature_key=FEATURE_KEY, current_user=current_user)
+
+
+router = APIRouter(dependencies=[Depends(require_wechat_archive_access)])
 
 
 class WeChatArchiveImportRequest(BaseModel):
@@ -50,7 +84,29 @@ def _settings_wechat_db_storage_path() -> Path:
     env_path = (os.environ.get("CODEYUN_WECHAT_DB_STORAGE") or "").strip()
     if env_path:
         return Path(env_path).expanduser()
-    return Path(r"D:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
+    legacy_codepc_mf_path = Path(r"D:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
+    if legacy_codepc_mf_path.exists():
+        return legacy_codepc_mf_path
+    return get_settings().data_dir / "wechat_db" / "decrypted" / "db_storage"
+
+
+def _settings_wechat_legacy_storage_path() -> Path:
+    env_path = (os.environ.get("CODEYUN_WECHAT_LEGACY_STORAGE") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return get_settings().data_dir / "wechat_legacy" / "decrypted"
+
+
+def _settings_wechat_db_storage_path_for_device(device_root: Path) -> Path:
+    if device_root.resolve() == get_settings().data_dir.resolve():
+        return _settings_wechat_db_storage_path()
+    return device_root / "wechat_db" / "decrypted" / "db_storage"
+
+
+def _settings_wechat_legacy_storage_path_for_device(device_root: Path) -> Path:
+    if device_root.resolve() == get_settings().data_dir.resolve():
+        return _settings_wechat_legacy_storage_path()
+    return device_root / "wechat_legacy" / "decrypted"
 
 
 def _settings_archive_db_path() -> Path:
@@ -246,10 +302,394 @@ def _ensure_archive_schema_if_exists() -> None:
     WeChatArchive(db_path)
 
 
-def _open_wechat_db_storage():
-    from pyxllib.autogui.wechat_db import WeChatDbStorage
+@dataclass(frozen=True)
+class RemoteWeChatDeviceRef:
+    entry: UserDevice
+    remote_device_id: str
+    public_device_id: str
 
-    return WeChatDbStorage(_settings_wechat_db_storage_path())
+
+def _has_user_device_context(session: Any, current_user: Any) -> bool:
+    return hasattr(session, "exec") and getattr(current_user, "id", None) is not None
+
+
+def _release_user_device_session(entry: UserDevice) -> None:
+    entry_session = object_session(entry)
+    if entry_session is not None:
+        entry_session.expunge(entry)
+        entry_session.close()
+
+
+def _remote_wechat_device_public_id(entry_id: str, remote_device_id: str) -> str:
+    return f"{REMOTE_WECHAT_DEVICE_PREFIX}{entry_id}:{quote(remote_device_id, safe='')}"
+
+
+def _parse_remote_wechat_device_id(device_id: str | None) -> tuple[str, str] | None:
+    if not device_id or not device_id.startswith(REMOTE_WECHAT_DEVICE_PREFIX):
+        return None
+    rest = device_id[len(REMOTE_WECHAT_DEVICE_PREFIX) :]
+    entry_id, sep, encoded_remote_id = rest.partition(":")
+    if not entry_id or not sep:
+        return None
+    return entry_id, unquote(encoded_remote_id)
+
+
+def _remote_wechat_headers(entry: UserDevice) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {entry.token}",
+        "X-Device-Token": entry.token,
+    }
+
+
+def _remote_wechat_base_url(entry: UserDevice) -> str:
+    if entry.mode != "remote":
+        raise HTTPException(status_code=400, detail="该设备不是远程设备")
+    if not entry.server_url:
+        raise HTTPException(status_code=400, detail="远程设备缺少后端地址")
+    return entry.server_url.rstrip("/")
+
+
+def _extract_remote_wechat_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    return response.text.strip() or f"远程设备返回 HTTP {response.status_code}"
+
+
+def _remote_wechat_json(
+    ref: RemoteWeChatDeviceRef,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = 20,
+) -> Any:
+    query = {key: value for key, value in (params or {}).items() if value is not None}
+    if ref.remote_device_id:
+        query["device_id"] = ref.remote_device_id
+    entry = ref.entry
+    url = f"{_remote_wechat_base_url(entry)}/api{path}"
+    headers = _remote_wechat_headers(entry)
+    _release_user_device_session(entry)
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            params=query,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程微信数据设备不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_remote_wechat_error(response))
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程微信数据接口返回了无效 JSON") from exc
+
+
+def _remote_wechat_stream(
+    ref: RemoteWeChatDeviceRef,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = 60,
+) -> StreamingResponse:
+    query = {key: value for key, value in (params or {}).items() if value is not None}
+    if ref.remote_device_id:
+        query["device_id"] = ref.remote_device_id
+    entry = ref.entry
+    url = f"{_remote_wechat_base_url(entry)}/api{path}"
+    headers = _remote_wechat_headers(entry)
+    _release_user_device_session(entry)
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            params=query,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=timeout,
+            stream=True,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程微信资源不可达：{exc}") from exc
+    if response.status_code >= 400:
+        detail = _extract_remote_wechat_error(response)
+        response.close()
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() in {"cache-control", "content-disposition", "content-length", "etag", "last-modified"}
+    }
+    return StreamingResponse(
+        response.iter_content(chunk_size=64 * 1024),
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type") or None,
+        headers=headers,
+        background=BackgroundTask(response.close),
+    )
+
+
+def _remote_user_device_entries(session: Any, current_user: Any) -> list[UserDevice]:
+    if not _has_user_device_context(session, current_user):
+        return []
+    entries = list(
+        session.exec(
+            select(UserDevice)
+            .where(
+                UserDevice.user_id == current_user.id,
+                UserDevice.is_active == True,  # noqa: E712
+                UserDevice.mode == "remote",
+            )
+            .order_by(UserDevice.order_index, UserDevice.created_at)
+        )
+    )
+    return [entry for entry in entries if not _is_loopback_server_url(entry.server_url)]
+
+
+def _is_loopback_server_url(value: str | None) -> bool:
+    if not value:
+        return False
+    host = (urlparse(value).hostname or "").strip().lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_remote_wechat_device(
+    device_id: str | None,
+    session: Any,
+    current_user: Any,
+) -> RemoteWeChatDeviceRef | None:
+    parsed = _parse_remote_wechat_device_id(device_id)
+    if not parsed:
+        return None
+    if not _has_user_device_context(session, current_user):
+        raise HTTPException(status_code=404, detail=f"微信数据设备不存在：{device_id}")
+    entry_id, remote_device_id = parsed
+    entry = session.get(UserDevice, entry_id)
+    if not entry or entry.user_id != current_user.id or not entry.is_active:
+        raise HTTPException(status_code=404, detail=f"微信数据设备不存在：{device_id}")
+    if entry.mode != "remote":
+        raise HTTPException(status_code=400, detail="该微信数据设备不是远程设备")
+    return RemoteWeChatDeviceRef(entry=entry, remote_device_id=remote_device_id, public_device_id=device_id or "")
+
+
+def _remote_wechat_device_payloads(session: Any, current_user: Any) -> list[dict[str, Any]]:
+    devices: list[dict[str, Any]] = []
+    for entry in _remote_user_device_entries(session, current_user):
+        try:
+            payload = _remote_wechat_json(
+                RemoteWeChatDeviceRef(entry=entry, remote_device_id="", public_device_id=""),
+                "/wechat-archive/db-devices",
+                timeout=8,
+            )
+            remote_items = payload.get("items") if isinstance(payload, dict) else []
+            if not isinstance(remote_items, list):
+                remote_items = []
+            for item in remote_items:
+                if not isinstance(item, dict):
+                    continue
+                remote_device_id = str(item.get("id") or entry.device_id or entry.entry_id)
+                public_id = _remote_wechat_device_public_id(entry.entry_id, remote_device_id)
+                entry_label = str(entry.name or entry.device_id or entry.entry_id).strip()
+                remote_label = str(item.get("label") or remote_device_id).replace("（本机）", "").strip() or remote_device_id
+                label = entry_label if entry_label in {remote_label, remote_device_id} else f"{entry_label} · {remote_label}"
+                devices.append(
+                    {
+                        **item,
+                        "id": public_id,
+                        "device_id": remote_device_id,
+                        "entry_id": entry.entry_id,
+                        "remote": True,
+                        "label": label,
+                        "current": False,
+                        "can_sync_live": False,
+                        "server_url": entry.server_url,
+                    }
+                )
+        except Exception as exc:
+            public_id = _remote_wechat_device_public_id(entry.entry_id, entry.device_id or entry.entry_id)
+            devices.append(
+                {
+                    "id": public_id,
+                    "device_id": entry.device_id,
+                    "entry_id": entry.entry_id,
+                    "remote": True,
+                    "label": f"{entry.name} · 微信数据",
+                    "current": False,
+                    "ready": False,
+                    "exists": False,
+                    "source_format": "unknown",
+                    "db_storage_path": "",
+                    "self_username": None,
+                    "can_sync_live": False,
+                    "server_url": entry.server_url,
+                    "error": str(exc),
+                }
+            )
+    return devices
+
+
+def _extra_wechat_device_roots() -> list[Path]:
+    raw = (os.environ.get("CODEYUN_WECHAT_DEVICE_ROOTS") or "").strip()
+    if not raw:
+        return []
+
+    values: list[str] = []
+    try:
+        import json
+
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            values.extend(str(value) for value in parsed.values())
+        elif isinstance(parsed, list):
+            values.extend(str(value) for value in parsed)
+    except Exception:
+        for item in raw.replace("\n", ";").split(";"):
+            value = item.strip()
+            if not value:
+                continue
+            if "=" in value:
+                value = value.split("=", 1)[1].strip()
+            values.append(value)
+
+    return [Path(value).expanduser() for value in values if value]
+
+
+def _wechat_device_roots() -> list[Path]:
+    settings = get_settings()
+    roots: list[Path] = [settings.data_dir]
+    parent = settings.data_dir.parent
+    if parent.exists():
+        roots.extend(path for path in parent.iterdir() if path.is_dir() and path.name.startswith("codepc_"))
+    roots.extend(_extra_wechat_device_roots())
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = os.fspath(root.resolve() if root.exists() else root).lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(root)
+    return sorted(deduped, key=lambda item: (item.name != settings.data_dir.name, item.name.lower()))
+
+
+def _device_id_for_root(root: Path) -> str:
+    return root.name
+
+
+def _is_current_device_root(root: Path) -> bool:
+    try:
+        return root.resolve() == get_settings().data_dir.resolve()
+    except OSError:
+        return False
+
+
+def _choose_wechat_storage_for_device(device_root: Path):
+    from pyxllib.autogui.wechat_db import WeChatDbStorage
+    from backend.core.wechat_legacy_db import WeChatLegacyDbStorage, has_legacy_wechat_live_source
+
+    is_current = _is_current_device_root(device_root)
+    source = (os.environ.get("CODEYUN_WECHAT_DB_SOURCE") or "auto").strip().lower() if is_current else "auto"
+    v4_path = _settings_wechat_db_storage_path_for_device(device_root)
+    legacy_path = _settings_wechat_legacy_storage_path_for_device(device_root)
+    if source in {"legacy", "v3", "wechat3", "wechat_3"}:
+        return WeChatLegacyDbStorage(legacy_path)
+    if source in {"v4", "wechat4", "wechat_4"}:
+        return WeChatDbStorage(v4_path)
+
+    v4_storage = WeChatDbStorage(v4_path)
+    try:
+        if v4_storage.status().get("ready"):
+            return v4_storage
+    except Exception:
+        pass
+
+    legacy_storage = WeChatLegacyDbStorage(legacy_path)
+    try:
+        if legacy_storage.status().get("ready") or (is_current and has_legacy_wechat_live_source()):
+            return legacy_storage
+    except Exception:
+        pass
+    return v4_storage
+
+
+def _wechat_storage_status(storage) -> dict[str, Any]:
+    status = storage.status()
+    if "source_format" not in status:
+        status["source_format"] = "wechat_4"
+    return status
+
+
+def _wechat_db_device_payload(device_root: Path) -> dict[str, Any]:
+    storage = _choose_wechat_storage_for_device(device_root)
+    try:
+        status = _wechat_storage_status(storage)
+    except Exception as exc:
+        status = {
+            "db_storage_path": os.fspath(getattr(storage, "root", "")),
+            "source_format": "unknown",
+            "exists": False,
+            "ready": False,
+            "databases": {},
+            "error": str(exc),
+        }
+    device_id = _device_id_for_root(device_root)
+    is_current = _is_current_device_root(device_root)
+    label = f"{device_id}（本机）" if is_current else device_id
+    return {
+        "id": device_id,
+        "label": label,
+        "current": is_current,
+        "ready": bool(status.get("ready")),
+        "exists": bool(status.get("exists")),
+        "source_format": status.get("source_format") or "unknown",
+        "db_storage_path": status.get("db_storage_path") or os.fspath(getattr(storage, "root", "")),
+        "self_username": status.get("self_username"),
+        "can_sync_live": is_current,
+        "error": status.get("error"),
+    }
+
+
+def _wechat_db_devices_payload(session: Any = None, current_user: Any = None) -> list[dict[str, Any]]:
+    items = [_wechat_db_device_payload(root) for root in _wechat_device_roots()]
+    visible_items = [item for item in items if item["current"] or item["ready"] or item["exists"]]
+    visible_items.extend(_remote_wechat_device_payloads(session, current_user))
+    return visible_items
+
+
+def _resolve_wechat_device_root(device_id: str | None = None) -> Path:
+    roots = _wechat_device_roots()
+    if device_id:
+        for root in roots:
+            if _device_id_for_root(root) == device_id:
+                return root
+        raise HTTPException(status_code=404, detail=f"微信数据设备不存在：{device_id}")
+    for root in roots:
+        if _is_current_device_root(root):
+            return root
+    return roots[0]
+
+
+def _open_wechat_db_storage(device_id: str | None = None):
+    return _choose_wechat_storage_for_device(_resolve_wechat_device_root(device_id))
+
+
+@router.get("/db-devices")
+def list_wechat_db_devices(
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    return {"items": _wechat_db_devices_payload(session, current_user)}
 
 
 @router.get("/status")
@@ -258,17 +698,41 @@ def get_wechat_archive_status():
 
 
 @router.get("/db-status")
-def get_wechat_db_status():
-    storage = _open_wechat_db_storage()
+def get_wechat_db_status(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        status = _remote_wechat_json(remote, "/wechat-archive/db-status")
+        if isinstance(status, dict):
+            status["device_id"] = remote.public_device_id
+            status["remote_device_id"] = remote.remote_device_id
+            status["entry_id"] = remote.entry.entry_id
+            status["remote"] = True
+        return status
+    storage = _open_wechat_db_storage(device_id)
     try:
-        return storage.status()
+        status = _wechat_storage_status(storage)
+        status["device_id"] = _device_id_for_root(_resolve_wechat_device_root(device_id))
+        return status
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库读取失败：{exc}") from exc
 
 
 @router.post("/db-sync-live")
-def sync_wechat_db_from_live():
-    storage = _open_wechat_db_storage()
+def sync_wechat_db_from_live(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    if _resolve_remote_wechat_device(device_id, session, current_user):
+        raise HTTPException(status_code=400, detail="只能同步当前节点正在运行的微信数据")
+    device_root = _resolve_wechat_device_root(device_id)
+    if not _is_current_device_root(device_root):
+        raise HTTPException(status_code=400, detail="只能同步本机正在运行的微信数据")
+    storage = _choose_wechat_storage_for_device(device_root)
     try:
         return storage.sync_from_live(export_media=True)
     except Exception as exc:
@@ -276,22 +740,55 @@ def sync_wechat_db_from_live():
 
 
 @router.get("/db-schema")
-def get_wechat_db_schema():
-    storage = _open_wechat_db_storage()
+def get_wechat_db_schema(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        payload = _remote_wechat_json(remote, "/wechat-archive/db-schema")
+        if isinstance(payload, dict):
+            payload["device_id"] = remote.public_device_id
+            payload["remote_device_id"] = remote.remote_device_id
+            payload["entry_id"] = remote.entry.entry_id
+            payload["remote"] = True
+        return payload
+    storage = _open_wechat_db_storage(device_id)
     try:
-        return {"items": storage.schema_overview(), "db_storage_path": os.fspath(storage.root)}
+        return {
+            "items": storage.schema_overview(),
+            "db_storage_path": os.fspath(storage.root),
+            "device_id": _device_id_for_root(_resolve_wechat_device_root(device_id)),
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库 schema 读取失败：{exc}") from exc
 
 
 @router.get("/db-chats")
 def list_wechat_db_chats(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 500,
     offset: Annotated[int, Query(ge=0)] = 0,
     scope: Annotated[Literal["main", "folded", "all"], Query()] = "main",
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    storage = _open_wechat_db_storage()
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        payload = _remote_wechat_json(
+            remote,
+            "/wechat-archive/db-chats",
+            params={"q": q, "limit": limit, "offset": offset, "scope": scope},
+        )
+        if isinstance(payload, dict):
+            payload["device_id"] = remote.public_device_id
+            payload["remote_device_id"] = remote.remote_device_id
+            payload["entry_id"] = remote.entry.entry_id
+            payload["remote"] = True
+        return payload
+    storage = _open_wechat_db_storage(device_id)
     try:
         folded = True if scope == "folded" else None
         include_folded_entry = scope == "main"
@@ -305,6 +802,7 @@ def list_wechat_db_chats(
             ),
             "total": storage.count_chats(q=q, folded=folded, include_folded_entry=include_folded_entry),
             "db_storage_path": os.fspath(storage.root),
+            "device_id": _device_id_for_root(_resolve_wechat_device_root(device_id)),
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库会话读取失败：{exc}") from exc
@@ -313,14 +811,39 @@ def list_wechat_db_chats(
 @router.get("/db-messages")
 def list_wechat_db_messages(
     chat_username: Annotated[str, Query(min_length=1, max_length=200)],
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     message_type: Annotated[str | None, Query(max_length=40)] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     offset: Annotated[int, Query(ge=0)] = 0,
     order: Annotated[Literal["asc", "desc"], Query()] = "desc",
     include_resources: bool = True,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    storage = _open_wechat_db_storage()
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        payload = _remote_wechat_json(
+            remote,
+            "/wechat-archive/db-messages",
+            params={
+                "chat_username": chat_username,
+                "q": q,
+                "message_type": message_type,
+                "limit": limit,
+                "offset": offset,
+                "order": order,
+                "include_resources": include_resources,
+            },
+            timeout=30,
+        )
+        if isinstance(payload, dict):
+            payload["device_id"] = remote.public_device_id
+            payload["remote_device_id"] = remote.remote_device_id
+            payload["entry_id"] = remote.entry.entry_id
+            payload["remote"] = True
+        return payload
+    storage = _open_wechat_db_storage(device_id)
     try:
         payload = storage.list_messages(
             chat_username=chat_username,
@@ -331,7 +854,11 @@ def list_wechat_db_messages(
             order=order,
             include_resources=include_resources,
         )
-        return {**payload, "db_storage_path": os.fspath(storage.root)}
+        return {
+            **payload,
+            "db_storage_path": os.fspath(storage.root),
+            "device_id": _device_id_for_root(_resolve_wechat_device_root(device_id)),
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库消息读取失败：{exc}") from exc
 
@@ -339,24 +866,56 @@ def list_wechat_db_messages(
 @router.get("/db-message-count")
 def count_wechat_db_messages(
     chat_username: Annotated[str, Query(min_length=1, max_length=200)],
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     message_type: Annotated[str | None, Query(max_length=40)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    storage = _open_wechat_db_storage()
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        payload = _remote_wechat_json(
+            remote,
+            "/wechat-archive/db-message-count",
+            params={"chat_username": chat_username, "q": q, "message_type": message_type},
+        )
+        if isinstance(payload, dict):
+            payload["device_id"] = remote.public_device_id
+            payload["remote_device_id"] = remote.remote_device_id
+            payload["entry_id"] = remote.entry.entry_id
+            payload["remote"] = True
+        return payload
+    storage = _open_wechat_db_storage(device_id)
     try:
         payload = storage.count_messages(
             chat_username=chat_username,
             q=q,
             message_type=message_type,
         )
-        return {**payload, "db_storage_path": os.fspath(storage.root)}
+        return {
+            **payload,
+            "db_storage_path": os.fspath(storage.root),
+            "device_id": _device_id_for_root(_resolve_wechat_device_root(device_id)),
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信数据库消息计数失败：{exc}") from exc
 
 
 @router.get("/db-message-types")
-def list_wechat_db_message_types(chat_username: Annotated[str | None, Query(max_length=200)] = None):
-    storage = _open_wechat_db_storage()
+def list_wechat_db_message_types(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    chat_username: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        return _remote_wechat_json(
+            remote,
+            "/wechat-archive/db-message-types",
+            params={"chat_username": chat_username},
+        )
+    storage = _open_wechat_db_storage(device_id)
     try:
         return {"items": storage.message_types(chat_username=chat_username)}
     except Exception as exc:
@@ -364,8 +923,17 @@ def list_wechat_db_message_types(chat_username: Annotated[str | None, Query(max_
 
 
 @router.get("/db-media/{kind}/{file_name}")
-def get_wechat_db_media_file(kind: Literal["image", "video", "file"], file_name: str):
-    storage = _open_wechat_db_storage()
+def get_wechat_db_media_file(
+    kind: Literal["image", "video", "file"],
+    file_name: str,
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        return _remote_wechat_stream(remote, f"/wechat-archive/db-media/{kind}/{file_name}")
+    storage = _open_wechat_db_storage(device_id)
     root = (storage.root.parent / "exported_media" / kind).resolve()
     path = (root / file_name).resolve()
     if not str(path).startswith(str(root)) or not path.exists():
@@ -374,8 +942,16 @@ def get_wechat_db_media_file(kind: Literal["image", "video", "file"], file_name:
 
 
 @router.get("/db-tables")
-def list_wechat_db_tables(database: Annotated[str, Query(min_length=1, max_length=40)]):
-    storage = _open_wechat_db_storage()
+def list_wechat_db_tables(
+    database: Annotated[str, Query(min_length=1, max_length=40)],
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        return _remote_wechat_json(remote, "/wechat-archive/db-tables", params={"database": database})
+    storage = _open_wechat_db_storage(device_id)
     try:
         return {"items": storage.list_tables(database)}
     except Exception as exc:
@@ -386,11 +962,22 @@ def list_wechat_db_tables(database: Annotated[str, Query(min_length=1, max_lengt
 def list_wechat_db_table_rows(
     database: Annotated[str, Query(min_length=1, max_length=40)],
     table: Annotated[str, Query(min_length=1, max_length=120)],
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     offset: Annotated[int, Query(ge=0)] = 0,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    storage = _open_wechat_db_storage()
+    remote = _resolve_remote_wechat_device(device_id, session, current_user)
+    if remote:
+        return _remote_wechat_json(
+            remote,
+            "/wechat-archive/db-table-rows",
+            params={"database": database, "table": table, "q": q, "limit": limit, "offset": offset},
+            timeout=30,
+        )
+    storage = _open_wechat_db_storage(device_id)
     try:
         return storage.browse_table(database=database, table=table, q=q, limit=limit, offset=offset)
     except Exception as exc:

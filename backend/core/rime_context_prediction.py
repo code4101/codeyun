@@ -79,6 +79,7 @@ MAX_LINT_AI_CHARS = 8000
 
 RIME_RUNTIME_CONFIG_FIELDS: dict[str, dict[str, Any]] = {
     "max_context": {"type": "int", "min": 0, "max": 16, "label": "前文长度"},
+    "enable_candidate_prediction": {"type": "bool", "label": "候选预测"},
     "max_source_candidates": {"type": "int", "min": 1, "max": 100, "label": "来源候选"},
     "max_candidates": {"type": "int", "min": 0, "max": 20, "label": "预测候选"},
     "min_input_length": {"type": "int", "min": 1, "max": 12, "label": "起效长度"},
@@ -89,7 +90,7 @@ RIME_RUNTIME_CONFIG_FIELDS: dict[str, dict[str, Any]] = {
     "max_buffer_rows": {"type": "int", "min": 0, "max": 100000, "label": "内存缓冲上限"},
     "flush_batch_size": {"type": "int", "min": 1, "max": 10000, "label": "写盘批量"},
     "flush_interval_seconds": {"type": "int", "min": 1, "max": 86400, "label": "写盘间隔"},
-    "enable_commit_capture": {"type": "bool", "label": "捕捉输入"},
+    "enable_commit_capture": {"type": "bool", "label": "语料捕捉"},
     "commit_capture_mode": {
         "type": "enum",
         "values": [
@@ -101,7 +102,7 @@ RIME_RUNTIME_CONFIG_FIELDS: dict[str, dict[str, Any]] = {
             "read_only",
             "hook_only",
         ],
-        "label": "捕捉模式",
+        "label": "捕捉强度",
     },
     "enable_realtime_learning": {"type": "bool", "label": "实时学习"},
     "capture_to_disk": {"type": "bool", "label": "实时写盘"},

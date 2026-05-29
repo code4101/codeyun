@@ -136,6 +136,46 @@
                 </el-tooltip>
               </div>
             </div>
+            <div class="control-row behavior-row">
+              <div class="control-group behavior-controls">
+                <span class="control-label">步进器</span>
+                <el-select
+                  v-model="selectedStepperTaskId"
+                  class="behavior-target-input"
+                  size="small"
+                  placeholder="选择任务"
+                  :disabled="stepperRunning"
+                >
+                  <el-option
+                    v-for="task in stepperTaskDefinitions"
+                    :key="task.id"
+                    :label="task.label"
+                    :value="task.id"
+                  />
+                </el-select>
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="stepperRunning"
+                  :disabled="!selectedEntryId || stepperRunning"
+                  @click="runStepperToTarget"
+                >
+                  运行
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="!stepperRunning"
+                  @click="stopStepperRun"
+                >
+                  停止
+                </el-button>
+                <button type="button" class="shape-inline-help" title="查看步进器说明" aria-label="查看步进器说明" @click="showStepperHelp">
+                  ?
+                </button>
+                <span v-if="stepperRunStatus" class="behavior-run-status">{{ stepperRunStatus }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -160,10 +200,10 @@
                   :style="liveContentStyle"
                 >
                   <img
-                    v-if="streamEnabled && streamUrl"
+                    v-if="streamEnabled && liveImageUrl"
                     ref="streamImageRef"
                     class="stream-image"
-                    :src="streamUrl"
+                    :src="liveImageUrl"
                     :style="liveCanvasStyle"
                     alt="凡修云手机窗口"
                     draggable="false"
@@ -211,6 +251,7 @@
                 default-expand-all
                 highlight-current
                 draggable
+                :expand-on-click-node="false"
                 :current-node-key="selectedAssetId"
                 :allow-drop="allowAssetDrop"
                 @node-click="selectAssetNode"
@@ -245,7 +286,12 @@
 
           <section class="annotation-workbench">
             <div class="annotation-workbench-head">
-              <span>{{ selectedImageTitleText }}</span>
+              <div class="annotation-title-tools">
+                <span>{{ selectedImageTitleText }}</span>
+                <el-checkbox v-if="selectedImageNode" v-model="selectedImageNode.occlusionMaskEnabled" size="small">
+                  遮挡标记
+                </el-checkbox>
+              </div>
               <div class="annotation-panel-actions">
                 <el-button size="small" :icon="Plus" :disabled="!selectedImageNode" title="新建 shape" aria-label="新建 shape" @click="addAnnotationShape" />
                 <el-button size="small" :icon="Delete" :disabled="!selectedShape" title="删除 shape" aria-label="删除 shape" @click="deleteSelectedShape" />
@@ -270,9 +316,9 @@
                       @pointerdown="startShapeDraft"
                     >
                       <img
-                        v-if="selectedImageNode.imageDataUrl"
+                        v-if="selectedImagePreviewUrl"
                         class="screenshot-image annotation-image"
-                        :src="selectedImageNode.imageDataUrl"
+                        :src="selectedImagePreviewUrl"
                         :style="annotationCanvasStyle"
                         :alt="selectedImageNode.title"
                         draggable="false"
@@ -280,6 +326,12 @@
                       <div v-else class="empty-image-surface">
                         <span>空图</span>
                       </div>
+                      <div
+                        v-for="shape in occlusionOverlayShapes"
+                        :key="'occlusion-' + shape.id"
+                        class="annotation-occlusion-mask"
+                        :style="shapeBoxStyle(shape)"
+                      />
                       <div
                         v-for="shape in annotationShapes"
                         :key="shape.id"
@@ -353,13 +405,25 @@
                   </el-checkbox>
                   <div class="shape-jump-field">
                     <span>场景跳转</span>
-                    <el-input-number
+                    <button type="button" class="shape-inline-help" title="查看场景跳转说明" aria-label="查看场景跳转说明" @click="showSceneJumpHelp">
+                      ?
+                    </button>
+                    <el-input
                       v-model="selectedShape.sceneJumpTarget"
                       size="small"
-                      :min="0"
-                      :controls="false"
-                      placeholder="图片ID"
+                      placeholder="17(3),18,-1"
+                      @blur="normalizeSelectedShapeSceneJumpTarget"
                     />
+                  </div>
+                  <div class="shape-jump-field">
+                    <span>内容方向</span>
+                    <el-select v-model="selectedShape.contentDirection" class="shape-direction-select" size="small">
+                      <el-option label="无" value="none" />
+                      <el-option label="↑" value="up" />
+                      <el-option label="↓" value="down" />
+                      <el-option label="←" value="left" />
+                      <el-option label="→" value="right" />
+                    </el-select>
                   </div>
                   <div class="shape-action-group">
                     <el-checkbox v-model="selectedShape.maskEnabled" title="启用抠图" aria-label="启用抠图" />
@@ -544,7 +608,20 @@
               placeholder="图片ID"
             />
           </div>
-          <el-input v-model="shapeDiscriminatorNewLabel" class="shape-discriminator-label-input" size="small" placeholder="状态名" />
+          <el-select
+            v-model="shapeDiscriminatorNewShapeId"
+            class="shape-discriminator-shape-select"
+            size="small"
+            placeholder="选择 shape"
+            :disabled="!shapeDiscriminatorNewImageId || !shapeDiscriminatorCandidateShapes.length"
+          >
+            <el-option
+              v-for="candidate in shapeDiscriminatorCandidateShapes"
+              :key="candidate.shape.id"
+              :label="candidate.label"
+              :value="candidate.shape.id"
+            />
+          </el-select>
           <el-button size="small" @click="addShapeDiscriminatorMember">添加</el-button>
           <el-button size="small" @click="resetShapeDiscriminator">刷新</el-button>
           <el-button size="small" type="primary" plain :disabled="shapeDiscriminatorRunning || !shapeDiscriminatorReady" @click="startShapeDiscriminatorSampling">
@@ -565,7 +642,15 @@
           >
             <span>#{{ member.imageId }}</span>
             <el-input v-model="member.label" size="small" placeholder="状态名" />
-            <el-button size="small" text type="danger" @click="removeShapeDiscriminatorMember(member.shapeId)">删除</el-button>
+            <button
+              type="button"
+              class="shape-discriminator-remove"
+              title="删除状态"
+              aria-label="删除状态"
+              @click="removeShapeDiscriminatorMember(member.shapeId)"
+            >
+              -
+            </button>
           </div>
         </div>
         <div class="shape-mask-previews is-three">
@@ -625,14 +710,17 @@ import {
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
+  keyeventFanxiuGameWindow2,
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
   runFanxiuVisualScript,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
+  screencapFanxiuGameWindow2,
   startFanxiuPseudoCode,
   stopFanxiuVisualScript,
+  textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2MatchResponse,
@@ -956,6 +1044,7 @@ const streamNonce = ref(Date.now());
 const streamError = ref('');
 const streamToken = ref('');
 const streamTokenExpiresAt = ref(0);
+const adbFrameUrl = ref('');
 const streamTokenLoading = ref(false);
 const layerVisible = ref(true);
 const windowViewMode = ref<WindowViewMode>('live');
@@ -1057,6 +1146,7 @@ const livePanState = ref<ScreenshotPanState | null>(null);
 
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
+let adbFrameTimer: number | null = null;
 let screenshotSaveTimer: number | null = null;
 let visualSimilarityProbeTimer: number | null = null;
 let visualSimilarityProbeSeq = 0;
@@ -1187,9 +1277,8 @@ const naturalSizeText = computed(() => {
   return `${naturalWidth.value} x ${naturalHeight.value}`;
 });
 const liveCanvasStyle = computed(() => {
-  const width = naturalWidth.value || 0;
-  const height = naturalHeight.value || 0;
-  if (!width || !height) return {};
+  const width = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
   const stageWidth = Math.max(1, Math.round(width * displayScale.value / 100));
   const stageHeight = Math.max(1, Math.round(height * displayScale.value / 100));
   return {
@@ -1228,6 +1317,7 @@ const placeholderText = computed(() => {
   if (!selectedEntryId.value) return '选择设备';
   if (windowViewMode.value === 'off') return '直播已关闭';
   if (!streamEnabled.value) return '画面已暂停';
+  if (shouldUseAdbFrame()) return '正在获取 ADB 画面';
   if (!streamToken.value) return '正在准备画面流';
   return '等待画面';
 });
@@ -2823,6 +2913,7 @@ const stopVisualScript = async (card: CodeCard) => {
 
 const streamUrl = computed(() => {
   if (windowViewMode.value === 'off') return '';
+  if (shouldUseAdbFrame()) return '';
   if (!selectedEntryId.value || !streamToken.value) return '';
   const params = new URLSearchParams({
     token: streamToken.value,
@@ -2843,11 +2934,12 @@ const streamUrl = computed(() => {
   });
   return `/api/fanxiu/game-window2/stream?${params.toString()}`;
 });
+const liveImageUrl = computed(() => (shouldUseAdbFrame() ? adbFrameUrl.value : streamUrl.value));
 const connectionReady = computed(() => Boolean(
   selectedEntryId.value
   && serviceActive.value
   && streamEnabled.value
-  && streamUrl.value
+  && liveImageUrl.value
   && naturalWidth.value
   && naturalHeight.value
   && !streamError.value
@@ -2857,7 +2949,7 @@ const connectionButtonType = computed(() => (connectionReady.value ? 'success' :
 const connectionButtonText = computed(() => {
   if (windowViewMode.value === 'off') return '已关闭';
   if (connectionReady.value) return '运行中';
-  if (connectionButtonLoading.value || (streamEnabled.value && streamToken.value && !streamError.value)) return '连接中';
+  if (connectionButtonLoading.value || (streamEnabled.value && (streamToken.value || shouldUseAdbFrame()) && !streamError.value)) return '连接中';
   return '连接';
 });
 
@@ -3719,6 +3811,20 @@ const captureCurrentLiveFrameDataUrl = () => {
   return canvas.toDataURL('image/jpeg', Math.max(0.1, Math.min(1, Number(quality.value || 82) / 100)));
 };
 
+const shouldUseAdbFrame = () => selectedWindowKey.value === 'mumu';
+
+const captureCurrentFrameDataUrl = async () => {
+  if (shouldUseAdbFrame() && selectedEntryId.value) {
+    try {
+      const blob = await screencapFanxiuGameWindow2(selectedEntryId.value);
+      return await blobToDataUrl(blob);
+    } catch {
+      // Fall back to the visible live frame if ADB screencap is temporarily unavailable.
+    }
+  }
+  return captureCurrentLiveFrameDataUrl();
+};
+
 const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
@@ -3774,7 +3880,7 @@ const saveCurrentFrame = async () => {
   if (!selectedEntryId.value) return;
   saveFrameLoading.value = true;
   try {
-    const currentFrameDataUrl = captureCurrentLiveFrameDataUrl();
+    const currentFrameDataUrl = await captureCurrentFrameDataUrl();
     const result = await saveFanxiuGameWindow2Frame({
       entry_id: selectedEntryId.value,
       title: targetTitle.value.trim(),
@@ -3796,12 +3902,16 @@ const saveCurrentFrame = async () => {
     } catch {
       // 保存帧已经成功；预览读取失败时退回当前直播帧。
     }
-    addSavedFrameToAssetTree(createAssetImageNode(result.filename, {
+    const node = createAssetImageNode(result.filename, {
       filename: result.filename,
-      imageDataUrl,
       width: result.width,
       height: result.height,
-    }));
+    });
+    assetImagePreviewUrls.value = {
+      ...assetImagePreviewUrls.value,
+      [node.id]: imageDataUrl,
+    };
+    addSavedFrameToAssetTree(node);
     ElMessage.success(`已保存到文件树：${result.filename}`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -4071,7 +4181,7 @@ const runVisualSimilarityProbeOnce = async () => {
       fixed_width: fixedFrameWidth.value,
       fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
+      current_frame_data_url: await captureCurrentFrameDataUrl(),
     });
     if (
       requestSeq !== visualSimilarityProbeSeq
@@ -5319,6 +5429,7 @@ onMounted(async () => {
     }
   }
   startPolling();
+  void ensureSelectedImagePreview();
   void nextTick(syncCanvas);
 });
 
@@ -5352,6 +5463,7 @@ type GameWindow3AssetNode = {
   imageDataUrl?: string;
   width?: number;
   height?: number;
+  occlusionMaskEnabled?: boolean;
   shapes?: GameWindow3Shape[];
 };
 
@@ -5361,7 +5473,8 @@ type GameWindow3Shape = {
   title: string;
   description: string;
   isSceneIdentity?: boolean;
-  sceneJumpTarget?: number | null;
+  sceneJumpTarget?: string;
+  contentDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
   maskEnabled?: boolean;
   alphaMask?: ShapeAlphaMask | null;
   toleranceEnabled?: boolean;
@@ -5392,6 +5505,51 @@ type ShapeToleranceRange = {
 
 type ShapeDiscriminator = {
   targetImageId: number | null;
+};
+
+type SceneJumpEntry = {
+  label: string;
+  count: number;
+};
+
+type StepperTask = {
+  id: string;
+  type: 'go_scene';
+  targetText: string;
+  targets: GameWindow3AssetNode[];
+};
+
+type StepperTaskDefinition = {
+  id: string;
+  label: string;
+  type: 'go_scene';
+  targetText: string;
+};
+
+type StepperLastAction = {
+  fromImageId: string;
+  shapeId: string;
+  shapeTitle: string;
+  isIndependentExit: boolean;
+  expectedTargets: GameWindow3AssetNode[];
+};
+
+type StepperSceneCandidate = {
+  image: GameWindow3AssetNode;
+  score: number;
+  full: number;
+  min: number;
+  average: number;
+  count: number;
+};
+
+type StepperActionEdge = {
+  from: GameWindow3AssetNode;
+  shape: GameWindow3Shape;
+  jumpEntries: SceneJumpEntry[];
+  targets: Array<{ image: GameWindow3AssetNode; count: number }>;
+  isIndependentExit: boolean;
+  hasExperience: boolean;
 };
 
 type DiscriminatorGroupMember = {
@@ -5427,6 +5585,21 @@ const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorG
 const annotationCanvasRef = ref<HTMLElement | null>(null);
 const selectedAssetId = ref<string | null>(null);
 const selectedShapeId = ref<string | null>(null);
+const assetImagePreviewUrls = ref<Record<string, string>>({});
+const stepperTaskDefinitions: StepperTaskDefinition[] = [
+  {
+    id: 'go-world',
+    label: '到世界',
+    type: 'go_scene',
+    targetText: '世界',
+  },
+];
+const selectedStepperTaskId = ref(stepperTaskDefinitions[0]?.id ?? '');
+const stepperRunning = ref(false);
+const stepperStopRequested = ref(false);
+const stepperRunStatus = ref('');
+const stepperTaskStack = ref<StepperTask[]>([]);
+const stepperLastAction = ref<StepperLastAction | null>(null);
 const shapeDragState = ref<ShapeDragState | null>(null);
 const shapeDraftState = ref<ShapeDraftState | null>(null);
 const shapeDraftBox = ref<GameWindow3Shape | null>(null);
@@ -5465,7 +5638,7 @@ const shapeDiscriminatorGroupTitle = ref('');
 const shapeDiscriminatorSyncBox = ref(true);
 const shapeDiscriminatorMembers = ref<DiscriminatorGroupMember[]>([]);
 const shapeDiscriminatorNewImageId = ref<number | null>(null);
-const shapeDiscriminatorNewLabel = ref('');
+const shapeDiscriminatorNewShapeId = ref('');
 const shapeDiscriminatorSourcePreviewUrl = ref('');
 const shapeDiscriminatorTargetPreviewUrl = ref('');
 const shapeDiscriminatorWeightPreviewUrl = ref('');
@@ -5481,6 +5654,7 @@ const shapeDiscriminatorState = ref<{
     label: string;
     shapeId: string;
     reference: ImageData;
+    alpha: Uint8ClampedArray | null;
   }>;
   weights: Float32Array;
   activePixels: number;
@@ -5516,6 +5690,7 @@ const createAssetImageNode = (
   type: 'image',
   title,
   ...options,
+  occlusionMaskEnabled: false,
   shapes: [],
 });
 
@@ -5528,6 +5703,49 @@ const createDefaultAssetTree = (): GameWindow3AssetNode[] => ([
   },
 ]);
 
+const normalizeShapeContentDirection = (value: unknown): GameWindow3Shape['contentDirection'] => (
+  value === 'up' || value === 'down' || value === 'left' || value === 'right' ? value : 'none'
+);
+
+const parseSceneJumpEntry = (value: string): SceneJumpEntry | null => {
+  const text = value.trim();
+  if (!text || text === '?') return null;
+  if (text === '-1') return { label: '-1', count: 0 };
+  const match = text.match(/^(.+?)\((\d+)\)$/);
+  const label = (match ? match[1] : text).trim();
+  if (!label || label === '?' || label === '-1') return null;
+  const count = match ? Math.max(0, Math.floor(Number(match[2]) || 0)) : 0;
+  return { label, count };
+};
+
+const parseSceneJumpEntries = (value: string | number | null | undefined): SceneJumpEntry[] => {
+  const items = String(value ?? '')
+    .replace(/，/g, ',')
+    .split(',')
+    .map(parseSceneJumpEntry)
+    .filter((item): item is SceneJumpEntry => Boolean(item));
+  if (items.some((item) => item.label === '-1')) return [{ label: '-1', count: 0 }];
+  const merged = new Map<string, SceneJumpEntry>();
+  for (const item of items) {
+    const current = merged.get(item.label);
+    merged.set(item.label, {
+      label: item.label,
+      count: Math.max(current?.count ?? 0, item.count),
+    });
+  }
+  return Array.from(merged.values()).sort((a, b) => (b.count - a.count) || a.label.localeCompare(b.label));
+};
+
+const serializeSceneJumpEntries = (entries: SceneJumpEntry[]) => (
+  entries
+    .map((item) => item.count > 0 ? `${item.label}(${item.count})` : item.label)
+    .join(',')
+);
+
+const normalizeSceneJumpTargetText = (value: string | number | null | undefined) => {
+  return serializeSceneJumpEntries(parseSceneJumpEntries(value));
+};
+
 const normalizeShapes = (shapes: GameWindow3Shape[] = []): GameWindow3Shape[] => shapes.flatMap((shape) => {
   if (shape.id === 'scene-identity') {
     return normalizeShapes(shape.children ?? []);
@@ -5538,7 +5756,10 @@ const normalizeShapes = (shapes: GameWindow3Shape[] = []): GameWindow3Shape[] =>
     title: typeof shape.title === 'string' ? shape.title : '',
     description: typeof shape.description === 'string' ? shape.description : '',
     isSceneIdentity: Boolean(shape.isSceneIdentity),
-    sceneJumpTarget: typeof shape.sceneJumpTarget === 'number' ? shape.sceneJumpTarget : null,
+    sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
+      ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
+      : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
+    contentDirection: normalizeShapeContentDirection(shape.contentDirection),
     maskEnabled: Boolean(shape.maskEnabled),
     alphaMask: shape.alphaMask && typeof shape.alphaMask === 'object'
       ? {
@@ -5582,9 +5803,10 @@ const normalizeAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode
   return {
     ...node,
     filename: typeof node.filename === 'string' ? node.filename : undefined,
-    imageDataUrl: typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
+    imageDataUrl: !node.filename && typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
+    occlusionMaskEnabled: Boolean(node.occlusionMaskEnabled),
     shapes: normalizeShapes(node.shapes ?? []),
     children: normalizeAssetTree(node.children ?? []),
   };
@@ -5599,6 +5821,30 @@ const loadAssetTree = (): GameWindow3AssetNode[] => {
     return Array.isArray(parsed) && parsed.length ? normalizeAssetTree(parsed) : createDefaultAssetTree();
   } catch {
     return createDefaultAssetTree();
+  }
+};
+
+const sendRemoteKeyevent = async (key: string) => {
+  if (!selectedEntryId.value) return;
+  try {
+    await keyeventFanxiuGameWindow2({
+      entry_id: selectedEntryId.value,
+      key,
+    });
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  }
+};
+
+const sendRemoteText = async (text: string) => {
+  if (!selectedEntryId.value || !text) return;
+  try {
+    await textFanxiuGameWindow2({
+      entry_id: selectedEntryId.value,
+      text,
+    });
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
   }
 };
 
@@ -5652,6 +5898,25 @@ const findFirstImageNode = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode
   return null;
 };
 
+const flattenAssetImages = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.flatMap((node) => [
+  ...(node.type === 'image' ? [node] : []),
+  ...flattenAssetImages(node.children ?? []),
+]);
+
+const findAssetParentFolder = (
+  nodes: GameWindow3AssetNode[],
+  id: string | null,
+  parent: GameWindow3AssetNode | null = null,
+): GameWindow3AssetNode | null => {
+  if (!id) return null;
+  for (const node of nodes) {
+    if (node.id === id) return parent;
+    const found = findAssetParentFolder(node.children ?? [], id, node.type === 'folder' ? node : parent);
+    if (found) return found;
+  }
+  return null;
+};
+
 const assetImageIdMark = (node: GameWindow3AssetNode) => {
   const source = node.filename || node.id;
   const filenameNumber = node.filename?.match(/(\d+)(?=\.[^.]+$|$)/)?.[1];
@@ -5674,6 +5939,18 @@ const findAssetImageByNumericId = (nodes: GameWindow3AssetNode[], id: number | n
     if (found) return found;
   }
   return null;
+};
+
+const firstSceneJumpNumericTarget = (value: string | number | null | undefined) => {
+  const firstToken = parseSceneJumpEntries(value)[0]?.label ?? '';
+  const numeric = Number(firstToken.replace(/^#/, ''));
+  return Number.isFinite(numeric) && firstToken ? numeric : null;
+};
+
+const normalizeSelectedShapeSceneJumpTarget = () => {
+  const shape = selectedShape.value;
+  if (!shape) return;
+  shape.sceneJumpTarget = normalizeSceneJumpTargetText(shape.sceneJumpTarget);
 };
 
 const findImageNodeByShapeId = (nodes: GameWindow3AssetNode[], shapeId: string): GameWindow3AssetNode | null => {
@@ -5714,12 +5991,32 @@ const selectedImageTitleText = computed(() => (
     ? `${assetImageIdMark(selectedImageNode.value)} ${selectedImageNode.value.title}`
     : '未选择图片'
 ));
+const selectedImagePreviewUrl = computed(() => {
+  const image = selectedImageNode.value;
+  if (!image) return '';
+  return assetImagePreviewUrls.value[image.id] || image.imageDataUrl || '';
+});
 const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
 const isDrawableShape = (shape: GameWindow3Shape) => shape.kind !== 'group';
 const flattenShapes = (shapes: GameWindow3Shape[]): GameWindow3Shape[] => shapes.flatMap((shape) => [
   shape,
   ...flattenShapes(shape.children ?? []),
 ]);
+const isOcclusionAssetGroup = (node: GameWindow3AssetNode) => (
+  node.type === 'folder' && node.title.trim() === '遮挡标记'
+);
+const collectOcclusionAssetImages = (
+  nodes: GameWindow3AssetNode[],
+  inOcclusionGroup = false,
+): GameWindow3AssetNode[] => {
+  const images: GameWindow3AssetNode[] = [];
+  for (const node of nodes) {
+    const nextInOcclusionGroup = inOcclusionGroup || isOcclusionAssetGroup(node);
+    if (node.type === 'image' && nextInOcclusionGroup) images.push(node);
+    images.push(...collectOcclusionAssetImages(node.children ?? [], nextInOcclusionGroup));
+  }
+  return images;
+};
 const findShapeById = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape | null => {
   if (!id) return null;
   for (const shape of shapes) {
@@ -5739,6 +6036,14 @@ const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null):
   return null;
 };
 const annotationShapes = computed(() => flattenShapes(selectedImageShapes.value).filter(isDrawableShape));
+const occlusionMaskShapes = computed(() => (
+  collectOcclusionAssetImages(assetTree.value)
+    .flatMap((image) => flattenShapes(image.shapes ?? []))
+    .filter(isDrawableShape)
+));
+const occlusionOverlayShapes = computed(() => (
+  selectedImageNode.value?.occlusionMaskEnabled ? occlusionMaskShapes.value : []
+));
 const selectedShape = computed(() => findShapeById(selectedImageShapes.value, selectedShapeId.value));
 const selectedShapeDetectResult = computed(() => (
   selectedShapeId.value ? shapeDetectResults.value[selectedShapeId.value] || '' : ''
@@ -5760,6 +6065,71 @@ const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): 
     w: Math.round(shape.w * width),
     h: Math.round(shape.h * height),
   };
+};
+
+const shapeBoxIou = (a: GameWindow3Shape, b: GameWindow3Shape) => {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.w, b.x + b.w);
+  const bottom = Math.min(a.y + a.h, b.y + b.h);
+  const intersection = Math.max(0, right - left) * Math.max(0, bottom - top);
+  const union = Math.max(0, a.w * a.h) + Math.max(0, b.w * b.h) - intersection;
+  return union > 0 ? intersection / union : 0;
+};
+
+const shapeBoxCenterDistance = (a: GameWindow3Shape, b: GameWindow3Shape) => {
+  const dx = (a.x + a.w / 2) - (b.x + b.w / 2);
+  const dy = (a.y + a.h / 2) - (b.y + b.h / 2);
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+const shapeDiscriminatorCandidateShapes = computed(() => {
+  const image = findAssetImageByNumericId(assetTree.value, shapeDiscriminatorNewImageId.value);
+  const source = selectedShape.value;
+  if (!image || !source) return [];
+  return flattenShapes(image.shapes ?? [])
+    .filter(isDrawableShape)
+    .map((shape) => {
+      const iou = shapeBoxIou(source, shape);
+      const distance = shapeBoxCenterDistance(source, shape);
+      return {
+        shape,
+        iou,
+        distance,
+        label: shape.title || 'shape',
+      };
+    })
+    .sort((a, b) => (b.iou - a.iou) || (a.distance - b.distance));
+});
+
+const buildOcclusionAlphaMaskDataUrl = (
+  image: GameWindow3AssetNode,
+  targetShape: GameWindow3Shape,
+  box: FanxiuGameWindow2MatchBox,
+) => {
+  if (!image.occlusionMaskEnabled || box.w <= 0 || box.h <= 0) return '';
+  const occlusionShapes = occlusionMaskShapes.value
+    .filter((shape) => isDrawableShape(shape) && shape.id !== targetShape.id);
+  if (!occlusionShapes.length) return '';
+  const imageWidth = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const imageHeight = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(box.w));
+  canvas.height = Math.max(1, Math.round(box.h));
+  const context = canvas.getContext('2d');
+  if (!context) return '';
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#000';
+  for (const shape of occlusionShapes) {
+    const left = shape.x * imageWidth - box.x;
+    const top = shape.y * imageHeight - box.y;
+    const width = shape.w * imageWidth;
+    const height = shape.h * imageHeight;
+    if (left >= canvas.width || top >= canvas.height || left + width <= 0 || top + height <= 0) continue;
+    context.fillRect(left, top, width, height);
+  }
+  return canvas.toDataURL('image/png');
 };
 const annotationCanvasStyle = computed(() => {
   const width = selectedImageNode.value?.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 9;
@@ -5794,36 +6164,53 @@ watch(selectedImageNode, (node) => {
   const firstShape = node ? flattenShapes(node.shapes ?? [])[0] ?? null : null;
   selectedShapeId.value = firstShape?.id ?? null;
   resetScreenshotViewState();
+  void ensureSelectedImagePreview();
 });
 
-const getAssetInsertTarget = () => {
-  const selected = selectedAssetNode.value;
-  if (selected) {
-    selected.children ??= [];
-    return selected.children;
+watch(shapeDiscriminatorNewImageId, () => {
+  const firstCandidate = shapeDiscriminatorCandidateShapes.value[0];
+  shapeDiscriminatorNewShapeId.value = firstCandidate?.shape.id ?? '';
+});
+
+watch(shapeDiscriminatorNewShapeId, (shapeId) => {
+  if (!shapeId && shapeDiscriminatorNewImageId.value) {
+    const firstCandidate = shapeDiscriminatorCandidateShapes.value[0];
+    shapeDiscriminatorNewShapeId.value = firstCandidate?.shape.id ?? '';
   }
-  return findAssetParentChildren(assetTree.value, selectedAssetId.value) ?? assetTree.value;
+});
+
+const getAssetInsertContext = () => {
+  const siblings = findAssetParentChildren(assetTree.value, selectedAssetId.value) ?? assetTree.value;
+  const selectedIndex = selectedAssetId.value ? siblings.findIndex((node) => node.id === selectedAssetId.value) : -1;
+  return {
+    siblings,
+    insertIndex: selectedIndex >= 0 ? selectedIndex + 1 : siblings.length,
+  };
+};
+
+const insertAssetNodeAfterSelection = (node: GameWindow3AssetNode) => {
+  const { siblings, insertIndex } = getAssetInsertContext();
+  siblings.splice(insertIndex, 0, node);
+  selectedAssetId.value = node.id;
 };
 
 const addAssetFolder = () => {
-  const target = getAssetInsertTarget();
-  const folderCount = target.filter((node) => node.type === 'folder').length + 1;
+  const { siblings } = getAssetInsertContext();
+  const folderCount = siblings.filter((node) => node.type === 'folder').length + 1;
   const node: GameWindow3AssetNode = {
     id: createAssetId('folder'),
     type: 'folder',
     title: '分组' + folderCount,
     children: [],
   };
-  target.push(node);
-  selectedAssetId.value = node.id;
+  insertAssetNodeAfterSelection(node);
 };
 
 const addAssetImage = () => {
-  const target = getAssetInsertTarget();
-  const imageCount = target.filter((node) => node.type === 'image').length + 1;
+  const { siblings } = getAssetInsertContext();
+  const imageCount = siblings.filter((node) => node.type === 'image').length + 1;
   const node = createAssetImageNode('图片' + imageCount);
-  target.push(node);
-  selectedAssetId.value = node.id;
+  insertAssetNodeAfterSelection(node);
 };
 
 const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
@@ -5833,10 +6220,31 @@ const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
   reader.readAsDataURL(blob);
 });
 
+const getAssetImageDataUrl = async (image: GameWindow3AssetNode) => {
+  if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
+  if (image.imageDataUrl) return image.imageDataUrl;
+  if (!selectedEntryId.value || !image.filename) return '';
+  const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, image.filename);
+  const dataUrl = await blobToDataUrl(blob);
+  assetImagePreviewUrls.value = {
+    ...assetImagePreviewUrls.value,
+    [image.id]: dataUrl,
+  };
+  return dataUrl;
+};
+
+const ensureSelectedImagePreview = async () => {
+  const image = selectedImageNode.value;
+  if (!image || selectedImagePreviewUrl.value) return;
+  try {
+    await getAssetImageDataUrl(image);
+  } catch {
+    // Preview loading is opportunistic; matching can still use the saved filename.
+  }
+};
+
 const addSavedFrameToAssetTree = (node: GameWindow3AssetNode) => {
-  const target = getAssetInsertTarget();
-  target.push(node);
-  selectedAssetId.value = node.id;
+  insertAssetNodeAfterSelection(node);
 };
 
 const deleteSelectedAsset = async () => {
@@ -5918,7 +6326,8 @@ const addAnnotationShape = () => {
     title: 'shape ' + (flattenShapes(image.shapes).filter(isDrawableShape).length + 1),
     description: '',
     isSceneIdentity: false,
-    sceneJumpTarget: null,
+    sceneJumpTarget: '',
+    contentDirection: 'none',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -5993,6 +6402,7 @@ const detectSelectedShape = async () => {
     ElMessage.warning('请先框选有效区域');
     return;
   }
+  const occlusionAlphaMaskDataUrl = buildOcclusionAlphaMaskDataUrl(image, shape, box);
   shapeDetectingId.value = shape.id;
   try {
     const response = await matchFanxiuGameWindow2Screenshot({
@@ -6000,7 +6410,7 @@ const detectSelectedShape = async () => {
       filename: image.filename,
       box,
       pixel_tolerance: visualMacroDefaultPixelTolerance.value,
-      alpha_mask_data_url: shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined,
+      alpha_mask_data_url: occlusionAlphaMaskDataUrl || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
       tolerance_min_data_url: shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
       tolerance_max_data_url: shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
       title: targetTitle.value.trim(),
@@ -6015,7 +6425,7 @@ const detectSelectedShape = async () => {
       fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
       auto_dismiss_popup: autoDismissPopup.value,
-      current_frame_data_url: captureCurrentLiveFrameDataUrl(),
+      current_frame_data_url: await captureCurrentFrameDataUrl(),
     });
     const geometryIssue = matchFrameAspectMismatchText(response);
     if (geometryIssue) ElMessage.warning(geometryIssue);
@@ -6026,6 +6436,367 @@ const detectSelectedShape = async () => {
     ElMessage.error(getErrorMessage(error));
   } finally {
     shapeDetectingId.value = null;
+  }
+};
+
+const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
+const stepperImageLabel = (image: GameWindow3AssetNode) => `${assetImageIdMark(image)} ${image.title}`;
+
+const stepperSceneIdentityShapes = (image: GameWindow3AssetNode) => (
+  flattenShapes(image.shapes ?? []).filter((shape) => isDrawableShape(shape) && shape.isSceneIdentity)
+);
+
+const isStepperSceneAsset = (image: GameWindow3AssetNode) => (
+  findAssetParentFolder(assetTree.value, image.id)?.title.trim() !== '遮挡标记'
+);
+
+const isIndependentExitShape = (shape: GameWindow3Shape) => normalizeSceneJumpTargetText(shape.sceneJumpTarget) === '-1';
+
+const isIndependentSceneImage = (image: GameWindow3AssetNode) => (
+  flattenShapes(image.shapes ?? []).some((shape) => isDrawableShape(shape) && isIndependentExitShape(shape))
+);
+
+const matchStepperShape = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape | null,
+  currentFrameDataUrl: string,
+) => {
+  if (!selectedEntryId.value || !image.filename) return 0;
+  const width = image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  const box = shape ? shapeToMatchBox(shape, image) : { name: 'scene', x: 0, y: 0, w: width, h: height };
+  if (box.w <= 0 || box.h <= 0) return 0;
+  const response = await matchFanxiuGameWindow2Screenshot({
+    entry_id: selectedEntryId.value,
+    filename: image.filename,
+    box,
+    pixel_tolerance: visualMacroDefaultPixelTolerance.value,
+    alpha_mask_data_url: shape && image.occlusionMaskEnabled
+      ? buildOcclusionAlphaMaskDataUrl(image, shape, box) || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined)
+      : (shape?.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
+    tolerance_min_data_url: shape?.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
+    tolerance_max_data_url: shape?.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
+    title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
+    mode: 'screen',
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
+    fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
+    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    auto_dismiss_popup: autoDismissPopup.value,
+    current_frame_data_url: currentFrameDataUrl,
+  });
+  return Number(response.fixed_similarity ?? response.similarity ?? 0);
+};
+
+const matchStepperSceneCandidate = async (
+  image: GameWindow3AssetNode,
+  currentFrameDataUrl: string,
+): Promise<StepperSceneCandidate> => {
+  const identityShapes = stepperSceneIdentityShapes(image);
+  const full = await matchStepperShape(image, null, currentFrameDataUrl);
+  const scores: number[] = [];
+  for (const shape of identityShapes) {
+    if (stepperStopRequested.value) break;
+    try {
+      scores.push(await matchStepperShape(image, shape, currentFrameDataUrl));
+    } catch {
+      scores.push(0);
+    }
+  }
+  const min = scores.length ? Math.min(...scores) : full;
+  const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : full;
+  const identityScore = min * 0.7 + average * 0.3;
+  return {
+    image,
+    score: scores.length ? identityScore * 0.85 + full * 0.15 : Math.min(full, 30),
+    full,
+    min,
+    average,
+    count: scores.length,
+  };
+};
+
+const matchStepperLayer = async (
+  images: GameWindow3AssetNode[],
+  currentFrameDataUrl: string,
+  concurrency = 4,
+  highConfidence = 85,
+) => {
+  const queue = [...images];
+  let best: StepperSceneCandidate | null = null;
+  let highHit: StepperSceneCandidate | null = null;
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length && !stepperStopRequested.value && !highHit) {
+      const image = queue.shift();
+      if (!image) break;
+      try {
+        const candidate = await matchStepperSceneCandidate(image, currentFrameDataUrl);
+        if (!best || candidate.score > best.score) best = candidate;
+        if (candidate.score >= highConfidence) highHit = candidate;
+      } catch {
+        // A failed candidate should not stop the whole tick.
+      }
+    }
+  });
+  await Promise.all(workers);
+  return highHit ?? best;
+};
+
+const uniqueImages = (images: GameWindow3AssetNode[]) => (
+  Array.from(new Map(images.map((image) => [image.id, image])).values())
+);
+
+const resolveStepperSceneTargets = (token: string) => {
+  const images = flattenAssetImages(assetTree.value);
+  const numeric = Number(token.replace(/^#/, ''));
+  if (Number.isFinite(numeric) && token.replace(/^#/, '').trim()) {
+    return images.filter((image) => assetNumericImageId(image) === numeric);
+  }
+  const normalizedToken = token.trim();
+  const titleMatches = images.filter((image) => image.title.trim() === normalizedToken);
+  if (titleMatches.length) return titleMatches;
+  return images.filter((image) => findAssetParentFolder(assetTree.value, image.id)?.title.trim() === normalizedToken);
+};
+
+const resolveStepperJumpTargets = (entries: SceneJumpEntry[]) => (
+  uniqueImages(entries.flatMap((entry) => resolveStepperSceneTargets(entry.label)))
+);
+
+const buildStepperCandidateLayers = (lastAction: StepperLastAction | null) => {
+  const allImages = flattenAssetImages(assetTree.value)
+    .filter((image) => image.filename && isStepperSceneAsset(image));
+  const seen = new Set<string>();
+  const take = (images: GameWindow3AssetNode[]) => {
+    const result: GameWindow3AssetNode[] = [];
+    for (const image of images) {
+      if (seen.has(image.id)) continue;
+      seen.add(image.id);
+      result.push(image);
+    }
+    return result;
+  };
+  const history = take(lastAction?.expectedTargets ?? []);
+  const independent = take(allImages.filter(isIndependentSceneImage));
+  const rest = take(allImages);
+  return [history, independent, rest].filter((layer) => layer.length);
+};
+
+const identifyStepperScene = async (
+  lastAction: StepperLastAction | null,
+): Promise<StepperSceneCandidate | null> => {
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+  for (const layer of buildStepperCandidateLayers(lastAction)) {
+    if (stepperStopRequested.value) return null;
+    const candidate = await matchStepperLayer(layer, currentFrameDataUrl);
+    if (candidate && candidate.score >= 55) return candidate;
+  }
+  return null;
+};
+
+const isBlankExitShape = (shape: GameWindow3Shape) => shape.title.trim() === '空白';
+
+const buildStepperActionEdges = () => {
+  const edges: StepperActionEdge[] = [];
+  for (const image of flattenAssetImages(assetTree.value)) {
+    if (!isStepperSceneAsset(image)) continue;
+    for (const shape of flattenShapes(image.shapes ?? []).filter(isDrawableShape)) {
+      const isIndependentExit = isIndependentExitShape(shape);
+      const jumpEntries = isIndependentExit ? [] : parseSceneJumpEntries(shape.sceneJumpTarget);
+      const targets = jumpEntries.flatMap((entry) => (
+        resolveStepperSceneTargets(entry.label).map((target) => ({ image: target, count: entry.count }))
+      ));
+      const uniqueTargets = Array.from(
+        new Map(targets.map((target) => [target.image.id, target])).values(),
+      ).sort((a, b) => b.count - a.count);
+      edges.push({
+        from: image,
+        shape,
+        jumpEntries,
+        targets: uniqueTargets,
+        isIndependentExit,
+        hasExperience: uniqueTargets.length > 0,
+      });
+    }
+  }
+  return edges;
+};
+
+const findStepperPath = (
+  current: GameWindow3AssetNode,
+  targets: GameWindow3AssetNode[],
+  triedEdges: Set<string> = new Set(),
+): StepperActionEdge[] => {
+  const targetIds = new Set(targets.map((target) => target.id));
+  if (targetIds.has(current.id)) return [];
+  const edges = buildStepperActionEdges();
+  const queue: Array<{ image: GameWindow3AssetNode; path: StepperActionEdge[] }> = [{ image: current, path: [] }];
+  const visited = new Set<string>([current.id]);
+  while (queue.length) {
+    const item = queue.shift();
+    if (!item) break;
+    for (const edge of edges.filter((candidate) => candidate.from.id === item.image.id)) {
+      if (triedEdges.has(`${edge.from.id}:${edge.shape.id}`)) continue;
+      for (const target of edge.targets.map((item) => item.image)) {
+        if (visited.has(target.id)) continue;
+        const path = [...item.path, edge];
+        if (targetIds.has(target.id)) return path;
+        visited.add(target.id);
+        queue.push({ image: target, path });
+      }
+    }
+  }
+  return [];
+};
+
+const stepperActionPriority = (edge: StepperActionEdge, targetIds: Set<string>) => {
+  const title = edge.shape.title.trim();
+  if (edge.targets.some((target) => targetIds.has(target.image.id))) {
+    return 100 + Math.max(...edge.targets.map((target) => target.count));
+  }
+  if (edge.hasExperience) return 60 + Math.max(...edge.targets.map((target) => target.count));
+  if (edge.isIndependentExit) return 50;
+  if (title === '空白') return 45;
+  if (/[关返回退离开跳过空白取消确定完成进入]/.test(title)) return 35;
+  return 0;
+};
+
+const findStepperNextAction = (
+  current: GameWindow3AssetNode,
+  targets: GameWindow3AssetNode[],
+  triedEdges: Set<string>,
+) => {
+  const path = findStepperPath(current, targets, triedEdges);
+  if (path.length) return path[0];
+  const targetIds = new Set(targets.map((target) => target.id));
+  return buildStepperActionEdges()
+    .filter((edge) => edge.from.id === current.id)
+    .filter((edge) => !triedEdges.has(`${edge.from.id}:${edge.shape.id}`))
+    .sort((a, b) => stepperActionPriority(b, targetIds) - stepperActionPriority(a, targetIds))[0] ?? null;
+};
+
+const clickStepperShape = async (image: GameWindow3AssetNode, shape: GameWindow3Shape) => {
+  if (!selectedEntryId.value) return;
+  const width = image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  await clickFanxiuGameWindow2({
+    ...buildRemoteInputPayloadBase(),
+    frame_width: naturalWidth.value || width,
+    frame_height: naturalHeight.value || height,
+    x: Math.round((shape.x + shape.w / 2) * width),
+    y: Math.round((shape.y + shape.h / 2) * height),
+  });
+};
+
+const incrementSceneJumpExperience = (shape: GameWindow3Shape, target: GameWindow3AssetNode) => {
+  if (isIndependentExitShape(shape)) return;
+  const targetId = assetNumericImageId(target);
+  const label = targetId !== null ? String(targetId) : target.title.trim();
+  if (!label) return;
+  const entries = parseSceneJumpEntries(shape.sceneJumpTarget).filter((entry) => entry.label !== '-1');
+  const found = entries.find((entry) => entry.label === label || resolveStepperSceneTargets(entry.label).some((image) => image.id === target.id));
+  if (found) {
+    found.count += 1;
+  } else {
+    entries.push({ label, count: 1 });
+  }
+  shape.sceneJumpTarget = serializeSceneJumpEntries(entries.sort((a, b) => (b.count - a.count) || a.label.localeCompare(b.label)));
+};
+
+const applyStepperObservedTransition = (candidate: StepperSceneCandidate) => {
+  const action = stepperLastAction.value;
+  if (!action || action.isIndependentExit) return;
+  const from = findAssetNode(assetTree.value, action.fromImageId);
+  const shape = from?.type === 'image' ? findShapeById(from.shapes ?? [], action.shapeId) : null;
+  if (!shape) return;
+  incrementSceneJumpExperience(shape, candidate.image);
+};
+
+const stopStepperRun = () => {
+  stepperStopRequested.value = true;
+  stepperRunStatus.value = '正在停止';
+};
+
+const runStepperToTarget = async () => {
+  if (!selectedEntryId.value || stepperRunning.value) return;
+  const taskDefinition = stepperTaskDefinitions.find((task) => task.id === selectedStepperTaskId.value) ?? stepperTaskDefinitions[0];
+  if (!taskDefinition) {
+    ElMessage.warning('没有可运行的步进器任务');
+    return;
+  }
+  const targets = resolveStepperSceneTargets(taskDefinition.targetText);
+  if (!targets.length) {
+    ElMessage.warning(`没有找到目标场景：${taskDefinition.targetText}`);
+    return;
+  }
+  stepperTaskStack.value = [{
+    id: createAssetId('stepper-task'),
+    type: taskDefinition.type,
+    targetText: taskDefinition.targetText,
+    targets,
+  }];
+  stepperRunning.value = true;
+  stepperStopRequested.value = false;
+  stepperLastAction.value = null;
+  const triedActionEdges = new Set<string>();
+  try {
+    for (let step = 0; step < 24; step += 1) {
+      if (stepperStopRequested.value) break;
+      const task = stepperTaskStack.value.at(-1);
+      if (!task) break;
+      stepperRunStatus.value = `Tick ${step + 1}：识别当前场景`;
+      const current = await identifyStepperScene(stepperLastAction.value);
+      if (!current) {
+        stepperRunStatus.value = `Tick ${step + 1}：过渡中，等待 1 秒`;
+        await sleep(1000);
+        continue;
+      }
+      applyStepperObservedTransition(current);
+      stepperLastAction.value = null;
+      if (task.targets.some((target) => target.id === current.image.id)) {
+        stepperRunStatus.value = `已到达 ${stepperImageLabel(current.image)}`;
+        ElMessage.success(stepperRunStatus.value);
+        selectedAssetId.value = current.image.id;
+        stepperTaskStack.value.pop();
+        return;
+      }
+      const next = findStepperNextAction(current.image, task.targets, triedActionEdges);
+      if (!next) {
+        stepperRunStatus.value = `${stepperImageLabel(current.image)} 没有可尝试动作`;
+        ElMessage.warning(stepperRunStatus.value);
+        return;
+      }
+      triedActionEdges.add(`${next.from.id}:${next.shape.id}`);
+      stepperRunStatus.value = `Tick ${step + 1}：${stepperImageLabel(current.image)} -> ${next.hasExperience ? '点击' : '探索'} ${next.shape.title || 'shape'}`;
+      selectedAssetId.value = current.image.id;
+      selectedShapeId.value = next.shape.id;
+      stepperLastAction.value = {
+        fromImageId: current.image.id,
+        shapeId: next.shape.id,
+        shapeTitle: next.shape.title,
+        isIndependentExit: next.isIndependentExit,
+        expectedTargets: next.targets.map((target) => target.image),
+      };
+      await clickStepperShape(current.image, next.shape);
+      await sleep(1000);
+    }
+    if (stepperStopRequested.value) {
+      stepperRunStatus.value = '已停止';
+      return;
+    }
+    stepperRunStatus.value = '超过最大步数，未到达目标';
+    ElMessage.warning(stepperRunStatus.value);
+  } catch (error) {
+    stepperRunStatus.value = getErrorMessage(error);
+    ElMessage.error(stepperRunStatus.value);
+  } finally {
+    stepperRunning.value = false;
+    stepperStopRequested.value = false;
   }
 };
 
@@ -6068,6 +6839,34 @@ const cropImageDataUrlByShape = async (imageDataUrl: string, shape: GameWindow3S
     height,
   );
   return context.getImageData(0, 0, width, height);
+};
+
+const loadShapeAlphaMask = async (shape: GameWindow3Shape, width: number, height: number) => {
+  if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
+  const image = await loadMaskImage(shape.alphaMask.dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(image, 0, 0, width, height);
+  const data = context.getImageData(0, 0, width, height).data;
+  const alpha = new Uint8ClampedArray(width * height);
+  for (let index = 0; index < alpha.length; index += 1) {
+    const offset = index * 4;
+    alpha[index] = Math.min(data[offset], data[offset + 1], data[offset + 2], data[offset + 3]);
+  }
+  return alpha;
+};
+
+const applyAlphaToPreview = (imageData: ImageData, alpha: Uint8ClampedArray | null) => {
+  if (!alpha) return imageData;
+  const preview = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+  const total = preview.width * preview.height;
+  for (let index = 0; index < total; index += 1) {
+    preview.data[index * 4 + 3] = alpha[index] ?? 255;
+  }
+  return preview;
 };
 
 const cropImageDataUrlToShape = async (imageDataUrl: string, width: number, height: number) => {
@@ -6173,8 +6972,10 @@ const resetShapeMaskSampling = async () => {
   pauseShapeMaskSampling();
   const image = selectedImageNode.value;
   const size = getSelectedShapePixelSize();
-  if (!image?.imageDataUrl || !size) return;
-  const reference = await cropImageDataUrlToShape(image.imageDataUrl, size.width, size.height);
+  if (!image || !size) return;
+  const imageDataUrl = await getAssetImageDataUrl(image);
+  if (!imageDataUrl) return;
+  const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
   shapeMaskFrameCount.value = 0;
@@ -6279,8 +7080,10 @@ const resetShapeToleranceSampling = async () => {
   pauseShapeToleranceSampling();
   const image = selectedImageNode.value;
   const size = getSelectedShapePixelSize();
-  if (!image?.imageDataUrl || !size) return;
-  const reference = await cropImageDataUrlToShape(image.imageDataUrl, size.width, size.height);
+  if (!image || !size) return;
+  const imageDataUrl = await getAssetImageDataUrl(image);
+  if (!imageDataUrl) return;
+  const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
   const min = new Uint8ClampedArray(total * 3);
@@ -6347,14 +7150,21 @@ const buildDiscriminatorWeightPreview = (weights: Float32Array, width: number, h
   return imageDataToDataUrl(image);
 };
 
-const computeDiscriminatorWeightedError = (sample: ImageData, reference: ImageData, weights: Float32Array) => {
+const computeDiscriminatorVariantError = (
+  sample: ImageData,
+  reference: ImageData,
+  weights: Float32Array,
+  alpha: Uint8ClampedArray | null,
+) => {
   let weightedDiff = 0;
   let totalWeight = 0;
   const total = sample.width * sample.height;
   for (let index = 0; index < total; index += 1) {
-    const offset = index * 4;
-    const weight = weights[index];
+    const alphaWeight = alpha ? (alpha[index] ?? 0) / 255 : 1;
+    if (alphaWeight <= 0.02) continue;
+    const weight = weights[index] * alphaWeight;
     if (weight <= 0) continue;
+    const offset = index * 4;
     const diff = Math.max(
       Math.abs(sample.data[offset] - reference.data[offset]),
       Math.abs(sample.data[offset + 1] - reference.data[offset + 1]),
@@ -6363,7 +7173,7 @@ const computeDiscriminatorWeightedError = (sample: ImageData, reference: ImageDa
     weightedDiff += diff * weight;
     totalWeight += weight;
   }
-  return totalWeight > 0 ? weightedDiff / totalWeight : 0;
+  return totalWeight > 0 ? weightedDiff / totalWeight : Number.POSITIVE_INFINITY;
 };
 
 const currentDiscriminatorGroup = () => (
@@ -6396,7 +7206,8 @@ const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number,
     title: label || source?.title || image.title,
     description: '',
     isSceneIdentity: false,
-    sceneJumpTarget: null,
+    sceneJumpTarget: '',
+    contentDirection: 'none',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -6415,6 +7226,22 @@ const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number,
   return shape;
 };
 
+const selectShapeDiscriminatorCandidate = (shape: GameWindow3Shape, label: string) => {
+  shape.discriminatorEnabled = true;
+  shape.discriminatorGroupId = shapeDiscriminatorGroupId.value;
+  shape.discriminatorValue = label;
+  if (shapeDiscriminatorSyncBox.value) {
+    const source = selectedShape.value;
+    if (source) {
+      shape.x = source.x;
+      shape.y = source.y;
+      shape.w = source.w;
+      shape.h = source.h;
+    }
+  }
+  return shape;
+};
+
 const addShapeDiscriminatorMember = () => {
   const imageId = shapeDiscriminatorNewImageId.value;
   if (imageId === null) return;
@@ -6424,14 +7251,22 @@ const addShapeDiscriminatorMember = () => {
     return;
   }
   ensureDiscriminatorCurrentMember();
-  const label = shapeDiscriminatorNewLabel.value.trim() || image.title || `#${imageId}`;
-  const shape = createLinkedShapeForImage(image, imageId, label);
+  const candidateShape = shapeDiscriminatorNewShapeId.value
+    ? findShapeById(image.shapes ?? [], shapeDiscriminatorNewShapeId.value)
+    : null;
+  const label = candidateShape?.discriminatorValue
+    || candidateShape?.title
+    || image.title
+    || `#${imageId}`;
+  const shape = candidateShape
+    ? selectShapeDiscriminatorCandidate(candidateShape, label)
+    : createLinkedShapeForImage(image, imageId, label);
   if (!shapeDiscriminatorMembers.value.some((member) => member.shapeId === shape.id)) {
     shapeDiscriminatorMembers.value.push({ imageId, shapeId: shape.id, label });
   }
   shape.discriminatorValue = label;
   shapeDiscriminatorNewImageId.value = null;
-  shapeDiscriminatorNewLabel.value = '';
+  shapeDiscriminatorNewShapeId.value = '';
   void resetShapeDiscriminator();
 };
 
@@ -6454,14 +7289,18 @@ const resetShapeDiscriminator = async () => {
   const variants: NonNullable<typeof shapeDiscriminatorState.value>['variants'] = [];
   for (const member of shapeDiscriminatorMembers.value) {
     const found = findShapeGlobal(member.shapeId);
-    if (!found?.image.imageDataUrl) continue;
-    const reference = await cropImageDataUrlByShape(found.image.imageDataUrl, found.shape, size.width, size.height);
+    if (!found) continue;
+    const imageDataUrl = await getAssetImageDataUrl(found.image);
+    if (!imageDataUrl) continue;
+    const reference = await cropImageDataUrlByShape(imageDataUrl, found.shape, size.width, size.height);
     if (!reference) continue;
+    const alpha = await loadShapeAlphaMask(found.shape, size.width, size.height);
     variants.push({
       imageId: member.imageId,
       label: member.label || found.shape.title || `#${member.imageId}`,
       shapeId: member.shapeId,
-      reference,
+      reference: applyAlphaToPreview(reference, alpha),
+      alpha,
     });
   }
   if (variants.length < 2) return;
@@ -6477,7 +7316,11 @@ const resetShapeDiscriminator = async () => {
     let maxR = 0;
     let maxG = 0;
     let maxB = 0;
+    let visibleCount = 0;
     for (const variant of variants) {
+      const alpha = variant.alpha ? (variant.alpha[index] ?? 0) : 255;
+      if (alpha <= 5) continue;
+      visibleCount += 1;
       minR = Math.min(minR, variant.reference.data[offset]);
       minG = Math.min(minG, variant.reference.data[offset + 1]);
       minB = Math.min(minB, variant.reference.data[offset + 2]);
@@ -6485,7 +7328,9 @@ const resetShapeDiscriminator = async () => {
       maxG = Math.max(maxG, variant.reference.data[offset + 1]);
       maxB = Math.max(maxB, variant.reference.data[offset + 2]);
     }
-    const diff = Math.max(maxR - minR, maxG - minG, maxB - minB);
+    const diff = visibleCount >= 2
+      ? Math.max(maxR - minR, maxG - minG, maxB - minB)
+      : (visibleCount === 1 ? 24 : 0);
     rawDiffs[index] = diff;
     maxDiff = Math.max(maxDiff, diff);
   }
@@ -6520,7 +7365,7 @@ const updateShapeDiscriminatorResult = (frame: ImageData) => {
   const results = state.variants
     .map((variant) => ({
       ...variant,
-      error: computeDiscriminatorWeightedError(frame, variant.reference, state.weights),
+      error: computeDiscriminatorVariantError(frame, variant.reference, state.weights, variant.alpha),
     }))
     .sort((a, b) => a.error - b.error);
   const best = results[0];
@@ -6569,7 +7414,7 @@ const openShapeDiscriminatorDialog = async () => {
     ? discriminatorGroups.value.find((item) => item.id === shape.discriminatorGroupId) ?? null
     : null;
   if (!group) {
-    const legacyTarget = shape.discriminator?.targetImageId ?? shape.sceneJumpTarget ?? null;
+    const legacyTarget = shape.discriminator?.targetImageId ?? firstSceneJumpNumericTarget(shape.sceneJumpTarget);
     group = {
       id: createAssetId('disc-group'),
       title: shape.title ? `${shape.title}区分` : '区分组',
@@ -6592,7 +7437,7 @@ const openShapeDiscriminatorDialog = async () => {
   shapeDiscriminatorSyncBox.value = group.syncBox !== false;
   shapeDiscriminatorMembers.value = group.members.map((member) => ({ ...member }));
   shapeDiscriminatorNewImageId.value = null;
-  shapeDiscriminatorNewLabel.value = '';
+  shapeDiscriminatorNewShapeId.value = '';
   shapeDiscriminatorDialogVisible.value = true;
   await nextTick();
   await resetShapeDiscriminator();
@@ -6633,46 +7478,187 @@ const saveShapeDiscriminatorAndClose = () => {
   shapeDiscriminatorDialogVisible.value = false;
 };
 
-const showShapeMaskHelp = () => {
+const helpSectionHtml = (title: string, lines: string[]) => (
+  `<section class="game-window3-help-section"><h4>${title}</h4>${lines.map((line) => `<p>${line}</p>`).join('')}</section>`
+);
+
+const showStructuredHelp = (title: string, sections: Array<{ title: string; lines: string[] }>) => {
   ElMessageBox.alert(
-    [
-      '抠图用于解决“背景在变，但前景锚点稳定”的情况。',
-      '',
-      '打开弹窗后会持续采样直播画面。每个像素会记录一段时间内的波动，波动越大的像素越容易被判定为动态背景，并在 alpha 通道里变透明。',
-      '',
-      '保存后，检测时透明像素会被跳过，不参与相似度计算。等待越久，动态背景识别通常越精细；随时保存就是固化当前结果。',
-    ].join('\n'),
-    '方框抠图说明',
-    { confirmButtonText: '知道了' },
+    `<div class="game-window3-help">${sections.map((section) => helpSectionHtml(section.title, section.lines)).join('')}</div>`,
+    title,
+    {
+      confirmButtonText: '知道了',
+      dangerouslyUseHTMLString: true,
+      customClass: 'game-window3-help-message',
+    },
   );
+};
+
+const showShapeMaskHelp = () => {
+  showStructuredHelp('方框抠图说明', [
+    {
+      title: '1. 适用场景',
+      lines: ['背景持续变化，但前景锚点本身稳定。'],
+    },
+    {
+      title: '2. 计算机制',
+      lines: [
+        '开始后持续采样直播画面，记录每个像素的波动范围。',
+        '波动越大的像素，越容易被判定为动态背景，并在 alpha 通道里变透明。',
+      ],
+    },
+    {
+      title: '3. 检测效果',
+      lines: [
+        '保存后，透明像素会被跳过，不参与相似度计算。',
+        '等待越久，动态背景识别通常越精细；随时保存就是固化当前结果。',
+      ],
+    },
+  ]);
 };
 
 const showShapeToleranceHelp = () => {
-  ElMessageBox.alert(
-    [
-      '容差用于解决“同一个目标区域本身有灯光、特效、轻微抖动”的情况。',
-      '',
-      '打开弹窗后会持续采样直播画面，并为每个像素记录 RGB 最小值图和最大值图。检测时，只要当前像素落在这个范围内，就算 0 误差；超出范围才计算超出的部分。',
-      '',
-      '它和抠图可以同时使用：抠图负责跳过不可靠背景，容差负责兼容仍要参与匹配的正常波动。',
-    ].join('\n'),
-    '方框容差说明',
-    { confirmButtonText: '知道了' },
-  );
+  showStructuredHelp('方框容差说明', [
+    {
+      title: '1. 适用场景',
+      lines: ['同一个目标区域本身存在灯光、特效、轻微抖动。'],
+    },
+    {
+      title: '2. 数据结构',
+      lines: ['开始后持续采样直播画面，为每个像素记录 RGB 最小值图和最大值图。'],
+    },
+    {
+      title: '3. 检测机制',
+      lines: [
+        '当前像素落在最小值和最大值范围内时，误差记为 0。',
+        '超出范围时，只计算超出的部分。',
+      ],
+    },
+    {
+      title: '4. 组合关系',
+      lines: ['可与抠图同时使用：抠图跳过不可靠背景，容差兼容仍要参与匹配的正常波动。'],
+    },
+  ]);
 };
 
 const showShapeDiscriminatorHelp = () => {
-  ElMessageBox.alert(
-    [
-      '区分用于解决“两张图整体很像，但有极小状态差异”的情况。',
-      '',
-      '它会比较当前图和对照图在同一个 shape 区域里的差异，生成差异权重图。越亮的像素越能区分两个状态，检测时权重越高。',
-      '',
-      '开始后会实时截取直播区域，分别计算它更接近当前图还是对照图，并显示两边误差和差距。它不是判断像不像单张图，而是判断更像哪一个状态。',
-    ].join('\n'),
-    '方框区分说明',
-    { confirmButtonText: '知道了' },
-  );
+  showStructuredHelp('方框区分说明', [
+    {
+      title: '1. 适用场景',
+      lines: ['多张图里的同一 shape 位置很像，但存在极小状态差异。'],
+    },
+    {
+      title: '2. 区分组',
+      lines: [
+        '一个区分组可以包含两个或多个状态。',
+        '各状态应尽量绑定同一位置、同一尺寸的 shape。',
+      ],
+    },
+    {
+      title: '3. 差异权重',
+      lines: [
+        '系统比较各状态在同一 shape 区域里的差异，生成差异权重图。',
+        '越亮的像素越能区分状态，检测时权重越高。',
+      ],
+    },
+    {
+      title: '4. 抠图关系',
+      lines: [
+        '区分会引入各状态自己的抠图 alpha。',
+        '透明区域只对所属状态跳过，不会把所有状态强行取交集。',
+      ],
+    },
+    {
+      title: '5. 实时判断',
+      lines: [
+        '开始后实时截取直播区域，计算更接近哪个状态，并显示各状态误差和差距。',
+        '它判断的是“更像哪个状态”，不是“像不像某一张静态图”。',
+      ],
+    },
+  ]);
+};
+
+const showSceneJumpHelp = () => {
+  showStructuredHelp('场景跳转说明', [
+    {
+      title: '1. 用途',
+      lines: ['场景跳转记录的是当前 shape 被执行后，历史上实际进入过哪些场景。'],
+    },
+    {
+      title: '2. 格式',
+      lines: [
+        '多个目标用英文逗号分隔。',
+        '目标后可以写出现次数，例如 20(5)、登录弹窗(2)。',
+        '没有括号表示 0 次，是人工先验，还没有被运行验证过。',
+      ],
+    },
+    {
+      title: '3. 频数',
+      lines: [
+        '步进器运行中识别到真实结果后，会自动递增对应次数。',
+        '保存时会按频数降序排序，让高频路径优先参与下一次匹配。',
+      ],
+    },
+    {
+      title: '4. -1',
+      lines: [
+        '-1 必须单独填写。',
+        '它表示这个 shape 是退出、空白、返回原场景类动作，不记录具体目标。',
+        '某张图片只要存在 -1 shape，就会被步进器视为独立场景候选。',
+      ],
+    },
+    {
+      title: '5. 目录路径',
+      lines: [
+        '可以写目录名，例如 登录弹窗。',
+        '表示该目录下的一组场景都可能进入。',
+      ],
+    },
+    {
+      title: '6. 旧写法',
+      lines: ['? 不再作为有效配置。未知路径由步进器运行时探索，不需要写进字段。'],
+    },
+  ]);
+};
+
+const showStepperHelp = () => {
+  showStructuredHelp('步进器说明', [
+    {
+      title: '1. Tick',
+      lines: [
+        '步进器每轮只推进一步，不把流程交给一个可能卡死的长函数。',
+        '等待也是一个 tick，默认等待 1 秒后重新感知场景。',
+      ],
+    },
+    {
+      title: '2. 任务栈',
+      lines: [
+        '第一版内置到达目标场景任务。',
+        '每轮都会根据当前场景和任务目标重新选择下一步动作。',
+      ],
+    },
+    {
+      title: '3. 分层并行',
+      lines: [
+        '识别先匹配上一步动作的历史目标，再匹配独立场景，最后匹配其他场景。',
+        '每层内部有限并发匹配，命中高置信结果后停止继续扫描后续候选。',
+      ],
+    },
+    {
+      title: '4. 自探索',
+      lines: [
+        '如果没有明确路径，步进器会按动作优先级尝试可点击 shape。',
+        '点击后识别到的新场景会写回场景跳转频数，逐步增强标注数据。',
+      ],
+    },
+    {
+      title: '5. 轻量加载',
+      lines: [
+        '标注元数据常驻，图片像素不在页面初始化时全量解码。',
+        '每个 tick 只截取一次当前直播帧，候选匹配按需使用 shape 区域和已有匹配接口。',
+      ],
+    },
+  ]);
 };
 
 const shapeBoxStyle = (shape: GameWindow3Shape) => ({
@@ -6688,7 +7674,8 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   title: '',
   description: '',
   isSceneIdentity: false,
-  sceneJumpTarget: null,
+  sceneJumpTarget: '',
+  contentDirection: 'none',
   maskEnabled: false,
   alphaMask: null,
   toleranceEnabled: false,
@@ -6757,7 +7744,8 @@ const finishShapeDraft = (event: PointerEvent) => {
     title: 'shape ' + (flattenShapes(image.shapes ?? []).filter(isDrawableShape).length + 1),
     description: '',
     isSceneIdentity: false,
-    sceneJumpTarget: null,
+    sceneJumpTarget: '',
+    contentDirection: 'none',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -6930,6 +7918,25 @@ const finishShapeDrag = () => {
   flex-wrap: wrap;
 }
 
+.behavior-controls {
+  gap: 8px;
+  max-width: 100%;
+}
+
+.behavior-target-input {
+  width: 120px;
+}
+
+.behavior-run-status {
+  min-width: 0;
+  max-width: 520px;
+  overflow: hidden;
+  color: #606266;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .switch-field {
   display: flex;
   align-items: center;
@@ -7089,8 +8096,8 @@ const finishShapeDrag = () => {
 }
 
 .paused-placeholder {
-  width: min(520px, calc(100vw - 260px));
-  height: min(760px, calc(100dvh - 160px));
+  width: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
   color: #9ca3af;
@@ -8516,6 +9523,13 @@ const finishShapeDrag = () => {
   gap: 6px;
 }
 
+.annotation-title-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
 .asset-tree {
   flex: 1 1 auto;
   min-height: 0;
@@ -8661,6 +9675,15 @@ const finishShapeDrag = () => {
   pointer-events: none;
 }
 
+.annotation-occlusion-mask {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(245, 108, 108, 0.24);
+  border: 1px dashed rgba(220, 38, 38, 0.75);
+  box-sizing: border-box;
+}
+
 .shape-corner-handle {
   position: absolute;
   width: 9px;
@@ -8738,8 +9761,30 @@ const finishShapeDrag = () => {
   white-space: nowrap;
 }
 
+.shape-inline-help {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #cdd6e1;
+  border-radius: 50%;
+  background: #fff;
+  color: #8a96a3;
+  font-size: 11px;
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.shape-inline-help:hover {
+  color: #409eff;
+  border-color: #409eff;
+}
+
 .shape-jump-field .el-input-number {
   width: 84px;
+}
+
+.shape-jump-field .shape-direction-select {
+  width: 44px;
 }
 
 .shape-jump-field :deep(.el-input__wrapper) {
@@ -8801,8 +9846,8 @@ const finishShapeDrag = () => {
   grid-template-columns: repeat(3, 1fr);
 }
 
-.shape-discriminator-label-input {
-  width: 120px;
+.shape-discriminator-shape-select {
+  width: 210px;
 }
 
 .shape-discriminator-members {
@@ -8828,6 +9873,27 @@ const finishShapeDrag = () => {
 
 .shape-discriminator-member .el-input {
   width: 110px;
+}
+
+.shape-discriminator-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shape-discriminator-remove:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .shape-mask-preview {
@@ -8889,6 +9955,36 @@ const finishShapeDrag = () => {
 .shape-mask-slider .el-slider {
   flex: 1;
   min-width: 0;
+}
+
+:global(.game-window3-help-message) {
+  width: min(520px, calc(100vw - 32px));
+}
+
+:global(.game-window3-help) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #303133;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+:global(.game-window3-help-section) {
+  margin: 0;
+}
+
+:global(.game-window3-help-section h4) {
+  margin: 0 0 4px;
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+:global(.game-window3-help-section p) {
+  margin: 0;
+  color: #606266;
 }
 
 .annotation-empty {

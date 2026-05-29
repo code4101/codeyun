@@ -624,6 +624,16 @@ export interface FanxiuGameWindow2DragPayload {
   frame_height?: number;
 }
 
+export interface FanxiuGameWindow2KeyeventPayload {
+  entry_id: string;
+  key: string;
+}
+
+export interface FanxiuGameWindow2TextPayload {
+  entry_id: string;
+  text: string;
+}
+
 export interface FanxiuGameWindow2SaveFramePayload {
   entry_id: string;
   title?: string;
@@ -4601,6 +4611,20 @@ export const clickFanxiuGameWindow2 = (payload: FanxiuGameWindow2ClickPayload) =
 
 export const dragFanxiuGameWindow2 = (payload: FanxiuGameWindow2DragPayload) => {
   return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/drag', payload).then(res => res.data);
+};
+
+export const keyeventFanxiuGameWindow2 = (payload: FanxiuGameWindow2KeyeventPayload) => {
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/keyevent', payload).then(res => res.data);
+};
+
+export const textFanxiuGameWindow2 = (payload: FanxiuGameWindow2TextPayload) => {
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/text', payload).then(res => res.data);
+};
+
+export const screencapFanxiuGameWindow2 = (entryId: string) => {
+  return api
+    .post<Blob>('/fanxiu/game-window2/screencap', { entry_id: entryId }, { responseType: 'blob' })
+    .then(res => res.data);
 };
 
 export const saveFanxiuGameWindow2Frame = (payload: FanxiuGameWindow2SaveFramePayload) => {

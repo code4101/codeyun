@@ -2482,21 +2482,18 @@ const isNianzhuChuangguanWorkbook = computed(() => (
 const shouldShowExcelImportResetButton = computed(() => !isNianzhuChuangguanWorkbook.value)
 const studentLookupPrimaryLabel = computed(() => (isStudentLookupQuestionnaireMode.value ? '序号' : '学员'))
 const studentLookupEmptyText = computed(() => (
-  isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : '选择学员后显示完整信息'
+  isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : ''
 ))
 const studentLookupStudentPlaceholder = computed(() => {
   const columns = studentLookupColumnIndexes.value
   if (!columns) {
-    return '选择学员'
+    return '点击此处下拉框可以选择查看自己的考勤数据'
   }
   if (columns.mode === 'questionnaire') {
     return '输入或选择序号'
   }
 
-  const visibleIdentityHeaders = columns.identityColumns
-    .filter((column) => !isStudentLookupColumnHidden(column.index))
-    .map((column) => column.header)
-  return visibleIdentityHeaders.length ? visibleIdentityHeaders.join(' ') : '选择学员'
+  return '点击此处下拉框可以选择查看自己的考勤数据'
 })
 const filteredStudentLookupOptions = computed(() => {
   if (isStudentLookupQuestionnaireMode.value || !studentLookupGroup.value) {
@@ -24314,7 +24311,7 @@ defineExpose({
           </section>
         </article>
       </div>
-      <div v-else class="sheet-student-lookup-empty">{{ studentLookupEmptyText }}</div>
+      <div v-else-if="studentLookupEmptyText" class="sheet-student-lookup-empty">{{ studentLookupEmptyText }}</div>
     </section>
 
     <el-dialog
@@ -25940,6 +25937,10 @@ defineExpose({
 .sheet-student-lookup-field-main .sheet-student-lookup-student-select {
   flex: 1;
   min-width: 0;
+}
+
+.sheet-student-lookup-student-select :deep(.el-select__placeholder) {
+  color: #dc2626;
 }
 
 .sheet-student-lookup-feedback-button {
