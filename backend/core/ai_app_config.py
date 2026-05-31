@@ -18,11 +18,45 @@ from backend.models import AppSetting, User
 AI_APP_NOTE_TAXONOMY = "note-taxonomy"
 AI_APP_GIT_COMMIT = "ai-git-commit"
 AI_APP_CODEX_DIARY = "codex-diary"
-AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = "deepseek"
-AI_APP_GIT_COMMIT_DEFAULT_MODEL = "deepseek-v4-flash"
+AI_APP_CODEX_DAILY_SUMMARY = "codex-daily-summary"
+AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION = "note-sheet-clockin-link-detection"
+AI_APP_NOTE_SHEET_EXCEL_IMPORT = "note-sheet-excel-import"
+AI_APP_RIME_LINT = "rime-lint"
+AI_APP_FANXIU_PSEUDOCODE = "fanxiu-pseudocode"
+AI_APP_FANXIU_GAME_MACRO_ANNOTATION = "fanxiu-game-macro-annotation"
+AI_APP_ATTENDANCE_PRECHECK = "attendance-precheck"
+AI_APP_EVOMIND = "evomind"
+AI_APP_CODECLAW = "codeclaw"
+AI_APP_WECHAT_DAILY_SUMMARY = "wechat-daily-summary"
+AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
+AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
+AI_APP_DEEPSEEK_PROVIDER = "deepseek"
+AI_APP_DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
+AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
+AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
 AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = "deepseek"
-AI_APP_CODEX_DIARY_DEFAULT_MODEL = "deepseek-v4-pro"
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_DEEPSEEK_PRO_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
+_AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
+    AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_GIT_COMMIT: (AI_APP_GIT_COMMIT_DEFAULT_PROVIDER, AI_APP_GIT_COMMIT_DEFAULT_MODEL),
+    AI_APP_CODEX_DIARY: (AI_APP_CODEX_DIARY_DEFAULT_PROVIDER, AI_APP_CODEX_DIARY_DEFAULT_MODEL),
+    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, "gpt-5.5"),
+    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_EVOMIND: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+}
+_AI_APP_CODEX_SPARK_DEFAULT_IDS = {
+    app_id
+    for app_id, (provider, model) in _AI_APP_DEFAULTS.items()
+    if provider == AI_APP_CODEX_CLI_PROVIDER and model == AI_APP_CODEX_SPARK_MODEL
+}
 
 AI_APP_CONFIG_SETTING_KEY_PREFIX = "ai_app.config.user"
 LEGACY_AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
@@ -30,18 +64,81 @@ LEGACY_AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
 AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
     {
         "id": AI_APP_NOTE_TAXONOMY,
+        "group": "星图笔记",
         "label": "笔记分类",
         "description": "仅分析当前标题，并参考已有条目的标题、分类、形态、阶段后回写结果。",
     },
     {
         "id": AI_APP_GIT_COMMIT,
+        "group": "开发工具",
         "label": "AI提交",
         "description": "生成 Git 提交信息，自动 Git 提交和分层归纳提交共用这一组模型配置。",
     },
     {
         "id": AI_APP_CODEX_DIARY,
+        "group": "星图笔记",
         "label": "Codex 星图日记",
-        "description": "读取 Codex 会话并生成星图日记节点。",
+        "description": "按日期读取 Codex 会话，按主题拆分后写入星图笔记节点。",
+    },
+    {
+        "id": AI_APP_CODEX_DAILY_SUMMARY,
+        "group": "开发工具",
+        "label": "Codex 日志总结",
+        "description": "读取 Codex 会话日志，生成日报或多设备汇总结果，不直接创建星图笔记节点。",
+    },
+    {
+        "id": AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION,
+        "group": "考勤",
+        "label": "表格打卡链接检测",
+        "description": "在问卷星/打卡页面中辅助判断目标打卡链接。",
+    },
+    {
+        "id": AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+        "group": "考勤",
+        "label": "考勤表 Excel 导入",
+        "description": "把考勤 Excel 内容映射为星图表格数据行。",
+    },
+    {
+        "id": AI_APP_RIME_LINT,
+        "group": "文本工具",
+        "label": "Rime 文本校对",
+        "description": "对 Rime 词库或候选文本做轻量校对。",
+    },
+    {
+        "id": AI_APP_FANXIU_PSEUDOCODE,
+        "group": "凡修",
+        "label": "凡修伪代码编译",
+        "description": "把凡修卡片伪代码编译为可执行脚本。",
+    },
+    {
+        "id": AI_APP_FANXIU_GAME_MACRO_ANNOTATION,
+        "group": "凡修",
+        "label": "游戏窗口录制标注",
+        "description": "录制宏时根据截图和操作点辅助判断按钮、图标或拖拽控件的 shape 区域。",
+    },
+    {
+        "id": AI_APP_ATTENDANCE_PRECHECK,
+        "group": "考勤",
+        "label": "问卷预检报告",
+        "description": "为考勤问卷反馈行生成并填写 AI 初判文本。",
+    },
+    {
+        "id": AI_APP_EVOMIND,
+        "group": "开发工具",
+        "label": "EvoMind 语义分析",
+        "description": "EvoMind 案例抽取、语义筛选和规则建议。",
+    },
+    {
+        "id": AI_APP_CODECLAW,
+        "group": "开发工具",
+        "label": "CodeClaw 微信接入",
+        "description": "微信消息入口使用的 AI 模型，默认交给本机 Codex CLI 处理并回复微信。",
+    },
+    {
+        "id": AI_APP_WECHAT_DAILY_SUMMARY,
+        "group": "星图笔记",
+        "label": "微信聊天日总结",
+        "description": "读取本机微信聊天数据，按联系人或群生成日总结并写入星图笔记。",
     },
 )
 
@@ -86,19 +183,18 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
-    if app_id == AI_APP_GIT_COMMIT and _is_codex_cli_provider(item.get("provider")):
-        return {
-            **item,
-            "provider": AI_APP_GIT_COMMIT_DEFAULT_PROVIDER,
-            "model": AI_APP_GIT_COMMIT_DEFAULT_MODEL,
-        }
-    if app_id == AI_APP_CODEX_DIARY:
-        if _is_codex_cli_provider(item.get("provider")):
+    if app_id in _AI_APP_CODEX_SPARK_DEFAULT_IDS:
+        provider = str(item.get("provider") or "").strip().lower()
+        model = str(item.get("model") or "").strip()
+        if (provider == AI_APP_DEEPSEEK_PROVIDER and model in {"", "deepseek-v4-flash"}) or (
+            _is_codex_cli_provider(provider) and model in {"", "gpt-5.4", "deepseek-v4-flash"}
+        ):
             return {
                 **item,
-                "provider": AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
-                "model": AI_APP_CODEX_DIARY_DEFAULT_MODEL,
+                "provider": AI_APP_CODEX_CLI_PROVIDER,
+                "model": AI_APP_CODEX_SPARK_MODEL,
             }
+    if app_id == AI_APP_CODEX_DIARY:
         if item.get("provider") == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER and not item.get("model"):
             return {
                 **item,
@@ -108,15 +204,7 @@ def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, A
 
 
 def _default_app_config(app_id: str) -> dict[str, Any]:
-    if app_id == AI_APP_GIT_COMMIT:
-        provider = AI_APP_GIT_COMMIT_DEFAULT_PROVIDER
-        model = AI_APP_GIT_COMMIT_DEFAULT_MODEL
-    elif app_id == AI_APP_CODEX_DIARY:
-        provider = AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
-        model = AI_APP_CODEX_DIARY_DEFAULT_MODEL
-    else:
-        provider = ""
-        model = ""
+    provider, model = _AI_APP_DEFAULTS.get(app_id, ("", ""))
     return {
         "enabled": True,
         "provider": provider,

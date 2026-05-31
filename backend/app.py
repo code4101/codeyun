@@ -20,7 +20,6 @@ from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
 from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
-from backend.core.codex_saver.mcp_server import codex_saver_mcp_lifespan
 from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
 from backend.plugins import register_plugin_modules
@@ -52,8 +51,7 @@ async def lifespan(app: FastAPI):
     init_background_task_runner()
     if not settings.is_test:
         start_enabled_codex_bridges()
-    async with codex_saver_mcp_lifespan():
-        yield
+    yield
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()

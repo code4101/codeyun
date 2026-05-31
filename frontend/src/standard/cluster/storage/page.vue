@@ -86,11 +86,11 @@
     </header>
 
     <section v-if="!devices.length && !loadingDevices" class="storage-empty">
-      当前没有可用设备，请先在运行管理里添加本机或远程设备。
+      {{ noAvailableNodeLabel }}
     </section>
 
     <template v-else>
-      <nav class="storage-view-tabs" aria-label="TreeSize子页">
+      <nav v-if="shouldShowDuplicates" class="storage-view-tabs" aria-label="TreeSize子页">
         <button
           type="button"
           :class="{ 'is-active': activeView === 'tree' }"
@@ -119,7 +119,7 @@
         <span><strong>文件</strong>{{ rootFileCount }}</span>
         <span v-if="unknownRootCount"><strong>未统计</strong>{{ unknownRootCount }}</span>
         <span
-          v-if="activeDeleteTask"
+          v-if="activeDeleteTask && !isWechatMode"
           class="summary-delete-task"
           :class="`is-${activeDeleteTask.status}`"
           :title="activeDeleteTask.path"
@@ -142,77 +142,34 @@
           当前范围没有可展示的文件或目录。
         </div>
 
-        <table v-else class="storage-table" aria-label="目录大小树">
+        <table
+          v-else
+          class="storage-table"
+          :class="{ 'is-wechat-storage': isWechatMode }"
+          aria-label="目录大小树"
+        >
           <thead>
             <tr class="storage-table-head">
               <th class="storage-cell storage-cell-name" scope="col">名称</th>
-              <th class="storage-cell storage-cell-size" scope="col">
-                <span class="size-head">
-                  <span>大小</span>
-                  <el-dropdown trigger="click" @command="handleSizeValueModeCommand">
-                    <button type="button" class="mode-dropdown-button" aria-label="选择大小统计口径">
-                      {{ currentSizeValueModeOption.label }}
-                      <el-icon><ArrowDown /></el-icon>
-                    </button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item
-                          v-for="option in sizeValueModeOptions"
-                          :key="option.value"
-                          :command="option.value"
-                          :class="{ 'is-active': sizeValueMode === option.value }"
-                        >
-                          {{ option.label }}
-                        </el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                </span>
+              <th
+                class="storage-cell storage-cell-size storage-configurable-head"
+                scope="col"
+                :title="`右键配置：${currentSizeValueModeOption.label}`"
+                @contextmenu.prevent.stop="openStorageConfigMenu($event)"
+              >
+                大小
               </th>
-              <th class="storage-cell storage-cell-percent" scope="col">
-                <span class="percent-head">
-                  <span>{{ sizeBarColumnTitle }}</span>
-                  <el-dropdown trigger="click" @command="handleSizeBarModeCommand">
-                    <button type="button" class="mode-dropdown-button" aria-label="选择大小条形图模式">
-                      {{ currentSizeBarModeOption.label }}
-                      <el-icon><ArrowDown /></el-icon>
-                    </button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item
-                          v-for="option in sizeBarModeOptions"
-                          :key="option.value"
-                          :command="option.value"
-                          :class="{ 'is-active': sizeBarMode === option.value }"
-                        >
-                          {{ option.label }}
-                        </el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                  <el-dropdown trigger="click" @command="handleSizeBarColorModeCommand">
-                    <button type="button" class="mode-dropdown-button" aria-label="选择条形图颜色模式">
-                      {{ currentSizeBarColorModeOption.label }}
-                      <el-icon><ArrowDown /></el-icon>
-                    </button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item
-                          v-for="option in sizeBarColorModeOptions"
-                          :key="option.value"
-                          :command="option.value"
-                          :class="{ 'is-active': sizeBarColorMode === option.value }"
-                        >
-                          {{ option.label }}
-                        </el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                </span>
+              <th
+                class="storage-cell storage-cell-percent storage-configurable-head"
+                scope="col"
+                :title="`右键配置：${currentSizeBarModeOption.label} / ${currentSizeBarColorModeOption.label}`"
+                @contextmenu.prevent.stop="openStorageConfigMenu($event)"
+              >
+                {{ sizeBarColumnTitle }}
               </th>
               <th class="storage-cell storage-cell-count" scope="col">文件数/剩余</th>
               <th class="storage-cell storage-cell-time" scope="col">修改时间</th>
-              <th class="storage-cell storage-cell-path" scope="col">路径</th>
+              <th class="storage-cell storage-cell-path" scope="col">{{ isWechatMode ? '说明' : '路径' }}</th>
               <th class="storage-cell storage-cell-spacer" scope="col" aria-hidden="true"></th>
             </tr>
           </thead>
@@ -221,7 +178,7 @@
               <tr
                 v-if="row.kind === 'node'"
                 class="storage-table-row"
-                :class="{ 'is-context-target': contextMenu.node?.id === row.node.id }"
+                :class="{ 'is-context-target': shouldShowContextMenu && contextMenu.node?.id === row.node.id }"
                 @contextmenu.prevent.stop="openNodeContextMenu(row.node, $event)"
               >
                 <td class="storage-cell storage-cell-name">
@@ -275,7 +232,11 @@
                 </td>
 
                 <td class="storage-cell storage-cell-path">
-                  <span :title="row.node.path">{{ row.node.path }}</span>
+                  <span
+                    v-if="isWechatMode"
+                    :title="describeWechatStorageNodeDetail(row.node)"
+                  >{{ describeWechatStorageNodeBrief(row.node) }}</span>
+                  <span v-else :title="row.node.path">{{ displayNodePath(row.node.path) }}</span>
                 </td>
 
                 <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
@@ -303,7 +264,7 @@
       </section>
       </template>
 
-      <template v-else>
+      <template v-else-if="shouldShowDuplicates">
         <section class="duplicate-toolbar">
           <label class="duplicate-field duplicate-field-rules">
             <span class="storage-field-label">判重规则</span>
@@ -521,7 +482,7 @@
 
     <teleport to="body">
       <div
-        v-if="contextMenu.visible"
+        v-if="shouldShowContextMenu && contextMenu.visible"
         class="storage-context-menu"
         :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
         @click.stop
@@ -537,6 +498,53 @@
           <span>{{ contextMenu.node && canDeleteNode(contextMenu.node) ? '永久删除' : '根目录不可删除' }}</span>
         </button>
       </div>
+      <div
+        v-if="tableConfigMenu.visible"
+        class="storage-context-menu storage-config-menu"
+        :style="{ left: `${tableConfigMenu.x}px`, top: `${tableConfigMenu.y}px` }"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <div class="storage-config-menu-section">
+          <strong>大小</strong>
+          <button
+            v-for="option in sizeValueModeOptions"
+            :key="option.value"
+            type="button"
+            class="context-menu-item"
+            :class="{ 'is-active': sizeValueMode === option.value }"
+            @click="chooseSizeValueMode(option.value)"
+          >
+            <span>{{ option.label }}</span>
+          </button>
+        </div>
+        <div class="storage-config-menu-section">
+          <strong>参照</strong>
+          <button
+            v-for="option in sizeBarModeOptions"
+            :key="option.value"
+            type="button"
+            class="context-menu-item"
+            :class="{ 'is-active': sizeBarMode === option.value }"
+            @click="chooseSizeBarMode(option.value)"
+          >
+            <span>{{ option.label }}</span>
+          </button>
+        </div>
+        <div class="storage-config-menu-section">
+          <strong>颜色</strong>
+          <button
+            v-for="option in sizeBarColorModeOptions"
+            :key="option.value"
+            type="button"
+            class="context-menu-item"
+            :class="{ 'is-active': sizeBarColorMode === option.value }"
+            @click="chooseSizeBarColorMode(option.value)"
+          >
+            <span>{{ option.label }}</span>
+          </button>
+        </div>
+      </div>
     </teleport>
   </div>
 </template>
@@ -545,7 +553,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  ArrowDown,
   ArrowLeft,
   ArrowRight,
   Delete,
@@ -556,6 +563,7 @@ import {
   Refresh,
   Search,
 } from '@element-plus/icons-vue';
+import { useRoute } from 'vue-router';
 
 import {
   fetchDeviceEntryDeleteTask,
@@ -577,7 +585,26 @@ import {
   type DeviceDuplicateSource,
   type DeviceFileSelector,
 } from '@/api/deviceFiles';
+import {
+  fetchWechatStorageDirectory,
+  fetchWechatStorageRoots,
+  type WeChatStorageDirectoryItem,
+  type WeChatStorageDirectoryListing,
+  type WeChatStorageRoot,
+} from '@/api/wechatArchive';
 import { taskStore, type Device } from '@/store/taskStore';
+
+type StorageSource = 'cluster' | 'wechat';
+
+const props = defineProps<{ source?: StorageSource }>();
+
+const route = useRoute();
+const storageSource = computed<StorageSource>(() => {
+  if (props.source === 'cluster' || props.source === 'wechat') {
+    return props.source;
+  }
+  return route.path.includes('/notes/wechat-data/storage') ? 'wechat' : 'cluster';
+});
 
 const DEVICE_ROOT_SENTINEL = '__device_root__';
 const SYSTEM_ROOT_KEY = '__system_root__';
@@ -587,6 +614,8 @@ const SIZE_VALUE_MODE_STORAGE_KEY = 'codeyun.storage.sizeValueMode';
 const STORAGE_VIEW_STORAGE_KEY = 'codeyun.storage.activeView';
 const DUPLICATE_SETTINGS_STORAGE_KEY = 'codeyun.storage.duplicateSettings.v1';
 const WORKSPACE_STATE_STORAGE_KEY = 'codeyun.storage.workspaceState.v1';
+const WECHAT_WORKSPACE_STATE_STORAGE_KEY = 'codeyun.storage.wechat.workspaceState.v1';
+const WECHAT_ACTIVE_VIEW_STORAGE_KEY = 'codeyun.storage.wechat.activeView';
 const NODE_PAGE_SIZE = 100;
 const MAX_VISIBLE_LIMIT = 100000;
 const DUPLICATE_PAGE_SIZE = 10;
@@ -676,6 +705,12 @@ interface ContextMenuState {
   node: StorageNode | null;
 }
 
+interface TableConfigMenuState {
+  visible: boolean;
+  x: number;
+  y: number;
+}
+
 interface ActiveDeleteTask {
   id: string;
   status: DeviceDeleteTask['status'];
@@ -696,6 +731,12 @@ interface StorageWorkspaceState {
   scrollTop: number;
   scrollLeft: number;
   updatedAt: number;
+}
+
+interface WeChatSourceEntry {
+  id: string;
+  device_id: string;
+  name: string;
 }
 
 interface DuplicateSettingsState {
@@ -728,7 +769,16 @@ const DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
   ],
 };
 
-const devices = computed<Device[]>(() => taskStore.devices);
+const isWechatMode = computed(() => storageSource.value === 'wechat');
+const wechatRoots = ref<WeChatStorageRoot[]>([]);
+const devices = computed<(Device | WeChatSourceEntry)[]>(() => isWechatMode.value
+  ? wechatRoots.value.map((root) => ({
+    id: root.device_id,
+    device_id: root.device_id,
+    name: `${root.label}${root.current ? '（当前）' : ''}`,
+  }))
+  : taskStore.devices
+);
 const selectedEntryId = ref('');
 const diskRootOptions = ref<RootOption[]>([]);
 const selectedRootKey = ref(SYSTEM_ROOT_KEY);
@@ -763,6 +813,11 @@ const contextMenu = ref<ContextMenuState>({
   y: 0,
   node: null,
 });
+const tableConfigMenu = ref<TableConfigMenuState>({
+  visible: false,
+  x: 0,
+  y: 0,
+});
 let nodeSeq = 0;
 let deleteTaskPollTimer: number | null = null;
 let duplicateTaskPollTimer: number | null = null;
@@ -772,15 +827,26 @@ let lastTableScrollTop = 0;
 let lastTableScrollLeft = 0;
 
 const rootOptions = computed<RootOption[]>(() => [
-  {
-    key: SYSTEM_ROOT_KEY,
-    label: '设备根目录',
-    path: '列出磁盘或系统根',
-    rootKey: null,
-    absolutePath: null,
-    system: true,
-  },
-  ...diskRootOptions.value,
+  ...(isWechatMode.value
+    ? wechatRoots.value.map((root) => ({
+      key: root.device_id,
+      label: root.label || root.device_id,
+      path: root.device_root,
+      rootKey: root.device_id,
+      absolutePath: root.device_root,
+      system: false,
+    }))
+    : [
+      {
+        key: SYSTEM_ROOT_KEY,
+        label: '设备根目录',
+        path: '列出磁盘或系统根',
+        rootKey: null,
+        absolutePath: null,
+        system: true,
+      },
+      ...diskRootOptions.value,
+    ]),
 ]);
 
 const selectedRoot = computed(() =>
@@ -792,8 +858,14 @@ const canBrowse = computed(() => Boolean(selectedEntryId.value && selectedRoot.v
 const pathPlaceholder = computed(() =>
   selectedRoot.value?.system
     ? '留空列出磁盘，也可输入绝对路径'
-    : '留空表示磁盘根目录，或输入相对路径'
+    : isWechatMode.value
+      ? '留空表示当前范围根，也可输入微信相关绝对路径'
+      : '留空表示磁盘根目录，或输入相对路径'
 );
+
+const shouldShowDuplicates = computed(() => !isWechatMode.value);
+const shouldShowContextMenu = computed(() => !isWechatMode.value);
+const noAvailableNodeLabel = computed(() => (isWechatMode.value ? '当前没有可用微信目录' : '当前没有可用设备，请先在运行管理里添加本机或远程设备。'));
 
 const currentDisplayPath = computed(() => {
   if (currentListing.value?.absolute_path) {
@@ -871,7 +943,13 @@ const currentSizeBarModeOption = computed(() =>
 const currentSizeBarColorModeOption = computed(() =>
   sizeBarColorModeOptions.find((option) => option.value === sizeBarColorMode.value) ?? sizeBarColorModeOptions[0]
 );
+const workspaceStateStorageKey = computed(() =>
+  isWechatMode.value ? WECHAT_WORKSPACE_STATE_STORAGE_KEY : WORKSPACE_STATE_STORAGE_KEY
+);
 const sizeBarColumnTitle = computed(() => currentSizeBarModeOption.value.columnTitle);
+const activeViewStorageKey = computed(() =>
+  isWechatMode.value ? WECHAT_ACTIVE_VIEW_STORAGE_KEY : STORAGE_VIEW_STORAGE_KEY
+);
 
 function normalizeMaybeNumber(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -1049,7 +1127,7 @@ function readWorkspaceState(): StorageWorkspaceState | null {
     return null;
   }
   try {
-    const raw = window.localStorage.getItem(WORKSPACE_STATE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(workspaceStateStorageKey.value);
     if (!raw) {
       return null;
     }
@@ -1130,7 +1208,7 @@ function persistWorkspaceState() {
     return;
   }
   try {
-    window.localStorage.setItem(WORKSPACE_STATE_STORAGE_KEY, JSON.stringify(buildWorkspaceState()));
+    window.localStorage.setItem(workspaceStateStorageKey.value, JSON.stringify(buildWorkspaceState()));
   } catch {
     // localStorage quota or privacy errors should not break browsing.
   }
@@ -1200,6 +1278,16 @@ function requestMatchesAvailableScope(request: DeviceFileSelector | null): boole
   if (!request) {
     return false;
   }
+  if (isWechatMode.value) {
+    const wechatRoot = selectedRoot.value?.absolutePath || '';
+    if (request.absolute_path) {
+      return isPathWithinScope(request.absolute_path, wechatRoot);
+    }
+    if (request.root) {
+      return request.root === selectedEntryId.value;
+    }
+    return false;
+  }
   if (request.absolute_path) {
     return true;
   }
@@ -1212,6 +1300,29 @@ function isAbsolutePathInput(path: string): boolean {
     || normalized.startsWith('\\\\')
     || normalized.startsWith('/')
     || normalized.startsWith('\\');
+}
+
+function normalizePathForScopeCompare(path: string): string {
+  return path
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+$/g, '')
+    .toLowerCase();
+}
+
+function isPathWithinScope(path: string, scopePath: string): boolean {
+  const normalizedPath = normalizePathForScopeCompare(path);
+  const normalizedScope = normalizePathForScopeCompare(scopePath);
+  if (!normalizedPath || !normalizedScope) {
+    return false;
+  }
+  if (normalizedScope === '/') {
+    return true;
+  }
+  if (normalizedPath === normalizedScope) {
+    return true;
+  }
+  return normalizedPath.startsWith(`${normalizedScope}/`);
 }
 
 function normalizePathForCompare(path: string): string {
@@ -1270,6 +1381,69 @@ function getPathRelativeToRoot(rootPath: string, absolutePath: string): string |
     return null;
   }
   return absolutePath.slice(rootPath.replace(/[\\/]+$/, '').length).replace(/^[\\/]+/, '').replace(/[\\/]/g, separator);
+}
+
+function displayNodePath(path: string): string {
+  if (!isWechatMode.value) {
+    return path;
+  }
+  const rootPath = selectedRoot.value?.absolutePath;
+  if (!rootPath) {
+    return path;
+  }
+  const relative = getPathRelativeToRoot(rootPath, path);
+  if (relative == null) {
+    return path;
+  }
+  if (!relative) {
+    return '/';
+  }
+  return relative.replace(/[\\/]/g, '/');
+}
+
+function getWechatNodeRelativePath(node: StorageNode): string {
+  const relative = displayNodePath(node.path);
+  return relative === '/' ? '' : relative.replace(/\\/g, '/');
+}
+
+function getWechatStorageNodeDescription(node: StorageNode): { brief: string; detail: string } {
+  const name = node.name.toLowerCase();
+  const relativePath = getWechatNodeRelativePath(node).toLowerCase();
+  const segments = relativePath.split('/').filter(Boolean);
+  const accountIndex = segments.findIndex((segment) => segment.startsWith('wxid_'));
+  const accountSubdir = accountIndex >= 0 ? segments[accountIndex + 1] || '' : '';
+
+  if (name.startsWith('wxid_')) return { brief: '账号数据', detail: '微信账号数据目录，包含该账号的消息、缓存、资源和本地配置。' };
+  if (name === 'all_users' || name === 'all users') return { brief: '全局共享', detail: '全局用户共享数据，通常是登录状态、公共配置和跨账号缓存。' };
+  if (name === 'backup') return { brief: '聊天备份', detail: '微信备份目录，用于聊天记录迁移或备份恢复产生的数据。' };
+  if (name === 'msg') return { brief: '聊天消息', detail: '聊天消息主体数据，通常包含会话消息库、索引和消息相关资源，是最核心的占用来源。' };
+  if (name === 'cache') return { brief: '运行缓存', detail: '运行缓存和临时下载内容，可用于加速加载，通常不是原始聊天数据库主体。' };
+  if (name === 'db_storage') return { brief: '数据库', detail: '微信 4.x 本地数据库存储区，包含加密/分片后的底层数据库文件。' };
+  if (name === 'temp' || name === 'tmp') return { brief: '临时文件', detail: '临时文件目录，常见于下载、预览、发送或转码过程中的中间文件。' };
+  if (name === 'business') return { brief: '业务插件', detail: '微信业务插件和功能模块数据，例如小程序、公众号或业务场景缓存。' };
+  if (name === 'resource' || name === 'resources') return { brief: '资源素材', detail: '资源文件目录，常见图片、表情、预览素材或界面资源缓存。' };
+  if (name === 'config') return { brief: '本地配置', detail: '本地配置目录，保存账号、客户端或功能模块的配置项。' };
+  if (name === 'apm_record') return { brief: '诊断记录', detail: '性能与诊断记录目录，通常用于客户端监控、崩溃或性能分析。' };
+  if (name === 'decrypted') return { brief: '解密结果', detail: '逆向流程生成的解密数据目录，通常包含已解密数据库和导出资源。' };
+  if (name === 'raw_snapshot') return { brief: '原始快照', detail: '逆向前保存的原始快照，用于保留官方微信目录或数据库的现场副本。' };
+  if (name === 'reports') return { brief: '分析报告', detail: '逆向分析报告和中间结论目录。' };
+  if (name === 'scripts' || name === 'work') return { brief: '工程文件', detail: '逆向工程脚本或临时工作目录。' };
+  if (name === 'secrets') return { brief: '敏感信息', detail: '密钥、参数或敏感中间信息目录，应谨慎查看和同步。' };
+  if (name === 'wechat-ilink') return { brief: '接入桥接', detail: 'CodeYun 微信接入数据，通常保存接入账号、桥接配置和运行状态。' };
+  if (name.endsWith('.db') || name.endsWith('.sqlite') || name.endsWith('.sqlite3')) return { brief: '数据库文件', detail: 'SQLite 数据库文件，可进一步解析表结构和业务字段。' };
+  if (name.endsWith('.db-wal') || name.endsWith('.db-shm')) return { brief: '数据库日志', detail: 'SQLite 运行辅助文件，和对应数据库一起表示最近写入状态。' };
+  if (accountSubdir === 'msg') return { brief: '消息子项', detail: '某个账号下的消息相关子目录，包含聊天记录数据库、索引或消息资源。' };
+  if (accountSubdir === 'db_storage') return { brief: '库文件子项', detail: '某个账号下的数据库存储子目录，可重点关注数据库分片和消息表。' };
+  if (node.isDir) return { brief: '微信目录', detail: '微信相关子目录，建议展开后结合文件类型和体积继续判断用途。' };
+  return { brief: '微信文件', detail: '微信相关文件，可结合扩展名、大小和所在目录进一步判断。' };
+}
+
+function describeWechatStorageNodeBrief(node: StorageNode): string {
+  return getWechatStorageNodeDescription(node).brief;
+}
+
+function describeWechatStorageNodeDetail(node: StorageNode): string {
+  return getWechatStorageNodeDescription(node).detail;
 }
 
 function buildDiskRootOptions(listing: DeviceDirectoryListing): RootOption[] {
@@ -1341,6 +1515,35 @@ function compareItems(left: DeviceDirectoryItem, right: DeviceDirectoryItem): nu
     return left.is_dir ? -1 : 1;
   }
   return left.name.localeCompare(right.name, 'zh-CN');
+}
+
+function normalizeWechatDirectoryItem(_item: WeChatStorageDirectoryItem): DeviceDirectoryItem {
+  return {
+    name: _item.name,
+    path: _item.path,
+    is_dir: _item.is_dir,
+    size: _item.size,
+    modified_at: _item.modified_at,
+    direct_file_bytes: _item.direct_file_bytes,
+    direct_file_count: _item.direct_file_count,
+    recursive_total_bytes: _item.recursive_total_bytes,
+    recursive_file_count: _item.recursive_file_count,
+    latest_descendant_modified_at: _item.latest_descendant_modified_at,
+    max_weight: _item.max_weight,
+    weighted_file_count: _item.weighted_file_count,
+    disk_total_bytes: _item.disk_total_bytes,
+    disk_free_bytes: _item.disk_free_bytes,
+    disk_used_bytes: _item.disk_used_bytes,
+  };
+}
+
+function normalizeWechatDirectoryListing(listing: WeChatStorageDirectoryListing): DeviceDirectoryListing {
+  return {
+    root: null,
+    current_path: listing.current_path,
+    absolute_path: listing.absolute_path,
+    items: listing.items.map((item) => normalizeWechatDirectoryItem(item)),
+  };
 }
 
 function createRequestForItem(listing: DeviceDirectoryListing, item: DeviceDirectoryItem): DeviceFileSelector {
@@ -1447,6 +1650,13 @@ function compareStorageNodes(left: StorageNode, right: StorageNode): number {
 }
 
 async function fetchListing(request: DeviceFileSelector): Promise<DeviceDirectoryListing> {
+  if (isWechatMode.value) {
+    const listing = await fetchWechatStorageDirectory({
+      device_id: selectedEntryId.value,
+      ...(request.absolute_path ? { absolute_path: request.absolute_path } : {}),
+    });
+    return normalizeWechatDirectoryListing(listing);
+  }
   return fetchDeviceDirectoryItems(selectedEntryId.value, {
     ...request,
     sort_program: DIRECTORY_SORT_PROGRAM,
@@ -1580,6 +1790,9 @@ function handleRootChange() {
   currentListing.value = null;
   currentRequest.value = null;
   loadError.value = '';
+  if (isWechatMode.value && selectedRootKey.value) {
+    selectedEntryId.value = selectedRootKey.value;
+  }
   clearDuplicateListing();
   schedulePersistWorkspaceState();
 }
@@ -1612,7 +1825,7 @@ async function reloadCurrent() {
 function setActiveView(view: StorageView) {
   activeView.value = view;
   if (typeof window !== 'undefined') {
-    window.localStorage.setItem(STORAGE_VIEW_STORAGE_KEY, view);
+    window.localStorage.setItem(activeViewStorageKey.value, view);
   }
 }
 
@@ -1772,6 +1985,17 @@ async function loadRootsForDevice() {
   }
   loadingRoots.value = true;
   try {
+    if (isWechatMode.value) {
+      if (!wechatRoots.value.length) {
+        const payload = await fetchWechatStorageRoots();
+        wechatRoots.value = payload.items;
+      }
+      if (!rootOptions.value.some((root) => root.key === selectedRootKey.value)) {
+        const currentRoot = wechatRoots.value.find((root) => root.current);
+        selectedRootKey.value = (currentRoot?.device_id || wechatRoots.value[0]?.device_id || selectedEntryId.value);
+      }
+      return;
+    }
     const listing = await fetchDeviceDirectoryItems(selectedEntryId.value, {
       absolute_path: DEVICE_ROOT_SENTINEL,
       sort_program: DIRECTORY_SORT_PROGRAM,
@@ -1796,8 +2020,15 @@ async function handleDeviceChange() {
   clearDuplicateListing();
   activeDeleteTask.value = null;
   stopDeleteTaskPolling();
+  if (isWechatMode.value) {
+    if (selectedEntryId.value) {
+      selectedRootKey.value = selectedEntryId.value;
+    }
+  }
   await loadRootsForDevice();
-  await syncLatestDeleteTaskForCurrentDevice();
+  if (!isWechatMode.value) {
+    await syncLatestDeleteTaskForCurrentDevice();
+  }
   await loadFromInputs();
 }
 
@@ -1805,13 +2036,40 @@ function closeContextMenu() {
   contextMenu.value.visible = false;
 }
 
+function closeTableConfigMenu() {
+  tableConfigMenu.value.visible = false;
+}
+
+function handleGlobalClick() {
+  closeContextMenu();
+  closeTableConfigMenu();
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     closeContextMenu();
+    closeTableConfigMenu();
   }
 }
 
+function openStorageConfigMenu(event: MouseEvent) {
+  closeContextMenu();
+  const menuWidth = 180;
+  const menuHeight = 248;
+  const viewportWidth = typeof window === 'undefined' ? event.clientX + menuWidth : window.innerWidth;
+  const viewportHeight = typeof window === 'undefined' ? event.clientY + menuHeight : window.innerHeight;
+  tableConfigMenu.value = {
+    visible: true,
+    x: Math.max(8, Math.min(event.clientX, viewportWidth - menuWidth - 8)),
+    y: Math.max(8, Math.min(event.clientY, viewportHeight - menuHeight - 8)),
+  };
+}
+
 function openNodeContextMenu(node: StorageNode, event: MouseEvent) {
+  if (!shouldShowContextMenu.value) {
+    return;
+  }
+  closeTableConfigMenu();
   const menuWidth = 180;
   const menuHeight = 42;
   const viewportWidth = typeof window === 'undefined' ? event.clientX + menuWidth : window.innerWidth;
@@ -2204,25 +2462,19 @@ function setSizeBarColorMode(mode: SizeBarColorMode) {
   sizeBarColorMode.value = mode;
 }
 
-function handleSizeValueModeCommand(command: unknown) {
-  const mode = normalizeSizeValueMode(typeof command === 'string' ? command : null);
-  if (mode) {
-    setSizeValueMode(mode);
-  }
+function chooseSizeValueMode(mode: SizeValueMode) {
+  setSizeValueMode(mode);
+  closeTableConfigMenu();
 }
 
-function handleSizeBarModeCommand(command: unknown) {
-  const mode = normalizeSizeBarMode(typeof command === 'string' ? command : null);
-  if (mode) {
-    setSizeBarMode(mode);
-  }
+function chooseSizeBarMode(mode: SizeBarMode) {
+  setSizeBarMode(mode);
+  closeTableConfigMenu();
 }
 
-function handleSizeBarColorModeCommand(command: unknown) {
-  const mode = normalizeSizeBarColorMode(typeof command === 'string' ? command : null);
-  if (mode) {
-    setSizeBarColorMode(mode);
-  }
+function chooseSizeBarColorMode(mode: SizeBarColorMode) {
+  setSizeBarColorMode(mode);
+  closeTableConfigMenu();
 }
 
 watch(sizeBarMode, (mode) => {
@@ -2254,11 +2506,14 @@ watch([duplicateRuleFields, duplicateFilterRules, duplicateMinSizeMb, duplicateS
 onMounted(async () => {
   const savedWorkspaceState = readWorkspaceState();
   if (typeof window !== 'undefined') {
-    window.addEventListener('click', closeContextMenu);
+    window.addEventListener('click', handleGlobalClick);
     window.addEventListener('keydown', handleGlobalKeydown);
-    const savedView = normalizeStorageView(window.localStorage.getItem(STORAGE_VIEW_STORAGE_KEY));
+    const savedView = normalizeStorageView(window.localStorage.getItem(activeViewStorageKey.value));
     if (savedView) {
       activeView.value = savedView;
+      if (isWechatMode.value && savedView === 'duplicates') {
+        activeView.value = 'tree';
+      }
     }
     const duplicateSettings = readDuplicateSettings();
     if (duplicateSettings) {
@@ -2287,17 +2542,36 @@ onMounted(async () => {
 
   loadingDevices.value = true;
   try {
-    await taskStore.fetchDevices();
-    const savedDevice = devices.value.find((device) => device.id === savedWorkspaceState?.selectedEntryId);
-    const localDevice = devices.value.find((device) => device.mode === 'local');
-    selectedEntryId.value = (savedDevice ?? localDevice ?? devices.value[0])?.id ?? '';
-    if (selectedEntryId.value) {
-      if (savedWorkspaceState?.selectedRootKey) {
-        selectedRootKey.value = savedWorkspaceState.selectedRootKey;
+    let canRestoreSelectedEntry = false;
+    if (isWechatMode.value) {
+      const payload = await fetchWechatStorageRoots();
+      wechatRoots.value = payload.items;
+      const preferred = payload.items.find((item) => item.current) ?? payload.items[0] ?? null;
+      const isSavedDeviceAvailable = payload.items.some((item) => item.device_id === savedWorkspaceState?.selectedEntryId);
+      canRestoreSelectedEntry = isSavedDeviceAvailable;
+      selectedEntryId.value = isSavedDeviceAvailable && savedWorkspaceState?.selectedEntryId
+        ? savedWorkspaceState.selectedEntryId
+        : (preferred?.device_id || payload.items[0]?.device_id || '');
+      if (selectedEntryId.value) {
+        const isSavedRootAvailable = payload.items.some((item) => item.device_id === savedWorkspaceState?.selectedRootKey);
+        selectedRootKey.value = isSavedRootAvailable && savedWorkspaceState?.selectedRootKey
+          ? savedWorkspaceState.selectedRootKey
+          : selectedEntryId.value;
+        await loadRootsForDevice();
       }
+    } else {
+      await taskStore.fetchDevices();
+      const resolvedDevices = devices.value as Device[];
+      const savedDevice = resolvedDevices.find((device) => device.id === savedWorkspaceState?.selectedEntryId);
+      const localDevice = resolvedDevices.find((device) => device.mode === 'local');
+      selectedEntryId.value = (savedDevice ?? localDevice ?? devices.value[0])?.id ?? '';
+      canRestoreSelectedEntry = Boolean(savedDevice);
       await loadRootsForDevice();
       await syncLatestDeleteTaskForCurrentDevice();
-      const savedRequest = savedDevice && requestMatchesAvailableScope(savedWorkspaceState?.currentRequest ?? null)
+    }
+
+    if (selectedEntryId.value) {
+      const savedRequest = canRestoreSelectedEntry && requestMatchesAvailableScope(savedWorkspaceState?.currentRequest ?? null)
         ? savedWorkspaceState?.currentRequest ?? null
         : null;
       const restored = savedRequest
@@ -2322,7 +2596,7 @@ onBeforeUnmount(() => {
   stopDuplicateTaskPolling();
   stopWorkspacePersistTimer();
   if (typeof window !== 'undefined') {
-    window.removeEventListener('click', closeContextMenu);
+    window.removeEventListener('click', handleGlobalClick);
     window.removeEventListener('keydown', handleGlobalKeydown);
   }
 });
@@ -2610,31 +2884,6 @@ onBeforeUnmount(() => {
   background: #fee2e2;
 }
 
-.mode-dropdown-button {
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid #cfd8e3;
-  border-radius: 4px;
-  background: #ffffff;
-  color: #64748b;
-  font: inherit;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-}
-
-.mode-dropdown-button:hover {
-  color: #1d4ed8;
-  border-color: #93c5fd;
-  background: #f8fbff;
-}
-
-.mode-dropdown-button .el-icon {
-  font-size: 12px;
-}
-
 .storage-table-shell {
   flex: 1;
   min-height: 360px;
@@ -2704,17 +2953,15 @@ onBeforeUnmount(() => {
   min-width: 290px;
 }
 
-.size-head,
-.percent-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .storage-cell-size,
 .storage-cell-count,
 .storage-cell-time {
   color: #334155;
+}
+
+.storage-configurable-head {
+  cursor: context-menu;
+  user-select: none;
 }
 
 .storage-cell-path span {
@@ -2724,6 +2971,15 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #64748b;
+}
+
+.storage-table.is-wechat-storage .storage-cell-path {
+  min-width: 120px;
+}
+
+.storage-table.is-wechat-storage .storage-cell-path span {
+  max-width: 180px;
+  color: #475569;
 }
 
 .storage-cell-spacer {
@@ -2915,6 +3171,37 @@ onBeforeUnmount(() => {
 
 .context-menu-item:hover:not(:disabled) {
   background: #f8fafc;
+}
+
+.storage-config-menu {
+  min-width: 174px;
+  padding: 6px;
+}
+
+.storage-config-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 0;
+}
+
+.storage-config-menu-section + .storage-config-menu-section {
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid #edf1f6;
+}
+
+.storage-config-menu-section strong {
+  padding: 0 8px 3px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.context-menu-item.is-active {
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
 }
 
 .context-menu-item.is-danger {

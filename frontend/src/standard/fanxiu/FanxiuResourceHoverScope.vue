@@ -160,8 +160,8 @@ onBeforeUnmount(() => {
 <template>
   <div
     class="fanxiu-resource-hover-scope"
-    @mousemove="updateResourceHover"
-    @mouseleave="clearResourceHover"
+    @mouseover="updateResourceHover"
+    @mouseout="clearResourceHover"
   >
     <slot />
     <div

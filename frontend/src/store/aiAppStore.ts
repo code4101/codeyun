@@ -8,10 +8,11 @@ import {
 
 const LOCAL_AI_APP_CONFIG_STORAGE_KEY = 'codeyun_ai_app_configs_v1'
 
-export type AiAppId = 'note-taxonomy' | 'ai-git-commit' | 'codex-diary'
+export type AiAppId = string
 
 export interface AiAppDefinition {
   id: AiAppId
+  group: string
   label: string
   description: string
 }
@@ -35,21 +36,30 @@ interface LocalAiAppConfigsPayload {
   apps: Partial<Record<AiAppId, LocalAiAppConfigItem>>
 }
 
-export const AI_APP_DEFINITIONS: AiAppDefinition[] = [
+export const FALLBACK_AI_APP_DEFINITIONS: AiAppDefinition[] = [
   {
     id: 'note-taxonomy',
+    group: '星图笔记',
     label: '笔记分类',
     description: '仅分析当前标题，并参考已有条目的标题、分类、形态、阶段后回写结果。',
   },
   {
     id: 'ai-git-commit',
+    group: '开发工具',
     label: 'AI提交',
     description: '生成 Git 提交信息，自动 Git 提交和分层归纳提交共用这一组模型配置。',
   },
   {
     id: 'codex-diary',
+    group: '星图笔记',
     label: 'Codex 星图日记',
-    description: '读取 Codex 会话并生成星图日记节点。',
+    description: '按日期读取 Codex 会话，按主题拆分后写入星图笔记节点。',
+  },
+  {
+    id: 'codeclaw',
+    group: '开发工具',
+    label: 'CodeClaw 微信接入',
+    description: '微信消息入口使用的 AI 模型，默认交给本机 Codex CLI 处理并回复微信。',
   },
 ]
 
@@ -61,16 +71,16 @@ function buildDefaultAppConfig(appId?: AiAppId): AiAppRuntimeConfig {
   if (appId === 'ai-git-commit') {
     return {
       enabled: true,
-      provider: 'deepseek',
-      model: 'deepseek-v4-flash',
+      provider: 'codex-cli',
+      model: 'gpt-5.3-codex-spark',
       updatedAt: null,
     }
   }
 
   return {
     enabled: true,
-    provider: appId === 'codex-diary' ? 'deepseek' : '',
-    model: '',
+    provider: appId === 'codex-diary' ? 'deepseek' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'codex-cli' : '',
+    model: appId === 'codex-diary' ? 'deepseek-v4-pro' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'gpt-5.3-codex-spark' : '',
     updatedAt: null,
   }
 }
@@ -106,7 +116,7 @@ function loadLocalAppConfigs(): Partial<Record<AiAppId, AiAppRuntimeConfig>> {
       return {}
     }
 
-    return AI_APP_DEFINITIONS.reduce<Partial<Record<AiAppId, AiAppRuntimeConfig>>>((result, definition) => {
+    return FALLBACK_AI_APP_DEFINITIONS.reduce<Partial<Record<AiAppId, AiAppRuntimeConfig>>>((result, definition) => {
       if (payload.apps?.[definition.id]) {
         result[definition.id] = normalizeAppConfigItem(payload.apps[definition.id], definition.id)
       }
@@ -128,7 +138,7 @@ function persistLocalAppConfigs(configs: Partial<Record<AiAppId, AiAppRuntimeCon
     return
   }
 
-  const apps = AI_APP_DEFINITIONS.reduce<Partial<Record<AiAppId, LocalAiAppConfigItem>>>((result, definition) => {
+  const apps = FALLBACK_AI_APP_DEFINITIONS.reduce<Partial<Record<AiAppId, LocalAiAppConfigItem>>>((result, definition) => {
     const config = configs[definition.id]
     if (!config) {
       return result
@@ -163,16 +173,17 @@ function appConfigFromApi(item: AiChatAppConfig): AiAppRuntimeConfig {
 export const useAiAppStore = defineStore('aiApp', {
   state: () => ({
     loadedForAuthState: null as boolean | null,
+    definitions: [...FALLBACK_AI_APP_DEFINITIONS] as AiAppDefinition[],
     appConfigs: {} as Partial<Record<AiAppId, AiAppRuntimeConfig>>,
   }),
 
   getters: {
-    appDefinitions: () => AI_APP_DEFINITIONS,
+    appDefinitions: state => state.definitions,
   },
 
   actions: {
     getDefinition(appId: AiAppId) {
-      return AI_APP_DEFINITIONS.find(item => item.id === appId) ?? null
+      return this.definitions.find(item => item.id === appId) ?? null
     },
 
     getAppConfig(appId: AiAppId): AiAppRuntimeConfig {
@@ -180,10 +191,15 @@ export const useAiAppStore = defineStore('aiApp', {
     },
 
     applyAppConfig(item: AiChatAppConfig) {
-      if (!AI_APP_DEFINITIONS.some(definition => definition.id === item.id)) {
-        return
+      if (!this.definitions.some(definition => definition.id === item.id)) {
+        this.definitions.push({
+          id: item.id,
+          group: item.group || '',
+          label: item.label || item.id,
+          description: item.description || '',
+        })
       }
-      this.appConfigs[item.id as AiAppId] = appConfigFromApi(item)
+      this.appConfigs[item.id] = appConfigFromApi(item)
     },
 
     async loadAppConfigs(isAuthenticated: boolean) {
@@ -195,15 +211,19 @@ export const useAiAppStore = defineStore('aiApp', {
       }
 
       const payload = await fetchAiChatAppConfigs()
+      this.definitions = payload.items.map(item => ({
+        id: item.id,
+        group: item.group || '',
+        label: item.label || item.id,
+        description: item.description || '',
+      }))
       const nextConfigs: Partial<Record<AiAppId, AiAppRuntimeConfig>> = {}
       for (const item of payload.items) {
-        if (AI_APP_DEFINITIONS.some(definition => definition.id === item.id)) {
-          nextConfigs[item.id as AiAppId] = appConfigFromApi(item)
-        }
+        nextConfigs[item.id] = appConfigFromApi(item)
       }
       this.appConfigs = nextConfigs
 
-      for (const definition of AI_APP_DEFINITIONS) {
+      for (const definition of this.definitions) {
         const localConfig = localConfigs[definition.id]
         const remoteConfig = this.appConfigs[definition.id]
         if (!localConfig || remoteConfig?.updatedAt) {

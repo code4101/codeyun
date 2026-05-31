@@ -696,8 +696,8 @@ export async function startNoteSheetClockinLinkDetectionRun(
     `/note-sheets/sheets/${sheetId}/clockin/link-detection-runs`,
     {
       force_restart: payload.forceRestart ?? false,
-      provider_id: payload.providerId ?? 'deepseek',
-      model: payload.model ?? 'deepseek-v4-flash',
+      provider_id: payload.providerId ?? '',
+      model: payload.model ?? '',
     },
     {
       params: {

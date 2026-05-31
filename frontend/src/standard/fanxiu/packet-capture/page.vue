@@ -6,6 +6,8 @@ import { Connection, QuestionFilled, SetUp } from '@element-plus/icons-vue'
 import {
   clearFanxiuPacketActivity,
   decodeFanxiuTcpCapture,
+  ensureFanxiuCaptureRuntime,
+  getFanxiuCaptureRuntimeStatus,
   getFanxiuPacketActivityHistory,
   getFanxiuPacketActivityStream,
   getFanxiuPacketActivityStatus,
@@ -14,11 +16,13 @@ import {
   getFanxiuPacketProxyTimeline,
   listFanxiuTcpBusinessEntries,
   listFanxiuTcpCaptures,
+  stopFanxiuCaptureRuntime,
   startFanxiuPacketActivity,
   startFanxiuPacketCaptureSession,
   stopFanxiuPacketActivity,
   stopFanxiuPacketCaptureSession,
   type FanxiuAndroidProxyStatus,
+  type FanxiuCaptureRuntimeStatus,
   type FanxiuPacketActivityFlow,
   type FanxiuPacketActivityPayloadEvent,
   type FanxiuPacketActivityStreamDirection,
@@ -65,6 +69,7 @@ type PayloadJsonFragment = {
 const activeMode = ref<PageMode>('decoder')
 const dnsHostText = ref(DEFAULT_DNS_HOSTS)
 const snapshot = ref<FanxiuPacketCaptureSnapshot | null>(null)
+const captureRuntimeStatus = ref<FanxiuCaptureRuntimeStatus | null>(null)
 const packetActivityStatus = ref<FanxiuPacketActivityStatus | null>(null)
 const proxyStatus = ref<FanxiuPacketProxyStatus | null>(null)
 const androidProxyStatus = ref<FanxiuAndroidProxyStatus | null>(null)
@@ -102,6 +107,7 @@ const operationBaselineKeys = ref<Set<string> | null>(null)
 const operationMarkedAt = ref('')
 const connectionObserveRunning = ref(true)
 const loading = ref(false)
+const captureRuntimeLoading = ref(false)
 const packetActivityLoading = ref(false)
 const sessionLoading = ref(false)
 const activeFilter = ref<'all' | 'mumu' | 'fake' | 'proxy' | 'new'>('all')
@@ -150,6 +156,26 @@ const selectedTcpBusinessEntry = computed(() => {
 const selectedTcpBusinessEntryJson = computed(() => {
   const entry = selectedTcpBusinessEntry.value
   return entry ? JSON.stringify(entry.content, null, 2) : ''
+})
+
+const captureRuntimeStateLabel = computed(() => {
+  const state = captureRuntimeStatus.value?.state ?? 'stopped'
+  return ({
+    stopped: '已停止',
+    waiting_game: '等待游戏',
+    recovering: '恢复中',
+    running: '采集中',
+  } as Record<string, string>)[state] ?? state
+})
+
+const captureRuntimeSummary = computed(() => {
+  const status = captureRuntimeStatus.value
+  if (!status) return '抓包运行时未同步'
+  const parts = [captureRuntimeStateLabel.value]
+  if (status.active_reasons.length) parts.push(status.active_reasons.join(', '))
+  if (status.current_pcap_path) parts.push(status.current_pcap_path.split(/[\\/]/).pop() || status.current_pcap_path)
+  if (status.last_error) parts.push(status.last_error)
+  return parts.join(' · ')
 })
 
 const connectionKey = (item: FanxiuPacketCaptureConnection) => {
@@ -377,7 +403,7 @@ const packetActivitySummary = computed(() => {
   return parts.join(' · ')
 })
 
-const packetActivityButtonLabel = computed(() => packetActivityStatus.value?.running ? '包活动采样中' : '开始包活动')
+const packetActivityButtonLabel = computed(() => packetActivityStatus.value?.running ? '旧采样中' : '旧采样')
 
 const operationNewCandidateCount = computed(() => {
   if (!operationBaselineKeys.value) return 0
@@ -835,6 +861,20 @@ const refreshPacketActivity = async (showLoading = false) => {
   }
 }
 
+const refreshCaptureRuntime = async (showLoading = false) => {
+  if (showLoading) captureRuntimeLoading.value = true
+  try {
+    captureRuntimeStatus.value = await getFanxiuCaptureRuntimeStatus()
+    if (captureRuntimeStatus.value.running) {
+      await autoDecodeLiveTcpCapture()
+    }
+  } catch (error: any) {
+    if (showLoading) ElMessage.error(error?.response?.data?.detail || error?.message || '读取抓包运行时失败')
+  } finally {
+    if (showLoading) captureRuntimeLoading.value = false
+  }
+}
+
 const refreshPacketActivityHistory = async (showLoading = false) => {
   if (!selectedPacketActivityKey.value) {
     packetActivityHistoryItems.value = []
@@ -1123,14 +1163,14 @@ const decodeSelectedTcpCapture = async (options: { persist?: boolean; silent?: b
 }
 
 const autoDecodeLiveTcpCapture = async () => {
-  const status = packetActivityStatus.value
-  if (!status?.running || !status.pcap_path || liveTcpDecodeRunning.value) return false
-  if (status.pcap_size < 256 || status.pcap_size === liveTcpDecodeSize.value) return false
+  const status = captureRuntimeStatus.value
+  if (!status?.running || !status.current_pcap_path || liveTcpDecodeRunning.value) return false
+  if (status.current_pcap_size < 256 || status.current_pcap_size === liveTcpDecodeSize.value) return false
   liveTcpDecodeRunning.value = true
   try {
-    selectedTcpCapture.value = status.pcap_path
+    selectedTcpCapture.value = status.current_pcap_path
     tcpStream.value = -1
-    liveTcpDecodeSize.value = status.pcap_size
+    liveTcpDecodeSize.value = status.current_pcap_size
     await decodeSelectedTcpCapture({ persist: false, silent: true })
     return true
   } finally {
@@ -1139,55 +1179,55 @@ const autoDecodeLiveTcpCapture = async () => {
 }
 
 const startSimpleTcpCapture = async () => {
-  packetActivityLoading.value = true
+  captureRuntimeLoading.value = true
   try {
-    const status = await startFanxiuPacketActivity()
-    packetActivityStatus.value = status
+    const status = await ensureFanxiuCaptureRuntime('packet-capture')
+    captureRuntimeStatus.value = status
     tcpDecodeResult.value = null
     liveTcpDecodeSize.value = 0
     if (status.running) {
-      ElMessage.success('已开始抓包，现在去游戏里操作一下')
+      ElMessage.success('抓包运行时已启动')
     } else {
-      ElMessage.warning(status.last_error || '没有启动成功，可能需要管理员权限')
+      ElMessage.warning(status.last_error || '运行时已启动，正在等待游戏或恢复 ADB')
     }
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '开始抓包失败')
   } finally {
-    packetActivityLoading.value = false
+    captureRuntimeLoading.value = false
   }
 }
 
 const stopSimpleTcpCapture = async () => {
-  packetActivityLoading.value = true
+  captureRuntimeLoading.value = true
   try {
-    packetActivityStatus.value = await stopFanxiuPacketActivity()
+    captureRuntimeStatus.value = await stopFanxiuCaptureRuntime()
     await loadTcpCaptures(false)
-    if (packetActivityStatus.value.pcap_path) {
-      selectedTcpCapture.value = packetActivityStatus.value.pcap_path
+    if (captureRuntimeStatus.value.current_pcap_path) {
+      selectedTcpCapture.value = captureRuntimeStatus.value.current_pcap_path
       tcpStream.value = -1
       ElMessage.success('已停止抓包，可以解析明文')
     } else {
-      ElMessage.warning(packetActivityStatus.value.last_error || '已停止，但没有生成 pcap 文件')
+      ElMessage.warning(captureRuntimeStatus.value.last_error || '已停止，但没有生成 pcap 文件')
     }
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '停止抓包失败')
   } finally {
-    packetActivityLoading.value = false
+    captureRuntimeLoading.value = false
   }
 }
 
 const stopAndDecodeSimpleTcpCapture = async () => {
-  if (packetActivityStatus.value?.running) {
+  if (captureRuntimeStatus.value?.running) {
     await stopSimpleTcpCapture()
   }
-  if (!selectedTcpCapture.value && packetActivityStatus.value?.pcap_path) {
-    selectedTcpCapture.value = packetActivityStatus.value.pcap_path
+  if (!selectedTcpCapture.value && captureRuntimeStatus.value?.current_pcap_path) {
+    selectedTcpCapture.value = captureRuntimeStatus.value.current_pcap_path
   }
   if (!selectedTcpCapture.value) {
     ElMessage.warning('还没有可解析的抓包文件')
     return
   }
-  if (selectedTcpCapture.value === packetActivityStatus.value?.pcap_path) {
+  if (selectedTcpCapture.value === captureRuntimeStatus.value?.current_pcap_path) {
     tcpStream.value = -1
   }
   tcpBusinessEntryPage.value = 1
@@ -1224,7 +1264,7 @@ const tcpBusinessDisplaySegments = (row: FanxiuTcpBusinessEntry) => {
 }
 
 const toggleSimpleTcpCapture = async () => {
-  if (packetActivityStatus.value?.running) {
+  if (captureRuntimeStatus.value?.running) {
     await stopAndDecodeSimpleTcpCapture()
     return
   }
@@ -1282,6 +1322,7 @@ onMounted(() => {
   window.addEventListener(FANXIU_PACKET_PROTOCOL_VISIBILITY_EVENT, handlePacketProtocolVisibilityChange)
   loadTcpCaptures()
   loadTcpBusinessEntries()
+  refreshCaptureRuntime()
   refreshSnapshot(false, true)
   refreshPacketActivity()
   connectionRefreshTimer = window.setInterval(() => {
@@ -1289,6 +1330,7 @@ onMounted(() => {
       refreshSnapshot(false, false)
     }
     if (activeMode.value === 'activity' || activeMode.value === 'decoder') {
+      refreshCaptureRuntime()
       refreshPacketActivity()
     }
   }, 2000)
@@ -1313,6 +1355,7 @@ watch(activeMode, (mode) => {
     refreshSnapshot(false, true)
     refreshPacketActivity(true)
   } else if (mode === 'decoder') {
+    refreshCaptureRuntime(true)
     loadTcpCaptures(true)
     loadTcpBusinessEntries(true)
   } else {
@@ -1331,7 +1374,7 @@ watch(activeMode, (mode) => {
 
     <div class="mode-switch">
       <button :class="{ active: activeMode === 'decoder' }" @click="activeMode = 'decoder'">TCP 解析</button>
-      <button :class="{ active: activeMode === 'activity' }" @click="activeMode = 'activity'">包活动</button>
+      <button :class="{ active: activeMode === 'activity' }" @click="activeMode = 'activity'">旧包活动</button>
       <button :class="{ active: activeMode === 'connections' }" @click="activeMode = 'connections'">连接定位</button>
       <button :class="{ active: activeMode === 'http' }" @click="activeMode = 'http'">HTTP 代理</button>
     </div>
@@ -1340,12 +1383,13 @@ watch(activeMode, (mode) => {
       <div class="tcp-simple-actions">
         <el-button
           size="large"
-          :type="packetActivityStatus?.running ? 'success' : 'primary'"
-          :loading="packetActivityLoading || tcpDecoderLoading"
+          :type="captureRuntimeStatus?.running ? 'success' : 'primary'"
+          :loading="captureRuntimeLoading || tcpDecoderLoading"
           @click="toggleSimpleTcpCapture"
         >
-          {{ packetActivityStatus?.running ? '停止抓包' : '开始抓包' }}
+          {{ captureRuntimeStatus?.running ? '停止抓包' : '开始抓包' }}
         </el-button>
+        <span class="tcp-runtime-status">{{ captureRuntimeSummary }}</span>
       </div>
 
       <section class="tcp-plain-results">
@@ -1400,7 +1444,7 @@ watch(activeMode, (mode) => {
     <section v-else-if="activeMode === 'activity'" class="packet-activity-panel">
       <div class="section-header">
         <div>
-          <h3 class="section-title">TCP/UDP 包活动</h3>
+          <h3 class="section-title">旧 TCP/UDP 包活动</h3>
           <div class="proxy-status-line">
             <span>{{ packetActivitySummary }}</span>
             <span v-if="packetActivityMarkedAt">标记 {{ formatClockTime(packetActivityMarkedAt) }}</span>
@@ -2206,6 +2250,11 @@ watch(activeMode, (mode) => {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.tcp-runtime-status {
+  color: #5f6b7a;
+  font-size: 13px;
 }
 
 .tcp-plain-results {

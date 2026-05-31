@@ -6,12 +6,14 @@ from sqlmodel import Session
 
 from backend.core.auth import verify_api_token
 from backend.core.runtime_management import (
+    add_builtin_runtime_job,
     build_runtime_status,
     configure_builtin_runtime_job_schedule,
     delete_builtin_runtime_job,
     delete_builtin_runtime_queue_task,
     get_runtime_item_logs,
     reset_builtin_runtime_job_schedule,
+    list_builtin_runtime_job_catalog,
     stop_builtin_runtime_item,
     stop_command_runtime_item,
     toggle_builtin_runtime_job,
@@ -34,6 +36,14 @@ class RuntimeJobToggleRequest(BaseModel):
 class RuntimeJobScheduleRequest(BaseModel):
     schedule_policy: dict | None = None
     next_run_at: str | None = None
+
+
+@router.get("/jobs/catalog")
+def list_runtime_job_catalog(
+    _token_device: BaseDevice = Depends(verify_api_token),
+    session: Session = Depends(get_session),
+):
+    return list_builtin_runtime_job_catalog(session)
 
 
 @router.get("/status")
@@ -61,6 +71,14 @@ def trigger_runtime_job(
     session: Session = Depends(get_session),
 ):
     return trigger_builtin_runtime_job(job_key, session)
+
+
+@router.post("/jobs/{job_key}/add")
+def add_runtime_job(
+    job_key: str,
+    _token_device: BaseDevice = Depends(verify_api_token),
+):
+    return add_builtin_runtime_job(job_key)
 
 
 @router.post("/items/{source}/{item_key}/trigger")

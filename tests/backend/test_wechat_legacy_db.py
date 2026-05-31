@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 from backend.api import wechat_archive
+from backend.core import wechat_legacy_db as legacy_db
 from backend.models import UserDevice
 from backend.core.wechat_legacy_db import WeChatLegacyDbStorage
 
@@ -164,6 +166,43 @@ def _init_msg(path):
         conn.close()
 
 
+def _insert_media_msg(path, local_id, local_type, content, bytes_extra=b""):
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO MSG (
+                localId, TalkerId, MsgSvrID, Type, SubType, IsSender, CreateTime, Sequence,
+                StatusEx, FlagEx, Status, MsgServerSeq, MsgSequence, StrTalker, StrContent,
+                DisplayContent, BytesExtra
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                local_id,
+                2,
+                2000 + local_id,
+                local_type,
+                0,
+                0,
+                1400 + local_id,
+                1400 + local_id,
+                0,
+                0,
+                0,
+                0,
+                0,
+                "room@chatroom",
+                content,
+                "",
+                bytes_extra,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_wechat_legacy_storage_maps_old_schema_to_wechat_db_shape(monkeypatch, tmp_path):
     root = tmp_path / "decrypted"
     _init_micro_msg(root / "Msg" / "MicroMsg.db")
@@ -195,6 +234,53 @@ def test_wechat_legacy_storage_maps_old_schema_to_wechat_db_shape(monkeypatch, t
     assert room_payload["items"][1]["sender_name"] == "Member"
     assert room_payload["items"][1]["sender_avatar_data_url"] == "https://example.test/member.jpg"
     assert storage.message_types(chat_username="friend") == [{"local_type": 1, "count": 2}]
+
+
+def test_wechat_legacy_storage_exports_image_and_emoji_resources(monkeypatch, tmp_path):
+    root = tmp_path / "decrypted"
+    msg_path = root / "Msg" / "Multi" / "MSG0.db"
+    _init_micro_msg(root / "Msg" / "MicroMsg.db")
+    _init_msg(msg_path)
+    account_root = tmp_path / "WeChat Files" / "wxid_test"
+    image_source = account_root / "FileStorage" / "MsgAttach" / "room" / "Thumb" / "2026-05" / "abc_t.dat"
+    image_source.parent.mkdir(parents=True, exist_ok=True)
+    image_bytes = bytes.fromhex("ffd8ffe000104a4649460001010000010001ffd9")
+    image_source.write_bytes(bytes(byte ^ 0x9C for byte in image_bytes))
+    image_rel = b"wxid_test\\FileStorage\\MsgAttach\\room\\Thumb\\2026-05\\abc_t.dat"
+    _insert_media_msg(
+        msg_path,
+        5,
+        3,
+        '<msg><img length="20" md5="image-md5"></img></msg>',
+        b"\x00" + image_rel + b"\x00",
+    )
+
+    def fake_download_media_url(url: str, target_dir: Path, stem: str) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{stem}.jpg"
+        target.write_bytes(image_bytes)
+        return target
+
+    monkeypatch.setattr(legacy_db, "_download_legacy_media_url", fake_download_media_url)
+    _insert_media_msg(
+        msg_path,
+        6,
+        47,
+        '<msg><emoji md5="emoji-md5" len="20" cdnurl="http://example.test/emoji.jpg"></emoji></msg>',
+    )
+    monkeypatch.setenv("CODEYUN_WECHAT_LEGACY_ACCOUNT_ROOT", str(account_root))
+
+    storage = WeChatLegacyDbStorage(root)
+    payload = storage.list_messages(chat_username="room@chatroom", limit=10, order="asc", include_resources=True)
+    image_row = next(item for item in payload["items"] if item["raw_local_id"] == 5)
+    emoji_row = next(item for item in payload["items"] if item["raw_local_id"] == 6)
+    image_export = image_row["resource"]["items"][0]["export"]
+    emoji_export = emoji_row["resource"]["items"][0]["export"]
+
+    assert image_export["decoded_from_dat"] is True
+    assert Path(image_export["stored_path"]).read_bytes().startswith(b"\xff\xd8\xff")
+    assert emoji_export["download_name"].startswith("image/wx3_emoji_")
+    assert Path(emoji_export["stored_path"]).read_bytes().startswith(b"\xff\xd8\xff")
 
 
 def test_wechat_archive_db_devices_select_device(monkeypatch, tmp_path):

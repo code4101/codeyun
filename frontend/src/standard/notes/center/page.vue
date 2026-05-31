@@ -36,7 +36,7 @@ import { defineAsyncComponent, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
 import { Delete } from '@element-plus/icons-vue';
-import { useNoteStore, type TabState } from '@/api/notes';
+import { useNoteStore, type NoteProgramRule, type TabState } from '@/api/notes';
 
 const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
 const CalendarNotes = defineAsyncComponent(() => import('./CalendarNotes.vue'));
@@ -53,10 +53,30 @@ const getTabComponent = (type: TabState['type']) => {
   return StarNotes;
 };
 
+const excludeWechatDailyRules: NoteProgramRule[] = [
+  {
+    action: 'exclude',
+    matcher: {
+      kind: 'field',
+      field: 'custom_fields.wechat_daily_source',
+      op: 'eq',
+      value: 'mf:v4_db_storage',
+    },
+  },
+];
+
 const getTabProps = (tab: TabState) => {
   const baseProps = {
     tabId: tab.id
   };
+
+  if (tab.type === 'calendar') {
+    return {
+      ...baseProps,
+      dataFilterRules: excludeWechatDailyRules,
+      fixedViewFilterRules: excludeWechatDailyRules,
+    };
+  }
 
   if (tab.type === 'planet') {
     return {

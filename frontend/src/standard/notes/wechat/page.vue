@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Download, Refresh, Search } from '@element-plus/icons-vue'
 
@@ -12,7 +13,6 @@ import {
   fetchWeChatDbMessages,
   fetchWeChatDbStatus,
   syncWeChatDbFromLive,
-  weChatDbMediaUrl,
   type WeChatDbChat,
   type WeChatDbDevice,
   type WeChatDbLiveSyncResult,
@@ -23,6 +23,9 @@ import {
 } from '@/api/wechatArchive'
 
 const DEFAULT_SELF_USERNAMES = new Set(['wxid_m1cd4f5aahut22'])
+const CHAT_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const MESSAGE_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const route = useRoute()
 
 const status = ref<WeChatDbStatus | null>(null)
 const devices = ref<WeChatDbDevice[]>([])
@@ -38,7 +41,7 @@ const typeFilter = ref('')
 const chatPageSize = ref(50)
 const currentChatPage = ref(1)
 const totalChats = ref(0)
-const pageSize = ref(80)
+const pageSize = ref(20)
 const currentPage = ref(1)
 const totalMessages = ref(0)
 const loading = ref(false)
@@ -50,11 +53,14 @@ const liveSyncLoading = ref(false)
 const lastLiveSyncResult = ref<WeChatDbLiveSyncResult | null>(null)
 const messageStreamRef = ref<HTMLElement | null>(null)
 const previewImage = ref<WeChatDbResourceExport | null>(null)
+const mediaObjectUrls = ref<Record<string, string>>({})
 const foldedListOpen = ref(false)
 const suppressMessagePageChange = ref(false)
 let messageRequestSerial = 0
 let resourceRequestSerial = 0
 let resourceSlowTimer: number | undefined
+let suppressTypeFilterChange = false
+const mediaObjectUrlLoading = new Set<string>()
 
 const selectedChat = computed(() => {
   const current = chats.value.find((item) => item.username === selectedUsername.value)
@@ -63,6 +69,8 @@ const selectedChat = computed(() => {
 })
 const selectedDevice = computed(() => devices.value.find((item) => item.id === selectedDeviceId.value) || null)
 const activeDeviceId = computed(() => selectedDeviceId.value || status.value?.device_id || '')
+const isQqPage = computed(() => route.path.startsWith('/notes/qq-data'))
+const pageTitle = computed(() => (isQqPage.value ? 'QQ数据' : '微信数据'))
 const selfUsernames = computed(() => {
   const names = new Set(DEFAULT_SELF_USERNAMES)
   if (status.value?.self_username) names.add(status.value.self_username)
@@ -71,6 +79,18 @@ const selfUsernames = computed(() => {
 const visibleMessages = computed(() => messages.value)
 const lastChatPage = computed(() => Math.max(1, Math.ceil(totalChats.value / chatPageSize.value)))
 const lastPage = computed(() => Math.max(1, Math.ceil(totalMessages.value / pageSize.value)))
+const qqCacheText = computed(() => {
+  if (!isQqPage.value) return ''
+  const total = status.value?.structured_total ?? 0
+  const chatCount = status.value?.structured_chats ?? totalChats.value
+  if (total > 0) return `CodeYun缓存 ${formatNumber(total)} 条 / ${formatNumber(chatCount)} 会话`
+  return status.value?.structured_ready ? 'CodeYun缓存已就绪' : '尚未写入CodeYun缓存'
+})
+const chatSubtitle = computed(() => {
+  const current = selectedChat.value?.username || status.value?.db_storage_path || '未读取'
+  return qqCacheText.value ? `${current} · ${qqCacheText.value}` : current
+})
+const chatSubtitleTitle = computed(() => status.value?.archive_path || status.value?.db_storage_path || '')
 
 const WECHAT_BUILTIN_EMOJI_MAP: Record<string, string> = {
   '[微笑]': '\u{1f642}',
@@ -239,12 +259,31 @@ function typeLabel(value: number | string | null | undefined) {
 function deviceSourceText(value: string | null | undefined) {
   if (value === 'wechat_3') return '微信 3.x'
   if (value === 'wechat_4') return '微信 4.x'
+  if (value === 'tim_legacy') return 'QQ/TIM'
   return '微信数据'
+}
+
+function isCurrentPageDevice(device: WeChatDbDevice) {
+  return isQqPage.value ? device.source_format === 'tim_legacy' : device.source_format !== 'tim_legacy'
 }
 
 function deviceOptionLabel(device: WeChatDbDevice) {
   const state = device.ready ? '' : ' · 未就绪'
   return `${device.label} · ${deviceSourceText(device.source_format)}${state}`
+}
+
+function liveSyncTitle() {
+  if (lastLiveSyncResult.value) {
+    if (isQqPage.value && lastLiveSyncResult.value.structured) {
+      const structured = lastLiveSyncResult.value.structured
+      return `上次同步 ${lastLiveSyncResult.value.elapsed_seconds}s，新增 ${structured.inserted} 条，共 ${structured.total} 条`
+    }
+    return `上次同步 ${lastLiveSyncResult.value.elapsed_seconds}s，新增资源 ${lastLiveSyncResult.value.media?.new_files ?? 0}`
+  }
+  if (selectedDevice.value?.can_sync_live) {
+    return isQqPage.value ? '读取运行中的 TIM，并把 QQ 消息结构化存入 CodeYun' : '复制本机微信数据库快照、解密并导出新增资源'
+  }
+  return isQqPage.value ? '需要本机 TIM 正在运行' : '只能同步本机微信数据'
 }
 
 function messageType(row: WeChatDbMessage) {
@@ -299,11 +338,15 @@ function downloadableResources(row: WeChatDbMessage) {
   )
 }
 
-function mediaUrl(item: WeChatDbResourceExport) {
-  return weChatDbMediaUrl(item, activeDeviceId.value || undefined)
+function mediaObjectKey(item: WeChatDbResourceExport) {
+  return `${activeDeviceId.value || ''}:${item.download_name}`
 }
 
-const previewImageUrl = computed(() => (previewImage.value ? mediaUrl(previewImage.value) : ''))
+function mediaObjectUrl(item: WeChatDbResourceExport) {
+  return mediaObjectUrls.value[mediaObjectKey(item)] || ''
+}
+
+const previewImageUrl = computed(() => (previewImage.value ? mediaObjectUrl(previewImage.value) : ''))
 
 function resourceName(item: WeChatDbResourceExport) {
   if (item.kind === 'image') return isWechatImageDat(item) ? '微信图片缓存' : '图片'
@@ -453,6 +496,32 @@ function getErrorMessage(error: unknown) {
   return candidate.response?.data?.detail || candidate.message || '读取失败'
 }
 
+function clearMediaObjectUrls() {
+  Object.values(mediaObjectUrls.value).forEach((url) => URL.revokeObjectURL(url))
+  mediaObjectUrls.value = {}
+  mediaObjectUrlLoading.clear()
+}
+
+async function ensureMediaObjectUrl(item: WeChatDbResourceExport) {
+  const key = mediaObjectKey(item)
+  if (mediaObjectUrls.value[key] || mediaObjectUrlLoading.has(key)) return
+  mediaObjectUrlLoading.add(key)
+  try {
+    const blob = await downloadWeChatDbMedia(item, activeDeviceId.value || undefined)
+    const url = URL.createObjectURL(blob)
+    const previous = mediaObjectUrls.value[key]
+    if (previous) URL.revokeObjectURL(previous)
+    mediaObjectUrls.value = { ...mediaObjectUrls.value, [key]: url }
+  } finally {
+    mediaObjectUrlLoading.delete(key)
+  }
+}
+
+async function ensureInlineMediaObjectUrls() {
+  const items = visibleMessages.value.flatMap((row) => inlineMediaResources(row))
+  await Promise.allSettled(items.map((item) => ensureMediaObjectUrl(item)))
+}
+
 async function downloadResource(item: WeChatDbResourceExport) {
   try {
     const blob = await downloadWeChatDbMedia(item, activeDeviceId.value || undefined)
@@ -468,7 +537,7 @@ async function downloadResource(item: WeChatDbResourceExport) {
 }
 
 function handleInlineMediaClick(item: WeChatDbResourceExport) {
-  if (item.kind === 'image' && mediaUrl(item)) {
+  if (item.kind === 'image' && mediaObjectUrl(item)) {
     previewImage.value = item
     return
   }
@@ -486,6 +555,7 @@ function handlePreviewKeydown(event: KeyboardEvent) {
 }
 
 async function loadInlineMedia() {
+  await ensureInlineMediaObjectUrls()
   if (currentPage.value === lastPage.value) {
     await scrollMessagesToBottom()
   }
@@ -497,7 +567,7 @@ async function loadStatus() {
 
 async function loadDevices() {
   const payload = await fetchWeChatDbDevices()
-  devices.value = payload.items
+  devices.value = payload.items.filter(isCurrentPageDevice)
   const selectedStillExists = devices.value.some((item) => item.id === selectedDeviceId.value)
   if (selectedDeviceId.value && selectedStillExists) return
   selectedDeviceId.value = devices.value.find((item) => item.current)?.id || devices.value.find((item) => item.ready)?.id || devices.value[0]?.id || ''
@@ -519,15 +589,6 @@ async function loadChats() {
       currentChatPage.value = lastChatPage.value
       await loadChats()
       return
-    }
-    const firstSelectable = chats.value.find((item) => !item.is_folded_entry)
-    const selectedStillVisible = chats.value.some((item) => item.username === selectedUsername.value && !item.is_folded_entry)
-    if (!selectedUsername.value && firstSelectable) {
-      selectedChatCache.value = firstSelectable
-      selectedUsername.value = firstSelectable.username
-    } else if (selectedUsername.value && !selectedStillVisible && !selectedChat.value && firstSelectable) {
-      selectedChatCache.value = firstSelectable
-      selectedUsername.value = firstSelectable.username
     }
   } finally {
     chatLoading.value = false
@@ -569,6 +630,7 @@ async function loadMessages() {
       offset: (targetPage - 1) * pageSize.value,
       order: 'asc',
       include_resources: false,
+      known_total: totalMessages.value || undefined,
     })
     if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
     if (!payload.items.length && payload.total > 0 && targetPage > Math.ceil(payload.total / pageSize.value)) {
@@ -578,6 +640,12 @@ async function loadMessages() {
     }
     messages.value = payload.items
     totalMessages.value = payload.total
+    if (isQqPage.value) {
+      resourceRequestSerial += 1
+      resourceLoading.value = false
+      resourceLoadingSlow.value = false
+      return
+    }
     void loadMessageResources(requestId, username, targetPage)
   } catch (error) {
     if (requestId !== messageRequestSerial) return
@@ -626,6 +694,7 @@ async function loadMessageResources(requestId: number, username: string, targetP
       offset: (targetPage - 1) * pageSize.value,
       order: 'asc',
       include_resources: true,
+      known_total: totalMessages.value || undefined,
     })
     if (requestId !== messageRequestSerial || resourceId !== resourceRequestSerial || username !== selectedUsername.value) return
     const byId = new Map(payload.items.map((item) => [item.local_id, item]))
@@ -657,30 +726,45 @@ async function loadLatestMessages() {
   }
   messageLoading.value = true
   messages.value = []
+  clearMediaObjectUrls()
   try {
-    const countPayload = await fetchWeChatDbMessageCount({
-      device_id: activeDeviceId.value || undefined,
-      chat_username: username,
-      q: messageKeyword.value.trim() || undefined,
-      message_type: typeFilter.value || undefined,
-    })
-    if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
-    totalMessages.value = countPayload.total
-    const targetPage = Math.max(1, Math.ceil(countPayload.total / pageSize.value))
+    const keyword = messageKeyword.value.trim()
+    const selectedMessageCount = selectedChat.value?.username === username ? selectedChat.value.message_count : null
+    if (!keyword && !typeFilter.value && selectedMessageCount != null) {
+      totalMessages.value = selectedMessageCount
+    } else {
+      const countPayload = await fetchWeChatDbMessageCount({
+        device_id: activeDeviceId.value || undefined,
+        chat_username: username,
+        q: keyword || undefined,
+        message_type: typeFilter.value || undefined,
+      })
+      if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
+      totalMessages.value = countPayload.total
+    }
+    const targetPage = Math.max(1, Math.ceil(totalMessages.value / pageSize.value))
     await setMessagePageSilently(targetPage)
     const payload = await fetchWeChatDbMessages({
       device_id: activeDeviceId.value || undefined,
       chat_username: username,
-      q: messageKeyword.value.trim() || undefined,
+      q: keyword || undefined,
       message_type: typeFilter.value || undefined,
       limit: pageSize.value,
       offset: (targetPage - 1) * pageSize.value,
       order: 'asc',
       include_resources: false,
+      known_total: totalMessages.value || undefined,
     })
     if (requestId !== messageRequestSerial || username !== selectedUsername.value) return
     messages.value = payload.items
     totalMessages.value = payload.total
+    if (isQqPage.value) {
+      resourceRequestSerial += 1
+      resourceLoading.value = false
+      resourceLoadingSlow.value = false
+      await scrollMessagesToBottom()
+      return
+    }
     void loadMessageResources(requestId, username, targetPage)
   } catch (error) {
     if (requestId !== messageRequestSerial) return
@@ -707,8 +791,10 @@ async function refreshAll() {
     await loadDevices()
     await loadStatus()
     await loadChats()
-    await loadMessageTypes()
-    await loadLatestMessages()
+    if (selectedUsername.value) {
+      await loadLatestMessages()
+      void loadMessageTypes()
+    }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -737,6 +823,7 @@ async function syncLiveData() {
 function resetConversationState() {
   chats.value = []
   messages.value = []
+  clearMediaObjectUrls()
   messageTypes.value = []
   selectedUsername.value = ''
   selectedChatCache.value = null
@@ -760,39 +847,34 @@ function handleDeviceChange() {
 
 function reloadChats() {
   currentChatPage.value = 1
-  selectedUsername.value = ''
-  selectedChatCache.value = null
-  void loadChats().then(() => {
-    void loadMessageTypes()
-    void loadLatestMessages()
-  })
+  void loadChats()
 }
 
 function reloadMessages() {
-  void loadMessageTypes()
-  void loadLatestMessages()
+  void loadLatestMessages().then(loadMessageTypes)
 }
 
 function selectChat(chat: WeChatDbChat) {
   const changed = chat.username !== selectedUsername.value
   if (changed) {
     suppressMessagePageChange.value = true
+    suppressTypeFilterChange = true
     messageRequestSerial += 1
     resourceRequestSerial += 1
     resourceLoading.value = false
     resourceLoadingSlow.value = false
     messages.value = []
     messageTypes.value = []
+    typeFilter.value = ''
     currentPage.value = 1
     void nextTick(() => {
       suppressMessagePageChange.value = false
+      suppressTypeFilterChange = false
     })
   }
   selectedChatCache.value = chat
   selectedUsername.value = chat.username
-  if (!changed) {
-    void loadLatestMessages()
-  }
+  void loadLatestMessages().then(loadMessageTypes)
 }
 
 function loadChatPage() {
@@ -802,28 +884,17 @@ function loadChatPage() {
 function openFoldedList() {
   foldedListOpen.value = true
   currentChatPage.value = 1
-  void loadChats().then(() => {
-    const first = chats.value.find((item) => !item.is_folded_entry)
-    if (first) selectChat(first)
-  })
+  void loadChats()
 }
 
 function closeFoldedList() {
   foldedListOpen.value = false
   currentChatPage.value = 1
-  void loadChats().then(() => {
-    const first = chats.value.find((item) => !item.is_folded_entry)
-    if (selectedChat.value?.is_folded && first) selectChat(first)
-  })
+  void loadChats()
 }
 
-watch(selectedUsername, () => {
-  typeFilter.value = ''
-  void loadMessageTypes()
-  void loadLatestMessages()
-})
-
 watch(typeFilter, () => {
+  if (suppressTypeFilterChange) return
   void loadLatestMessages()
 })
 
@@ -932,7 +1003,7 @@ onBeforeUnmount(() => {
           background
           small
           layout="prev, pager, next"
-          :page-sizes="[50, 80, 120]"
+          :page-sizes="CHAT_PAGE_SIZE_OPTIONS"
           :total="totalChats"
           @current-change="loadChatPage"
           @size-change="reloadChats"
@@ -943,9 +1014,9 @@ onBeforeUnmount(() => {
     <section class="chat-shell">
       <header class="chat-header">
         <div class="chat-title">
-          <h1>{{ selectedChat?.name || '微信数据' }}</h1>
-          <span :title="status?.db_storage_path || ''">
-            {{ selectedChat?.username || status?.db_storage_path || '未读取' }}
+          <h1>{{ selectedChat?.name || pageTitle }}</h1>
+          <span :title="chatSubtitleTitle">
+            {{ chatSubtitle }}
           </span>
         </div>
         <div class="chat-tools">
@@ -971,13 +1042,7 @@ onBeforeUnmount(() => {
           <el-button
             :icon="Refresh"
             :loading="liveSyncLoading"
-            :title="
-              lastLiveSyncResult
-                ? `上次同步 ${lastLiveSyncResult.elapsed_seconds}s，新增资源 ${lastLiveSyncResult.media?.new_files ?? 0}`
-                : selectedDevice?.can_sync_live
-                  ? '复制本机微信数据库快照、解密并导出新增资源'
-                  : '只能同步本机微信数据'
-            "
+            :title="liveSyncTitle()"
             size="small"
             plain
             :disabled="!selectedDevice?.can_sync_live"
@@ -1045,8 +1110,8 @@ onBeforeUnmount(() => {
                   :title="item.stored_path"
                   @click="handleInlineMediaClick(item)"
                 >
-                  <img v-if="item.kind === 'image' && mediaUrl(item)" :src="mediaUrl(item)" :alt="item.file_name" />
-                  <video v-else-if="item.kind === 'video' && mediaUrl(item)" :src="mediaUrl(item)" controls />
+                  <img v-if="item.kind === 'image' && mediaObjectUrl(item)" :src="mediaObjectUrl(item)" :alt="item.file_name" />
+                  <video v-else-if="item.kind === 'video' && mediaObjectUrl(item)" :src="mediaObjectUrl(item)" controls />
                   <span v-else>{{ resourceName(item) }}</span>
                 </button>
               </div>
@@ -1078,7 +1143,7 @@ onBeforeUnmount(() => {
           background
           small
           layout="sizes, prev, pager, next"
-          :page-sizes="[50, 80, 120, 200]"
+          :page-sizes="MESSAGE_PAGE_SIZE_OPTIONS"
           :total="totalMessages"
           @current-change="handleMessagePageChange"
           @size-change="handleMessagePageSizeChange"

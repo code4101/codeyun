@@ -2417,9 +2417,10 @@ def get_fanxiu_activity_cards(
     kind_key: str = Query(default=""),
     time_kind: str = Query(default=""),
     activity_type: str = Query(default=""),
+    server_scope: str = Query(default=""),
     sort_by: str = Query(default="default"),
     sort_order: str = Query(default="asc"),
-    limit: int = Query(default=80, ge=1, le=200),
+    limit: int = Query(default=80, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     export_root: str | None = Query(default=None),
 ) -> dict[str, Any]:
@@ -2429,6 +2430,7 @@ def get_fanxiu_activity_cards(
         kind_key=kind_key,
         time_kind=time_kind,
         activity_type=activity_type,
+        server_scope=server_scope,
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
@@ -2440,11 +2442,13 @@ def get_fanxiu_activity_cards(
 @router.get("/resources/activities/card")
 def get_fanxiu_activity_card_detail(
     activity_id: str = Query(min_length=1),
+    server_scope: str = Query(default=""),
     export_root: str | None = Query(default=None),
 ) -> dict[str, Any]:
     return _run_resource_operation(
         get_fanxiu_activity_card,
         activity_id,
+        server_scope=server_scope,
         export_root=export_root,
     )
 

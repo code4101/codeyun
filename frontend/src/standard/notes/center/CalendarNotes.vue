@@ -45,8 +45,24 @@
                 :value="volume.id"
               />
             </el-select>
-            <el-button v-if="calendarScale !== 'era'" @click="prevPeriod" :icon="ArrowLeft" circle />
-            <el-button v-if="calendarScale !== 'era'" @click="nextPeriod" :icon="ArrowRight" circle />
+            <div v-if="calendarScale !== 'era'" class="period-nav-buttons">
+              <el-button
+                v-if="calendarScale !== 'year'"
+                @click="prevYearPeriod"
+                :icon="DArrowLeft"
+                circle
+                title="上一年"
+              />
+              <el-button @click="prevPeriod" :icon="ArrowLeft" circle :title="prevPeriodTitle" />
+              <el-button @click="nextPeriod" :icon="ArrowRight" circle :title="nextPeriodTitle" />
+              <el-button
+                v-if="calendarScale !== 'year'"
+                @click="nextYearPeriod"
+                :icon="DArrowRight"
+                circle
+                title="下一年"
+              />
+            </div>
             <el-button v-if="calendarScale === 'month'" @click="goToToday">今天</el-button>
             <label
               v-if="calendarScale === 'year' || calendarScale === 'volume' || calendarScale === 'era'"
@@ -75,7 +91,7 @@
       </div>
     </div>
 
-    <div class="filter-section front-filter-section">
+    <div v-if="showFrontFilter" class="filter-section front-filter-section">
       <NoteProgramBar
         v-model="viewProgram"
         title="前端筛选"
@@ -116,7 +132,7 @@
                 <div class="day-left">
                   <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
                   <span
-                    v-if="shouldShowCodexHours(getCodexSecondsForDate(day.date))"
+                    v-if="showCodexWorkload && shouldShowCodexHours(getCodexSecondsForDate(day.date))"
                     class="codex-hours"
                     :title="getCodexHoursTitle(getCodexSecondsForDate(day.date))"
                   >
@@ -126,7 +142,7 @@
                   <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
                     {{ day.isRest === true ? '休' : '班' }}
                   </span>
-                  <el-button class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
+                  <el-button v-if="allowCreate" class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
                 </div>
                 <div class="day-right">
                   <span class="lunar-info" :class="{ 'is-festival': day.festival || day.jieQi }">
@@ -214,7 +230,7 @@
                     {{ month.monthLabel }}
                   </button>
                   <span
-                    v-if="shouldShowCodexHours(month.codexSeconds)"
+                    v-if="showCodexWorkload && shouldShowCodexHours(month.codexSeconds)"
                     class="codex-hours year-month-codex-hours"
                     :title="getCodexHoursTitle(month.codexSeconds)"
                   >
@@ -458,7 +474,7 @@
     </NoteSplitView>
 
     <div
-      v-if="dayContextMenu.visible"
+      v-if="allowCreate && dayContextMenu.visible"
       class="day-context-menu"
       :style="{ left: `${dayContextMenu.x}px`, top: `${dayContextMenu.y}px` }"
       @click.stop
@@ -487,12 +503,14 @@ import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
   type NoteNode,
+  type NoteProgramRule,
   type CodexDiaryImportRunResponse,
   applyNoteProgramChannelLocally,
   buildScanNoteProgramRequest,
   cloneNoteProgramChannel,
   createFixedRangeProgram,
   createIncludeAllProgram,
+  normalizeNoteProgramRule,
   normalizeNoteProgramChannel,
   startCodexDiaryImportRun,
   fetchCodexDiaryImportRun,
@@ -503,7 +521,7 @@ import {
 import { useUserStore } from '@/store/userStore';
 import { fetchCodexWorkloadForEntry, type CodexWorkloadResponse, type CodexWorkloadTurn } from '@/api/codexSessions';
 import { taskStore, type Device } from '@/store/taskStore';
-import { ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeDisplayStyle } from '@/utils/nodeConfig';
@@ -519,7 +537,17 @@ const noteStore = useNoteStore();
 const userStore = useUserStore();
 const props = defineProps<{
   tabId: string;
+  dataFilterRules?: NoteProgramRule[];
+  fixedViewFilterRules?: NoteProgramRule[];
+  showFrontFilter?: boolean;
+  allowCreate?: boolean;
+  showCodexWorkload?: boolean;
+  splitPaneStorageKey?: string;
 }>();
+
+const showFrontFilter = computed(() => props.showFrontFilter !== false);
+const allowCreate = computed(() => props.allowCreate !== false);
+const showCodexWorkload = computed(() => props.showCodexWorkload !== false);
 
 const session = computed(() => noteStore.getTabSession(props.tabId));
 
@@ -737,6 +765,16 @@ const activeMonthVisibleLimit = computed(() => {
   return calendarScale.value === 'volume' ? volumeMonthVisibleLimit.value : yearMonthVisibleLimit.value;
 });
 const activeVisibleLimitLabel = computed(() => (calendarScale.value === 'era' ? '每年' : '每月'));
+const prevPeriodTitle = computed(() => {
+  if (calendarScale.value === 'year') return '上一年';
+  if (calendarScale.value === 'volume') return '上一卷';
+  return '上个月';
+});
+const nextPeriodTitle = computed(() => {
+  if (calendarScale.value === 'year') return '下一年';
+  if (calendarScale.value === 'volume') return '下一卷';
+  return '下个月';
+});
 const monthVisibleLimitTitle = computed(() => {
   if (calendarScale.value === 'era') return '控制纪视图每年最多直接显示的代表性文档节点数';
   return calendarScale.value === 'volume'
@@ -803,6 +841,7 @@ const createNoteForDay = async (date: Date) => {
 };
 
 const openDayContextMenu = (event: MouseEvent, date: Date) => {
+  if (!allowCreate.value) return;
   dayContextMenu.value = {
     visible: true,
     x: event.clientX,
@@ -1093,6 +1132,21 @@ const nextPeriod = () => {
   scheduleCalendarRefresh();
 };
 
+const shiftYearPeriod = (delta: number) => {
+  if (calendarScale.value === 'era') return;
+  const d = monthAnchor.value;
+  currentMonth.value = new Date(d.getFullYear() + delta, d.getMonth(), 1);
+  scheduleCalendarRefresh();
+};
+
+const prevYearPeriod = () => {
+  shiftYearPeriod(-1);
+};
+
+const nextYearPeriod = () => {
+  shiftYearPeriod(1);
+};
+
 const goToToday = () => {
   const d = new Date();
   currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
@@ -1245,17 +1299,12 @@ const gridTemplateRows = computed(() => {
   const weekRows = Array.from({ length: rowsCount }, (_, i) => days.slice(i * 7, i * 7 + 7));
   const weekNoteCounts = weekRows.map(week => week.reduce((sum, day) => sum + getNotesForDay(day.date).length, 0));
   const maxWeekNoteCount = Math.max(...weekNoteCounts, 0);
-  const weights: number[] = [];
 
-  for (let i = 0; i < rowsCount; i++) {
-    const week = weekRows[i];
-    const weekNoteCount = weekNoteCounts[i];
+  return weekRows.map((week, index) => {
+    const weekNoteCount = weekNoteCounts[index];
     const effectiveCount = isCurrentWeekRow(week) ? Math.max(weekNoteCount, maxWeekNoteCount) : weekNoteCount;
     const level = getWeekLevelFromCount(effectiveCount);
-    weights.push(Number((WEEK_BASE_WEIGHT + level).toFixed(3)));
-  }
-
-  return weights.map((weight) => {
+    const weight = Number((WEEK_BASE_WEIGHT + level).toFixed(3));
     const height = Math.min(
       MONTH_WEEK_ROW_MAX_HEIGHT,
       Math.max(MONTH_WEEK_ROW_MIN_HEIGHT, Math.round(weight * MONTH_WEEK_ROW_UNIT_HEIGHT))
@@ -1283,7 +1332,14 @@ const periodEndTs = computed(() => {
   return gridEndTs.value;
 });
 
-const visibleNotes = computed(() => applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value));
+const fixedViewProgram = computed(() => ({
+  default: true,
+  rules: (props.fixedViewFilterRules || []).map(rule => normalizeNoteProgramRule(rule))
+}));
+const visibleNotes = computed(() => {
+  const fixedNotes = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), fixedViewProgram.value);
+  return applyNoteProgramChannelLocally(fixedNotes, viewProgram.value);
+});
 
 const notesByDay = computed(() => {
   const map = new Map<string, NoteNode[]>();
@@ -2210,7 +2266,17 @@ const getNoteSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
   } as any;
 };
 
-const buildCalendarProgram = () => createFixedRangeProgram(periodStartTs.value, periodEndTs.value - 1, 'start_at');
+const buildCalendarProgram = () => {
+  const base = createFixedRangeProgram(periodStartTs.value, periodEndTs.value - 1, 'start_at');
+  const fixedRules = (props.dataFilterRules || []).map(rule => normalizeNoteProgramRule(rule));
+  return {
+    ...base,
+    rules: [
+      ...base.rules,
+      ...fixedRules
+    ]
+  };
+};
 const getCalendarQueryLimit = () => {
   if (calendarScale.value === 'era') return CALENDAR_ERA_QUERY_LIMIT;
   if (calendarScale.value === 'volume') return CALENDAR_VOLUME_QUERY_LIMIT;
@@ -2266,7 +2332,7 @@ const {
     getResizeBounds: () => ({
         min: 300,
     }),
-    storageKey: 'notes:center:calendar:split-pane-height',
+    storageKey: props.splitPaneStorageKey || 'notes:center:calendar:split-pane-height',
 });
 const calendarPaneHeight = computed(() => (
   calendarScale.value !== 'month'
@@ -2276,7 +2342,9 @@ const calendarPaneHeight = computed(() => (
 
 onMounted(() => {
   void loadYearMonthMemos();
-  void refreshCodexWorkloadStats();
+  if (showCodexWorkload.value) {
+    void refreshCodexWorkloadStats();
+  }
   refreshData({ silent: true });
   window.addEventListener('click', closeContextMenus);
   window.addEventListener('scroll', closeContextMenus, true);
@@ -2328,6 +2396,7 @@ watch(viewProgram, (value) => {
 }, { deep: true });
 
 watch(() => userStore.isAuthenticated, (isAuthenticated) => {
+  if (!showCodexWorkload.value) return;
   if (isAuthenticated) {
     void refreshCodexWorkloadStats();
   } else {
@@ -2366,12 +2435,16 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   overflow: visible;
 }
 
-.calendar-workspace :deep(.note-main-pane) {
+.calendar-workspace:not(.calendar-workspace--calendar-only) :deep(.note-main-pane) {
+  overflow: hidden;
+}
+
+.calendar-workspace--calendar-only :deep(.note-main-pane) {
   height: auto !important;
   overflow: visible;
 }
 
-.calendar-workspace :deep(.note-main-resizer),
+.calendar-workspace--calendar-only :deep(.note-main-resizer),
 .calendar-workspace--calendar-only :deep(.note-editor-pane) {
   display: none;
 }
@@ -2419,6 +2492,16 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   flex-wrap: wrap;
 }
 
+.period-nav-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.period-nav-buttons :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
 .backend-filter-tags {
   display: flex;
   gap: 8px;
@@ -2450,6 +2533,14 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   border-radius: 4px;
   overflow: visible;
   min-height: 0;
+}
+
+.calendar-workspace:not(.calendar-workspace--calendar-only) .calendar-container,
+.calendar-workspace:not(.calendar-workspace--calendar-only) .year-container,
+.calendar-workspace:not(.calendar-workspace--calendar-only) .volume-container,
+.calendar-workspace:not(.calendar-workspace--calendar-only) .era-container {
+  height: 100%;
+  overflow: auto;
 }
 
 .year-container,

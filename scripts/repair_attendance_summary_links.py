@@ -35,12 +35,34 @@ def _default_db_path() -> Path:
 
 
 def _normalize_stem(value: Any) -> str:
+    if isinstance(value, dict) and "value" in value:
+        value = value.get("value")
     text = str(value or "").strip()
     text = re.sub(r"\.py$", "", text)
+    chinese_month = re.match(r"^(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<body>.+)$", text)
+    if chinese_month:
+        year = int(chinese_month.group("year")) % 100
+        month = int(chinese_month.group("month"))
+        body = chinese_month.group("body").strip()
+        return f"d{year:02d}{month:02d}{body}".strip(" .")
+    compact_month = re.match(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<body>\D.+)$", text)
+    if compact_month:
+        year = int(compact_month.group("year")) % 100
+        month = int(compact_month.group("month"))
+        body = compact_month.group("body").strip()
+        return f"d{year:02d}{month:02d}{body}".strip(" .")
     text = re.sub(r"^\d{2}(\d{6})", r"d\1", text, count=1)
     text = re.sub(r"^(\d{6})(?=\D|$)", r"d\1", text, count=1)
     text = text.replace(".", "点")
     return text.strip(" .")
+
+
+def _stem_aliases(stem: str) -> set[str]:
+    aliases = {stem}
+    parsed = re.match(r"^d(?P<year>\d{2})(?P<month>\d{2})(?P<day>\d{2})(?P<body>.+)$", stem)
+    if parsed:
+        aliases.add(f"d{parsed.group('year')}{parsed.group('month')}{parsed.group('body')}")
+    return aliases
 
 
 def _url_key(value: Any) -> str:
@@ -113,11 +135,14 @@ def _build_expected_links(courses_dir: Path) -> dict[str, dict[str, str]]:
             url = _extract_course_script_url(path)
             if not url or stem in expected:
                 continue
-            expected[stem] = {
+            item = {
                 "url": url,
                 "key": _url_key(url),
                 "path": str(path),
             }
+            expected[stem] = item
+            for alias in _stem_aliases(stem):
+                expected.setdefault(alias, item)
     return expected
 
 

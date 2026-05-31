@@ -9,6 +9,7 @@ from sqlmodel import select
 
 from backend.models import NoteNode
 from backend.core import wechat_ilink
+from backend.core.ai_app_config import AI_APP_CODECLAW, save_user_ai_app_config
 
 
 @pytest.fixture()
@@ -253,6 +254,62 @@ def test_wechat_codex_bridge_replies_to_user_text_message(monkeypatch, isolated_
     ]
 
 
+def test_wechat_codex_bridge_uses_codeclaw_ai_app_config(
+    monkeypatch,
+    isolated_wechat_store,
+    session,
+    engine,
+    auth_user,
+):
+    wechat_ilink.save_account(
+        account_id="bot@example",
+        token="plain-token",
+        user_id="bot-user",
+        base_url="https://ilink.example.com",
+        owner_user_id=auth_user.id,
+    )
+    save_user_ai_app_config(
+        session,
+        auth_user.id,
+        AI_APP_CODECLAW,
+        provider="codex-cli",
+        model="gpt-5.5",
+    )
+    captured = {}
+
+    def fake_chat_with_provider(*, provider_id=None, model=None, extra_providers=(), **kwargs):
+        captured["provider_id"] = provider_id
+        captured["model"] = model
+        captured["provider"] = extra_providers[0]
+        return {"content": "CodeClaw 已处理", "session_id": ""}
+
+    def fake_send_text_message(account_id, *, to_user_id, text, context_token=None, timeout_seconds=15):
+        return {"message_id": "reply-1", "to_user_id": to_user_id, "text": text}
+
+    monkeypatch.setattr(wechat_ilink, "_get_database_engine", lambda: engine)
+    monkeypatch.setattr(wechat_ilink, "chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr(wechat_ilink, "send_text_message", fake_send_text_message)
+
+    result = wechat_ilink.handle_codex_bridge_message(
+        "bot@example",
+        {
+            "from_user_id": "friend-1",
+            "text": "帮我看一下项目状态",
+            "create_time_ms": 1710000000000,
+            "message_type": 1,
+            "context_token": "ctx-1",
+        },
+        model="legacy-model",
+        command="codex",
+    )
+
+    assert result["message_id"] == "reply-1"
+    assert captured["provider_id"] == "codex-cli"
+    assert captured["model"] == "gpt-5.5"
+    assert captured["provider"].id == "codex-cli"
+    assert captured["provider"].workspace_dir == str(wechat_ilink.ROOT_DIR)
+
+
 def test_wechat_codex_bridge_dash_message_creates_private_note_without_ai(
     monkeypatch,
     isolated_wechat_store,
@@ -338,7 +395,7 @@ def test_wechat_codex_bridge_uses_new_default_for_legacy_config(isolated_wechat_
         },
     )
 
-    assert summary["codex_bridge"]["model"] == "gpt-5.5"
+    assert summary["codex_bridge"]["model"] == "gpt-5.3-codex-spark"
 
 
 def test_start_enabled_codex_bridges_restores_persisted_bridge(monkeypatch, isolated_wechat_store):

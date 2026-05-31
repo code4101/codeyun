@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus';
 import { Delete, Plus } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
+import { formatChineseCompactNumber } from '../numberFormat';
 import {
   getFanxiuActivityList,
   getFanxiuModaoInvasionExchangeList,
@@ -509,34 +510,6 @@ function getTotalMagicCrystal(row: FanxiuModaoInvasionExchangeItem) {
 
 function formatMagicCrystalWan(value: number) {
   return `${(normalizeNonNegativeInt(value) / 10000).toFixed(2)}万`;
-}
-
-function formatCompactSignificant(value: number, significantDigits = 4) {
-  const numeric = Math.abs(value);
-  if (!Number.isFinite(numeric) || numeric === 0) {
-    return '0';
-  }
-
-  const integerDigits = Math.floor(Math.log10(numeric)) + 1;
-  const fractionDigits = Math.max(0, significantDigits - integerDigits);
-  return numeric
-    .toFixed(fractionDigits)
-    .replace(/\.0+$/, '')
-    .replace(/(\.\d*?)0+$/, '$1');
-}
-
-function formatChineseCompactNumber(value: number) {
-  const numeric = normalizeNonNegativeInt(value);
-  if (!numeric) {
-    return '0';
-  }
-  if (numeric >= 100000000) {
-    return `${formatCompactSignificant(numeric / 100000000)}亿`;
-  }
-  if (numeric >= 10000) {
-    return `${formatCompactSignificant(numeric / 10000)}万`;
-  }
-  return formatCompactSignificant(numeric);
 }
 
 function getSelectionIds(recordId: string) {

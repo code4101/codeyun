@@ -826,6 +826,7 @@ def make_rime_performance_unavailable(
         "config": {},
         "runtime": {},
         "sections": {},
+        "recent_queries": [],
     }
 
 
@@ -873,6 +874,7 @@ def collect_rime_performance_stats() -> dict[str, Any]:
             "config": config,
             "runtime": {},
             "sections": {},
+            "recent_queries": [],
         }
 
     try:
@@ -890,6 +892,7 @@ def collect_rime_performance_stats() -> dict[str, Any]:
     stat = path.stat()
     sections = payload.get("sections")
     runtime = payload.get("runtime")
+    recent_queries = payload.get("recent_queries")
     return {
         "available": True,
         "status": "ready",
@@ -902,6 +905,7 @@ def collect_rime_performance_stats() -> dict[str, Any]:
         "config": config,
         "runtime": runtime if isinstance(runtime, dict) else {},
         "sections": sections if isinstance(sections, dict) else {},
+        "recent_queries": recent_queries if isinstance(recent_queries, list) else [],
         "started_at": payload.get("started_at"),
         "clock_ms": payload.get("clock_ms"),
         "version": payload.get("version") or 1,
@@ -2251,8 +2255,8 @@ def _collect_ai_lint_issues(sources: list[dict[str, Any]]) -> tuple[list[dict[st
     except ImportError as exc:
         return [], f"AI 校对模块不可用：{exc}"
 
-    provider_id = os.environ.get("CODEYUN_RIME_LINT_PROVIDER", "deepseek").strip() or "deepseek"
-    model = os.environ.get("CODEYUN_RIME_LINT_MODEL", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+    provider_id = os.environ.get("CODEYUN_RIME_LINT_PROVIDER", "codex-cli").strip() or "codex-cli"
+    model = os.environ.get("CODEYUN_RIME_LINT_MODEL", "gpt-5.3-codex-spark").strip() or "gpt-5.3-codex-spark"
     try:
         timeout_seconds = float(os.environ.get("CODEYUN_RIME_LINT_TIMEOUT", "120"))
     except ValueError:

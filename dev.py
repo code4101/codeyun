@@ -743,6 +743,18 @@ def start_frontend(frontend_dir, env, npm_exec):
     )
 
 
+def wait_for_tcp_port(host, port, timeout_seconds=20.0):
+    deadline = time.monotonic() + timeout_seconds
+    target_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((target_host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+
 def stop_process(proc, process_guard=None):
     if not proc or proc.poll() is not None:
         return
@@ -988,6 +1000,9 @@ def main():
             log(f"Outer backend watcher: {backend_watcher.strategy}")
 
         ensure_frontend_deps(frontend_dir, env, npm_exec)
+        log(f"Waiting for backend port {backend_port} before launching frontend ...")
+        if not wait_for_tcp_port(backend_host, backend_port):
+            log("Backend port did not become reachable in time; launching frontend anyway.")
         frontend_proc = start_frontend(frontend_dir, env, npm_exec)
         process_guard.register(frontend_proc)
 

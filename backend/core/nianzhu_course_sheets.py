@@ -458,8 +458,6 @@ def _query_legacy_lesson_rows(course_name: str) -> tuple[list[dict[str, Any]], s
         return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
 
     terms = [course_name]
-    if "念住闯关" not in terms:
-        terms.append("念住闯关")
     terms = [term for index, term in enumerate(terms) if term and term not in terms[:index]]
     where = " OR ".join("lesson_name LIKE %s" for _ in terms)
     params = [f"%{term}%" for term in terms]
@@ -523,8 +521,6 @@ def _query_legacy_clockin_rows(course_name: str) -> tuple[list[dict[str, Any]], 
         return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
 
     terms = [course_name]
-    if "念住闯关" not in terms:
-        terms.append("念住闯关")
     terms = [term for index, term in enumerate(terms) if term and term not in terms[:index]]
     where = " OR ".join("name LIKE %s" for _ in terms)
     params = [f"%{term}%" for term in terms]

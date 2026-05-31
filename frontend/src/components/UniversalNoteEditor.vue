@@ -9,6 +9,7 @@
     :lock-node-type="lockNodeType"
     :lock-note-form="lockNoteForm"
     :editor-layout="editorLayout"
+    :draft-storage-key="draftStorageKey"
     :on-save="onSave"
     :on-save-keepalive="onSaveKeepalive"
     @update:modelValue="emit('update:modelValue', $event)"
@@ -38,6 +39,7 @@ defineProps<{
   lockNodeType?: boolean;
   lockNoteForm?: boolean;
   editorLayout?: 'fill' | 'flow';
+  draftStorageKey?: string | null;
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();

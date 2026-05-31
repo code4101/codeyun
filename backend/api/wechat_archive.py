@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+import inspect
 import ipaddress
 import os
 from pathlib import Path
+import re
 import sqlite3
+import subprocess
 import time
 from urllib.parse import quote, unquote, urlparse
 from typing import Annotated, Any, Literal
@@ -26,7 +30,7 @@ from backend.models import User, UserDevice
 
 
 FEATURE_KEY = "notes.wechat"
-DEFAULT_PAGE_SIZE = 80
+DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 500
 WECHAT_ARCHIVE_SYNC_TASK_NAME = "wechat_archive_incremental_sync"
 _WECHAT_ARCHIVE_LAST_SYNC_RESULT: dict[str, Any] | None = None
@@ -97,16 +101,57 @@ def _settings_wechat_legacy_storage_path() -> Path:
     return get_settings().data_dir / "wechat_legacy" / "decrypted"
 
 
+def _settings_tim_legacy_storage_path() -> Path:
+    env_path = (os.environ.get("CODEYUN_TIM_LEGACY_STORAGE") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return get_settings().data_dir / "tim_legacy" / "decrypted"
+
+
 def _settings_wechat_db_storage_path_for_device(device_root: Path) -> Path:
+    default_path = _settings_wechat_db_storage_path()
+    device_root_path = device_root / "wechat_db" / "decrypted" / "db_storage"
+    if device_root_path.exists():
+        return device_root_path
+    if (device_root / "wechat_legacy").exists() or (device_root / "tim_legacy").exists() or _is_tim_account_root(device_root):
+        return device_root / "wechat_db" / "decrypted" / "db_storage"
     if device_root.resolve() == get_settings().data_dir.resolve():
-        return _settings_wechat_db_storage_path()
-    return device_root / "wechat_db" / "decrypted" / "db_storage"
+        return default_path
+    if not default_path.exists():
+        return device_root_path
+    return default_path
 
 
 def _settings_wechat_legacy_storage_path_for_device(device_root: Path) -> Path:
+    default_path = _settings_wechat_legacy_storage_path()
+    device_root_path = device_root / "wechat_legacy" / "decrypted"
+    if device_root_path.exists():
+        return device_root_path
+    if _is_tim_account_root(device_root):
+        return device_root / "wechat_legacy" / "decrypted"
     if device_root.resolve() == get_settings().data_dir.resolve():
-        return _settings_wechat_legacy_storage_path()
-    return device_root / "wechat_legacy" / "decrypted"
+        return default_path
+    if not default_path.exists():
+        return device_root_path
+    return default_path
+
+
+def _is_tim_account_root(device_root: Path) -> bool:
+    return any((device_root / name).exists() for name in ("Msg3.0.db", "Msg2.0.db"))
+
+
+def _settings_tim_legacy_storage_path_for_device(device_root: Path) -> Path:
+    default_path = _settings_tim_legacy_storage_path()
+    if _is_tim_account_root(device_root):
+        return device_root
+    device_root_path = device_root / "tim_legacy" / "decrypted"
+    if device_root_path.exists():
+        return device_root_path
+    if device_root.resolve() == get_settings().data_dir.resolve():
+        return default_path
+    if not default_path.exists():
+        return device_root_path
+    return default_path
 
 
 def _settings_archive_db_path() -> Path:
@@ -238,6 +283,22 @@ def _run_wechat_archive_sync_job(payload: dict[str, Any]) -> dict[str, Any]:
     return _WECHAT_ARCHIVE_LAST_SYNC_RESULT
 
 
+def _run_wechat_db_live_sync_job(payload: dict[str, Any]) -> dict[str, Any]:
+    global _WECHAT_ARCHIVE_LAST_SYNC_RESULT
+
+    started_at = time.time()
+    storage = _open_wechat_db_storage()
+    result = storage.sync_from_live(export_media=bool(payload.get("save_media", True)))
+    _WECHAT_ARCHIVE_LAST_SYNC_RESULT = {
+        "mode": payload.get("mode") or "db_storage_live",
+        "started_at": started_at,
+        "finished_at": time.time(),
+        "payload": payload,
+        "result": result,
+    }
+    return _WECHAT_ARCHIVE_LAST_SYNC_RESULT
+
+
 def _enqueue_wechat_archive_sync(payload: dict[str, Any]) -> str:
     if _queue_has_wechat_sync_task():
         raise HTTPException(status_code=409, detail="微信归档同步任务已在队列中")
@@ -250,6 +311,26 @@ def _enqueue_wechat_archive_sync(payload: dict[str, Any]) -> str:
             "chat_names": payload.get("chat_names"),
             "max_runtime": payload.get("max_runtime"),
             "max_scrolls_total": payload.get("max_scrolls_total"),
+        },
+    )
+
+
+def _enqueue_wechat_db_live_sync(payload: dict[str, Any] | None = None) -> str:
+    task_payload = {
+        "mode": "db_storage_live",
+        "save_media": True,
+        **(payload or {}),
+    }
+    if _queue_has_wechat_sync_task():
+        raise HTTPException(status_code=409, detail="微信数据库同步任务已在队列中")
+    return background_task_queue.enqueue(
+        WECHAT_ARCHIVE_SYNC_TASK_NAME,
+        _run_wechat_db_live_sync_job,
+        task_payload,
+        metadata={
+            "mode": task_payload.get("mode"),
+            "save_media": task_payload.get("save_media"),
+            "source": "db_storage",
         },
     )
 
@@ -566,21 +647,201 @@ def _extra_wechat_device_roots() -> list[Path]:
     return [Path(value).expanduser() for value in values if value]
 
 
-def _wechat_device_roots() -> list[Path]:
+def _wechat_official_device_roots() -> list[Path]:
+    home = Path.home()
+    candidates = [
+        *_wechat_live_process_device_roots(),
+        home / "Documents" / "xwechat_files",
+        home / "Documents" / "WeChat Files",
+        home / "AppData" / "Roaming" / "Tencent" / "xwechat",
+        home / "AppData" / "Roaming" / "Tencent" / "WeChat",
+    ]
+    resolved: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        key = os.fspath(candidate.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(candidate)
+    return resolved
+
+
+def _tim_official_device_roots() -> list[Path]:
+    try:
+        from backend.core.tim_legacy_db import tim_account_roots
+
+        return tim_account_roots()
+    except Exception:
+        return []
+
+
+@lru_cache(maxsize=1)
+def _wechat_live_process_device_roots() -> tuple[Path, ...]:
+    if os.name != "nt":
+        return ()
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.Name -match '^(Weixin|WeChat|WeChatAppEx)\\.exe$' } | "
+                    "ForEach-Object { $_.CommandLine }"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        return ()
+    if completed.returncode != 0:
+        return ()
+
+    paths: list[Path] = []
+    for match in re.finditer(r'--wechat-files-path=(?:"([^"]+)"|(\S+))', completed.stdout or "", re.IGNORECASE):
+        raw = (match.group(1) or match.group(2) or "").strip()
+        if raw:
+            paths.append(Path(raw).expanduser())
+    return tuple(paths)
+
+
+def _wechat_fallback_device_roots() -> list[Path]:
     settings = get_settings()
     roots: list[Path] = [settings.data_dir]
     parent = settings.data_dir.parent
     if parent.exists():
         roots.extend(path for path in parent.iterdir() if path.is_dir() and path.name.startswith("codepc_"))
-    roots.extend(_extra_wechat_device_roots())
+    return roots
+
+
+def _dedupe_existing_paths(paths: list[Path]) -> list[Path]:
     deduped: list[Path] = []
     seen: set[str] = set()
+    for path in paths:
+        if not path.exists() or not path.is_dir():
+            continue
+        key = os.fspath(path.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _wechat_reverse_data_roots() -> list[Path]:
+    env_path = (os.environ.get("CODEYUN_WECHAT_REVERSE_ROOT") or "").strip()
+    candidates = [Path(env_path).expanduser()] if env_path else []
+    legacy_root = Path(r"D:\home\chenkunze\data\d2605微信逆向")
+    candidates.append(legacy_root)
+    db_storage_root = _settings_wechat_db_storage_path()
+    candidates.append(db_storage_root.parents[1] if len(db_storage_root.parents) > 1 else db_storage_root.parent)
+    return _dedupe_existing_paths(candidates)
+
+
+def _wechat_codeyun_data_roots() -> list[Path]:
+    settings = get_settings()
+    candidates = [
+        settings.data_dir / "wechat-ilink",
+        settings.data_dir / "wechat_archive",
+        settings.data_dir / "wechat_db",
+        settings.data_dir / "wechat_legacy",
+    ]
+    return _dedupe_existing_paths(candidates)
+
+
+def _wechat_storage_scan_roots() -> list[tuple[str, str, Path, bool]]:
+    roots: list[tuple[str, str, Path, bool]] = []
+    for root in _wechat_official_device_roots():
+        roots.append((f"official:{root.name}", f"官方微信：{root.name}", root, _is_current_device_root(root)))
+    for root in _tim_official_device_roots():
+        roots.append((f"tim:{root.name}", f"TIM：{root.name}", root, False))
+    for root in _wechat_reverse_data_roots():
+        roots.append((f"reverse:{root.name}", f"逆向数据：{root.name}", root, False))
+    for root in _wechat_codeyun_data_roots():
+        roots.append((f"codeyun:{root.name}", f"CodeYun微信：{root.name}", root, False))
+
+    deduped: list[tuple[str, str, Path, bool]] = []
+    seen_paths: set[str] = set()
+    seen_ids: set[str] = set()
+    for root_id, label, path, current in roots:
+        key = os.fspath(path.resolve()).lower()
+        if key in seen_paths:
+            continue
+        next_id = root_id
+        index = 2
+        while next_id in seen_ids:
+            next_id = f"{root_id}-{index}"
+            index += 1
+        seen_paths.add(key)
+        seen_ids.add(next_id)
+        deduped.append((next_id, label, path, current))
+    return deduped
+
+
+def _wechat_default_current_device_root(roots: list[Path]) -> Path | None:
+    if not roots:
+        return None
+    settings = get_settings()
+    try:
+        if settings.data_dir.exists() and any(
+            (
+                settings.data_dir / rel
+            ).exists()
+            for rel in (
+                Path("wechat_db/decrypted/db_storage"),
+                Path("wechat_legacy/decrypted"),
+                Path("tim_legacy/decrypted"),
+            )
+        ):
+            return settings.data_dir
+    except OSError:
+        pass
+    official_roots = _wechat_official_device_roots()
+    if official_roots:
+        official_resolved: set[str] = set(
+            os.fspath(candidate.resolve()) for candidate in official_roots if candidate.exists()
+        )
+        for root in roots:
+            if os.fspath(root.resolve() if root.exists() else root) in official_resolved:
+                return root
+        return official_roots[0]
+    for root in roots:
+        if root.resolve() == settings.data_dir.resolve():
+            return root
+    return roots[0]
+
+
+def _wechat_device_roots() -> list[Path]:
+    official_roots = _wechat_official_device_roots()
+    roots = list(_extra_wechat_device_roots())
+    roots.extend(_wechat_fallback_device_roots())
+    roots.extend(official_roots)
+    roots.extend(_tim_official_device_roots())
+
+    current_root = _wechat_default_current_device_root(roots)
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    current_root_key = os.fspath(current_root.resolve() if current_root and current_root.exists() else Path("")).lower()
     for root in roots:
         key = os.fspath(root.resolve() if root.exists() else root).lower()
         if key not in seen:
             seen.add(key)
             deduped.append(root)
-    return sorted(deduped, key=lambda item: (item.name != settings.data_dir.name, item.name.lower()))
+
+    def _sort_key(item: Path) -> tuple[int, str]:
+        item_key = os.fspath(item.resolve() if item.exists() else item).lower()
+        is_current = int(item_key == current_root_key)
+        return (-is_current, item.name.lower())
+
+    return sorted(deduped, key=_sort_key)
 
 
 def _device_id_for_root(root: Path) -> str:
@@ -589,7 +850,10 @@ def _device_id_for_root(root: Path) -> str:
 
 def _is_current_device_root(root: Path) -> bool:
     try:
-        return root.resolve() == get_settings().data_dir.resolve()
+        current_root = _wechat_default_current_device_root(_wechat_device_roots())
+        if current_root is None:
+            return False
+        return root.resolve() == current_root.resolve()
     except OSError:
         return False
 
@@ -597,15 +861,21 @@ def _is_current_device_root(root: Path) -> bool:
 def _choose_wechat_storage_for_device(device_root: Path):
     from pyxllib.autogui.wechat_db import WeChatDbStorage
     from backend.core.wechat_legacy_db import WeChatLegacyDbStorage, has_legacy_wechat_live_source
+    from backend.core.tim_legacy_db import TimLegacyDbStorage, has_tim_live_source
 
     is_current = _is_current_device_root(device_root)
     source = (os.environ.get("CODEYUN_WECHAT_DB_SOURCE") or "auto").strip().lower() if is_current else "auto"
     v4_path = _settings_wechat_db_storage_path_for_device(device_root)
     legacy_path = _settings_wechat_legacy_storage_path_for_device(device_root)
+    tim_path = _settings_tim_legacy_storage_path_for_device(device_root)
     if source in {"legacy", "v3", "wechat3", "wechat_3"}:
         return WeChatLegacyDbStorage(legacy_path)
     if source in {"v4", "wechat4", "wechat_4"}:
         return WeChatDbStorage(v4_path)
+    if source in {"tim", "tim_legacy", "qq", "qq_legacy"}:
+        return TimLegacyDbStorage(tim_path)
+    if _is_tim_account_root(device_root):
+        return TimLegacyDbStorage(tim_path)
 
     v4_storage = WeChatDbStorage(v4_path)
     try:
@@ -618,6 +888,12 @@ def _choose_wechat_storage_for_device(device_root: Path):
     try:
         if legacy_storage.status().get("ready") or (is_current and has_legacy_wechat_live_source()):
             return legacy_storage
+    except Exception:
+        pass
+    tim_storage = TimLegacyDbStorage(tim_path)
+    try:
+        if tim_storage.status().get("ready") or (is_current and has_tim_live_source()):
+            return tim_storage
     except Exception:
         pass
     return v4_storage
@@ -655,7 +931,7 @@ def _wechat_db_device_payload(device_root: Path) -> dict[str, Any]:
         "source_format": status.get("source_format") or "unknown",
         "db_storage_path": status.get("db_storage_path") or os.fspath(getattr(storage, "root", "")),
         "self_username": status.get("self_username"),
-        "can_sync_live": is_current,
+        "can_sync_live": is_current or status.get("source_format") == "tim_legacy",
         "error": status.get("error"),
     }
 
@@ -665,6 +941,111 @@ def _wechat_db_devices_payload(session: Any = None, current_user: Any = None) ->
     visible_items = [item for item in items if item["current"] or item["ready"] or item["exists"]]
     visible_items.extend(_remote_wechat_device_payloads(session, current_user))
     return visible_items
+
+
+def _wechat_storage_roots_payload() -> list[dict[str, Any]]:
+    items = []
+    for device_id, label, root, current in _wechat_storage_scan_roots():
+        storage = _choose_wechat_storage_for_device(root)
+        try:
+            status = _wechat_storage_status(storage)
+        except Exception as exc:
+            status = {
+                "db_storage_path": os.fspath(getattr(storage, "root", "")),
+                "source_format": "unknown",
+                "exists": False,
+                "ready": False,
+                "error": str(exc),
+            }
+        item = {
+            "device_id": device_id,
+            "label": label,
+            "device_root": os.fspath(root),
+            "db_storage_path": status.get("db_storage_path") or os.fspath(getattr(storage, "root", "")),
+            "current": current,
+            "source_format": status.get("source_format") or "unknown",
+            "ready": bool(status.get("ready")),
+            "exists": bool(status.get("exists")),
+        }
+        items.append(item)
+    return items
+
+
+def _wechat_storage_root_from_request(device_id: str | None) -> Path:
+    if device_id:
+        for root_id, _label, root, _current in _wechat_storage_scan_roots():
+            if root_id == device_id:
+                return root
+        raise HTTPException(status_code=400, detail=f"未知微信数据设备：{device_id}")
+    return _resolve_wechat_device_root(None)
+
+
+def _normalize_wechat_storage_absolute_path(
+    root: Path,
+    path: str,
+    absolute_path: str,
+) -> Path:
+    if absolute_path.strip():
+        target = Path(absolute_path.strip())
+    elif path.strip():
+        target = root / path.strip()
+    else:
+        target = root
+
+    normalized_target = target.resolve(strict=False)
+    scope_roots = [root]
+    if absolute_path.strip():
+        scope_roots = [item[2] for item in _wechat_storage_scan_roots()]
+
+    normalized_scope_roots = [scope_root.resolve(strict=False) for scope_root in scope_roots]
+    target_key = os.path.normcase(os.fspath(normalized_target))
+    matched = False
+    for scope_root in normalized_scope_roots:
+        scope_key = os.path.normcase(os.fspath(scope_root))
+        try:
+            if os.path.commonpath([target_key, scope_key]) == scope_key:
+                matched = True
+                break
+        except ValueError:
+            continue
+
+    if not matched:
+        raise HTTPException(status_code=400, detail="微信路径越界")
+
+    return target
+
+
+def _merge_wechat_directory_usage_stats(target: Path, payload: dict, session: Session | None = None) -> None:
+    items = payload.get("items") or []
+    directory_items = [item for item in items if item.get("is_dir")]
+    if not directory_items:
+        return
+    if all(item.get("recursive_total_bytes") is not None for item in directory_items):
+        return
+
+    try:
+        from backend.core.storage_usage import collect_directory_usage
+
+        summary = collect_directory_usage(
+            target,
+            top_limit=max(len(items), 1000),
+            session=session,
+        )
+    except Exception:
+        return
+
+    usage_by_name = {entry.name: entry for entry in summary.top_entries}
+    for item in directory_items:
+        entry = usage_by_name.get(str(item.get("name") or ""))
+        if entry is None:
+            continue
+        item["recursive_total_bytes"] = entry.logical_size_bytes
+        item["recursive_file_count"] = entry.file_count
+        item["latest_descendant_modified_at"] = (
+            int(entry.modified_at * 1000) if entry.modified_at is not None else item.get("modified_at")
+        )
+        item["direct_file_count"] = item.get("direct_file_count")
+        item["direct_file_bytes"] = item.get("direct_file_bytes")
 
 
 def _resolve_wechat_device_root(device_id: str | None = None) -> Path:
@@ -682,6 +1063,58 @@ def _resolve_wechat_device_root(device_id: str | None = None) -> Path:
 
 def _open_wechat_db_storage(device_id: str | None = None):
     return _choose_wechat_storage_for_device(_resolve_wechat_device_root(device_id))
+
+
+def _local_wechat_media_roots(device_id: str | None, kind: str) -> list[Path]:
+    device_root = _resolve_wechat_device_root(device_id)
+    candidates = [
+        _settings_wechat_legacy_storage_path_for_device(device_root).parent / "exported_media" / kind,
+        _settings_wechat_db_storage_path_for_device(device_root).parent / "exported_media" / kind,
+        _settings_tim_legacy_storage_path_for_device(device_root).parent / "exported_media" / kind,
+    ]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in candidates:
+        key = os.fspath(root.resolve() if root.exists() else root).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(root)
+    return roots
+
+
+@router.get("/storage-roots")
+def list_wechat_storage_roots():
+    return {"items": _wechat_storage_roots_payload()}
+
+
+@router.get("/storage-directory")
+def list_wechat_storage_directory(
+    device_id: Annotated[str | None, Query(max_length=200)] = None,
+    path: str = "",
+    absolute_path: str = "",
+    session: Session = Depends(get_session),
+):
+    root = _wechat_storage_root_from_request(device_id)
+    target = _normalize_wechat_storage_absolute_path(root, path, absolute_path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="路径不存在")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="路径不是目录")
+
+    from backend.api.filesystem import list_directory_items
+
+    payload = list_directory_items(
+        absolute_path=os.fspath(target.resolve(strict=False)),
+        session=session,
+    )
+    _merge_wechat_directory_usage_stats(target, payload, session)
+    return {
+        "device_id": _device_id_for_root(root),
+        "device_root": os.fspath(root),
+        "items": payload.get("items", []),
+        "current_path": payload.get("current_path", ""),
+        "absolute_path": payload.get("absolute_path", ""),
+    }
 
 
 @router.get("/db-devices")
@@ -730,7 +1163,7 @@ def sync_wechat_db_from_live(
     if _resolve_remote_wechat_device(device_id, session, current_user):
         raise HTTPException(status_code=400, detail="只能同步当前节点正在运行的微信数据")
     device_root = _resolve_wechat_device_root(device_id)
-    if not _is_current_device_root(device_root):
+    if not _is_current_device_root(device_root) and not _is_tim_account_root(device_root):
         raise HTTPException(status_code=400, detail="只能同步本机正在运行的微信数据")
     storage = _choose_wechat_storage_for_device(device_root)
     try:
@@ -818,6 +1251,7 @@ def list_wechat_db_messages(
     offset: Annotated[int, Query(ge=0)] = 0,
     order: Annotated[Literal["asc", "desc"], Query()] = "desc",
     include_resources: bool = True,
+    known_total: Annotated[int | None, Query(ge=0)] = None,
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
@@ -834,6 +1268,7 @@ def list_wechat_db_messages(
                 "offset": offset,
                 "order": order,
                 "include_resources": include_resources,
+                "known_total": known_total,
             },
             timeout=30,
         )
@@ -845,15 +1280,18 @@ def list_wechat_db_messages(
         return payload
     storage = _open_wechat_db_storage(device_id)
     try:
-        payload = storage.list_messages(
-            chat_username=chat_username,
-            q=q,
-            message_type=message_type,
-            limit=limit,
-            offset=offset,
-            order=order,
-            include_resources=include_resources,
-        )
+        kwargs = {
+            "chat_username": chat_username,
+            "q": q,
+            "message_type": message_type,
+            "limit": limit,
+            "offset": offset,
+            "order": order,
+            "include_resources": include_resources,
+        }
+        if known_total is not None and "known_total" in inspect.signature(storage.list_messages).parameters:
+            kwargs["known_total"] = known_total
+        payload = storage.list_messages(**kwargs)
         return {
             **payload,
             "db_storage_path": os.fspath(storage.root),
@@ -933,12 +1371,12 @@ def get_wechat_db_media_file(
     remote = _resolve_remote_wechat_device(device_id, session, current_user)
     if remote:
         return _remote_wechat_stream(remote, f"/wechat-archive/db-media/{kind}/{file_name}")
-    storage = _open_wechat_db_storage(device_id)
-    root = (storage.root.parent / "exported_media" / kind).resolve()
-    path = (root / file_name).resolve()
-    if not str(path).startswith(str(root)) or not path.exists():
-        raise HTTPException(status_code=404, detail="资源文件不存在或尚未导出")
-    return FileResponse(path, filename=file_name)
+    for root_candidate in _local_wechat_media_roots(device_id, kind):
+        root = root_candidate.resolve()
+        path = (root / file_name).resolve()
+        if str(path).startswith(str(root)) and path.exists():
+            return FileResponse(path, filename=file_name)
+    raise HTTPException(status_code=404, detail="资源文件不存在或尚未导出")
 
 
 @router.get("/db-tables")
@@ -1175,15 +1613,20 @@ def get_wechat_archive_sync_status():
 
 @router.post("/sync/start")
 def start_wechat_archive_sync(payload: WeChatArchiveSyncStartRequest):
+    if payload.mode in {"history", "history_clearance", "full"}:
+        raise HTTPException(status_code=410, detail="旧版微信 GUI 采集同步已停用，请使用纯数据库同步。")
     chat_names = _chat_names_from_payload(payload)
-    if payload.mode == "full" and not chat_names:
-        raise HTTPException(status_code=400, detail="全量同步需要指定会话名")
-    if payload.mode in ("latest", "history") and payload.chat_name and not chat_names:
+    if payload.mode == "latest" and payload.chat_name and not chat_names:
         raise HTTPException(status_code=400, detail="会话名不能为空")
 
     task_payload = payload.model_dump()
     task_payload["chat_names"] = chat_names
-    task_id = _enqueue_wechat_archive_sync(task_payload)
+    task_id = _enqueue_wechat_db_live_sync({
+        "mode": "db_storage_live",
+        "requested_mode": payload.mode,
+        "chat_names": chat_names,
+        "save_media": payload.save_media,
+    })
     return {
         "queued": True,
         "queue_task_id": task_id,
@@ -1194,29 +1637,4 @@ def start_wechat_archive_sync(payload: WeChatArchiveSyncStartRequest):
 
 @router.post("/import")
 def import_wechat_archive(payload: WeChatArchiveImportRequest):
-    db_path = _settings_archive_db_path()
-    try:
-        from pyxllib.autogui.wechat_archive import WeChatArchive
-
-        archive = WeChatArchive(db_path)
-        if payload.mode == "full":
-            result = archive.full_chat(
-                payload.chat_name,
-                exact=payload.exact,
-                save_media=payload.save_media,
-            )
-        else:
-            max_scrolls = payload.max_scrolls or 0
-            result = archive.pull_chat(
-                payload.chat_name,
-                until="top" if payload.mode == "scroll" or max_scrolls else "loaded",
-                max_scrolls=max_scrolls,
-                exact=payload.exact,
-                save_media=payload.save_media,
-            )
-        return {
-            **result,
-            "status": _archive_status_payload(),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="微信归档导入失败：{}".format(exc)) from exc
+    raise HTTPException(status_code=410, detail="旧版微信 GUI 导入已停用，请使用纯数据库同步。")

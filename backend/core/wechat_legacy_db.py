@@ -16,6 +16,8 @@ import sqlite3
 import struct
 import time
 from typing import Any
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 try:
     import winreg
@@ -34,6 +36,7 @@ from pyxllib.autogui.wechat_db import (
     SQLITE_HEADER,
     WeChatDbError,
     _decode_text_value,
+    _image_type_from_header,
     _parse_appmsg,
     _safe_like,
     _table_exists,
@@ -95,6 +98,12 @@ def _display_name(username: str, contacts: dict[str, dict[str, Any]], sessions: 
 
 
 _BYTES_EXTRA_USERNAME_RE = re.compile(rb"(?<![A-Za-z0-9_@.-])(?:wxid_[A-Za-z0-9_-]{4,}|[A-Za-z][A-Za-z0-9_-]{3,31})(?![A-Za-z0-9_@.-])")
+_BYTES_EXTRA_FILE_RE = re.compile(
+    r"(?:[A-Za-z]:\\|wxid_[^\\/:*?\"<>|\s\x00]+\\|FileStorage\\)"
+    r"[^\x00\r\n<>\"|]{1,360}?\.(?:dat|jpg|jpeg|png|gif|webp|bmp|mp4)",
+    re.IGNORECASE,
+)
+_LEGACY_MEDIA_URL_MAX_BYTES = 16 * 1024 * 1024
 _BYTES_EXTRA_USERNAME_SKIP = {
     "aeskey",
     "alnode",
@@ -221,6 +230,117 @@ def _bytes_extra_sender_username(value: Any, known_usernames: set[str] | None = 
         if candidate.startswith("wxid_") or candidate.endswith("@chatroom"):
             return candidate
     return candidates[0] if candidates else None
+
+
+def _xml_attrs(text: str, tag: str | None = None) -> dict[str, str]:
+    target = text
+    if tag:
+        match = re.search(rf"<{tag}\b[^>]*>", text, flags=re.IGNORECASE)
+        target = match.group(0) if match else ""
+    return {
+        key.lower(): html.unescape(value)
+        for key, value in re.findall(r"([\w:-]+)\s*=\s*['\"]([^'\"]*)['\"]", target)
+    }
+
+
+def _bytes_extra_file_paths(value: Any) -> list[str]:
+    if isinstance(value, memoryview):
+        data = value.tobytes()
+    elif isinstance(value, bytearray):
+        data = bytes(value)
+    elif isinstance(value, bytes):
+        data = value
+    else:
+        return []
+    if not data:
+        return []
+    text = data.decode("utf-8", errors="ignore")
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _BYTES_EXTRA_FILE_RE.finditer(text):
+        candidate = match.group(0).strip("\x00\r\n\t ")
+        key = candidate.lower()
+        if key not in seen:
+            seen.add(key)
+            paths.append(candidate)
+    return paths
+
+
+def _safe_media_stem(value: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    return stem[:140] or "media"
+
+
+def _decode_legacy_xor_image_dat(source: Path, target_dir: Path, stem: str) -> Path | None:
+    try:
+        data = source.read_bytes()
+    except OSError:
+        return None
+    if not data:
+        return None
+    image_type = _image_type_from_header(data[:16])
+    plain_data = data
+    if not image_type:
+        signatures = [
+            b"\xff\xd8\xff",
+            b"\x89PNG\r\n\x1a\n",
+            b"GIF87a",
+            b"GIF89a",
+            b"BM",
+            b"RIFF",
+        ]
+        for signature in signatures:
+            key = data[0] ^ signature[0]
+            header = bytes(byte ^ key for byte in data[: max(16, len(signature))])
+            if signature == b"RIFF":
+                matched = header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+            else:
+                matched = header.startswith(signature)
+            if matched:
+                plain_data = bytes(byte ^ key for byte in data)
+                image_type = _image_type_from_header(plain_data[:16])
+                break
+    if not image_type:
+        return None
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{stem}.{image_type}"
+    if not target.exists() or target.stat().st_size != len(plain_data):
+        target.write_bytes(plain_data)
+    return target
+
+
+def _download_legacy_media_url(url: str, target_dir: Path, stem: str) -> Path | None:
+    if not url.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=8) as response:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _LEGACY_MEDIA_URL_MAX_BYTES:
+                    return None
+                chunks.append(chunk)
+        data = b"".join(chunks)
+    except Exception:
+        return None
+    image_type = _image_type_from_header(data[:16])
+    if not image_type:
+        path_suffix = Path(unquote(urlparse(url).path)).suffix.lower().lstrip(".")
+        image_type = path_suffix if path_suffix in {"jpg", "jpeg", "png", "gif", "webp", "bmp"} else ""
+    if not image_type:
+        return None
+    if image_type == "jpeg":
+        image_type = "jpg"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{stem}.{image_type}"
+    if not target.exists() or target.stat().st_size != len(data):
+        target.write_bytes(data)
+    return target
 
 
 def _pe_pointer_size(path: str | None) -> int:
@@ -626,6 +746,131 @@ class WeChatLegacyDbStorage:
     def _raw_snapshot_root(self, account_root: Path) -> Path:
         return self.root.parent / "raw_snapshot" / "wechat_files" / account_root.name
 
+    def _snapshot_account_name(self) -> str | None:
+        raw_snapshot = self.root.parent / "raw_snapshot" / "wechat_files"
+        if not raw_snapshot.exists():
+            return None
+        candidates = [path.name for path in raw_snapshot.iterdir() if path.is_dir() and path.name.startswith("wxid_")]
+        return sorted(candidates)[-1] if candidates else None
+
+    def _media_account_root(self) -> Path | None:
+        env_account = (os.environ.get("CODEYUN_WECHAT_LEGACY_ACCOUNT_ROOT") or "").strip()
+        if env_account:
+            path = Path(env_account).expanduser()
+            if path.exists():
+                return path
+        snapshot_account = self._snapshot_account_name()
+        for files_root in _default_wechat_files_roots():
+            if snapshot_account:
+                candidate = files_root / snapshot_account
+                if candidate.exists():
+                    return candidate
+            if files_root.exists():
+                for child in files_root.iterdir():
+                    if child.is_dir() and child.name.startswith("wxid_") and (child / "FileStorage").exists():
+                        return child
+        return None
+
+    def _resource_export_root(self) -> Path:
+        return self.root.parent / "exported_media"
+
+    def _resolve_media_source_path(self, raw_path: str, account_root: Path) -> Path | None:
+        normalized = raw_path.replace("/", "\\").strip("\x00\r\n\t ")
+        if not normalized:
+            return None
+        path = Path(normalized)
+        candidates: list[Path] = []
+        if path.is_absolute():
+            candidates.append(path)
+        if normalized.lower().startswith((account_root.name + "\\").lower()):
+            candidates.append(account_root.parent / normalized)
+        if normalized.lower().startswith("filestorage\\"):
+            candidates.append(account_root / normalized)
+        candidates.append(account_root.parent / normalized)
+        candidates.append(account_root / normalized)
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _export_legacy_media_file(
+        self,
+        source: Path,
+        *,
+        kind: str,
+        stem: str,
+        md5_text: str = "",
+        original_file_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        export_dir = self._resource_export_root() / kind
+        safe_stem = _safe_media_stem(stem)
+        target: Path | None = None
+        decoded_from_dat = False
+        if kind == "image" and source.suffix.lower() == ".dat":
+            target = _decode_legacy_xor_image_dat(source, export_dir, safe_stem)
+            decoded_from_dat = target is not None
+        if target is None:
+            suffix = source.suffix.lower().lstrip(".")
+            if not suffix:
+                suffix = "bin"
+            target = export_dir / f"{safe_stem}.{suffix}"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                if not target.exists() or target.stat().st_size != source.stat().st_size:
+                    shutil.copy2(source, target)
+            except OSError:
+                return None
+        try:
+            size = int(target.stat().st_size)
+        except OSError:
+            return None
+        return {
+            "kind": kind,
+            "file_name": target.name,
+            "original_file_name": original_file_name or source.name,
+            "size": size,
+            "source_path": os.fspath(source),
+            "stored_path": os.fspath(target),
+            "download_name": f"{kind}/{target.name}",
+            "md5": md5_text,
+            "decoded_from_dat": decoded_from_dat,
+        }
+
+    def _download_legacy_media_export(self, url: str, *, kind: str, stem: str, md5_text: str = "") -> dict[str, Any] | None:
+        export_dir = self._resource_export_root() / kind
+        safe_stem = _safe_media_stem(stem)
+        target = next(
+            (
+                candidate
+                for ext in ("jpg", "png", "gif", "webp", "bmp")
+                for candidate in [export_dir / f"{safe_stem}.{ext}"]
+                if candidate.exists()
+            ),
+            None,
+        )
+        if target is None:
+            target = _download_legacy_media_url(url, export_dir, safe_stem)
+        if not target:
+            return None
+        try:
+            size = int(target.stat().st_size)
+        except OSError:
+            return None
+        return {
+            "kind": kind,
+            "file_name": target.name,
+            "original_file_name": target.name,
+            "size": size,
+            "source_path": url,
+            "stored_path": os.fspath(target),
+            "download_name": f"{kind}/{target.name}",
+            "md5": md5_text,
+            "decoded_from_dat": False,
+        }
+
     def _iter_live_db_files(self, account_root: Path) -> list[Path]:
         msg_root = account_root / "Msg"
         paths = [msg_root / "MicroMsg.db"]
@@ -993,6 +1238,19 @@ class WeChatLegacyDbStorage:
             params.append(normalized_type)
         return clauses, params
 
+    def _talker_where(self, conn: sqlite3.Connection, chat_username: str, *, alias: str | None = None) -> tuple[str, list[Any]]:
+        name2id_table = f"{alias}.Name2ID" if alias else "Name2ID"
+        talker_ids: list[int] = []
+        try:
+            rows = conn.execute(f"SELECT rowid FROM {name2id_table} WHERE UsrName = ?", (chat_username,)).fetchall()
+            talker_ids = [int(row[0]) for row in rows if row[0] is not None]
+        except sqlite3.Error:
+            talker_ids = []
+        if talker_ids:
+            placeholders = ",".join("?" for _ in talker_ids)
+            return f"m.TalkerId IN ({placeholders})", [*talker_ids]
+        return "m.StrTalker = ?", [chat_username]
+
     def count_messages(self, chat_username: str, q: str | None = None, message_type: str | None = None) -> dict[str, Any]:
         total = 0
         base_clauses, base_params = self._message_where(q, message_type)
@@ -1001,8 +1259,9 @@ class WeChatLegacyDbStorage:
             try:
                 if not (_table_exists(conn, "MSG") and _table_exists(conn, "Name2ID")):
                     continue
-                clauses = ["COALESCE(NULLIF(m.StrTalker, ''), n.UsrName) = ?"]
-                params: list[Any] = [chat_username]
+                talker_clause, talker_params = self._talker_where(conn, chat_username)
+                clauses = [talker_clause]
+                params: list[Any] = [*talker_params]
                 clauses.extend(base_clauses)
                 params.extend(base_params)
                 where_sql = " WHERE " + " AND ".join(clauses)
@@ -1011,7 +1270,6 @@ class WeChatLegacyDbStorage:
                         f"""
                         SELECT COUNT(*)
                         FROM MSG m
-                        LEFT JOIN Name2ID n ON n.rowid = m.TalkerId
                         {where_sql}
                         """,
                         params,
@@ -1045,33 +1303,131 @@ class WeChatLegacyDbStorage:
                 return match.group(1)
         return chat_username
 
+    def _legacy_resource_payload(self, row: sqlite3.Row, db_index: int, raw_local_id: int, message_text: str) -> dict[str, Any] | None:
+        local_type = normalize_message_type(row["Type"])
+        if local_type not in {3, 47}:
+            return None
+        account_root = self._media_account_root()
+        attrs = _xml_attrs(message_text, "img" if local_type == 3 else "emoji")
+        exports: list[dict[str, Any]] = []
+        md5_text = attrs.get("md5") or attrs.get("androidmd5") or ""
+        size_value = attrs.get("length") or attrs.get("len") or attrs.get("androidlen") or "0"
+        try:
+            declared_size = int(size_value or 0)
+        except ValueError:
+            declared_size = 0
+
+        if local_type == 3 and account_root:
+            paths = _bytes_extra_file_paths(row["BytesExtra"] if "BytesExtra" in row.keys() else None)
+            ranked_paths = sorted(
+                paths,
+                key=lambda value: (
+                    0 if "\\Image\\" in value or "/Image/" in value else 1,
+                    0 if "\\Thumb\\" not in value and "/Thumb/" not in value else 1,
+                ),
+            )
+            for raw_path in ranked_paths:
+                source = self._resolve_media_source_path(raw_path, account_root)
+                if not source:
+                    continue
+                export = self._export_legacy_media_file(
+                    source,
+                    kind="image",
+                    stem=f"wx3_{db_index}_{raw_local_id}_{source.stem}",
+                    md5_text=md5_text,
+                    original_file_name=source.name,
+                )
+                if export:
+                    exports.append(export)
+                    break
+
+        if local_type == 47:
+            if account_root and md5_text:
+                emotion_source = account_root / "FileStorage" / "CustomEmotion" / md5_text[:2].upper() / md5_text.upper()
+                if emotion_source.exists():
+                    export = self._export_legacy_media_file(
+                        emotion_source,
+                        kind="image",
+                        stem=f"wx3_emoji_{md5_text.lower()}",
+                        md5_text=md5_text,
+                        original_file_name=emotion_source.name,
+                    )
+                    if export and _image_type_from_header(Path(export["stored_path"]).read_bytes()[:16]):
+                        exports.append(export)
+            if not exports:
+                url = attrs.get("cdnurl") or attrs.get("thumburl") or attrs.get("externurl")
+                if url:
+                    export = self._download_legacy_media_export(
+                        url,
+                        kind="image",
+                        stem=f"wx3_emoji_{(md5_text or str(raw_local_id)).lower()}",
+                        md5_text=md5_text,
+                    )
+                    if export:
+                        exports.append(export)
+
+        if not exports:
+            return None
+        items = [
+            {
+                "resource_id": None,
+                "type": local_type,
+                "size": int(export.get("size") or declared_size or 0),
+                "data_index": None,
+                "packed_text": message_text,
+                "export": export,
+            }
+            for export in exports
+        ]
+        return {
+            "resource_count": len(items),
+            "total_size": sum(int(item.get("size") or 0) for item in items),
+            "resource_types": "emoji" if local_type == 47 else "image",
+            "data_indexes": "",
+            "items": items,
+        }
+
     def list_messages(
         self,
         chat_username: str,
         q: str | None = None,
         message_type: str | None = None,
-        limit: int = 80,
+        limit: int = 20,
         offset: int = 0,
         order: str = "desc",
         include_resources: bool = True,
+        known_total: int | None = None,
     ) -> dict[str, Any]:
         limit = min(max(1, int(limit)), MAX_PAGE_SIZE)
         offset = max(0, int(offset))
         order_desc = order != "asc"
-        total = self.count_messages(chat_username, q=q, message_type=message_type)["total"]
+        total = int(known_total) if known_total is not None else self.count_messages(chat_username, q=q, message_type=message_type)["total"]
+        if offset >= total:
+            return {"total": total, "items": [], "table_name": "MSG"}
         contacts = self._contact_map(include_avatar=True)
         chatroom_members = self._chatroom_member_map() if chat_username.endswith("@chatroom") else {}
         sessions = self._session_map()
         self_username = self._self_username()
         base_clauses, base_params = self._message_where(q, message_type)
+        query_limit = limit
+        query_offset = offset
+        query_order_desc = order_desc
+        reverse_page = False
+        if not order_desc and total > 0 and offset + limit >= total:
+            query_limit = max(0, min(limit, total - offset))
+            query_offset = max(0, total - offset - query_limit)
+            query_order_desc = True
+            reverse_page = True
         page_rows = self._query_message_page(
             chat_username=chat_username,
             base_clauses=base_clauses,
             base_params=base_params,
-            limit=limit,
-            offset=offset,
-            order_desc=order_desc,
+            limit=query_limit,
+            offset=query_offset,
+            order_desc=query_order_desc,
         )
+        if reverse_page:
+            page_rows = list(reversed(page_rows))
         items: list[dict[str, Any]] = []
         for db_index, row in page_rows:
             raw_local_id = int(row["localId"] or 0)
@@ -1085,6 +1441,7 @@ class WeChatLegacyDbStorage:
             )
             message_text = _decode_text_value(row["StrContent"])
             display_text = _decode_text_value(row["DisplayContent"])
+            resource = self._legacy_resource_payload(row, db_index, raw_local_id, message_text) if include_resources else None
             item = {
                 "local_id": db_index * 10_000_000_000 + raw_local_id,
                 "raw_local_id": raw_local_id,
@@ -1112,7 +1469,7 @@ class WeChatLegacyDbStorage:
                 "source_text": display_text,
                 "appmsg": _parse_appmsg(message_text) or _parse_appmsg(display_text),
                 "packed_info_size": row["CompressContentSize"],
-                "resource": None,
+                "resource": resource,
             }
             items.append(item)
         return {"total": total, "items": items, "table_name": "MSG"}
@@ -1140,10 +1497,11 @@ class WeChatLegacyDbStorage:
                     continue
                 columns = {str(row["name"]) for row in conn.execute(f"PRAGMA {alias}.table_info(MSG)").fetchall()}
                 bytes_extra_sql = "m.BytesExtra" if "BytesExtra" in columns else "NULL"
-                clauses = ["COALESCE(NULLIF(m.StrTalker, ''), n.UsrName) = ?"]
+                talker_clause, talker_params = self._talker_where(conn, chat_username, alias=alias)
+                clauses = [talker_clause]
                 clauses.extend(base_clauses)
                 where_sql = " WHERE " + " AND ".join(clauses)
-                params.extend([chat_username, *base_params])
+                params.extend([*talker_params, *base_params])
                 selects.append(
                     f"""
                     SELECT
@@ -1202,15 +1560,15 @@ class WeChatLegacyDbStorage:
                 if not (_table_exists(conn, "MSG") and _table_exists(conn, "Name2ID")):
                     continue
                 if chat_username:
+                    talker_clause, talker_params = self._talker_where(conn, chat_username)
                     rows = conn.execute(
                         """
                         SELECT m.Type AS local_type, COUNT(*) AS n
                         FROM MSG m
-                        LEFT JOIN Name2ID n ON n.rowid = m.TalkerId
-                        WHERE COALESCE(NULLIF(m.StrTalker, ''), n.UsrName) = ?
+                        WHERE {talker_clause}
                         GROUP BY m.Type
-                        """,
-                        (chat_username,),
+                        """.format(talker_clause=talker_clause),
+                        talker_params,
                     ).fetchall()
                 else:
                     rows = conn.execute("SELECT Type AS local_type, COUNT(*) AS n FROM MSG GROUP BY Type").fetchall()

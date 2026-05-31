@@ -1,12 +1,14 @@
+import base64
 import json
 import re
 import tempfile
+import threading
 import time
 import uuid
 from datetime import date, datetime, timedelta, time as dt_time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -31,6 +33,7 @@ from backend.core.game_window_service_runtime import (
     GameWindowServiceError,
     open_game_window_service_stream,
 )
+from backend.core.settings import get_settings
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import get_session
@@ -47,19 +50,25 @@ from backend.core.fanxiu_sunlogin_rotate import (
     activate_sunlogin_rotate_window,
     capture_sunlogin_rotate_frame,
     click_sunlogin_rotate_processed_point,
+    clear_fanxiu_burst_frames,
     delete_fanxiu_screenshot,
     drag_sunlogin_rotate_processed_points,
+    get_fanxiu_burst_frame_path,
     get_fanxiu_match_frame_path,
     get_fanxiu_screenshot_path,
     get_sunlogin_rotate_status,
+    import_fanxiu_burst_frames,
     keyevent_mumu_adb,
+    list_fanxiu_burst_frames,
     list_fanxiu_screenshots,
     match_fanxiu_screenshot_box_frame,
     read_fanxiu_screenshot_pre_label,
+    save_fanxiu_burst_frame,
     save_fanxiu_screenshot_frame,
     screencap_mumu_adb_png,
     start_sunlogin_rotate_preview,
     stop_sunlogin_rotate_preview,
+    stream_mumu_adb_screencap_mjpeg,
     stream_sunlogin_rotate_mjpeg,
     text_mumu_adb,
     write_fanxiu_screenshot_pre_label,
@@ -72,6 +81,12 @@ from backend.core.fanxiu_visual_macro_runtime import (
     run_fanxiu_visual_script,
     stop_visual_macro_run,
 )
+from backend.core.ai_app_config import (
+    AI_APP_FANXIU_GAME_MACRO_ANNOTATION,
+    AiAppConfigError,
+    resolve_ai_app_runtime_config,
+)
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
 from backend.core.fanxiu_inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
 from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
@@ -87,6 +102,11 @@ from backend.core.fanxiu_packet_capture import build_fanxiu_packet_capture_snaps
 from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
 from backend.core.fanxiu_packet_activity import fanxiu_packet_activity_service
 from backend.core.fanxiu_packet_proxy import fanxiu_packet_proxy_service
+from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu_activity_packet_sync import (
+    get_fanxiu_activity_packet_schedule,
+    sync_fanxiu_activity_packets,
+)
 from backend.core.fanxiu_tcp_flow import (
     decode_fanxiu_tcp_pcap,
     list_fanxiu_tcp_business_entries,
@@ -595,6 +615,53 @@ class FanxiuPacketActivityStartRequest(BaseModel):
     bind_ip: str = ""
 
 
+class FanxiuCaptureRuntimeRequest(BaseModel):
+    reason: str = "manual"
+
+
+class FanxiuCaptureRuntimeStatus(BaseModel):
+    state: str = "stopped"
+    running: bool = False
+    game_running: bool = False
+    adb_connected: bool = False
+    root_ready: bool = False
+    tcpdump_ready: bool = False
+    active_reasons: List[str] = Field(default_factory=list)
+    current_pcap_path: str = ""
+    current_pcap_size: int = 0
+    current_remote_pcap_path: str = ""
+    started_at: str = ""
+    last_error: str = ""
+    last_recover_at: str = ""
+    tcpdump_started_at: str = ""
+    device_id: str = ""
+    package_name: str = ""
+
+
+class FanxiuActivityPacketSyncRequest(BaseModel):
+    force: bool = False
+
+
+class FanxiuActivityPacketSyncResponse(BaseModel):
+    ok: bool = True
+    state_path: str = ""
+    records_path: str = ""
+    rank_records_path: str = ""
+    cursor: dict[str, Any] = Field(default_factory=dict)
+    rank_cursor: dict[str, Any] = Field(default_factory=dict)
+    scanned_packets: int = 0
+    matched_packets: int = 0
+    matched_rank_packets: int = 0
+    inserted: int = 0
+    updated: int = 0
+    rank_inserted: int = 0
+    rank_updated: int = 0
+    skipped_duplicates: int = 0
+    rank_skipped_duplicates: int = 0
+    record_count: int = 0
+    rank_record_count: int = 0
+
+
 class FanxiuPacketPayloadDirection(BaseModel):
     length: int = 0
     hex: str = ""
@@ -861,6 +928,7 @@ class FanxiuGameWindow2ClickRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ServiceClickRequest(BaseModel):
@@ -877,6 +945,7 @@ class FanxiuGameWindow2ServiceClickRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ActivateRequest(BaseModel):
@@ -910,6 +979,7 @@ class FanxiuGameWindow2DragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ServiceDragRequest(BaseModel):
@@ -929,6 +999,7 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2KeyeventRequest(BaseModel):
@@ -966,6 +1037,7 @@ class FanxiuGameWindow2SaveFrameRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
     current_frame_data_url: Optional[str] = None
+    overwrite_filename: Optional[str] = None
 
 
 class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
@@ -980,6 +1052,48 @@ class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
     current_frame_data_url: Optional[str] = None
+    overwrite_filename: Optional[str] = None
+
+
+class FanxiuGameWindow2BurstFrameRequest(FanxiuGameWindow2SaveFrameRequest):
+    pass
+
+
+class FanxiuGameWindow2ServiceBurstFrameRequest(FanxiuGameWindow2ServiceSaveFrameRequest):
+    pass
+
+
+class FanxiuGameWindow3AssetTreeRequest(BaseModel):
+    entry_id: str
+    tree: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FanxiuGameWindow2BurstListRequest(BaseModel):
+    entry_id: str
+    page: int = Field(1, ge=1)
+    page_size: int = Field(24, ge=1, le=100)
+
+
+class FanxiuGameWindow2ServiceBurstListRequest(BaseModel):
+    page: int = Field(1, ge=1)
+    page_size: int = Field(24, ge=1, le=100)
+
+
+class FanxiuGameWindow2BurstClearRequest(BaseModel):
+    entry_id: str
+
+
+class FanxiuGameWindow2ServiceBurstClearRequest(BaseModel):
+    pass
+
+
+class FanxiuGameWindow2BurstImportRequest(BaseModel):
+    entry_id: str
+    filenames: list[str] = Field(default_factory=list)
+
+
+class FanxiuGameWindow2ServiceBurstImportRequest(BaseModel):
+    filenames: list[str] = Field(default_factory=list)
 
 
 class FanxiuGameWindow2MatchBox(BaseModel):
@@ -994,6 +1108,8 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     entry_id: str
     filename: str
     box: FanxiuGameWindow2MatchBox
+    scan: bool = False
+    scan_box: Optional[FanxiuGameWindow2MatchBox] = None
     pixel_tolerance: int = Field(5, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
@@ -1009,11 +1125,18 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
     current_frame_data_url: Optional[str] = None
+    match_strategy: str = Field("auto", pattern="^(auto|anchor_pixel)$")
+    ocr_enabled: bool = False
+    ocr_text: str = Field("", max_length=200)
+    ocr_match_mode: str = Field("contains", pattern="^(contains|exact|wildcard|regex)$")
+    ocr_min_confidence: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     filename: str
     box: FanxiuGameWindow2MatchBox
+    scan: bool = False
+    scan_box: Optional[FanxiuGameWindow2MatchBox] = None
     pixel_tolerance: int = Field(5, ge=0, le=255)
     alpha_mask_data_url: Optional[str] = None
     tolerance_min_data_url: Optional[str] = None
@@ -1029,6 +1152,11 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     current_frame_data_url: Optional[str] = None
     quality: int = Field(82, ge=1, le=100)
+    match_strategy: str = Field("auto", pattern="^(auto|anchor_pixel)$")
+    ocr_enabled: bool = False
+    ocr_text: str = Field("", max_length=200)
+    ocr_match_mode: str = Field("contains", pattern="^(contains|exact|wildcard|regex)$")
+    ocr_min_confidence: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class FanxiuPseudoCodeCardRead(BaseModel):
@@ -1139,6 +1267,315 @@ class FanxiuGameWindow2ScreenshotPreLabelSaveRequest(BaseModel):
 class FanxiuGameWindow2ServiceScreenshotPreLabelSaveRequest(BaseModel):
     filename: str
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuGameWindow3StepperLogEntry(BaseModel):
+    id: str = ""
+    time: str = ""
+    kind: str = ""
+    message: str = ""
+    ts: str = ""
+
+
+class FanxiuGameWindow3StepperLogAppendRequest(BaseModel):
+    entry: FanxiuGameWindow3StepperLogEntry
+
+
+class FanxiuGameWindow3StepperLogResponse(BaseModel):
+    entries: list[FanxiuGameWindow3StepperLogEntry] = Field(default_factory=list)
+    path: str = ""
+
+
+class FanxiuGameWindow3OcrFrameRequest(BaseModel):
+    image_data_url: str
+
+
+class FanxiuGameWindow3OcrFrameLine(BaseModel):
+    text: str
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class FanxiuGameWindow3OcrFrameResponse(BaseModel):
+    lines: list[FanxiuGameWindow3OcrFrameLine] = Field(default_factory=list)
+
+
+class FanxiuGameWindow3MacroPoint(BaseModel):
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+
+
+class FanxiuGameWindow3MacroAnnotateRequest(BaseModel):
+    image_data_url: str
+    action: str = Field("click", pattern="^(click|drag)$")
+    start: FanxiuGameWindow3MacroPoint
+    end: Optional[FanxiuGameWindow3MacroPoint] = None
+    fallback_box: FanxiuGameWindow2MatchBox
+    frame_width: int = Field(gt=0, le=4096)
+    frame_height: int = Field(gt=0, le=4096)
+    duration_ms: int = Field(0, ge=0, le=120000)
+    direction: Optional[str] = Field(None, pattern="^(up|down|left|right|none)$")
+
+
+class FanxiuGameWindow3MacroAnnotateResponse(BaseModel):
+    ok: bool = True
+    used_ai: bool = False
+    box: FanxiuGameWindow2MatchBox
+    confidence: float = Field(0, ge=0, le=1)
+    label: str = ""
+    reason: str = ""
+    raw: str = ""
+
+
+_GAME_WINDOW3_STEPPER_LOG_LOCK = threading.Lock()
+
+
+def _game_window3_stepper_log_path() -> Path:
+    return get_settings().data_dir / "fanxiu" / "game-window3" / "stepper.log"
+
+
+def _read_game_window3_stepper_log_entries(limit: int = 500) -> list[FanxiuGameWindow3StepperLogEntry]:
+    path = _game_window3_stepper_log_path()
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"读取步进器日志失败：{exc}") from exc
+    entries: list[FanxiuGameWindow3StepperLogEntry] = []
+    for line in lines[-max(1, min(5000, limit)):]:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            payload = {"kind": "error", "message": line}
+        entries.append(FanxiuGameWindow3StepperLogEntry.model_validate(payload))
+    return entries
+
+
+def _extract_game_macro_annotation_json(raw: Any) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise ValueError("AI 标注结果不是 JSON")
+        payload = json.loads(match.group(0))
+    if not isinstance(payload, dict):
+        raise ValueError("AI 标注结果必须是 JSON 对象")
+    return payload
+
+
+def _coerce_float(value: Any, fallback: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if result != result:
+        return fallback
+    return result
+
+
+def _clamp_game_macro_box(
+    raw_box: Any,
+    fallback_box: FanxiuGameWindow2MatchBox,
+    frame_width: int,
+    frame_height: int,
+) -> FanxiuGameWindow2MatchBox:
+    if not isinstance(raw_box, dict):
+        raw_box = {}
+    fallback = fallback_box.model_dump()
+    x = _coerce_float(raw_box.get("x"), float(fallback["x"]))
+    y = _coerce_float(raw_box.get("y"), float(fallback["y"]))
+    w = _coerce_float(raw_box.get("w"), float(fallback["w"]))
+    h = _coerce_float(raw_box.get("h"), float(fallback["h"]))
+    w = max(1.0, min(w, float(frame_width)))
+    h = max(1.0, min(h, float(frame_height)))
+    x = max(0.0, min(x, max(0.0, float(frame_width) - w)))
+    y = max(0.0, min(y, max(0.0, float(frame_height) - h)))
+    return FanxiuGameWindow2MatchBox(
+        name=str(raw_box.get("name") or fallback_box.name or ""),
+        x=round(x, 3),
+        y=round(y, 3),
+        w=round(w, 3),
+        h=round(h, 3),
+    )
+
+
+def _build_game_macro_annotation_prompt(req: FanxiuGameWindow3MacroAnnotateRequest) -> str:
+    fallback = req.fallback_box.model_dump()
+    end_text = "无"
+    if req.end:
+        end_text = json.dumps(req.end.model_dump(), ensure_ascii=False)
+    ocr_context = _build_game_macro_ocr_context(req.image_data_url)
+    return "\n".join(
+        [
+            "请根据截图和用户操作点，判断这次录制宏操作对应的控件 shape 框。",
+            "只返回用户点击或拖拽直接作用的按钮、图标、菜单项、滑块、可拖拽控件范围。",
+            "不要返回整屏、整张弹窗、背景大区域，也不要为了包含文字说明而扩大到无关区域。",
+            "坐标必须使用截图原始像素坐标，左上角为 (0,0)。",
+            "如果不能可靠判断，请返回 fallback_box，并把 confidence 设低。",
+            "",
+            f"截图尺寸：{req.frame_width}x{req.frame_height}",
+            f"操作类型：{req.action}",
+            f"起点：{json.dumps(req.start.model_dump(), ensure_ascii=False)}",
+            f"终点：{end_text}",
+            f"方向：{req.direction or 'none'}",
+            f"持续时间 ms：{req.duration_ms}",
+            f"工程保底框 fallback_box：{json.dumps(fallback, ensure_ascii=False)}",
+            f"PaddleOCR 文本参考：{ocr_context}",
+            "",
+            "严格返回 JSON 对象，格式如下：",
+            '{"box":{"x":0,"y":0,"w":50,"h":50},"confidence":0.0,"label":"控件名称","reason":"简短理由"}',
+        ]
+    )
+
+
+def _decode_game_macro_data_url_to_bytes(data_url: str) -> bytes:
+    text = str(data_url or "").strip()
+    if "," in text and text.lower().startswith("data:"):
+        text = text.split(",", 1)[1]
+    return base64.b64decode("".join(text.split()), validate=False)
+
+
+def _summarize_game_macro_ocr_document(preview_document: dict[str, Any]) -> str:
+    try:
+        line_entries = _extract_ocr_line_entries(preview_document)
+    except Exception:
+        line_entries = []
+    lines: list[str] = []
+    for entries in line_entries:
+        fragments: list[str] = []
+        boxes: list[str] = []
+        for entry in entries:
+            text = _sanitize_ocr_text(entry.get("text"))
+            if not text:
+                continue
+            fragments.append(text)
+            x = _coerce_float(entry.get("x"), -1)
+            y = _coerce_float(entry.get("y"), -1)
+            w = _coerce_float(entry.get("width"), -1)
+            h = _coerce_float(entry.get("height"), -1)
+            if x >= 0 and y >= 0 and w > 0 and h > 0:
+                boxes.append(f"{round(x)},{round(y)},{round(w)},{round(h)}")
+        joined = "".join(fragments)
+        if joined:
+            suffix = f" @{'/'.join(boxes[:3])}" if boxes else ""
+            lines.append(f"{joined}{suffix}")
+        if len(lines) >= 80:
+            break
+    if not lines:
+        return "无可用 OCR 文本"
+    return "；".join(lines)[:4000]
+
+
+def _build_game_macro_ocr_context(image_data_url: str) -> str:
+    temp_path: Path | None = None
+    try:
+        image_bytes = _decode_game_macro_data_url_to_bytes(image_data_url)
+        if not image_bytes:
+            return "无可用 OCR 文本"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
+            file.write(image_bytes)
+            temp_path = Path(file.name)
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        return _summarize_game_macro_ocr_document(preview)
+    except Exception as exc:
+        return f"OCR 不可用：{exc}"
+    finally:
+        if temp_path:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _recognize_game_window3_ocr_frame(image_data_url: str) -> FanxiuGameWindow3OcrFrameResponse:
+    temp_path: Path | None = None
+    try:
+        image_bytes = _decode_game_macro_data_url_to_bytes(image_data_url)
+        if not image_bytes:
+            return FanxiuGameWindow3OcrFrameResponse()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
+            file.write(image_bytes)
+            temp_path = Path(file.name)
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        line_entries = _extract_ocr_line_entries(preview.get("document") or {})
+        lines: list[FanxiuGameWindow3OcrFrameLine] = []
+        for entries in line_entries:
+            text = _join_ocr_line_entries(entries)
+            if not text:
+                continue
+            left = min(_coerce_float(item.get("x"), 0) for item in entries)
+            right = max(_coerce_float(item.get("x2"), _coerce_float(item.get("x"), 0) + _coerce_float(item.get("width"), 1)) for item in entries)
+            top = min(_coerce_float(item.get("y"), 0) - _coerce_float(item.get("height"), 1) / 2 for item in entries)
+            bottom = max(_coerce_float(item.get("y"), 0) + _coerce_float(item.get("height"), 1) / 2 for item in entries)
+            lines.append(FanxiuGameWindow3OcrFrameLine(
+                text=text,
+                x=max(0.0, left),
+                y=max(0.0, top),
+                w=max(1.0, right - left),
+                h=max(1.0, bottom - top),
+            ))
+        return FanxiuGameWindow3OcrFrameResponse(lines=lines)
+    except OcrPreviewError as exc:
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        if temp_path:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _annotate_game_macro_shape_with_ai(
+    req: FanxiuGameWindow3MacroAnnotateRequest,
+    *,
+    current_user: User,
+    session: Session,
+) -> FanxiuGameWindow3MacroAnnotateResponse:
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_FANXIU_GAME_MACRO_ANNOTATION,
+    )
+    response = chat_with_provider(
+        provider_id=str(runtime["provider"]),
+        base_url=runtime["base_url"],
+        api_key=runtime["api_key"],
+        model=runtime["model"],
+        system_prompt="你是手游 GUI 自动化标注助手。只输出严格 JSON，不输出解释性正文。",
+        messages=[
+            {
+                "role": "user",
+                "content": _build_game_macro_annotation_prompt(req),
+                "images": [req.image_data_url],
+            }
+        ],
+        response_format="json",
+        timeout_seconds=180,
+        extra_providers=runtime["extra_providers"],
+    )
+    raw = str(response.get("content") or "")
+    payload = _extract_game_macro_annotation_json(raw)
+    box = _clamp_game_macro_box(payload.get("box"), req.fallback_box, req.frame_width, req.frame_height)
+    confidence = max(0.0, min(1.0, _coerce_float(payload.get("confidence"), 0.0)))
+    return FanxiuGameWindow3MacroAnnotateResponse(
+        ok=True,
+        used_ai=True,
+        box=box,
+        confidence=round(confidence, 4),
+        label=str(payload.get("label") or "").strip()[:80],
+        reason=str(payload.get("reason") or "").strip()[:300],
+        raw=raw,
+    )
 
 
 class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
@@ -4388,11 +4825,74 @@ def decode_fanxiu_packet_tcp_capture(
             server_host=payload.server_host,
             persist=payload.persist,
         )
+        if payload.persist:
+            sync_fanxiu_activity_packets(force=False)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuTcpDecodeResponse.model_validate(result)
+
+
+@status_router.get("/packet-capture/tcp/worldline-activity/latest")
+def get_fanxiu_latest_worldline_activity_schedule(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_fanxiu_write_permission(current_user, session)
+    return get_fanxiu_activity_packet_schedule()
+
+
+@status_router.post("/activity-packet-sync", response_model=FanxiuActivityPacketSyncResponse)
+def sync_fanxiu_activity_packet_history(
+    payload: FanxiuActivityPacketSyncRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuActivityPacketSyncResponse.model_validate(
+        sync_fanxiu_activity_packets(force=payload.force)
+    )
+
+
+@status_router.get("/capture-runtime/status", response_model=FanxiuCaptureRuntimeStatus)
+def get_fanxiu_capture_runtime_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.status())
+
+
+@status_router.post("/capture-runtime/ensure", response_model=FanxiuCaptureRuntimeStatus)
+def ensure_fanxiu_capture_runtime(
+    payload: FanxiuCaptureRuntimeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuCaptureRuntimeStatus.model_validate(
+        fanxiu_capture_runtime_service.ensure_running(payload.reason)
+    )
+
+
+@status_router.post("/capture-runtime/release", response_model=FanxiuCaptureRuntimeStatus)
+def release_fanxiu_capture_runtime(
+    payload: FanxiuCaptureRuntimeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.release(payload.reason))
+
+
+@status_router.post("/capture-runtime/stop", response_model=FanxiuCaptureRuntimeStatus)
+def stop_fanxiu_capture_runtime(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuCaptureRuntimeStatus.model_validate(fanxiu_capture_runtime_service.force_stop("api-stop"))
 
 
 @status_router.get("/packet-capture/activity/status", response_model=FanxiuPacketActivityStatus)
@@ -4895,6 +5395,7 @@ def stream_fanxiu_game_window(
     rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
     fixed_width: int = Query(0, ge=0, le=4096),
     fixed_height: int = Query(0, ge=0, le=4096),
+    adb_screencap: bool = Query(False),
     auto_dismiss_popup: bool = Query(False),
     popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
 ):
@@ -5029,11 +5530,18 @@ def _extract_stream_error(response: requests.Response) -> str:
     return response.text.strip() or f"画面流服务返回 HTTP {response.status_code}"
 
 
-def _stream_response_from_requests(response: requests.Response) -> StreamingResponse:
+def _stream_response_from_requests(response: requests.Response, *, cleanup: Callable[[], None] | None = None) -> StreamingResponse:
     if response.status_code >= 400:
         detail = _extract_stream_error(response)
         response.close()
         raise HTTPException(status_code=response.status_code, detail=detail)
+
+    def close_stream() -> None:
+        try:
+            response.close()
+        finally:
+            if cleanup is not None:
+                cleanup()
 
     return StreamingResponse(
         response.iter_content(chunk_size=64 * 1024),
@@ -5043,7 +5551,7 @@ def _stream_response_from_requests(response: requests.Response) -> StreamingResp
             "Pragma": "no-cache",
             "X-Accel-Buffering": "no",
         },
-        background=BackgroundTask(response.close),
+        background=BackgroundTask(close_stream),
     )
 
 
@@ -5067,7 +5575,11 @@ def _stream_game_window2_service(params: dict[str, Any]) -> StreamingResponse:
         response = open_game_window_service_stream(params)
     except GameWindowServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return _stream_response_from_requests(response)
+    fanxiu_capture_runtime_service.ensure_running("game-window2-stream")
+    return _stream_response_from_requests(
+        response,
+        cleanup=lambda: fanxiu_capture_runtime_service.release("game-window2-stream"),
+    )
 
 
 def _game_window2_click_payload(req: FanxiuGameWindow2ClickRequest | FanxiuGameWindow2ServiceClickRequest) -> dict[str, Any]:
@@ -5122,6 +5634,7 @@ def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_height=int(payload.get("fixed_height") or 0),
             frame_width=int(payload.get("frame_width") or 0) or None,
             frame_height=int(payload.get("frame_height") or 0) or None,
+            input_backend=payload.get("input_backend") or "desktop",
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5157,6 +5670,7 @@ def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_height=int(payload.get("fixed_height") or 0),
             frame_width=int(payload.get("frame_width") or 0) or None,
             frame_height=int(payload.get("frame_height") or 0) or None,
+            input_backend=payload.get("input_backend") or "desktop",
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5207,6 +5721,7 @@ def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_height=int(payload.get("fixed_height") or 0),
             quality=int(payload.get("quality") or 82),
             current_frame_data_url=payload.get("current_frame_data_url"),
+            overwrite_filename=payload.get("overwrite_filename"),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5217,6 +5732,8 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
         return match_fanxiu_screenshot_box_frame(
             filename=payload["filename"],
             box=payload["box"],
+            scan=bool(payload.get("scan")),
+            scan_box=payload.get("scan_box"),
             pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
             alpha_mask_data_url=payload.get("alpha_mask_data_url"),
             tolerance_min_data_url=payload.get("tolerance_min_data_url"),
@@ -5232,9 +5749,64 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_height=int(payload.get("fixed_height") or 0),
             quality=int(payload.get("quality") or 82),
             current_frame_data_url=payload.get("current_frame_data_url"),
+            match_strategy=payload.get("match_strategy") or "auto",
+            ocr_enabled=bool(payload.get("ocr_enabled")),
+            ocr_text=payload.get("ocr_text"),
+            ocr_match_mode=payload.get("ocr_match_mode") or "contains",
+            ocr_min_confidence=float(payload.get("ocr_min_confidence") or 0.0),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _save_burst_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return save_fanxiu_burst_frame(
+            title=payload.get("title"),
+            title_match=payload.get("title_match") or "contains",
+            mode=payload.get("mode"),
+            area=payload.get("area"),
+            crop=payload.get("crop"),
+            trim_border=payload.get("trim_border"),
+            rotate=payload.get("rotate"),
+            fixed_width=int(payload.get("fixed_width") or 0),
+            fixed_height=int(payload.get("fixed_height") or 0),
+            current_frame_data_url=payload.get("current_frame_data_url"),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _list_burst_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return list_fanxiu_burst_frames(
+            page=int(payload.get("page") or 1),
+            page_size=int(payload.get("page_size") or 24),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _clear_burst_game_window2_service() -> dict[str, Any]:
+    try:
+        return clear_fanxiu_burst_frames()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _import_burst_game_window2_service(filenames: list[str]) -> dict[str, Any]:
+    try:
+        return import_fanxiu_burst_frames(filenames)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _burst_game_window2_service_image(filename: str) -> FileResponse:
+    try:
+        path = get_fanxiu_burst_frame_path(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type="image/png")
 
 
 def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5951,6 +6523,7 @@ def stream_fanxiu_game_window2(
     rotate: str = Query("0", pattern="^(0|90|180|270|ccw|cw|none)$"),
     fixed_width: int = Query(0, ge=0, le=4096),
     fixed_height: int = Query(0, ge=0, le=4096),
+    adb_screencap: bool = Query(False),
     auto_dismiss_popup: bool = Query(False),
     popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
     session: Session = Depends(get_session),
@@ -5971,6 +6544,12 @@ def stream_fanxiu_game_window2(
         auto_dismiss_popup=auto_dismiss_popup,
         popup_check_interval=popup_check_interval,
     )
+    if adb_screencap:
+        return StreamingResponse(
+            stream_mumu_adb_screencap_mjpeg(fps=fps),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store"},
+        )
     if entry.mode == "local":
         return _stream_game_window2_service(params)
     return _stream_response_from_requests(_open_remote_game_window2_stream(entry, params))
@@ -6141,6 +6720,58 @@ def screencap_fanxiu_game_window2_service(
     return _screencap_game_window2_service()
 
 
+def _game_window3_asset_tree_path(entry_id: str) -> Path:
+    safe_entry_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", entry_id).strip("._") or "default"
+    return get_settings().data_dir / "fanxiu" / "game-window3" / "asset-trees" / f"{safe_entry_id}.json"
+
+
+@status_router.get("/game-window3/asset-tree")
+def get_fanxiu_game_window3_asset_tree(
+    entry_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    path = _game_window3_asset_tree_path(entry_id)
+    if not path.is_file():
+        return {"ok": True, "entry_id": entry_id, "exists": False, "tree": [], "updated_at": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = []
+    tree = payload if isinstance(payload, list) else []
+    return {
+        "ok": True,
+        "entry_id": entry_id,
+        "exists": True,
+        "tree": tree,
+        "updated_at": path.stat().st_mtime,
+    }
+
+
+@status_router.put("/game-window3/asset-tree")
+def save_fanxiu_game_window3_asset_tree(
+    req: FanxiuGameWindow3AssetTreeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    path = _game_window3_asset_tree_path(req.entry_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(req.tree, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return {
+        "ok": True,
+        "entry_id": req.entry_id,
+        "exists": True,
+        "tree": req.tree,
+        "updated_at": path.stat().st_mtime,
+    }
+
+
 @status_router.post("/game-window2/save-frame")
 def save_fanxiu_game_window2_frame(
     req: FanxiuGameWindow2SaveFrameRequest,
@@ -6161,6 +6792,112 @@ def save_fanxiu_game_window2_frame_service(
     _token_device: Any = Depends(verify_api_token),
 ):
     return _save_game_window2_service(_game_window2_save_frame_payload(req))
+
+
+@status_router.post("/game-window2/burst/save")
+def save_fanxiu_game_window2_burst_frame(
+    req: FanxiuGameWindow2BurstFrameRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="连拍缓存暂仅支持本机设备")
+    return _save_burst_game_window2_service(_game_window2_save_frame_payload(req))
+
+
+@status_router.post("/game-window2/service-burst/save")
+def save_fanxiu_game_window2_burst_frame_service(
+    req: FanxiuGameWindow2ServiceBurstFrameRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _save_burst_game_window2_service(_game_window2_save_frame_payload(req))
+
+
+@status_router.post("/game-window2/burst/list")
+def list_fanxiu_game_window2_burst_frames(
+    req: FanxiuGameWindow2BurstListRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="连拍缓存暂仅支持本机设备")
+    return _list_burst_game_window2_service(req.model_dump(exclude_none=True, exclude={"entry_id"}))
+
+
+@status_router.post("/game-window2/service-burst/list")
+def list_fanxiu_game_window2_burst_frames_service(
+    req: FanxiuGameWindow2ServiceBurstListRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _list_burst_game_window2_service(req.model_dump(exclude_none=True))
+
+
+@status_router.get("/game-window2/burst/image")
+def get_fanxiu_game_window2_burst_frame_image(
+    entry_id: str = Query(...),
+    filename: str = Query(...),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, entry_id)
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="连拍缓存暂仅支持本机设备")
+    return _burst_game_window2_service_image(filename)
+
+
+@status_router.get("/game-window2/service-burst/image")
+def get_fanxiu_game_window2_burst_frame_image_service(
+    filename: str = Query(...),
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _burst_game_window2_service_image(filename)
+
+
+@status_router.post("/game-window2/burst/clear")
+def clear_fanxiu_game_window2_burst_frames(
+    req: FanxiuGameWindow2BurstClearRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="连拍缓存暂仅支持本机设备")
+    return _clear_burst_game_window2_service()
+
+
+@status_router.post("/game-window2/service-burst/clear")
+def clear_fanxiu_game_window2_burst_frames_service(
+    _req: FanxiuGameWindow2ServiceBurstClearRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _clear_burst_game_window2_service()
+
+
+@status_router.post("/game-window2/burst/import")
+def import_fanxiu_game_window2_burst_frames(
+    req: FanxiuGameWindow2BurstImportRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="连拍缓存暂仅支持本机设备")
+    return _import_burst_game_window2_service(req.filenames)
+
+
+@status_router.post("/game-window2/service-burst/import")
+def import_fanxiu_game_window2_burst_frames_service(
+    req: FanxiuGameWindow2ServiceBurstImportRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _import_burst_game_window2_service(req.filenames)
 
 
 @status_router.post("/game-window2/match")
@@ -6205,6 +6942,88 @@ def get_fanxiu_game_window2_match_image_service(
     _token_device: Any = Depends(verify_api_token),
 ):
     return _match_game_window2_service_image(filename)
+
+
+@status_router.get("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
+def get_fanxiu_game_window3_stepper_logs(
+    limit: int = Query(500, ge=1, le=5000),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    path = _game_window3_stepper_log_path()
+    return FanxiuGameWindow3StepperLogResponse(
+        entries=_read_game_window3_stepper_log_entries(limit),
+        path=str(path),
+    )
+
+
+@status_router.post("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
+def append_fanxiu_game_window3_stepper_log(
+    req: FanxiuGameWindow3StepperLogAppendRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    path = _game_window3_stepper_log_path()
+    entry = req.entry.model_dump()
+    if not entry.get("ts"):
+        entry["ts"] = datetime.now().isoformat(timespec="seconds")
+    with _GAME_WINDOW3_STEPPER_LOG_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return FanxiuGameWindow3StepperLogResponse(
+        entries=_read_game_window3_stepper_log_entries(500),
+        path=str(path),
+    )
+
+
+@status_router.delete("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
+def clear_fanxiu_game_window3_stepper_logs(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    path = _game_window3_stepper_log_path()
+    with _GAME_WINDOW3_STEPPER_LOG_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    return FanxiuGameWindow3StepperLogResponse(entries=[], path=str(path))
+
+
+@status_router.post("/game-window3/ocr-frame", response_model=FanxiuGameWindow3OcrFrameResponse)
+def recognize_fanxiu_game_window3_ocr_frame(
+    req: FanxiuGameWindow3OcrFrameRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    try:
+        return _recognize_game_window3_ocr_frame(req.image_data_url)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@status_router.post("/game-window3/macro/annotate", response_model=FanxiuGameWindow3MacroAnnotateResponse)
+def annotate_fanxiu_game_window3_macro_shape(
+    req: FanxiuGameWindow3MacroAnnotateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    try:
+        return _annotate_game_macro_shape_with_ai(req, current_user=current_user, session=session)
+    except (AiAppConfigError, OllamaClientError, ValueError, RuntimeError) as exc:
+        return FanxiuGameWindow3MacroAnnotateResponse(
+            ok=False,
+            used_ai=False,
+            box=_clamp_game_macro_box(req.fallback_box.model_dump(), req.fallback_box, req.frame_width, req.frame_height),
+            confidence=0,
+            label="",
+            reason=str(exc),
+            raw="",
+        )
 
 
 @status_router.post("/game-window2/screenshot/list")

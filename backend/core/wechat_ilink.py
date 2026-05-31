@@ -31,6 +31,7 @@ from backend.core.ai_chat import (
     CODEX_CLI_DEFAULT_MODEL,
     chat_with_provider,
 )
+from backend.core.ai_app_config import AI_APP_CODECLAW, AiAppConfigError, resolve_ai_app_runtime_config
 from backend.core.note_semantics import (
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DOCUMENT,
@@ -945,9 +946,15 @@ def _build_codex_bridge_system_prompt(extra_prompt: str | None = None) -> str:
     return "\n".join(sections)
 
 
-def _build_codex_bridge_provider(*, model: str, command: str, session_id: str = "") -> AiProviderConfig:
+def _build_codex_bridge_provider(
+    *,
+    model: str,
+    command: str,
+    session_id: str = "",
+    provider_id: str = "wechat-codex-cli",
+) -> AiProviderConfig:
     return AiProviderConfig(
-        id="wechat-codex-cli",
+        id=provider_id,
         label="Codex CLI",
         kind="codex_cli",
         base_url=command,
@@ -963,6 +970,79 @@ def _build_codex_bridge_provider(*, model: str, command: str, session_id: str = 
         workspace_dir=str(ROOT_DIR),
         session_id=session_id,
     )
+
+
+def _is_codex_bridge_provider_id(value: Any) -> bool:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    return normalized == "codex-cli" or normalized.endswith("-codex-cli")
+
+
+def _resolve_codex_bridge_chat_runtime(
+    account_id: str,
+    *,
+    fallback_model: str,
+    fallback_command: str,
+    session_id: str,
+) -> dict[str, Any]:
+    try:
+        owner_user_id = _load_codex_bridge_owner_user_id(account_id)
+    except WechatIlinkError:
+        owner_user_id = None
+    if owner_user_id is None:
+        provider = _build_codex_bridge_provider(
+            model=fallback_model,
+            command=fallback_command,
+            session_id=session_id,
+        )
+        return {
+            "provider_id": provider.id,
+            "base_url": None,
+            "api_key": None,
+            "model": fallback_model,
+            "extra_providers": (provider,),
+        }
+
+    from sqlmodel import Session
+
+    try:
+        with Session(_get_database_engine()) as session:
+            user = session.get(User, owner_user_id)
+            if user is None or not user.is_active:
+                raise WechatIlinkError("CodeClaw 绑定用户不存在或已停用，请在 CodeYun 页面重新开启 CodeClaw。")
+            runtime = resolve_ai_app_runtime_config(
+                session=session,
+                current_user=user,
+                app_id=AI_APP_CODECLAW,
+            )
+    except AiAppConfigError as exc:
+        raise WechatIlinkError(str(exc)) from exc
+
+    provider_id = str(runtime.get("provider") or "").strip()
+    resolved_model = str(runtime.get("model") or "").strip() or fallback_model
+    extra_providers = tuple(runtime.get("extra_providers") or ())
+    base_url = runtime.get("base_url")
+    if _is_codex_bridge_provider_id(provider_id):
+        provider = _build_codex_bridge_provider(
+            model=resolved_model,
+            command=str(base_url or fallback_command),
+            session_id=session_id,
+            provider_id=provider_id or "codex-cli",
+        )
+        return {
+            "provider_id": provider_id or provider.id,
+            "base_url": None,
+            "api_key": None,
+            "model": resolved_model,
+            "extra_providers": (provider,),
+        }
+
+    return {
+        "provider_id": provider_id,
+        "base_url": base_url,
+        "api_key": runtime.get("api_key"),
+        "model": resolved_model,
+        "extra_providers": extra_providers,
+    }
 
 
 def _message_images(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1307,13 +1387,16 @@ def handle_codex_bridge_message(
     sender_id = str(message.get("from_user_id") or "").strip()
     session_id = _load_codex_bridge_session_id(account_id, sender_id)
     image_payloads = _build_bridge_image_payloads(message)
-    provider = _build_codex_bridge_provider(
-        model=resolved_model,
-        command=resolved_command,
+    runtime = _resolve_codex_bridge_chat_runtime(
+        account_id,
+        fallback_model=resolved_model,
+        fallback_command=resolved_command,
         session_id=session_id,
     )
     response = chat_with_provider(
-        provider_id=provider.id,
+        provider_id=runtime["provider_id"],
+        base_url=runtime["base_url"],
+        api_key=runtime["api_key"],
         messages=[
             {
                 "role": "user",
@@ -1321,10 +1404,10 @@ def handle_codex_bridge_message(
                 "images": image_payloads,
             }
         ],
-        model=resolved_model,
+        model=runtime["model"],
         system_prompt=_build_codex_bridge_system_prompt(system_prompt),
         timeout_seconds=CODEX_BRIDGE_DEFAULT_TIMEOUT_SECONDS,
-        extra_providers=(provider,),
+        extra_providers=runtime["extra_providers"],
     )
     returned_session_id = _normalize_codex_bridge_session_id(response.get("session_id"))
     if returned_session_id:

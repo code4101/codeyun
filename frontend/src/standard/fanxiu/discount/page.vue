@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import currentRuleImageSrc from './currentRuleImage';
 import originalRuleImageSrc from './originalRuleImage';
 interface PromotionRule {
   qualifyingPayment: number;
@@ -43,6 +44,13 @@ const promotionRules: PromotionRule[] = [
   { qualifyingPayment: 198, couponValue: 168, minimumRecharge: 328, limit: 2 },
   { qualifyingPayment: 328, couponValue: 248, minimumRecharge: 648, limit: 2 },
   { qualifyingPayment: 648, couponValue: 368, minimumRecharge: 648, limit: 2 },
+];
+const currentPromotionRules: PromotionRule[] = [
+  { qualifyingPayment: 30, couponValue: 25, minimumRecharge: 68, limit: 2 },
+  { qualifyingPayment: 68, couponValue: 35, minimumRecharge: 68, limit: 2 },
+  { qualifyingPayment: 198, couponValue: 88, minimumRecharge: 128, limit: 2 },
+  { qualifyingPayment: 328, couponValue: 138, minimumRecharge: 198, limit: 2 },
+  { qualifyingPayment: 648, couponValue: 268, minimumRecharge: 328, limit: 2 },
 ];
 
 const monthlyCoupons: MonthlyCoupon[] = [
@@ -94,7 +102,7 @@ const buildPurchasePlans = (rawPlans: RawPlan[]): PurchasePlan[] => {
   return builtPlans;
 };
 
-const eventRawPlans: RawPlan[] = promotionRules.map((rule) => {
+const buildPromotionRawPlans = (rules: PromotionRule[]): RawPlan[] => rules.map((rule) => {
   const couponRechargeFaceValue = getBestRechargeFaceValue(rule.minimumRecharge);
   const couponRechargeActualPayment = couponRechargeFaceValue - rule.couponValue;
   const singleActualPayment = rule.qualifyingPayment + couponRechargeActualPayment;
@@ -124,7 +132,8 @@ const monthlyRawPlans: RawPlan[] = monthlyCoupons.map((coupon) => {
   };
 });
 
-const eventPlans = buildPurchasePlans(eventRawPlans);
+const eventPlans = buildPurchasePlans(buildPromotionRawPlans(promotionRules));
+const currentEventPlans = buildPurchasePlans(buildPromotionRawPlans(currentPromotionRules));
 const monthlyPlans = buildPurchasePlans(monthlyRawPlans);
 const rechargeOptionsText = rechargeOptions.join(' / ');
 </script>
@@ -211,7 +220,7 @@ const rechargeOptionsText = rechargeOptions.join(' / ');
 
       <el-card class="table-card section-card" shadow="never">
         <template #header>
-          <div class="section-title">活动券</div>
+          <div class="section-title">2026年3月31日活动券</div>
         </template>
         <div class="table-scroll">
           <el-table :data="eventPlans" border size="small" class="compact-table">
@@ -278,11 +287,89 @@ const rechargeOptionsText = rechargeOptions.join(' / ');
         </div>
       </el-card>
 
+      <el-card class="table-card section-card" shadow="never">
+        <template #header>
+          <div class="section-title">2026年5月29日活动券</div>
+        </template>
+        <div class="table-scroll">
+          <el-table :data="currentEventPlans" border size="small" class="compact-table">
+            <el-table-column label="优先级" width="78" align="center">
+              <template #default="scope">
+                <span class="priority-badge">{{ scope.row.priority }}</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="建议顺序" min-width="260">
+              <template #default="scope">
+                <div class="action-cell">{{ scope.row.actionLabel }}</div>
+              </template>
+            </el-table-column>
+
+            <el-table-column min-width="118" align="center">
+              <template #header>
+                <div class="stack-header">
+                  <span>单次</span>
+                  <span>实付 / 面额</span>
+                </div>
+              </template>
+              <template #default="scope">
+                <div class="pair-cell">
+                  <strong>{{ scope.row.singleActualPayment }}</strong>
+                  <span>/ {{ scope.row.singleFaceValue }}</span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="单次折扣率" min-width="110" align="center">
+              <template #default="scope">
+                <strong>{{ scope.row.singlePercentText }}</strong>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="次数" min-width="72" align="center">
+              <template #default="scope">
+                {{ scope.row.limit }} 次
+              </template>
+            </el-table-column>
+
+            <el-table-column min-width="126" align="center">
+              <template #header>
+                <div class="stack-header">
+                  <span>累计</span>
+                  <span>实付 / 面额</span>
+                </div>
+              </template>
+              <template #default="scope">
+                <div class="pair-cell">
+                  <strong>{{ scope.row.cumulativeActualPayment }}</strong>
+                  <span>/ {{ scope.row.cumulativeFaceValue }}</span>
+                </div>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="累计折扣率" min-width="110" align="center">
+              <template #default="scope">
+                <strong>{{ scope.row.cumulativePercentText }}</strong>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </el-card>
+
       <el-card class="source-card" shadow="never">
         <template #header>
           <div class="source-title">原始规则图</div>
         </template>
-        <img class="source-image" :src="originalRuleImageSrc" alt="凡修优惠原始规则图" />
+        <div class="source-grid">
+          <figure class="source-figure">
+            <figcaption>2026年3月31日活动</figcaption>
+            <img class="source-image" :src="originalRuleImageSrc" alt="凡修2026年3月31日优惠原始规则图" />
+          </figure>
+          <figure class="source-figure">
+            <figcaption>2026年5月29日活动</figcaption>
+            <img class="source-image" :src="currentRuleImageSrc" alt="凡修2026年5月29日优惠原始规则图" />
+          </figure>
+        </div>
       </el-card>
     </div>
   </div>
@@ -403,10 +490,28 @@ const rechargeOptionsText = rechargeOptions.join(' / ');
   color: #47300d;
 }
 
+.source-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.source-figure {
+  width: min(450px, 100%);
+  margin: 0;
+}
+
+.source-figure figcaption {
+  margin-bottom: 8px;
+  color: #6b5831;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .source-image {
   display: block;
-  width: 59.16%;
-  max-width: 450px;
+  width: 100%;
   margin: 0;
   border-radius: 14px;
   border: 1px solid #ead9b2;

@@ -22,16 +22,21 @@ const props = withDefaults(defineProps<{
   item: LinkedItem
   compact?: boolean
   muted?: boolean
+  plainCount?: boolean
+  disableHover?: boolean
 }>(), {
   compact: false,
   muted: false,
+  plainCount: false,
+  disableHover: false,
 })
 
 const itemId = computed(() => String(props.item?.id ?? '').trim())
 const itemName = computed(() => cleanFanxiuPreview(props.item?.name || props.item?.id || '道具'))
 const itemCount = computed(() => {
   const count = props.item?.count
-  return count === null || count === undefined || count === '' ? '' : ` x${count}`
+  if (count === null || count === undefined || count === '') return ''
+  return props.plainCount ? ` ${count}` : ` x${count}`
 })
 const itemText = computed(() => `${itemName.value}${itemCount.value}`)
 const itemDescription = computed(() => cleanFanxiuDisplayText(props.item?.description))
@@ -52,8 +57,8 @@ function hideBrokenIcon(event: Event) {
     class="linked-item clickable"
     :class="{ compact, muted }"
     :href="itemHref"
-    data-fanxiu-resource-link="1"
-    data-wiki-resource-link="1"
+    :data-fanxiu-resource-link="disableHover ? undefined : '1'"
+    :data-wiki-resource-link="disableHover ? undefined : '1'"
     data-wiki-tab="item"
     :data-wiki-id="itemId"
     :data-wiki-title="itemName"

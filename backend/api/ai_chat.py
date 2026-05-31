@@ -198,6 +198,7 @@ class AiChatSavedConfigsResponse(BaseModel):
 
 class AiChatAppConfig(BaseModel):
     id: str
+    group: str = ""
     label: str = ""
     description: str = ""
     enabled: bool = True
