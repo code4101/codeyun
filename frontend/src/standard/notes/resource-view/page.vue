@@ -45,7 +45,7 @@ type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
 const resourceLinkMenuItems: Array<{ command: ResourceLinkMenuCommand; label: string }> = [
   { command: 'copy', label: '复制' },
-  { command: 'local', label: '在本地打开' },
+  { command: 'current', label: '在当前域名打开' },
   { command: 'public', label: `在 ${CODEYUN_PUBLIC_HOST} 打开` },
 ]
 

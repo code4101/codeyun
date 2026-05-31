@@ -21,6 +21,7 @@ from backend.core.background_task_runner import (
     get_background_task_runner_snapshot,
     get_background_task_spec,
     is_background_task_deleted,
+    is_background_task_visible,
     refresh_background_task_schedule_states,
     reset_background_task_schedule,
     set_background_task_next_run_at,
@@ -396,6 +397,20 @@ class BackgroundTaskRead(BaseModel):
     trigger_warning: str = ""
     active: bool = False
     latest_run: Optional[Dict[str, Any]] = None
+
+
+class BackgroundTaskCatalogItem(BaseModel):
+    key: str
+    title: str
+    category: str
+    description: str = ""
+    schedule_label: str = ""
+    retry_policy: str = ""
+    added: bool = False
+
+
+class BackgroundTaskCatalogResponse(BaseModel):
+    items: List[BackgroundTaskCatalogItem]
 
 
 class BackgroundTaskStatusResponse(BaseModel):
@@ -781,6 +796,34 @@ def get_background_task_status(session: Session = Depends(get_session)):
         next_wake_at=runner.get("next_wake_at"),
         runner_error=runner.get("last_error"),
     )
+
+
+@tasks_router.get("/background-tasks/catalog", response_model=BackgroundTaskCatalogResponse)
+def get_background_task_catalog(session: Session = Depends(get_session)):
+    return BackgroundTaskCatalogResponse(
+        items=[
+            BackgroundTaskCatalogItem(
+                key=spec.key,
+                title=spec.title,
+                category=spec.category,
+                description=spec.description,
+                schedule_label=spec.schedule_label,
+                retry_policy=spec.retry_label,
+                added=is_background_task_visible(spec.key, session),
+            )
+            for spec in BACKGROUND_TASK_SPECS
+        ]
+    )
+
+
+@tasks_router.post("/background-tasks/{task_key}/add", response_model=dict)
+def add_background_task(task_key: str):
+    normalized_key = task_key.strip()
+    if not any(spec.key == normalized_key for spec in BACKGROUND_TASK_SPECS):
+        raise HTTPException(status_code=404, detail="后台任务不存在")
+    set_background_task_deleted(normalized_key, False)
+    refresh_background_task_schedule_states(normalized_key)
+    return {"success": True, "added": True, "task_key": normalized_key}
 
 
 @tasks_router.post("/background-tasks/{task_key}/trigger", response_model=BackgroundTaskTriggerResponse)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -51,6 +52,10 @@ from backend.core.fanxiu_behavior_tree_service import (
     is_fanxiu_behavior_tree_service_enabled,
     start_behavior_tree_service,
     stop_behavior_tree_service,
+)
+from backend.core.fanxiu_capture_runtime import (
+    FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
+    fanxiu_capture_runtime_service,
 )
 from backend.core.runtime_units import (
     command_runtime_group,
@@ -600,6 +605,77 @@ def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None =
     }
 
 
+def _fanxiu_capture_runtime_description(status: dict[str, Any]) -> str:
+    parts = [str(status.get("state") or "stopped")]
+    reasons = status.get("active_reasons") or []
+    if reasons:
+        parts.append(f"consumer {', '.join(str(item) for item in reasons)}")
+    if status.get("current_pcap_path"):
+        parts.append(Path(str(status.get("current_pcap_path"))).name)
+    if status.get("last_error"):
+        parts.append(f"错误 {status.get('last_error')}")
+    return " · ".join(part for part in parts if part)
+
+
+def _serialize_fanxiu_capture_runtime_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(status or fanxiu_capture_runtime_service.status())
+    running = bool(payload.get("running"))
+    state = str(payload.get("state") or ("running" if running else "stopped"))
+    reasons = payload.get("active_reasons") or []
+    active = running or bool(reasons)
+    state_label = {
+        "stopped": "已停止",
+        "waiting_game": "等待游戏",
+        "recovering": "恢复中",
+        "running": "采集中",
+    }.get(state, state)
+    return {
+        "id": f"builtin:{FANXIU_CAPTURE_RUNTIME_SERVICE_KEY}",
+        "key": FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
+        "kind": "service",
+        "source": "builtin",
+        "group_id": "service:game",
+        "group_title": "游戏服务",
+        "title": "凡修抓包运行时",
+        "description": _fanxiu_capture_runtime_description(payload),
+        "command": "adb tcpdump -> fanxiu/tcp-flow/live-captures",
+        "cwd": "",
+        "schedule": "",
+        "schedule_policy": None,
+        "schedule_label": "",
+        "next_run_at": None,
+        "timeout": None,
+        "order": 0,
+        "enabled": True,
+        "active": active,
+        "status": {
+            "running": running,
+            "state": state,
+            "state_label": state_label,
+            "game_running": bool(payload.get("game_running")),
+            "adb_connected": bool(payload.get("adb_connected")),
+            "root_ready": bool(payload.get("root_ready")),
+            "tcpdump_ready": bool(payload.get("tcpdump_ready")),
+            "active_reasons": reasons,
+            "current_pcap_path": payload.get("current_pcap_path") or "",
+            "current_pcap_size": payload.get("current_pcap_size") or 0,
+            "started_at": payload.get("started_at") or "",
+            "last_error": payload.get("last_error") or "",
+            "last_recover_at": payload.get("last_recover_at") or "",
+            "controllable": True,
+        },
+        "actions": ["trigger", "stop", "logs"],
+        "raw": payload,
+        "schedule_kind": "manual",
+        "timeout_policy": "none",
+        "timeout_seconds": None,
+        "concurrency_scope": "unit",
+        "concurrency_key": FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
+        "overlap_policy": "replace",
+        "queue_key": None,
+    }
+
+
 def _game_window_service_description(status: dict[str, Any]) -> str:
     parts = [str(status.get("url") or "")]
     target_title = str(status.get("target_title") or "")
@@ -670,6 +746,13 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return build_attendance_behavior_tree_log_lines()
     if item.get("key") == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         return build_behavior_tree_log_lines()
+    if item.get("key") == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
+        lines = [
+            f"名称：{item.get('title') or item.get('key')}",
+            f"状态：{(item.get('status') or {}).get('state_label') or '-'}",
+        ]
+        lines.extend(fanxiu_capture_runtime_service.log_lines())
+        return lines
     if item.get("key") == GAME_WINDOW_SERVICE_KEY:
         return _build_game_window_service_log_lines(item)
     if item.get("key") == FUTU_OPEND_SERVICE_KEY:
@@ -898,6 +981,7 @@ def _collect_builtin_services() -> dict[str, Any]:
         items.append(_serialize_attendance_behavior_tree_service_item())
     if is_fanxiu_behavior_tree_service_enabled():
         items.append(_serialize_fanxiu_behavior_tree_service_item())
+    items.append(_serialize_fanxiu_capture_runtime_service_item())
     items.append(_serialize_game_window_service_item())
     items.append(_serialize_futu_opend_service_item())
     return {
@@ -1067,6 +1151,19 @@ def trigger_builtin_runtime_job(task_key: str, session: Session) -> dict[str, An
     return result.model_dump() if hasattr(result, "model_dump") else dict(result)
 
 
+def list_builtin_runtime_job_catalog(session: Session) -> dict[str, Any]:
+    from backend.api.admin import get_background_task_catalog
+
+    result = get_background_task_catalog(session=session)
+    return result.model_dump() if hasattr(result, "model_dump") else dict(result)
+
+
+def add_builtin_runtime_job(task_key: str) -> dict[str, Any]:
+    from backend.api.admin import add_background_task
+
+    return add_background_task(task_key)
+
+
 def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, Any]:
     normalized_key = str(task_key or "").strip()
     if normalized_key == BUILTIN_OCR_SERVICE_KEY:
@@ -1084,6 +1181,8 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             return start_game_window_service(replace_existing=False)
         except GameWindowServiceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if normalized_key == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
+        return fanxiu_capture_runtime_service.ensure_running("runtime-manual")
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")
@@ -1133,6 +1232,8 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == GAME_WINDOW_SERVICE_KEY:
         return stop_game_window_service()
+    if normalized_key == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
+        return fanxiu_capture_runtime_service.force_stop("runtime-manual")
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")

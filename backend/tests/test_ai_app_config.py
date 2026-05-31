@@ -7,6 +7,7 @@ from backend.core.ai_app_config import (
     AI_APP_CODEX_DIARY,
     AI_APP_CODEX_DIARY_DEFAULT_MODEL,
     AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
+    AI_APP_CODEX_DAILY_SUMMARY,
     AI_APP_GIT_COMMIT,
     AI_APP_GIT_COMMIT_DEFAULT_MODEL,
     AI_APP_GIT_COMMIT_DEFAULT_PROVIDER,
@@ -47,7 +48,7 @@ def test_ai_git_commit_config_reads_legacy_setting_when_app_config_missing():
         session.add(
             AppSetting(
                 key=build_legacy_ai_git_commit_config_setting_key(user.id),
-                value={"provider_id": "deepseek", "model": "deepseek-v4-flash"},
+                value={"provider_id": "codex-cli", "model": "gpt-5.3-codex-spark"},
                 updated_at=123.0,
             )
         )
@@ -56,15 +57,15 @@ def test_ai_git_commit_config_reads_legacy_setting_when_app_config_missing():
         app_config = get_user_ai_app_config(session, user.id, AI_APP_GIT_COMMIT)
         compat_config = get_user_ai_git_commit_config(session, user.id)
 
-        assert app_config["provider"] == "deepseek"
-        assert app_config["model"] == "deepseek-v4-flash"
+        assert app_config["provider"] == "codex-cli"
+        assert app_config["model"] == "gpt-5.3-codex-spark"
         assert compat_config == {
-            "provider_id": "deepseek",
-            "model": "deepseek-v4-flash",
+            "provider_id": "codex-cli",
+            "model": "gpt-5.3-codex-spark",
         }
 
 
-def test_ai_git_commit_default_uses_deepseek_flash():
+def test_ai_git_commit_default_uses_codex_spark():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -83,7 +84,7 @@ def test_ai_git_commit_default_uses_deepseek_flash():
         assert runtime["model"] == AI_APP_GIT_COMMIT_DEFAULT_MODEL
 
 
-def test_ai_git_commit_codex_cli_saved_config_is_coerced_to_deepseek_flash():
+def test_ai_git_commit_deepseek_flash_saved_config_is_coerced_to_codex_spark():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -91,8 +92,8 @@ def test_ai_git_commit_codex_cli_saved_config_is_coerced_to_deepseek_flash():
             session,
             user.id,
             AI_APP_GIT_COMMIT,
-            provider="custom-codex-cli",
-            model="gpt-5.5",
+            provider="deepseek",
+            model="deepseek-v4-flash",
         )
 
         app_config = get_user_ai_app_config(session, user.id, AI_APP_GIT_COMMIT)
@@ -166,12 +167,12 @@ def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():
             preferred_models=["deepseek-preferred"],
             api_key="sk-deepseek-plaintext-value",
         )
-        save_user_ai_app_config(session, user.id, AI_APP_GIT_COMMIT, provider="deepseek", model="")
+        save_user_ai_app_config(session, user.id, AI_APP_CODEX_DAILY_SUMMARY, provider="deepseek", model="")
 
         runtime = resolve_ai_app_runtime_config(
             session=session,
             current_user=user,
-            app_id=AI_APP_GIT_COMMIT,
+            app_id=AI_APP_CODEX_DAILY_SUMMARY,
         )
 
         assert runtime["provider"] == "deepseek"
@@ -197,7 +198,7 @@ def test_codex_diary_default_uses_deepseek_pro():
         assert runtime["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
 
 
-def test_codex_diary_codex_cli_saved_config_is_coerced_to_deepseek_pro():
+def test_codex_diary_manual_provider_selection_is_preserved():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -216,7 +217,7 @@ def test_codex_diary_codex_cli_saved_config_is_coerced_to_deepseek_pro():
             app_id=AI_APP_CODEX_DIARY,
         )
 
-        assert app_config["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
-        assert app_config["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
-        assert runtime["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
-        assert runtime["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
+        assert app_config["provider"] == "custom-codex-cli"
+        assert app_config["model"] == "gpt-5.5"
+        assert runtime["provider"] == "custom-codex-cli"
+        assert runtime["model"] == "gpt-5.5"

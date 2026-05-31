@@ -9,8 +9,10 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import {
+  addRuntimeJob,
   configureRuntimeJobSchedule,
   deleteRuntimeJob,
+  fetchRuntimeJobCatalog,
   fetchRuntimeStatus,
   stopRuntimeItem,
   triggerRuntimeItem,
@@ -18,6 +20,7 @@ import {
   type SchedulePolicy,
   type RuntimeKind,
   type RuntimeItem,
+  type RuntimeJobCatalogItem,
   type RuntimeStatusResponse,
 } from '@/api/runtime';
 import Sortable from 'sortablejs';
@@ -59,6 +62,10 @@ const isLoopbackHost = (host: string) => {
 };
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
+const jobCatalogDialogVisible = ref(false);
+const jobCatalogLoading = ref(false);
+const jobCatalogItems = ref<RuntimeJobCatalogItem[]>([]);
+const addJobTypeLoadingKey = ref('');
 const scheduleDialogVisible = ref(false);
 const scheduleTarget = ref<RuntimeItem | null>(null);
 const deviceDialogVisible = ref(false);
@@ -850,6 +857,47 @@ const openCreateDialog = (kind: RuntimeKind) => {
     dialogVisible.value = true;
 };
 
+const openJobCatalogDialog = async () => {
+    if (!currentDeviceId.value) {
+        ElMessage.warning('请先选择一个设备');
+        return;
+    }
+    jobCatalogDialogVisible.value = true;
+    jobCatalogLoading.value = true;
+    try {
+        const payload = await fetchRuntimeJobCatalog(currentDeviceId.value);
+        jobCatalogItems.value = payload.items || [];
+    } catch (err: any) {
+        ElMessage.error(err.response?.data?.detail || '读取作业类型失败');
+    } finally {
+        jobCatalogLoading.value = false;
+    }
+};
+
+const handleAddBuiltinJobType = async (item: RuntimeJobCatalogItem) => {
+    if (!currentDeviceId.value || item.added || addJobTypeLoadingKey.value) return;
+    addJobTypeLoadingKey.value = item.key;
+    try {
+        await addRuntimeJob(currentDeviceId.value, item.key);
+        ElMessage.success('已加入作业清单');
+        await Promise.all([
+          fetchTasks(currentDeviceId.value, false),
+          fetchRuntimeJobCatalog(currentDeviceId.value).then(payload => {
+            jobCatalogItems.value = payload.items || [];
+          }),
+        ]);
+    } catch (err: any) {
+        ElMessage.error(err.response?.data?.detail || '添加失败');
+    } finally {
+        addJobTypeLoadingKey.value = '';
+    }
+};
+
+const openCustomJobDialog = () => {
+    jobCatalogDialogVisible.value = false;
+    openCreateDialog('job');
+};
+
 const openEditDialog = (item: RuntimeItem) => {
     if (item.source !== 'command') return;
 
@@ -1509,7 +1557,7 @@ onUnmounted(() => {
           text
           title="新建作业"
           aria-label="新建作业"
-          @click="openCreateDialog('job')"
+          @click="openJobCatalogDialog"
         />
       </div>
       <el-table
@@ -1641,6 +1689,42 @@ onUnmounted(() => {
     </div>
 
     <!-- Create Runtime Command Dialog -->
+    <el-dialog v-model="jobCatalogDialogVisible" title="添加作业" width="640px">
+      <div v-loading="jobCatalogLoading" class="job-catalog">
+        <div class="job-catalog-list">
+          <div
+            v-for="item in jobCatalogItems"
+            :key="item.key"
+            class="job-catalog-row"
+          >
+            <div class="job-catalog-main">
+              <div class="job-catalog-title">
+                <strong>{{ item.title }}</strong>
+                <span>{{ item.category }}</span>
+              </div>
+              <p :title="item.description">{{ item.description }}</p>
+              <small>{{ item.schedule_label || '手动触发' }}</small>
+            </div>
+            <el-button
+              size="small"
+              :disabled="item.added"
+              :loading="addJobTypeLoadingKey === item.key"
+              @click="handleAddBuiltinJobType(item)"
+            >
+              {{ item.added ? '已添加' : '添加' }}
+            </el-button>
+          </div>
+        </div>
+        <el-empty v-if="!jobCatalogLoading && !jobCatalogItems.length" description="暂无可添加作业类型" />
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="jobCatalogDialogVisible = false">关闭</el-button>
+          <el-button @click="openCustomJobDialog">自定义命令</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="dialogVisible" :title="`${isEditingTask ? '配置' : '新建'}${runtimeKindLabel(form.runtime_kind)}`" width="560px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="名称" required>
@@ -2082,6 +2166,62 @@ onUnmounted(() => {
 
 .context-menu-item.danger {
   color: #f56c6c;
+}
+
+.job-catalog {
+  min-height: 180px;
+}
+
+.job-catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.job-catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.job-catalog-row:first-child {
+  padding-top: 0;
+}
+
+.job-catalog-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-catalog-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.3;
+}
+
+.job-catalog-title strong {
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.job-catalog-title span {
+  color: #909399;
+  font-size: 12px;
+}
+
+.job-catalog-main p {
+  margin: 4px 0 2px;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.job-catalog-main small {
+  color: #909399;
+  font-size: 12px;
 }
 
 .device-tabs {

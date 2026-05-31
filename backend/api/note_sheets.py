@@ -24,6 +24,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlmodel import Session, delete, func, select
 
+from backend.core.ai_app_config import (
+    AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION,
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+    resolve_ai_app_runtime_config,
+)
 from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.auth import (
     extract_api_token,
@@ -72,6 +77,8 @@ MAX_NOTE_SHEET_PAGE_SIZE = 1000
 NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "deepseek"
 NOTE_SHEET_EXCEL_IMPORT_MODEL = "deepseek-v4-pro"
 NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
+NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS = 2
+NOTE_SHEET_EXCEL_IMPORT_RETRY_DELAY_SECONDS = 1.0
 NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS = 12
 NOTE_SHEET_EXCEL_IMPORT_MAX_ROWS_PER_SHEET = 600
@@ -87,7 +94,12 @@ NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = "registration_composite_u
 NOTE_SHEET_CELL_ACTION_ATTENDANCE_EXPORT = "attendance_export"
 NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = "clockin_link_detect"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
-NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
+NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]
+NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS = ["已返款"]
+NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = [
+    *NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
+    *NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
+]
 NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
 NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
 NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
@@ -120,11 +132,11 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
 )
 NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID = os.environ.get(
     "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_PROVIDER_ID",
-    "deepseek",
+    "codex-cli",
 )
 NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL = os.environ.get(
     "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_MODEL",
-    "deepseek-v4-flash",
+    "gpt-5.3-codex-spark",
 )
 NOTE_SHEET_CLOCKIN_LINK_DETECTION_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_TIMEOUT_SECONDS",
@@ -523,8 +535,8 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
 
 class NoteSheetClockinLinkDetectionRunRequest(BaseModel):
     force_restart: bool = False
-    provider_id: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID
-    model: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL
+    provider_id: str = ""
+    model: str = ""
 
 
 class NoteSheetClockinLinkDetectionRunResponse(BaseModel):
@@ -794,13 +806,113 @@ def _create_default_sheet_document() -> dict[str, Any]:
 def _normalize_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return _create_default_sheet_document()
-    return dict(value)
+    return _materialize_row_cell_links(dict(value))
 
 
 def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return _create_default_sheet_document()
-    return dict(value)
+    return _materialize_row_cell_links(dict(value))
+
+
+def _inline_cell_link_url(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    link = value.get("link")
+    if not isinstance(link, dict):
+        return ""
+    return str(link.get("url") or "").strip()
+
+
+def _with_inline_cell_link(value: Any, url: str) -> Any:
+    if not url:
+        return value
+    if isinstance(value, dict):
+        next_cell = dict(value)
+        if "value" not in next_cell:
+            next_cell["value"] = ""
+        next_cell["link"] = {"url": url}
+        return next_cell
+    return {"value": "" if value is None else value, "link": {"url": url}}
+
+
+def _legacy_cell_meta_link_url(document_json: dict[str, Any], document_row: int, data_row: int, column_index: int) -> str:
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict):
+        return ""
+    for candidate_row in (document_row, data_row):
+        if candidate_row == data_row and data_row < document_row:
+            continue
+        entry = cell_meta.get(f"{candidate_row}:{column_index}")
+        if isinstance(entry, dict):
+            url = _inline_cell_link_url(entry)
+            if url:
+                return url
+    return ""
+
+
+def _legacy_entity_cell_link_url(document_json: dict[str, Any], document_row: int, column_index: int) -> str:
+    entity_rows = document_json.get("entity_rows")
+    entity_columns = document_json.get("entity_columns")
+    entity_cells = document_json.get("entity_cells")
+    if not isinstance(entity_rows, list) or not isinstance(entity_columns, list) or not isinstance(entity_cells, dict):
+        return ""
+    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
+        return ""
+    entity_row = entity_rows[document_row]
+    entity_column = entity_columns[column_index]
+    row_id = str(entity_row.get("id") or "").strip() if isinstance(entity_row, dict) else ""
+    column_id = str(entity_column.get("id") or "").strip() if isinstance(entity_column, dict) else ""
+    if not row_id or not column_id:
+        return ""
+    row_cells = entity_cells.get(row_id)
+    if not isinstance(row_cells, dict):
+        return ""
+    return _inline_cell_link_url(row_cells.get(column_id))
+
+
+def _materialize_row_cell_links(document_json: dict[str, Any]) -> dict[str, Any]:
+    rows = document_json.get("rows")
+    columns = document_json.get("columns")
+    if not isinstance(rows, list) or not isinstance(columns, list):
+        return document_json
+
+    try:
+        data_start_row = int(document_json.get("data_start_row") or 0)
+    except (TypeError, ValueError):
+        data_start_row = 0
+
+    changed = False
+    next_rows: list[Any] = []
+    for data_row, row in enumerate(rows):
+        if not isinstance(row, list):
+            next_rows.append(row)
+            continue
+
+        next_row = list(row)
+        for column_index in range(min(len(columns), len(next_row))):
+            cell = next_row[column_index]
+            if _inline_cell_link_url(cell):
+                continue
+            document_row = data_start_row + data_row
+            url = (
+                _legacy_entity_cell_link_url(document_json, document_row, column_index)
+                or _legacy_cell_meta_link_url(document_json, document_row, data_row, column_index)
+            )
+            if not url:
+                continue
+            next_row[column_index] = _with_inline_cell_link(cell, url)
+            changed = True
+        next_rows.append(next_row)
+
+    if not changed:
+        return document_json
+    next_document = dict(document_json)
+    next_document["rows"] = next_rows
+    grid_rows = next_document.get("grid_rows")
+    if isinstance(grid_rows, list):
+        next_document["grid_rows"] = [*grid_rows[:data_start_row], *next_rows]
+    return next_document
 
 
 def _is_defined_name_valid(name: str) -> bool:
@@ -1293,7 +1405,7 @@ def _slice_paged_document_row_metadata(
 
 
 def _normalize_filter_text(value: Any) -> str:
-    return "" if value is None else str(value).strip()
+    return _normalize_sheet_text(value)
 
 
 def _normalize_filter_search_text(value: Any) -> str:
@@ -2219,6 +2331,7 @@ def _merge_paged_document(
 
 
 def _normalize_restricted_cell_value(value: Any) -> str:
+    value = _extract_cell_value(value)
     return "" if value is None else str(value)
 
 
@@ -2301,11 +2414,12 @@ def _extract_sort_cell_text(row: Any, column_index: int, columns: list[Any]) -> 
         raw_value = row.get(column_key, "")
     else:
         raw_value = ""
+    raw_value = _extract_cell_value(raw_value)
     return "" if raw_value is None else str(raw_value).strip()
 
 
 def _normalize_column_option_value(value: Any) -> str:
-    return "" if value is None else str(value).strip()
+    return _normalize_sheet_text(value)
 
 
 def _get_column_option_label(value: str) -> str:
@@ -2353,14 +2467,15 @@ def _build_note_sheet_column_options_response(
 
 def _extract_row_cell_value(row: Any, column_index: int, columns: list[Any]) -> Any:
     if isinstance(row, list):
-        return row[column_index] if column_index < len(row) else ""
+        return _extract_cell_value(row[column_index]) if column_index < len(row) else ""
     if isinstance(row, dict):
         column_key = str(columns[column_index]) if column_index < len(columns) else ""
-        return row.get(column_key, "")
+        return _extract_cell_value(row.get(column_key, ""))
     return ""
 
 
 def _is_formula_expression(value: Any) -> bool:
+    value = _extract_cell_value(value)
     return isinstance(value, str) and value.startswith("=")
 
 
@@ -2401,7 +2516,7 @@ def _normalize_two_digit_year(value: int) -> int:
 
 
 def _parse_compact_date_serial(value: Any, pattern: str = "yyyymmdd") -> float | None:
-    text = "" if value is None else str(value).strip()
+    text = _normalize_sheet_text(value)
     normalized_pattern = re.sub(r"[^ymd]", "", str(pattern or "yyyymmdd").lower()) or "yyyymmdd"
     if normalized_pattern not in {"yyyymmdd", "yymmdd"}:
         return None
@@ -2423,6 +2538,7 @@ def _parse_compact_date_serial(value: Any, pattern: str = "yyyymmdd") -> float |
 
 
 def _parse_date_sort_value(value: Any) -> float | None:
+    value = _extract_cell_value(value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
 
@@ -2721,7 +2837,12 @@ def _shift_formula_cell_references(formula: str, *, row_delta: int = 0, column_d
 def _shift_formula_value_references(value: Any, *, row_delta: int = 0, column_delta: int = 0) -> Any:
     if not _is_formula_expression(value):
         return value
-    return _shift_formula_cell_references(str(value), row_delta=row_delta, column_delta=column_delta)
+    shifted_value = _shift_formula_cell_references(str(_extract_cell_value(value)), row_delta=row_delta, column_delta=column_delta)
+    if isinstance(value, dict):
+        next_cell = dict(value)
+        next_cell["value"] = shifted_value
+        return next_cell
+    return shifted_value
 
 
 def _normalize_sheet_row(row: Any, column_count: int) -> list[Any]:
@@ -2732,7 +2853,14 @@ def _normalize_sheet_row(row: Any, column_count: int) -> list[Any]:
     return [""] * column_count
 
 
+def _extract_cell_value(value: Any) -> Any:
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
 def _normalize_sheet_text(value: Any) -> str:
+    value = _extract_cell_value(value)
     return "" if value is None else str(value).strip()
 
 
@@ -3483,6 +3611,20 @@ def _find_required_registration_column_indexes(columns: list[str], required_colu
     return indexes
 
 
+def _find_registration_column_indexes(
+    columns: list[str],
+    required_columns: list[str],
+    *,
+    optional_columns: list[str] | tuple[str, ...] = (),
+) -> dict[str, int]:
+    indexes = _find_required_registration_column_indexes(columns, required_columns)
+    for header in optional_columns:
+        index = _find_column_index(columns, header)
+        if index is not None:
+            indexes[header] = index
+    return indexes
+
+
 def _normalize_registration_order_lookup_mode() -> str:
     value = str(NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE or "").strip().lower()
     return value if value in {"hybrid", "db_only", "browser_only"} else "db_only"
@@ -4039,12 +4181,12 @@ def _apply_clockin_link_detection_results(
     }
 
 
-def _order_info_has_fill_values(order_info: Any) -> bool:
+def _order_info_has_fill_values(order_info: Any, fill_columns: list[str] | None = None) -> bool:
     if not isinstance(order_info, dict):
         return False
     return any(
         _normalize_sheet_text(order_info.get(column))
-        for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:]
+        for column in (fill_columns or NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:])
     )
 
 
@@ -4068,6 +4210,8 @@ def _apply_registration_order_info_to_row(
     order_info: dict[str, Any],
 ) -> None:
     for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS:
+        if column not in indexes:
+            continue
         value = order_info.get(column) if isinstance(order_info, dict) else ""
         if value is not None and value != "":
             formatted_value = _format_registration_match_cell(value)
@@ -4076,6 +4220,12 @@ def _apply_registration_order_info_to_row(
             row[indexes[column]] = formatted_value
     if not _normalize_sheet_text(row[indexes["订单日期"]]):
         row[indexes["订单日期"]] = _derive_registration_order_month(row[indexes["微信支付订单号"]])
+
+
+def _clear_registration_order_optional_refund_value(row: list[Any], indexes: dict[str, int]) -> None:
+    refunded_index = indexes.get("已返款")
+    if refunded_index is not None:
+        row[refunded_index] = ""
 
 
 def _update_registration_order_match_document(
@@ -4087,7 +4237,11 @@ def _update_registration_order_match_document(
 ) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
-    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_ORDER_COLUMNS)
+    indexes = _find_registration_column_indexes(
+        columns,
+        NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
+        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
+    )
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     if not rows:
         return normalized, _build_registration_match_summary()
@@ -4108,7 +4262,7 @@ def _update_registration_order_match_document(
     already_complete_count = 0
     next_rows: list[list[Any]] = []
     browser_candidates: list[dict[str, Any]] = []
-    fill_columns = NOTE_SHEET_REGISTRATION_ORDER_COLUMNS
+    fill_columns = [column for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS if column in indexes]
     completeness_columns = fill_columns[1:]
 
     for source_row in rows:
@@ -4149,7 +4303,7 @@ def _update_registration_order_match_document(
             )
         except Exception as exc:
             row[indexes["订单金额"]] = str(exc)
-            row[indexes["已返款"]] = ""
+            _clear_registration_order_optional_refund_value(row, indexes)
             error_count += 1
             next_rows.append(row)
             if row != before:
@@ -4170,7 +4324,7 @@ def _update_registration_order_match_document(
             continue
         if isinstance(order_info, dict) and "error" in order_info:
             row[indexes["订单金额"]] = _format_registration_match_cell(order_info.get("error") or "订单不存在")
-            row[indexes["已返款"]] = ""
+            _clear_registration_order_optional_refund_value(row, indexes)
             error_count += 1
             next_rows.append(row)
             if row != before:
@@ -4196,7 +4350,7 @@ def _update_registration_order_match_document(
                 row = next_rows[int(candidate["row_position"])]
                 before = list(row)
                 row[indexes["订单金额"]] = error_text
-                row[indexes["已返款"]] = ""
+                _clear_registration_order_optional_refund_value(row, indexes)
                 error_count += 1
                 if row != before:
                     updated_count += 1
@@ -4206,12 +4360,12 @@ def _update_registration_order_match_document(
                 before = list(row)
                 if isinstance(order_info, dict) and _normalize_sheet_text(order_info.get("error")):
                     row[indexes["订单金额"]] = _normalize_sheet_text(order_info.get("error"))
-                    row[indexes["已返款"]] = ""
+                    _clear_registration_order_optional_refund_value(row, indexes)
                     error_count += 1
                     if row != before:
                         updated_count += 1
                     continue
-                if not _order_info_has_fill_values(order_info):
+                if not _order_info_has_fill_values(order_info, completeness_columns):
                     skipped_count += 1
                     unmatched_count += 1
                     warning_count += 1
@@ -4238,10 +4392,18 @@ def _update_registration_order_match_document(
 def _count_registration_order_match_targets(document_json: dict[str, Any]) -> int:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
-    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_ORDER_COLUMNS)
+    indexes = _find_registration_column_indexes(
+        columns,
+        NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
+        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
+    )
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     count = 0
-    completeness_columns = NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:]
+    completeness_columns = [
+        column
+        for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:]
+        if column in indexes
+    ]
     for row in rows:
         order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
         if len(order_id) < 19:
@@ -6537,6 +6699,7 @@ def _build_note_sheet_excel_import_prompt(
     user_instruction = instruction.strip() or "无补充说明。"
     return "\n\n".join([
         "请把 Excel 工作簿标准化为目标 sheet 的数据行。",
+        "注意：Excel 文件名只作为来源信息，可能不准确；课程、日期和字段判断必须以用户补充说明、目标 sheet 结构、工作表表头和数据内容为准。",
         "目标 sheet 结构：",
         json.dumps(target_context, ensure_ascii=False, indent=2),
         "用户补充说明：",
@@ -6657,6 +6820,153 @@ def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[
     return normalized_rows, extra_columns
 
 
+NOTE_SHEET_EXCEL_IMPORT_DIRECT_ALIASES: dict[str, tuple[str, ...]] = {
+    "姓名": ("姓名", "真实姓名", "真实姓名（必填）", "提交者", "提交者（自动）"),
+    "微信昵称": ("微信昵称", "昵称", "微信名"),
+    "手机号": ("手机号", "手机", "手机号码", "联系电话"),
+    "微信支付订单号": ("微信支付订单号", "交易单号", "订单号", "支付订单号"),
+    "序号": ("序号", "编号"),
+    "提交时间": ("提交时间", "提交日期", "报名时间"),
+    "备注": ("备注", "说明"),
+}
+
+
+def _normalize_excel_import_header_key(value: Any) -> str:
+    header = _normalize_excel_import_extra_column_header(value)
+    header = re.sub(r"（\s*(?:必填|自动)\s*）|\(\s*(?:必填|自动)\s*\)", "", header)
+    return _normalize_import_record_key(header)
+
+
+def _get_direct_import_target_alias_keys(column: str) -> tuple[str, ...]:
+    aliases = (column, *NOTE_SHEET_EXCEL_IMPORT_DIRECT_ALIASES.get(column, ()))
+    keys: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        key = _normalize_excel_import_header_key(alias)
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return tuple(keys)
+
+
+def _try_direct_excel_import_by_header(
+    *,
+    workbook_payload: dict[str, Any],
+    columns: list[str],
+) -> tuple[list[list[Any]], list[str], list[str], list[str]] | None:
+    target_alias_keys = {
+        key
+        for column in columns
+        for key in _get_direct_import_target_alias_keys(column)
+    }
+    sheets = workbook_payload.get("sheets")
+    if not isinstance(sheets, list):
+        return None
+
+    for sheet in sheets:
+        sheet_rows = sheet.get("rows") if isinstance(sheet, dict) else None
+        if not isinstance(sheet_rows, list) or not sheet_rows:
+            continue
+
+        header_row_index = -1
+        header_values: list[Any] = []
+        best_score = 0
+        for index, raw_row in enumerate(sheet_rows[:8]):
+            values = raw_row.get("values") if isinstance(raw_row, dict) else None
+            if not isinstance(values, list):
+                continue
+            score = sum(
+                1
+                for value in values
+                if _normalize_excel_import_header_key(value) in target_alias_keys
+            )
+            if score > best_score:
+                best_score = score
+                header_row_index = index
+                header_values = values
+
+        if header_row_index < 0 or best_score < 2:
+            continue
+
+        source_key_to_index: dict[str, int] = {}
+        source_headers: list[str] = []
+        for index, value in enumerate(header_values):
+            header = _normalize_excel_import_extra_column_header(value)
+            source_headers.append(header)
+            key = _normalize_excel_import_header_key(header)
+            if key and key not in source_key_to_index:
+                source_key_to_index[key] = index
+
+        target_to_source_index: dict[str, int] = {}
+        used_source_indexes: set[int] = set()
+        for column in columns:
+            for key in _get_direct_import_target_alias_keys(column):
+                source_index = source_key_to_index.get(key)
+                if source_index is None:
+                    continue
+                target_to_source_index[column] = source_index
+                used_source_indexes.add(source_index)
+                break
+
+        if len(target_to_source_index) < 2:
+            continue
+
+        data_rows = sheet_rows[header_row_index + 1:]
+        source_has_value: dict[int, bool] = {}
+        for raw_row in data_rows:
+            values = raw_row.get("values") if isinstance(raw_row, dict) else None
+            if not isinstance(values, list):
+                continue
+            for index, value in enumerate(values):
+                if _normalize_sheet_text(value):
+                    source_has_value[index] = True
+
+        extra_columns: list[str] = []
+        used_header_keys = {_normalize_import_record_key(column) for column in columns}
+        for index, header in enumerate(source_headers):
+            if index in used_source_indexes or not header or not source_has_value.get(index):
+                continue
+            _append_excel_import_extra_column_header(extra_columns, used_header_keys, header)
+
+        direct_rows: list[dict[str, Any]] = []
+        extra_column_source_indexes = {
+            header: index
+            for index, header in enumerate(source_headers)
+            if header in extra_columns
+        }
+        for raw_row in data_rows:
+            values = raw_row.get("values") if isinstance(raw_row, dict) else None
+            if not isinstance(values, list) or not any(_normalize_sheet_text(value) for value in values):
+                continue
+            row_payload: dict[str, Any] = {}
+            for column, source_index in target_to_source_index.items():
+                row_payload[column] = values[source_index] if source_index < len(values) else ""
+            for header, source_index in extra_column_source_indexes.items():
+                row_payload[header] = values[source_index] if source_index < len(values) else ""
+            if any(_normalize_sheet_text(value) for value in row_payload.values()):
+                direct_rows.append(row_payload)
+
+        if not direct_rows:
+            continue
+
+        import_rows, normalized_extra_columns = _coerce_note_sheet_excel_import_rows(
+            {
+                "extra_columns": extra_columns,
+                "rows": direct_rows,
+            },
+            columns,
+        )
+        sheet_name = _normalize_sheet_text(sheet.get("name")) if isinstance(sheet, dict) else ""
+        return (
+            import_rows,
+            normalized_extra_columns,
+            ["AI 导入失败，已按 Excel 表头直接映射导入"],
+            [f"使用工作表“{sheet_name or '未命名'}”第 {header_row_index + 1} 行作为表头"],
+        )
+
+    return None
+
+
 def _normalize_import_message_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -6668,6 +6978,8 @@ def _run_note_sheet_excel_import_deepseek(
     document_json: dict[str, Any],
     workbook_payload: dict[str, Any],
     instruction: str,
+    session: Session,
+    current_user: User,
     action_document_row: int | None = None,
     action_column: int | None = None,
 ) -> tuple[list[list[Any]], list[str], list[str], list[str]]:
@@ -6679,25 +6991,56 @@ def _run_note_sheet_excel_import_deepseek(
         action_document_row=action_document_row,
         action_column=action_column,
     )
-    try:
-        response = chat_with_provider(
-            provider_id=NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID,
-            model=os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL", NOTE_SHEET_EXCEL_IMPORT_MODEL),
-            messages=[{"role": "user", "content": prompt}],
-            system_prompt=NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT,
-            response_format="json",
-            timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
-        )
-    except OllamaClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+    )
+    attempts = max(1, int(os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS") or NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS))
+    provider_id = str(runtime.get("provider") or NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID)
+    model = os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL") or runtime.get("model") or NOTE_SHEET_EXCEL_IMPORT_MODEL
+    last_error: HTTPException | None = None
 
-    payload = _parse_note_sheet_excel_import_json(str(response.get("content") or ""))
-    import_rows, extra_columns = _coerce_note_sheet_excel_import_rows(payload, columns)
-    return (
-        import_rows,
-        extra_columns,
-        _normalize_import_message_list(payload.get("warnings")),
-        _normalize_import_message_list(payload.get("mapping_notes")),
+    for attempt in range(1, attempts + 1):
+        retry_suffix = ""
+        if attempt > 1 and last_error is not None:
+            retry_suffix = "\n\n上一次 AI 导入失败，请严格返回合法 JSON 对象，并确保 rows 是可导入的数据行。上一次错误：" + _normalize_sheet_text(last_error.detail)
+        try:
+            response = chat_with_provider(
+                provider_id=provider_id,
+                base_url=runtime.get("base_url"),
+                api_key=runtime.get("api_key"),
+                model=model,
+                messages=[{"role": "user", "content": f"{prompt}{retry_suffix}"}],
+                system_prompt=NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT,
+                response_format="json",
+                timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
+                extra_providers=tuple(runtime.get("extra_providers") or ()),
+            )
+            payload = _parse_note_sheet_excel_import_json(str(response.get("content") or ""))
+            import_rows, extra_columns = _coerce_note_sheet_excel_import_rows(payload, columns)
+            return (
+                import_rows,
+                extra_columns,
+                _normalize_import_message_list(payload.get("warnings")),
+                _normalize_import_message_list(payload.get("mapping_notes")),
+            )
+        except OllamaClientError as exc:
+            last_error = HTTPException(status_code=502, detail=str(exc))
+        except HTTPException as exc:
+            if exc.status_code not in {502, 422}:
+                raise
+            last_error = exc
+
+        if attempt < attempts:
+            time.sleep(NOTE_SHEET_EXCEL_IMPORT_RETRY_DELAY_SECONDS * attempt)
+
+    if last_error is None:
+        raise HTTPException(status_code=502, detail="AI 导入失败")
+    detail = _normalize_sheet_text(last_error.detail)
+    raise HTTPException(
+        status_code=last_error.status_code,
+        detail=f"AI 导入失败（已重试 {attempts} 次）：{detail}" if attempts > 1 else detail,
     )
 
 
@@ -7345,12 +7688,24 @@ def _attendance_template_row_exists(
 def _set_row_cell_value(row: Any, columns: list[Any], column_index: int, value: Any) -> Any:
     if isinstance(row, list):
         next_row = [*row, *([""] * max(column_index + 1 - len(row), 0))]
-        next_row[column_index] = value
+        current = next_row[column_index]
+        if isinstance(current, dict) and "link" in current and not isinstance(value, dict):
+            next_cell = dict(current)
+            next_cell["value"] = value
+            next_row[column_index] = next_cell
+        else:
+            next_row[column_index] = value
         return next_row
     if isinstance(row, dict):
         next_row = dict(row)
         column_key = str(columns[column_index]) if column_index < len(columns) else str(column_index)
-        next_row[column_key] = value
+        current = next_row.get(column_key)
+        if isinstance(current, dict) and "link" in current and not isinstance(value, dict):
+            next_cell = dict(current)
+            next_cell["value"] = value
+            next_row[column_key] = next_cell
+        else:
+            next_row[column_key] = value
         return next_row
     next_row = [""] * max(len(columns), column_index + 1)
     next_row[column_index] = value
@@ -7770,6 +8125,62 @@ def _get_attendance_course_name_from_row(row: list[Any], columns: list[Any]) -> 
     return _normalize_sheet_text(row[name_index])
 
 
+def _get_attendance_template_course_run_bucket(text: str) -> tuple[int, int]:
+    # Keep this in sync with kq5034._课程类型排序值 so generated rows keep the same run order.
+    if "念住闯关" in text:
+        return (1, 0)
+    if "念住" in text:
+        return (2, 0)
+    if "觉观" in text:
+        return (2, 1)
+    if "禅宗" in text or "修道班" in text:
+        return (3, 0)
+    if "梵呗初阶" in text:
+        return (10, 0)
+    if "梵呗增益" in text:
+        return (10, 1)
+    return (10, 0)
+
+
+def _get_attendance_template_row_run_bucket(row: Any, columns: list[Any]) -> tuple[int, int]:
+    normalized_row = _normalize_sheet_row(row, len(columns))
+    values: list[str] = []
+    for field_key in ("course_type", "course_name", "online_sheet"):
+        column_index = _find_attendance_column_index(columns, field_key)
+        if column_index is not None and column_index < len(normalized_row):
+            value = _normalize_sheet_text(normalized_row[column_index])
+            if value:
+                values.append(value)
+    return _get_attendance_template_course_run_bucket(" ".join(values))
+
+
+def _get_attendance_template_item_run_bucket(item: NoteSheetAttendanceTemplateActionItem) -> tuple[int, int]:
+    values = [
+        _normalize_sheet_text(item.course_type),
+        _normalize_sheet_text(item.course_name),
+    ]
+    return _get_attendance_template_course_run_bucket(" ".join(value for value in values if value))
+
+
+def _get_attendance_template_insert_index(
+    rows: list[Any],
+    *,
+    columns: list[Any],
+    pending_items: list[NoteSheetAttendanceTemplateActionItem],
+) -> int:
+    if not pending_items:
+        return 0
+
+    first_pending_bucket = min(_get_attendance_template_item_run_bucket(item) for item in pending_items)
+    insert_index = 0
+    for row_index, row in enumerate(rows):
+        if _get_attendance_template_row_run_bucket(row, columns) < first_pending_bucket:
+            insert_index = row_index + 1
+            continue
+        break
+    return insert_index
+
+
 def _generate_attendance_course_templates(
     document_json: dict[str, Any],
     *,
@@ -7788,9 +8199,10 @@ def _generate_attendance_course_templates(
             skipped.append(NoteSheetAttendanceTemplateActionItem(course_type=course_type, reason="当前表没有可复制的模板行"))
         return normalized, generated, skipped
 
-    pending_rows: list[tuple[int, list[Any], date, NoteSheetAttendanceTemplateActionItem]] = []
+    pending_rows: list[tuple[int, int, list[Any], date, NoteSheetAttendanceTemplateActionItem]] = []
     seen_targets: set[tuple[str, date]] = set()
     for course_type, target_date in targets:
+        target_order = len(seen_targets)
         target_key = (course_type, target_date)
         if target_key in seen_targets:
             continue
@@ -7835,6 +8247,7 @@ def _generate_attendance_course_templates(
         )
         target_course_name = _get_attendance_course_name_from_row(preview_row, columns)
         pending_rows.append((
+            target_order,
             source_row_index,
             source_row,
             source_info["date"],
@@ -7848,7 +8261,13 @@ def _generate_attendance_course_templates(
     if not pending_rows:
         return normalized, generated, skipped
 
-    insert_index = 0
+    pending_rows.sort(key=lambda item: (_get_attendance_template_item_run_bucket(item[4]), item[0]))
+    pending_items = [item for *_row_info, item in pending_rows]
+    insert_index = _get_attendance_template_insert_index(
+        rows,
+        columns=columns,
+        pending_items=pending_items,
+    )
     existing_rows = _remap_existing_rows_for_insert(
         rows,
         columns=columns,
@@ -7858,7 +8277,7 @@ def _generate_attendance_course_templates(
     )
 
     inserted_rows: list[list[Any]] = []
-    for offset, (source_row_index, source_row, source_start_date, item) in enumerate(pending_rows):
+    for offset, (_target_order, source_row_index, source_row, source_start_date, item) in enumerate(pending_rows):
         target_row_index = insert_index + offset
         item_target_date = _parse_attendance_date_text(item.target_date) or _get_next_month_first_day()
         inserted_rows.append(_build_inserted_attendance_template_row(
@@ -8050,6 +8469,13 @@ def _get_document_entity_cell_link_url(
 def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
     data_start_row = _normalize_document_data_start_row(document_json)
     document_row_index = data_start_row + row_index
+    rows = _extract_document_rows(document_json)
+    if 0 <= row_index < len(rows):
+        row = _normalize_sheet_row(rows[row_index], len(_normalize_document_columns(document_json)))
+        if 0 <= column_index < len(row):
+            inline_url = _inline_cell_link_url(row[column_index])
+            if inline_url:
+                return inline_url
 
     entity_url = _get_document_entity_cell_link_url(document_json, document_row_index, column_index)
     if entity_url:
@@ -11543,6 +11969,7 @@ async def import_note_sheet_excel_reset(
     file: UploadFile = File(...),
     instruction: str = Form(default=""),
     mode: Literal["append", "reset"] = Form(default="reset"),
+    allow_direct_fallback: bool = Form(default=False),
     action_document_row: int | None = Form(default=None),
     action_column: int | None = Form(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
@@ -11567,13 +11994,29 @@ async def import_note_sheet_excel_reset(
     raw_bytes = await file.read()
     workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
     current_document = _normalize_document_json(dict(document.document_json or {}))
-    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
-        document_json=current_document,
-        workbook_payload=workbook_payload,
-        instruction=instruction,
-        action_document_row=action_document_row,
-        action_column=action_column,
-    )
+    try:
+        import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
+            document_json=current_document,
+            workbook_payload=workbook_payload,
+            instruction=instruction,
+            session=session,
+            current_user=current_user,
+            action_document_row=action_document_row,
+            action_column=action_column,
+        )
+    except HTTPException as exc:
+        if not allow_direct_fallback:
+            raise
+        fallback = _try_direct_excel_import_by_header(
+            workbook_payload=workbook_payload,
+            columns=_normalize_document_columns(current_document),
+        )
+        if fallback is None:
+            raise
+        import_rows, extra_columns, warnings, mapping_notes = fallback
+        detail = _normalize_sheet_text(exc.detail)
+        if detail:
+            warnings = [*warnings, f"原 AI 导入错误：{detail}"]
     if mode == "append":
         next_document, preserved_row_count = _append_document_rows_for_excel_import(
             current_document,
@@ -11648,12 +12091,17 @@ def start_note_sheet_clockin_link_detection_run(
         raise HTTPException(status_code=403, detail="没有执行打卡链接检测的权限")
     if current_user.id is None:
         raise HTTPException(status_code=403, detail="当前用户无效")
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION,
+    )
     return _start_clockin_link_detection_run(
         sheet_id=_require_sheet_numeric_id(document),
         workbook_id=workbook_id,
         current_user=current_user,
-        provider_id=payload.provider_id or NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID,
-        model=payload.model or NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL,
+        provider_id=payload.provider_id or str(runtime.get("provider") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID),
+        model=payload.model or str(runtime.get("model") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL),
         force_restart=payload.force_restart,
     )
 

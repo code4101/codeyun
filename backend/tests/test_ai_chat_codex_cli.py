@@ -12,6 +12,7 @@ from backend.api.ai_chat import _get_extra_providers, _resolve_runtime_provider_
 from backend.core.ai_chat import (
     AiProviderConfig,
     CODEX_CLI_DEFAULT_MODEL,
+    CODEX_CLI_MODELS,
     CODEX_CLI_WORKSPACE_DIRNAME,
     _resolve_command_path,
     _summarize_process_output,
@@ -46,7 +47,7 @@ def _build_codex_provider(
         supports_vision=True,
         requires_api_key=False,
         configured=False,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
+        models=CODEX_CLI_MODELS,
         is_custom=True,
         sharing_mode="private",
         can_manage=True,

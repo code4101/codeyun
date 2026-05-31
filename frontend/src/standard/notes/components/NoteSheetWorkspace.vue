@@ -256,7 +256,13 @@ const COLUMN_SETTINGS_KEYS = [
   'font_size',
 ] as const satisfies readonly ColumnSettingsDraftKey[]
 
+type SheetInlineCell = {
+  value?: string
+  link?: SheetCellLink
+}
+type SheetStoredCell = string | SheetInlineCell
 type SheetRow = string[]
+type SheetStoredRow = SheetStoredCell[]
 type ColumnFilterNumberOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 type ColumnFilterState = {
   query: string
@@ -910,8 +916,8 @@ type SheetViewSettings = {
 type SheetDocument = {
   schema_version: 1
   columns: string[]
-  rows: SheetRow[]
-  grid_rows?: SheetRow[]
+  rows: SheetStoredRow[]
+  grid_rows?: SheetStoredRow[]
   data_start_row?: number
   field_row_index?: number
   merged_cells?: SheetMergedCell[]
@@ -3861,6 +3867,33 @@ function buildLegacyCellMetaFromEntitySnapshot(
   return normalizeCellMetaMap(nextMeta, entityColumns.length)
 }
 
+function buildRowsWithInlineLinks(
+  normalizedRows: SheetRow[],
+  entityRows: SheetEntityRow[],
+  entityColumns: SheetEntityColumn[],
+  cells: SheetEntityCellMap,
+  headerRowCount: number,
+): SheetStoredRow[] {
+  return normalizedRows.map((row, dataRowIndex) => {
+    const entityRow = entityRows[headerRowCount + dataRowIndex]
+    if (!entityRow) {
+      return row
+    }
+
+    let changed = false
+    const nextRow = row.map((value, columnIndex): SheetStoredCell => {
+      const entityColumn = entityColumns[columnIndex]
+      const link = entityColumn ? cells[entityRow.id]?.[entityColumn.id]?.link : null
+      if (!link) {
+        return value
+      }
+      changed = true
+      return { value, link }
+    })
+    return changed ? nextRow : row
+  })
+}
+
 function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[]) {
   const headerRows = sheetGridRows.value
     .slice(0, sheetHeaderRowCount.value)
@@ -3903,6 +3936,7 @@ function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[
     entity_rows: entityRows,
     entity_cells: nextCells,
     cell_meta: buildLegacyCellMetaFromEntitySnapshot(entityRows, entityColumns, nextCells, cellMeta.value, getDocumentRow),
+    rows: buildRowsWithInlineLinks(normalizedRows, entityRows, entityColumns, nextCells, headerRows.length),
   }
 }
 
@@ -4777,11 +4811,11 @@ const contextMenu = {
             },
           },
           {
-            key: 'open_cell_link:local',
-            name: '在本地打开',
-            hidden: () => !canOpenSelectedCellLinkVariant('local'),
+            key: 'open_cell_link:current',
+            name: '在当前域名打开',
+            hidden: () => !canOpenSelectedCellLinkVariant('current'),
             callback: () => {
-              openSelectedCellLinkVariant('local')
+              openSelectedCellLinkVariant('current')
             },
           },
           {
@@ -5386,6 +5420,7 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
   try {
     commitPendingSheetGridEdit()
     await flushRemoteSave()
+    clearSaveTimer()
     const result = await importNoteSheetFromExcel(
       props.sheetId,
       {
@@ -5396,8 +5431,9 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
       },
       { workbookId: props.workbookId },
     )
+    clearSaveTimer()
     clearDraftStorage()
-    await restoreInitialDocument({ preserveContent: false })
+    applyRemoteSheetDetail(result.sheet)
     const extraColumnSuffix = result.extra_columns.length
       ? `，追加 ${result.extra_columns.length} 列`
       : ''
@@ -6256,6 +6292,9 @@ function resetWorkspaceState() {
 }
 
 function normalizeCellValue(value: unknown): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return normalizeCellValue((value as Record<string, unknown>).value)
+  }
   return value == null ? '' : String(value)
 }
 
@@ -8282,6 +8321,36 @@ function normalizeRow(row: unknown, headers: string[]): SheetRow {
   return createEmptyRow(headers.length)
 }
 
+function getInlineCellMeta(source: unknown): SheetCellMeta | null {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return null
+  }
+  return normalizeCellMetaEntry(source)
+}
+
+function mergeInlineCellMetaIntoCellMeta(
+  sourceMeta: SheetCellMetaMap,
+  sourceRows: unknown[],
+  dataStartRow: number,
+  headers: string[],
+) {
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  sourceRows.forEach((row, rowIndex) => {
+    if (!Array.isArray(row)) {
+      return
+    }
+    row.slice(0, headers.length).forEach((cell, columnIndex) => {
+      const inlineMeta = getInlineCellMeta(cell)
+      if (!inlineMeta) {
+        return
+      }
+      const key = createCellMetaKey(dataStartRow + rowIndex, columnIndex)
+      nextMeta[key] = normalizeCellMetaEntry({ ...(nextMeta[key] ?? {}), ...inlineMeta }) ?? inlineMeta
+    })
+  })
+  return normalizeCellMetaMap(nextMeta, headers.length)
+}
+
 function isMeaningfulRow(row: SheetRow): boolean {
   return row.some((cell) => cell.trim() !== '')
 }
@@ -8485,7 +8554,7 @@ function normalizeSheetDocument(
   const normalizedCellMeta = addDefaultRegistrationCompositeUpdateAction(
     addDefaultRegistrationAddStudentAction(
       addLegacySheetCellActions(
-        sourceCellMeta,
+        mergeInlineCellMetaIntoCellMeta(sourceCellMeta, sourceRows, dataStartRow, headers),
         normalizedGridRows,
         headers.length,
       ),
@@ -8688,7 +8757,7 @@ function buildCurrentDocument(): SheetDocument {
   return {
     schema_version: 1,
     columns: headers,
-    rows: normalizedRows,
+    rows: entitySnapshot.rows,
     grid_rows: sheetGridRows.value.map((row) => normalizeRow(row, headers)),
     data_start_row: sheetHeaderRowCount.value,
     field_row_index: columnHeaderLevel.value,
@@ -21261,7 +21330,7 @@ function clearCellStyleDialog() {
 }
 
 function openCellLink(link: SheetCellLink | null) {
-  openUrlInNewWindow(link?.url ?? '')
+  openUrlInNewWindow(buildDefaultCellLinkUrl(link))
 }
 
 function getSelectedColumnHeaderCellIndex() {
@@ -21352,6 +21421,13 @@ function canOpenSelectedCellLinkVariant(variant: CodeyunLinkVariant) {
 
 function openSelectedCellLinkVariant(variant: CodeyunLinkVariant) {
   openUrlInNewWindow(buildCodeyunLinkVariantUrl(variant))
+}
+
+function buildDefaultCellLinkUrl(link: SheetCellLink | null) {
+  if (!link?.url) {
+    return ''
+  }
+  return buildCodeyunUrlVariant(link.url, 'current') || link.url
 }
 
 function openSelectedCellLink() {

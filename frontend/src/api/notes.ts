@@ -1305,6 +1305,7 @@ export const useNoteStore = defineStore('notes', () => {
     { id: 'galaxy', label: '星系', type: 'galaxy', closable: false },
     { id: 'list', label: '列表', type: 'list', closable: false }
   ]);
+  const virtualTabs = ref<Record<string, TabState>>({});
   const activeTabId = ref('calendar');
 
   const loadPersistedTabViewStates = (): Record<string, Record<string, any>> => {
@@ -1606,7 +1607,7 @@ export const useNoteStore = defineStore('notes', () => {
 
   setupNoteSyncListener();
 
-  const getTabById = (tabId: string) => tabs.value.find(tab => tab.id === tabId);
+  const getTabById = (tabId: string) => tabs.value.find(tab => tab.id === tabId) ?? virtualTabs.value[tabId] ?? null;
 
   const ensureTabSession = (tabId: string) => {
     const tab = getTabById(tabId);
@@ -1759,6 +1760,17 @@ export const useNoteStore = defineStore('notes', () => {
     tabs.value.push(tab);
     ensureTabSession(tab.id);
     activeTabId.value = tab.id;
+  };
+
+  const ensureVirtualTab = (tab: TabState) => {
+    const existingMainTab = tabs.value.find(item => item.id === tab.id);
+    if (existingMainTab) {
+      ensureTabSession(existingMainTab.id);
+      return;
+    }
+
+    virtualTabs.value[tab.id] = tab;
+    ensureTabSession(tab.id);
   };
 
   const removeTab = (tabId: string) => {
@@ -2296,6 +2308,7 @@ export const useNoteStore = defineStore('notes', () => {
     activeTabId,
     tabSessions,
     addTab,
+    ensureVirtualTab,
     removeTab,
     setActiveTab,
     getTabSession,

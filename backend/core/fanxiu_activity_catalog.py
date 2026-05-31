@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import csv
 from collections import defaultdict
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from backend.core.fanxiu_item_catalog import load_fanxiu_item_runtime_index
+from backend.core.fanxiu_region_data import KNOWN_REGION_SERVER_NAMES, REGION_NAMES, SERVER_MARKS, _add_days, _region_start_date
 from backend.core.fanxiu_resources import FanxiuResourceError, resolve_fanxiu_export_root
 from backend.core.fanxiu_timeline import (
     _activity_indexes,
@@ -32,8 +34,11 @@ DEFAULT_ACTIVITY_BOSS_ROWS = Path("parsed_configs/ActivityBoss/rows.json")
 DEFAULT_ACTIVE_TASK_ROWS = Path("parsed_configs/ActiveTask/rows.json")
 DEFAULT_OPEN_FUNCTION_ROWS = Path("parsed_configs/OpenFunction/rows.json")
 DEFAULT_SUBPACKAGE_REWARD_ROWS = Path("parsed_configs/SubpackageRewards/rows.json")
+DEFAULT_BLLD_LEVEL_ROWS = Path("apk_static_index/hot_update_blld_levels.tsv")
+DEFAULT_BLLD_LEVEL_REWARD_ROWS = Path("apk_static_index/hot_update_blld_level_reward_items.tsv")
 DEFAULT_ACTIVITY_CATALOG = Path("parsed_configs/activity_catalog/activity_catalog.json")
-ACTIVITY_CATALOG_SCHEMA_VERSION = 5
+ACTIVITY_CATALOG_SCHEMA_VERSION = 8
+_ACTIVITY_RANK_GUARDIAN_CACHE: tuple[tuple[tuple[str, int, int], ...], dict[str, dict[int, dict[str, Any]]]] | None = None
 
 _INT_RE = re.compile(r"-?\d+")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -53,6 +58,7 @@ ACTIVITY_KIND_LABELS: dict[str, str] = {
     "direct_reward": "展示奖励",
     "boss": "首领",
     "loop": "轮换",
+    "challenge": "闯关",
     "active_task": "活跃任务",
     "subpackage": "资源包奖励",
     "control": "控制活动",
@@ -128,6 +134,22 @@ def _as_int(value: Any) -> int | None:
         return value
     if isinstance(value, str) and _INT_RE.fullmatch(value.strip()):
         return int(value.strip())
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
     return None
 
 
@@ -329,6 +351,104 @@ def _parse_condition_token(token_text: str) -> dict[str, Any]:
     return item
 
 
+def _format_condition_date(value: str) -> str | None:
+    return _format_date8(value) if _DATE8_RE.fullmatch(value) else None
+
+
+def _activity_server_scope_options() -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for region_name, server_names in KNOWN_REGION_SERVER_NAMES.items():
+        try:
+            region_start_date = _region_start_date(REGION_NAMES.index(region_name))
+        except ValueError:
+            region_start_date = ""
+        for index, server_name in enumerate(server_names):
+            order = index + 1
+            scope = f"{region_name}/{server_name}"
+            cross_group = 0 if order <= 1 else min(64, 2 ** ((order).bit_length() - 1))
+            option = {
+                "scope": scope,
+                "region_name": region_name,
+                "server_name": server_name,
+                "server_order": order,
+                "open_date": _add_days(region_start_date, index) if region_start_date else "",
+                "cross_group": cross_group,
+            }
+            result[scope] = option
+            mark = SERVER_MARKS.get((region_name, server_name), {})
+            if mark.get("mark_type") == "current":
+                result["current"] = option
+    return result
+
+
+def _resolve_activity_server_scope(server_scope: str) -> dict[str, Any] | None:
+    value = str(server_scope or "").strip()
+    if not value:
+        return None
+    return _activity_server_scope_options().get(value)
+
+
+def _condition_token_matches_server(token_text: str, server: dict[str, Any]) -> bool:
+    token, _, payload = token_text.partition("|")
+    if token in {"InCrossGroup", "InActivityCrossGroup", "CrossGroup"}:
+        values = {_as_int(item) for item in _INT_RE.findall(payload)}
+        return server.get("cross_group") in values
+    if token in {"OpenBefore", "DateBefore"}:
+        date_text = _format_condition_date(payload)
+        return not date_text or str(server.get("open_date") or "") < date_text
+    if token in {"OpenAfter", "ActivityAfter"}:
+        date_text = _format_condition_date(payload)
+        return not date_text or str(server.get("open_date") or "") >= date_text
+    if token == "OpenBetween":
+        dates = [_format_condition_date(item) for item in _DATE8_RE.findall(payload)]
+        dates = [item for item in dates if item]
+        return len(dates) < 2 or dates[0] <= str(server.get("open_date") or "") <= dates[1]
+    return True
+
+
+def _condition_field_has_server_scope(value: Any) -> bool:
+    groups = _split_condition_groups(value)
+    return any(
+        token.split("|", 1)[0] in {"InCrossGroup", "InActivityCrossGroup", "CrossGroup", "OpenBefore", "DateBefore", "OpenAfter", "ActivityAfter", "OpenBetween"}
+        for group in groups
+        for token in group
+    )
+
+
+def _condition_field_matches_server(value: Any, server: dict[str, Any]) -> bool:
+    groups = _split_condition_groups(value)
+    scoped_groups = [
+        group
+        for group in groups
+        if any(token.split("|", 1)[0] in {"InCrossGroup", "InActivityCrossGroup", "CrossGroup", "OpenBefore", "DateBefore", "OpenAfter", "ActivityAfter", "OpenBetween"} for token in group)
+    ]
+    return not scoped_groups or any(all(_condition_token_matches_server(token, server) for token in group) for group in scoped_groups)
+
+
+def _activity_card_matches_server(
+    card: dict[str, Any],
+    server: dict[str, Any] | None,
+    *,
+    cards_by_id: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    if not server:
+        return True
+    scoped_fields = [
+        field
+        for field in ("open_condition", "join_condition", "show_condition")
+        if _condition_field_has_server_scope(card.get(field))
+    ]
+    if not scoped_fields and cards_by_id:
+        parent_id = str(card.get("parent_activity_id") or "").strip()
+        parent_card = cards_by_id.get(parent_id) if parent_id else None
+        if parent_card:
+            return _activity_card_matches_server(parent_card, server, cards_by_id=cards_by_id)
+    return all(
+        _condition_field_matches_server(card.get(field), server)
+        for field in scoped_fields
+    )
+
+
 def _condition_code_summary(parsed_groups: list[dict[str, Any]]) -> str:
     condition_ids: list[str] = []
     for group in parsed_groups:
@@ -397,7 +517,7 @@ def _resolve_catalog_file(
 
 
 def _load_activity_catalog_cached(path_text: str, mtime_ns: int, size: int, export_root_text: str) -> dict[str, Any]:
-    del mtime_ns, size, export_root_text
+    del mtime_ns, size
     data = json.loads(Path(path_text).read_text(encoding="utf-8"))
     if int(data.get("schema_version") or 0) != ACTIVITY_CATALOG_SCHEMA_VERSION:
         root = resolve_fanxiu_export_root(export_root_text)
@@ -472,6 +592,300 @@ def _extract_reward_items(value: Any, item_by_id: dict[str, dict[str, Any]], *, 
 def _raw_value_text(value: Any, *, limit: int = 8) -> list[str]:
     values = [_clean_text(item) for item in _iter_leaf_values(value)]
     return [item for item in values if item][:limit]
+
+
+def _format_rank_range(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        parts = [_clean_text(item) for item in value if _clean_text(item)]
+    else:
+        parts = _INT_RE.findall(_clean_text(value))
+    if len(parts) >= 2:
+        return parts[0] if parts[0] == parts[1] else f"{parts[0]}-{parts[1]}"
+    return parts[0] if parts else ""
+
+
+def _rank_range_start(value: Any) -> int:
+    if isinstance(value, (list, tuple)):
+        values = [_as_int(item) for item in value]
+        values = [item for item in values if item is not None]
+        return values[0] if values else 10**9
+    values = [_as_int(item) for item in _INT_RE.findall(_clean_text(value))]
+    return values[0] if values and values[0] is not None else 10**9
+
+
+def _rank_range_end(value: Any) -> int:
+    if isinstance(value, (list, tuple)):
+        values = [_as_int(item) for item in value]
+        values = [item for item in values if item is not None]
+        return values[1] if len(values) >= 2 else (values[0] if values else 10**9)
+    values = [_as_int(item) for item in _INT_RE.findall(_clean_text(value))]
+    values = [item for item in values if item is not None]
+    return values[1] if len(values) >= 2 else (values[0] if values else 10**9)
+
+
+def _load_optional_tsv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as file:
+            return [dict(row) for row in csv.DictReader(file, delimiter="\t")]
+    except OSError:
+        return []
+
+
+def _linked_item_from_reward_row(row: dict[str, Any], item_by_id: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    item_id = _clean_text(row.get("item_id"))
+    if not item_id:
+        return None
+    item = _linked_item(item_id, _clean_text(row.get("count")), item_by_id)
+    for field in ("reward_group_id", "quality", "limit", "weight", "source"):
+        value = _clean_text(row.get(field))
+        if value:
+            item[field] = value
+    return item
+
+
+def _reward_item_text(items: list[dict[str, Any]], *, limit: int = 12) -> str:
+    parts: list[str] = []
+    for item in items[:limit]:
+        name = _clean_text(item.get("name") or item.get("id"))
+        count = _clean_text(item.get("count"))
+        parts.append(f"{name}x{count}" if count else name)
+    if len(items) > limit:
+        parts.append(f"+{len(items) - limit}")
+    return " | ".join(part for part in parts if part)
+
+
+def _reward_count_number(value: Any) -> float:
+    text = _clean_text(value)
+    if not text:
+        return 1.0
+    try:
+        return float(text)
+    except ValueError:
+        return 1.0
+
+
+def _level_number(value: Any) -> int:
+    number = _as_int(value)
+    return number if number is not None else 10**9
+
+
+def _format_level_ranges(level_ids: Iterable[Any]) -> str:
+    numbers = sorted({number for value in level_ids if (number := _as_int(value)) is not None and number > 0})
+    ranges: list[str] = []
+    index = 0
+    while index < len(numbers):
+        start = numbers[index]
+        end = start
+        while index + 1 < len(numbers) and numbers[index + 1] == end + 1:
+            index += 1
+            end = numbers[index]
+        ranges.append(str(start) if start == end else f"{start}-{end}")
+        index += 1
+    return f"第{','.join(ranges)}关" if ranges else ""
+
+
+def _build_challenge_reward_rarity(levels: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    stats_by_item: dict[str, dict[str, Any]] = {}
+    for level in levels:
+        level_id = level.get("level_id")
+        level_num = _level_number(level_id)
+        for reward_kind, field in [("clear", "clear_rewards"), ("find", "find_rewards")]:
+            for item in level.get(field) or []:
+                item_id = _clean_text(item.get("id"))
+                if not item_id:
+                    continue
+                stat = stats_by_item.setdefault(
+                    item_id,
+                    {
+                        "item_id": item_id,
+                        "item_name": _clean_text(item.get("name")) or item_id,
+                        "icon": item.get("icon"),
+                        "quality": item.get("quality"),
+                        "total_count": 0.0,
+                        "level_count": 0,
+                        "first_level_id": level_id,
+                        "first_level_num": level_num,
+                        "first_reward_kind": reward_kind,
+                        "_levels": set(),
+                        "_level_numbers": set(),
+                    },
+                )
+                stat["total_count"] += _reward_count_number(item.get("count"))
+                stat["_levels"].add(str(level_id))
+                if level_num < 10**9:
+                    stat["_level_numbers"].add(level_num)
+                if level_num < int(stat["first_level_num"]):
+                    stat["first_level_id"] = level_id
+                    stat["first_level_num"] = level_num
+                    stat["first_reward_kind"] = reward_kind
+
+    stats = []
+    for stat in stats_by_item.values():
+        stat["level_count"] = len(stat.pop("_levels"))
+        level_numbers = sorted(stat.pop("_level_numbers"))
+        stat["level_ids"] = level_numbers
+        stat["level_range_text"] = _format_level_ranges(level_numbers)
+        stat.pop("first_level_num", None)
+        stats.append(stat)
+    stats.sort(key=lambda item: (float(item.get("total_count") or 0), _level_number(item.get("first_level_id")), str(item.get("item_name") or "")))
+    for index, stat in enumerate(stats, start=1):
+        stat["rarity_rank"] = index
+        total = float(stat.get("total_count") or 0)
+        stat["total_count"] = int(total) if total.is_integer() else total
+
+    item_rank = {str(stat.get("item_id")): stat for stat in stats}
+    for level in levels:
+        for field in ("clear_rewards", "find_rewards"):
+            compact_items: list[dict[str, Any]] = []
+            for item in level.get(field) or []:
+                stat = item_rank.get(str(item.get("id") or ""))
+                if stat:
+                    item["rarity_rank"] = stat["rarity_rank"]
+                    item["rarity_total_count"] = stat["total_count"]
+                    item["rarity_first_level_id"] = stat["first_level_id"]
+                compact_items.append(
+                    {
+                        key: item.get(key)
+                        for key in ("id", "name", "count", "rarity_rank", "rarity_total_count", "rarity_first_level_id")
+                        if item.get(key) not in (None, "")
+                    }
+                )
+            level[field] = compact_items
+
+    default_limit = max(1, round(max(1, len(levels)) * 0.05))
+    default_rank = 0
+    for stat in stats:
+        if float(stat.get("total_count") or 0) <= default_limit:
+            default_rank = int(stat.get("rarity_rank") or 0)
+    if default_rank <= 0 and stats:
+        default_rank = min(len(stats), 10)
+    return stats, default_rank
+
+
+def _challenge_threshold_item(stats: list[dict[str, Any]], rank: int) -> dict[str, Any] | None:
+    for stat in stats:
+        if int(stat.get("rarity_rank") or 0) == rank:
+            return stat
+    return stats[min(max(rank, 1), len(stats)) - 1] if stats else None
+
+
+def _build_blld_challenge_sections_by_activity(
+    activity_rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    item_by_id: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    level_rows = _load_optional_tsv_rows(root / DEFAULT_BLLD_LEVEL_ROWS)
+    reward_rows = _load_optional_tsv_rows(root / DEFAULT_BLLD_LEVEL_REWARD_ROWS)
+    if not level_rows or not reward_rows:
+        return {}
+
+    rewards_by_level: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: {"clear": [], "find": []})
+    for row in reward_rows:
+        level_id = _clean_text(row.get("level_id"))
+        if not level_id:
+            continue
+        item = _linked_item_from_reward_row(row, item_by_id)
+        if not item:
+            continue
+        kind = "clear" if row.get("reward_kind") == "push" else "find"
+        rewards_by_level[level_id][kind].append(item)
+
+    levels: list[dict[str, Any]] = []
+    activity_ids_from_levels: set[str] = set()
+    for row in sorted(level_rows, key=lambda item: _sort_value(item.get("level_id"))):
+        level_id = _clean_text(row.get("level_id"))
+        if not level_id:
+            continue
+        activity_ids = [item.strip() for item in _clean_text(row.get("activity_ids")).split("|") if item.strip()]
+        activity_ids_from_levels.update(activity_ids)
+        clear_items = rewards_by_level[level_id]["clear"]
+        find_items = rewards_by_level[level_id]["find"]
+        levels.append(
+            {
+                "level_id": row.get("level_id"),
+                "name": row.get("name") or f"第{level_id}关",
+                "stage": row.get("stage"),
+                "layer": row.get("layer"),
+                "sub_layer": row.get("sub_layer"),
+                "reward_title": row.get("reward_show_title"),
+                "clear_rewards": clear_items,
+                "find_rewards": find_items,
+                "clear_reward_text": _reward_item_text(clear_items, limit=10),
+                "find_reward_text": _reward_item_text(find_items, limit=10),
+                "activity_ids": activity_ids,
+                "source_level_id": level_id,
+            }
+        )
+    if not levels:
+        return {}
+
+    stage_counts: dict[str, int] = defaultdict(int)
+    for level in levels:
+        stage = _clean_text(level.get("stage")) or "-"
+        stage_counts[stage] += 1
+    stage_summary = [
+        {"stage": stage, "level_count": count}
+        for stage, count in sorted(stage_counts.items(), key=lambda item: _sort_value(item[0]))
+    ]
+    rarity_stats, default_threshold_rank = _build_challenge_reward_rarity(levels)
+    threshold_item = _challenge_threshold_item(rarity_stats, default_threshold_rank)
+    section = {
+        "key": "blld",
+        "title": "闯关奖励",
+        "source": "BLLD Level / RewardGroup / Item",
+        "display_mode": "rarity_threshold",
+        "level_count": len(levels),
+        "reward_item_count": sum(len(level.get("clear_rewards") or []) + len(level.get("find_rewards") or []) for level in levels),
+        "stage_summary": stage_summary,
+        "rarity_stats": rarity_stats,
+        "default_threshold_rank": default_threshold_rank,
+        "default_threshold_item_id": threshold_item.get("item_id") if threshold_item else "",
+        "levels": levels,
+    }
+
+    result: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for activity in activity_rows:
+        activity_id = _clean_text(activity.get("id"))
+        if not activity_id:
+            continue
+        red_dot = _clean_text(activity.get("redDot")).upper()
+        if activity_id in activity_ids_from_levels or red_dot == "BLLD":
+            result[activity_id].append(section)
+    return dict(result)
+
+
+def _challenge_reward_preview(challenge_sections: list[dict[str, Any]], *, limit: int = 12) -> str:
+    names: list[str] = []
+    seen: set[str] = set()
+    for section in challenge_sections:
+        for level in section.get("levels") or []:
+            for field in ("clear_rewards", "find_rewards"):
+                for item in level.get(field) or []:
+                    name = _clean_text(item.get("name"))
+                    if name and name not in seen:
+                        seen.add(name)
+                        names.append(name)
+                        if len(names) >= limit:
+                            return "、".join(names)
+    return "、".join(names)
+
+
+def _build_challenge_sections_by_activity(
+    activity_rows: list[dict[str, Any]],
+    *,
+    root: Path,
+    item_by_id: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for mapping in [
+        _build_blld_challenge_sections_by_activity(activity_rows, root=root, item_by_id=item_by_id),
+    ]:
+        for activity_id, sections in mapping.items():
+            result[activity_id].extend(sections)
+    return dict(result)
 
 
 def _activity_name(row: dict[str, Any]) -> str:
@@ -633,6 +1047,7 @@ def _compact_related_row(
         title = _text_value(row, field)
         if title:
             break
+    rank_range = _format_rank_range(row.get("rankingRange"))
     reward_values: list[Any] = [row.get(field) for field in reward_fields]
     reward_items: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -645,6 +1060,9 @@ def _compact_related_row(
             reward_items.append(item)
     meta_values = [
         f"ID {row.get('id') or row.get('fundId') or row.get('_row_key')}",
+        f"名次 {rank_range}" if rank_range else "",
+        f"分组 {row.get('group')}" if row.get("group") not in (None, "") else "",
+        f"榜单活动 {row.get('_source_activity_id')}" if row.get("_source_activity_id") not in (None, "") else "",
         f"次数 {row.get('times')}" if row.get("times") not in (None, "") else "",
         f"天 {row.get('day')}" if row.get("day") not in (None, "") else "",
         f"轮 {row.get('turn')}" if row.get("turn") not in (None, "") else "",
@@ -656,6 +1074,10 @@ def _compact_related_row(
         "row_key": row.get("_row_key") or row.get("id") or row.get("fundId"),
         "title": title,
         "meta": " / ".join(item for item in meta_values if item),
+        "source_activity_id": row.get("_source_activity_id"),
+        "rank_range": rank_range,
+        "rank_start": _rank_range_start(row.get("rankingRange")) if rank_range else None,
+        "rank_end": _rank_range_end(row.get("rankingRange")) if rank_range else None,
         "costs": _raw_value_text(row.get("costs") or row.get("discountItem") or row.get("payId"), limit=4),
         "reward_items": reward_items,
         "raw_rewards": _raw_value_text(reward_values, limit=12),
@@ -995,6 +1417,7 @@ def _compact_activity_row(
     fund_rows: list[dict[str, Any]],
     battle_pass_rows: list[dict[str, Any]],
     boss_rows: list[dict[str, Any]],
+    challenge_sections: list[dict[str, Any]],
     loop_entries: list[dict[str, Any]],
     jump_target: dict[str, Any] | None,
     item_by_id: dict[str, dict[str, Any]],
@@ -1091,10 +1514,14 @@ def _compact_activity_row(
     kind_keys = _activity_kind_keys(row, sections)
     if boss_rows:
         kind_keys.append("boss")
+    if challenge_sections:
+        kind_keys.append("challenge")
     if loop_entries:
         kind_keys.append("loop")
     kind_keys = list(dict.fromkeys(kind_keys))
     reward_preview = _reward_preview_from_sections(sections)
+    if challenge_sections:
+        reward_preview = "、".join(item for item in [reward_preview, _challenge_reward_preview(challenge_sections)] if item)
     description = _text_value(row, "describe")
     join_description = _text_value(row, "joinConditionDescribe")
     card = {
@@ -1132,6 +1559,7 @@ def _compact_activity_row(
         "time_hints": hints,
         "first_time_hint": first_hint,
         "reward_sections": sections,
+        "challenge_sections": challenge_sections,
         "reward_preview": reward_preview,
         "loop_entries": loop_entries,
         "jump_target": jump_target,
@@ -1145,6 +1573,7 @@ def _compact_activity_row(
         description,
         join_description,
         reward_preview,
+        _challenge_reward_preview(challenge_sections),
         " ".join(str(item.get("loop_id") or "") for item in loop_entries),
         _clean_text((jump_target or {}).get("name")),
         limit=16,
@@ -1214,16 +1643,31 @@ def _build_fund_rows_by_activity(activity_rows: list[dict[str, Any]], fund_rows:
 
 def _build_list_rewards_by_activity(activity_rows: list[dict[str, Any]], list_reward_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     activities_by_reward_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    blld_parent_ids: list[str] = []
+    blld_rank_activities: list[dict[str, Any]] = []
     for row in activity_rows:
         if row.get("rewardGroup") not in (None, ""):
             activities_by_reward_group[str(row.get("rewardGroup"))].append(row)
+        red_dot = _clean_text(row.get("redDot")).upper()
+        if red_dot == "BLLD" and row.get("id") not in (None, ""):
+            blld_parent_ids.append(str(row.get("id")))
+        elif red_dot == "BLLD_GAMEREWRD" and row.get("rewardGroup") not in (None, ""):
+            blld_rank_activities.append(row)
     result: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    blld_rank_rows: list[dict[str, Any]] = []
     for row in list_reward_rows:
         group = row.get("group")
         if group in (None, ""):
             continue
         for activity in activities_by_reward_group.get(str(group), []):
             result[str(activity.get("id"))].append(row)
+            if activity in blld_rank_activities:
+                row_with_source = {**row, "_source_activity_id": activity.get("id")}
+                blld_rank_rows.append(row_with_source)
+    if blld_rank_rows:
+        blld_rank_rows.sort(key=lambda item: (_sort_value(item.get("_source_activity_id")), _rank_range_start(item.get("rankingRange")), _sort_value(item.get("id"))))
+        for activity_id in blld_parent_ids:
+            result[activity_id].extend(blld_rank_rows)
     return dict(result)
 
 
@@ -1272,6 +1716,18 @@ def _activity_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
         for row in section.get("rows") or []
         for item in row.get("reward_items") or []
     )
+    challenge_text = " ".join(
+        " ".join(
+            [
+                str(level.get("name") or ""),
+                str(level.get("reward_title") or ""),
+                str(level.get("clear_reward_text") or ""),
+                str(level.get("find_reward_text") or ""),
+            ]
+        )
+        for section in card.get("challenge_sections") or []
+        for level in section.get("levels") or []
+    )
     condition_text = " ".join(
         str(card.get(key) or "")
         for key in ("open_condition", "join_condition", "show_condition", "force_hide_condition")
@@ -1302,6 +1758,7 @@ def _activity_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
         "description": str(card.get("description") or "").lower(),
         "join_condition_description": str(card.get("join_condition_description") or "").lower(),
         "reward_text": reward_text.lower(),
+        "challenge_text": challenge_text.lower(),
         "condition_text": condition_text.lower(),
         "loop_text": loop_text.lower(),
         "jump_text": jump_text.lower(),
@@ -1319,6 +1776,7 @@ def _activity_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
                 str(card.get("description") or ""),
                 str(card.get("join_condition_description") or ""),
                 reward_text,
+                challenge_text,
                 condition_text,
                 loop_text,
                 jump_text,
@@ -1371,6 +1829,8 @@ def _score_activity_doc(doc: dict[str, Any], terms: tuple[str, ...]) -> int:
             score += 50
         if term in doc["reward_text"]:
             score += 34
+        if term in doc.get("challenge_text", ""):
+            score += 34
         if term in doc["description"] or term in doc["join_condition_description"]:
             score += 20
         if term in doc["condition_text"]:
@@ -1395,6 +1855,7 @@ def _format_activity_search_item(card: dict[str, Any], score: int) -> dict[str, 
         "time_kind_name": card.get("time_kind_name"),
         "description_preview": _preview(card.get("description") or card.get("join_condition_description"), 140),
         "reward_preview": _preview(card.get("reward_preview"), 180),
+        "time_hints": card.get("time_hints") or [],
         "first_time_hint": card.get("first_time_hint"),
         "loop_entries": (card.get("loop_entries") or [])[:6],
         "source_table": card.get("source_table"),
@@ -1429,12 +1890,457 @@ def _build_activity_facet_index(scored_rows: list[tuple[int, int, dict[str, Any]
     return {"object_ids": object_ids, "rows": rows}
 
 
+def _filter_activity_detail_for_server(card: dict[str, Any], server: dict[str, Any] | None, cards_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    effective_server = server or _resolve_activity_server_scope("current")
+    if not effective_server:
+        return card
+    next_card = {**card}
+    next_sections: list[dict[str, Any]] = []
+    for section in card.get("reward_sections") or []:
+        rows = section.get("rows") or []
+        if not any(row.get("source_activity_id") for row in rows if isinstance(row, dict)):
+            next_sections.append(section)
+            continue
+        filtered_rows = [
+            row
+            for row in rows
+            if not row.get("source_activity_id")
+            or _activity_card_matches_server(cards_by_id.get(str(row.get("source_activity_id"))) or {}, effective_server, cards_by_id=cards_by_id)
+        ]
+        if filtered_rows:
+            next_sections.append({**section, "count": len(filtered_rows), "rows": filtered_rows})
+    next_card["reward_sections"] = next_sections
+    return next_card
+
+
+def _activity_rank_runtime_sources() -> list[dict[str, Any]]:
+    try:
+        from backend.core.fanxiu_tcp_flow import _iter_fanxiu_tcp_decoded_sources, _load_json_file
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for source in _iter_fanxiu_tcp_decoded_sources(None):
+        decoded_path = Path(str(source.get("decoded_path") or ""))
+        if not decoded_path.is_file():
+            continue
+        data = _load_json_file(decoded_path) or {}
+        rows.append(
+            {
+                "source": source,
+                "path": decoded_path,
+                "data": data,
+                "mtime": decoded_path.stat().st_mtime,
+            }
+        )
+    rows.sort(key=lambda item: float(item.get("mtime") or 0))
+    return rows
+
+
+def _activity_rank_runtime_signature() -> tuple[tuple[str, int, int], ...]:
+    signature_rows: list[tuple[str, int, int]] = []
+    try:
+        from backend.core.fanxiu_activity_packet_sync import _rank_records_path
+        rank_path = _rank_records_path(None)
+        if rank_path.is_file():
+            stat = rank_path.stat()
+            signature_rows.append((str(rank_path), stat.st_mtime_ns, stat.st_size))
+    except Exception:
+        pass
+    try:
+        from backend.core.fanxiu_tcp_flow import _iter_fanxiu_tcp_decoded_sources
+    except Exception:
+        return tuple(sorted(signature_rows))
+    for source in _iter_fanxiu_tcp_decoded_sources(None):
+        decoded_path = Path(str(source.get("decoded_path") or ""))
+        if not decoded_path.is_file():
+            continue
+        stat = decoded_path.stat()
+        signature_rows.append((str(decoded_path), stat.st_mtime_ns, stat.st_size))
+    return tuple(sorted(signature_rows))
+
+
+def _activity_rank_server_names_from_frame(parsed: dict[str, Any]) -> dict[int, str]:
+    result: dict[int, str] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("_class") == "ServerVO":
+                server_id = _as_int(value.get("id"))
+                name = str(value.get("name") or "").strip()
+                if server_id is not None and name:
+                    result[server_id] = name
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(parsed)
+    return result
+
+
+def _activity_rank_super(rank_item: dict[str, Any]) -> dict[str, Any]:
+    parent = rank_item.get("_super")
+    return parent if isinstance(parent, dict) else {}
+
+
+def _format_activity_rank_number(value: Any) -> str:
+    number = _as_float(value)
+    if number is None:
+        return ""
+    if abs(number - int(number)) < 0.000001:
+        return str(int(number))
+    return f"{number:g}"
+
+
+def _parse_activity_abs_datetime(value: Any) -> datetime | None:
+    match = _ABS_TIME_RE.fullmatch(str(value or "").strip())
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            int(match.group(4)),
+            int(match.group(5)),
+            int(match.group(6)),
+        )
+    except ValueError:
+        return None
+
+
+def _activity_rank_runtime_still_open(card: dict[str, Any], cards_by_id: dict[str, dict[str, Any]]) -> bool:
+    close_at = _parse_activity_abs_datetime(card.get("close_panel_time"))
+    if close_at is not None:
+        return datetime.now() <= close_at
+    parent_id = str(card.get("parent_activity_id") or "").strip()
+    parent = cards_by_id.get(parent_id) if parent_id else None
+    if parent:
+        return _activity_rank_runtime_still_open(parent, cards_by_id)
+    return True
+
+
+def _activity_rank_progress_text(activity_id: str, rank_item: dict[str, Any]) -> str:
+    score = _as_float(rank_item.get("score"))
+    if score is None:
+        return ""
+    if activity_id.startswith("1162"):
+        level = int(score)
+        rate = _as_float(rank_item.get("extScore"))
+        if rate is None:
+            rate = _as_float(rank_item.get("extScore2"))
+        if rate is not None and rate > 0:
+            if rate > 100:
+                rate = rate / 100
+            return f"通过第{level}关{_format_activity_rank_number(rate)}%"
+        return f"通过第{level}关"
+    return f"积分 {_format_activity_rank_number(score)}"
+
+
+def _normalize_activity_rank_guardian(
+    *,
+    activity_id: str,
+    rank_item: dict[str, Any],
+    vo: dict[str, Any],
+    source: dict[str, Any],
+    server_names: dict[int, str],
+) -> dict[str, Any] | None:
+    parent = _activity_rank_super(rank_item)
+    rank = _as_int(parent.get("rank"))
+    if rank is None or rank <= 0:
+        return None
+    name = str(parent.get("name") or rank_item.get("name") or "").strip()
+    server_id = _as_int(rank_item.get("serverId"))
+    server_name = server_names.get(server_id or -1, "")
+    prefix = server_name or str(rank_item.get("clubName") or rank_item.get("crossUnionName") or rank_item.get("campName") or "").strip()
+    progress = _activity_rank_progress_text(activity_id, rank_item)
+    subject = f"{prefix}：{name}" if prefix and name else name or prefix
+    text = "，".join(part for part in [subject, progress] if part)
+    if not text:
+        text = f"第{rank}名"
+    return {
+        "activity_id": activity_id,
+        "rank": rank,
+        "name": name,
+        "server_id": server_id,
+        "server_name": server_name,
+        "subject": subject,
+        "progress": progress,
+        "score": rank_item.get("score"),
+        "ext_score": rank_item.get("extScore"),
+        "ext_score2": rank_item.get("extScore2"),
+        "group": vo.get("group"),
+        "rank_list_size": vo.get("rankListSize"),
+        "rank_vo_type": (vo.get("rankVOS") or {}).get("_type") if isinstance(vo.get("rankVOS"), dict) else "",
+        "source_path": str(source.get("path") or ""),
+        "captured_at": (source.get("source") or {}).get("created_at") or "",
+        "text": text,
+    }
+
+
+def _activity_rank_progress_text_from_values(activity_id: str, score: Any, ext_score: Any, ext_score2: Any = None) -> str:
+    score_number = _as_float(score)
+    if score_number is None:
+        return ""
+    if activity_id.startswith("1162"):
+        level = int(score_number)
+        rate = _as_float(ext_score)
+        if rate is None:
+            rate = _as_float(ext_score2)
+        if rate is not None and rate > 0:
+            if rate > 100:
+                rate = rate / 100
+            return f"通过第{level}关{_format_activity_rank_number(rate)}%"
+        return f"通过第{level}关"
+    return f"积分 {_format_activity_rank_number(score_number)}"
+
+
+def _normalize_activity_rank_record_item(
+    *,
+    activity_id: str,
+    item: dict[str, Any],
+    snapshot: dict[str, Any],
+    captured_at: str,
+) -> dict[str, Any] | None:
+    rank = _as_int(item.get("rank"))
+    if rank is None:
+        return None
+    index = _as_int(item.get("index"))
+    server_name = str(item.get("server_name") or item.get("club_name") or item.get("cross_union_name") or item.get("camp_name") or "").strip()
+    name = str(item.get("name") or "").strip()
+    subject = f"{server_name}：{name}" if server_name and name else name or server_name
+    progress = _activity_rank_progress_text_from_values(activity_id, item.get("score"), item.get("ext_score"), item.get("ext_score2"))
+    text = str(item.get("text") or "，".join(part for part in [subject, progress] if part) or f"第{rank}名")
+    return {
+        "activity_id": activity_id,
+        "rank": rank,
+        "index": index,
+        "name": name,
+        "server_id": item.get("server_id"),
+        "server_name": server_name,
+        "subject": subject,
+        "progress": progress,
+        "score": item.get("score"),
+        "ext_score": item.get("ext_score"),
+        "ext_score2": item.get("ext_score2"),
+        "group": snapshot.get("group"),
+        "rank_list_size": snapshot.get("rank_list_size"),
+        "rank_vo_type": snapshot.get("rank_vo_type") or "",
+        "captured_at": captured_at,
+        "text": text,
+    }
+
+
+def _load_activity_rank_record_indexes() -> tuple[dict[str, dict[int, dict[str, Any]]], dict[str, dict[str, Any]]]:
+    try:
+        from backend.core.fanxiu_activity_packet_sync import get_fanxiu_activity_rank_records
+    except Exception:
+        return {}
+    payload = get_fanxiu_activity_rank_records()
+    result: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    self_result: dict[str, dict[str, Any]] = {}
+    for record in payload.get("records") or []:
+        if not isinstance(record, dict):
+            continue
+        snapshot = record.get("snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        activity_id = str(snapshot.get("activity_id") or "").strip()
+        if not activity_id:
+            continue
+        captured_at = str(record.get("last_seen_at") or "")
+        for item in snapshot.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_activity_rank_record_item(
+                activity_id=activity_id,
+                item=item,
+                snapshot=snapshot,
+                captured_at=captured_at,
+            )
+            if not normalized:
+                continue
+            index = _as_int(normalized.get("index"))
+            if index is None:
+                index = len(result[activity_id])
+            result[activity_id][index] = {**normalized, "index": index}
+        personal = snapshot.get("personal_item")
+        if isinstance(personal, dict):
+            normalized_personal = _normalize_activity_rank_record_item(
+                activity_id=activity_id,
+                item=personal,
+                snapshot=snapshot,
+                captured_at=captured_at,
+            )
+            if normalized_personal:
+                self_result[activity_id] = normalized_personal
+    return {key: dict(items) for key, items in result.items()}, self_result
+
+
+def _load_activity_rank_guardian_index_from_sync_records() -> dict[str, dict[int, dict[str, Any]]]:
+    return _load_activity_rank_record_indexes()[0]
+
+
+def _select_activity_rank_guardian(
+    rank_items: dict[int, dict[str, Any]],
+    *,
+    rank_start: int | None,
+    rank_end: int | None,
+) -> dict[str, Any] | None:
+    if rank_end is None:
+        return None
+    by_position = rank_items.get(rank_end - 1)
+    if by_position:
+        return by_position
+    if rank_start is not None and rank_start <= 1:
+        return rank_items.get(0)
+    return None
+
+
+def _find_activity_rank_reward_row_for_position(rows: list[dict[str, Any]], position: int) -> dict[str, Any] | None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rank_start = _as_int(row.get("rank_start"))
+        rank_end = _as_int(row.get("rank_end"))
+        if rank_start is None or rank_end is None:
+            continue
+        if rank_start <= position <= rank_end:
+            return row
+    return None
+
+
+def _rank_row_label(row: dict[str, Any] | None) -> str:
+    if not row:
+        return ""
+    return str(row.get("title") or row.get("rank_range") or "").strip()
+
+
+def _load_activity_rank_guardian_index() -> dict[str, dict[int, dict[str, Any]]]:
+    global _ACTIVITY_RANK_GUARDIAN_CACHE
+    signature = _activity_rank_runtime_signature()
+    if _ACTIVITY_RANK_GUARDIAN_CACHE and _ACTIVITY_RANK_GUARDIAN_CACHE[0] == signature:
+        return _ACTIVITY_RANK_GUARDIAN_CACHE[1]
+    record_index = _load_activity_rank_guardian_index_from_sync_records()
+    if record_index:
+        _ACTIVITY_RANK_GUARDIAN_CACHE = (signature, record_index)
+        return record_index
+    result: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    server_names: dict[int, str] = {}
+    for source in _activity_rank_runtime_sources():
+        data = source.get("data") or {}
+        for frame in data.get("frames") or []:
+            if not isinstance(frame, dict):
+                continue
+            parsed = frame.get("parsed")
+            if not isinstance(parsed, dict):
+                continue
+            server_names.update(_activity_rank_server_names_from_frame(parsed))
+            if str(frame.get("name") or "") != "SM_ActivityRankSync":
+                continue
+            vo = parsed.get("vo")
+            if not isinstance(vo, dict):
+                continue
+            activity_id = str(vo.get("activityId") or vo.get("id") or "").strip()
+            rank_vos = vo.get("rankVOS")
+            items = rank_vos.get("items") if isinstance(rank_vos, dict) else []
+            if not activity_id or not isinstance(items, list):
+                continue
+            for raw_item in items:
+                if not isinstance(raw_item, dict):
+                    continue
+                guardian = _normalize_activity_rank_guardian(
+                    activity_id=activity_id,
+                    rank_item=raw_item,
+                    vo=vo,
+                    source=source,
+                    server_names=server_names,
+                )
+                if not guardian:
+                    continue
+                index = _as_int(guardian.get("index"))
+                if index is None:
+                    index = len(result[activity_id])
+                result[activity_id][index] = guardian
+    normalized = {key: dict(items) for key, items in result.items()}
+    _ACTIVITY_RANK_GUARDIAN_CACHE = (signature, normalized)
+    return normalized
+
+
+def _enrich_activity_rank_reward_rows(card: dict[str, Any], cards_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not any(
+        row.get("rank_end")
+        for section in card.get("reward_sections") or []
+        for row in section.get("rows") or []
+        if isinstance(row, dict)
+    ):
+        return card
+    if not _activity_rank_runtime_still_open(card, cards_by_id):
+        return card
+    guardian_index = _load_activity_rank_guardian_index()
+    _rank_indexes, self_index = _load_activity_rank_record_indexes()
+    if not guardian_index and not self_index:
+        return card
+    next_card = {**card}
+    next_sections: list[dict[str, Any]] = []
+    for section in card.get("reward_sections") or []:
+        next_rows: list[dict[str, Any]] = []
+        rank_section_source_id = ""
+        for row in section.get("rows") or []:
+            if not isinstance(row, dict):
+                next_rows.append(row)
+                continue
+            source_activity_id = str(row.get("source_activity_id") or card.get("id") or "").strip()
+            if not rank_section_source_id and source_activity_id:
+                rank_section_source_id = source_activity_id
+            source_card = cards_by_id.get(source_activity_id) if source_activity_id else None
+            if source_card and not _activity_rank_runtime_still_open(source_card, cards_by_id):
+                next_rows.append(row)
+                continue
+            rank_end = _as_int(row.get("rank_end"))
+            rank_start = _as_int(row.get("rank_start"))
+            guardian = _select_activity_rank_guardian(
+                guardian_index.get(source_activity_id, {}),
+                rank_start=rank_start,
+                rank_end=rank_end,
+            )
+            if guardian:
+                next_rows.append({**row, "rank_gatekeeper": guardian})
+            else:
+                next_rows.append(row)
+        next_section = {**section, "rows": next_rows}
+        if str(section.get("key") or "") == "rank_reward" and rank_section_source_id:
+            self_item = self_index.get(rank_section_source_id)
+            self_rank = _as_int((self_item or {}).get("rank")) if self_item else None
+            if self_item and self_rank is not None:
+                current_row = _find_activity_rank_reward_row_for_position(next_rows, self_rank)
+                next_row = None
+                if current_row:
+                    current_start = _as_int(current_row.get("rank_start"))
+                    if current_start is not None and current_start > 1:
+                        next_row = _find_activity_rank_reward_row_for_position(next_rows, current_start - 1)
+                next_section["rank_self"] = {
+                    **self_item,
+                    "current_tier": _rank_row_label(current_row),
+                    "current_gatekeeper_rank": (current_row or {}).get("rank_end"),
+                    "current_gatekeeper": (current_row or {}).get("rank_gatekeeper"),
+                    "next_tier": _rank_row_label(next_row),
+                    "next_gatekeeper_rank": (next_row or {}).get("rank_end"),
+                    "next_gatekeeper": (next_row or {}).get("rank_gatekeeper"),
+                }
+        next_sections.append(next_section)
+    next_card["reward_sections"] = next_sections
+    return next_card
+
+
 def search_fanxiu_activity_cards(
     *,
     query: str = "",
     kind_key: str = "",
     time_kind: str = "",
     activity_type: str = "",
+    server_scope: str = "",
     sort_by: str = "default",
     sort_order: str = "asc",
     limit: int = 80,
@@ -1442,13 +2348,14 @@ def search_fanxiu_activity_cards(
     export_root: str | Path | None = None,
     rebuild_missing: bool = True,
 ) -> dict[str, Any]:
-    limit = max(1, min(int(limit), 200))
+    limit = max(1, min(int(limit), 5000))
     offset = max(0, int(offset))
     runtime_index = load_fanxiu_activity_runtime_index(export_root=export_root, rebuild_missing=rebuild_missing)
     catalog = runtime_index["catalog"]
     kind_key = str(kind_key or "").strip()
     time_kind = str(time_kind or "").strip()
     activity_type = str(activity_type or "").strip()
+    server = _resolve_activity_server_scope(server_scope)
     sort_by = str(sort_by or "default").strip()
     sort_order = str(sort_order or "asc").strip().lower()
     if sort_by not in {"default", "time"}:
@@ -1463,8 +2370,13 @@ def search_fanxiu_activity_cards(
         if score <= 0:
             continue
         query_rows.append((score, int(doc["index"]), card, doc))
+    server_query_rows = [
+        (score, index, card, doc)
+        for score, index, card, doc in query_rows
+        if _activity_card_matches_server(card, server, cards_by_id=runtime_index["cards_by_id"])
+    ]
     scored_rows: list[tuple[int, int, dict[str, Any]]] = []
-    for score, index, card, doc in query_rows:
+    for score, index, card, doc in server_query_rows:
         if kind_key and kind_key not in doc["kind_values"]:
             continue
         if time_kind and time_kind != doc["time_kind"]:
@@ -1487,6 +2399,7 @@ def search_fanxiu_activity_cards(
         "kind_key": kind_key,
         "time_kind": time_kind,
         "activity_type": activity_type,
+        "server_scope": server.get("scope") if server else "",
         "sort_by": sort_by,
         "sort_order": sort_order,
         "limit": limit,
@@ -1497,7 +2410,7 @@ def search_fanxiu_activity_cards(
         "kind_options": runtime_index["kind_options"],
         "time_options": runtime_index["time_options"],
         "activity_type_options": runtime_index["activity_type_options"],
-        "facet_index": _build_activity_facet_index(query_rows),
+        "facet_index": _build_activity_facet_index(server_query_rows),
         "items": [_format_activity_search_item(card, score) for score, _index, card in page_rows],
     }
 
@@ -1505,6 +2418,7 @@ def search_fanxiu_activity_cards(
 def get_fanxiu_activity_card(
     activity_id: str | int,
     *,
+    server_scope: str = "",
     export_root: str | Path | None = None,
     rebuild_missing: bool = True,
 ) -> dict[str, Any]:
@@ -1513,7 +2427,10 @@ def get_fanxiu_activity_card(
     catalog = runtime_index["catalog"]
     card = runtime_index["cards_by_id"].get(requested)
     if card:
-        return {"catalog_path": catalog["catalog_path"], "card": {**card, "terms": (card.get("terms") or [])[:20]}}
+        server = _resolve_activity_server_scope(server_scope)
+        scoped_card = _filter_activity_detail_for_server(card, server, runtime_index["cards_by_id"])
+        scoped_card = _enrich_activity_rank_reward_rows(scoped_card, runtime_index["cards_by_id"])
+        return {"catalog_path": catalog["catalog_path"], "card": {**scoped_card, "terms": (scoped_card.get("terms") or [])[:20]}}
     raise FanxiuResourceError(f"没有找到活动：{activity_id}")
 
 
@@ -1544,6 +2461,7 @@ def build_fanxiu_activity_catalog(*, export_root: str | Path | None = None) -> d
     battle_pass_by_activity = _index_rows_by_key(battle_pass_rows, "taskActivityId")
     loop_entries_by_activity = _build_loop_entries_by_activity(loop_rows, activity_rows)
     boss_by_activity = _build_boss_rows_by_activity(activity_rows, boss_rows)
+    challenge_sections_by_activity = _build_challenge_sections_by_activity(activity_rows, root=root, item_by_id=item_by_id)
     functions_by_id = {str(row.get("id")): row for row in open_function_rows if row.get("id") not in (None, "")}
 
     current_cards = [
@@ -1557,6 +2475,7 @@ def build_fanxiu_activity_catalog(*, export_root: str | Path | None = None) -> d
                 fund_rows=fund_by_activity.get(str(row.get("id")), []),
                 battle_pass_rows=battle_pass_by_activity.get(str(row.get("id")), []),
                 boss_rows=boss_by_activity.get(str(row.get("id")), []),
+                challenge_sections=challenge_sections_by_activity.get(str(row.get("id")), []),
                 loop_entries=loop_entries_by_activity.get(str(row.get("id")), []),
                 jump_target=_resolve_open_function(row, functions_by_id),
                 item_by_id=item_by_id,
@@ -1593,11 +2512,13 @@ def build_fanxiu_activity_catalog(*, export_root: str | Path | None = None) -> d
         "active_task_count": len(active_task_rows),
         "open_function_count": len(open_function_rows),
         "subpackage_reward_count": len(subpackage_reward_rows),
+        "activity_challenge_reward_count": sum(len(sections) for sections in challenge_sections_by_activity.values()),
         "catalog_card_count": len(cards),
         "current_card_count": current_card_count,
         "stale_card_count": stale_card_count,
         "activity_with_time_hint_count": sum(1 for card in cards if card.get("first_time_hint")),
         "activity_with_reward_count": sum(1 for card in cards if card.get("reward_sections")),
+        "activity_with_challenge_reward_count": sum(1 for card in cards if card.get("challenge_sections")),
         "activity_with_loop_count": sum(1 for card in cards if card.get("loop_entries")),
         "activity_with_jump_target_count": sum(1 for card in cards if card.get("jump_target")),
         "activity_kind_count": len({key for card in cards for key in card.get("kind_keys") or []}),
@@ -1620,6 +2541,8 @@ def build_fanxiu_activity_catalog(*, export_root: str | Path | None = None) -> d
             "active_task_rows": str(root / DEFAULT_ACTIVE_TASK_ROWS),
             "open_function_rows": str(root / DEFAULT_OPEN_FUNCTION_ROWS),
             "subpackage_reward_rows": str(root / DEFAULT_SUBPACKAGE_REWARD_ROWS),
+            "blld_level_rows": str(root / DEFAULT_BLLD_LEVEL_ROWS),
+            "blld_level_reward_rows": str(root / DEFAULT_BLLD_LEVEL_REWARD_ROWS),
         },
         "stats": stats,
         "cards": cards,

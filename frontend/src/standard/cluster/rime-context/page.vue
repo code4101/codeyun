@@ -161,6 +161,7 @@ const performanceSectionLabels: Record<string, string> = {
   input_fallback_load_index: '输入兜底加载索引',
   translator_split_syllables: '拆分拼音',
   translator_yield_candidates: '输出候选',
+  translator_skip_segment: '跳过非完整段',
   load_index_total: '加载索引总耗时',
   load_index_skip: '跳过索引加载',
   build_completion_index: '构建补全索引',
@@ -226,6 +227,7 @@ const performanceSectionPhase: Record<string, PerformancePhaseKey> = {
   translator_total: 'input',
   translator_split_syllables: 'input',
   translator_yield_candidates: 'input',
+  translator_skip_segment: 'input',
   score_candidates_total: 'input',
   score_context_lookup: 'input',
   score_global_lookup: 'input',
@@ -468,6 +470,9 @@ const performancePhaseGroups = computed(() => (
     })
     .filter((group) => group.sections.length)
 ));
+const performanceRecentQueries = computed(() => (
+  (performanceState.value?.recent_queries || []).slice(-40)
+));
 
 const findPerformanceSection = (key: string) => performanceSections.value.find((item) => item.key === key) || null;
 const performanceSummary = computed(() => ({
@@ -639,6 +644,7 @@ const unavailablePerformance = (message: string, status = 'request_failed'): Rim
   config: {},
   runtime: {},
   sections: {},
+  recent_queries: [],
 });
 
 const unavailableWeightCompare = (message: string, status = 'request_failed'): RimeWeightCompareResponse => ({
@@ -2546,6 +2552,40 @@ onBeforeUnmount(() => {
               </tbody>
             </table>
           </section>
+          <section v-if="performanceRecentQueries.length" class="perf-table-block">
+            <div class="perf-block-head">
+              <strong>最近输入轨迹</strong>
+              <span>记录 Rime 调用到 Lua 预测器时看到的输入段。</span>
+            </div>
+            <table class="rime-performance-table perf-query-table" aria-label="小狼毫最近输入轨迹">
+              <thead>
+                <tr>
+                  <th>序号</th>
+                  <th>完整输入</th>
+                  <th>输入段</th>
+                  <th>段位</th>
+                  <th>间隔</th>
+                  <th>耗时</th>
+                  <th>候选</th>
+                  <th>输出</th>
+                  <th>结果</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="query in performanceRecentQueries" :key="query.seq">
+                  <td>{{ query.seq }}</td>
+                  <td :title="query.full_input">{{ query.full_input || '-' }}</td>
+                  <td :title="query.input">{{ query.input || '-' }}</td>
+                  <td>{{ query.seg_start }}-{{ query.seg_end }}</td>
+                  <td>{{ formatMs(query.gap_ms) }}</td>
+                  <td>{{ formatMs(query.duration_ms) }}</td>
+                  <td>{{ formatNumber(query.candidate_count) }}</td>
+                  <td>{{ formatNumber(query.yielded_count) }}</td>
+                  <td>{{ query.reason || '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
           <table v-if="performanceState.runtime && Object.keys(performanceState.runtime).length" class="rime-performance-runtime" aria-label="小狼毫运行快照">
             <tbody>
               <tr v-for="(value, key) in performanceState.runtime" :key="key">
@@ -3294,6 +3334,18 @@ onBeforeUnmount(() => {
 .rime-performance-table th:nth-child(3),
 .rime-performance-table td:nth-child(3) {
   min-width: 230px;
+}
+
+.perf-query-table th:nth-child(3),
+.perf-query-table td:nth-child(3) {
+  min-width: 0;
+}
+
+.perf-query-table td:nth-child(2),
+.perf-query-table td:nth-child(3) {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .perf-time-bar {

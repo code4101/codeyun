@@ -9,7 +9,13 @@
     <div class="workspace-grid">
       <aside class="provider-panel">
         <section class="panel-card">
-          <div class="provider-list">
+          <el-segmented
+            v-model="assetMode"
+            class="asset-mode-tabs"
+            :options="assetModeOptions"
+            @change="handleAssetModeChange"
+          />
+          <div v-if="assetMode === 'providers'" class="provider-list">
             <button
               v-for="provider in providers"
               :key="provider.id"
@@ -34,7 +40,7 @@
               </div>
             </button>
           </div>
-          <div v-if="isAuthenticated" class="provider-footer">
+          <div v-if="assetMode === 'providers' && isAuthenticated" class="provider-footer">
             <el-button
               class="asset-add-button"
               size="large"
@@ -43,30 +49,65 @@
               新增
             </el-button>
           </div>
-          <div v-if="aiAppStore.appDefinitions.length" class="provider-list app-list">
-            <button
-              v-for="appDefinition in aiAppStore.appDefinitions"
-              :key="appDefinition.id"
-              type="button"
-              class="provider-item"
-              :class="{ active: assetMode === 'apps' && selectedAppId === appDefinition.id }"
-              @click="handleAppAssetChange(appDefinition.id)"
+          <div v-if="assetMode === 'apps' && aiAppStore.appDefinitions.length" ref="appTreeRef" class="app-tree">
+            <div
+              v-for="(group, groupIndex) in appDefinitionTree"
+              :key="group.key"
+              class="app-tree-group"
             >
-              <div class="provider-item-main">
-                <span class="provider-item-label">{{ appDefinition.label }}</span>
-                <span class="provider-item-model">
-                  {{ getAppSummaryModel(appDefinition.id) }}
-                </span>
-              </div>
-              <div class="provider-item-meta">
-                <span
-                  class="provider-item-state"
-                  :class="getAppStateClass(appDefinition.id)"
+              <div class="app-tree-group-header">
+                <SortableOrderHandle
+                  :index="groupIndex"
+                  :total="appDefinitionTree.length"
+                  class="app-group-order-handle"
+                  size="xs"
+                  title="拖拽调整分组顺序"
+                  aria-label="拖拽调整分组顺序"
+                />
+                <button
+                  type="button"
+                  class="app-tree-group-toggle"
+                  @click="toggleAppGroup(group.key)"
                 >
-                  {{ getAppStateLabel(appDefinition.id) }}
-                </span>
+                  <span class="app-tree-caret" :class="{ expanded: isAppGroupExpanded(group.key) }">›</span>
+                  <span class="app-tree-group-label">{{ group.label }}</span>
+                  <span class="app-tree-count">{{ group.children.length }}</span>
+                </button>
               </div>
-            </button>
+              <div
+                v-if="isAppGroupExpanded(group.key)"
+                :ref="el => setAppListRef(group.key, el)"
+                class="provider-list app-list"
+              >
+                <div
+                  v-for="(appDefinition, appIndex) in group.children"
+                  :key="appDefinition.id"
+                  class="provider-item app-tree-item"
+                  :class="{ active: selectedAppId === appDefinition.id }"
+                >
+                  <SortableOrderHandle
+                    :index="appIndex"
+                    :total="group.children.length"
+                    class="app-item-order-handle"
+                    size="xs"
+                    title="拖拽调整业务顺序"
+                    aria-label="拖拽调整业务顺序"
+                  />
+                  <button
+                    type="button"
+                    class="app-tree-item-button"
+                    @click="handleAppAssetChange(appDefinition.id)"
+                  >
+                    <div class="provider-item-main">
+                      <span class="provider-item-label">{{ appDefinition.label }}</span>
+                      <span class="provider-item-model">
+                        {{ getAppSummaryModel(appDefinition.id) }}
+                      </span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </aside>
@@ -510,15 +551,6 @@
           </div>
 
           <el-form label-position="top" class="settings-form">
-            <el-form-item label="启用">
-              <div class="app-toggle-row">
-                <el-switch v-model="currentAppEnabled" />
-                <el-tag size="small" effect="plain" :type="currentAppEnabled ? 'success' : 'info'">
-                  {{ currentAppEnabled ? '节点与详情页可直接调用' : '当前不执行' }}
-                </el-tag>
-              </div>
-            </el-form-item>
-
             <el-form-item label="AI来源">
               <el-select
                 v-model="currentAppProviderId"
@@ -561,13 +593,14 @@
           </el-form>
 
           <el-alert
-            title="会读取当前节点标题，并参考已有条目的标题、分类、形态、阶段，自动回写分类、形态、阶段。"
+            v-if="currentAppDescription"
+            :title="currentAppDescription"
             type="info"
             :closable="false"
             class="status-alert"
           />
           <el-alert
-            v-if="currentAppEnabled && !currentAppIsReady"
+            v-if="!currentAppIsReady"
             title="请先为这个应用绑定一个已可用的来源和模型。"
             type="warning"
             :closable="false"
@@ -616,9 +649,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Hide, Minus, Plus, QuestionFilled, RefreshRight, View } from '@element-plus/icons-vue'
+import Sortable from 'sortablejs'
 
 import {
   createAiChatCodexAccessKey,
@@ -638,7 +672,7 @@ import {
   type AiChatStatusResponse,
 } from '@/api/aiChat'
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
-import { useAiAppStore } from '@/store/aiAppStore'
+import { useAiAppStore, type AiAppDefinition } from '@/store/aiAppStore'
 import { useAiProviderStore } from '@/store/aiProviderStore'
 import { useUserStore } from '@/store/userStore'
 import { useSortableList } from '@/utils/useSortableList'
@@ -652,14 +686,117 @@ interface CustomProviderDraft {
 }
 
 type AiChatSystemAccessKeySummary = AiChatOllamaAccessKeySummary | AiChatCodexAccessKeySummary
+type AssetMode = 'providers' | 'apps'
+const ASSET_MODE_STORAGE_KEY = 'codeyun_ai_config_asset_mode'
+const APP_TREE_ORDER_STORAGE_KEY = 'codeyun_ai_config_app_tree_order'
+
+interface AppDefinitionGroup {
+  key: string
+  label: string
+  children: AiAppDefinition[]
+}
+
+interface AppTreeOrderPayload {
+  version: 1
+  groups: string[]
+  items: Record<string, string[]>
+}
+
+const FALLBACK_APP_GROUPS: Record<string, string> = {
+  'note-taxonomy': '星图笔记',
+  'codex-diary': '星图笔记',
+  'codex-daily-summary': '开发工具',
+  'note-sheet-clockin-link-detection': '考勤',
+  'note-sheet-excel-import': '考勤',
+  'ai-git-commit': '开发工具',
+  evomind: '开发工具',
+  codeclaw: '开发工具',
+  'rime-lint': '文本工具',
+  'fanxiu-pseudocode': '凡修',
+  'attendance-precheck': '考勤',
+}
+
+const APP_GROUP_ORDER = ['星图笔记', '考勤', '开发工具', '文本工具', '凡修', '其他']
+
+function resolveAppGroup(definition: AiAppDefinition) {
+  return definition.group?.trim() || FALLBACK_APP_GROUPS[definition.id] || '其他'
+}
+
+function loadAssetMode(): AssetMode {
+  if (typeof window === 'undefined') {
+    return 'providers'
+  }
+  const storedValue = window.localStorage.getItem(ASSET_MODE_STORAGE_KEY)
+  return storedValue === 'apps' || storedValue === 'providers' ? storedValue : 'providers'
+}
+
+function saveAssetMode(value: AssetMode) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(ASSET_MODE_STORAGE_KEY, value)
+}
+
+function loadAppTreeOrder(): AppTreeOrderPayload {
+  if (typeof window === 'undefined') {
+    return { version: 1, groups: [], items: {} }
+  }
+  try {
+    const payload = JSON.parse(window.localStorage.getItem(APP_TREE_ORDER_STORAGE_KEY) || '{}') as Partial<AppTreeOrderPayload>
+    const groups = Array.isArray(payload.groups)
+      ? payload.groups.filter((item): item is string => typeof item === 'string' && !!item.trim())
+      : []
+    const rawItems = payload.items && typeof payload.items === 'object' ? payload.items : {}
+    const items = Object.fromEntries(
+      Object.entries(rawItems).map(([groupKey, ids]) => [
+        groupKey,
+        Array.isArray(ids)
+          ? ids.filter((item): item is string => typeof item === 'string' && !!item.trim())
+          : [],
+      ]),
+    )
+    return { version: 1, groups, items }
+  } catch {
+    return { version: 1, groups: [], items: {} }
+  }
+}
+
+function saveAppTreeOrder(groups: string[], items: Record<string, string[]>) {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const payload: AppTreeOrderPayload = { version: 1, groups, items }
+  window.localStorage.setItem(APP_TREE_ORDER_STORAGE_KEY, JSON.stringify(payload))
+}
+
+function moveItem<T>(items: T[], oldIndex: number, newIndex: number) {
+  const nextItems = [...items]
+  const [moved] = nextItems.splice(oldIndex, 1)
+  if (moved !== undefined) {
+    nextItems.splice(newIndex, 0, moved)
+  }
+  return nextItems
+}
 
 const aiProviderStore = useAiProviderStore()
 const aiAppStore = useAiAppStore()
 const userStore = useUserStore()
 
-const assetMode = ref<'providers' | 'apps'>('providers')
+const assetMode = ref<AssetMode>(loadAssetMode())
 const selectedProviderId = ref('')
-const selectedAppId = ref<'note-taxonomy' | 'ai-git-commit' | 'codex-diary'>('note-taxonomy')
+const selectedAppId = ref('note-taxonomy')
+const expandedAppGroups = ref<Set<string>>(new Set())
+const appTreeOrderPayload = loadAppTreeOrder()
+const appGroupOrder = ref<string[]>(appTreeOrderPayload.groups)
+const appItemOrders = ref<Record<string, string[]>>(appTreeOrderPayload.items)
+const appTreeRef = ref<HTMLElement | null>(null)
+const appListRefs = new Map<string, HTMLElement>()
+let appTreeSortable: Sortable | null = null
+let appListSortables = new Map<string, Sortable>()
+const assetModeOptions = [
+  { label: '模型', value: 'providers' },
+  { label: '业务', value: 'apps' },
+]
 const status = reactive<AiChatStatusResponse>({
   provider: 'ollama',
   label: 'Ollama',
@@ -730,7 +867,7 @@ const customProviderDraft = reactive<CustomProviderDraft>({
 })
 
 const DEFAULT_CODEX_COMMAND = 'codex'
-const DEFAULT_CODEX_MODEL = 'gpt-5.5'
+const DEFAULT_CODEX_MODEL = 'gpt-5.3-codex-spark'
 
 const isAuthenticated = computed(() => userStore.isAuthenticated)
 const isAdmin = computed(() => userStore.isAdmin)
@@ -738,6 +875,49 @@ const providers = computed(() => aiProviderStore.providers)
 const currentProvider = computed(() => aiProviderStore.getProviderById(selectedProviderId.value))
 const currentProviderConfig = computed(() => aiProviderStore.getProviderConfig(selectedProviderId.value))
 const currentProviderCanManage = computed(() => currentProvider.value?.can_manage ?? false)
+const appDefinitionTree = computed<AppDefinitionGroup[]>(() => {
+  const groupMap = new Map<string, AppDefinitionGroup>()
+  for (const definition of aiAppStore.appDefinitions) {
+    const groupLabel = resolveAppGroup(definition)
+    const key = groupLabel
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        key,
+        label: groupLabel,
+        children: [],
+      })
+    }
+    groupMap.get(key)?.children.push(definition)
+  }
+  return Array.from(groupMap.values()).map(group => {
+    const itemOrder = appItemOrders.value[group.key] || []
+    if (!itemOrder.length) {
+      return group
+    }
+    const itemRanks = new Map(itemOrder.map((id, index) => [id, index]))
+    return {
+      ...group,
+      children: [...group.children].sort((a, b) => {
+        const rankA = itemRanks.get(a.id) ?? Number.MAX_SAFE_INTEGER
+        const rankB = itemRanks.get(b.id) ?? Number.MAX_SAFE_INTEGER
+        return rankA - rankB
+      }),
+    }
+  }).sort((a, b) => {
+    const savedOrderA = appGroupOrder.value.indexOf(a.key)
+    const savedOrderB = appGroupOrder.value.indexOf(b.key)
+    if (savedOrderA >= 0 || savedOrderB >= 0) {
+      const rankA = savedOrderA >= 0 ? savedOrderA : Number.MAX_SAFE_INTEGER
+      const rankB = savedOrderB >= 0 ? savedOrderB : Number.MAX_SAFE_INTEGER
+      return rankA - rankB || a.label.localeCompare(b.label)
+    }
+    const orderA = APP_GROUP_ORDER.indexOf(a.label)
+    const orderB = APP_GROUP_ORDER.indexOf(b.label)
+    const rankA = orderA === -1 ? APP_GROUP_ORDER.length : orderA
+    const rankB = orderB === -1 ? APP_GROUP_ORDER.length : orderB
+    return rankA - rankB || a.label.localeCompare(b.label)
+  })
+})
 const currentProviderSharingMode = computed(() => currentProvider.value?.sharing_mode || 'builtin')
 const currentProviderRequiresApiKey = computed(() => currentProvider.value?.requires_api_key ?? status.requires_api_key)
 const currentProviderHasSavedConfig = computed(() => currentProviderConfig.value.hasAccountConfig)
@@ -834,6 +1014,7 @@ const customProviderDefaultModelPlaceholder = computed(() => (
     : '可选，留空后再在配置页单独填写'
 ))
 const currentAppDefinition = computed(() => aiAppStore.getDefinition(selectedAppId.value))
+const currentAppDescription = computed(() => currentAppDefinition.value?.description?.trim() || '')
 const currentAppConfig = computed(() => aiAppStore.getAppConfig(selectedAppId.value))
 const resolvedCurrentAppProviderId = computed(() =>
   currentAppConfig.value.provider.trim()
@@ -841,12 +1022,6 @@ const resolvedCurrentAppProviderId = computed(() =>
   || providers.value[0]?.id
   || ''
 )
-const currentAppEnabled = computed({
-  get: () => currentAppConfig.value.enabled,
-  set: (value: boolean) => {
-    void aiAppStore.updateAppConfig(selectedAppId.value, { enabled: value })
-  },
-})
 const currentAppProviderId = computed({
   get: () => currentAppConfig.value.provider.trim() || resolvedCurrentAppProviderId.value,
   set: (value: string) => {
@@ -870,8 +1045,7 @@ const currentAppModelOptions = computed(() => (
 ))
 const currentAppEffectiveModel = computed(() => currentAppConfig.value.model.trim() || currentAppModelOptions.value[0] || '')
 const currentAppIsReady = computed(() => (
-  currentAppEnabled.value
-  && Boolean(resolvedCurrentAppProviderId.value)
+  Boolean(resolvedCurrentAppProviderId.value)
   && Boolean(currentAppEffectiveModel.value)
   && aiProviderStore.hasEffectiveConnection(resolvedCurrentAppProviderId.value)
 ))
@@ -912,6 +1086,43 @@ watch(
   }
 )
 
+watch(assetMode, value => {
+  saveAssetMode(value)
+})
+
+watch(
+  appDefinitionTree,
+  groups => {
+    const nextExpanded = new Set(expandedAppGroups.value)
+    if (!nextExpanded.size) {
+      groups.forEach(group => nextExpanded.add(group.key))
+    }
+    const knownKeys = new Set(groups.map(group => group.key))
+    for (const key of Array.from(nextExpanded)) {
+      if (!knownKeys.has(key)) {
+        nextExpanded.delete(key)
+      }
+    }
+    expandedAppGroups.value = nextExpanded
+    if (!groups.some(group => group.children.some(item => item.id === selectedAppId.value))) {
+      selectedAppId.value = groups[0]?.children[0]?.id || 'note-taxonomy'
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [
+    assetMode.value,
+    appDefinitionTree.value.map(group => `${group.key}:${group.children.map(item => item.id).join(',')}`).join('|'),
+    Array.from(expandedAppGroups.value).sort().join(','),
+  ] as const,
+  () => {
+    void initAppTreeSortable()
+  },
+  { immediate: true },
+)
+
 watch(
   () => customProviderDraft.kind,
   kind => {
@@ -929,6 +1140,16 @@ watch(
 
 onMounted(async () => {
   await loadProvidersAndStatus()
+})
+
+onUpdated(() => {
+  if (assetMode.value === 'apps') {
+    void initAppTreeSortable()
+  }
+})
+
+onBeforeUnmount(() => {
+  destroyAppTreeSortable()
 })
 
 useSortableList({
@@ -955,7 +1176,103 @@ function handleProviderAssetChange(id: string) {
 
 function handleAppAssetChange(id: string) {
   assetMode.value = 'apps'
-  selectedAppId.value = id as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary'
+  selectedAppId.value = id
+}
+
+function handleAssetModeChange(value: string | number | boolean) {
+  assetMode.value = value === 'apps' ? 'apps' : 'providers'
+}
+
+function setAppListRef(groupKey: string, el: Element | null) {
+  if (el instanceof HTMLElement) {
+    appListRefs.set(groupKey, el)
+  } else {
+    appListRefs.delete(groupKey)
+  }
+}
+
+function destroyAppTreeSortable() {
+  appTreeSortable?.destroy()
+  appTreeSortable = null
+  for (const sortable of appListSortables.values()) {
+    sortable.destroy()
+  }
+  appListSortables = new Map()
+}
+
+async function initAppTreeSortable() {
+  destroyAppTreeSortable()
+  if (assetMode.value !== 'apps') {
+    return
+  }
+  await nextTick()
+  if (appTreeRef.value && appDefinitionTree.value.length > 1) {
+    appTreeSortable = Sortable.create(appTreeRef.value, {
+      draggable: '.app-tree-group',
+      handle: '.app-group-order-handle',
+      animation: 150,
+      ghostClass: 'app-tree-ghost',
+      onEnd: ({ oldIndex, newIndex }) => {
+        if (oldIndex == null || newIndex == null || oldIndex === newIndex) {
+          return
+        }
+        reorderAppGroup(oldIndex, newIndex)
+      },
+    })
+  }
+  for (const group of appDefinitionTree.value) {
+    const listEl = appListRefs.get(group.key)
+    if (!listEl || group.children.length <= 1) {
+      continue
+    }
+    appListSortables.set(group.key, Sortable.create(listEl, {
+      draggable: '.app-tree-item',
+      handle: '.app-item-order-handle',
+      animation: 150,
+      ghostClass: 'app-tree-ghost',
+      onEnd: ({ oldIndex, newIndex }) => {
+        if (oldIndex == null || newIndex == null || oldIndex === newIndex) {
+          return
+        }
+        reorderAppDefinition(group.key, oldIndex, newIndex)
+      },
+    }))
+  }
+}
+
+function persistAppTreeOrder() {
+  saveAppTreeOrder(appGroupOrder.value, appItemOrders.value)
+}
+
+function reorderAppGroup(oldIndex: number, newIndex: number) {
+  appGroupOrder.value = moveItem(appDefinitionTree.value.map(group => group.key), oldIndex, newIndex)
+  persistAppTreeOrder()
+}
+
+function reorderAppDefinition(groupKey: string, oldIndex: number, newIndex: number) {
+  const group = appDefinitionTree.value.find(item => item.key === groupKey)
+  if (!group) {
+    return
+  }
+  appItemOrders.value = {
+    ...appItemOrders.value,
+    [groupKey]: moveItem(group.children.map(item => item.id), oldIndex, newIndex),
+  }
+  persistAppTreeOrder()
+}
+
+function isAppGroupExpanded(key: string) {
+  return expandedAppGroups.value.has(key)
+}
+
+function toggleAppGroup(key: string) {
+  const nextExpanded = new Set(expandedAppGroups.value)
+  if (nextExpanded.has(key)) {
+    nextExpanded.delete(key)
+  } else {
+    nextExpanded.add(key)
+  }
+  expandedAppGroups.value = nextExpanded
 }
 
 function getBaseUrlDraft(providerId: string) {
@@ -1038,7 +1355,7 @@ function getProviderSummaryModel(providerId: string) {
 }
 
 function getAppSummaryModel(appId: string) {
-  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary')
+  const config = aiAppStore.getAppConfig(appId)
   const providerId = config.provider.trim() || aiProviderStore.defaultProviderId || providers.value[0]?.id || ''
   const provider = aiProviderStore.getProviderById(providerId)
   const resolvedModel = config.model.trim() || (providerId ? aiProviderStore.getEffectiveModel(providerId) : '')
@@ -1073,7 +1390,7 @@ function getProviderStateClass(providerId: string) {
 }
 
 function getAppStateLabel(appId: string) {
-  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary')
+  const config = aiAppStore.getAppConfig(appId)
   if (!config.enabled) {
     return '已停用'
   }
@@ -2436,6 +2753,7 @@ function getErrorMessage(error: unknown) {
 .provider-panel,
 .editor-panel {
   min-height: 0;
+  min-width: 0;
 }
 
 .panel-card {
@@ -2447,6 +2765,16 @@ function getErrorMessage(error: unknown) {
 .provider-panel .panel-card {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.asset-mode-tabs {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+.asset-mode-tabs :deep(.el-segmented__item) {
+  flex: 1;
 }
 
 .panel-header {
@@ -2480,10 +2808,112 @@ function getErrorMessage(error: unknown) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .app-list {
-  margin-top: 8px;
+  margin-top: 4px;
+  padding-left: 12px;
+}
+
+.app-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.app-tree-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.app-tree-group-header {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-tree-group-toggle {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-tree-group-toggle:hover {
+  color: #0f172a;
+}
+
+.app-tree-caret {
+  width: 14px;
+  height: 14px;
+  line-height: 12px;
+  text-align: center;
+  color: #64748b;
+  transform: rotate(0deg);
+  transition: transform 0.16s ease;
+}
+
+.app-tree-caret.expanded {
+  transform: rotate(90deg);
+}
+
+.app-tree-group-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-tree-count {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.app-tree-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  cursor: default;
+}
+
+.app-tree-item-button {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.app-tree-ghost {
+  opacity: 0.72;
+  background: #eff6ff;
 }
 
 .provider-footer {
@@ -2494,6 +2924,7 @@ function getErrorMessage(error: unknown) {
 
 .provider-item {
   width: 100%;
+  box-sizing: border-box;
   border: 1px solid rgba(203, 213, 225, 0.86);
   background: #fff;
   border-radius: 8px;
@@ -2522,6 +2953,7 @@ function getErrorMessage(error: unknown) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -2529,12 +2961,17 @@ function getErrorMessage(error: unknown) {
   font-size: 15px;
   font-weight: 600;
   color: #0f172a;
+  overflow-wrap: anywhere;
 }
 
 .provider-item-model {
   font-size: 12px;
   color: #64748b;
   word-break: break-all;
+}
+
+.provider-item-meta {
+  flex: 0 0 auto;
 }
 
 .provider-item-state {
@@ -2676,7 +3113,6 @@ function getErrorMessage(error: unknown) {
   min-width: 76px;
 }
 
-.app-toggle-row,
 .app-model-row {
   display: flex;
   align-items: center;

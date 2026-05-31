@@ -1,4 +1,4 @@
-export type CodeyunLinkVariant = 'local' | 'public'
+export type CodeyunLinkVariant = 'current' | 'public'
 
 export const CODEYUN_PUBLIC_HOST = 'code4101.com'
 
@@ -50,9 +50,13 @@ function isSwitchableCodeyunHost(hostname: string) {
 }
 
 function isSwitchableCodeyunUrl(url: URL) {
+  const currentUrl = getCurrentLocationUrl()
   return (
     (url.protocol === 'http:' || url.protocol === 'https:')
-    && isSwitchableCodeyunHost(getUrlHostname(url))
+    && (
+      isSwitchableCodeyunHost(getUrlHostname(url))
+      || (!!currentUrl && url.protocol === currentUrl.protocol && url.host === currentUrl.host)
+    )
   )
 }
 
@@ -68,18 +72,6 @@ function getCurrentLocationUrl() {
   }
 }
 
-function getLocalCodeyunPort(sourceUrl: URL) {
-  if (sourceUrl.port) {
-    return sourceUrl.port
-  }
-
-  const currentUrl = getCurrentLocationUrl()
-  if (currentUrl && isSwitchableCodeyunHost(getUrlHostname(currentUrl)) && currentUrl.port) {
-    return currentUrl.port
-  }
-  return '5173'
-}
-
 export function buildCodeyunUrlVariant(source: string | URL | null | undefined, variant: CodeyunLinkVariant) {
   const sourceUrl = resolveCodeyunUrl(source)
   if (!sourceUrl || !isSwitchableCodeyunUrl(sourceUrl)) {
@@ -87,19 +79,18 @@ export function buildCodeyunUrlVariant(source: string | URL | null | undefined, 
   }
 
   const targetUrl = new URL(sourceUrl.toString())
-  if (variant === 'local') {
+  if (variant === 'current') {
     const currentUrl = getCurrentLocationUrl()
-    targetUrl.protocol = currentUrl && isLocalhostCodeyunHost(getUrlHostname(currentUrl))
-      ? currentUrl.protocol
-      : 'http:'
-    targetUrl.hostname = 'localhost'
-    targetUrl.port = getLocalCodeyunPort(sourceUrl)
+    if (!currentUrl) {
+      return ''
+    }
+    targetUrl.protocol = currentUrl.protocol
+    targetUrl.host = currentUrl.host
     return targetUrl.toString()
   }
 
   targetUrl.protocol = 'https:'
-  targetUrl.hostname = CODEYUN_PUBLIC_HOST
-  targetUrl.port = ''
+  targetUrl.host = CODEYUN_PUBLIC_HOST
   return targetUrl.toString()
 }
 

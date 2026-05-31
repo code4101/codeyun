@@ -3,6 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight, Close, Refresh, Search, TopRight } from '@element-plus/icons-vue'
+import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue'
+import { noteKey, type NoteNode, useNoteStore } from '@/api/notes'
+import type { EditableNotePatch } from '@/utils/noteAutoSave'
+import {
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_DOCUMENT,
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  NOTE_SCENE_DEFAULT,
+} from '@/utils/noteSemantics'
 
 import {
   buildFanxiuResourceHref,
@@ -18,6 +27,7 @@ import {
 } from '../resourceRenderer'
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
+import { formatChineseCompactNumber } from '../numberFormat'
 import {
   getHiddenFanxiuPacketProtocols,
   isFanxiuPacketProtocolVisible,
@@ -38,6 +48,7 @@ import {
   getFanxiuGongfaSpecialFazeCatalog,
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
+  getFanxiuLatestWorldlineActivitySchedule,
   getFanxiuProtocolSemantics,
   getFanxiuStaticAssetManifest,
   getFanxiuStaticAssetPreviewManifest,
@@ -47,6 +58,7 @@ import {
   getFanxiuWwiseMp3Manifest,
   listFanxiuTcpBusinessEntries,
   searchFanxiuStaticVisualByImage,
+  syncFanxiuActivityPackets,
   searchFanxiuActivityCards,
   searchFanxiuDigitDoorCharacterCards,
   searchFanxiuDigitDoorEnhanceGroups,
@@ -57,11 +69,16 @@ import {
   searchFanxiuItemCards,
   searchFanxiuLingjieFeatureCards,
   type FanxiuActivityCard,
+  type FanxiuActivityChallengeLevel,
+  type FanxiuActivityChallengeRarityStat,
+  type FanxiuActivityChallengeSection,
   type FanxiuActivityOption,
   type FanxiuActivityRewardRow,
   type FanxiuActivityRewardSection,
   type FanxiuActivitySearchItem,
   type FanxiuActivityStats,
+  type FanxiuWorldlineActivityItem,
+  type FanxiuWorldlineActivityScheduleResponse,
   type FanxiuDigitDoorBuffRuntime,
   type FanxiuDigitDoorCharacterCard,
   type FanxiuDigitDoorCharacterSearchItem,
@@ -160,9 +177,17 @@ import {
 
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
 const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
+const ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY = 'fanxiu:wiki:activity-period-pane-height'
+const ACTIVITY_NOTE_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-binding'
+const ACTIVITY_NOTE_INDEX_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-index'
+const ACTIVITY_NOTE_FIELD_SOURCE = '__fanxiu_source'
+const ACTIVITY_NOTE_FIELD_ACTIVITY_ID = '__fanxiu_activity_id'
+const ACTIVITY_NOTE_FIELD_ACTIVITY_NAME = '__fanxiu_activity_name'
 const FACET_OPTION_DISPLAY_LIMIT = 100
 const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
+const NON_LIST_ACTIVITY_PAGE_SIZE = 5000
+const ACTIVITY_CALENDAR_WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WIKI_TABS = [
   { key: 'item', label: '道具' },
   { key: 'visual', label: '图片' },
@@ -212,7 +237,18 @@ const DEFAULT_PROTOCOL_FEATURES: FanxiuProtocolSemanticFeature[] = [
   { key: 'gongfa', title: 'Gongfa' },
 ]
 type SortMode = 'default' | 'time_asc' | 'time_desc'
+type ActivityViewMode = 'list' | 'document' | 'period'
 type StaticAssetCatalogView = 'semantic'
+const ACTIVITY_VIEW_MODE_OPTIONS: Array<{ value: ActivityViewMode, label: string }> = [
+  { value: 'list', label: '列表' },
+  { value: 'period', label: '日程' },
+  { value: 'document', label: '文档' },
+]
+const ACTIVITY_PERIOD_SIDE_DAYS = 60
+const ACTIVITY_PERIOD_INITIAL_LEAD_DAYS = 3
+const ACTIVITY_PERIOD_LABEL_MIN_DAYS = 2.4
+const ACTIVITY_PERIOD_LABEL_MAX_DAYS = 4.8
+const ACTIVITY_PERIOD_LANE_HEIGHT = 42
 const SORT_MODE_ORDER: SortMode[] = ['default', 'time_asc', 'time_desc']
 const SORT_MODE_LABELS: Record<SortMode, string> = {
   default: '默认',
@@ -247,6 +283,10 @@ const STATIC_ASSET_SEMANTIC_GROUP_OPTIONS = [
   { value: 'skill', label: '技能' },
   { value: 'buff', label: 'Buff' },
   { value: 'gongfa_skill', label: '功法技能' },
+] as const
+const ACTIVITY_SERVER_SCOPE_OPTIONS = [
+  { value: '', label: '全部区服' },
+  { value: 'current', label: '当前服：岁序更替' },
 ] as const
 const PROGRESSION_LABELS: Record<string, string> = {
   gongfa_jie: '功法进阶',
@@ -306,6 +346,9 @@ type PageConfig = {
   activityKindFilter?: string
   activityTimeFilter?: string
   activityTypeFilter?: string
+  activityServerScope?: string
+  activityViewMode?: ActivityViewMode
+  activityHideOver30Days?: boolean
   visualAssetGroupFilter?: string
   staticAssetCatalogView?: StaticAssetCatalogView
   staticAssetGroupFilter?: string
@@ -331,7 +374,67 @@ type PacketSampleTable = {
   fieldLabels?: Record<string, Record<string, string>>
 }
 
+type ActivityScheduleEntry = {
+  id: string
+  selectId: string
+  item: FanxiuActivitySearchItem
+  dateText: string
+  dateValue: string
+  endDateText: string
+  endDateValue: string
+  dateLabel: string
+  timeText: string
+  endTimeText: string
+  startMs: number
+  endMs: number
+  monthKey: string
+  monthLabel: string
+  periodStartMs: number
+  periodEndMs: number
+  periodStagePoints: ActivityPeriodStagePoint[]
+  runtime?: FanxiuWorldlineActivityItem
+}
+
+type ActivityPeriodStageKind = 'prepare' | 'active' | 'reward' | 'close' | 'fallback'
+
+type ActivityPeriodStagePoint = {
+  kind: ActivityPeriodStageKind
+  source: string
+  label: string
+  ms: number
+  dateValue: string
+  timeText: string
+}
+
+type ActivityPeriodSegment = {
+  key: string
+  kind: ActivityPeriodStageKind
+  label: string
+  left: number
+  width: number
+}
+
+type ActivityPeriodDay = {
+  key: string
+  dayLabel: string
+  weekdayLabel: string
+  isToday: boolean
+}
+
+type ActivityPeriodRow = {
+  entry: ActivityScheduleEntry
+  lane: number
+  left: number
+  width: number
+  labelLeft: number
+  labelTop: number
+  labelWidth: number
+  rangeLabel: string
+  segments: ActivityPeriodSegment[]
+}
+
 const activeTab = ref<WikiTab>('item')
+const noteStore = useNoteStore()
 const selectedAuxiliaryTab = ref<WikiTab>('visual')
 const activeTopTab = computed<TopWikiTab>({
   get() {
@@ -369,6 +472,17 @@ const itemSubTypeFilter = ref('')
 const activityKindFilter = ref('')
 const activityTimeFilter = ref('')
 const activityTypeFilter = ref('')
+const activityServerScope = ref('')
+const activityViewMode = ref<ActivityViewMode>('list')
+const activityHideOver30Days = ref(true)
+const activityWorldlineSchedule = ref<FanxiuWorldlineActivityScheduleResponse | null>(null)
+const loadingActivityWorldlineSchedule = ref(false)
+const activityPacketSyncing = ref(false)
+const activityPeriodScrollRef = ref<HTMLElement | null>(null)
+const activityWorkspaceRef = ref<HTMLElement | null>(null)
+const activityPeriodListRef = ref<HTMLElement | null>(null)
+const activityPeriodInitialScrollDone = ref(false)
+let activityPeriodScrollTimer: number | null = null
 const visualAssetGroupFilter = ref('')
 const staticAssetCatalogView = ref<StaticAssetCatalogView>('semantic')
 const staticAssetGroupFilter = ref('')
@@ -437,6 +551,9 @@ const selectedId = ref('')
 const selectedCard = ref<FanxiuGongfaCard | null>(null)
 const selectedItem = ref<FanxiuItemCard | null>(null)
 const selectedActivity = ref<FanxiuActivityCard | null>(null)
+const selectedActivityNote = ref<NoteNode | undefined>(undefined)
+const loadingActivityNote = ref(false)
+const activityChallengeThresholdRanks = ref<Record<string, number>>({})
 const selectedLingjieCard = ref<FanxiuLingjieFeatureCard | null>(null)
 const selectedDigitDoorCharacter = ref<FanxiuDigitDoorCharacterCard | null>(null)
 const selectedDigitDoorLevel = ref<FanxiuDigitDoorLevelConfig | null>(null)
@@ -476,6 +593,8 @@ const gongfaSpecialFazeCatalogCache = new Map<string, FanxiuGongfaSpecialFazeCat
 const itemDetailCache = new Map<string, FanxiuItemCard>()
 const itemDetailRefreshAttempts = new Map<string, string>()
 const activityDetailCache = new Map<string, FanxiuActivityCard>()
+const activityNoteCache = new Map<string, NoteNode | null>()
+const activityDocumentNotes = ref<Record<string, NoteNode>>({})
 const lingjieDetailCache = new Map<string, FanxiuLingjieFeatureCard>()
 const digitDoorDetailCache = new Map<string, FanxiuDigitDoorCharacterCard>()
 const digitDoorLevelDetailCache = new Map<string, { item: FanxiuDigitDoorLevelConfig; stage?: FanxiuDigitDoorStageReward | null }>()
@@ -486,6 +605,8 @@ const route = useRoute()
 const router = useRouter()
 let listRequestSeq = 0
 let detailRequestSeq = 0
+let activityNoteRequestSeq = 0
+let activityDocumentRequestSeq = 0
 let staticAssetPreviewRequestSeq = 0
 let homeMakeStaticDetailRequestSeq = 0
 let homeMakeBuffParameterSemanticsRequestSeq = 0
@@ -578,6 +699,13 @@ function normalizePageSize(value: unknown, fallback = 50) {
 function normalizeSortMode(value: unknown): SortMode {
   const text = String(value ?? '').trim()
   return text === 'time_asc' || text === 'time_desc' ? text : 'default'
+}
+
+function normalizeActivityViewMode(value: unknown): ActivityViewMode {
+  const text = String(value ?? '').trim().toLowerCase()
+  if (text === 'document') return text
+  if (text === 'period') return text
+  return 'list'
 }
 
 function normalizeAudioKindFilter(value: unknown) {
@@ -714,6 +842,9 @@ function loadPageConfig() {
     activityKindFilter.value = String(config.activityKindFilter ?? '')
     activityTimeFilter.value = String(config.activityTimeFilter ?? '')
     activityTypeFilter.value = String(config.activityTypeFilter ?? '')
+    activityServerScope.value = String(config.activityServerScope ?? '')
+    activityViewMode.value = normalizeActivityViewMode(config.activityViewMode)
+    activityHideOver30Days.value = config.activityHideOver30Days !== false
     visualAssetGroupFilter.value = normalizeVisualAssetGroupFilter(config.visualAssetGroupFilter)
     staticAssetCatalogView.value = normalizeStaticAssetCatalogView(config.staticAssetCatalogView)
     staticAssetGroupFilter.value = normalizeStaticAssetGroupFilter(config.staticAssetGroupFilter)
@@ -750,6 +881,9 @@ function persistPageConfig() {
       activityKindFilter: activityKindFilter.value,
       activityTimeFilter: activityTimeFilter.value,
       activityTypeFilter: activityTypeFilter.value,
+      activityServerScope: activityServerScope.value,
+      activityViewMode: activityViewMode.value,
+      activityHideOver30Days: activityHideOver30Days.value,
       visualAssetGroupFilter: visualAssetGroupFilter.value,
       staticAssetCatalogView: staticAssetCatalogView.value,
       staticAssetGroupFilter: staticAssetGroupFilter.value,
@@ -770,6 +904,7 @@ function persistPageConfig() {
 }
 
 const pageCount = computed(() => {
+  if (activeTab.value === 'activity' && activityViewMode.value !== 'list') return 1
   return Math.max(1, Math.ceil(Math.max(total.value, 0) / Math.max(pageSize.value, 1)))
 })
 
@@ -894,7 +1029,7 @@ const selectedListItem = computed(() => {
     return audioItems.value.find(item => getAudioAssetKey(item) === selectedId.value) ?? null
   }
   if (activeTab.value === 'activity') {
-    return activityItems.value.find(item => String(item.id) === selectedId.value) ?? null
+    return activityDisplayItems.value.find(item => String(item.id) === selectedId.value) ?? null
   }
   if (activeTab.value === 'lingjie') {
     return lingjieItems.value.find(item => String(item.gongfa_id) === selectedId.value) ?? null
@@ -919,6 +1054,1054 @@ const selectedListItem = computed(() => {
   }
   return gongfaItems.value.find(item => String(item.id) === selectedId.value) ?? null
 })
+
+const activityBaseDisplayItems = computed(() => dedupeActivitySearchItems(activityItems.value))
+
+const activityBaseItemsById = computed(() => {
+  const map = new Map<string, FanxiuActivitySearchItem>()
+  for (const item of activityBaseDisplayItems.value) {
+    map.set(String(item.id), item)
+  }
+  return map
+})
+
+function buildWorldlineSyntheticActivityItem(row: FanxiuWorldlineActivityItem): FanxiuActivitySearchItem {
+  const activityId = String(row.activityId ?? row.id ?? row.key)
+  return {
+    id: activityId,
+    name: getWorldlineActivityDisplayName(row, String(row.name || activityId)),
+    activity_type: row.activityType,
+    kind_names: ['运行日程'],
+    time_kind_name: '服务端日程',
+    source_table: 'SM_WorldLineActivitySync',
+    description_preview: '',
+    reward_preview: '',
+  }
+}
+
+function getWorldlineActivityServerCount(row: FanxiuWorldlineActivityItem) {
+  const explicitCount = Number(row.serverCount ?? 0)
+  if (Number.isFinite(explicitCount) && explicitCount > 0) return explicitCount
+  if (Array.isArray(row.serverIds) && row.serverIds.length > 0) return row.serverIds.length
+  const encodedCount = inferWorldlineActivityServerCountFromId(row)
+  if (encodedCount > 0) return encodedCount
+  const name = String(row.name || '')
+  if (/预赛|服内|本服|常规/.test(name)) return 1
+  return 0
+}
+
+function inferWorldlineActivityServerCountFromId(row: FanxiuWorldlineActivityItem) {
+  const activityId = String(row.activityId ?? row.id ?? '').replace(/\D/g, '')
+  if (!activityId || activityId.length < 7) return 0
+  const candidates = [16, 8, 4, 2, 1]
+  for (const count of candidates) {
+    if (activityId.startsWith(String(count)) && activityId.length > String(count).length + 4) {
+      return count
+    }
+  }
+  return 0
+}
+
+function cleanWorldlineActivityName(value: unknown) {
+  return String(value ?? '')
+    .replace(/\s*跨服\s*/g, '')
+    .replace(/[（(]\s*预赛\s*[）)]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getWorldlineActivityDisplayName(row: FanxiuWorldlineActivityItem, fallbackName?: string) {
+  const baseName = cleanWorldlineActivityName(row.name || fallbackName || row.activityId || row.id || row.key)
+  const serverCount = getWorldlineActivityServerCount(row)
+  if (!serverCount) return baseName
+  return `${baseName}[${serverCount}]`
+}
+
+function getWorldlineActivityDisplayItem(row: FanxiuWorldlineActivityItem) {
+  const activityId = String(row.activityId ?? '').trim()
+  const runtimeId = String(row.id ?? '').trim()
+  const item = activityBaseItemsById.value.get(activityId)
+    ?? activityBaseItemsById.value.get(runtimeId)
+    ?? buildWorldlineSyntheticActivityItem(row)
+  return {
+    ...item,
+    name: getWorldlineActivityDisplayName(row, item.name),
+  }
+}
+
+const hasActivityListFilter = computed(() => Boolean(
+  normalizeSearchQuery(query.value)
+  || activityKindFilter.value
+  || activityTimeFilter.value
+  || activityTypeFilter.value
+))
+
+function getActivityWorldlineRows(activity: FanxiuActivitySearchItem | FanxiuActivityCard | null | undefined) {
+  const activityId = String(activity?.id ?? '').trim()
+  if (!activityId) return []
+  return (activityWorldlineSchedule.value?.items ?? []).filter(row => {
+    return String(row.activityId ?? '').trim() === activityId || String(row.id ?? '').trim() === activityId
+  })
+}
+
+function formatWorldlineActivityRange(row: FanxiuWorldlineActivityItem) {
+  const start = String(row.startTimeText || '').trim()
+  const end = String(row.endTimeText || '').trim()
+  if (start && end) return `${start} - ${end}`
+  return start || end || ''
+}
+
+function getWorldlineActivityMeta(row: FanxiuWorldlineActivityItem) {
+  return [
+    row.prepareEndTimeText ? `准备 ${row.prepareEndTimeText}` : '',
+    row.closePanelTimeText ? `关闭 ${row.closePanelTimeText}` : '',
+    row.scheduleId ? `schedule ${row.scheduleId}` : '',
+    getWorldlineActivityServerCount(row) ? `${getWorldlineActivityServerCount(row)}服` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getActivityDocumentNote(activityId: string | number | null | undefined) {
+  const id = String(activityId ?? '').trim()
+  return id ? activityDocumentNotes.value[id] : undefined
+}
+
+function getNoteCustomFieldValue(note: NoteNode | null | undefined, fieldName: string) {
+  const fields = note?.custom_fields
+  if (!Array.isArray(fields)) return ''
+  for (const item of fields) {
+    if (!Array.isArray(item) || String(item[0] ?? '') !== fieldName) continue
+    return String(item[2] ?? item[1] ?? '').trim()
+  }
+  return ''
+}
+
+function getActivityDocumentTimeMs(item: FanxiuActivitySearchItem) {
+  const parsedHints = buildParsedActivityHints(item)
+  const range = pickActivityScheduleRange(parsedHints)
+  if (range?.startHint.ms) return range.startHint.ms
+  const note = getActivityDocumentNote(item.id)
+  return Number(note?.start_at || note?.updated_at || 0)
+}
+
+const activityDocumentItems = computed(() => activityBaseDisplayItems.value
+  .filter(item => Boolean(getActivityDocumentNote(item.id)))
+  .sort((left, right) => {
+    const timeDelta = getActivityDocumentTimeMs(right) - getActivityDocumentTimeMs(left)
+    if (timeDelta) return timeDelta
+    const leftNote = getActivityDocumentNote(left.id)
+    const rightNote = getActivityDocumentNote(right.id)
+    return Number(rightNote?.updated_at || 0) - Number(leftNote?.updated_at || 0)
+      || String(left.name || '').localeCompare(String(right.name || ''))
+  }))
+
+const activityDisplayItems = computed(() => (
+  activityViewMode.value === 'document' ? activityDocumentItems.value : activityBaseDisplayItems.value
+))
+
+const displayTotal = computed(() => {
+  if (activeTab.value === 'activity' && activityViewMode.value === 'document') return activityDocumentItems.value.length
+  return total.value
+})
+
+function dedupeActivitySearchItems(items: FanxiuActivitySearchItem[]) {
+  const seen = new Set<string>()
+  const rows: FanxiuActivitySearchItem[] = []
+  for (const item of items) {
+    const id = String(item?.id ?? '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    rows.push(item)
+  }
+  return rows
+}
+
+function parseActivityDateFromHint(hint: FanxiuTimelineHint | null | undefined) {
+  const raw = String(hint?.date || '').trim()
+  if (!raw) return { dateText: '', dateValue: '' }
+  const compact = raw.replace(/\//g, '-')
+  const withYear = compact.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
+  if (withYear) {
+    const year = String(withYear[1]).padStart(4, '0')
+    const month = String(withYear[2]).padStart(2, '0')
+    const day = String(withYear[3]).padStart(2, '0')
+    return { dateText: compact, dateValue: `${year}-${month}-${day}` }
+  }
+  const onlyMonthDay = compact.match(/^(\d{1,2})-(\d{1,2})$/)
+  if (onlyMonthDay) {
+    const year = String(new Date().getFullYear())
+    const month = String(onlyMonthDay[1]).padStart(2, '0')
+    const day = String(onlyMonthDay[2]).padStart(2, '0')
+    return { dateText: compact, dateValue: `${year}-${month}-${day}` }
+  }
+  const fallback = new Date(`${compact}T00:00:00`)
+  if (Number.isNaN(fallback.getTime())) {
+    return { dateText: compact, dateValue: '' }
+  }
+  const value = getLocalDateKey(fallback)
+  return { dateText: compact, dateValue: value }
+}
+
+function parseActivityTimeMinutes(value: unknown) {
+  const text = String(value ?? '').trim()
+  const match = text.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/)
+  if (!match) return null
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  const second = Number(match[3] ?? 0)
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || !Number.isFinite(second)) return null
+  return Math.max(0, Math.min(24 * 60, hour * 60 + minute + second / 60))
+}
+
+function parseCalendarKey(dateValue: string) {
+  const match = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    date: `${match[1]}-${match[2]}-${match[3]}`,
+  }
+}
+
+function makeLocalDate(dateValue: string) {
+  const parsed = parseCalendarKey(dateValue)
+  if (!parsed) return null
+  return new Date(parsed.year, parsed.month - 1, parsed.day)
+}
+
+function makeActivityDateTimeMs(dateValue: string, timeText: string, fallbackToEndOfDay = false) {
+  const date = makeLocalDate(dateValue)
+  if (!date) return null
+  const minutes = parseActivityTimeMinutes(timeText)
+  if (minutes === null) return date.getTime() + (fallbackToEndOfDay ? 24 * 60 * 60 * 1000 : 0)
+  return date.getTime() + minutes * 60 * 1000
+}
+
+function formatActivityDateSlash(dateValue: string | null | undefined) {
+  const parsed = parseCalendarKey(String(dateValue || ''))
+  if (!parsed) return String(dateValue || '')
+  return `${parsed.year}/${parsed.month}/${parsed.day}`
+}
+
+function formatActivityMonthDaySlash(dateValue: string | null | undefined) {
+  const parsed = parseCalendarKey(String(dateValue || ''))
+  if (!parsed) return String(dateValue || '')
+  return `${parsed.month}/${parsed.day}`
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getLocalDateTimeParts(ms: number) {
+  const date = new Date(ms)
+  if (!Number.isFinite(date.getTime())) return null
+  const dateValue = getLocalDateKey(date)
+  const timeText = [
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0'),
+  ].join(':')
+  return {
+    dateText: dateValue,
+    dateValue,
+    timeText,
+  }
+}
+
+function formatCompactClockTime(value: string | null | undefined) {
+  const text = String(value || '').trim()
+  return text.replace(/^(\d{1,2}:\d{2}):00$/, '$1')
+}
+
+function normalizeWorldlineMs(value: unknown) {
+  const ms = Number(value)
+  return Number.isFinite(ms) && ms > 0 ? ms : null
+}
+
+function getActivityPeriodDayWidth(scroller: HTMLElement, dayCount: number) {
+  const dayCell = scroller.querySelector<HTMLElement>('.activity-period-day')
+  if (dayCell) {
+    const width = dayCell.getBoundingClientRect().width
+    if (width > 0) return width
+  }
+  return scroller.scrollWidth / Math.max(1, dayCount)
+}
+
+function scrollActivityPeriodToInitialRange() {
+  if (activeTab.value !== 'activity' || activityViewMode.value !== 'period') return
+  const scroller = activityPeriodScrollRef.value
+  if (!scroller) return
+  const todayIndex = activityPeriodDays.value.findIndex(day => day.isToday)
+  if (todayIndex < 0) return
+  const dayCount = Math.max(1, activityPeriodDays.value.length)
+  const dayWidth = getActivityPeriodDayWidth(scroller, dayCount)
+  const leadDays = Math.max(0, Math.min(ACTIVITY_PERIOD_INITIAL_LEAD_DAYS, todayIndex))
+  const targetIndex = todayIndex - leadDays
+  const targetDay = scroller.querySelector<HTMLElement>(`.activity-period-day:nth-child(${targetIndex + 1})`)
+  const targetLeft = targetDay ? targetDay.offsetLeft : targetIndex * dayWidth
+  const maxLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth)
+  scroller.scrollLeft = Math.min(maxLeft, Math.max(0, targetLeft))
+  activityPeriodInitialScrollDone.value = Math.abs(scroller.scrollLeft - Math.min(maxLeft, Math.max(0, targetLeft))) <= 2
+}
+
+function scheduleActivityPeriodInitialScroll(force = false, attempt = 0) {
+  if (force) {
+    activityPeriodInitialScrollDone.value = false
+  } else if (activityPeriodInitialScrollDone.value) {
+    return
+  }
+  if (activityPeriodScrollTimer !== null && typeof window !== 'undefined') {
+    window.clearTimeout(activityPeriodScrollTimer)
+    activityPeriodScrollTimer = null
+  }
+  void nextTick(() => {
+    if (typeof window === 'undefined') {
+      scrollActivityPeriodToInitialRange()
+      return
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        scrollActivityPeriodToInitialRange()
+        if (!activityPeriodInitialScrollDone.value && attempt < 8) {
+          activityPeriodScrollTimer = window.setTimeout(() => {
+            scheduleActivityPeriodInitialScroll(false, attempt + 1)
+          }, 60)
+        }
+      })
+    })
+  })
+}
+
+function setActivityPeriodScrollRef(element: Element | null) {
+  activityPeriodScrollRef.value = element instanceof HTMLElement ? element : null
+  if (activityPeriodScrollRef.value) {
+    scheduleActivityPeriodInitialScroll()
+  }
+}
+
+function calculateActivityPeriodPaneBounds() {
+  if (typeof window === 'undefined') {
+    return {
+      adaptiveHeight: 520,
+      maxHeight: 720,
+    }
+  }
+  const viewportHeight = window.innerHeight
+  const isNarrow = window.innerWidth < 960
+  const reservedHeight = isNarrow ? 210 : 180
+  const availableHeight = Math.max(520, viewportHeight - reservedHeight)
+  const minDetailHeight = isNarrow ? 360 : 420
+  const maxHeight = Math.max(300, availableHeight - minDetailHeight)
+  const adaptiveHeight = Math.min(
+    maxHeight,
+    Math.max(isNarrow ? 320 : 380, Math.floor(availableHeight * 0.58)),
+  )
+  return { adaptiveHeight, maxHeight }
+}
+
+const activityPeriodPaneHeight = ref(520)
+const isActivityPeriodPaneResizing = ref(false)
+const isActivityPeriodPaneManual = ref(false)
+let activityPeriodResizeStartY = 0
+let activityPeriodResizeStartHeight = 0
+let activityPeriodResizePendingHeight: number | null = null
+let activityPeriodResizeFrameId: number | null = null
+
+function canUseActivityPeriodStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
+
+function clampActivityPeriodPaneHeight(value: number) {
+  const bounds = calculateActivityPeriodPaneBounds()
+  return Math.max(260, Math.min(bounds.maxHeight, Math.round(value)))
+}
+
+function persistActivityPeriodPaneHeight(value: number | null) {
+  if (!canUseActivityPeriodStorage()) return
+  if (value === null) {
+    window.localStorage.removeItem(ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY, String(Math.round(value)))
+}
+
+function applyActivityPeriodPaneDomHeight(height: number) {
+  const normalizedHeight = clampActivityPeriodPaneHeight(height)
+  activityWorkspaceRef.value?.style.setProperty('--activity-period-pane-height', `${normalizedHeight}px`)
+  if (activityPeriodListRef.value) {
+    activityPeriodListRef.value.style.height = `${normalizedHeight}px`
+  }
+  return normalizedHeight
+}
+
+function cancelActivityPeriodResizeFrame() {
+  if (activityPeriodResizeFrameId === null || typeof window === 'undefined') return
+  window.cancelAnimationFrame(activityPeriodResizeFrameId)
+  activityPeriodResizeFrameId = null
+}
+
+function scheduleActivityPeriodPaneDomHeight(height: number) {
+  activityPeriodResizePendingHeight = height
+  if (typeof window === 'undefined') {
+    activityPeriodPaneHeight.value = applyActivityPeriodPaneDomHeight(height)
+    activityPeriodResizePendingHeight = null
+    return
+  }
+  if (activityPeriodResizeFrameId !== null) return
+  activityPeriodResizeFrameId = window.requestAnimationFrame(() => {
+    activityPeriodResizeFrameId = null
+    if (activityPeriodResizePendingHeight === null) return
+    applyActivityPeriodPaneDomHeight(activityPeriodResizePendingHeight)
+  })
+}
+
+function restoreActivityPeriodPaneHeight() {
+  if (!canUseActivityPeriodStorage()) return false
+  const rawHeight = window.localStorage.getItem(ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY)
+  if (!rawHeight) return false
+  const parsedHeight = Number(rawHeight)
+  if (!Number.isFinite(parsedHeight)) {
+    window.localStorage.removeItem(ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY)
+    return false
+  }
+  activityPeriodPaneHeight.value = clampActivityPeriodPaneHeight(parsedHeight)
+  isActivityPeriodPaneManual.value = true
+  void nextTick(() => applyActivityPeriodPaneDomHeight(activityPeriodPaneHeight.value))
+  return true
+}
+
+function updateActivityPeriodPaneHeight() {
+  cancelActivityPeriodResizeFrame()
+  activityPeriodResizePendingHeight = null
+
+  if (isActivityPeriodPaneManual.value) {
+    activityPeriodPaneHeight.value = clampActivityPeriodPaneHeight(activityPeriodPaneHeight.value)
+    persistActivityPeriodPaneHeight(activityPeriodPaneHeight.value)
+  } else {
+    activityPeriodPaneHeight.value = clampActivityPeriodPaneHeight(
+      calculateActivityPeriodPaneBounds().adaptiveHeight,
+    )
+  }
+  void nextTick(() => applyActivityPeriodPaneDomHeight(activityPeriodPaneHeight.value))
+}
+
+function stopActivityPeriodPaneResizing() {
+  if (!isActivityPeriodPaneResizing.value) return
+  cancelActivityPeriodResizeFrame()
+  if (activityPeriodResizePendingHeight !== null) {
+    activityPeriodPaneHeight.value = applyActivityPeriodPaneDomHeight(activityPeriodResizePendingHeight)
+  } else {
+    activityPeriodPaneHeight.value = clampActivityPeriodPaneHeight(activityPeriodPaneHeight.value)
+  }
+  activityPeriodResizePendingHeight = null
+  isActivityPeriodPaneResizing.value = false
+  persistActivityPeriodPaneHeight(activityPeriodPaneHeight.value)
+  window.removeEventListener('mousemove', handleActivityPeriodPaneResizing)
+  window.removeEventListener('mouseup', stopActivityPeriodPaneResizing)
+  document.body.style.userSelect = ''
+}
+
+function handleActivityPeriodPaneResizing(event: MouseEvent) {
+  if (!isActivityPeriodPaneResizing.value) return
+  scheduleActivityPeriodPaneDomHeight(
+    activityPeriodResizeStartHeight + event.clientY - activityPeriodResizeStartY,
+  )
+}
+
+function startActivityPeriodPaneResizing(event: MouseEvent) {
+  event.preventDefault()
+  isActivityPeriodPaneResizing.value = true
+  isActivityPeriodPaneManual.value = true
+  activityPeriodResizeStartY = event.clientY
+  activityPeriodResizeStartHeight = activityPeriodPaneHeight.value
+  window.addEventListener('mousemove', handleActivityPeriodPaneResizing)
+  window.addEventListener('mouseup', stopActivityPeriodPaneResizing)
+  document.body.style.userSelect = 'none'
+}
+
+const activityPeriodListPaneStyle = computed(() => (
+  activeTab.value === 'activity' && activityViewMode.value === 'period'
+    ? { height: `${activityPeriodPaneHeight.value}px` }
+    : undefined
+))
+
+const activityWorkspaceStyle = computed(() => (
+  activeTab.value === 'activity' && activityViewMode.value === 'period'
+    ? { '--activity-period-pane-height': `${activityPeriodPaneHeight.value}px` }
+    : undefined
+))
+
+type ParsedActivityHint = {
+  hint: FanxiuTimelineHint
+  parsed: ReturnType<typeof parseActivityDateFromHint>
+  key: string
+  ms: number
+}
+
+type ParsedActivityRelativeTime = {
+  day: number
+  timeText: string
+}
+
+function parseActivityRelativeTime(value: unknown): ParsedActivityRelativeTime | null {
+  const text = String(value ?? '').trim()
+  const match = text.match(/^ARIT\|(\d+)_(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})$/i)
+  if (!match) return null
+  const day = Number(match[1])
+  const hour = Number(match[2])
+  const minute = Number(match[3])
+  const second = Number(match[4])
+  if (!Number.isFinite(day) || day <= 0) return null
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return null
+  return {
+    day,
+    timeText: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`,
+  }
+}
+
+function getActivityRelativeBaseDate(hints: FanxiuTimelineHint[]) {
+  const relativeDays = hints
+    .map(hint => parseActivityRelativeTime(hint.evidence) ?? parseActivityRelativeTime(hint.time_code))
+    .filter((item): item is ParsedActivityRelativeTime => Boolean(item))
+    .map(item => item.day)
+  const today = makeLocalDate(getLocalDateKey()) ?? new Date()
+  if (!relativeDays.length) return today
+  const activeDay = relativeDays.includes(2) ? 2 : Math.min(...relativeDays)
+  return new Date(today.getTime() - (activeDay - 1) * 24 * 60 * 60 * 1000)
+}
+
+function parseActivityRelativeDateFromHint(hint: FanxiuTimelineHint, baseDate: Date) {
+  const relative = parseActivityRelativeTime(hint.evidence) ?? parseActivityRelativeTime(hint.time_code)
+  if (!relative) return null
+  const date = new Date(baseDate.getTime() + (relative.day - 1) * 24 * 60 * 60 * 1000)
+  const dateValue = getLocalDateKey(date)
+  return {
+    parsed: { dateText: dateValue, dateValue },
+    timeText: relative.timeText,
+    ms: makeActivityDateTimeMs(dateValue, relative.timeText) ?? date.getTime(),
+  }
+}
+
+function isActivityStartHint(hint: FanxiuTimelineHint) {
+  return hint.source === 'Activity.startTime' || hint.kind === 'activity_start'
+}
+
+function isActivityEndHint(hint: FanxiuTimelineHint) {
+  return hint.source === 'Activity.endTime'
+}
+
+function getActivityPeriodStageKind(hint: FanxiuTimelineHint): ActivityPeriodStageKind | null {
+  if (hint.source === 'Activity.prepareTime') return 'prepare'
+  if (isActivityStartHint(hint)) return 'active'
+  if (isActivityEndHint(hint)) return 'active'
+  if (hint.source === 'Activity.rewardTime') return 'reward'
+  if (hint.source === 'Activity.closePanelTime') return 'close'
+  return null
+}
+
+function buildParsedActivityHints(item: FanxiuActivitySearchItem) {
+  const hints = getTimelineHints(item)
+  const relativeBaseDate = getActivityRelativeBaseDate(hints)
+  return hints
+    .map(hint => {
+      const parsed = parseActivityDateFromHint(hint)
+      if (parsed.dateValue) {
+        const ms = makeActivityDateTimeMs(parsed.dateValue, String(hint.time || ''))
+        return {
+          hint,
+          parsed,
+          key: parsed.dateValue,
+          ms: ms ?? 0,
+        }
+      }
+      const relative = parseActivityRelativeDateFromHint(hint, relativeBaseDate)
+      if (relative) {
+        const normalizedHint = { ...hint, time: relative.timeText }
+        return {
+          hint: normalizedHint,
+          parsed: relative.parsed,
+          key: relative.parsed.dateValue,
+          ms: relative.ms,
+        }
+      }
+      return {
+        hint,
+        parsed,
+        key: parsed.dateValue,
+        ms: 0,
+      }
+    })
+    .filter((row): row is ParsedActivityHint => Boolean(row.key))
+    .sort((left, right) => left.ms - right.ms || left.key.localeCompare(right.key))
+}
+
+function buildActivityPeriodStagePoints(hints: ParsedActivityHint[]) {
+  const sourceOrder = [
+    'Activity.prepareTime',
+    'Activity.startTime',
+    'Activity.endTime',
+    'Activity.rewardTime',
+    'Activity.closePanelTime',
+  ]
+  const rows: ActivityPeriodStagePoint[] = []
+  for (const source of sourceOrder) {
+    const row = hints.find(item => item.hint.source === source || (source === 'Activity.startTime' && isActivityStartHint(item.hint)))
+    if (!row) continue
+    const kind = getActivityPeriodStageKind(row.hint)
+    if (!kind) continue
+    rows.push({
+      kind,
+      source,
+      label: row.hint.label || row.hint.source || '',
+      ms: row.ms,
+      dateValue: row.parsed.dateValue,
+      timeText: String(row.hint.time || '').trim(),
+    })
+  }
+  return rows.sort((left, right) => left.ms - right.ms)
+}
+
+function pickActivityScheduleRange(hints: ParsedActivityHint[]) {
+  if (!hints.length) return null
+  const startHint = hints.find(row => isActivityStartHint(row.hint)) ?? hints[0]
+  const endCandidates = hints.filter(row => isActivityEndHint(row.hint))
+  let endHint = endCandidates.length ? endCandidates[endCandidates.length - 1] : hints[hints.length - 1]
+  if (endHint.ms < startHint.ms) {
+    endHint = startHint
+  }
+  return { startHint, endHint }
+}
+
+function getActivityScheduleDedupeKey(entry: ActivityScheduleEntry) {
+  const stageKey = entry.periodStagePoints
+    .map(point => `${point.source}:${point.ms}`)
+    .join('|')
+  return [
+    String(entry.item.name || '').trim(),
+    entry.startMs,
+    entry.endMs,
+    entry.periodStartMs,
+    entry.periodEndMs,
+    stageKey,
+  ].join('::')
+}
+
+function dedupeActivityScheduleEntries(entries: ActivityScheduleEntry[]) {
+  const seen = new Set<string>()
+  const rows: ActivityScheduleEntry[] = []
+  for (const entry of entries) {
+    const key = getActivityScheduleDedupeKey(entry)
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push(entry)
+  }
+  return rows
+}
+
+const activityScheduledEntries = computed<ActivityScheduleEntry[]>(() => {
+  const rows: ActivityScheduleEntry[] = []
+  for (const item of activityBaseDisplayItems.value) {
+    const parsedHints = buildParsedActivityHints(item)
+    const range = pickActivityScheduleRange(parsedHints)
+    if (!range) continue
+    const periodStagePoints = buildActivityPeriodStagePoints(parsedHints)
+    const start = range.startHint.parsed
+    const end = range.endHint.parsed
+    const monthKey = start.dateValue.slice(0, 7)
+    const [year, month] = monthKey.split('-')
+    const startTimeText = String(range.startHint.hint.time || '').trim()
+    const endTimeText = String(range.endHint.hint.time || '').trim()
+    const startMs = makeActivityDateTimeMs(start.dateValue, startTimeText) ?? range.startHint.ms
+    const endMs = Math.max(startMs, makeActivityDateTimeMs(end.dateValue, endTimeText, true) ?? range.endHint.ms)
+    const stageTimes = periodStagePoints.map(point => point.ms).filter(ms => Number.isFinite(ms))
+    const periodStartMs = Math.min(startMs, ...stageTimes)
+    const periodEndMs = Math.max(endMs, ...stageTimes)
+    rows.push({
+      id: String(item.id),
+      selectId: String(item.id),
+      item,
+      dateText: start.dateText || start.dateValue,
+      dateValue: start.dateValue,
+      endDateText: end.dateText || end.dateValue,
+      endDateValue: end.dateValue,
+      dateLabel: `${year}-${month}`,
+      timeText: startTimeText,
+      endTimeText,
+      startMs,
+      endMs,
+      monthKey,
+      monthLabel: `${year}年${Number(month)}月`,
+      periodStartMs,
+      periodEndMs,
+      periodStagePoints,
+    })
+  }
+  const sortedRows = rows.sort((left, right) => {
+    if (left.startMs === right.startMs) {
+      return left.timeText.localeCompare(right.timeText) || left.item.name.localeCompare(right.item.name)
+    }
+    return left.startMs - right.startMs
+  })
+  return sortedRows
+})
+
+function buildWorldlineStagePoint(
+  row: FanxiuWorldlineActivityItem,
+  field: keyof FanxiuWorldlineActivityItem,
+  source: string,
+  kind: ActivityPeriodStageKind,
+  label: string,
+) {
+  const ms = normalizeWorldlineMs(row[field])
+  const parts = ms === null ? null : getLocalDateTimeParts(ms)
+  return ms !== null && parts ? {
+    kind,
+    source,
+    label,
+    ms,
+    dateValue: parts.dateValue,
+    timeText: parts.timeText,
+  } satisfies ActivityPeriodStagePoint : null
+}
+
+const activityWorldlineScheduledEntries = computed<ActivityScheduleEntry[]>(() => {
+  const rows: ActivityScheduleEntry[] = []
+  const seen = new Set<string>()
+  for (const row of activityWorldlineSchedule.value?.items ?? []) {
+    const startMs = normalizeWorldlineMs(row.startTime)
+    const endMs = normalizeWorldlineMs(row.endTime)
+    if (startMs === null || endMs === null) continue
+    const start = getLocalDateTimeParts(startMs)
+    const end = getLocalDateTimeParts(endMs)
+    if (!start || !end) continue
+    const activityId = String(row.activityId ?? '').trim()
+    const runtimeId = String(row.id ?? '').trim()
+    if (
+      hasActivityListFilter.value
+      && !activityBaseItemsById.value.has(activityId)
+      && !activityBaseItemsById.value.has(runtimeId)
+    ) {
+      continue
+    }
+    const item = getWorldlineActivityDisplayItem(row)
+    const detailId = String(item.id ?? row.activityId ?? row.id ?? '').trim()
+    const key = [
+      String(row.activityId ?? row.id ?? row.name),
+      startMs,
+      endMs,
+      row.scheduleId ?? '',
+      row.loopDay ?? '',
+    ].join('::')
+    if (seen.has(key)) continue
+    seen.add(key)
+    const periodStagePoints = [
+      buildWorldlineStagePoint(row, 'prepareEndTime', 'Activity.prepareTime', 'prepare', '准备'),
+      buildWorldlineStagePoint(row, 'startTime', 'Activity.startTime', 'active', '开始'),
+      buildWorldlineStagePoint(row, 'endTime', 'Activity.endTime', 'active', '结束'),
+      buildWorldlineStagePoint(row, 'closePanelTime', 'Activity.closePanelTime', 'close', '关闭面板'),
+    ].filter((point): point is ActivityPeriodStagePoint => Boolean(point))
+    const stageTimes = periodStagePoints.map(point => point.ms).filter(ms => Number.isFinite(ms))
+    const periodStartMs = Math.min(startMs, ...stageTimes)
+    const periodEndMs = Math.max(endMs, ...stageTimes)
+    rows.push({
+      id: `worldline:${key}`,
+      selectId: detailId,
+      item: { ...item, name: getWorldlineActivityDisplayName(row, item.name || row.activityId) },
+      dateText: start.dateText,
+      dateValue: start.dateValue,
+      endDateText: end.dateText,
+      endDateValue: end.dateValue,
+      dateLabel: start.dateValue.slice(0, 7),
+      timeText: start.timeText,
+      endTimeText: end.timeText,
+      startMs,
+      endMs: Math.max(startMs, endMs),
+      monthKey: start.dateValue.slice(0, 7),
+      monthLabel: `${start.dateValue.slice(0, 4)}年${Number(start.dateValue.slice(5, 7))}月`,
+      periodStartMs,
+      periodEndMs,
+      periodStagePoints,
+      runtime: row,
+    })
+  }
+  return rows.sort((left, right) => left.startMs - right.startMs || left.item.name.localeCompare(right.item.name))
+})
+
+function isActivityEntryOverDays(entry: ActivityScheduleEntry, days: number) {
+  return entry.endMs - entry.startMs > days * 24 * 60 * 60 * 1000
+}
+
+function isActivityTemplateScheduleEntry(entry: ActivityScheduleEntry) {
+  const hints = getTimelineHints(entry.item)
+  const scheduleHints = hints.filter(hint => [
+    'Activity.prepareTime',
+    'Activity.startTime',
+    'Activity.endTime',
+    'Activity.rewardTime',
+    'Activity.closePanelTime',
+  ].includes(String(hint.source || '')) || hint.kind === 'activity_start')
+  if (!scheduleHints.length) return false
+  const isTemplate = scheduleHints.every(hint => {
+    const kind = String(hint.kind || '')
+    const confidence = String(hint.confidence || '').toLowerCase()
+    const hasConcreteDate = Boolean(String(hint.date || '').trim())
+    return kind === 'relative_schedule' && confidence !== 'high' && !hasConcreteDate
+  })
+  return isTemplate
+}
+
+const activityVisibleScheduledEntries = computed(() => {
+  let entries = [
+    ...activityScheduledEntries.value,
+    ...(activityWorldlineSchedule.value?.available ? activityWorldlineScheduledEntries.value : []),
+  ]
+  if (activityWorldlineSchedule.value?.available) {
+    entries = entries.filter(entry => entry.runtime || !isActivityTemplateScheduleEntry(entry))
+  }
+  if (activityHideOver30Days.value) {
+    entries = entries.filter(entry => !isActivityEntryOverDays(entry, 30))
+  }
+  return dedupeActivityScheduleEntries(entries)
+})
+
+const activityPeriodCenterKey = computed(() => getLocalDateKey())
+
+const activityPeriodTitle = computed(() => {
+  const parsed = parseCalendarKey(activityPeriodCenterKey.value)
+  if (!parsed) return activityPeriodCenterKey.value
+  return `今日 ${parsed.year}年${parsed.month}月${parsed.day}日`
+})
+
+const activityPeriodDays = computed<ActivityPeriodDay[]>(() => {
+  const todayKey = activityPeriodCenterKey.value
+  const center = makeLocalDate(todayKey)
+  if (!center) return []
+  const days: ActivityPeriodDay[] = []
+  for (let offset = -ACTIVITY_PERIOD_SIDE_DAYS; offset <= ACTIVITY_PERIOD_SIDE_DAYS; offset++) {
+    const date = new Date(center.getTime() + offset * 86400000)
+    const key = getLocalDateKey(date)
+    const weekdayIndex = (date.getDay() + 6) % 7
+    days.push({
+      key,
+      dayLabel: formatActivityMonthDaySlash(key),
+      weekdayLabel: ACTIVITY_CALENDAR_WEEKDAY_LABELS[weekdayIndex] ?? '',
+      isToday: key === todayKey,
+    })
+  }
+  return days
+})
+
+function getActivityPeriodStagePoint(entry: ActivityScheduleEntry, source: string) {
+  return entry.periodStagePoints.find(point => point.source === source) ?? null
+}
+
+function buildFallbackActivityPeriodStagePoint(
+  entry: ActivityScheduleEntry,
+  source: string,
+  kind: ActivityPeriodStageKind,
+  label: string,
+  ms: number,
+  dateValue: string,
+  timeText: string,
+): ActivityPeriodStagePoint {
+  return { source, kind, label, ms, dateValue, timeText }
+}
+
+function buildActivityPeriodSegments(entry: ActivityScheduleEntry, blockStartMs: number, blockEndMs: number) {
+  const blockDuration = Math.max(1, blockEndMs - blockStartMs)
+  const startPoint = getActivityPeriodStagePoint(entry, 'Activity.startTime')
+    ?? buildFallbackActivityPeriodStagePoint(entry, 'Activity.startTime', 'active', '开始', entry.startMs, entry.dateValue, entry.timeText)
+  const endPoint = getActivityPeriodStagePoint(entry, 'Activity.endTime')
+    ?? buildFallbackActivityPeriodStagePoint(entry, 'Activity.endTime', 'active', '结束', entry.endMs, entry.endDateValue, entry.endTimeText)
+  const preparePoint = getActivityPeriodStagePoint(entry, 'Activity.prepareTime')
+  const rewardPoint = getActivityPeriodStagePoint(entry, 'Activity.rewardTime')
+  const closePoint = getActivityPeriodStagePoint(entry, 'Activity.closePanelTime')
+  const ranges = [
+    preparePoint ? { kind: 'prepare' as const, label: '准备', start: preparePoint, end: startPoint } : null,
+    { kind: 'active' as const, label: '进行', start: startPoint, end: endPoint },
+    rewardPoint ? { kind: 'reward' as const, label: '领奖', start: endPoint, end: rewardPoint } : null,
+    closePoint ? { kind: 'close' as const, label: '关闭面板', start: rewardPoint ?? endPoint, end: closePoint } : null,
+  ].filter((range): range is { kind: ActivityPeriodStageKind; label: string; start: ActivityPeriodStagePoint; end: ActivityPeriodStagePoint } => Boolean(range))
+
+  const segments = ranges
+    .map(range => {
+      if (range.end.ms <= range.start.ms) return null
+      const startMs = Math.max(blockStartMs, range.start.ms)
+      const endMs = Math.min(blockEndMs, range.end.ms)
+      if (endMs <= startMs) return null
+      return {
+        key: `${range.kind}-${range.start.ms}-${range.end.ms}`,
+        kind: range.kind,
+        label: `${range.label}：${range.start.label || range.start.timeText || ''} → ${range.end.label || range.end.timeText || ''}`,
+        left: (startMs - blockStartMs) / blockDuration * 100,
+        width: (endMs - startMs) / blockDuration * 100,
+      }
+    })
+    .filter((segment): segment is ActivityPeriodSegment => Boolean(segment))
+
+  if (segments.length) return segments
+  return [{
+    key: 'fallback',
+    kind: 'fallback' as const,
+    label: '活动时间',
+    left: 0,
+    width: 100,
+  }]
+}
+
+function getActivityPeriodActiveRange(entry: ActivityScheduleEntry, blockStartMs: number, blockEndMs: number) {
+  const startPoint = getActivityPeriodStagePoint(entry, 'Activity.startTime')
+  const endPoint = getActivityPeriodStagePoint(entry, 'Activity.endTime')
+  const startMs = Math.max(blockStartMs, startPoint?.ms ?? entry.startMs)
+  const endMs = Math.min(blockEndMs, endPoint?.ms ?? entry.endMs)
+  if (endMs <= startMs) return { startMs: blockStartMs, endMs: blockEndMs }
+  return { startMs, endMs }
+}
+
+const activityPeriodRows = computed<ActivityPeriodRow[]>(() => {
+  const days = activityPeriodDays.value
+  if (!days.length) return []
+  const first = makeLocalDate(days[0].key)
+  const last = makeLocalDate(days[days.length - 1].key)
+  const today = makeLocalDate(activityPeriodCenterKey.value)
+  if (!first || !last) return []
+  const monthStart = first.getTime()
+  const monthEnd = last.getTime() + 24 * 60 * 60 * 1000
+  const labelAnchorMs = (today?.getTime() ?? Date.now()) - ACTIVITY_PERIOD_INITIAL_LEAD_DAYS * 86400000
+  const entries = activityVisibleScheduledEntries.value
+    .map(entry => {
+      const periodStartMs = Number.isFinite(entry.periodStartMs) ? entry.periodStartMs : entry.startMs
+      const periodEndMs = Number.isFinite(entry.periodEndMs) ? Math.max(entry.periodEndMs, periodStartMs) : entry.endMs
+      if (periodEndMs <= monthStart || periodStartMs >= monthEnd) return null
+      const clippedStartMs = Math.max(monthStart, periodStartMs)
+      const clippedEndMs = Math.min(monthEnd, Math.max(periodEndMs, periodStartMs + 60 * 60 * 1000))
+      const clippedStart = (clippedStartMs - monthStart) / 86400000
+      const clippedEnd = (clippedEndMs - monthStart) / 86400000
+      return {
+        entry,
+        clippedStart,
+        clippedEnd,
+        clippedStartMs,
+        clippedEndMs,
+        duration: clippedEnd - clippedStart,
+        rangeLabel: formatActivityPeriodRange(entry),
+      }
+    })
+    .filter((row): row is { entry: ActivityScheduleEntry; clippedStart: number; clippedEnd: number; clippedStartMs: number; clippedEndMs: number; duration: number; rangeLabel: string } => Boolean(row))
+    .sort((left, right) => left.clippedStart - right.clippedStart || right.duration - left.duration || left.entry.item.name.localeCompare(right.entry.item.name))
+  const laneEnds: number[] = []
+  return entries.map(row => {
+    const labelLayout = getActivityPeriodLabelLayout(
+      row.clippedStartMs,
+      row.clippedEndMs,
+      row.clippedStart,
+      row.clippedEnd,
+      days.length,
+      labelAnchorMs,
+    )
+    const reserveStart = Math.min(row.clippedStart, labelLayout.slot.left)
+    const reserveEnd = Math.max(row.clippedEnd, labelLayout.slot.right)
+    let lane = laneEnds.findIndex(end => end <= reserveStart)
+    if (lane < 0) {
+      lane = laneEnds.length
+      laneEnds.push(reserveEnd)
+    } else {
+      laneEnds[lane] = reserveEnd
+    }
+    return {
+      entry: row.entry,
+      lane,
+      left: row.clippedStart / days.length * 100,
+      width: Math.max(0, (row.clippedEnd - row.clippedStart) / days.length * 100),
+      labelLeft: labelLayout.left,
+      labelTop: labelLayout.top,
+      labelWidth: labelLayout.width,
+      rangeLabel: row.rangeLabel,
+      segments: buildActivityPeriodSegments(row.entry, row.clippedStartMs, row.clippedEndMs),
+    }
+  })
+})
+
+function getActivityPeriodLabelLeft(blockStartMs: number, blockEndMs: number, targetMs: number) {
+  const duration = Math.max(1, blockEndMs - blockStartMs)
+  const clampedTarget = Math.max(blockStartMs, Math.min(blockEndMs, targetMs))
+  return (clampedTarget - blockStartMs) / duration * 100
+}
+
+function getActivityPeriodLabelLayout(
+  blockStartMs: number,
+  blockEndMs: number,
+  blockStartDay: number,
+  blockEndDay: number,
+  timelineEndDay: number,
+  targetMs: number,
+) {
+  const duration = Math.max(1, blockEndMs - blockStartMs)
+  const desiredLeft = getActivityPeriodLabelLeft(blockStartMs, blockEndMs, targetMs)
+  const blockWidthDay = Math.max(0.0001, blockEndDay - blockStartDay)
+  const rawPreferredDay = blockStartDay + blockWidthDay * (Math.max(0, Math.min(100, desiredLeft)) / 100)
+  const targetAtEnd = rawPreferredDay >= blockEndDay - 0.01
+  const naturalWidthDay = Math.max(0, blockEndDay - rawPreferredDay)
+  const labelWidthDay = Math.min(
+    ACTIVITY_PERIOD_LABEL_MAX_DAYS,
+    Math.max(ACTIVITY_PERIOD_LABEL_MIN_DAYS, targetAtEnd ? blockWidthDay : naturalWidthDay),
+  )
+  const labelEndDay = targetAtEnd
+    ? blockEndDay
+    : Math.min(timelineEndDay, blockEndDay + ACTIVITY_PERIOD_LABEL_MIN_DAYS, rawPreferredDay + labelWidthDay)
+  const labelStartDay = Math.max(0, Math.min(rawPreferredDay, labelEndDay - labelWidthDay))
+  const left = (labelStartDay - blockStartDay) / blockWidthDay * 100
+  const labelWidth = (labelEndDay - labelStartDay) / blockWidthDay * 100
+  const slot = {
+    left: labelStartDay,
+    right: labelEndDay,
+    top: 0,
+  }
+  return {
+    left,
+    top: 0,
+    width: labelWidth,
+    slot,
+  }
+}
+
+const activityPeriodLaneCount = computed(() => {
+  if (!activityPeriodRows.value.length) return 0
+  return Math.max(...activityPeriodRows.value.map(row => row.lane)) + 1
+})
+
+const activityPeriodGridStyle = computed(() => ({
+  '--activity-period-days': Math.max(1, activityPeriodDays.value.length).toString(),
+  '--activity-period-lanes': Math.max(1, activityPeriodLaneCount.value).toString(),
+}))
+
+function formatActivityRangeEndDate(entry: ActivityScheduleEntry) {
+  const start = parseCalendarKey(entry.dateValue)
+  const end = parseCalendarKey(entry.endDateValue)
+  if (start && end && start.year === end.year) {
+    return formatActivityMonthDaySlash(entry.endDateValue)
+  }
+  return formatActivityDateSlash(entry.endDateValue || entry.endDateText)
+}
+
+function formatActivityPeriodRange(entry: ActivityScheduleEntry) {
+  const startTime = formatCompactClockTime(entry.timeText)
+  const endTime = formatCompactClockTime(entry.endTimeText)
+  const startSuffix = startTime ? ` ${startTime}` : ''
+  const endSuffix = endTime ? ` ${endTime}` : ''
+  const startDate = formatActivityDateSlash(entry.dateValue || entry.dateText)
+  if (!entry.endDateValue || entry.endDateValue === entry.dateValue) {
+    if (endTime && endTime !== startTime) {
+      return `${startDate}${startSuffix} - ${endTime}`
+    }
+    return `${startDate}${startSuffix}`
+  }
+  return `${startDate}${startSuffix} - ${formatActivityRangeEndDate(entry)}${endSuffix}`
+}
 
 function shouldRefetchItemDetail(itemId: string | number, cached: FanxiuItemCard | null | undefined) {
   if (!cached) return true
@@ -2132,11 +3315,20 @@ function getActivityKindText(item: FanxiuActivitySearchItem | FanxiuActivityCard
   return uniqueLabels(item?.kind_names ?? []).slice(0, 3).join(' · ')
 }
 
+function getActivityTypeText(value: unknown, options: { showCode?: boolean } = {}) {
+  const key = String(value ?? '').trim()
+  if (!key) return ''
+  const option = activityTypeOptions.value.find(item => String(item.value) === key)
+  const label = option?.label || `玩法 ${key}`
+  if (options.showCode) return label
+  const suffix = ` · ${key}`
+  return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label
+}
+
 function getActivityMeta(item: FanxiuActivitySearchItem | FanxiuActivityCard | null | undefined) {
   return [
     getActivityKindText(item),
-    item?.activity_type ? `玩法 ${item.activity_type}` : '',
-    item?.base_id ? `Base ${item.base_id}` : '',
+    getActivityTypeText(item?.activity_type),
   ].filter(Boolean).join(' · ')
 }
 
@@ -3110,6 +4302,271 @@ function getFirstTimelineShortLabel(item: TimelineCarrier) {
   return hint?.date || ''
 }
 
+function getActivityNoteCacheKey(activity: FanxiuActivityCard | null | undefined) {
+  return String(activity?.id ?? '').trim()
+}
+
+function getActivityNoteVirtualId(activityId: string) {
+  const numericId = Number(activityId)
+  if (Number.isFinite(numericId) && numericId > 0) return -Math.trunc(numericId)
+  let hash = 0
+  for (let index = 0; index < activityId.length; index++) {
+    hash = (hash * 31 + activityId.charCodeAt(index)) >>> 0
+  }
+  return -Math.max(1, hash)
+}
+
+function getActivityNoteDraftStorageKey(activity: FanxiuActivityCard | null | undefined) {
+  const activityId = getActivityNoteCacheKey(activity)
+  return activityId ? `codeyun.fanxiu-activity-note-draft.${activityId}` : null
+}
+
+function isVirtualActivityNote(note: NoteNode | null | undefined) {
+  const id = Number(note?.id)
+  return Number.isFinite(id) && id < 0
+}
+
+function getActivityNoteDocRouteRef(note: Pick<NoteNode, 'id' | 'numeric_id'> | null | undefined) {
+  if (!note || isVirtualActivityNote(note as NoteNode)) return ''
+  return note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : noteKey(note.id)
+}
+
+function getActivityNoteDocHref(note: Pick<NoteNode, 'id' | 'numeric_id'> | null | undefined) {
+  const routeRef = getActivityNoteDocRouteRef(note)
+  return routeRef ? router.resolve(`/doc/${encodeURIComponent(routeRef)}`).href : ''
+}
+
+function getActivityNoteStartAt(activity: FanxiuActivityCard) {
+  const hint = getFirstTimelineHint(activity)
+  const parsed = parseActivityDateFromHint(hint)
+  const ms = parsed.dateValue ? makeActivityDateTimeMs(parsed.dateValue, String(hint?.time || '')) : null
+  return ms ?? Date.now()
+}
+
+function buildActivityNoteCustomFields(activity: FanxiuActivityCard, existing: unknown = []) {
+  const fields = Array.isArray(existing)
+    ? existing.filter(item => Array.isArray(item) && ![
+      ACTIVITY_NOTE_FIELD_SOURCE,
+      ACTIVITY_NOTE_FIELD_ACTIVITY_ID,
+      ACTIVITY_NOTE_FIELD_ACTIVITY_NAME,
+    ].includes(String(item[0] ?? '')))
+    : []
+  return [
+    ...fields,
+    [ACTIVITY_NOTE_FIELD_SOURCE, 'string', 'fanxiu_activity'],
+    [ACTIVITY_NOTE_FIELD_ACTIVITY_ID, 'string', String(activity.id)],
+    [ACTIVITY_NOTE_FIELD_ACTIVITY_NAME, 'string', String(activity.name || '')],
+  ]
+}
+
+function buildVirtualActivityNote(activity: FanxiuActivityCard): NoteNode {
+  const activityId = getActivityNoteCacheKey(activity)
+  return {
+    id: getActivityNoteVirtualId(activityId),
+    title: String(activity.name || `活动 ${activity.id}`),
+    content: '',
+    weight: 0,
+    note_categories: [],
+    primary_category: NOTE_CATEGORY_DEFAULT,
+    note_form: NOTE_FORM_DOCUMENT,
+    note_kind: NOTE_SCENE_DEFAULT,
+    note_scene: NOTE_SCENE_DEFAULT,
+    node_status: NOTE_LIFECYCLE_STAGE_DEFAULT,
+    lifecycle_stage: NOTE_LIFECYCLE_STAGE_DEFAULT,
+    private_level: 0,
+    custom_fields: buildActivityNoteCustomFields(activity),
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    start_at: getActivityNoteStartAt(activity),
+    can_edit: true,
+  }
+}
+
+function isEmptyActivityNoteContent(value: unknown) {
+  const html = String(value ?? '')
+    .replace(/<br\s*\/?>/gi, '')
+    .replace(/<\/p>\s*<p>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .trim()
+  return !html && !/(<img\b|<table\b|<ul\b|<ol\b|<li\b)/i.test(String(value ?? ''))
+}
+
+function shouldCreateActivityNote(note: NoteNode, patch: EditableNotePatch) {
+  const content = 'content' in patch ? patch.content : note.content
+  return !isEmptyActivityNoteContent(content)
+}
+
+function ensureActivityNoteQueryTab() {
+  noteStore.ensureVirtualTab({
+    id: ACTIVITY_NOTE_QUERY_TAB_ID,
+    label: '凡修活动文档',
+    type: 'list',
+    closable: false,
+  })
+}
+
+function ensureActivityNoteIndexQueryTab() {
+  noteStore.ensureVirtualTab({
+    id: ACTIVITY_NOTE_INDEX_QUERY_TAB_ID,
+    label: '凡修活动文档索引',
+    type: 'list',
+    closable: false,
+  })
+}
+
+function indexActivityDocumentNotes(notes: NoteNode[]) {
+  const rows: Record<string, NoteNode> = {}
+  for (const note of notes) {
+    const activityId = getNoteCustomFieldValue(note, ACTIVITY_NOTE_FIELD_ACTIVITY_ID)
+    if (!activityId) continue
+    const current = rows[activityId]
+    if (!current || Number(note.updated_at || 0) > Number(current.updated_at || 0)) {
+      rows[activityId] = note
+    }
+  }
+  return rows
+}
+
+async function loadActivityDocumentNotes() {
+  const requestSeq = ++activityDocumentRequestSeq
+  try {
+    ensureActivityNoteIndexQueryTab()
+    const result = await noteStore.queryNotesForTab(ACTIVITY_NOTE_INDEX_QUERY_TAB_ID, {
+      scope: { mode: 'all' },
+      rules: [
+        { field: `custom_fields.${ACTIVITY_NOTE_FIELD_SOURCE}`, op: 'eq', value: 'fanxiu_activity' },
+      ],
+      order_by: 'updated_at',
+      order_desc: true,
+      limit: 5000,
+      include_edges: false,
+    })
+    if (requestSeq !== activityDocumentRequestSeq) return
+    activityDocumentNotes.value = indexActivityDocumentNotes(result?.nodes ?? [])
+  } catch (error: any) {
+    if (requestSeq === activityDocumentRequestSeq) {
+      console.warn('Failed to load Fanxiu activity document index:', error)
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动文档索引失败')
+    }
+  }
+}
+
+async function loadActivityNote(activity: FanxiuActivityCard | null | undefined) {
+  const activityId = getActivityNoteCacheKey(activity)
+  const requestSeq = ++activityNoteRequestSeq
+  if (!activity || !activityId) {
+    selectedActivityNote.value = undefined
+    loadingActivityNote.value = false
+    return
+  }
+
+  const cached = activityNoteCache.get(activityId)
+  if (cached !== undefined) {
+    selectedActivityNote.value = cached ? { ...cached } : buildVirtualActivityNote(activity)
+    loadingActivityNote.value = false
+    return
+  }
+
+  selectedActivityNote.value = undefined
+  loadingActivityNote.value = true
+  try {
+    ensureActivityNoteQueryTab()
+    const result = await noteStore.queryNotesForTab(ACTIVITY_NOTE_QUERY_TAB_ID, {
+      scope: { mode: 'all' },
+      rules: [
+        { field: `custom_fields.${ACTIVITY_NOTE_FIELD_SOURCE}`, op: 'eq', value: 'fanxiu_activity' },
+        { field: `custom_fields.${ACTIVITY_NOTE_FIELD_ACTIVITY_ID}`, op: 'eq', value: activityId },
+      ],
+      order_by: 'updated_at',
+      order_desc: true,
+      limit: 1,
+      include_edges: false,
+    })
+    if (requestSeq !== activityNoteRequestSeq) return
+    const summary = result?.nodes?.[0]
+    if (!summary) {
+      activityNoteCache.set(activityId, null)
+      selectedActivityNote.value = buildVirtualActivityNote(activity)
+      return
+    }
+    const detail = await noteStore.fetchNoteDetail(summary.id)
+    if (requestSeq !== activityNoteRequestSeq) return
+    const note = detail ?? summary
+    activityNoteCache.set(activityId, note)
+    activityDocumentNotes.value = { ...activityDocumentNotes.value, [activityId]: note }
+    selectedActivityNote.value = { ...note }
+  } catch (error: any) {
+    if (requestSeq === activityNoteRequestSeq) {
+      console.warn('Failed to load Fanxiu activity note:', error)
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动笔记失败')
+    }
+  } finally {
+    if (requestSeq === activityNoteRequestSeq) {
+      loadingActivityNote.value = false
+    }
+  }
+}
+
+async function saveActivityNote(note: NoteNode, patch: EditableNotePatch = {}) {
+  const activity = selectedActivity.value
+  const activityId = getActivityNoteCacheKey(activity)
+  if (!activity || !activityId) throw new Error('未选中活动')
+  const payload = {
+    ...(Object.keys(patch).length ? patch : note),
+    title: String(activity.name || note.title || `活动 ${activity.id}`),
+    custom_fields: buildActivityNoteCustomFields(activity, (Object.keys(patch).length ? patch.custom_fields : note.custom_fields) ?? note.custom_fields),
+  }
+
+  if (isVirtualActivityNote(note)) {
+    if (!shouldCreateActivityNote(note, payload)) {
+      return { ...note, ...payload }
+    }
+    const created = await noteStore.createNote(
+      payload.title,
+      String(payload.content ?? ''),
+      typeof payload.weight === 'number' ? payload.weight : note.weight ?? 0,
+      typeof payload.start_at === 'number' ? payload.start_at : note.start_at,
+      note.node_type ?? 'note',
+      note.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
+      payload.custom_fields,
+      typeof payload.private_level === 'number' ? payload.private_level : note.private_level ?? 0,
+      payload.color ?? note.color ?? null,
+      note.weight_mode ?? null,
+      note.note_kind ?? NOTE_SCENE_DEFAULT,
+      note.note_types ?? [],
+      note.note_categories ?? [],
+      note.primary_category ?? NOTE_CATEGORY_DEFAULT,
+      NOTE_FORM_DOCUMENT,
+      note.note_scene ?? NOTE_SCENE_DEFAULT,
+      note.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
+    )
+    if (!created) throw new Error('创建活动笔记失败')
+    activityNoteCache.set(activityId, created)
+    activityDocumentNotes.value = { ...activityDocumentNotes.value, [activityId]: created }
+    selectedActivityNote.value = { ...created }
+    return created
+  }
+
+  const updated = await noteStore.updateNote(noteKey(note.id), payload)
+  if (!updated) throw new Error('保存活动笔记失败')
+  activityNoteCache.set(activityId, updated)
+  activityDocumentNotes.value = { ...activityDocumentNotes.value, [activityId]: updated }
+  selectedActivityNote.value = { ...updated }
+  return updated
+}
+
+function onActivityNoteChange(note: NoteNode) {
+  const activity = selectedActivity.value
+  const activityId = getActivityNoteCacheKey(activity)
+  if (!activity || !activityId) return
+  selectedActivityNote.value = { ...note }
+  if (!isVirtualActivityNote(note)) {
+    activityNoteCache.set(activityId, note)
+    activityDocumentNotes.value = { ...activityDocumentNotes.value, [activityId]: note }
+  }
+}
+
 function getActivityTimeRows(activity: FanxiuActivityCard | null | undefined) {
   if (!activity) return []
   const parsedRows = (activity.time_fields ?? [])
@@ -3184,7 +4641,7 @@ function getActivityFieldRows(activity: FanxiuActivityCard | null | undefined) {
   return [
     ['来源表', activity.source_table],
     ['活动 ID', activity.id],
-    ['玩法', activity.activity_type],
+    ['玩法', getActivityTypeText(activity.activity_type, { showCode: true })],
     ['Base', activity.base_id],
     ['奖励组', activity.reward_group],
     ['父活动', activity.parent_activity_id],
@@ -3468,8 +4925,493 @@ function getActivityRewardRowMeta(row: FanxiuActivityRewardRow) {
   return [row.meta, row.condition ? `条件 ${row.condition}` : ''].filter(Boolean).join(' / ')
 }
 
+function getActivityRankRewardRowMeta(row: FanxiuActivityRewardRow) {
+  return String(row.rank_gatekeeper?.text || '').trim()
+}
+
+type ActivityRankPerson = NonNullable<FanxiuActivityRewardRow['rank_gatekeeper']>
+
+function getActivityRankPersonSubject(person: ActivityRankPerson | undefined | null) {
+  return String(person?.subject || person?.text || '').split('，')[0]?.trim() || ''
+}
+
+function getActivityRankPersonProgress(person: ActivityRankPerson | undefined | null) {
+  if (person?.progress) return String(person.progress).trim()
+  const parts = String(person?.text || '').split('，')
+  return parts.slice(1).join('，').trim()
+}
+
+function getActivityRankRewardCaptureText(row: FanxiuActivityRewardRow) {
+  const subject = getActivityRankPersonSubject(row.rank_gatekeeper)
+  if (subject) return subject
+  const rankEnd = Number(row.rank_end)
+  if (Number.isFinite(rankEnd) && rankEnd > 0) return `未捕捉第${rankEnd}名`
+  return ''
+}
+
+function getActivityRankRewardCaptureProgress(row: FanxiuActivityRewardRow) {
+  return getActivityRankPersonProgress(row.rank_gatekeeper)
+}
+
+function getActivityRankGatekeeperCount(section: FanxiuActivityRewardSection) {
+  return getActivityRankRewardRows(section).filter(row => Boolean(getActivityRankRewardRowMeta(row))).length
+}
+
+function getActivityRankSelfText(section: FanxiuActivityRewardSection) {
+  const self = section.rank_self
+  if (!self) return ''
+  const rank = Number(self.rank)
+  const rankText = Number.isFinite(rank) && rank > 0 ? `第${rank}名` : '排名未知'
+  const subject = getActivityRankPersonSubject(self)
+  const progress = getActivityRankPersonProgress(self)
+  return [subject ? `我：${subject}` : '我', rankText, progress].filter(Boolean).join(' / ')
+}
+
+function getActivityRankSelfGatekeeperText(section: FanxiuActivityRewardSection) {
+  const self = section.rank_self
+  if (!self) return ''
+  const current = getActivityRankPersonSubject(self.current_gatekeeper)
+  const next = getActivityRankPersonSubject(self.next_gatekeeper)
+  const currentProgress = getActivityRankPersonProgress(self.current_gatekeeper)
+  const nextProgress = getActivityRankPersonProgress(self.next_gatekeeper)
+  const rows = []
+  if (self.current_tier) {
+    const currentText = current
+      ? `${current}${currentProgress ? ` / ${currentProgress}` : ''}`
+      : `未捕捉第${self.current_gatekeeper_rank || '?'}名`
+    rows.push(`当前档 ${self.current_tier}：${currentText}`)
+  }
+  if (self.next_tier) {
+    const nextText = next
+      ? `${next}${nextProgress ? ` / ${nextProgress}` : ''}`
+      : `未捕捉第${self.next_gatekeeper_rank || '?'}名`
+    rows.push(`下一档 ${self.next_tier}：${nextText}`)
+  }
+  return rows.join('；')
+}
+
 function getActivityRawRewardText(row: FanxiuActivityRewardRow) {
   return (row.raw_rewards ?? []).filter(Boolean).join('；')
+}
+
+function isActivityRankRewardSection(section: FanxiuActivityRewardSection) {
+  return section.key === 'rank_reward'
+}
+
+function getActivityRewardRankStart(row: FanxiuActivityRewardRow, fallback: number) {
+  const explicit = Number(row.rank_start)
+  if (Number.isFinite(explicit)) return explicit
+  const matched = String(row.meta || row.title || '').match(/名次\s*(\d+)/)
+  const parsed = matched ? Number(matched[1]) : Number.NaN
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function getActivityRankRewardRows(section: FanxiuActivityRewardSection) {
+  return [...(section.rows ?? [])].sort((left, right) => (
+    String(left.source_activity_id ?? '').localeCompare(String(right.source_activity_id ?? ''))
+    || getActivityRewardRankStart(left, 10 ** 9) - getActivityRewardRankStart(right, 10 ** 9)
+    || String(left.row_key ?? '').localeCompare(String(right.row_key ?? ''))
+  ))
+}
+
+function getActivityRankRewardBaselineRow(rows: FanxiuActivityRewardRow[], index: number) {
+  const current = rows[index]
+  const next = rows[index + 1]
+  if (!current || !next) return null
+  const currentSource = String(current.source_activity_id ?? '')
+  const nextSource = String(next.source_activity_id ?? '')
+  if (currentSource || nextSource) return currentSource === nextSource ? next : null
+  return next
+}
+
+function activityRewardItemId(item: FanxiuGongfaLinkedItem) {
+  return String(item.id ?? '').trim()
+}
+
+function getActivityRankRewardDeltaItems(rows: FanxiuActivityRewardRow[], index: number) {
+  const row = rows[index]
+  if (!row) return []
+  const baseline = getActivityRankRewardBaselineRow(rows, index)
+  const currentItems = row.reward_items ?? []
+  const baselineItems = baseline?.reward_items ?? []
+  const baselineCountById = new Map<string, number>()
+  for (const item of baselineItems) {
+    const id = activityRewardItemId(item)
+    if (!id) continue
+    baselineCountById.set(id, (baselineCountById.get(id) ?? 0) + linkedItemNumber(item.count))
+  }
+  const currentCountById = new Map<string, number>()
+  for (const item of currentItems) {
+    const id = activityRewardItemId(item)
+    if (!id) continue
+    currentCountById.set(id, (currentCountById.get(id) ?? 0) + linkedItemNumber(item.count))
+  }
+  const result: Array<FanxiuGongfaLinkedItem & { delta_value?: number }> = []
+  const seen = new Set<string>()
+  for (const item of currentItems) {
+    const id = activityRewardItemId(item)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const delta = (currentCountById.get(id) ?? 0) - (baselineCountById.get(id) ?? 0)
+    if (!delta) continue
+    result.push({ ...item, count: formatSignedActivityDelta(delta), delta_value: delta })
+  }
+  for (const item of baselineItems) {
+    const id = activityRewardItemId(item)
+    if (!id || seen.has(id) || currentCountById.has(id)) continue
+    seen.add(id)
+    const delta = -(baselineCountById.get(id) ?? 0)
+    if (!delta) continue
+    result.push({ ...item, count: formatSignedActivityDelta(delta), delta_value: delta })
+  }
+  return result
+}
+
+function formatSignedActivityDelta(value: number) {
+  const sign = value > 0 ? '+' : '-'
+  return `${sign}${formatChineseCompactNumber(Math.abs(value))}`
+}
+
+function getActivityRankRewardDeltaItemsForSection(section: FanxiuActivityRewardSection, index: number) {
+  return getActivityRankRewardDeltaItems(getActivityRankRewardRows(section), index)
+}
+
+function getActivityChallengeLevelKey(sectionKey: string, level: { level_id?: string | number; source_level_id?: string | number }, index: number) {
+  return `${sectionKey}-${level.source_level_id ?? level.level_id ?? index}`
+}
+
+function getActivityChallengeLevelTitle(level: { level_id?: string | number; name?: string }) {
+  return String(level.name || (level.level_id ? `第${level.level_id}关` : '关卡'))
+}
+
+function getActivityChallengeLevelMeta(level: { stage?: string | number; layer?: string | number; reward_title?: string }) {
+  return [
+    level.stage ? `阶段 ${level.stage}` : '',
+    level.layer ? `层 ${level.layer}` : '',
+    level.reward_title || '',
+  ].filter(Boolean).join(' / ')
+}
+
+function formatActivityChallengeItems(items: FanxiuGongfaLinkedItem[] | undefined) {
+  return (items ?? []).map(item => `${item.name || item.id}${item.count ? `x${item.count}` : ''}`).join(' | ')
+}
+
+function getActivityChallengeRewardText(level: { clear_reward_text?: string; find_reward_text?: string; clear_rewards?: FanxiuGongfaLinkedItem[]; find_rewards?: FanxiuGongfaLinkedItem[] }, field: 'clear' | 'find') {
+  if (field === 'clear') return level.clear_reward_text || formatActivityChallengeItems(level.clear_rewards)
+  return level.find_reward_text || formatActivityChallengeItems(level.find_rewards)
+}
+
+type ActivityChallengeRewardItem = FanxiuGongfaLinkedItem & {
+  rarity_rank?: string | number;
+  rarity_total_count?: string | number;
+  rarity_first_level_id?: string | number;
+}
+
+function getActivityChallengeThresholdKey(section: FanxiuActivityChallengeSection) {
+  return `${selectedActivity.value?.id ?? 'activity'}:${section.key}`
+}
+
+function getActivityChallengeSelectedRank(section: FanxiuActivityChallengeSection) {
+  const key = getActivityChallengeThresholdKey(section)
+  const saved = activityChallengeThresholdRanks.value[key]
+  if (Number.isFinite(saved) && saved > 0) return saved
+  const fallback = Number(section.default_threshold_rank || section.rarity_stats?.[Math.min((section.rarity_stats?.length || 1) - 1, 9)]?.rarity_rank || 0)
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0
+}
+
+function setActivityChallengeSelectedRank(section: FanxiuActivityChallengeSection, value: string | number) {
+  const rank = Number(value)
+  if (!Number.isFinite(rank) || rank <= 0) return
+  activityChallengeThresholdRanks.value = {
+    ...activityChallengeThresholdRanks.value,
+    [getActivityChallengeThresholdKey(section)]: rank,
+  }
+}
+
+function getActivityChallengeRarityCards(section: FanxiuActivityChallengeSection) {
+  return [...(section.rarity_stats ?? [])].sort((left, right) => (
+    Number(left.total_count) - Number(right.total_count)
+    || Number(left.first_level_id) - Number(right.first_level_id)
+    || String(left.item_name || '').localeCompare(String(right.item_name || ''))
+  ))
+}
+
+function getActivityChallengeLevelRangeParts(levelIds: Array<string | number>) {
+  const ids = [...new Set(levelIds.map(levelId => Number(levelId)).filter(levelId => Number.isFinite(levelId) && levelId > 0))]
+    .sort((left, right) => left - right)
+  const ranges: string[] = []
+  for (let index = 0; index < ids.length; index += 1) {
+    const start = ids[index]
+    let end = start
+    while (index + 1 < ids.length && ids[index + 1] === end + 1) {
+      index += 1
+      end = ids[index]
+    }
+    ranges.push(start === end ? String(start) : `${start}-${end}`)
+  }
+  return ranges
+}
+
+function formatActivityChallengeLevelRanges(levelIds: Array<string | number>, compact = false) {
+  const ranges = getActivityChallengeLevelRangeParts(levelIds)
+  if (!ranges.length) return ''
+  let visibleRanges = ranges
+  if (compact && ranges.length > 6) {
+    visibleRanges = [...ranges.slice(0, 3), '...', ...ranges.slice(-2)]
+  }
+  return `第${visibleRanges.join(',')}关`
+}
+
+function getActivityChallengeRarityLevelText(item: FanxiuActivityChallengeRarityStat, compact = false) {
+  if (!compact && item.level_range_text) return item.level_range_text
+  return formatActivityChallengeLevelRanges(item.level_ids ?? [], compact) || item.level_range_text || ''
+}
+
+function getActivityChallengeRarityCardMeta(item: FanxiuActivityChallengeRarityStat) {
+  return getActivityChallengeRarityLevelText(item, true) || `出现 ${item.level_count} 关`
+}
+
+function getActivityChallengeRarityCardTitle(item: FanxiuActivityChallengeRarityStat) {
+  return getActivityChallengeRarityItemName(item)
+}
+
+function getActivityChallengeRarityCountText(item: FanxiuActivityChallengeRarityStat) {
+  return `x ${formatChineseCompactNumber(item.total_count)}`
+}
+
+function getActivityChallengeRarityItemId(item: FanxiuActivityChallengeRarityStat) {
+  return String(item.item_id ?? '').trim()
+}
+
+function getActivityChallengeRarityItemName(item: FanxiuActivityChallengeRarityStat) {
+  return cleanFanxiuPreview(item.item_name || item.item_id || '道具')
+}
+
+function getActivityChallengeRarityItemHref(item: FanxiuActivityChallengeRarityStat) {
+  const itemId = getActivityChallengeRarityItemId(item)
+  return itemId ? buildFanxiuResourceHref('item', itemId) : ''
+}
+
+function getActivityChallengeRarityIconUrl(item: FanxiuActivityChallengeRarityStat) {
+  return getFanxiuResourceIconUrl(item.icon)
+}
+
+function isActivityChallengeRarityCardActive(section: FanxiuActivityChallengeSection, item: FanxiuActivityChallengeRarityStat) {
+  return getActivityChallengeSelectedRank(section) === Number(item.rarity_rank)
+}
+
+function handleActivityChallengeRarityCardClick(event: MouseEvent, section: FanxiuActivityChallengeSection, item: FanxiuActivityChallengeRarityStat) {
+  if (event.ctrlKey || event.metaKey) return
+  event.preventDefault()
+  setActivityChallengeSelectedRank(section, item.rarity_rank)
+}
+
+function isActivityChallengeRarityMode(section: FanxiuActivityChallengeSection) {
+  return section.display_mode === 'rarity_threshold' && Boolean(section.rarity_stats?.length)
+}
+
+function isActivityChallengeRewardVisible(item: ActivityChallengeRewardItem, thresholdRank: number) {
+  const rank = Number(item.rarity_rank)
+  return Number.isFinite(rank) && rank > 0 && rank <= thresholdRank
+}
+
+function getActivityChallengeVisibleRewards(level: FanxiuActivityChallengeLevel, section: FanxiuActivityChallengeSection, field: 'clear' | 'find') {
+  const items = (field === 'clear' ? level.clear_rewards : level.find_rewards) as ActivityChallengeRewardItem[] | undefined
+  if (!isActivityChallengeRarityMode(section)) return items ?? []
+  const thresholdRank = getActivityChallengeSelectedRank(section)
+  return (items ?? []).filter(item => isActivityChallengeRewardVisible(item, thresholdRank))
+}
+
+function getActivityChallengeVisibleRewardText(level: FanxiuActivityChallengeLevel, section: FanxiuActivityChallengeSection, field: 'clear' | 'find') {
+  return formatActivityChallengeItems(getActivityChallengeVisibleRewards(level, section, field))
+}
+
+function getActivityChallengeDisplayLevels(section: FanxiuActivityChallengeSection) {
+  if (!isActivityChallengeRarityMode(section)) return section.levels
+  return section.levels.filter(level => (
+    getActivityChallengeVisibleRewards(level, section, 'clear').length
+    || getActivityChallengeVisibleRewards(level, section, 'find').length
+  ))
+}
+
+function getActivityChallengeCountText(section: FanxiuActivityChallengeSection) {
+  const total = section.level_count || section.levels.length
+  if (isActivityChallengeRarityMode(section)) return `${getActivityChallengeDisplayLevels(section).length} 个节点 / ${total} 关`
+  return `${total} 关 · ${section.reward_item_count || 0} 项奖励`
+}
+
+function getActivityChallengeThresholdSummary(section: FanxiuActivityChallengeSection) {
+  if (!isActivityChallengeRarityMode(section)) return ''
+  const rank = getActivityChallengeSelectedRank(section)
+  const item = (section.rarity_stats ?? []).find(stat => Number(stat.rarity_rank) === rank)
+  if (!item) return ''
+  return `当前显示稀缺度不低于「${item.item_name}」的奖励，统计口径：全关卡累计总量 ${item.total_count}，首次出现第 ${item.first_level_id ?? '-'} 关。`
+}
+
+function getActivityChallengeStageText(section: { stage_summary?: Array<{ stage?: string | number; level_count?: number }> }) {
+  return (section.stage_summary ?? [])
+    .map(item => `阶段 ${item.stage ?? '-'}：${item.level_count ?? 0}关`)
+    .join(' / ')
+}
+
+interface ActivityGiftValueRow {
+  key: string;
+  title: string;
+  priceText: string;
+  price: number;
+  quantity: number;
+  quantityText: string;
+  unitPriceText: string;
+  limitText: string;
+  limit: number;
+  cumulativeText: string;
+}
+
+const ACTIVITY_PAY_PRICE_BY_ID: Record<string, number> = {
+  '200001': 6,
+  '200002': 18,
+  '200003': 30,
+  '200004': 68,
+  '200005': 98,
+  '200006': 128,
+  '200007': 198,
+  '200008': 198,
+  '200009': 328,
+  '200010': 488,
+  '200011': 648,
+  '300001': 6,
+  '300002': 18,
+  '300003': 30,
+  '300004': 68,
+  '300005': 98,
+  '300006': 128,
+  '300007': 198,
+  '300008': 198,
+  '300009': 328,
+  '300010': 488,
+  '300011': 648,
+}
+
+const ACTIVITY_GIFT_SIDE_RESOURCE_NAME_PATTERN = /(灵石|仙玉|元宝|天资丹|红包)/
+const ACTIVITY_GIFT_SIDE_RESOURCE_IDS = new Set(['1', '1001', '9070095', '1102', '1103'])
+
+function parseActivityGiftPayId(row: FanxiuActivityRewardRow) {
+  const source = [row.meta, ...(row.costs ?? [])].filter(Boolean).join(' ')
+  return source.match(/(?:付费\s*)?(\d{6})/)?.[1] || ''
+}
+
+function parseActivityGiftLimit(row: FanxiuActivityRewardRow) {
+  const source = String(row.meta || '')
+  const match = source.match(/次数\s*(\d+(?:\.\d+)?)/)
+  if (!match) return 0
+  const value = Number(match[1])
+  return Number.isFinite(value) ? value : 0
+}
+
+function linkedItemNumber(value: unknown) {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : 0
+}
+
+function isActivityGiftSideResource(item: { id?: string | number; name?: string }) {
+  const id = String(item.id ?? '').trim()
+  const name = String(item.name ?? '').trim()
+  return ACTIVITY_GIFT_SIDE_RESOURCE_IDS.has(id) || ACTIVITY_GIFT_SIDE_RESOURCE_NAME_PATTERN.test(name)
+}
+
+function getActivityGiftCoreItemId(section: FanxiuActivityRewardSection) {
+  const counts = new Map<string, { count: number; total: number }>()
+  for (const row of section.rows ?? []) {
+    for (const item of row.reward_items ?? []) {
+      if (!item.id || isActivityGiftSideResource(item)) continue
+      const id = String(item.id)
+      const current = counts.get(id) ?? { count: 0, total: 0 }
+      current.count += 1
+      current.total += linkedItemNumber(item.count)
+      counts.set(id, current)
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1].count - left[1].count || right[1].total - left[1].total)[0]?.[0] || ''
+}
+
+function getActivityGiftPrice(row: FanxiuActivityRewardRow) {
+  const payId = parseActivityGiftPayId(row)
+  if (payId && ACTIVITY_PAY_PRICE_BY_ID[payId] !== undefined) return ACTIVITY_PAY_PRICE_BY_ID[payId]
+  const spiritStone = (row.reward_items ?? []).find(item => String(item.id ?? '') === '1' || String(item.name ?? '') === '灵石')
+  const count = linkedItemNumber(spiritStone?.count)
+  return count > 0 ? count / 10 : 0
+}
+
+function getActivityGiftCoreQuantity(row: FanxiuActivityRewardRow, coreItemId: string) {
+  const rawQuantity = (row.raw_rewards ?? []).reduce((sum, reward) => {
+    const match = String(reward || '').match(/^Item\|([^_|\s]+)_(\d+(?:\.\d+)?)$/)
+    if (!match || match[1] !== coreItemId) return sum
+    return sum + linkedItemNumber(match[2])
+  }, 0)
+  if (rawQuantity > 0) return rawQuantity
+  return (row.reward_items ?? [])
+    .filter(item => String(item.id ?? '') === coreItemId)
+    .reduce((sum, item) => sum + linkedItemNumber(item.count), 0)
+}
+
+function formatActivityGiftNumber(value: number, digits = 2) {
+  if (!Number.isFinite(value)) return '-'
+  if (Math.abs(value - Math.round(value)) < 0.000001) return String(Math.round(value))
+  return value.toFixed(digits).replace(/\.?0+$/, '')
+}
+
+function getActivityGiftValueRows(section: FanxiuActivityRewardSection): ActivityGiftValueRow[] {
+  if (section.key !== 'gift' && !/礼包/.test(section.title || '')) return []
+  const coreItemId = getActivityGiftCoreItemId(section)
+  if (!coreItemId) return []
+  const rows = (section.rows ?? [])
+    .map((row, index) => {
+      const quantity = getActivityGiftCoreQuantity(row, coreItemId)
+      if (quantity <= 0) return null
+      const price = getActivityGiftPrice(row)
+      const limit = parseActivityGiftLimit(row)
+      const title = getActivityRewardRowTitle(row, index)
+      return {
+        key: `${row.source || ''}-${row.row_key || ''}-${index}`,
+        title,
+        price,
+        priceText: price > 0 ? formatActivityGiftNumber(price, 2) : '免费',
+        quantity,
+        quantityText: formatActivityGiftNumber(quantity, 2),
+        unitPriceText: price > 0 ? (price / quantity).toFixed(2) : '免费',
+        limit,
+        limitText: limit > 0 ? formatActivityGiftNumber(limit, 2) : '无限',
+      }
+    })
+    .filter((row): row is Omit<ActivityGiftValueRow, 'cumulativeText'> => Boolean(row))
+    .sort((left, right) => left.price - right.price || left.quantity - right.quantity || left.title.localeCompare(right.title))
+
+  let cumulativeQuantity = 0
+  let cumulativePrice = 0
+  return rows.map(row => {
+    if (row.price <= 0) {
+      return {
+        ...row,
+        cumulativeText: row.limit > 0
+          ? `${formatActivityGiftNumber(row.quantity * row.limit, 2)}抽 / 0元`
+          : '∞抽 / 0元',
+      }
+    }
+    if (row.limit > 0) {
+      cumulativeQuantity += row.quantity * row.limit
+      cumulativePrice += row.price * row.limit
+    } else {
+      cumulativeQuantity = Infinity
+      cumulativePrice = Infinity
+    }
+    return {
+      ...row,
+      cumulativeText: Number.isFinite(cumulativeQuantity) && Number.isFinite(cumulativePrice)
+        ? `${formatActivityGiftNumber(cumulativeQuantity, 2)}抽 / ${formatActivityGiftNumber(cumulativePrice, 2)}元`
+        : '∞抽 / ∞元',
+    }
+  })
 }
 
 function getActivityLinkedItems(activity: FanxiuActivityCard | null | undefined) {
@@ -5457,7 +7399,40 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
   } finally {
     if (requestSeq === listRequestSeq) {
       loadingList.value = false
+      if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
+        scheduleActivityPeriodInitialScroll(true)
+      }
     }
+  }
+}
+
+async function loadActivityWorldlineSchedule() {
+  loadingActivityWorldlineSchedule.value = true
+  try {
+    activityWorldlineSchedule.value = await getFanxiuLatestWorldlineActivitySchedule()
+  } catch (error) {
+    activityWorldlineSchedule.value = null
+    console.warn('Failed to load Fanxiu worldline activity schedule:', error)
+  } finally {
+    loadingActivityWorldlineSchedule.value = false
+  }
+}
+
+async function syncActivityPacketHistory(options: { reloadSchedule?: boolean } = {}) {
+  if (activityPacketSyncing.value) return
+  activityPacketSyncing.value = true
+  try {
+    const result = await syncFanxiuActivityPackets()
+    if (options.reloadSchedule !== false && result.matched_packets > 0) {
+      await loadActivityWorldlineSchedule()
+      if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
+        scheduleActivityPeriodInitialScroll(true)
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to sync Fanxiu activity packets:', error)
+  } finally {
+    activityPacketSyncing.value = false
   }
 }
 
@@ -5718,15 +7693,29 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
   try {
-    const response = await searchFanxiuActivityCards({
+    const isNonListMode = activityViewMode.value !== 'list'
+    const isDocumentMode = activityViewMode.value === 'document'
+    const isPeriodMode = activityViewMode.value === 'period'
+    if (isNonListMode && page.value !== 1) {
+      page.value = 1
+    }
+    const responsePromise = searchFanxiuActivityCards({
       query: query.value,
       kind_key: activityKindFilter.value,
       time_kind: activityTimeFilter.value,
       activity_type: activityTypeFilter.value,
+      server_scope: activityServerScope.value,
       ...objectSortParams.value,
-      limit: pageSize.value,
-      offset: (page.value - 1) * pageSize.value,
+      limit: isNonListMode ? NON_LIST_ACTIVITY_PAGE_SIZE : pageSize.value,
+      offset: isNonListMode ? 0 : (page.value - 1) * pageSize.value,
     })
+    const documentPromise = isDocumentMode ? loadActivityDocumentNotes() : Promise.resolve()
+    const worldlinePromise = isPeriodMode
+      ? syncActivityPacketHistory({ reloadSchedule: false }).then(() => loadActivityWorldlineSchedule())
+      : Promise.resolve()
+    const response = await responsePromise
+    await documentPromise
+    await worldlinePromise
     if (requestSeq !== listRequestSeq) return
     activityStats.value = response.stats
     catalogPath.value = response.catalog_path
@@ -5737,13 +7726,14 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
     total.value = response.total
 
     const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
-    if (page.value > maxPage) {
+    if (!isNonListMode && page.value > maxPage) {
       page.value = maxPage
       await loadActivityCards(options)
       return
     }
 
-    activityItems.value = response.items
+    const normalizedItems = dedupeActivitySearchItems(response.items)
+    activityItems.value = normalizedItems
     gongfaItems.value = []
     itemItems.value = []
     lingjieItems.value = []
@@ -5754,7 +7744,8 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
     selectedLingjieCard.value = null
     selectedDoupoTDPartner.value = null
     selectedDoupoTDReward.value = null
-    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    const visibleItems = activityDisplayItems.value
+    const keepSelected = options.keepSelection && Boolean(selectedId.value) && visibleItems.some(item => String(item.id) === selectedId.value)
     if (keepSelected) {
       if (!selectedActivity.value || String(selectedActivity.value.id) !== selectedId.value) {
         void selectActivity(selectedId.value)
@@ -5762,7 +7753,7 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
       return
     }
 
-    const first = response.items[0]
+    const first = visibleItems[0]
     if (first) {
       selectedId.value = String(first.id)
       selectedActivity.value = null
@@ -6383,7 +8374,8 @@ async function selectActivity(activityId: string | number) {
   const nextId = String(activityId)
   selectedId.value = nextId
   const requestSeq = ++detailRequestSeq
-  const cached = activityDetailCache.get(nextId)
+  const cacheKey = `${nextId}::${activityServerScope.value || 'all'}`
+  const cached = activityDetailCache.get(cacheKey)
   if (cached) {
     selectedActivity.value = cached
     selectedCard.value = null
@@ -6392,19 +8384,21 @@ async function selectActivity(activityId: string | number) {
     selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     loadingDetail.value = false
+    void syncActivityPacketHistory()
     return
   }
   loadingDetail.value = true
   try {
-    const response = await getFanxiuActivityCard(nextId)
+    const response = await getFanxiuActivityCard(nextId, { server_scope: activityServerScope.value })
     if (requestSeq !== detailRequestSeq) return
-    activityDetailCache.set(nextId, response.card)
+    activityDetailCache.set(cacheKey, response.card)
     selectedActivity.value = response.card
     selectedCard.value = null
     selectedItem.value = null
     selectedLingjieCard.value = null
     selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
+    void syncActivityPacketHistory()
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动详情失败')
@@ -6774,6 +8768,7 @@ function openWikiObject(tab: WikiTab, objectId: string | number, options: { rese
         activityKindFilter.value = ''
         activityTimeFilter.value = ''
         activityTypeFilter.value = ''
+        activityServerScope.value = ''
       } else if (tab === 'gongfa') {
         gongfaQualityGradeFilter.value = ''
         gongfaQualityFamilyFilter.value = ''
@@ -6941,6 +8936,8 @@ function clearDetailCaches() {
   itemDetailCache.clear()
   itemDetailRefreshAttempts.clear()
   activityDetailCache.clear()
+  activityNoteCache.clear()
+  activityDocumentNotes.value = {}
   lingjieDetailCache.clear()
   digitDoorDetailCache.clear()
   digitDoorLevelDetailCache.clear()
@@ -6953,6 +8950,8 @@ function clearSelectedDetailsForReload() {
   selectedCard.value = null
   selectedItem.value = null
   selectedActivity.value = null
+  selectedActivityNote.value = undefined
+  loadingActivityNote.value = false
   selectedLingjieCard.value = null
   selectedDigitDoorCharacter.value = null
   selectedDigitDoorLevel.value = null
@@ -7040,17 +9039,20 @@ function handleQueryClear() {
 }
 
 function handlePageChange(nextPage: number) {
+  if (activeTab.value === 'activity' && activityViewMode.value !== 'list') return
   page.value = normalizePage(nextPage, 1)
   loadCurrentCards()
 }
 
 function handlePageStep(delta: number) {
+  if (activeTab.value === 'activity' && activityViewMode.value !== 'list') return
   const nextPage = Math.min(pageCount.value, Math.max(1, page.value + delta))
   if (nextPage === page.value) return
   handlePageChange(nextPage)
 }
 
 function handlePageSizeChange(nextPageSize: number) {
+  if (activeTab.value === 'activity' && activityViewMode.value !== 'list') return
   pageSize.value = normalizePageSize(nextPageSize, 50)
   page.value = 1
   loadCurrentCards()
@@ -7146,6 +9148,26 @@ function applyActivityTypeFilter(value: string) {
   reloadFromFirstPage()
 }
 
+function applyActivityServerScope(value: string) {
+  activityServerScope.value = value
+  reloadFromFirstPage()
+}
+
+function applyActivityViewMode(value: ActivityViewMode) {
+  const nextMode = normalizeActivityViewMode(value)
+  if (activityViewMode.value === nextMode) return
+  activityViewMode.value = nextMode
+  page.value = 1
+  loadCurrentCards()
+}
+
+function toggleActivityHideOver30Days() {
+  activityHideOver30Days.value = !activityHideOver30Days.value
+  if (activityViewMode.value === 'period') {
+    scheduleActivityPeriodInitialScroll(true)
+  }
+}
+
 function applyAudioKindFilter(value: string) {
   audioKindFilter.value = normalizeAudioKindFilter(value)
   reloadFromFirstPage()
@@ -7190,6 +9212,9 @@ watch([
   activityKindFilter,
   activityTimeFilter,
   activityTypeFilter,
+  activityServerScope,
+  activityViewMode,
+  activityHideOver30Days,
   visualAssetGroupFilter,
   staticAssetCatalogView,
   staticAssetGroupFilter,
@@ -7212,6 +9237,32 @@ watch(activeTab, tab => {
   }
 })
 watch([activeTab, selectedId], syncRouteState)
+watch([activeTab, activityViewMode], () => {
+  if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
+    void nextTick(() => {
+      updateActivityPeriodPaneHeight()
+      scheduleActivityPeriodInitialScroll(true)
+    })
+  }
+})
+watch(
+  () => [
+    activeTab.value,
+    activityViewMode.value,
+    activityPeriodDays.value.map(day => day.key).join(','),
+    activityVisibleScheduledEntries.value.length,
+  ],
+  () => {
+    scheduleActivityPeriodInitialScroll(true)
+  },
+  { flush: 'post' },
+)
+watch(
+  () => selectedActivity.value,
+  activity => {
+    void loadActivityNote(activity)
+  },
+)
 watch(
   () => [
     activeTab.value,
@@ -7235,23 +9286,41 @@ watch(
     }
   },
 )
+
+function handleWindowResize() {
+  closeContextMenu()
+  if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
+    updateActivityPeriodPaneHeight()
+    scheduleActivityPeriodInitialScroll(true)
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalContextMenuKeydown)
   window.addEventListener('paste', handleVisualSimilarityPaste)
   window.addEventListener('scroll', closeContextMenu, true)
-  window.addEventListener('resize', closeContextMenu)
+  window.addEventListener('resize', handleWindowResize)
   loadPageConfig()
   loadSearchHistory()
   applyRouteState()
+  if (!restoreActivityPeriodPaneHeight()) {
+    updateActivityPeriodPaneHeight()
+  }
   void loadWikiLinkIndex()
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
 })
 
 onBeforeUnmount(() => {
+  stopActivityPeriodPaneResizing()
+  cancelActivityPeriodResizeFrame()
+  if (activityPeriodScrollTimer !== null) {
+    window.clearTimeout(activityPeriodScrollTimer)
+    activityPeriodScrollTimer = null
+  }
   window.removeEventListener('keydown', handleGlobalContextMenuKeydown)
   window.removeEventListener('paste', handleVisualSimilarityPaste)
   window.removeEventListener('scroll', closeContextMenu, true)
-  window.removeEventListener('resize', closeContextMenu)
+  window.removeEventListener('resize', handleWindowResize)
   revokeVisualSimilarityPreview()
 })
 </script>
@@ -7343,7 +9412,7 @@ onBeforeUnmount(() => {
         :title="`点击切换到 ${nextSortModeLabel}`"
         @click="cycleSortMode"
       >{{ activeSortModeLabel }}</el-button>
-      <span class="result-count">{{ total }} 个对象</span>
+      <span class="result-count">{{ displayTotal }} 个对象</span>
     </div>
 
     <div v-if="activeTab === 'visual' && visualSimilarityFile" class="visual-similarity-strip">
@@ -7426,7 +9495,7 @@ onBeforeUnmount(() => {
 
     <div v-if="activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
-        <div class="facet-row">
+        <div v-if="activityViewMode === 'period'" class="facet-row">
           <span class="facet-label">品阶</span>
           <span class="facet-options">
             <button
@@ -7519,6 +9588,59 @@ onBeforeUnmount(() => {
       </template>
       <template v-else-if="activeTab === 'activity'">
         <div class="facet-row">
+          <span class="facet-label">区服</span>
+          <span class="facet-options">
+            <select
+              class="facet-select"
+              :value="activityServerScope"
+              @change="applyActivityServerScope(($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="option in ACTIVITY_SERVER_SCOPE_OPTIONS"
+                :key="option.value"
+                :value="option.value"
+              >{{ option.label }}</option>
+            </select>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">视图</span>
+          <span class="facet-options activity-view-tabs" role="tablist" aria-label="活动显示模式">
+            <button
+              v-for="option in ACTIVITY_VIEW_MODE_OPTIONS"
+              :key="option.value"
+              class="facet-option activity-view-tab"
+              :class="{ active: activityViewMode === option.value }"
+              :aria-pressed="activityViewMode === option.value"
+              :aria-selected="activityViewMode === option.value"
+              role="tab"
+              type="button"
+              @click="applyActivityViewMode(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </span>
+        </div>
+        <div v-if="activityViewMode !== 'list'" class="facet-row">
+          <span class="facet-label">范围</span>
+          <span class="facet-options">
+            <span v-if="activityViewMode === 'period'" class="facet-option read-only">
+              <span class="facet-option-label">{{ activityPacketSyncing ? '同步抓包' : '服务端日程' }}</span>
+              <small>{{ activityWorldlineSchedule?.available ? activityWorldlineSchedule.count : 0 }}</small>
+            </span>
+            <button
+              class="facet-option"
+              :class="{ active: activityHideOver30Days }"
+              type="button"
+              :aria-pressed="activityHideOver30Days"
+              @click="toggleActivityHideOver30Days"
+            >
+              <span class="facet-option-label">隐藏时间超过30天</span>
+              <small>{{ activityVisibleScheduledEntries.length }}</small>
+            </button>
+          </span>
+        </div>
+        <div v-if="activityViewMode === 'list'" class="facet-row">
           <span class="facet-label">形态</span>
           <span class="facet-options">
             <button
@@ -7528,7 +9650,7 @@ onBeforeUnmount(() => {
               @click="applyActivityKindFilter('')"
             >全部</button>
             <button
-              v-for="option in getVisibleFacetOptions('activity:kind', activityKindFacetOptions, activityKindFilter)"
+              v-for="option in getVisibleFacetOptions('activity:kind', activityKindFacetOptions, activityKindFilter).filter(option => option.count > 0 || option.value === activityKindFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: activityKindFilter === option.value }"
@@ -7547,7 +9669,7 @@ onBeforeUnmount(() => {
             >{{ getFacetToggleLabel('activity:kind', activityKindFacetOptions, activityKindFilter) }}</button>
           </span>
         </div>
-        <div class="facet-row">
+        <div v-if="activityViewMode === 'list'" class="facet-row">
           <span class="facet-label">时间</span>
           <span class="facet-options">
             <button
@@ -7557,7 +9679,7 @@ onBeforeUnmount(() => {
               @click="applyActivityTimeFilter('')"
             >全部</button>
             <button
-              v-for="option in getVisibleFacetOptions('activity:time', activityTimeFacetOptions, activityTimeFilter)"
+              v-for="option in getVisibleFacetOptions('activity:time', activityTimeFacetOptions, activityTimeFilter).filter(option => option.count > 0 || option.value === activityTimeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: activityTimeFilter === option.value }"
@@ -7576,7 +9698,7 @@ onBeforeUnmount(() => {
             >{{ getFacetToggleLabel('activity:time', activityTimeFacetOptions, activityTimeFilter) }}</button>
           </span>
         </div>
-        <div class="facet-row">
+        <div v-if="activityViewMode === 'list'" class="facet-row">
           <span class="facet-label">玩法</span>
           <span class="facet-options">
             <button
@@ -7586,7 +9708,7 @@ onBeforeUnmount(() => {
               @click="applyActivityTypeFilter('')"
             >全部</button>
             <button
-              v-for="option in getVisibleFacetOptions('activity:type', activityTypeFacetOptions, activityTypeFilter)"
+              v-for="option in getVisibleFacetOptions('activity:type', activityTypeFacetOptions, activityTypeFilter).filter(option => option.count > 0 || option.value === activityTypeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: activityTypeFilter === option.value }"
@@ -7827,7 +9949,7 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
-      <aside class="object-list" v-loading="loadingList">
+      <aside class="object-list" :style="activityPeriodListPaneStyle" v-loading="loadingList">
         <div class="object-list-scroll">
           <button
             v-for="item in protocolBusinessCategories"
@@ -7960,8 +10082,17 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <div v-else class="object-workspace" :class="{ 'protocol-workspace': activeTab === 'protocol' }">
-      <aside class="object-list" v-loading="loadingList">
+    <div
+      v-else
+      ref="activityWorkspaceRef"
+      class="object-workspace"
+      :class="{
+        'protocol-workspace': activeTab === 'protocol',
+        'activity-time-workspace': activeTab === 'activity' && activityViewMode === 'period',
+      }"
+      :style="activityWorkspaceStyle"
+    >
+      <aside ref="activityPeriodListRef" class="object-list" v-loading="loadingList">
         <div class="object-list-scroll">
           <template v-if="activeTab === 'gongfa'">
             <button
@@ -8074,35 +10205,147 @@ onBeforeUnmount(() => {
             <div v-if="!loadingList && !audioItems.length" class="empty-state">没有匹配音乐</div>
           </template>
           <template v-else-if="activeTab === 'activity'">
-            <button
-              v-for="item in activityItems"
-              :key="item.id"
-              class="object-row"
-              :class="{ selected: String(item.id) === selectedId, stale: item.is_stale }"
-              type="button"
-              @click="selectObject(item.id)"
-            >
-              <span class="object-row-icon">
-                <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
-                <img
-                  v-if="getObjectIconUrl(item)"
-                  :src="getObjectIconUrl(item)"
-                  :alt="item.name"
-                  loading="lazy"
-                  @error="hideBrokenIcon"
-                >
-              </span>
-              <span class="object-row-main">
-                <span class="object-row-title">{{ item.name }}</span>
-                <span class="object-row-meta">
-                  {{ getActivityMeta(item) }}
-                  <template v-if="getFirstTimelineShortLabel(item)"> · {{ getFirstTimelineShortLabel(item) }}</template>
-                  <template v-if="item.is_stale"> · 旧版保留</template>
+            <template v-if="activityViewMode === 'list'">
+              <button
+                v-for="item in activityDisplayItems"
+                :key="item.id"
+                class="object-row"
+                :class="{ selected: String(item.id) === selectedId, stale: item.is_stale }"
+                type="button"
+                @click="selectObject(item.id)"
+              >
+                <span class="object-row-icon">
+                  <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
+                  <img
+                    v-if="getObjectIconUrl(item)"
+                    :src="getObjectIconUrl(item)"
+                    :alt="item.name"
+                    loading="lazy"
+                    @error="hideBrokenIcon"
+                  >
                 </span>
-                <span class="object-row-preview">{{ compactText(item.reward_preview || item.description_preview, 96) }}</span>
-              </span>
-            </button>
-            <div v-if="!loadingList && !activityItems.length" class="empty-state">没有匹配活动</div>
+                <span class="object-row-main">
+                  <span class="object-row-title">{{ item.name }}</span>
+                  <span class="object-row-meta">
+                    {{ getActivityMeta(item) }}
+                    <template v-if="getFirstTimelineShortLabel(item)"> · {{ getFirstTimelineShortLabel(item) }}</template>
+                    <template v-if="item.is_stale"> · 旧版保留</template>
+                  </span>
+                  <span class="object-row-preview">{{ compactText(item.reward_preview || item.description_preview, 96) }}</span>
+                </span>
+              </button>
+              <div v-if="!loadingList && !activityDisplayItems.length" class="empty-state">没有匹配活动</div>
+            </template>
+            <template v-else-if="activityViewMode === 'document'">
+              <div
+                v-for="item in activityDocumentItems"
+                :key="item.id"
+                class="object-row activity-document-row"
+                :class="{ selected: String(item.id) === selectedId, stale: item.is_stale }"
+                role="button"
+                tabindex="0"
+                @click="selectObject(item.id)"
+                @keydown.enter.prevent="selectObject(item.id)"
+                @keydown.space.prevent="selectObject(item.id)"
+              >
+                <span class="object-row-icon">
+                  <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
+                  <img
+                    v-if="getObjectIconUrl(item)"
+                    :src="getObjectIconUrl(item)"
+                    :alt="item.name"
+                    loading="lazy"
+                    @error="hideBrokenIcon"
+                  >
+                </span>
+                <span class="object-row-main">
+                  <span class="object-row-title">{{ item.name }}</span>
+                  <span class="object-row-meta">
+                    文档 {{ noteKey(getActivityDocumentNote(item.id)?.id) }}
+                    <template v-if="getFirstTimelineShortLabel(item)"> · {{ getFirstTimelineShortLabel(item) }}</template>
+                    <template v-if="getActivityMeta(item)"> · {{ getActivityMeta(item) }}</template>
+                  </span>
+                  <span class="object-row-preview">{{ compactText(item.reward_preview || item.description_preview, 96) }}</span>
+                </span>
+                <a
+                  v-if="getActivityNoteDocHref(getActivityDocumentNote(item.id))"
+                  class="activity-document-open"
+                  :href="getActivityNoteDocHref(getActivityDocumentNote(item.id))"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="打开独立文档"
+                  aria-label="打开独立文档"
+                  @click.stop
+                >
+                  <TopRight />
+                </a>
+              </div>
+              <div v-if="!loadingList && !activityDocumentItems.length" class="empty-state">没有已有文档的活动</div>
+            </template>
+            <template v-else-if="activityViewMode === 'period'">
+              <div v-if="activityVisibleScheduledEntries.length === 0" class="empty-state">没有匹配活动</div>
+              <div v-else class="activity-period-view">
+                <section class="activity-period-board">
+                  <div class="activity-period-head">
+                    <h4>{{ activityPeriodTitle }}</h4>
+                    <span>{{ activityPeriodRows.length }} 项</span>
+                  </div>
+                  <div :ref="setActivityPeriodScrollRef" class="activity-period-scroll">
+                    <div class="activity-period-grid" :style="activityPeriodGridStyle">
+                      <div class="activity-period-days">
+                        <div
+                          v-for="day in activityPeriodDays"
+                          :key="`period-day-${day.key}`"
+                          class="activity-period-day"
+                          :class="{ today: day.isToday }"
+                        >
+                          <strong>{{ day.dayLabel }}</strong>
+                          <span>{{ day.weekdayLabel }}</span>
+                        </div>
+                      </div>
+                      <div class="activity-period-lanes">
+                        <div
+                          v-for="day in activityPeriodDays"
+                          :key="`period-bg-${day.key}`"
+                          class="activity-period-column"
+                          :class="{ today: day.isToday }"
+                        ></div>
+                        <button
+                          v-for="row in activityPeriodRows"
+                          :key="`period-${row.entry.id}`"
+                          class="activity-period-block"
+                          type="button"
+                          :class="{ selected: String(row.entry.selectId) === selectedId }"
+                          :style="{ left: `${row.left}%`, width: `${row.width}%`, top: `${row.lane * ACTIVITY_PERIOD_LANE_HEIGHT + 7}px` }"
+                          :title="`${row.entry.item.name} · ${row.rangeLabel}`"
+                          @click="selectObject(row.entry.selectId)"
+                        >
+                          <span
+                            v-for="segment in row.segments"
+                            :key="segment.key"
+                            class="activity-period-segment"
+                            :class="`stage-${segment.kind}`"
+                            :style="{ left: `${segment.left}%`, width: `${segment.width}%` }"
+                            :title="segment.label"
+                          ></span>
+                          <span
+                            class="activity-period-block-text"
+                            :style="{
+                              left: `${row.labelLeft}%`,
+                              top: `${row.labelTop}px`,
+                              width: `${row.labelWidth}%`,
+                            }"
+                          >
+                            <span>{{ row.entry.item.name }}</span>
+                            <small>{{ row.rangeLabel }}</small>
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </template>
           </template>
           <template v-else-if="activeTab === 'lingjie'">
             <button
@@ -8290,7 +10533,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-if="total > 0 && activeTab !== 'protocol'" class="object-pagination">
+        <div v-if="total > 0 && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
           <el-select
             v-model="pageSize"
             class="page-size-select"
@@ -8329,7 +10572,22 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <main class="object-detail" v-loading="loadingDetail">
+      <div
+        v-if="activeTab === 'activity' && activityViewMode === 'period'"
+        class="activity-period-resizer"
+        :class="{ 'is-resizing': isActivityPeriodPaneResizing }"
+        role="separator"
+        aria-orientation="horizontal"
+        title="拖拽调整日程与详情高度"
+        @mousedown="startActivityPeriodPaneResizing"
+      >
+        <span class="activity-period-resizer-indicator"></span>
+      </div>
+
+      <main
+        class="object-detail"
+        v-loading="loadingDetail"
+      >
         <template v-if="activeTab === 'visual' && selectedVisualAsset">
           <section class="detail-head visual-detail-head">
             <div class="visual-detail-preview">
@@ -9993,6 +12251,17 @@ onBeforeUnmount(() => {
             <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
           </div>
 
+          <div v-if="getActivityWorldlineRows(selectedActivity).length" class="time-hint-strip">
+            <strong>服务端日程</strong>
+            <span
+              v-for="row in getActivityWorldlineRows(selectedActivity)"
+              :key="row.key"
+              :title="getWorldlineActivityMeta(row)"
+            >
+              {{ formatWorldlineActivityRange(row) }}
+            </span>
+          </div>
+
           <div v-if="getTimelineValueHints(selectedActivity).length" class="time-hint-strip">
             <strong>时间线索</strong>
             <span
@@ -10013,6 +12282,40 @@ onBeforeUnmount(() => {
               {{ row.label }} · {{ row.value }}
             </span>
           </div>
+
+          <section class="object-section activity-note-section">
+            <div class="section-row">
+              <h4>星图笔记</h4>
+              <span v-if="selectedActivityNote && isVirtualActivityNote(selectedActivityNote)" class="section-count">未创建</span>
+              <a
+                v-else-if="getActivityNoteDocHref(selectedActivityNote)"
+                class="section-count activity-note-open-button"
+                :href="getActivityNoteDocHref(selectedActivityNote)"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="打开独立文档"
+              >
+                文档 {{ noteKey(selectedActivityNote.id) }}
+                <TopRight />
+              </a>
+            </div>
+            <UniversalNoteEditor
+              :key="String(selectedActivity.id)"
+              :model-value="selectedActivityNote"
+              :loading="loadingActivityNote"
+              :draft-storage-key="getActivityNoteDraftStorageKey(selectedActivity)"
+              :on-save="saveActivityNote"
+              empty-text="活动笔记加载中..."
+              class="activity-note-editor"
+              editor-layout="flow"
+              :readonly="selectedActivityNote?.can_edit === false"
+              :show-private-toggle="false"
+              :lock-title="true"
+              :lock-note-form="true"
+              @update:model-value="onActivityNoteChange"
+              @change="onActivityNoteChange"
+            />
+          </section>
 
           <section v-if="getActivityDescriptionRows(selectedActivity).length" class="object-section intro-section">
             <div class="activity-text-list">
@@ -10051,6 +12354,79 @@ onBeforeUnmount(() => {
           </section>
 
           <section
+            v-for="section in selectedActivity.challenge_sections ?? []"
+            :key="`challenge-${section.key}`"
+            class="object-section activity-challenge-section"
+          >
+            <div class="section-row">
+              <h4>{{ section.title }}</h4>
+              <span class="section-count">{{ getActivityChallengeCountText(section) }}</span>
+            </div>
+            <div v-if="isActivityChallengeRarityMode(section)" class="activity-challenge-rarity-table">
+              <a
+                v-for="item in getActivityChallengeRarityCards(section)"
+                :key="String(item.item_id)"
+                class="activity-challenge-rarity-card"
+                :class="{ active: isActivityChallengeRarityCardActive(section, item) }"
+                :href="getActivityChallengeRarityItemHref(item)"
+                role="button"
+                tabindex="0"
+                @click="handleActivityChallengeRarityCardClick($event, section, item)"
+                @keydown.enter.prevent="setActivityChallengeSelectedRank(section, item.rarity_rank)"
+                @keydown.space.prevent="setActivityChallengeSelectedRank(section, item.rarity_rank)"
+              >
+                <span class="activity-challenge-rarity-icon">
+                  <img
+                    v-if="getActivityChallengeRarityIconUrl(item)"
+                    :src="getActivityChallengeRarityIconUrl(item)"
+                    :alt="getActivityChallengeRarityItemName(item)"
+                    loading="lazy"
+                    @error="hideBrokenIcon"
+                  >
+                </span>
+                <span class="activity-challenge-rarity-copy">
+                  <span class="activity-challenge-rarity-title">
+                    <strong>{{ getActivityChallengeRarityCardTitle(item) }}</strong>
+                    <em>{{ getActivityChallengeRarityCountText(item) }}</em>
+                  </span>
+                  <small>{{ getActivityChallengeRarityCardMeta(item) }}</small>
+                </span>
+              </a>
+            </div>
+            <div v-if="getActivityChallengeThresholdSummary(section)" class="activity-challenge-threshold-summary">
+              {{ getActivityChallengeThresholdSummary(section) }}
+            </div>
+            <div v-if="getActivityChallengeStageText(section)" class="activity-challenge-stage-strip">
+              <span>{{ getActivityChallengeStageText(section) }}</span>
+            </div>
+            <details class="activity-challenge-details">
+              <summary>
+                <span>关卡明细</span>
+                <small>{{ getActivityChallengeDisplayLevels(section).length }} 关</small>
+              </summary>
+              <div class="activity-challenge-table">
+                <div class="activity-challenge-row head">
+                  <span>关卡</span>
+                  <span>通关奖励</span>
+                  <span>探索奖励</span>
+                </div>
+                <div
+                  v-for="(level, index) in getActivityChallengeDisplayLevels(section)"
+                  :key="getActivityChallengeLevelKey(section.key, level, index)"
+                  class="activity-challenge-row"
+                >
+                  <div class="activity-challenge-level">
+                    <strong>{{ getActivityChallengeLevelTitle(level) }}</strong>
+                    <small>{{ getActivityChallengeLevelMeta(level) }}</small>
+                  </div>
+                  <div>{{ isActivityChallengeRarityMode(section) ? (getActivityChallengeVisibleRewardText(level, section, 'clear') || '-') : (getActivityChallengeRewardText(level, 'clear') || '-') }}</div>
+                  <div>{{ isActivityChallengeRarityMode(section) ? (getActivityChallengeVisibleRewardText(level, section, 'find') || '-') : (getActivityChallengeRewardText(level, 'find') || '-') }}</div>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section
             v-for="section in selectedActivity.reward_sections ?? []"
             :key="section.key"
             class="object-section"
@@ -10059,7 +12435,74 @@ onBeforeUnmount(() => {
               <h4>{{ section.title }}</h4>
               <span class="section-count">{{ section.count }} 条</span>
             </div>
-            <div class="skill-list activity-reward-list">
+            <div v-if="getActivityGiftValueRows(section).length" class="activity-gift-value-table-wrap">
+              <table class="activity-gift-value-table">
+                <thead>
+                  <tr>
+                    <th>礼包</th>
+                    <th>价格</th>
+                    <th>数量</th>
+                    <th>性价比</th>
+                    <th>限购</th>
+                    <th>买满累计（抽/元）</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in getActivityGiftValueRows(section)" :key="row.key">
+                    <td>{{ row.title }}</td>
+                    <td>{{ row.priceText }}</td>
+                    <td>{{ row.quantityText }}</td>
+                    <td>{{ row.unitPriceText }}</td>
+                    <td>{{ row.limitText }}</td>
+                    <td>{{ row.cumulativeText }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="isActivityRankRewardSection(section)" class="activity-rank-delta-table">
+              <div class="activity-rank-delta-row head">
+                <span>档位</span>
+                <span>升档增量</span>
+              </div>
+              <div class="activity-rank-capture-summary">
+                <span>已捕捉 {{ getActivityRankGatekeeperCount(section) }} / {{ getActivityRankRewardRows(section).length }} 个档位守门员</span>
+                <span v-if="getActivityRankSelfText(section)">{{ getActivityRankSelfText(section) }}</span>
+                <span v-if="getActivityRankSelfGatekeeperText(section)">{{ getActivityRankSelfGatekeeperText(section) }}</span>
+              </div>
+              <div
+                v-for="(row, index) in getActivityRankRewardRows(section)"
+                :key="getActivityRewardRowKey(section, row, index)"
+                class="activity-rank-delta-row"
+              >
+                <div class="activity-rank-delta-title">
+                  <strong>{{ getActivityRewardRowTitle(row, index) }}</strong>
+                  <small
+                    v-if="getActivityRankRewardCaptureText(row)"
+                    :class="{ missing: !getActivityRankRewardRowMeta(row) }"
+                  >
+                    {{ getActivityRankRewardCaptureText(row) }}
+                  </small>
+                  <small v-if="getActivityRankRewardCaptureProgress(row)" class="progress">
+                    {{ getActivityRankRewardCaptureProgress(row) }}
+                  </small>
+                </div>
+                <div class="activity-rank-delta-items linked-item-strip progression-items">
+                  <FanxiuLinkedItemChip
+                    v-for="item in getActivityRankRewardDeltaItemsForSection(section, index)"
+                    :key="`${section.key}-${row.row_key}-${item.id}-${item.count}`"
+                    class="activity-rank-delta-chip"
+                    :class="{ negative: Number(item.delta_value || 0) < 0, positive: Number(item.delta_value || 0) > 0 }"
+                    :item="item"
+                    compact
+                    plain-count
+                    disable-hover
+                    :muted="Number(item.delta_value || 0) < 0"
+                  />
+                  <span v-if="!getActivityRankRewardDeltaItemsForSection(section, index).length" class="activity-rank-delta-empty">无变化</span>
+                </div>
+              </div>
+            </div>
+            <div v-else class="skill-list activity-reward-list">
               <article
                 v-for="(row, index) in section.rows"
                 :key="getActivityRewardRowKey(section, row, index)"
@@ -10955,6 +13398,13 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 
+.facet-option.read-only {
+  cursor: default;
+  color: #667085;
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px #e4e7ec;
+}
+
 .facet-option.active {
   font-weight: 700;
   background: rgba(255, 246, 220, 0.82);
@@ -10966,6 +13416,20 @@ onBeforeUnmount(() => {
   color: #98a2b3;
   font-size: 12px;
   font-weight: 500;
+}
+
+.facet-select {
+  width: auto;
+  min-width: 168px;
+  height: 28px;
+  padding: 0 28px 0 8px;
+  border: 1px solid rgba(174, 128, 38, 0.38);
+  border-radius: 3px;
+  color: #344054;
+  background: #fffaf0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 28px;
 }
 
 .facet-more-option {
@@ -11127,12 +13591,63 @@ onBeforeUnmount(() => {
   grid-template-columns: clamp(460px, 42%, 660px) minmax(0, 1fr);
 }
 
+.object-workspace.activity-time-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 8px minmax(360px, max-content);
+  align-content: start;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
 .object-list {
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: #fbfbfb;
   border-right: 1px solid #dfe4ec;
+}
+
+.activity-time-workspace .object-list {
+  min-width: 0;
+  height: var(--activity-period-pane-height, 520px);
+  min-height: auto;
+  border-right: 0;
+}
+
+.activity-time-workspace .object-list-scroll {
+  min-width: 0;
+  overflow: auto;
+}
+
+.activity-time-workspace .object-detail {
+  min-height: 360px;
+}
+
+.activity-period-resizer {
+  height: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid #dfe4ec;
+  border-bottom: 1px solid #dfe4ec;
+  background: #f5f7fa;
+  cursor: ns-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.activity-period-resizer:hover,
+.activity-period-resizer.is-resizing {
+  background: #ecf5ff;
+}
+
+.activity-period-resizer-indicator {
+  width: 96px;
+  height: 4px;
+  border-top: 1px solid #cfd6df;
+  border-bottom: 1px solid #cfd6df;
+  border-radius: 999px;
 }
 
 .object-list-scroll {
@@ -11184,6 +13699,40 @@ onBeforeUnmount(() => {
 .object-row.stale .object-row-meta,
 .object-row.stale .object-row-preview {
   color: #8a8f98;
+}
+
+.activity-document-row {
+  grid-template-columns: 46px minmax(0, 1fr) 28px;
+  align-items: center;
+}
+
+.activity-document-open,
+.activity-note-open-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #8a6b33;
+  text-decoration: none;
+}
+
+.activity-document-open {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #ead7a8;
+  border-radius: 4px;
+  background: #fffaf0;
+}
+
+.activity-document-open:hover {
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.activity-document-open svg,
+.activity-note-open-button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .object-row-icon,
@@ -11637,6 +14186,241 @@ onBeforeUnmount(() => {
   padding: 8px 10px;
   border-top: 1px solid #e5e7eb;
   background: #fffdfa;
+}
+
+.activity-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid #dce2ea;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.activity-view-tab {
+  height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #475467;
+}
+
+.activity-view-tab:hover:not(.active) {
+  background: #f8f9fc;
+}
+
+.activity-view-tab.active {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.activity-period-view {
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.activity-period-board {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #dfe4ec;
+  background: #fffdf6;
+}
+
+.activity-period-head {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: max-content max-content;
+  align-items: center;
+  justify-content: start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e8edf3;
+  background: #ffffff;
+}
+
+.activity-period-head h4 {
+  margin: 0;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.activity-period-head span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.activity-period-scroll {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.activity-period-grid {
+  min-width: max(100%, calc(var(--activity-period-days) * 96px));
+  display: grid;
+  grid-template-rows: 54px minmax(240px, calc(var(--activity-period-lanes) * 42px));
+}
+
+.activity-period-days,
+.activity-period-lanes {
+  display: grid;
+  grid-template-columns: repeat(var(--activity-period-days), minmax(96px, 1fr));
+}
+
+.activity-period-days {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+}
+
+.activity-period-day {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 2px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f7f9fc;
+  color: #667085;
+}
+
+.activity-period-day.today {
+  background: #fff2c7;
+  color: #7d5e16;
+}
+
+.activity-period-day strong {
+  color: #344054;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.activity-period-day span {
+  font-size: 12px;
+}
+
+.activity-period-lanes {
+  position: relative;
+  min-height: max(240px, calc(var(--activity-period-lanes) * 42px));
+}
+
+.activity-period-column {
+  grid-row: 1 / calc(var(--activity-period-lanes) + 1);
+  border-right: 1px solid #edf1f6;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.activity-period-column.today {
+  background: rgba(255, 239, 190, 0.42);
+}
+
+.activity-period-block {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 32px;
+  margin: 0 5px;
+  padding: 0;
+  border: 1px solid rgba(194, 139, 34, 0.58);
+  border-radius: 4px;
+  background: #f6f1e4;
+  color: #4e3b18;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(121, 90, 20, 0.12);
+  overflow: visible;
+}
+
+.activity-period-block:hover,
+.activity-period-block.selected {
+  z-index: 3;
+  border-color: #b87c14;
+  box-shadow: 0 0 0 1px rgba(184, 124, 20, 0.22), 0 4px 10px rgba(121, 90, 20, 0.18);
+}
+
+.activity-period-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 0;
+}
+
+.activity-period-segment.stage-prepare {
+  background: linear-gradient(90deg, #e6e1d7 0%, #d8d1c5 100%);
+}
+
+.activity-period-segment.stage-active {
+  background: linear-gradient(90deg, #ffe894 0%, #ffd55d 52%, #f0b83c 100%);
+}
+
+.activity-period-segment.stage-reward {
+  background: linear-gradient(90deg, #e3e7ec 0%, #d3d9e0 100%);
+}
+
+.activity-period-segment.stage-close {
+  background: linear-gradient(90deg, #d4dae2 0%, #c2cbd5 100%);
+}
+
+.activity-period-segment.stage-fallback {
+  background: linear-gradient(90deg, #fff0b8 0%, #ffe39a 72%, #f2c563 100%);
+}
+
+.activity-period-block-text {
+  display: block;
+  position: absolute;
+  z-index: 1;
+  padding: 2px 0;
+  pointer-events: none;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: none;
+  overflow: visible;
+}
+
+.activity-period-block-text span,
+.activity-period-block-text small {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 8px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.activity-period-block-text span {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.activity-period-block-text small {
+  color: #7d641f;
+  font-size: 10px;
+  line-height: 1.15;
+}
+
+.pager-arrow:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .pager-nav {
@@ -12104,6 +14888,259 @@ onBeforeUnmount(() => {
   background: rgba(255, 252, 242, 0.74);
   border-color: rgba(193, 164, 92, 0.48);
   box-shadow: none;
+}
+
+.activity-note-section {
+  color: #554733;
+  background: rgba(255, 252, 242, 0.84);
+  border-color: rgba(193, 164, 92, 0.48);
+  box-shadow: none;
+}
+
+.activity-note-section h4 {
+  color: #8a6b33;
+  border-bottom-color: rgba(138, 107, 51, 0.36);
+}
+
+.activity-note-section .section-count {
+  color: #8a7656;
+}
+
+.activity-note-open-button {
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.activity-note-open-button:hover {
+  color: #1d4ed8;
+}
+
+.activity-note-editor {
+  min-width: 0;
+}
+
+.activity-note-editor :deep(.shared-note-editor) {
+  background: transparent;
+}
+
+.activity-note-editor :deep(.panel-content) {
+  gap: 10px;
+}
+
+.activity-note-editor :deep(.editor-header) {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.activity-note-editor :deep(.editor-shell),
+.activity-note-editor :deep(.editor-body),
+.activity-note-editor :deep(.editor-main) {
+  background: transparent;
+}
+
+.activity-challenge-stage-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: rgba(247, 240, 223, 0.68);
+  font-size: 12px;
+}
+
+.activity-challenge-stage-strip span {
+  padding: 4px 7px;
+  background: rgba(255, 244, 208, 0.06);
+  border: 1px solid rgba(214, 196, 136, 0.2);
+}
+
+.activity-challenge-rarity-table {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.activity-challenge-rarity-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px 10px;
+  color: rgba(247, 240, 223, 0.78);
+  text-decoration: none;
+  background: rgba(255, 244, 208, 0.06);
+  border: 1px solid rgba(214, 196, 136, 0.18);
+  cursor: pointer;
+}
+
+.activity-challenge-rarity-card:hover,
+.activity-challenge-rarity-card.active {
+  color: #fff4ca;
+  background: rgba(255, 212, 95, 0.1);
+  border-color: rgba(255, 212, 95, 0.42);
+}
+
+.activity-challenge-rarity-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  background: rgba(255, 251, 230, 0.08);
+  border: 1px solid rgba(214, 196, 136, 0.28);
+}
+
+.activity-challenge-rarity-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.activity-challenge-rarity-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.activity-challenge-rarity-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.activity-challenge-rarity-title strong,
+.activity-challenge-rarity-title em,
+.activity-challenge-rarity-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-challenge-rarity-title strong {
+  color: #efd98f;
+  font-size: 13px;
+}
+
+.activity-challenge-rarity-title em {
+  color: #fff0a8;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.activity-challenge-rarity-copy small {
+  color: rgba(247, 240, 223, 0.54);
+  font-size: 11px;
+}
+
+.activity-challenge-threshold-summary {
+  margin-bottom: 10px;
+  color: rgba(247, 240, 223, 0.62);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.activity-challenge-details {
+  border: 1px solid rgba(214, 196, 136, 0.2);
+  background: rgba(255, 244, 208, 0.04);
+}
+
+.activity-challenge-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  color: #efd98f;
+  font-size: 13px;
+  font-weight: 740;
+  cursor: pointer;
+  user-select: none;
+}
+
+.activity-challenge-details summary small {
+  color: rgba(247, 240, 223, 0.56);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.activity-challenge-table {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  overflow-x: auto;
+  border-top: 1px solid rgba(214, 196, 136, 0.2);
+}
+
+.activity-challenge-row {
+  display: grid;
+  grid-template-columns: 118px minmax(220px, 0.95fr) minmax(260px, 1.2fr);
+  min-width: 720px;
+  border-top: 1px solid rgba(214, 196, 136, 0.14);
+}
+
+.activity-challenge-row:first-child {
+  border-top: 0;
+}
+
+.activity-challenge-row > span,
+.activity-challenge-row > div {
+  min-width: 0;
+  padding: 7px 9px;
+  overflow: hidden;
+  color: rgba(247, 240, 223, 0.82);
+  font-size: 12px;
+  line-height: 1.42;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-left: 1px solid rgba(214, 196, 136, 0.12);
+}
+
+.activity-challenge-row > span:first-child,
+.activity-challenge-row > div:first-child {
+  border-left: 0;
+}
+
+.activity-challenge-row.head {
+  background: rgba(255, 244, 208, 0.08);
+}
+
+.activity-challenge-row.head span {
+  color: #efe2ad;
+  font-weight: 700;
+}
+
+.activity-challenge-level {
+  display: grid;
+  gap: 2px;
+}
+
+.activity-challenge-level strong,
+.activity-challenge-level small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-challenge-level strong {
+  color: #fff5cf;
+  font-size: 13px;
+}
+
+.activity-challenge-level small {
+  color: rgba(247, 240, 223, 0.52);
+  font-size: 11px;
 }
 
 .object-section h4 {
@@ -12909,6 +15946,165 @@ onBeforeUnmount(() => {
   color: rgba(247, 240, 223, 0.84);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.activity-gift-value-table-wrap {
+  margin-bottom: 12px;
+  overflow-x: auto;
+  border: 1px solid rgba(239, 217, 143, 0.24);
+  background: rgba(255, 244, 208, 0.05);
+}
+
+.activity-gift-value-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  color: rgba(247, 240, 223, 0.88);
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+.activity-gift-value-table th,
+.activity-gift-value-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(239, 217, 143, 0.14);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.activity-gift-value-table th {
+  color: #efd98f;
+  font-weight: 760;
+  background: rgba(255, 244, 208, 0.08);
+}
+
+.activity-gift-value-table td:not(:first-child),
+.activity-gift-value-table th:not(:first-child) {
+  text-align: right;
+}
+
+.activity-gift-value-table td:first-child,
+.activity-gift-value-table th:first-child,
+.activity-gift-value-table td:last-child,
+.activity-gift-value-table th:last-child {
+  text-align: left;
+}
+
+.activity-gift-value-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.activity-gift-value-table tbody tr:hover {
+  background: rgba(255, 244, 208, 0.06);
+}
+
+.activity-rank-delta-table {
+  display: grid;
+  border: 1px solid rgba(239, 217, 143, 0.22);
+  background: rgba(255, 244, 208, 0.04);
+}
+
+.activity-rank-delta-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.34fr) minmax(360px, 1fr);
+  min-width: 720px;
+  border-top: 1px solid rgba(239, 217, 143, 0.14);
+}
+
+.activity-rank-delta-row:first-child {
+  border-top: 0;
+}
+
+.activity-rank-delta-row.head {
+  color: #efd98f;
+  font-size: 13px;
+  font-weight: 760;
+  background: rgba(255, 244, 208, 0.08);
+}
+
+.activity-rank-capture-empty {
+  min-width: 720px;
+  padding: 8px 10px;
+  color: rgba(247, 240, 223, 0.58);
+  font-size: 12px;
+  border-top: 1px solid rgba(239, 217, 143, 0.14);
+}
+
+.activity-rank-capture-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 720px;
+  padding: 8px 10px;
+  color: #fff0a8;
+  font-size: 12px;
+  font-weight: 700;
+  border-top: 1px solid rgba(239, 217, 143, 0.18);
+  background: rgba(255, 244, 208, 0.06);
+}
+
+.activity-rank-delta-row > span,
+.activity-rank-delta-row > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 1px solid rgba(239, 217, 143, 0.12);
+}
+
+.activity-rank-delta-row > span:first-child,
+.activity-rank-delta-row > div:first-child {
+  border-left: 0;
+}
+
+.activity-rank-delta-title {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+}
+
+.activity-rank-delta-title strong,
+.activity-rank-delta-title small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-rank-delta-title strong {
+  color: #fff4ca;
+  font-size: 14px;
+}
+
+.activity-rank-delta-title small,
+.activity-rank-delta-empty {
+  color: rgba(247, 240, 223, 0.56);
+  font-size: 12px;
+}
+
+.activity-rank-delta-title small:not(.missing) {
+  color: #d9e9ff;
+}
+
+.activity-rank-delta-title small.progress {
+  color: rgba(247, 240, 223, 0.62);
+}
+
+.activity-rank-delta-title small.missing {
+  color: rgba(247, 240, 223, 0.42);
+}
+
+.activity-rank-delta-items {
+  align-content: start;
+}
+
+.activity-rank-delta-chip.positive {
+  color: #fff0a8;
+  border-color: rgba(239, 217, 143, 0.54);
+  background: rgba(255, 244, 208, 0.08);
+}
+
+.activity-rank-delta-chip.negative {
+  color: #9fd3ff;
+  border-color: rgba(109, 166, 215, 0.5);
+  background: rgba(109, 166, 215, 0.12);
 }
 
 .activity-reward-row {
@@ -13854,6 +17050,10 @@ onBeforeUnmount(() => {
     border-bottom: 1px solid #dfe4ec;
   }
 
+  .activity-time-workspace .object-list {
+    max-height: none;
+  }
+
   .detail-head {
     align-items: flex-start;
   }
@@ -13909,5 +17109,10 @@ onBeforeUnmount(() => {
     font-size: 17px;
   }
 
+  .activity-view-tab {
+    height: 26px;
+    padding: 3px 8px;
+    font-size: 12px;
+  }
 }
 </style>

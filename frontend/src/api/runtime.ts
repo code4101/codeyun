@@ -73,6 +73,20 @@ export interface RuntimeStatusResponse {
   runner_error?: string | null;
 }
 
+export interface RuntimeJobCatalogItem {
+  key: string;
+  title: string;
+  category: string;
+  description?: string;
+  schedule_label?: string;
+  retry_policy?: string;
+  added: boolean;
+}
+
+export interface RuntimeJobCatalogResponse {
+  items: RuntimeJobCatalogItem[];
+}
+
 export interface RuntimeItemLogsResponse {
   source: RuntimeSource;
   key: string;
@@ -113,6 +127,11 @@ export const fetchRuntimeStatus = async (entryId: string): Promise<RuntimeStatus
   return response.data;
 };
 
+export const fetchRuntimeJobCatalog = async (entryId: string): Promise<RuntimeJobCatalogResponse> => {
+  const response = await api.get(getDeviceEntryPath(entryId, '/runtime/jobs/catalog'));
+  return response.data;
+};
+
 export const fetchRuntimeSystemMetrics = async (
   entryId: string,
   params: { hours?: number; limit?: number } = {}
@@ -123,6 +142,11 @@ export const fetchRuntimeSystemMetrics = async (
 
 export const triggerRuntimeJob = async (entryId: string, jobKey: string) => {
   const response = await api.post(getDeviceEntryPath(entryId, `/runtime/jobs/${encodeURIComponent(jobKey)}/trigger`));
+  return response.data;
+};
+
+export const addRuntimeJob = async (entryId: string, jobKey: string) => {
+  const response = await api.post(getDeviceEntryPath(entryId, `/runtime/jobs/${encodeURIComponent(jobKey)}/add`));
   return response.data;
 };
 

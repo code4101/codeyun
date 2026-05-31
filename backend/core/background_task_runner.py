@@ -47,6 +47,7 @@ MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
+WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 RUANYF_WEEKLY_START_TIME = "06:00"
 BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 6
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
@@ -59,6 +60,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
     MARKET_QUOTE_REFRESH_TASK_KEY,
+    WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
 }
 
@@ -73,6 +75,7 @@ class BackgroundTaskSpec:
     retry_label: str
     action: TaskAction
     manual_warning: str = ""
+    default_visible: bool = True
 
 
 DEFAULT_ENABLED_TASK_KEYS: set[str] = set()
@@ -178,6 +181,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"}, retry_minutes=10)
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
+    if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
+        return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
     if task_key == "storage_analysis":
         return _storage_analysis_schedule_policy()
     if task_key == FANXIU_SLIMMING_TASK_KEY:
@@ -232,7 +237,10 @@ def set_background_task_schedule_policy(task_key: str, policy: dict[str, Any] | 
 def _is_task_deleted(task_key: str, session: Session | None = None) -> bool:
     def _read(current_session: Session) -> bool:
         row = current_session.get(AppSetting, _deleted_setting_key(task_key))
-        return bool(row and isinstance(row.value, dict) and row.value.get("deleted", False))
+        if row and isinstance(row.value, dict):
+            return bool(row.value.get("deleted", False))
+        spec = get_background_task_spec(task_key)
+        return bool(spec and not spec.default_visible)
 
     if session is not None:
         return _read(session)
@@ -298,6 +306,10 @@ def set_background_task_deleted(task_key: str, deleted: bool = True) -> None:
             session.add(enabled_row)
 
         session.commit()
+
+
+def is_background_task_visible(task_key: str, session: Session | None = None) -> bool:
+    return not _is_task_deleted(task_key, session)
 
 
 def _enqueue_storage_analysis() -> str:
@@ -440,6 +452,21 @@ def _enqueue_public_frontend_deploy() -> str | None:
     return task_id
 
 
+def _enqueue_wechat_archive_incremental_sync() -> str | None:
+    from backend.api.wechat_archive import _enqueue_wechat_db_live_sync
+
+    try:
+        return _enqueue_wechat_db_live_sync({
+            "mode": "db_storage_live",
+            "save_media": True,
+        })
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 409:
+            print("WeChat archive sync skipped: task already queued or running.")
+            return None
+        raise
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     BackgroundTaskSpec(
         key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
@@ -558,6 +585,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         schedule_label=f"每天 {STORAGE_ANALYSIS_RUN_TIME}",
         retry_label="无额外重试",
         action=_enqueue_storage_analysis,
+    ),
+    BackgroundTaskSpec(
+        key=WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
+        title="微信数据同步",
+        category="微信",
+        description="通过纯数据库通道同步本机微信新增消息和图片等资源到 CodeYun 数据区；不会操作微信 GUI，已有同步在队列中会自动跳过。",
+        schedule_label="未配置自动触发",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_wechat_archive_incremental_sync,
+        manual_warning="会只读复制本机微信数据库、解密快照并导出图片等资源；不会修改官方微信原始数据，也不会操作微信窗口。",
+        default_visible=False,
     ),
     BackgroundTaskSpec(
         key=FANXIU_SLIMMING_TASK_KEY,

@@ -8,12 +8,14 @@ import sys
 import threading
 import time
 import base64
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import psutil
+from pyxllib.autogui.anlib import ImageTools
 from pyxllib.cv.rgbfmt import (
     compare_bgr_pixel_tolerance,
     normalize_for_saved_jpeg_match,
@@ -21,13 +23,14 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
+from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.sunlogin_rotate_preview import (
     WindowCapture,
     activate_window,
     click_window_title_bar,
     click_window_raw_point,
     drag_window_raw_points,
-    encode_jpeg,
     ensure_windows_runtime,
     find_window,
     iter_mjpeg_frames,
@@ -52,13 +55,17 @@ DEFAULT_FIXED_WIDTH = "0"
 DEFAULT_FIXED_HEIGHT = "0"
 SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
+BURST_FRAME_DIRNAME = "连拍缓存"
 _SCREENSHOT_FRAME_LOCK = threading.Lock()
 _MATCH_FRAME_LOCK = threading.Lock()
+_BURST_FRAME_LOCK = threading.Lock()
 _LATEST_FRAME_LOCK = threading.Lock()
+_MUMU_ADB_SESSION_LOCK = threading.Lock()
 _LATEST_FRAME_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_MUMU_ADB_SESSION: dict[str, Any] = {}
 _LATEST_FRAME_MAX_AGE_SECONDS = 3.0
-_SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.jpe?g$", re.IGNORECASE)
-_SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg"}
+_SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.(?:jpe?g|png)$", re.IGNORECASE)
+_SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MUMU_ADB_PORTS = (7555, 16416, 5555)
 
 
@@ -138,6 +145,51 @@ def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[byte
     raise RuntimeError("ADB 命令失败：" + "; ".join(errors))
 
 
+def _close_mumu_adb_session() -> None:
+    device = _MUMU_ADB_SESSION.pop("device", None)
+    _MUMU_ADB_SESSION.pop("port", None)
+    try:
+        if device is not None:
+            device.close()
+    except Exception:
+        pass
+
+
+def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    try:
+        from adb_shell.adb_device import AdbDeviceTcp
+    except Exception as exc:
+        raise RuntimeError(f"ADB 依赖不可用：{exc}") from exc
+
+    with _MUMU_ADB_SESSION_LOCK:
+        errors: list[str] = []
+        cached_device = _MUMU_ADB_SESSION.get("device")
+        cached_port = _MUMU_ADB_SESSION.get("port")
+        if cached_device is not None and cached_port is not None:
+            try:
+                data = cached_device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
+                return bytes(data), {"input": "adb-session", "adb_port": cached_port, "adb_size": ""}
+            except Exception as exc:
+                errors.append(f"{cached_port}: {exc}")
+                _close_mumu_adb_session()
+
+        for port in MUMU_ADB_PORTS:
+            device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+            try:
+                device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
+                data = device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
+                _MUMU_ADB_SESSION["device"] = device
+                _MUMU_ADB_SESSION["port"] = port
+                return bytes(data), {"input": "adb-session", "adb_port": port, "adb_size": ""}
+            except Exception as exc:
+                errors.append(f"{port}: {exc}")
+                try:
+                    device.close()
+                except Exception:
+                    pass
+        raise RuntimeError("ADB 会话命令失败：" + "; ".join(errors))
+
+
 def keyevent_mumu_adb(key: str | int) -> dict[str, Any]:
     raw = str(key).strip()
     if not raw:
@@ -167,13 +219,55 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
 
 
 def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
-    data, meta = _run_mumu_adb_shell_bytes("screencap -p", timeout_s=10)
+    try:
+        data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10)
+    except Exception:
+        adb_path = fanxiu_android_proxy_service.adb_path()
+        serial = f"127.0.0.1:{MUMU_ADB_PORTS[0]}"
+        process = subprocess.run(
+            [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
+            capture_output=True,
+            timeout=6,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if process.returncode == 0 and process.stdout:
+            data = process.stdout
+            meta = {"input": "adb", "adb_port": MUMU_ADB_PORTS[0], "adb_size": ""}
+        else:
+            raise RuntimeError((process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}")
     # Some adb stacks emit CRLF around PNG chunks; normalize only the common corruption pattern.
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         data = data.replace(b"\r\n", b"\n")
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("ADB screencap 返回的不是 PNG 数据")
     return data, meta
+
+
+def stream_mumu_adb_screencap_mjpeg(*, fps: float = 2.0) -> Any:
+    interval = 1.0 / max(0.2, min(12.0, float(fps or 2.0)))
+    while True:
+        started = time.monotonic()
+        try:
+            data, _meta = screencap_mumu_adb_png()
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/png\r\n"
+                b"Cache-Control: no-store\r\n\r\n"
+                + data
+                + b"\r\n"
+            )
+        except Exception as exc:
+            message = str(exc).encode("utf-8", errors="replace")
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: text/plain; charset=utf-8\r\n"
+                b"Cache-Control: no-store\r\n\r\n"
+                + message
+                + b"\r\n"
+            )
+        elapsed = time.monotonic() - started
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
 
 
 def _tap_mumu_adb(
@@ -296,7 +390,14 @@ def get_fanxiu_match_frame_dir() -> Path:
     return (get_fanxiu_mainwin_root() / MATCH_FRAME_DIRNAME).resolve(strict=False)
 
 
-def _next_numbered_frame_path(output_dir: Path) -> tuple[int, Path]:
+def get_fanxiu_burst_frame_dir() -> Path:
+    configured = os.getenv("FX_BURST_FRAME_DIR")
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser().resolve(strict=False)
+    return (get_fanxiu_mainwin_root() / BURST_FRAME_DIRNAME).resolve(strict=False)
+
+
+def _next_numbered_frame_path(output_dir: Path, suffix: str = ".png") -> tuple[int, Path]:
     max_index = 0
     if output_dir.exists():
         for path in output_dir.iterdir():
@@ -306,11 +407,11 @@ def _next_numbered_frame_path(output_dir: Path) -> tuple[int, Path]:
             if match:
                 max_index = max(max_index, int(match.group(1)))
     index = max_index + 1
-    return index, output_dir / f"{index:04d}.jpg"
+    return index, output_dir / f"{index:04d}{suffix}"
 
 
 def _next_screenshot_frame_path(output_dir: Path) -> tuple[int, Path]:
-    return _next_numbered_frame_path(output_dir)
+    return _next_numbered_frame_path(output_dir, ".png")
 
 
 def _normalize_screenshot_filename(filename: str) -> str:
@@ -318,7 +419,7 @@ def _normalize_screenshot_filename(filename: str) -> str:
     if not name or name != str(filename) or "\x00" in name:
         raise ValueError("截图文件名不合法")
     if Path(name).suffix.lower() not in _SCREENSHOT_IMAGE_SUFFIXES:
-        raise ValueError("截图只支持 jpg/jpeg")
+        raise ValueError("截图只支持 jpg/jpeg/png")
     return name
 
 
@@ -347,6 +448,23 @@ def _read_image_bgr(path: Path):
     if data.size == 0:
         return None
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _frame_phash(frame: Any) -> str:
+    import cv2
+    import numpy as np
+
+    bgr = _ensure_bgr_frame(frame)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA).astype("float32")
+    dct = cv2.dct(small)
+    block = dct[:8, :8].copy()
+    values = block.flatten()
+    median = float(np.median(values[1:])) if values.size > 1 else float(np.median(values))
+    bits = 0
+    for value in values:
+        bits = (bits << 1) | int(float(value) > median)
+    return f"{bits:016x}"
 
 
 def _decode_image_data_url_bgr(data_url: str):
@@ -392,6 +510,14 @@ def _match_frame_path(filename: str) -> Path:
     image_path = (output_dir / _normalize_screenshot_filename(filename)).resolve(strict=False)
     if image_path.parent != output_dir.resolve(strict=False):
         raise ValueError("匹配帧路径越界")
+    return image_path
+
+
+def _burst_frame_path(filename: str) -> Path:
+    output_dir = get_fanxiu_burst_frame_dir()
+    image_path = (output_dir / _normalize_screenshot_filename(filename)).resolve(strict=False)
+    if image_path.parent != output_dir.resolve(strict=False):
+        raise ValueError("连拍帧路径越界")
     return image_path
 
 
@@ -980,6 +1106,7 @@ def save_fanxiu_screenshot_frame(
     fixed_height: int | None = None,
     quality: int = 82,
     current_frame_data_url: str | None = None,
+    overwrite_filename: str | None = None,
 ) -> dict[str, Any]:
     frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if frame is None:
@@ -996,15 +1123,22 @@ def save_fanxiu_screenshot_frame(
             prefer_cached=True,
         )
     height, width = frame.shape[:2]
-    data = encode_jpeg(frame, quality)
+    data = _encode_png_frame(frame)
 
     output_dir = get_fanxiu_screenshot_frame_dir()
     with _SCREENSHOT_FRAME_LOCK:
         output_dir.mkdir(parents=True, exist_ok=True)
-        index, output = _next_screenshot_frame_path(output_dir)
-        while output.exists():
-            index += 1
-            output = output_dir / f"{index:04d}.jpg"
+        if overwrite_filename:
+            original_output = get_fanxiu_screenshot_path(overwrite_filename)
+            output = original_output.with_suffix(".png")
+            index = int(output.stem) if output.stem.isdigit() else 0
+            if original_output != output and original_output.exists():
+                original_output.unlink()
+        else:
+            index, output = _next_screenshot_frame_path(output_dir)
+            while output.exists():
+                index += 1
+                output = output_dir / f"{index:04d}.png"
         output.write_bytes(data)
 
     return {
@@ -1015,6 +1149,172 @@ def save_fanxiu_screenshot_frame(
         "directory": os.fspath(output_dir),
         "width": width,
         "height": height,
+    }
+
+
+def save_fanxiu_burst_frame(
+    *,
+    title: str | None = None,
+    title_match: str = "contains",
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+    current_frame_data_url: str | None = None,
+) -> dict[str, Any]:
+    frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
+    if frame is None:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            title_match=title_match,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            prefer_cached=True,
+        )
+    height, width = frame.shape[:2]
+    phash = _frame_phash(frame)
+    data = _encode_png_frame(frame)
+
+    output_dir = get_fanxiu_burst_frame_dir()
+    with _BURST_FRAME_LOCK:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(
+            (item for item in output_dir.iterdir() if item.is_file() and item.suffix.lower() in _SCREENSHOT_IMAGE_SUFFIXES),
+            key=_screenshot_sort_key,
+        )
+        if existing:
+            last = existing[-1]
+            last_frame = _read_image_bgr(last)
+            if last_frame is not None and _frame_phash(last_frame) == phash:
+                return {
+                    "ok": True,
+                    "saved": False,
+                    "skipped": True,
+                    "reason": "same_phash",
+                    "phash": phash,
+                    "index": int(last.stem) if last.stem.isdigit() else 0,
+                    "filename": last.name,
+                    "directory": os.fspath(output_dir),
+                    "width": width,
+                    "height": height,
+                }
+        index, output = _next_numbered_frame_path(output_dir, ".png")
+        while output.exists():
+            index += 1
+            output = output_dir / f"{index:04d}.png"
+        output.write_bytes(data)
+
+    return {
+        "ok": True,
+        "saved": True,
+        "skipped": False,
+        "reason": "",
+        "phash": phash,
+        "index": index,
+        "filename": output.name,
+        "path": os.fspath(output),
+        "directory": os.fspath(output_dir),
+        "width": width,
+        "height": height,
+    }
+
+
+def list_fanxiu_burst_frames(page: int = 1, page_size: int = 24) -> dict[str, Any]:
+    output_dir = get_fanxiu_burst_frame_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(page_size or 24)))
+    paths = sorted(
+        (item for item in output_dir.iterdir() if item.is_file() and item.suffix.lower() in _SCREENSHOT_IMAGE_SUFFIXES),
+        key=_screenshot_sort_key,
+    )
+    total = len(paths)
+    start = (page - 1) * page_size
+    items: list[dict[str, Any]] = []
+    for path in paths[start : start + page_size]:
+        stat = path.stat()
+        width, height = _read_image_size(path)
+        items.append(
+            {
+                "filename": path.name,
+                "stem": path.stem,
+                "size": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(timespec="seconds"),
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "width": width,
+                "height": height,
+            }
+        )
+    return {
+        "ok": True,
+        "directory": os.fspath(output_dir),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "items": items,
+    }
+
+
+def get_fanxiu_burst_frame_path(filename: str) -> Path:
+    image_path = _burst_frame_path(filename)
+    if not image_path.is_file():
+        raise FileNotFoundError(f"连拍帧不存在：{filename}")
+    return image_path
+
+
+def clear_fanxiu_burst_frames() -> dict[str, Any]:
+    output_dir = get_fanxiu_burst_frame_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with _BURST_FRAME_LOCK:
+        for path in output_dir.iterdir():
+            if path.is_file() and path.suffix.lower() in _SCREENSHOT_IMAGE_SUFFIXES:
+                path.unlink()
+                count += 1
+    return {"ok": True, "cleared": count, "directory": os.fspath(output_dir)}
+
+
+def import_fanxiu_burst_frames(filenames: list[str]) -> dict[str, Any]:
+    output_dir = get_fanxiu_screenshot_frame_dir()
+    burst_dir = get_fanxiu_burst_frame_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    imported: list[dict[str, Any]] = []
+    with _SCREENSHOT_FRAME_LOCK:
+        for filename in filenames:
+            source = _burst_frame_path(filename)
+            if not source.is_file():
+                continue
+            index, output = _next_screenshot_frame_path(output_dir)
+            while output.exists():
+                index += 1
+                output = output_dir / f"{index:04d}.png"
+            output.write_bytes(source.read_bytes())
+            width, height = _read_image_size(output)
+            imported.append(
+                {
+                    "index": index,
+                    "filename": output.name,
+                    "source_filename": source.name,
+                    "path": os.fspath(output),
+                    "directory": os.fspath(output_dir),
+                    "width": width,
+                    "height": height,
+                }
+            )
+    return {
+        "ok": True,
+        "directory": os.fspath(output_dir),
+        "source_directory": os.fspath(burst_dir),
+        "imported": imported,
+        "imported_count": len(imported),
     }
 
 
@@ -1138,139 +1438,210 @@ def _compare_frame_crops(
     return int(round(score * 100)), score
 
 
-def _correlate_frame_crops(
-    reference_crop: Any,
-    current_crop: Any,
-    alpha_mask: Any = None,
-    tolerance_min: Any = None,
-    tolerance_max: Any = None,
-) -> tuple[int, float]:
-    import cv2
-    import numpy as np
-
-    template = _ensure_bgr_frame(reference_crop)
-    crop = _ensure_bgr_frame(current_crop)
-    if template.size == 0 or crop.size == 0:
-        raise ValueError("匹配图片为空")
-    if template.shape[:2] != crop.shape[:2]:
-        crop = cv2.resize(crop, (template.shape[1], template.shape[0]), interpolation=cv2.INTER_AREA)
-
-    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-    crop_gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    mask = _normalize_alpha_mask(alpha_mask, template_gray.shape[1], template_gray.shape[0])
-    tolerance_min_frame, tolerance_max_frame = _normalize_tolerance_frames(
-        tolerance_min,
-        tolerance_max,
-        template.shape[1],
-        template.shape[0],
-    )
-    if tolerance_min_frame is not None and tolerance_max_frame is not None:
-        if mask is None:
-            mask = np.ones(template_gray.shape, dtype="float32")
-        min_gray = cv2.cvtColor(np.minimum(tolerance_min_frame, tolerance_max_frame), cv2.COLOR_BGR2GRAY).astype("float32")
-        max_gray = cv2.cvtColor(np.maximum(tolerance_min_frame, tolerance_max_frame), cv2.COLOR_BGR2GRAY).astype("float32")
-        current_gray = crop_gray.astype("float32")
-        diff = np.maximum(min_gray - current_gray, current_gray - max_gray)
-        diff = np.maximum(diff, 0)
-        score = max(0.0, min(1.0, 1.0 - float((diff * mask).sum() / (255.0 * mask.sum()))))
-        return int(round(score * 100)), score
-    if mask is not None and float(mask.sum()) > 1e-6:
-        diff = np.abs(template_gray.astype("float32") - crop_gray.astype("float32"))
-        score = max(0.0, min(1.0, 1.0 - float((diff * mask).sum() / (255.0 * mask.sum()))))
-        return int(round(score * 100)), score
-    if float(template_gray.std()) > 1e-6 and float(crop_gray.std()) > 1e-6:
-        result = cv2.matchTemplate(crop_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        _, max_value, _, _ = cv2.minMaxLoc(result)
-        score = max(0.0, min(1.0, float(max_value)))
-    else:
-        result = cv2.matchTemplate(crop_gray, template_gray, cv2.TM_SQDIFF_NORMED)
-        min_value, _, _, _ = cv2.minMaxLoc(result)
-        score = max(0.0, min(1.0, 1.0 - float(min_value)))
-    return int(round(score * 100)), score
-
-
 def _jpeg_normalize_frame(frame: Any, quality: int) -> tuple[Any, bytes]:
     return normalize_for_saved_jpeg_match(frame, quality=quality, source_format="auto", return_bytes=True)
 
 
-def _match_template_frame(
-    reference_crop: Any,
-    current_frame: Any,
-    current_box: dict[str, Any],
-    pixel_tolerance: int = 5,
-    alpha_mask: Any = None,
-    tolerance_min: Any = None,
-    tolerance_max: Any = None,
-) -> dict[str, Any]:
+def _prepare_current_frame_for_reference(
+    frame: Any,
+    reference_path: Path,
+    quality: int,
+) -> tuple[Any, bytes, str]:
+    if reference_path.suffix.lower() in {".jpg", ".jpeg"}:
+        normalized_frame, data = _jpeg_normalize_frame(frame, quality)
+        return normalized_frame, data, ".jpg"
+    normalized_frame = _ensure_bgr_frame(frame)
+    return normalized_frame, _encode_png_frame(normalized_frame), ".png"
+
+
+def _encode_png_frame(frame: Any) -> bytes:
     import cv2
-    import numpy as np
 
-    template = _ensure_bgr_frame(reference_crop)
-    frame = _ensure_bgr_frame(current_frame)
-    if template.size == 0 or frame.size == 0:
-        raise ValueError("模板匹配图片为空")
+    ok, data = cv2.imencode(".png", _ensure_bgr_frame(frame), [cv2.IMWRITE_PNG_COMPRESSION, 3])
+    if not ok:
+        raise RuntimeError("编码 PNG 失败")
+    return data.tobytes()
 
-    frame_height, frame_width = frame.shape[:2]
-    template_width = min(max(1, int(current_box["w"])), frame_width)
-    template_height = min(max(1, int(current_box["h"])), frame_height)
-    if template.shape[:2] != (template_height, template_width):
-        template = cv2.resize(template, (template_width, template_height), interpolation=cv2.INTER_AREA)
-    mask = _normalize_alpha_mask(alpha_mask, template_width, template_height)
-    min_frame, max_frame = _normalize_tolerance_frames(tolerance_min, tolerance_max, template_width, template_height)
 
-    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    template_for_search = ((np.minimum(min_frame, max_frame).astype("uint16") + np.maximum(min_frame, max_frame).astype("uint16")) // 2).astype("uint8") if min_frame is not None and max_frame is not None else template
-    template_gray = cv2.cvtColor(template_for_search, cv2.COLOR_BGR2GRAY)
-    if template_gray.shape[0] > frame_gray.shape[0] or template_gray.shape[1] > frame_gray.shape[1]:
-        raise ValueError("模板尺寸大于当前画面")
+def _normalize_ocr_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
 
-    if mask is not None and float(mask.sum()) > 1e-6:
-        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCORR_NORMED, mask=(mask * 255).astype("uint8"))
-        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
-        _, max_value, _, max_loc = cv2.minMaxLoc(result)
-        score = max(0.0, min(1.0, float(max_value)))
-        x, y = max_loc
-    elif float(template_gray.std()) > 1e-6 and float(frame_gray.std()) > 1e-6:
-        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        _, max_value, _, max_loc = cv2.minMaxLoc(result)
-        score = max(0.0, min(1.0, float(max_value)))
-        x, y = max_loc
-    else:
-        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_SQDIFF_NORMED)
-        min_value, _, min_loc, _ = cv2.minMaxLoc(result)
-        score = max(0.0, min(1.0, 1.0 - float(min_value)))
-        x, y = min_loc
 
-    box = _normalize_match_box(
+def _ocr_label_payload(label: Any) -> dict[str, Any]:
+    if isinstance(label, dict):
+        return label
+    if isinstance(label, str):
+        try:
+            payload = json.loads(label)
+        except json.JSONDecodeError:
+            return {"text": label}
+        return payload if isinstance(payload, dict) else {"text": label}
+    return {"text": str(label or "")}
+
+
+def _ocr_shape_box(shape: dict[str, Any], offset_x: int, offset_y: int, frame_width: int, frame_height: int) -> dict[str, Any] | None:
+    points = shape.get("points")
+    if not isinstance(points, list) or not points:
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    for point in points:
+        if not isinstance(point, list) or len(point) < 2:
+            continue
+        try:
+            xs.append(float(point[0]))
+            ys.append(float(point[1]))
+        except (TypeError, ValueError):
+            continue
+    if not xs or not ys:
+        return None
+    return _normalize_match_box(
         {
-            "name": current_box.get("name", ""),
-            "x": x,
-            "y": y,
-            "w": template_width,
-            "h": template_height,
+            "name": "ocr",
+            "x": offset_x + min(xs),
+            "y": offset_y + min(ys),
+            "w": max(1.0, max(xs) - min(xs)),
+            "h": max(1.0, max(ys) - min(ys)),
         },
         frame_width,
         frame_height,
     )
-    matched_crop = _crop_frame_box(frame, box)
-    crop_similarity, crop_score = _compare_frame_crops(
-        template,
-        matched_crop,
-        pixel_tolerance,
-        mask,
-        min_frame,
-        max_frame,
-    )
+
+
+def _ocr_text_matches(text: str, target: str, mode: str) -> bool:
+    if not target:
+        return False
+    if mode == "regex":
+        try:
+            return re.search(target, text) is not None
+        except re.error:
+            return False
+    normalized_text = _normalize_ocr_text(text)
+    normalized_target = _normalize_ocr_text(target)
+    if mode == "wildcard":
+        pattern = "".join(
+            "." if char == "?" else ".*" if char == "*" else re.escape(char)
+            for char in normalized_target
+        )
+        return re.fullmatch(pattern, normalized_text) is not None
+    if mode == "exact":
+        return normalized_text == normalized_target
+    return normalized_target in normalized_text
+
+
+def _apply_alpha_mask_for_ocr(crop: Any, alpha_mask: Any):
+    if alpha_mask is None:
+        return crop
+    import numpy as np
+
+    frame = _ensure_bgr_frame(crop).copy()
+    height, width = frame.shape[:2]
+    mask = _normalize_alpha_mask(alpha_mask, width, height)
+    if mask is None or float(mask.sum()) <= 1e-6:
+        return frame
+    frame[mask <= 0.05] = np.array([255, 255, 255], dtype=frame.dtype)
+    return frame
+
+
+def _run_ocr_on_bgr_frame(frame: Any) -> dict[str, Any]:
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_file.write(_encode_png_frame(frame))
+            temp_path = temp_file.name
+        return run_paddle_ocr_preview(Path(temp_path), shape_type="rectangle")
+    except OcrPreviewError as exc:
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+def _match_ocr_frame(
+    current_frame: Any,
+    current_box: dict[str, Any],
+    current_search_box: dict[str, Any],
+    *,
+    scan: bool,
+    text: str,
+    match_mode: str = "contains",
+    min_confidence: float = 0.0,
+    alpha_mask: Any = None,
+) -> dict[str, Any]:
+    frame = _ensure_bgr_frame(current_frame)
+    frame_height, frame_width = frame.shape[:2]
+    target_box = _normalize_match_box(current_search_box if scan else current_box, frame_width, frame_height)
+    x, y, w, h = int(target_box["x"]), int(target_box["y"]), int(target_box["w"]), int(target_box["h"])
+    crop = frame[y:y + h, x:x + w]
+    if crop.size == 0:
+        return {
+            "box": current_box,
+            "similarity": 0,
+            "score": 0.0,
+            "crop_similarity": 0,
+            "crop_score": 0.0,
+            "search_radius": -1 if scan else 0,
+            "matches": [],
+            "ocr_text": "",
+        }
+    ocr_crop = _apply_alpha_mask_for_ocr(crop, alpha_mask) if not scan else crop
+    document = _run_ocr_on_bgr_frame(ocr_crop).get("document") or {}
+    raw_shapes = document.get("shapes") if isinstance(document, dict) else []
+    matches: list[dict[str, Any]] = []
+    all_texts: list[str] = []
+    min_score = max(0.0, min(1.0, float(min_confidence or 0.0)))
+    for shape in raw_shapes if isinstance(raw_shapes, list) else []:
+        if not isinstance(shape, dict):
+            continue
+        label = _ocr_label_payload(shape.get("label"))
+        recognized = str(label.get("text") or "")
+        all_texts.append(recognized)
+        confidence = float(label.get("score") or 0.0)
+        if confidence < min_score or not _ocr_text_matches(recognized, text, match_mode):
+            continue
+        absolute_box = _ocr_shape_box(shape, x, y, frame_width, frame_height) or current_box
+        similarity = int(round(confidence * 100))
+        matches.append(
+            {
+                "box": absolute_box,
+                "similarity": similarity,
+                "score": confidence,
+                "crop_similarity": similarity,
+                "crop_score": confidence,
+                "ocr_text": recognized,
+                "ocr_confidence": confidence,
+            }
+        )
+    if not matches and _ocr_text_matches("".join(all_texts), text, match_mode):
+        matches.append(
+            {
+                "box": current_box,
+                "similarity": 100,
+                "score": 1.0,
+                "crop_similarity": 100,
+                "crop_score": 1.0,
+                "ocr_text": "".join(all_texts),
+                "ocr_confidence": 1.0,
+            }
+        )
+    matches.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    best = matches[0] if matches else None
     return {
-        "box": box,
-        "similarity": int(round(score * 100)),
-        "score": score,
-        "crop_similarity": crop_similarity,
-        "crop_score": crop_score,
+        "box": best["box"] if best else current_box,
+        "similarity": int(best["similarity"]) if best else 0,
+        "score": float(best["score"]) if best else 0.0,
+        "crop_similarity": int(best["crop_similarity"]) if best else 0,
+        "crop_score": float(best["crop_score"]) if best else 0.0,
+        "search_radius": -1 if scan else 0,
+        "matches": matches[:50],
+        "ocr_text": "".join(all_texts),
     }
 
 
-def _match_local_template_frame(
+def _match_local_pixel_frame(
     reference_crop: Any,
     current_frame: Any,
     current_box: dict[str, Any],
@@ -1281,37 +1652,172 @@ def _match_local_template_frame(
 ) -> dict[str, Any]:
     frame = _ensure_bgr_frame(current_frame)
     frame_height, frame_width = frame.shape[:2]
+    template = _ensure_bgr_frame(reference_crop)
+    template_height, template_width = template.shape[:2]
     radius = max(8, min(24, round(max(int(current_box["w"]), int(current_box["h"])) * 0.25)))
     x1 = max(0, int(current_box["x"]) - radius)
     y1 = max(0, int(current_box["y"]) - radius)
-    x2 = min(frame_width, int(current_box["x"]) + int(current_box["w"]) + radius)
-    y2 = min(frame_height, int(current_box["y"]) + int(current_box["h"]) + radius)
-    region = frame[y1:y2, x1:x2]
-    match = _match_template_frame(
-        reference_crop,
-        region,
-        {"name": current_box.get("name", ""), "x": 0, "y": 0, "w": current_box["w"], "h": current_box["h"]},
-        pixel_tolerance,
-        alpha_mask,
-        tolerance_min,
-        tolerance_max,
-    )
-    local_box = match["box"]
-    box = _normalize_match_box(
-        {
-            "name": current_box.get("name", ""),
-            "x": local_box["x"] + x1,
-            "y": local_box["y"] + y1,
-            "w": local_box["w"],
-            "h": local_box["h"],
-        },
-        frame_width,
-        frame_height,
-    )
+    x2 = min(frame_width - template_width, int(current_box["x"]) + radius)
+    y2 = min(frame_height - template_height, int(current_box["y"]) + radius)
+    if x2 < x1 or y2 < y1:
+        similarity, score = _compare_frame_crops(
+            template,
+            _crop_frame_box(frame, current_box),
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
+        return {
+            "box": current_box,
+            "similarity": similarity,
+            "score": score,
+            "crop_similarity": similarity,
+            "crop_score": score,
+            "search_radius": radius,
+        }
+
+    best_box = current_box
+    best_similarity = -1
+    best_score = -1.0
+    for y in range(y1, y2 + 1):
+        for x in range(x1, x2 + 1):
+            candidate_box = _normalize_match_box(
+                {
+                    "name": current_box.get("name", ""),
+                    "x": x,
+                    "y": y,
+                    "w": template_width,
+                    "h": template_height,
+                },
+                frame_width,
+                frame_height,
+            )
+            similarity, score = _compare_frame_crops(
+                template,
+                _crop_frame_box(frame, candidate_box),
+                pixel_tolerance,
+                alpha_mask,
+                tolerance_min,
+                tolerance_max,
+            )
+            if score > best_score:
+                best_box = candidate_box
+                best_similarity = similarity
+                best_score = score
     return {
-        **match,
-        "box": box,
+        "box": best_box,
+        "similarity": best_similarity,
+        "score": best_score,
+        "crop_similarity": best_similarity,
+        "crop_score": best_score,
         "search_radius": radius,
+    }
+
+
+def _match_scan_frame(
+    reference_crop: Any,
+    current_frame: Any,
+    current_search_box: dict[str, Any],
+    current_box: dict[str, Any],
+    pixel_tolerance: int = 5,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
+) -> dict[str, Any]:
+    frame = _ensure_bgr_frame(current_frame)
+    frame_height, frame_width = frame.shape[:2]
+    search_box = _normalize_match_box(current_search_box, frame_width, frame_height)
+    template = _ensure_bgr_frame(reference_crop)
+    template_height, template_width = template.shape[:2]
+    sx, sy, sw, sh = int(search_box["x"]), int(search_box["y"]), int(search_box["w"]), int(search_box["h"])
+    search_crop = frame[sy : sy + sh, sx : sx + sw]
+    if search_crop.size == 0:
+        return {
+            "box": current_box,
+            "similarity": 0,
+            "score": 0.0,
+            "crop_similarity": 0,
+            "crop_score": 0.0,
+            "search_radius": -1,
+        }
+
+    scan_template = template
+    template_offset_x = 0
+    template_offset_y = 0
+    mask = _normalize_alpha_mask(alpha_mask, template_width, template_height)
+    if mask is not None and float(mask.sum()) > 1e-6:
+        import numpy as np
+
+        ys, xs = np.where(mask > 0.05)
+        if xs.size and ys.size:
+            left = max(0, int(xs.min()))
+            top = max(0, int(ys.min()))
+            right = min(template_width, int(xs.max()) + 1)
+            bottom = min(template_height, int(ys.max()) + 1)
+            if right > left and bottom > top:
+                scan_template = template[top:bottom, left:right]
+                template_offset_x = left
+                template_offset_y = top
+
+    rects = ImageTools.base_find_img(
+        scan_template,
+        search_crop,
+        grayscale=False,
+        confidence=0.5,
+        sort_by_confidence=True,
+    )
+    best_box = current_box
+    best_similarity = 0
+    best_score = 0.0
+    matches: list[dict[str, Any]] = []
+    for rect in rects:
+        x, y, _w, _h = [int(round(v)) for v in rect[:4]]
+        full_x = sx + x - template_offset_x
+        full_y = sy + y - template_offset_y
+        if full_x < 0 or full_y < 0 or full_x + template_width > frame_width or full_y + template_height > frame_height:
+            continue
+        candidate_box = _normalize_match_box(
+            {
+                "name": current_box.get("name", ""),
+                "x": full_x,
+                "y": full_y,
+                "w": template_width,
+                "h": template_height,
+            },
+            frame_width,
+            frame_height,
+        )
+        similarity, score = _compare_frame_crops(
+            template,
+            _crop_frame_box(frame, candidate_box),
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
+        matches.append(
+            {
+                "box": candidate_box,
+                "similarity": similarity,
+                "score": score,
+                "crop_similarity": similarity,
+                "crop_score": score,
+            }
+        )
+        if score > best_score:
+            best_box = candidate_box
+            best_similarity = similarity
+            best_score = score
+    matches.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return {
+        "box": best_box,
+        "similarity": best_similarity,
+        "score": best_score,
+        "crop_similarity": best_similarity,
+        "crop_score": best_score,
+        "search_radius": -1,
+        "matches": matches[:50],
     }
 
 
@@ -1319,6 +1825,8 @@ def match_fanxiu_screenshot_box_frame(
     *,
     filename: str,
     box: dict[str, Any],
+    scan: bool = False,
+    scan_box: dict[str, Any] | None = None,
     title: str | None = None,
     title_match: str = "contains",
     mode: str | None = None,
@@ -1334,6 +1842,11 @@ def match_fanxiu_screenshot_box_frame(
     tolerance_min_data_url: str | None = None,
     tolerance_max_data_url: str | None = None,
     current_frame_data_url: str | None = None,
+    match_strategy: str = "auto",
+    ocr_enabled: bool = False,
+    ocr_text: str | None = None,
+    ocr_match_mode: str = "contains",
+    ocr_min_confidence: float = 0.0,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
     reference_frame = _read_image_bgr(source_path)
@@ -1360,17 +1873,111 @@ def match_fanxiu_screenshot_box_frame(
             fixed_height=fixed_height,
             prefer_cached=True,
         )
-    current_frame, data = _jpeg_normalize_frame(current_frame, quality)
+    current_frame, data, match_frame_suffix = _prepare_current_frame_for_reference(current_frame, source_path, quality)
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
-    fixed_exact_similarity, fixed_exact_score = _correlate_frame_crops(
-        reference_crop,
-        current_crop,
-        alpha_mask,
-        tolerance_min,
-        tolerance_max,
-    )
+    source_scan_box = _normalize_match_box(scan_box, source_width, source_height) if scan_box else {
+        "name": "scan",
+        "x": 0,
+        "y": 0,
+        "w": source_width,
+        "h": source_height,
+    }
+    current_scan_box = _scale_box(source_scan_box, source_width, source_height, current_width, current_height)
+    use_ocr = bool(ocr_enabled and str(ocr_text or "").strip())
+    if use_ocr:
+        fixed_match = _match_ocr_frame(
+            current_frame,
+            current_box,
+            current_scan_box,
+            scan=bool(scan),
+            text=str(ocr_text or ""),
+            match_mode=ocr_match_mode if ocr_match_mode in {"contains", "exact", "wildcard", "regex"} else "contains",
+            min_confidence=ocr_min_confidence,
+            alpha_mask=alpha_mask,
+        )
+        output_dir = get_fanxiu_match_frame_dir()
+        with _MATCH_FRAME_LOCK:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
+            while output.exists():
+                index += 1
+                output = output_dir / f"{index:04d}{match_frame_suffix}"
+            output.write_bytes(data)
+
+        return {
+            "ok": True,
+            "index": index,
+            "source_filename": source_path.name,
+            "match_filename": output.name,
+            "path": os.fspath(output),
+            "directory": os.fspath(output_dir),
+            "similarity": fixed_match["similarity"],
+            "score": fixed_match["score"],
+            "fixed_similarity": fixed_match["similarity"],
+            "fixed_score": fixed_match["score"],
+            "fixed_pixel_similarity": fixed_match["similarity"],
+            "fixed_pixel_score": fixed_match["score"],
+            "fixed_exact_similarity": fixed_match["similarity"],
+            "fixed_exact_score": fixed_match["score"],
+            "fixed_exact_pixel_similarity": fixed_match["similarity"],
+            "fixed_exact_pixel_score": fixed_match["score"],
+            "fixed_search_radius": fixed_match["search_radius"],
+            "box": source_box,
+            "scan": bool(scan),
+            "scan_box": source_scan_box if scan else None,
+            "current_box": current_box,
+            "fixed_box": fixed_match["box"],
+            "matches": fixed_match.get("matches") or [],
+            "source_width": source_width,
+            "source_height": source_height,
+            "width": current_width,
+            "height": current_height,
+            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+            "match_strategy": "ocr",
+            "ocr_text": fixed_match.get("ocr_text") or "",
+            "ocr_target": str(ocr_text or ""),
+            "ocr_match_mode": ocr_match_mode,
+            "ocr_min_confidence": max(0.0, min(1.0, float(ocr_min_confidence or 0.0))),
+        }
+    if match_strategy == "anchor_pixel":
+        diff = ImageTools.img_distance(
+            reference_crop,
+            current_crop,
+            grayscale=False,
+            color_tolerance=max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+        )
+        score = max(0.0, min(1.0, 1.0 - float(diff)))
+        similarity = int(round(score * 100))
+        return {
+            "ok": True,
+            "index": 0,
+            "source_filename": source_path.name,
+            "match_filename": "",
+            "path": "",
+            "directory": "",
+            "similarity": similarity,
+            "score": score,
+            "fixed_similarity": similarity,
+            "fixed_score": score,
+            "fixed_pixel_similarity": similarity,
+            "fixed_pixel_score": score,
+            "fixed_exact_similarity": similarity,
+            "fixed_exact_score": score,
+            "fixed_exact_pixel_similarity": similarity,
+            "fixed_exact_pixel_score": score,
+            "fixed_search_radius": 0,
+            "box": source_box,
+            "current_box": current_box,
+            "fixed_box": current_box,
+            "source_width": source_width,
+            "source_height": source_height,
+            "width": current_width,
+            "height": current_height,
+            "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+            "match_strategy": "anchor_pixel",
+        }
     fixed_exact_pixel_similarity, fixed_exact_pixel_score = _compare_frame_crops(
         reference_crop,
         current_crop,
@@ -1379,32 +1986,35 @@ def match_fanxiu_screenshot_box_frame(
         tolerance_min,
         tolerance_max,
     )
-    fixed_match = _match_local_template_frame(
-        reference_crop,
-        current_frame,
-        current_box,
-        pixel_tolerance,
-        alpha_mask,
-        tolerance_min,
-        tolerance_max,
-    )
-    template_match = _match_template_frame(
-        reference_crop,
-        current_frame,
-        current_box,
-        pixel_tolerance,
-        alpha_mask,
-        tolerance_min,
-        tolerance_max,
-    )
+    if scan:
+        fixed_match = _match_scan_frame(
+            reference_crop,
+            current_frame,
+            current_scan_box,
+            current_box,
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
+    else:
+        fixed_match = _match_local_pixel_frame(
+            reference_crop,
+            current_frame,
+            current_box,
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
 
     output_dir = get_fanxiu_match_frame_dir()
     with _MATCH_FRAME_LOCK:
         output_dir.mkdir(parents=True, exist_ok=True)
-        index, output = _next_numbered_frame_path(output_dir)
+        index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
         while output.exists():
             index += 1
-            output = output_dir / f"{index:04d}.jpg"
+            output = output_dir / f"{index:04d}{match_frame_suffix}"
         output.write_bytes(data)
 
     return {
@@ -1420,19 +2030,25 @@ def match_fanxiu_screenshot_box_frame(
         "fixed_score": fixed_match["score"],
         "fixed_pixel_similarity": fixed_match["crop_similarity"],
         "fixed_pixel_score": fixed_match["crop_score"],
-        "fixed_exact_similarity": fixed_exact_similarity,
-        "fixed_exact_score": fixed_exact_score,
+        "fixed_exact_similarity": fixed_exact_pixel_similarity,
+        "fixed_exact_score": fixed_exact_pixel_score,
         "fixed_exact_pixel_similarity": fixed_exact_pixel_similarity,
         "fixed_exact_pixel_score": fixed_exact_pixel_score,
         "fixed_search_radius": fixed_match["search_radius"],
-        "template_similarity": template_match["similarity"],
-        "template_score": template_match["score"],
-        "template_crop_similarity": template_match["crop_similarity"],
-        "template_crop_score": template_match["crop_score"],
         "box": source_box,
+        "scan": bool(scan),
+        "scan_box": source_scan_box if scan else None,
         "current_box": current_box,
         "fixed_box": fixed_match["box"],
-        "template_box": template_match["box"],
+        "matches": fixed_match.get("matches") or [
+            {
+                "box": fixed_match["box"],
+                "similarity": fixed_match["crop_similarity"],
+                "score": fixed_match["crop_score"],
+                "crop_similarity": fixed_match["crop_similarity"],
+                "crop_score": fixed_match["crop_score"],
+            }
+        ],
         "source_width": source_width,
         "source_height": source_height,
         "width": current_width,
@@ -1456,6 +2072,7 @@ def click_sunlogin_rotate_processed_point(
     fixed_height: int | None = None,
     frame_width: int | None = None,
     frame_height: int | None = None,
+    input_backend: str = "desktop",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
@@ -1466,7 +2083,8 @@ def click_sunlogin_rotate_processed_point(
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     frame_x = int(round(x))
     frame_y = int(round(y))
-    if _is_mumu_target(normalized_title):
+    normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    if normalized_input_backend == "adb":
         input_result = _tap_mumu_adb(
             frame_x,
             frame_y,
@@ -1529,7 +2147,9 @@ def click_sunlogin_rotate_processed_point(
     try:
         click_window_raw_point(capturer.hwnd, resolved_area, raw_point)
     except Exception as exc:
-        if "mumu" not in normalized_title.lower() and "mumu" not in target.title.lower():
+        if normalized_input_backend == "desktop" or (
+            "mumu" not in normalized_title.lower() and "mumu" not in target.title.lower()
+        ):
             raise
         input_result = _tap_mumu_adb(frame_x, frame_y, frame_width=frame_width, frame_height=frame_height)
         input_result["window_input_error"] = str(exc)
@@ -1596,6 +2216,7 @@ def drag_sunlogin_rotate_processed_points(
     fixed_height: int | None = None,
     frame_width: int | None = None,
     frame_height: int | None = None,
+    input_backend: str = "desktop",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
@@ -1608,7 +2229,8 @@ def drag_sunlogin_rotate_processed_points(
     frame_start_y = int(round(start_y))
     frame_end_x = int(round(end_x))
     frame_end_y = int(round(end_y))
-    if _is_mumu_target(normalized_title):
+    normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    if normalized_input_backend == "adb":
         input_result = _swipe_mumu_adb(
             frame_start_x,
             frame_start_y,
@@ -1690,7 +2312,7 @@ def drag_sunlogin_rotate_processed_points(
     try:
         drag_window_raw_points(capturer.hwnd, resolved_area, start_raw_point, end_raw_point, duration_ms=duration_ms)
     except Exception as exc:
-        if not _is_mumu_target(normalized_title, target.title):
+        if normalized_input_backend == "desktop" or not _is_mumu_target(normalized_title, target.title):
             raise
         input_result = _swipe_mumu_adb(
             frame_start_x,

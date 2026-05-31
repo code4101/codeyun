@@ -123,6 +123,17 @@ function getProviderDefaultModelList(provider: AiChatProviderSummary | null) {
   ].filter((item): item is string => typeof item === 'string'))
 }
 
+function getProviderEffectiveModelList(
+  providerId: string,
+  config: AiProviderRuntimeConfig,
+  provider: AiChatProviderSummary | null,
+) {
+  return decorateProviderModelList(providerId, [
+    ...config.preferredModels,
+    ...getProviderDefaultModelList(provider),
+  ])
+}
+
 function loadLocalProviderConfigs(): Record<string, LocalProviderConfigItem> {
   if (!canUseLocalStorage()) {
     return {}
@@ -384,10 +395,7 @@ export const useAiProviderStore = defineStore('aiProvider', {
 
     getEffectiveModels(providerId: string) {
       const providerConfig = this.getProviderConfig(providerId)
-      if (providerConfig.preferredModels.length) {
-        return decorateProviderModelList(providerId, providerConfig.preferredModels)
-      }
-      return getProviderDefaultModelList(this.getProviderById(providerId))
+      return getProviderEffectiveModelList(providerId, providerConfig, this.getProviderById(providerId))
     },
 
     applyProviderStatus(status: AiChatStatusResponse) {

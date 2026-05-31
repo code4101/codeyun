@@ -208,6 +208,20 @@ export interface RimePerformanceSection {
   last_ms: number;
 }
 
+export interface RimePerformanceQueryTrace {
+  seq: number;
+  input: string;
+  full_input: string;
+  seg_start: number;
+  seg_end: number;
+  gap_ms: number;
+  duration_ms: number;
+  candidate_count: number;
+  yielded_count: number;
+  heap_kb: number;
+  reason: string;
+}
+
 export interface RimePerformanceResponse {
   available: boolean;
   status: string;
@@ -220,6 +234,7 @@ export interface RimePerformanceResponse {
   config: Record<string, RimeRuntimeConfigValue>;
   runtime: Record<string, number | string | boolean | null>;
   sections: Record<string, RimePerformanceSection>;
+  recent_queries: RimePerformanceQueryTrace[];
   started_at?: number | null;
   clock_ms?: number | null;
   version?: number;

@@ -120,11 +120,13 @@ from backend.core.codex_device_summary import (
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.runtime_management import (
+    add_builtin_runtime_job,
     build_runtime_status,
     configure_builtin_runtime_job_schedule,
     delete_builtin_runtime_job,
     delete_builtin_runtime_queue_task,
     get_runtime_item_logs,
+    list_builtin_runtime_job_catalog,
     reset_builtin_runtime_job_schedule,
     stop_builtin_runtime_item,
     stop_command_runtime_item,
@@ -1172,6 +1174,18 @@ def get_runtime_status_for_entry(
     return _proxy_request(entry, "GET", "/runtime/status")
 
 
+@router.get("/{entry_id}/runtime/jobs/catalog")
+def list_runtime_job_catalog_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return list_builtin_runtime_job_catalog(session)
+    return _proxy_request(entry, "GET", "/runtime/jobs/catalog")
+
+
 @router.get("/{entry_id}/runtime/system-metrics")
 def get_runtime_system_metrics_for_entry(
     entry_id: str,
@@ -1197,6 +1211,19 @@ def trigger_runtime_job_for_entry(
     if entry.mode == "local":
         return trigger_builtin_runtime_job(job_key, session)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/trigger")
+
+
+@router.post("/{entry_id}/runtime/jobs/{job_key}/add")
+def add_runtime_job_for_entry(
+    entry_id: str,
+    job_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return add_builtin_runtime_job(job_key)
+    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/add")
 
 
 @router.post("/{entry_id}/runtime/items/{source}/{item_key}/trigger")

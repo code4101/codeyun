@@ -471,6 +471,7 @@ const props = defineProps<{
   lockNoteForm?: boolean;
   readonlyPresentation?: boolean;
   editorLayout?: 'fill' | 'flow';
+  draftStorageKey?: string | null;
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();
@@ -1241,7 +1242,7 @@ watch(() => props.modelValue, async newVal => {
   const note = normalizeIncomingNote(newVal);
   const serverSnapshot = createEditableNoteSnapshot(note);
   if (!serverSnapshot) return;
-  currentDraftKey.value = buildNoteDraftStorageKey(note.id, note.title);
+  currentDraftKey.value = props.draftStorageKey ?? buildNoteDraftStorageKey(note.id, note.title);
   if ((!currentNote.value || currentNote.value.id !== note.id) && note.inherited_fields == null) {
     inheritedFieldSource.value = null;
   }

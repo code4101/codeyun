@@ -1,6 +1,6 @@
 # AI Context: CodeYun
 
-> **Last Updated**: 2026-05-24
+> **Last Updated**: 2026-05-30
 > **Purpose**: 本文档旨在为AI提供CodeYun项目的全局上下文、架构设计与核心逻辑，以便快速理解代码并进行准确的修改。
 
 ## 1. 项目概览 (Project Overview)
@@ -16,7 +16,7 @@
     *   **Agent 模式**: 每个运行后端实例的设备既是 Server 也是 Agent，支持组成对等网络（Mesh-like）。
     *   **远程文件系统**: 浏览和操作远程设备的文件目录。
     *   **远端 Sub-Agent（设计中）**: 通过设备能力探测和受控运行接口调用远端 Codex CLI 等 agent runtime。设计见 `docs/远端SubAgent能力设计.md`，实现前不要继续把它当成默认可用能力。
-    *   **凡修逆向/图鉴上下文**: 凡人修仙传手游的资源、APK、IL2CPP、热更新 Lua、图鉴和抓包分析有独立 AI 交接文档：`docs/FANXIU_REVERSE_CONTEXT.md`。后续 agent 接手相关任务时先读该文档，再看具体代码或外部导出目录。
+    *   **凡修逆向/图鉴上下文**: 凡人修仙传手游的资源、APK、IL2CPP、热更新 Lua、图鉴和抓包分析有独立 AI 交接文档：`docs/FANXIU_REVERSE_CONTEXT.md`。后续 agent 接手相关任务时先读该文档，再看具体代码或外部导出目录。若用户提到增量更新凡修逆向、更新凡修图鉴或同步最新游戏数据，还必须遵守 `docs/凡修逆向增量更新约定.md`：默认使用快照、diff、选择性合并的增量机制，不要无理由暴力全量重算或覆盖业务数据。
 
 *   **技术栈**:
     *   **Backend**: Python 3.10+, FastAPI, Uvicorn, APScheduler (定时任务), psutil (进程管理)。

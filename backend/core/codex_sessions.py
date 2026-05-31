@@ -16,11 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlmodel import Session, delete, select
 
 from backend.core.ai_chat import chat_with_provider
-from backend.core.ai_chat_user_config import (
-    AiChatUserConfigError,
-    get_user_ai_chat_provider_runtime_config,
-    list_user_ai_chat_custom_provider_configs,
-)
+from backend.core.ai_app_config import AI_APP_CODEX_DAILY_SUMMARY, AiAppConfigError, resolve_ai_app_runtime_config
 from backend.db import engine
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
@@ -37,6 +33,7 @@ from backend.models import (
     CodexTextCacheRoot,
     CodexTextCacheThread,
     CodexTextCacheTurn,
+    User,
 )
 
 
@@ -1455,22 +1452,25 @@ def _resolve_codex_daily_summary_runtime_config(
         "provider_id": _CODEX_DAILY_SUMMARY_PROVIDER_ID,
         "base_url": None,
         "api_key": None,
+        "model": _CODEX_DAILY_SUMMARY_DEFAULT_MODEL,
         "extra_providers": (),
     }
     if session is None or user_id is None:
         return runtime
 
     try:
-        saved_config = get_user_ai_chat_provider_runtime_config(
-            session,
-            int(user_id),
-            _CODEX_DAILY_SUMMARY_PROVIDER_ID,
+        app_runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=session.get(User, int(user_id)),
+            app_id=AI_APP_CODEX_DAILY_SUMMARY,
         )
-        runtime["base_url"] = str(saved_config.get("base_url") or "").strip() or None
-        runtime["api_key"] = str(saved_config.get("api_key") or "").strip() or None
-        runtime["extra_providers"] = tuple(list_user_ai_chat_custom_provider_configs(session, int(user_id)))
+        runtime["provider_id"] = str(app_runtime.get("provider") or _CODEX_DAILY_SUMMARY_PROVIDER_ID)
+        runtime["base_url"] = app_runtime.get("base_url")
+        runtime["api_key"] = app_runtime.get("api_key")
+        runtime["model"] = str(app_runtime.get("model") or _CODEX_DAILY_SUMMARY_DEFAULT_MODEL)
+        runtime["extra_providers"] = tuple(app_runtime.get("extra_providers") or ())
         return runtime
-    except AiChatUserConfigError as exc:
+    except AiAppConfigError as exc:
         raise ValueError(str(exc)) from exc
 
 
@@ -2128,7 +2128,7 @@ def _build_codex_daily_summary_result_from_source(
         type_items=list(source["type_items"]),
         turn_records=list(source["turn_records"]),
     )
-    resolved_model = _resolve_codex_daily_summary_model(model)
+    resolved_model = _resolve_codex_daily_summary_model(model or str(runtime_config.get("model") or ""))
     runtime_config = runtime_config or _resolve_codex_daily_summary_runtime_config(None, None)
     if callable(before_codex_call):
         before_codex_call()

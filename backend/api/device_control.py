@@ -362,8 +362,8 @@ class AttendanceFanbeiLessonExportInspectRequest(BaseModel):
 class AttendanceClockinLinkDetectRequest(BaseModel):
     root_url: str
     targets: List[str] = Field(default_factory=list)
-    provider_id: str = "deepseek"
-    model: str = "deepseek-v4-flash"
+    provider_id: str = "codex-cli"
+    model: str = "gpt-5.3-codex-spark"
     close_tabs: bool = True
 
 

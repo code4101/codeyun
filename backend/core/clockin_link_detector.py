@@ -393,8 +393,8 @@ def detect_clockin_links_browser(
     *,
     root_url: str,
     targets: list[str],
-    provider_id: str = "deepseek",
-    model: str = "deepseek-v4-flash",
+    provider_id: str = "codex-cli",
+    model: str = "gpt-5.3-codex-spark",
     close_tabs: bool = True,
 ) -> dict[str, Any]:
     from DrissionPage import Chromium

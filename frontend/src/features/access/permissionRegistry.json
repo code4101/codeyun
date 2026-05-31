@@ -97,17 +97,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "tools.ai-codex-saver",
-      "title": "CodexSaver",
-      "node_type": "feature",
-      "parent_key": "ai-tools",
-      "sort_order": 20,
-      "route_paths": ["/tools/ai-codex-saver"],
-      "menu_paths": ["/tools/ai-codex-saver"],
-      "api_scopes": ["ai-tools.codex-saver"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "tools.ai-evomind",
       "title": "EvoMind",
       "node_type": "feature",
@@ -611,6 +600,28 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "notes.chat-data",
+      "title": "聊天数据",
+      "node_type": "feature",
+      "parent_key": "notes.center",
+      "sort_order": 12,
+      "route_paths": ["/notes/chat-data"],
+      "menu_paths": ["/notes/chat-data"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "notes.common-sites",
+      "title": "常用网站",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 15,
+      "route_paths": ["/notes/common-sites"],
+      "menu_paths": ["/notes/common-sites"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "notes.eastmoney",
       "title": "东方财富",
       "node_type": "feature",
@@ -640,6 +651,28 @@
       "sort_order": 40,
       "route_paths": ["/notes/wechat-data", "/notes/wechat"],
       "menu_paths": ["/notes/wechat-data"],
+      "api_scopes": ["note-tools.wechat"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "notes.wechat.storage",
+      "title": "目录体积",
+      "node_type": "feature",
+      "parent_key": "notes.wechat",
+      "sort_order": 10,
+      "route_paths": ["/notes/wechat-data/storage"],
+      "menu_paths": ["/notes/wechat-data/storage"],
+      "api_scopes": ["note-tools.wechat"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "notes.qq",
+      "title": "QQ数据",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 42,
+      "route_paths": ["/notes/qq-data"],
+      "menu_paths": ["/notes/qq-data"],
       "api_scopes": ["note-tools.wechat"],
       "default_anonymous_allow": false
     },

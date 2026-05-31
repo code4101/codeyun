@@ -70,7 +70,6 @@ const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
-const AI_CODEX_SAVER_PATH = requirePageMenuPath('AiCodexSaver');
 const AI_EVOMIND_PATH = requirePageMenuPath('AiEvoMind');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
@@ -109,10 +108,15 @@ const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
 const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
 const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
+const NOTES_CENTER_CANONICAL_PATH = requirePageCanonicalPath('NotesCenter');
+const NOTES_CHAT_DATA_PATH = requirePageMenuPath('NotesChatData');
+const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
+const NOTES_QQ_PATH = requirePageMenuPath('NotesQq');
+const NOTES_WECHAT_STORAGE_PATH = requirePageMenuPath('NotesWechatStorage');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('RuntimeManagement');
 const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
@@ -124,6 +128,8 @@ const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
 const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
 const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
 const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
+const NOTES_CENTER_SUBMENU_INDEX = 'notes-center';
+const NOTES_WECHAT_SUBMENU_INDEX = 'notes-wechat';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
 const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
@@ -135,7 +141,6 @@ const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH)
 const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
-const AI_CODEX_SAVER_TITLE = requirePermissionTitleByMenuPath(AI_CODEX_SAVER_PATH);
 const AI_EVOMIND_TITLE = requirePermissionTitleByMenuPath(AI_EVOMIND_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
@@ -180,10 +185,14 @@ const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_P
 const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
 const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
 const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
+const NOTES_CHAT_DATA_TITLE = requirePermissionTitleByMenuPath(NOTES_CHAT_DATA_PATH);
+const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
 const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
+const NOTES_QQ_TITLE = requirePermissionTitleByMenuPath(NOTES_QQ_PATH);
+const NOTES_WECHAT_STORAGE_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_STORAGE_PATH);
 const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
@@ -359,7 +368,6 @@ const aiToolsMenuVisible = computed(() =>
   canAccessFeature('ai-tools')
   && [
     AI_CONFIG_PATH,
-    AI_CODEX_SAVER_PATH,
     AI_EVOMIND_PATH,
     CLUSTER_CODEX_PATH,
     AI_CHAT_PATH,
@@ -456,12 +464,28 @@ const noteToolsMenuVisible = computed(() =>
   canAccessFeature('note-tools')
   && [
     NOTES_CENTER_MENU_PATH,
+    NOTES_CHAT_DATA_PATH,
+    NOTES_COMMON_SITES_PATH,
     EASTMONEY_PATH,
     FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
     NOTES_WECHAT_PATH,
+    NOTES_QQ_PATH,
+    NOTES_WECHAT_STORAGE_PATH,
     NOTES_INFINITE_CANVAS_PATH,
   ].some((path) => canAccessMenuPath(path)),
+);
+
+const notesWechatMenuEntryPath = computed(() =>
+  canAccessMenuPath(NOTES_WECHAT_PATH)
+    ? NOTES_WECHAT_PATH
+    : NOTES_WECHAT_STORAGE_PATH,
+);
+
+const notesCenterMenuEntryPath = computed(() =>
+  canAccessMenuPath(NOTES_CENTER_MENU_PATH)
+    ? NOTES_CENTER_MENU_PATH
+    : NOTES_CHAT_DATA_PATH,
 );
 
 const clusterFilesMenuVisible = computed(() =>
@@ -544,6 +568,12 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
   if (route.path.startsWith('/notes/')) openeds.push('note-tools');
+  if (route.path === NOTES_CENTER_CANONICAL_PATH || route.path === NOTES_CENTER_MENU_PATH || route.path === NOTES_CHAT_DATA_PATH) {
+    openeds.push(NOTES_CENTER_SUBMENU_INDEX);
+  }
+  if (route.path.startsWith('/notes/wechat')) {
+    openeds.push(NOTES_WECHAT_SUBMENU_INDEX);
+  }
   openeds.push(...getDefaultPluginOpeneds(route.path));
   return Array.from(new Set(openeds));
 });
@@ -765,7 +795,6 @@ watch(
               <span>{{ AI_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_CODEX_SAVER_PATH)" :index="AI_CODEX_SAVER_PATH">{{ AI_CODEX_SAVER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_EVOMIND_PATH)" :index="AI_EVOMIND_PATH">{{ AI_EVOMIND_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
@@ -889,11 +918,37 @@ watch(
               <el-icon><Document /></el-icon>
               <span>{{ NOTE_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH)" :index="NOTES_CENTER_MENU_PATH">{{ NOTES_CENTER_TITLE }}</el-menu-item>
+            <el-sub-menu
+              v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH) || canAccessMenuPath(NOTES_CHAT_DATA_PATH)"
+              :index="NOTES_CENTER_SUBMENU_INDEX"
+            >
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(notesCenterMenuEntryPath, $event)">
+                  {{ NOTES_CENTER_TITLE }}
+                </span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(NOTES_CHAT_DATA_PATH)" :index="NOTES_CHAT_DATA_PATH">
+                {{ NOTES_CHAT_DATA_TITLE }}
+              </el-menu-item>
+            </el-sub-menu>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(EASTMONEY_PATH)" :index="EASTMONEY_PATH">{{ EASTMONEY_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(NOTES_WECHAT_PATH)" :index="NOTES_WECHAT_PATH">{{ NOTES_WECHAT_TITLE }}</el-menu-item>
+            <el-sub-menu
+              v-if="canAccessMenuPath(NOTES_WECHAT_PATH) || canAccessMenuPath(NOTES_WECHAT_STORAGE_PATH)"
+              :index="NOTES_WECHAT_SUBMENU_INDEX"
+            >
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(notesWechatMenuEntryPath, $event)">
+                  {{ NOTES_WECHAT_TITLE }}
+                </span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(NOTES_WECHAT_STORAGE_PATH)" :index="NOTES_WECHAT_STORAGE_PATH">
+                {{ NOTES_WECHAT_STORAGE_TITLE }}
+              </el-menu-item>
+            </el-sub-menu>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_QQ_PATH)" :index="NOTES_QQ_PATH">{{ NOTES_QQ_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
 

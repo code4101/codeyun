@@ -149,6 +149,10 @@ export interface WeChatDbStatus {
   exists: boolean
   ready: boolean
   databases: Record<string, boolean>
+  archive_path?: string
+  structured_ready?: boolean
+  structured_total?: number
+  structured_chats?: number
 }
 
 export interface WeChatDbDevice {
@@ -182,6 +186,16 @@ export interface WeChatDbLiveSyncResult {
     skipped: number
     failed: string[]
     failed_count: number
+  }
+  structured?: {
+    archive_path: string
+    source: string
+    scanned: number
+    inserted: number
+    skipped: number
+    total: number
+    chats: number
+    runtime_key_found: boolean
   }
   media: {
     scanned_chats: number
@@ -316,6 +330,43 @@ export interface WeChatDbTablePage {
   items: Record<string, unknown>[]
 }
 
+export interface WeChatStorageRoot {
+  device_id: string
+  label: string
+  device_root: string
+  db_storage_path: string
+  current: boolean
+  source_format: string
+  ready: boolean
+  exists: boolean
+}
+
+export interface WeChatStorageDirectoryItem {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number | null
+  modified_at: number | null
+  direct_file_bytes?: number | null
+  direct_file_count?: number | null
+  recursive_total_bytes?: number | null
+  recursive_file_count?: number | null
+  latest_descendant_modified_at?: number | null
+  max_weight?: number | null
+  weighted_file_count?: number | null
+  disk_total_bytes?: number | null
+  disk_free_bytes?: number | null
+  disk_used_bytes?: number | null
+}
+
+export interface WeChatStorageDirectoryListing {
+  device_id: string
+  device_root: string
+  current_path: string
+  absolute_path: string
+  items: WeChatStorageDirectoryItem[]
+}
+
 export async function fetchWeChatArchiveStatus() {
   const response = await api.get<WeChatArchiveStatus>('/wechat-archive/status')
   return response.data
@@ -372,6 +423,7 @@ export async function fetchWeChatDbMessages(params: {
   offset?: number
   order?: 'asc' | 'desc'
   include_resources?: boolean
+  known_total?: number
 }) {
   const response = await api.get<WeChatDbMessagePage>('/wechat-archive/db-messages', {
     params,
@@ -433,6 +485,22 @@ export async function fetchWeChatDbTableRows(params: {
   offset?: number
 }) {
   const response = await api.get<WeChatDbTablePage>('/wechat-archive/db-table-rows', {
+    params,
+  })
+  return response.data
+}
+
+export async function fetchWechatStorageRoots() {
+  const response = await api.get<{ items: WeChatStorageRoot[] }>('/wechat-archive/storage-roots')
+  return response.data
+}
+
+export async function fetchWechatStorageDirectory(params: {
+  device_id?: string
+  path?: string
+  absolute_path?: string
+}) {
+  const response = await api.get<WeChatStorageDirectoryListing>('/wechat-archive/storage-directory', {
     params,
   })
   return response.data

@@ -113,6 +113,7 @@ export interface AiChatSavedConfigsResponse {
 
 export interface AiChatAppConfig {
   id: string
+  group: string
   label: string
   description: string
   enabled: boolean

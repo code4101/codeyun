@@ -35,7 +35,8 @@ def _ttl_cache_set(key: str, value: Any) -> None:
 
 from pyxllib.file.packetstream import (
     LuaPacketSchemaIndex,
-    decode_lusuo_frames,
+    PacketDecodeError,
+    VarintBinaryReader,
     extract_tcp_stream_payloads_with_tshark,
     list_tcp_streams_with_tshark,
     summarize_decoded_frames,
@@ -1540,6 +1541,54 @@ def _trim_value(value: Any, *, max_items: int = 8) -> Any:
     return value
 
 
+def _decode_lusuo_frames_tolerant(data: bytes, schema: LuaPacketSchemaIndex) -> tuple[list[dict[str, Any]], list[str]]:
+    frames: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    pos = 0
+    total = len(data)
+    while pos + 4 <= total:
+        offset = pos
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        pos += 4
+        if length < 0:
+            warnings.append(f"offset {offset}: invalid frame length {length}")
+            break
+        if pos + length > total:
+            warnings.append(f"offset {offset}: incomplete frame length={length}, left={total - pos}")
+            break
+        body = data[pos : pos + length]
+        pos += length
+        try:
+            reader = VarintBinaryReader(body)
+            sn = reader.read_int()
+            packet_id = reader.read_int()
+            payload = body[reader.pos :]
+            item: dict[str, Any] = {
+                "offset": offset,
+                "frame_len": length,
+                "sn": sn,
+                "pro_id": packet_id,
+                "name": schema.protocol_names.get(packet_id),
+                "payload_len": len(payload),
+            }
+            try:
+                item.update(schema.decode_packet_payload(packet_id, payload))
+            except Exception as exc:
+                item["decode_error"] = str(exc)
+                warnings.append(
+                    f"offset {offset}: payload decode failed for {packet_id} "
+                    f"{item.get('name') or ''}: {exc}"
+                )
+            frames.append(item)
+        except PacketDecodeError as exc:
+            warnings.append(f"offset {offset}: frame header decode failed: {exc}")
+        except Exception as exc:
+            warnings.append(f"offset {offset}: frame decode failed: {exc}")
+    if pos < total and total - pos < 4:
+        warnings.append(f"offset {pos}: trailing {total - pos} byte(s) ignored")
+    return frames, warnings
+
+
 def decode_fanxiu_tcp_pcap(
     pcap: str | Path,
     *,
@@ -1565,8 +1614,8 @@ def decode_fanxiu_tcp_pcap(
         server_host=server_host,
     )
 
-    c2s_frames = decode_lusuo_frames(c2s_payload, schema)
-    s2c_frames = decode_lusuo_frames(s2c_payload, schema)
+    c2s_frames, c2s_decode_warnings = _decode_lusuo_frames_tolerant(c2s_payload, schema)
+    s2c_frames, s2c_decode_warnings = _decode_lusuo_frames_tolerant(s2c_payload, schema)
     for item in c2s_frames:
         item["direction"] = "c2s"
     for item in s2c_frames:
@@ -1588,6 +1637,10 @@ def decode_fanxiu_tcp_pcap(
             "s2c_frames": len(s2c_frames),
             "c2s_protocols": summarize_decoded_frames(c2s_frames),
             "s2c_protocols": summarize_decoded_frames(s2c_frames),
+            "decode_warnings": {
+                "c2s": c2s_decode_warnings[:20],
+                "s2c": s2c_decode_warnings[:20],
+            },
         },
         "frames": frames,
     }
@@ -1675,6 +1728,171 @@ def list_fanxiu_tcp_records(
         "store_root": str(root),
         "items": items,
     }
+
+
+def _normalize_fanxiu_worldline_activity_item(item: dict[str, Any], *, export_root: str | Path | None = None) -> dict[str, Any] | None:
+    source = item.get("_super") if isinstance(item.get("_super"), dict) else item
+    if not isinstance(source, dict):
+        return None
+    activity_id = source.get("activityId")
+    activity_name = str(item.get("name") or "").strip() or _fanxiu_config_name(export_root, "Activity", activity_id)
+
+    def _server_ids(value: Any) -> list[int]:
+        if isinstance(value, dict):
+            raw_items = value.get("items") or []
+        elif isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = []
+        rows: list[int] = []
+        for row in raw_items:
+            try:
+                rows.append(int(row))
+            except (TypeError, ValueError):
+                pass
+        return rows
+
+    row_id = source.get("id")
+    start_time = source.get("startTime")
+    end_time = source.get("endTime")
+    close_panel_time = source.get("closePanelTime")
+    unique_key = "|".join(str(value or "") for value in (row_id, activity_id, start_time, end_time, close_panel_time))
+    server_ids = _server_ids(source.get("serverIds"))
+    return {
+        "key": unique_key,
+        "class": item.get("class") or item.get("_class") or "",
+        "bean_id": item.get("bean_id") or item.get("_bean_id") or 0,
+        "id": row_id,
+        "activityId": activity_id,
+        "name": activity_name,
+        "activityType": source.get("activityType"),
+        "state": source.get("state"),
+        "prepareEndTime": source.get("prepareEndTime"),
+        "prepareEndTimeText": _format_fanxiu_ms(source.get("prepareEndTime")),
+        "startTime": start_time,
+        "startTimeText": _format_fanxiu_ms(start_time),
+        "endTime": end_time,
+        "endTimeText": _format_fanxiu_ms(end_time),
+        "closePanelTime": close_panel_time,
+        "closePanelTimeText": _format_fanxiu_ms(close_panel_time),
+        "daoNian": source.get("daoNian"),
+        "scheduleId": source.get("scheduleId"),
+        "row": source.get("row"),
+        "loopDay": source.get("loopDay"),
+        "avgWorldLevel": source.get("avgWorldLevel"),
+        "crossGroup": source.get("crossGroup"),
+        "serverIds": server_ids,
+        "serverCount": len(server_ids),
+    }
+
+
+def _fanxiu_worldline_items_from_decoded(data: dict[str, Any], *, export_root: str | Path | None = None) -> list[dict[str, Any]]:
+    frames = data.get("frames") or []
+    for frame in frames:
+        if not isinstance(frame, dict) or int(frame.get("pro_id") or 0) != 51006:
+            continue
+        parsed = frame.get("parsed") or {}
+        if not isinstance(parsed, dict):
+            continue
+        activity_vos = parsed.get("activityVOS") or {}
+        raw_items = activity_vos.get("items") if isinstance(activity_vos, dict) else []
+        rows = [
+            normalized
+            for raw in raw_items or []
+            if isinstance(raw, dict)
+            for normalized in [_normalize_fanxiu_worldline_activity_item(raw, export_root=export_root)]
+            if normalized
+        ]
+        if rows:
+            return rows
+    return []
+
+
+def get_latest_fanxiu_worldline_activity_schedule(
+    *,
+    data_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
+    candidates: list[dict[str, Any]] = []
+
+    if live_dir.is_dir():
+        for path in sorted(live_dir.glob("*_worldline_activity.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            data = _load_json_file(path) or {}
+            raw_items = data.get("items") or []
+            items = [
+                normalized
+                for raw in raw_items
+                if isinstance(raw, dict)
+                for normalized in [_normalize_fanxiu_worldline_activity_item(raw, export_root=export_root)]
+                if normalized
+            ]
+            if items:
+                candidates.append(
+                    {
+                        "source_kind": "worldline_activity_json",
+                        "source_path": str(path),
+                        "source_mtime": path.stat().st_mtime,
+                        "created_at": data.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime)),
+                        "pcap": data.get("pcap") or "",
+                        "stream": int(data.get("stream") or 0),
+                        "server_host": data.get("server_host") or "",
+                        "protocol": data.get("protocol") or "SM_WorldLineActivitySync",
+                        "pro_id": int(data.get("pro_id") or 51006),
+                        "openServerTime": data.get("openServerTime"),
+                        "openServerTimeText": data.get("openServerTimeText") or _format_fanxiu_ms(data.get("openServerTime")),
+                        "decode_warnings": data.get("decode_warnings") or [],
+                        "items": items,
+                    }
+                )
+
+    for source in _iter_fanxiu_tcp_decoded_sources(data_dir):
+        decoded_path = Path(str(source.get("decoded_path") or ""))
+        data = _load_json_file(decoded_path) or {}
+        items = _fanxiu_worldline_items_from_decoded(data, export_root=export_root)
+        if not items:
+            continue
+        stat = decoded_path.stat()
+        candidates.append(
+            {
+                "source_kind": source.get("source_kind") or "decoded",
+                "source_path": str(decoded_path),
+                "source_mtime": stat.st_mtime,
+                "created_at": source.get("created_at") or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                "pcap": data.get("pcap") or "",
+                "stream": int(data.get("stream") or 0),
+                "server_host": data.get("server_host") or "",
+                "protocol": "SM_WorldLineActivitySync",
+                "pro_id": 51006,
+                "openServerTime": "",
+                "openServerTimeText": "",
+                "decode_warnings": ((data.get("summary") or {}).get("decode_warnings") or {}).get("s2c") or [],
+                "items": items,
+            }
+        )
+
+    if not candidates:
+        return {
+            "available": False,
+            "source_kind": "",
+            "source_path": "",
+            "created_at": "",
+            "pcap": "",
+            "stream": 0,
+            "server_host": "",
+            "protocol": "SM_WorldLineActivitySync",
+            "pro_id": 51006,
+            "openServerTime": "",
+            "openServerTimeText": "",
+            "count": 0,
+            "decode_warnings": [],
+            "items": [],
+        }
+    latest = max(candidates, key=lambda item: float(item.get("source_mtime") or 0))
+    latest["available"] = True
+    latest["count"] = len(latest.get("items") or [])
+    latest.pop("source_mtime", None)
+    return latest
 
 
 def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list[dict[str, Any]]:

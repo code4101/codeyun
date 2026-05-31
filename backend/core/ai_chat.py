@@ -23,7 +23,11 @@ class OllamaClientError(RuntimeError):
 
 
 CODEX_CLI_DEFAULT_COMMAND = "codex"
-CODEX_CLI_DEFAULT_MODEL = "gpt-5.5"
+CODEX_CLI_DEFAULT_MODEL = "gpt-5.3-codex-spark"
+CODEX_CLI_MODELS = (
+    CODEX_CLI_DEFAULT_MODEL,
+    "gpt-5.5",
+)
 CODEX_CLI_WORKSPACE_DIRNAME = "codex-cli-workspace"
 CODEX_CLI_IMAGE_EXTENSIONS = {
     "image/jpeg": ".jpg",
@@ -97,6 +101,21 @@ def _build_provider_map(
             requires_api_key=True,
             configured=bool(settings.deepseek_base_url.strip() and settings.deepseek_api_key.strip()),
             models=settings.deepseek_models,
+            is_custom=False,
+        ),
+        "codex-cli": AiProviderConfig(
+            id="codex-cli",
+            label="Codex CLI",
+            kind="codex_cli",
+            base_url=CODEX_CLI_DEFAULT_COMMAND,
+            default_model=CODEX_CLI_DEFAULT_MODEL,
+            timeout_seconds=900.0,
+            api_key="",
+            supports_stream=False,
+            supports_vision=True,
+            requires_api_key=False,
+            configured=bool(shutil.which(CODEX_CLI_DEFAULT_COMMAND)),
+            models=CODEX_CLI_MODELS,
             is_custom=False,
         ),
         "302ai": AiProviderConfig(

@@ -340,6 +340,25 @@ export interface FanxiuPacketActivityStatus {
   items: FanxiuPacketActivityFlow[];
 }
 
+export interface FanxiuCaptureRuntimeStatus {
+  state: string;
+  running: boolean;
+  game_running: boolean;
+  adb_connected: boolean;
+  root_ready: boolean;
+  tcpdump_ready: boolean;
+  active_reasons: string[];
+  current_pcap_path: string;
+  current_pcap_size: number;
+  current_remote_pcap_path: string;
+  started_at: string;
+  last_error: string;
+  last_recover_at: string;
+  tcpdump_started_at: string;
+  device_id: string;
+  package_name: string;
+}
+
 export interface FanxiuPacketActivityPayloadEvent {
   id: number;
   captured_at: string;
@@ -602,6 +621,7 @@ export interface FanxiuGameWindow2ClickPayload {
   fixed_height?: number;
   frame_width?: number;
   frame_height?: number;
+  input_backend?: 'desktop' | 'adb';
 }
 
 export interface FanxiuGameWindow2DragPayload {
@@ -622,6 +642,7 @@ export interface FanxiuGameWindow2DragPayload {
   fixed_height?: number;
   frame_width?: number;
   frame_height?: number;
+  input_backend?: 'desktop' | 'adb';
 }
 
 export interface FanxiuGameWindow2KeyeventPayload {
@@ -647,6 +668,7 @@ export interface FanxiuGameWindow2SaveFramePayload {
   fixed_height?: number;
   quality?: number;
   current_frame_data_url?: string;
+  overwrite_filename?: string;
 }
 
 export interface FanxiuGameWindow2SaveFrameResponse {
@@ -657,6 +679,63 @@ export interface FanxiuGameWindow2SaveFrameResponse {
   directory: string;
   width: number;
   height: number;
+}
+
+export interface FanxiuGameWindow2BurstSaveResponse {
+  ok: boolean;
+  saved: boolean;
+  skipped: boolean;
+  reason?: string;
+  phash?: string;
+  index: number;
+  filename: string;
+  path?: string;
+  directory: string;
+  width: number;
+  height: number;
+}
+
+export interface FanxiuGameWindow2BurstFrameItem {
+  filename: string;
+  stem: string;
+  size: number;
+  created_at: string;
+  modified_at: string;
+  width: number;
+  height: number;
+}
+
+export interface FanxiuGameWindow2BurstListResponse {
+  ok: boolean;
+  directory: string;
+  page: number;
+  page_size: number;
+  total: number;
+  items: FanxiuGameWindow2BurstFrameItem[];
+}
+
+export interface FanxiuGameWindow2BurstClearResponse {
+  ok: boolean;
+  cleared: number;
+  directory: string;
+}
+
+export interface FanxiuGameWindow2BurstImportItem {
+  index: number;
+  filename: string;
+  source_filename: string;
+  path: string;
+  directory: string;
+  width: number;
+  height: number;
+}
+
+export interface FanxiuGameWindow2BurstImportResponse {
+  ok: boolean;
+  directory: string;
+  source_directory: string;
+  imported: FanxiuGameWindow2BurstImportItem[];
+  imported_count: number;
 }
 
 export interface FanxiuGameWindow2MatchBox {
@@ -670,11 +749,17 @@ export interface FanxiuGameWindow2MatchBox {
 export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFramePayload {
   filename: string;
   box: FanxiuGameWindow2MatchBox;
+  scan?: boolean;
+  scan_box?: FanxiuGameWindow2MatchBox;
   pixel_tolerance?: number;
   alpha_mask_data_url?: string;
   tolerance_min_data_url?: string;
   tolerance_max_data_url?: string;
   current_frame_data_url?: string;
+  match_strategy?: 'auto' | 'anchor_pixel';
+  ocr_enabled?: boolean;
+  ocr_text?: string;
+  ocr_match_mode?: 'contains' | 'exact' | 'wildcard' | 'regex';
 }
 
 export interface FanxiuGameWindow2MatchResponse {
@@ -695,19 +780,88 @@ export interface FanxiuGameWindow2MatchResponse {
   fixed_exact_pixel_similarity?: number;
   fixed_exact_pixel_score?: number;
   fixed_search_radius?: number;
-  template_similarity?: number;
-  template_score?: number;
-  template_crop_similarity?: number;
-  template_crop_score?: number;
   pixel_tolerance?: number;
+  match_strategy?: string;
+  ocr_text?: string;
+  ocr_target?: string;
+  ocr_match_mode?: string;
+  ocr_min_confidence?: number;
   box: FanxiuGameWindow2MatchBox;
   current_box: FanxiuGameWindow2MatchBox;
   fixed_box?: FanxiuGameWindow2MatchBox;
-  template_box?: FanxiuGameWindow2MatchBox;
+  matches?: Array<{
+    box: FanxiuGameWindow2MatchBox;
+    similarity: number;
+    score: number;
+    crop_similarity?: number;
+    crop_score?: number;
+    ocr_text?: string;
+    ocr_confidence?: number;
+  }>;
   source_width: number;
   source_height: number;
   width: number;
   height: number;
+}
+
+export interface FanxiuGameWindow3StepperLogEntry {
+  id: string;
+  time: string;
+  kind: string;
+  message: string;
+  ts?: string;
+}
+
+export interface FanxiuGameWindow3StepperLogResponse {
+  entries: FanxiuGameWindow3StepperLogEntry[];
+  path: string;
+}
+
+export interface FanxiuGameWindow3AssetTreeResponse {
+  ok: boolean;
+  entry_id: string;
+  exists: boolean;
+  tree: unknown[];
+  updated_at: number;
+}
+
+export interface FanxiuGameWindow3OcrFrameLine {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface FanxiuGameWindow3OcrFrameResponse {
+  lines: FanxiuGameWindow3OcrFrameLine[];
+}
+
+export interface FanxiuGameWindow3MacroPoint {
+  x: number;
+  y: number;
+}
+
+export interface FanxiuGameWindow3MacroAnnotatePayload {
+  image_data_url: string;
+  action: 'click' | 'drag';
+  start: FanxiuGameWindow3MacroPoint;
+  end?: FanxiuGameWindow3MacroPoint | null;
+  fallback_box: FanxiuGameWindow2MatchBox;
+  frame_width: number;
+  frame_height: number;
+  duration_ms?: number;
+  direction?: 'up' | 'down' | 'left' | 'right' | 'none' | null;
+}
+
+export interface FanxiuGameWindow3MacroAnnotateResponse {
+  ok: boolean;
+  used_ai: boolean;
+  box: FanxiuGameWindow2MatchBox;
+  confidence: number;
+  label: string;
+  reason: string;
+  raw: string;
 }
 
 export type FanxiuPseudoCodeCardScope = 'guard' | 'action';
@@ -2530,6 +2684,7 @@ export interface FanxiuActivityStats {
   activity_battle_pass_count?: number;
   activity_loop_count?: number;
   activity_boss_count?: number;
+  activity_challenge_reward_count?: number;
   active_task_count?: number;
   open_function_count?: number;
   subpackage_reward_count?: number;
@@ -2538,6 +2693,7 @@ export interface FanxiuActivityStats {
   stale_card_count?: number;
   activity_with_time_hint_count?: number;
   activity_with_reward_count?: number;
+  activity_with_challenge_reward_count?: number;
   activity_with_loop_count?: number;
   activity_with_jump_target_count?: number;
   activity_kind_count?: number;
@@ -2557,6 +2713,29 @@ export interface FanxiuActivityRewardRow {
   row_key?: string | number;
   title?: string;
   meta?: string;
+  source_activity_id?: string | number;
+  rank_range?: string;
+  rank_start?: string | number;
+  rank_end?: string | number;
+  rank_gatekeeper?: {
+    activity_id?: string | number;
+    rank?: string | number;
+    index?: string | number;
+    name?: string;
+    server_id?: string | number;
+    server_name?: string;
+    subject?: string;
+    progress?: string;
+    score?: string | number;
+    ext_score?: string | number;
+    ext_score2?: string | number;
+    group?: string | number;
+    rank_list_size?: string | number;
+    rank_vo_type?: string;
+    source_path?: string;
+    captured_at?: string;
+    text?: string;
+  };
   costs?: string[];
   reward_items?: FanxiuGongfaLinkedItem[];
   raw_rewards?: string[];
@@ -2568,6 +2747,65 @@ export interface FanxiuActivityRewardSection {
   title: string;
   count: number;
   rows: FanxiuActivityRewardRow[];
+  rank_self?: {
+    activity_id?: string | number;
+    rank?: string | number;
+    index?: string | number;
+    name?: string;
+    server_name?: string;
+    subject?: string;
+    progress?: string;
+    text?: string;
+    current_tier?: string;
+    next_tier?: string;
+    current_gatekeeper_rank?: string | number;
+    next_gatekeeper_rank?: string | number;
+    current_gatekeeper?: FanxiuActivityRewardRow['rank_gatekeeper'];
+    next_gatekeeper?: FanxiuActivityRewardRow['rank_gatekeeper'];
+  };
+}
+
+export interface FanxiuActivityChallengeLevel {
+  level_id?: string | number;
+  name?: string;
+  stage?: string | number;
+  layer?: string | number;
+  sub_layer?: string | number;
+  reward_title?: string;
+  clear_rewards?: FanxiuGongfaLinkedItem[];
+  find_rewards?: FanxiuGongfaLinkedItem[];
+  clear_reward_text?: string;
+  find_reward_text?: string;
+  activity_ids?: Array<string | number>;
+  source_level_id?: string | number;
+}
+
+export interface FanxiuActivityChallengeRarityStat {
+  rarity_rank: number;
+  item_id: string | number;
+  item_name: string;
+  icon?: string;
+  quality?: string | number;
+  total_count: string | number;
+  level_count: string | number;
+  level_ids?: Array<string | number>;
+  level_range_text?: string;
+  first_level_id?: string | number;
+  first_reward_kind?: string;
+}
+
+export interface FanxiuActivityChallengeSection {
+  key: string;
+  title: string;
+  source?: string;
+  display_mode?: string;
+  level_count?: number;
+  reward_item_count?: number;
+  stage_summary?: Array<{ stage?: string | number; level_count?: number }>;
+  rarity_stats?: FanxiuActivityChallengeRarityStat[];
+  default_threshold_rank?: string | number;
+  default_threshold_item_id?: string | number;
+  levels: FanxiuActivityChallengeLevel[];
 }
 
 export interface FanxiuActivityLoopEntry {
@@ -2669,6 +2907,7 @@ export interface FanxiuActivityCard {
   time_hints?: FanxiuTimelineHint[];
   first_time_hint?: FanxiuTimelineHint | null;
   reward_sections?: FanxiuActivityRewardSection[];
+  challenge_sections?: FanxiuActivityChallengeSection[];
   reward_preview?: string;
   loop_entries?: FanxiuActivityLoopEntry[];
   jump_target?: FanxiuActivityJumpTarget | null;
@@ -2695,6 +2934,7 @@ export interface FanxiuActivitySearchItem {
   time_kind_name?: string;
   description_preview?: string;
   reward_preview?: string;
+  time_hints?: FanxiuTimelineHint[];
   first_time_hint?: FanxiuTimelineHint | null;
   loop_entries?: FanxiuActivityLoopEntry[];
   source_table?: string;
@@ -2711,6 +2951,7 @@ export interface FanxiuActivitySearchResponse {
   kind_key?: string;
   time_kind?: string;
   activity_type?: string;
+  server_scope?: string;
   sort_by?: string;
   sort_order?: string;
   limit: number;
@@ -2723,6 +2964,67 @@ export interface FanxiuActivitySearchResponse {
   activity_type_options?: FanxiuActivityOption[];
   facet_index?: FanxiuFacetIndex;
   items: FanxiuActivitySearchItem[];
+}
+
+export interface FanxiuWorldlineActivityItem {
+  key: string;
+  class?: string;
+  bean_id?: string | number;
+  id?: string | number;
+  activityId?: string | number;
+  name: string;
+  activityType?: string | number;
+  state?: string | number;
+  prepareEndTime?: string | number | null;
+  prepareEndTimeText?: string;
+  startTime?: string | number | null;
+  startTimeText?: string;
+  endTime?: string | number | null;
+  endTimeText?: string;
+  closePanelTime?: string | number | null;
+  closePanelTimeText?: string;
+  daoNian?: string | number;
+  scheduleId?: string | number;
+  row?: string | number;
+  loopDay?: string | number;
+  avgWorldLevel?: string | number;
+  crossGroup?: string | number;
+  serverIds?: number[];
+  serverCount?: number;
+}
+
+export interface FanxiuWorldlineActivityScheduleResponse {
+  available: boolean;
+  source_kind: string;
+  source_path: string;
+  created_at: string;
+  pcap: string;
+  stream: number;
+  server_host: string;
+  protocol: string;
+  pro_id: number;
+  openServerTime?: string | number;
+  openServerTimeText?: string;
+  count: number;
+  decode_warnings?: string[];
+  items: FanxiuWorldlineActivityItem[];
+  sync?: {
+    cursor?: Record<string, unknown>;
+    record_count?: number;
+  };
+}
+
+export interface FanxiuActivityPacketSyncResponse {
+  ok: boolean;
+  state_path: string;
+  records_path: string;
+  cursor: Record<string, unknown>;
+  scanned_packets: number;
+  matched_packets: number;
+  inserted: number;
+  updated: number;
+  skipped_duplicates: number;
+  record_count: number;
 }
 
 export interface FanxiuActivityCardResponse {
@@ -4127,6 +4429,22 @@ export const getFanxiuPacketActivityStatus = () => {
   return api.get<FanxiuPacketActivityStatus>('/fanxiu/packet-capture/activity/status').then(res => res.data);
 };
 
+export const getFanxiuCaptureRuntimeStatus = () => {
+  return api.get<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/status').then(res => res.data);
+};
+
+export const ensureFanxiuCaptureRuntime = (reason = 'manual') => {
+  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/ensure', { reason }).then(res => res.data);
+};
+
+export const releaseFanxiuCaptureRuntime = (reason = 'manual') => {
+  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/release', { reason }).then(res => res.data);
+};
+
+export const stopFanxiuCaptureRuntime = () => {
+  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/stop', {}).then(res => res.data);
+};
+
 export const getFanxiuPacketActivityHistory = (params: { offset?: number; limit?: number; key?: string } = {}) => {
   return api
     .get<FanxiuPacketActivityHistoryResponse>('/fanxiu/packet-capture/activity/history', { params })
@@ -4451,6 +4769,7 @@ export const searchFanxiuActivityCards = (params: {
   kind_key?: string;
   time_kind?: string;
   activity_type?: string;
+  server_scope?: string;
   sort_by?: string;
   sort_order?: string;
   limit?: number;
@@ -4459,9 +4778,21 @@ export const searchFanxiuActivityCards = (params: {
   return api.get<FanxiuActivitySearchResponse>('/fanxiu/resources/activities/cards', { params }).then(res => res.data);
 };
 
-export const getFanxiuActivityCard = (activityId: string | number) => {
+export const getFanxiuLatestWorldlineActivitySchedule = () => {
   return api
-    .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId } })
+    .get<FanxiuWorldlineActivityScheduleResponse>('/fanxiu/packet-capture/tcp/worldline-activity/latest')
+    .then(res => res.data);
+};
+
+export const syncFanxiuActivityPackets = (payload: { force?: boolean } = {}) => {
+  return api
+    .post<FanxiuActivityPacketSyncResponse>('/fanxiu/activity-packet-sync', payload, { timeout: 120000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuActivityCard = (activityId: string | number, params: { server_scope?: string } = {}) => {
+  return api
+    .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId, ...params } })
     .then(res => res.data);
 };
 
@@ -4631,8 +4962,87 @@ export const saveFanxiuGameWindow2Frame = (payload: FanxiuGameWindow2SaveFramePa
   return api.post<FanxiuGameWindow2SaveFrameResponse>('/fanxiu/game-window2/save-frame', payload).then(res => res.data);
 };
 
+export const saveFanxiuGameWindow2BurstFrame = (payload: FanxiuGameWindow2SaveFramePayload) => {
+  return api.post<FanxiuGameWindow2BurstSaveResponse>('/fanxiu/game-window2/burst/save', payload).then(res => res.data);
+};
+
+export const listFanxiuGameWindow2BurstFrames = (entryId: string, page = 1, pageSize = 24) => {
+  return api
+    .post<FanxiuGameWindow2BurstListResponse>('/fanxiu/game-window2/burst/list', {
+      entry_id: entryId,
+      page,
+      page_size: pageSize,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuGameWindow2BurstFrameImage = (entryId: string, filename: string) => {
+  return api
+    .get<Blob>('/fanxiu/game-window2/burst/image', {
+      params: { entry_id: entryId, filename },
+      responseType: 'blob',
+    })
+    .then(res => res.data);
+};
+
+export const clearFanxiuGameWindow2BurstFrames = (entryId: string) => {
+  return api
+    .post<FanxiuGameWindow2BurstClearResponse>('/fanxiu/game-window2/burst/clear', { entry_id: entryId })
+    .then(res => res.data);
+};
+
+export const importFanxiuGameWindow2BurstFrames = (entryId: string, filenames: string[]) => {
+  return api
+    .post<FanxiuGameWindow2BurstImportResponse>('/fanxiu/game-window2/burst/import', { entry_id: entryId, filenames })
+    .then(res => res.data);
+};
+
 export const matchFanxiuGameWindow2Screenshot = (payload: FanxiuGameWindow2MatchPayload) => {
   return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload).then(res => res.data);
+};
+
+export const getFanxiuGameWindow3StepperLogs = (limit = 500) => {
+  return api
+    .get<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs', { params: { limit } })
+    .then(res => res.data);
+};
+
+export const appendFanxiuGameWindow3StepperLog = (entry: FanxiuGameWindow3StepperLogEntry) => {
+  return api
+    .post<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs', { entry })
+    .then(res => res.data);
+};
+
+export const clearFanxiuGameWindow3StepperLogs = () => {
+  return api.delete<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs').then(res => res.data);
+};
+
+export const getFanxiuGameWindow3AssetTree = (entryId: string) => {
+  return api
+    .get<FanxiuGameWindow3AssetTreeResponse>('/fanxiu/game-window3/asset-tree', { params: { entry_id: entryId } })
+    .then(res => res.data);
+};
+
+export const saveFanxiuGameWindow3AssetTree = (entryId: string, tree: unknown[]) => {
+  return api
+    .put<FanxiuGameWindow3AssetTreeResponse>('/fanxiu/game-window3/asset-tree', { entry_id: entryId, tree })
+    .then(res => res.data);
+};
+
+export const recognizeFanxiuGameWindow3OcrFrame = (imageDataUrl: string) => {
+  return api
+    .post<FanxiuGameWindow3OcrFrameResponse>('/fanxiu/game-window3/ocr-frame', { image_data_url: imageDataUrl }, {
+      timeout: 180000,
+    })
+    .then(res => res.data);
+};
+
+export const annotateFanxiuGameWindow3MacroShape = (payload: FanxiuGameWindow3MacroAnnotatePayload) => {
+  return api
+    .post<FanxiuGameWindow3MacroAnnotateResponse>('/fanxiu/game-window3/macro/annotate', payload, {
+      timeout: 180000,
+    })
+    .then(res => res.data);
 };
 
 export const getFanxiuGameWindow2MatchImage = (entryId: string, filename: string) => {

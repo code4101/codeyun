@@ -41,29 +41,13 @@
                     />
                   </el-select>
                 </div>
-                <el-button
-                  class="connection-button"
-                  :type="connectionButtonType"
-                  :plain="!connectionReady"
-                  :icon="Refresh"
-                  size="small"
-                  :loading="connectionButtonLoading"
-                  :disabled="!selectedEntryId"
-                  @click="connectWindow"
-                >
-                  {{ connectionButtonText }}
-                </el-button>
-                <el-button
-                  class="save-frame-button"
-                  :icon="Download"
-                  size="small"
-                  plain
-                  :loading="saveFrameLoading"
-                  :disabled="!selectedEntryId"
-                  @click="saveCurrentFrame"
-                >
-                  保存帧
-                </el-button>
+                <div v-if="selectedWindowKey === 'mumu'" class="control-field">
+                  <span class="control-label">通道</span>
+                  <el-select v-model="mumuChannel" class="channel-select" size="small" @change="restartStream">
+                    <el-option label="桌面" value="desktop" />
+                    <el-option label="ADB" value="adb" />
+                  </el-select>
+                </div>
               </div>
             </div>
             <div class="control-row option-row">
@@ -99,10 +83,7 @@
                 <div class="control-field">
                   <span class="control-label">FPS</span>
                   <el-input-number v-model="fps" class="number-input" size="small" :min="1" :max="30" controls-position="right" @change="restartStream" />
-                </div>
-                <div class="control-field">
-                  <span class="control-label">质量</span>
-                  <el-input-number v-model="quality" class="number-input" size="small" :min="1" :max="100" controls-position="right" @change="restartStream" />
+                  <span class="actual-fps-text">实际 {{ actualFpsText }}</span>
                 </div>
               </div>
             </div>
@@ -134,31 +115,78 @@
                 <el-tooltip content="直播只显示画面；交互可在画面中点击/拖拽；关闭会停止当前页面取流。" placement="top">
                   <span class="help-mark">?</span>
                 </el-tooltip>
+                <span class="connection-status" :class="{ 'is-ready': connectionReady, 'is-loading': connectionButtonLoading }">
+                  {{ connectionButtonText }}
+                </span>
+                <button type="button" class="capture-runtime-link" @click="router.push('/cluster/runtime')">
+                  {{ captureRuntimeText }}
+                </button>
+                <el-button
+                  size="small"
+                  :type="gameMacroRecording ? 'primary' : 'default'"
+                  :icon="gameMacroRecording ? VideoPause : VideoPlay"
+                  :disabled="!selectedEntryId"
+                  @click="toggleGameMacroRecording"
+                >
+                  录制宏
+                </el-button>
+                <el-button
+                  size="small"
+                  :icon="Setting"
+                  title="录制宏配置"
+                  aria-label="录制宏配置"
+                  @click="gameMacroConfigVisible = true"
+                />
               </div>
             </div>
             <div class="control-row behavior-row">
               <div class="control-group behavior-controls">
                 <span class="control-label">步进器</span>
                 <el-select
-                  v-model="selectedStepperTaskId"
-                  class="behavior-target-input"
+                  v-model="selectedStepperFunctionId"
+                  class="behavior-function-select"
                   size="small"
-                  placeholder="选择任务"
-                  :disabled="stepperRunning"
+                  placeholder="函数"
+                  :disabled="stepperRunning || stepperStepping"
                 >
                   <el-option
-                    v-for="task in stepperTaskDefinitions"
-                    :key="task.id"
-                    :label="task.label"
-                    :value="task.id"
+                    v-for="fn in stepperTaskFunctionDefinitions"
+                    :key="fn.id"
+                    :label="fn.label"
+                    :value="fn.id"
                   />
                 </el-select>
+                <el-select
+                  v-if="selectedStepperPresetDefinitions.length"
+                  v-model="selectedStepperTaskId"
+                  class="behavior-preset-select"
+                  size="small"
+                  placeholder="参数预设"
+                  :disabled="stepperRunning || stepperStepping"
+                >
+                  <el-option
+                    v-for="preset in selectedStepperPresetDefinitions"
+                    :key="preset.id"
+                    :label="preset.label"
+                    :value="preset.id"
+                  />
+                </el-select>
+                <span class="behavior-row-break" aria-hidden="true"></span>
+                <el-button
+                  size="small"
+                  plain
+                  :loading="stepperStepping"
+                  :disabled="!selectedEntryId || stepperRunning || stepperStepping"
+                  @click="runStepperSingleTick"
+                >
+                  单步
+                </el-button>
                 <el-button
                   size="small"
                   type="primary"
                   plain
                   :loading="stepperRunning"
-                  :disabled="!selectedEntryId || stepperRunning"
+                  :disabled="!selectedEntryId || stepperRunning || stepperStepping"
                   @click="runStepperToTarget"
                 >
                   运行
@@ -173,7 +201,18 @@
                 <button type="button" class="shape-inline-help" title="查看步进器说明" aria-label="查看步进器说明" @click="showStepperHelp">
                   ?
                 </button>
+                <el-button size="small" plain @click="stepperLogDialogVisible = true">
+                  日志
+                </el-button>
                 <span v-if="stepperRunStatus" class="behavior-run-status">{{ stepperRunStatus }}</span>
+                <span
+                  v-if="stepperLastDailyFindSummaryText"
+                  class="daily-find-summary"
+                  :title="stepperLastDailyFindDetailText"
+                >
+                  {{ stepperLastDailyFindSummaryText }}
+                </span>
+                <span v-if="gameMacroStatusText" class="behavior-run-status">{{ gameMacroStatusText }}</span>
               </div>
             </div>
           </div>
@@ -184,7 +223,6 @@
         <div class="viewer-pane">
           <div class="live-workspace">
             <div
-              v-show="windowViewMode !== 'off'"
               ref="liveViewportRef"
               class="live-viewport"
               :class="liveViewportClasses"
@@ -225,7 +263,7 @@
               </div>
             </div>
 
-            <aside class="annotation-panel">
+            <aside class="annotation-panel" :style="annotationPanelStyle">
               <div class="annotation-panel-head">
                 <span>文件树</span>
                 <div class="annotation-panel-actions">
@@ -239,32 +277,48 @@
                     :disabled="!selectedEntryId"
                     @click="saveCurrentFrame"
                   />
+                  <el-button
+                    size="small"
+                    :type="burstCaptureRunning ? 'primary' : 'default'"
+                    :icon="burstCaptureRunning ? VideoPause : VideoPlay"
+                    title="连拍"
+                    aria-label="连拍"
+                    :disabled="!selectedEntryId"
+                    @click="toggleBurstCapture"
+                  />
+                  <el-button size="small" plain @click="openBurstDialog">
+                    连拍
+                  </el-button>
                   <el-button size="small" :icon="Delete" title="删除选中节点" aria-label="删除选中节点" :disabled="!selectedAssetNode" @click="deleteSelectedAsset" />
                 </div>
               </div>
 
-              <el-tree
-                class="asset-tree"
-                :data="assetTree"
-                :props="assetTreeProps"
-                node-key="id"
-                default-expand-all
-                highlight-current
-                draggable
-                :expand-on-click-node="false"
-                :current-node-key="selectedAssetId"
-                :allow-drop="allowAssetDrop"
-                @node-click="selectAssetNode"
-                @node-contextmenu="openAssetContextMenu"
-              >
-                <template #default="{ data }">
-                  <span class="asset-tree-node" :class="{ 'is-image': data.type === 'image' }">
-                    <el-icon v-if="data.type === 'folder'"><Folder /></el-icon>
-                    <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
-                    <span>{{ data.title }}</span>
-                  </span>
-                </template>
-              </el-tree>
+              <div class="asset-tree-scroll">
+                <el-tree
+                  class="asset-tree"
+                  :data="assetTree"
+                  :props="assetTreeProps"
+                  node-key="id"
+                  :default-expanded-keys="expandedAssetNodeIds"
+                  highlight-current
+                  draggable
+                  :expand-on-click-node="false"
+                  :current-node-key="selectedAssetId"
+                  :allow-drop="allowAssetDrop"
+                  @node-click="selectAssetNode"
+                  @node-expand="node => setAssetNodeExpanded(node.id, true)"
+                  @node-collapse="node => setAssetNodeExpanded(node.id, false)"
+                  @node-contextmenu="openAssetContextMenu"
+                >
+                  <template #default="{ data }">
+                    <span class="asset-tree-node" :class="{ 'is-image': data.type === 'image' }" @dblclick.stop="renameAssetNode(data)">
+                      <el-icon v-if="data.type === 'folder'"><Folder /></el-icon>
+                      <span v-else class="asset-node-id">{{ assetImageIdMark(data) }}</span>
+                      <span>{{ data.title }}</span>
+                    </span>
+                  </template>
+                </el-tree>
+              </div>
 
               <div
                 v-if="assetContextMenu.visible"
@@ -273,8 +327,12 @@
                 @click.stop
                 @contextmenu.prevent
               >
-                <button type="button" @click="renameAssetFromContextMenu">
-                  重命名
+                <button
+                  v-if="assetContextMenuNode?.type === 'image' && assetContextMenuNode.filename"
+                  type="button"
+                  @click="resetAssetFrameFromContextMenu"
+                >
+                  重置帧
                 </button>
                 <button type="button" class="is-danger" @click="deleteAssetFromContextMenu">
                   删除
@@ -288,13 +346,13 @@
             <div class="annotation-workbench-head">
               <div class="annotation-title-tools">
                 <span>{{ selectedImageTitleText }}</span>
-                <el-checkbox v-if="selectedImageNode" v-model="selectedImageNode.occlusionMaskEnabled" size="small">
+                <el-checkbox v-if="selectedImageNode" v-model="globalOcclusionMaskEnabled" size="small">
                   遮挡标记
                 </el-checkbox>
               </div>
               <div class="annotation-panel-actions">
                 <el-button size="small" :icon="Plus" :disabled="!selectedImageNode" title="新建 shape" aria-label="新建 shape" @click="addAnnotationShape" />
-                <el-button size="small" :icon="Delete" :disabled="!selectedShape" title="删除 shape" aria-label="删除 shape" @click="deleteSelectedShape" />
+                <el-button size="small" :icon="Delete" :disabled="!selectedShapeCopyCount" title="删除 shape" aria-label="删除 shape" @click="deleteSelectedShape" />
               </div>
             </div>
 
@@ -324,19 +382,21 @@
                         draggable="false"
                       />
                       <div v-else class="empty-image-surface">
-                        <span>空图</span>
+                        <span>{{ selectedImageNode.filename || selectedImagePreviewLoading ? '加载中' : '空图' }}</span>
                       </div>
                       <div
+                        v-if="selectedImagePreviewUrl"
                         v-for="shape in occlusionOverlayShapes"
                         :key="'occlusion-' + shape.id"
                         class="annotation-occlusion-mask"
                         :style="shapeBoxStyle(shape)"
                       />
                       <div
+                        v-if="selectedImagePreviewUrl"
                         v-for="shape in annotationShapes"
                         :key="shape.id"
                         class="annotation-shape"
-                        :class="{ 'is-active': selectedShapeId === shape.id }"
+                        :class="{ 'is-active': isShapeSelected(shape.id) }"
                         :style="shapeBoxStyle(shape)"
                         @pointerdown.stop="startShapeMove($event, shape.id)"
                         @contextmenu.prevent.stop="openShapeContextMenu($event, shape.id)"
@@ -365,24 +425,29 @@
                   </div>
                 </div>
 
-                <el-tree
-                  class="shape-tree"
-                  :data="selectedImageShapes"
-                  :props="shapeTreeProps"
-                  node-key="id"
-                  default-expand-all
-                  highlight-current
-                  draggable
-                  :current-node-key="selectedShapeId"
-                  @node-click="node => selectShape(node.id)"
-                  @node-contextmenu="openShapeTreeContextMenu"
-                >
-                  <template #default="{ data }">
-                    <span class="shape-tree-node" :class="{ 'is-group': data.kind === 'group' }">
-                      {{ data.title || 'shape' }}
-                    </span>
-                  </template>
-                </el-tree>
+                <div class="shape-tree-scroll" :style="annotationPanelStyle">
+                  <el-tree
+                    class="shape-tree"
+                    :data="selectedImageShapes"
+                    :props="shapeTreeProps"
+                    node-key="id"
+                    :default-expanded-keys="expandedShapeNodeIds"
+                    highlight-current
+                    draggable
+                    :current-node-key="selectedShapeId"
+                    @node-click="handleShapeTreeNodeClick"
+                    @node-expand="node => setShapeNodeExpanded(node.id, true)"
+                    @node-collapse="node => setShapeNodeExpanded(node.id, false)"
+                    @node-contextmenu="openShapeTreeContextMenu"
+                    @contextmenu.prevent="openShapeTreeBlankContextMenu"
+                  >
+                    <template #default="{ data }">
+                      <span class="shape-tree-node" :class="{ 'is-group': data.kind === 'group', 'is-selected': isShapeSelected(data.id) }">
+                        {{ data.title || 'shape' }}
+                      </span>
+                    </template>
+                  </el-tree>
+                </div>
 
                 <div
                   v-if="shapeContextMenu.visible"
@@ -391,18 +456,37 @@
                   @click.stop
                   @contextmenu.prevent
                 >
-                  <button type="button" class="is-danger" @click="deleteShapeFromContextMenu">
+                  <button type="button" :disabled="!selectedShapeCopyCount" @click="copySelectedShapes">
+                    复制
+                  </button>
+                  <button type="button" :disabled="!copiedShapes.length || !selectedImageNode" @click="pasteCopiedShapes">
+                    粘贴
+                  </button>
+                  <button type="button" class="is-danger" :disabled="!selectedShapeCopyCount" @click="deleteShapeFromContextMenu">
                     删除
                   </button>
                 </div>
               </div>
 
-              <div v-if="selectedShape" class="shape-fields">
+    <div v-if="selectedShape" class="shape-fields">
                 <el-input v-model="selectedShape.title" size="small" placeholder="标题" />
                 <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
-                  <el-checkbox v-model="selectedShape.isSceneIdentity">
-                    场景标识
+                  <el-checkbox v-model="selectedShape.floating">
+                    浮动
                   </el-checkbox>
+                  <button
+                    type="button"
+                    class="shape-condition-toggle"
+                    :class="'is-' + selectedShapeSceneIdentityRole"
+                    :title="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
+                    :aria-label="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
+                    @click="cycleSelectedShapeSceneIdentityRole"
+                  >
+                    {{ shapeMatchRoleLabel(selectedShapeSceneIdentityRole) }}
+                  </button>
+                  <span>
+                    场景标识
+                  </span>
                   <div class="shape-jump-field">
                     <span>场景跳转</span>
                     <button type="button" class="shape-inline-help" title="查看场景跳转说明" aria-label="查看场景跳转说明" @click="showSceneJumpHelp">
@@ -425,6 +509,30 @@
                       <el-option label="→" value="right" />
                     </el-select>
                   </div>
+                  <span class="shape-row-break" aria-hidden="true" />
+                  <div class="shape-jump-field shape-pixel-tolerance-field">
+                    <button
+                      type="button"
+                      class="shape-condition-toggle"
+                      :class="'is-' + selectedShapeImageMatchRole"
+                      :title="shapeMatchRoleTitle('image', selectedShapeImageMatchRole)"
+                      :aria-label="shapeMatchRoleTitle('image', selectedShapeImageMatchRole)"
+                      @click="cycleSelectedShapeMatchRole('image')"
+                    >
+                      {{ shapeMatchRoleLabel(selectedShapeImageMatchRole) }}
+                    </button>
+                    <span>图像</span>
+                    <span>像素容差</span>
+                    <el-input-number
+                      v-model="selectedShape.pixelTolerance"
+                      class="shape-pixel-tolerance-input"
+                      size="small"
+                      :min="0"
+                      :max="255"
+                      :step="1"
+                      :controls="false"
+                    />
+                  </div>
                   <div class="shape-action-group">
                     <el-checkbox v-model="selectedShape.maskEnabled" title="启用抠图" aria-label="启用抠图" />
                     <el-button size="small" :disabled="!selectedShape" @click="openShapeMaskDialog">
@@ -442,6 +550,34 @@
                     <el-button size="small" :disabled="!selectedShape" @click="openShapeDiscriminatorDialog">
                       区分
                     </el-button>
+                  </div>
+                  <span class="shape-row-break" aria-hidden="true" />
+                  <div class="shape-action-group shape-ocr-config">
+                    <button
+                      type="button"
+                      class="shape-condition-toggle"
+                      :class="'is-' + selectedShapeOcrMatchRole"
+                      :title="shapeMatchRoleTitle('ocr', selectedShapeOcrMatchRole)"
+                      :aria-label="shapeMatchRoleTitle('ocr', selectedShapeOcrMatchRole)"
+                      @click="cycleSelectedShapeMatchRole('ocr')"
+                    >
+                      {{ shapeMatchRoleLabel(selectedShapeOcrMatchRole) }}
+                    </button>
+                    <span>
+                      OCR
+                    </span>
+                    <el-input
+                      v-model="selectedShape.ocrText"
+                      class="shape-ocr-text-input"
+                      size="small"
+                      placeholder="文本"
+                    />
+                    <el-select v-model="selectedShape.ocrMatchMode" class="shape-ocr-mode-select" size="small">
+                      <el-option label="包含" value="contains" />
+                      <el-option label="等于" value="exact" />
+                      <el-option label="通配符" value="wildcard" />
+                      <el-option label="正则" value="regex" />
+                    </el-select>
                   </div>
                 </div>
                 <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
@@ -478,6 +614,112 @@
 
 
     </section>
+    <el-dialog
+      v-model="burstDialogVisible"
+      title="连拍缓存"
+      width="860px"
+      append-to-body
+      @opened="loadBurstFrames"
+      @closed="releaseBurstPreviewUrls"
+    >
+      <div class="burst-toolbar">
+        <span class="burst-summary">
+          {{ burstCaptureRunning ? '连拍中' : '已停止' }}，已存 {{ burstSavedCount }}，跳过 {{ burstSkippedCount }}，缓存 {{ burstTotal }}
+        </span>
+        <div class="burst-actions">
+          <el-button size="small" :type="burstCaptureRunning ? 'primary' : 'default'" @click="toggleBurstCapture">
+            {{ burstCaptureRunning ? '停止连拍' : '开始连拍' }}
+          </el-button>
+          <el-button size="small" type="primary" plain :disabled="!selectedBurstFilenames.length" @click="importSelectedBurstFrames">
+            保存选中
+          </el-button>
+          <el-button size="small" :loading="burstLoading" @click="loadBurstFrames">刷新</el-button>
+          <el-button size="small" type="danger" plain :disabled="!burstTotal" @click="clearBurstFrames">清空</el-button>
+        </div>
+      </div>
+      <div v-loading="burstLoading" class="burst-grid">
+        <div
+          v-for="item in burstItems"
+          :key="item.filename"
+          class="burst-card"
+          :class="{ 'is-selected': selectedBurstFilenames.includes(item.filename) }"
+          @click="toggleBurstFrameSelection(item.filename)"
+        >
+          <el-checkbox
+            class="burst-card-check"
+            :model-value="selectedBurstFilenames.includes(item.filename)"
+            @click.stop
+            @change="toggleBurstFrameSelection(item.filename)"
+          />
+          <img v-if="burstPreviewUrls[item.filename]" :src="burstPreviewUrls[item.filename]" :alt="item.filename" />
+          <div v-else class="burst-card-empty">加载中</div>
+          <div class="burst-card-meta">
+            <span>{{ item.filename }}</span>
+          </div>
+        </div>
+        <div v-if="!burstItems.length" class="burst-empty">暂无连拍缓存</div>
+      </div>
+      <div class="burst-pager">
+        <span>第 {{ burstPage }} / {{ burstPageCount }} 页</span>
+        <el-pagination
+          background
+          layout="prev, pager, next"
+          :current-page="burstPage"
+          :page-size="burstPageSize"
+          :total="burstTotal"
+          @current-change="handleBurstPageChange"
+        />
+      </div>
+    </el-dialog>
+    <el-dialog
+      v-model="gameMacroConfigVisible"
+      title="录制宏配置"
+      width="420px"
+      append-to-body
+    >
+      <div class="game-macro-config">
+        <label class="game-macro-config-row">
+          <span>默认尺寸</span>
+          <el-input-number
+            v-model="gameMacroConfig.defaultShapeSize"
+            size="small"
+            :min="8"
+            :max="240"
+            :step="2"
+            :controls="false"
+          />
+        </label>
+        <label class="game-macro-config-row">
+          <span>首个 shape 标记场景</span>
+          <el-checkbox v-model="gameMacroConfig.markFirstShapeAsSceneIdentity" />
+        </label>
+        <label class="game-macro-config-row">
+          <span>拖拽耗时模式</span>
+          <el-select v-model="gameMacroConfig.dragDurationMode" size="small">
+            <el-option label="真实耗时" value="real" />
+            <el-option label="固定耗时" value="fixed" />
+          </el-select>
+        </label>
+        <label v-if="gameMacroConfig.dragDurationMode === 'fixed'" class="game-macro-config-row">
+          <span>固定耗时 ms</span>
+          <el-input-number
+            v-model="gameMacroConfig.defaultDragDurationMs"
+            size="small"
+            :min="50"
+            :max="3000"
+            :step="50"
+            :controls="false"
+          />
+        </label>
+        <label class="game-macro-config-row">
+          <span>标注模式</span>
+          <el-select v-model="gameMacroConfig.annotationMode" size="small">
+            <el-option label="工程保底" value="simple" />
+            <el-option label="AI辅助" value="ai" />
+          </el-select>
+        </label>
+      </div>
+    </el-dialog>
     <el-dialog
       v-model="shapeMaskDialogVisible"
       class="shape-mask-dialog"
@@ -517,6 +759,9 @@
           </el-button>
           <el-button size="small" :disabled="!shapeMaskRunning" @click="pauseShapeMaskSampling">
             暂停
+          </el-button>
+          <el-button size="small" :disabled="!shapeMaskAlphaDataUrl" @click="cleanShapeMaskAlpha">
+            净化
           </el-button>
           <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
         </div>
@@ -678,6 +923,42 @@
         </el-button>
       </template>
     </el-dialog>
+    <el-dialog
+      v-model="stepperLogDialogVisible"
+      class="stepper-log-dialog"
+      title="步进器日志"
+      width="720px"
+      append-to-body
+      top="10vh"
+    >
+      <div v-if="stepperLogs.length" class="stepper-log-list">
+        <div
+          v-for="entry in pagedStepperLogs"
+          :key="entry.id"
+          class="stepper-log-row"
+          :class="`is-${entry.kind}`"
+        >
+          <span class="stepper-log-time">{{ entry.time }}</span>
+          <span class="stepper-log-kind">{{ stepperLogKindLabel(entry.kind) }}</span>
+          <span class="stepper-log-message">{{ entry.message }}</span>
+        </div>
+      </div>
+      <div v-else class="stepper-log-empty">暂无日志</div>
+      <div v-if="stepperLogs.length" class="stepper-log-pager">
+        <span>{{ stepperLogPageStart }}-{{ stepperLogPageEnd }} / {{ stepperLogs.length }}</span>
+        <el-pagination
+          v-model:current-page="stepperLogPage"
+          size="small"
+          layout="prev, pager, next"
+          :page-size="STEPPER_LOG_PAGE_SIZE"
+          :total="stepperLogs.length"
+        />
+      </div>
+      <template #footer>
+        <el-button :disabled="!stepperLogs.length" @click="clearStepperLogs">清空</el-button>
+        <el-button type="primary" @click="stepperLogDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -689,17 +970,19 @@ import {
   ArrowLeft,
   ArrowRight,
   Delete,
-  Download,
   Folder,
   Picture,
   Plus,
-  Refresh,
   Setting,
   VideoPause,
   VideoPlay,
 } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 import {
+  annotateFanxiuGameWindow3MacroShape,
+  appendFanxiuGameWindow3StepperLog,
+  clearFanxiuGameWindow2BurstFrames,
+  clearFanxiuGameWindow3StepperLogs,
   clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
@@ -707,26 +990,43 @@ import {
   deleteFanxiuPseudoCodeCard,
   deleteFanxiuGameWindow2Screenshot,
   dragFanxiuGameWindow2,
+  ensureFanxiuCaptureRuntime,
+  getFanxiuGameWindow2BurstFrameImage,
+  getFanxiuCaptureRuntimeStatus,
+  getFanxiuGameWindow3AssetTree,
+  getFanxiuGameWindow3StepperLogs,
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
+  importFanxiuGameWindow2BurstFrames,
   keyeventFanxiuGameWindow2,
+  listFanxiuGameWindow2BurstFrames,
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
+  recognizeFanxiuGameWindow3OcrFrame,
   runFanxiuVisualScript,
+  saveFanxiuGameWindow2BurstFrame,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
+  saveFanxiuGameWindow3AssetTree,
   screencapFanxiuGameWindow2,
   startFanxiuPseudoCode,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
+  releaseFanxiuCaptureRuntime,
+  type FanxiuCaptureRuntimeStatus,
   type FanxiuGameWindow2MatchBox,
+  type FanxiuGameWindow2BurstFrameItem,
+  type FanxiuGameWindow2MatchPayload,
   type FanxiuGameWindow2MatchResponse,
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
+  type FanxiuGameWindow3MacroAnnotateResponse,
+  type FanxiuGameWindow3OcrFrameLine,
+  type FanxiuGameWindow3StepperLogEntry,
   type FanxiuPseudoCodeCard,
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
@@ -740,6 +1040,21 @@ import {
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';
+import {
+  decideDailyFindResult,
+  extractDailyProgress,
+  extractDailyStatusText,
+  getDailyStatusCode,
+  type DailyFindDecision,
+  type DailyFindProgress,
+  type DailyFindResult,
+  type DailyFindStatusCode,
+} from './dailyFindDecision';
+import {
+  defaultDailyTaskPresets,
+  type DailyTaskMatchMode,
+  type DailyTaskPreset,
+} from './dailyTaskPresets';
 
 interface OverlayBox {
   id: string;
@@ -790,6 +1105,13 @@ type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
 type WindowTitleMatch = 'contains' | 'exact';
+type MumuChannel = 'desktop' | 'adb';
+type RuntimeChannelUse = 'frontend' | 'stepper';
+type RuntimeChannelPolicyChannel = 'selected' | MumuChannel;
+
+interface RuntimeChannelPolicy {
+  mumu: RuntimeChannelPolicyChannel;
+}
 
 interface WindowSceneDefaults {
   targetTitle: string;
@@ -804,6 +1126,7 @@ interface WindowSceneDefaults {
   displayScale: number;
   fixedWidth: number;
   fixedHeight: number;
+  mumuChannel?: MumuChannel;
 }
 
 interface WindowSceneConfig {
@@ -812,6 +1135,7 @@ interface WindowSceneConfig {
   fps: number;
   quality: number;
   autoDismissPopup: boolean;
+  mumuChannel: MumuChannel;
 }
 
 interface WindowScene {
@@ -926,7 +1250,7 @@ interface MatchResult extends FanxiuGameWindow2MatchResponse {
   createdAt: number;
 }
 
-type MatchResultEntryKind = 'fixed' | 'template';
+type MatchResultEntryKind = 'fixed';
 
 interface MatchResultEntry {
   id: string;
@@ -945,6 +1269,32 @@ interface VisualMacroUiState {
   pseudoOutputTab?: PseudoOutputTab;
 }
 
+type GameMacroAnnotationMode = 'simple' | 'ai';
+type GameMacroDragDurationMode = 'real' | 'fixed';
+type ShapeMatchRole = 'off' | 'optional' | 'required';
+type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
+
+type GameMacroConfig = {
+  version: number;
+  defaultShapeSize: number;
+  markFirstShapeAsSceneIdentity: boolean;
+  dragDurationMode: GameMacroDragDurationMode;
+  defaultDragDurationMs: number;
+  annotationMode: GameMacroAnnotationMode;
+};
+
+type GameMacroPendingJump = {
+  imageId: string;
+  shapeId: string;
+};
+
+type GameMacroShapeAnnotation = {
+  box: FanxiuGameWindow2MatchBox;
+  label?: string;
+  confidence?: number;
+  usedAi?: boolean;
+};
+
 const route = useRoute();
 const router = useRouter();
 const DEVICE_STORAGE_KEY = 'fanxiu.gameWindow2.entryId';
@@ -956,6 +1306,11 @@ const VISUAL_MACRO_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow2.visualMacro.uiStat
 const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defaultThreshold';
 const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
 const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPixelTolerance';
+const GAME_MACRO_CONFIG_STORAGE_KEY = 'fanxiu.gameWindow3.gameMacro.config.v1';
+const GAME_MACRO_CONFIG_VERSION = 2;
+const GAME_MACRO_DEFAULT_DRAG_DURATION_MS = 1500;
+const FALLBACK_FRAME_WIDTH = 900;
+const FALLBACK_FRAME_HEIGHT = 1600;
 const SCREENSHOT_MIN_ZOOM_PERCENT = 20;
 const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
 const SCREENSHOT_ZOOM_STEP = 10;
@@ -964,6 +1319,10 @@ const MIN_CONTENT_VISIBLE_AXIS_RATIO = Math.sqrt(MIN_CONTENT_VISIBLE_AREA_RATIO)
 const GAME_WINDOW_SERVICE_KEY = 'fanxiu-game-window';
 const VISUAL_ACTION_MARKER_START = '<!-- codeyun-visual-action-v1';
 const VISUAL_ACTION_MARKER_END = '-->';
+const RUNTIME_CHANNEL_POLICIES: Record<RuntimeChannelUse, RuntimeChannelPolicy> = {
+  frontend: { mumu: 'selected' },
+  stepper: { mumu: 'adb' },
+};
 const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'live', label: '直播' },
   { value: 'control', label: '交互' },
@@ -986,6 +1345,7 @@ const windowScenes: WindowScene[] = [
       displayScale: 100,
       fixedWidth: 0,
       fixedHeight: 0,
+      mumuChannel: 'desktop',
     },
   },
   {
@@ -1004,6 +1364,7 @@ const windowScenes: WindowScene[] = [
       displayScale: 100,
       fixedWidth: 0,
       fixedHeight: 0,
+      mumuChannel: 'desktop',
     },
   },
   {
@@ -1022,6 +1383,7 @@ const windowScenes: WindowScene[] = [
       displayScale: 60,
       fixedWidth: 900,
       fixedHeight: 1600,
+      mumuChannel: 'adb',
     },
   },
 ];
@@ -1031,6 +1393,7 @@ const selectedEntryId = ref('');
 const selectedWindowKey = ref<WindowSceneKey>('star-cloud-phone');
 const runtimeStatus = ref<RuntimeStatusResponse | null>(null);
 const runtimeLoading = ref(false);
+const captureRuntimeStatus = ref<FanxiuCaptureRuntimeStatus | null>(null);
 const connectionLoading = ref(false);
 
 const trimBorderText = ref('0,0,0,0');
@@ -1038,6 +1401,7 @@ const rotateDegrees = ref<RotateDegrees>('0');
 const displayScale = ref(100);
 const fps = ref(12);
 const quality = ref(82);
+const mumuChannel = ref<MumuChannel>('desktop');
 const autoDismissPopup = ref(false);
 const streamEnabled = ref(true);
 const streamNonce = ref(Date.now());
@@ -1046,10 +1410,36 @@ const streamToken = ref('');
 const streamTokenExpiresAt = ref(0);
 const adbFrameUrl = ref('');
 const streamTokenLoading = ref(false);
+const actualFps = ref(0);
 const layerVisible = ref(true);
 const windowViewMode = ref<WindowViewMode>('live');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
+const burstCaptureRunning = ref(false);
+const burstCaptureSaving = ref(false);
+const burstDialogVisible = ref(false);
+const burstLoading = ref(false);
+const burstSavedCount = ref(0);
+const burstSkippedCount = ref(0);
+const burstPage = ref(1);
+const burstPageSize = 24;
+const burstTotal = ref(0);
+const burstItems = ref<FanxiuGameWindow2BurstFrameItem[]>([]);
+const burstPreviewUrls = ref<Record<string, string>>({});
+const selectedBurstFilenames = ref<string[]>([]);
+const gameMacroRecording = ref(false);
+const gameMacroConfigVisible = ref(false);
+const gameMacroCapturePending = ref(false);
+const gameMacroStatusText = ref('');
+const gameMacroPendingJump = ref<GameMacroPendingJump | null>(null);
+const gameMacroConfig = ref<GameMacroConfig>({
+  version: GAME_MACRO_CONFIG_VERSION,
+  defaultShapeSize: 50,
+  markFirstShapeAsSceneIdentity: true,
+  dragDurationMode: 'real',
+  defaultDragDurationMs: GAME_MACRO_DEFAULT_DRAG_DURATION_MS,
+  annotationMode: 'simple',
+});
 const screenshotPanelOpen = ref(true);
 const screenshotLoaded = ref(false);
 const screenshotLoading = ref(false);
@@ -1147,6 +1537,11 @@ const livePanState = ref<ScreenshotPanState | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
 let adbFrameTimer: number | null = null;
+let actualFpsResetTimer: number | null = null;
+let actualFpsSamplerTimer: number | null = null;
+const liveFrameTimestamps: number[] = [];
+let lastLiveFrameSample = '';
+let burstCaptureTimer: number | null = null;
 let screenshotSaveTimer: number | null = null;
 let visualSimilarityProbeTimer: number | null = null;
 let visualSimilarityProbeSeq = 0;
@@ -1243,20 +1638,10 @@ const matchResultEntries = computed<MatchResultEntry[]>(() => {
         kind: 'fixed',
         label: '原位',
         name,
-        similarity: result.fixed_similarity ?? result.similarity,
+        similarity: result.fixed_pixel_similarity ?? result.fixed_exact_pixel_similarity ?? result.fixed_similarity ?? result.similarity,
         result,
       },
     ];
-    if (result.template_similarity !== undefined) {
-      entries.push({
-        id: `${result.id}:template`,
-        kind: 'template',
-        label: '模板',
-        name,
-        similarity: result.template_similarity,
-        result,
-      });
-    }
     return entries;
   });
 });
@@ -1277,8 +1662,8 @@ const naturalSizeText = computed(() => {
   return `${naturalWidth.value} x ${naturalHeight.value}`;
 });
 const liveCanvasStyle = computed(() => {
-  const width = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
-  const height = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  const width = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH;
+  const height = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT;
   const stageWidth = Math.max(1, Math.round(width * displayScale.value / 100));
   const stageHeight = Math.max(1, Math.round(height * displayScale.value / 100));
   return {
@@ -1286,6 +1671,10 @@ const liveCanvasStyle = computed(() => {
     height: `${stageHeight}px`,
   };
 });
+const annotationPanelStyle = computed(() => ({
+  height: liveCanvasStyle.value.height,
+  maxHeight: liveCanvasStyle.value.height,
+}));
 const liveContentStyle = computed(() => ({
   ...liveCanvasStyle.value,
   transform: `translate(${livePanX.value}px, ${livePanY.value}px) scale(${liveContentZoomPercent.value / 100})`,
@@ -1317,7 +1706,7 @@ const placeholderText = computed(() => {
   if (!selectedEntryId.value) return '选择设备';
   if (windowViewMode.value === 'off') return '直播已关闭';
   if (!streamEnabled.value) return '画面已暂停';
-  if (shouldUseAdbFrame()) return '正在获取 ADB 画面';
+  if (shouldCaptureWithAdb('frontend')) return '正在获取 ADB 画面';
   if (!streamToken.value) return '正在准备画面流';
   return '等待画面';
 });
@@ -1576,6 +1965,42 @@ const loadVisualMacroDefaults = () => {
   setVisualMacroDefaultThreshold(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY), false);
   setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
   setVisualMacroDefaultPixelTolerance(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY), false);
+};
+
+const normalizeGameMacroConfig = (value: unknown): GameMacroConfig => {
+  const item = value && typeof value === 'object'
+    ? value as Partial<GameMacroConfig> & { recordRealDragDuration?: unknown }
+    : {};
+  const rawVersion = Math.round(Number(item.version));
+  const version = rawVersion === GAME_MACRO_CONFIG_VERSION ? GAME_MACRO_CONFIG_VERSION : 1;
+  const defaultShapeSize = Math.round(Number(item.defaultShapeSize));
+  const rawDefaultDragDurationMs = Math.round(Number(item.defaultDragDurationMs));
+  const defaultDragDurationMs = !Number.isFinite(rawDefaultDragDurationMs)
+    ? GAME_MACRO_DEFAULT_DRAG_DURATION_MS
+    : version < GAME_MACRO_CONFIG_VERSION && rawDefaultDragDurationMs === 300
+      ? GAME_MACRO_DEFAULT_DRAG_DURATION_MS
+      : clamp(rawDefaultDragDurationMs, 50, 3000);
+  const annotationMode = item.annotationMode === 'ai' ? 'ai' : 'simple';
+  const dragDurationMode = item.dragDurationMode === 'fixed' || item.dragDurationMode === 'real'
+    ? item.dragDurationMode
+    : (item.recordRealDragDuration === false ? 'fixed' : 'real');
+  return {
+    version: GAME_MACRO_CONFIG_VERSION,
+    defaultShapeSize: Number.isFinite(defaultShapeSize) ? clamp(defaultShapeSize, 8, 240) : 50,
+    markFirstShapeAsSceneIdentity: item.markFirstShapeAsSceneIdentity !== false,
+    dragDurationMode,
+    defaultDragDurationMs,
+    annotationMode,
+  };
+};
+
+const loadGameMacroConfig = () => {
+  if (typeof window === 'undefined') return;
+  try {
+    gameMacroConfig.value = normalizeGameMacroConfig(JSON.parse(window.localStorage.getItem(GAME_MACRO_CONFIG_STORAGE_KEY) || '{}'));
+  } catch {
+    gameMacroConfig.value = normalizeGameMacroConfig({});
+  }
 };
 
 const normalizeVisualProgram = (raw: unknown): VisualMacroProgram => {
@@ -2913,7 +3338,6 @@ const stopVisualScript = async (card: CodeCard) => {
 
 const streamUrl = computed(() => {
   if (windowViewMode.value === 'off') return '';
-  if (shouldUseAdbFrame()) return '';
   if (!selectedEntryId.value || !streamToken.value) return '';
   const params = new URLSearchParams({
     token: streamToken.value,
@@ -2929,12 +3353,18 @@ const streamUrl = computed(() => {
     fixed_width: String(fixedFrameWidth.value),
     fixed_height: String(fixedFrameHeight.value),
     auto_dismiss_popup: selectedWindowKey.value === 'sunlogin' && autoDismissPopup.value ? 'true' : 'false',
+    adb_screencap: shouldCaptureWithAdb('frontend') ? 'true' : 'false',
     popup_check_interval: '3',
     nonce: String(streamNonce.value),
   });
   return `/api/fanxiu/game-window2/stream?${params.toString()}`;
 });
-const liveImageUrl = computed(() => (shouldUseAdbFrame() ? adbFrameUrl.value : streamUrl.value));
+const liveImageUrl = computed(() => streamUrl.value);
+const actualFpsText = computed(() => (streamEnabled.value && windowViewMode.value !== 'off'
+  ? `${actualFps.value.toFixed(1)}`
+  : '-'
+));
+const burstPageCount = computed(() => Math.max(1, Math.ceil(burstTotal.value / burstPageSize)));
 const connectionReady = computed(() => Boolean(
   selectedEntryId.value
   && serviceActive.value
@@ -2945,12 +3375,22 @@ const connectionReady = computed(() => Boolean(
   && !streamError.value
 ));
 const connectionButtonLoading = computed(() => connectionLoading.value || streamTokenLoading.value);
-const connectionButtonType = computed(() => (connectionReady.value ? 'success' : 'info'));
 const connectionButtonText = computed(() => {
   if (windowViewMode.value === 'off') return '已关闭';
   if (connectionReady.value) return '运行中';
-  if (connectionButtonLoading.value || (streamEnabled.value && (streamToken.value || shouldUseAdbFrame()) && !streamError.value)) return '连接中';
+  if (connectionButtonLoading.value || (streamEnabled.value && (streamToken.value || shouldCaptureWithAdb('frontend')) && !streamError.value)) return '连接中';
   return '连接';
+});
+const captureRuntimeText = computed(() => {
+  const status = captureRuntimeStatus.value;
+  if (!status) return '抓包未同步';
+  const stateLabel = ({
+    stopped: '抓包已停',
+    waiting_game: '等待游戏',
+    recovering: '抓包恢复中',
+    running: '抓包中',
+  } as Record<string, string>)[status.state] ?? status.state;
+  return status.last_error ? `${stateLabel} · ${status.last_error}` : stateLabel;
 });
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -3006,6 +3446,9 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
   const rotate = raw.rotateDegrees;
   const nextFps = Number(raw.fps ?? fallback.fps);
   const nextQuality = Number(raw.quality ?? fallback.quality);
+  const nextMumuChannel = raw.mumuChannel === 'desktop' || raw.mumuChannel === 'adb'
+    ? raw.mumuChannel
+    : (fallback.mumuChannel ?? 'desktop');
   return {
     trimBorderText: raw.trimBorderText || fallback.trimBorderText,
     rotateDegrees: rotate === '0' || rotate === '90' || rotate === '180' || rotate === '270'
@@ -3014,6 +3457,7 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
     fps: Number.isFinite(nextFps) ? Math.min(Math.max(Math.round(nextFps), 1), 30) : fallback.fps,
     quality: Number.isFinite(nextQuality) ? Math.min(Math.max(Math.round(nextQuality), 1), 100) : fallback.quality,
     autoDismissPopup: typeof raw.autoDismissPopup === 'boolean' ? raw.autoDismissPopup : fallback.autoDismissPopup,
+    mumuChannel: nextMumuChannel,
   };
 };
 
@@ -3057,6 +3501,7 @@ const currentWindowConfig = (): WindowSceneConfig => ({
   fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
   quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
   autoDismissPopup: autoDismissPopup.value,
+  mumuChannel: mumuChannel.value,
 });
 
 const persistWindowConfig = () => {
@@ -3074,6 +3519,7 @@ const applyWindowConfig = () => {
   fps.value = config.fps;
   quality.value = config.quality;
   autoDismissPopup.value = config.autoDismissPopup;
+  mumuChannel.value = config.mumuChannel;
   window.requestAnimationFrame(() => {
     isApplyingWindowConfig = false;
   });
@@ -3150,6 +3596,30 @@ const loadRuntimeStatus = async (silent = false) => {
   }
 };
 
+const ensureCaptureRuntime = async () => {
+  try {
+    captureRuntimeStatus.value = await ensureFanxiuCaptureRuntime('game-window3');
+  } catch (error) {
+    ElMessage.warning(getErrorMessage(error));
+  }
+};
+
+const refreshCaptureRuntimeStatus = async () => {
+  try {
+    captureRuntimeStatus.value = await getFanxiuCaptureRuntimeStatus();
+  } catch {
+    // 抓包状态只是辅助状态，静默等待下一轮同步。
+  }
+};
+
+const releaseCaptureRuntime = () => {
+  releaseFanxiuCaptureRuntime('game-window3')
+    .then((status) => {
+      captureRuntimeStatus.value = status;
+    })
+    .catch(() => undefined);
+};
+
 const handleEntryChange = async () => {
   controlEnabled.value = false;
   controlClickState.value = null;
@@ -3158,12 +3628,15 @@ const handleEntryChange = async () => {
   streamError.value = '';
   streamToken.value = '';
   streamTokenExpiresAt.value = 0;
+  stopAdbFramePolling();
+  revokeAdbFrameUrl();
   screenshotImages.value = [];
   screenshotLoaded.value = false;
   clearScreenshotSelection();
   clearMatchResults();
   persistEntrySelection(selectedEntryId.value);
   applyWindowConfig();
+  if (selectedEntryId.value) await loadEntryAssetTree(selectedEntryId.value);
   if (windowViewMode.value !== 'off') {
     await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
   }
@@ -3177,26 +3650,21 @@ const handleWindowChange = async () => {
   naturalWidth.value = 0;
   naturalHeight.value = 0;
   streamError.value = '';
+  stopAdbFramePolling();
+  revokeAdbFrameUrl();
   clearMatchResults();
   persistWindowSelection();
   applyWindowConfig();
-  await restartStream();
+  await connectWindow();
 };
 
 const handleWindowViewModeChange = async () => {
   controlClickState.value = null;
   if (windowViewMode.value === 'off') {
-    streamError.value = '';
-    streamEnabled.value = false;
-    controlEnabled.value = false;
-    runtimeStatus.value = null;
-    streamToken.value = '';
-    streamTokenExpiresAt.value = 0;
-    if (streamImageRef.value) streamImageRef.value.src = '';
-    await nextTick(syncCanvas);
+    await restartStream();
     return;
   }
-  await restartStream();
+  await connectWindow();
 };
 
 const normalizeBox = (box: OverlayBox): OverlayBox => {
@@ -3253,6 +3721,37 @@ const drawBox = (
   ctx.restore();
 };
 
+const drawLiveMatchBox = (
+  ctx: CanvasRenderingContext2D,
+  box: FanxiuGameWindow2MatchBox,
+  displayWidth: number,
+  displayHeight: number,
+  index: number,
+) => {
+  if (!naturalWidth.value || !naturalHeight.value) return;
+  const scaleX = displayWidth / naturalWidth.value;
+  const scaleY = displayHeight / naturalHeight.value;
+  const x = box.x * scaleX;
+  const y = box.y * scaleY;
+  const w = box.w * scaleX;
+  const h = box.h * scaleY;
+  const color = index === 0 ? '#22c55e' : '#f97316';
+  ctx.save();
+  ctx.lineWidth = index === 0 ? 2.2 : 1.5;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = index === 0 ? 'rgba(34, 197, 94, 0.12)' : 'rgba(249, 115, 22, 0.08)';
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeRect(x, y, w, h);
+  const label = box.name || `${index + 1}`;
+  ctx.font = '12px sans-serif';
+  const labelWidth = Math.max(22, ctx.measureText(label).width + 10);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, Math.max(0, y - 18), labelWidth, 16);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(label, x + 5, Math.max(12, y - 6));
+  ctx.restore();
+};
+
 const drawOverlay = () => {
   const canvas = overlayCanvasRef.value;
   if (!canvas) return;
@@ -3277,6 +3776,11 @@ const drawOverlay = () => {
   });
   if (draftBox.value) {
     drawBox(ctx, normalizeBox(draftBox.value), width, height, { draft: true });
+  }
+  if (streamEnabled.value && windowViewMode.value !== 'off') {
+    shapeDetectLiveBoxes.value.forEach((box, index) => {
+      drawLiveMatchBox(ctx, box, width, height, index);
+    });
   }
 };
 
@@ -3773,9 +4277,85 @@ const drawMatchOverlay = () => {
 
   const fixedBox = result.current_box || result.box;
   drawMatchBox(fixedBox, '#10b981', 'rgba(16, 185, 129, 0.12)');
-  if (result.template_box) {
-    drawMatchBox(result.template_box, '#f97316', 'rgba(249, 115, 22, 0.1)', true);
+};
+
+const resetActualFps = () => {
+  liveFrameTimestamps.length = 0;
+  actualFps.value = 0;
+  lastLiveFrameSample = '';
+  if (actualFpsResetTimer) {
+    window.clearTimeout(actualFpsResetTimer);
+    actualFpsResetTimer = null;
   }
+};
+
+const recordLiveFrameArrival = () => {
+  const now = performance.now();
+  liveFrameTimestamps.push(now);
+  const windowMs = 3000;
+  while (liveFrameTimestamps.length && now - liveFrameTimestamps[0] > windowMs) {
+    liveFrameTimestamps.shift();
+  }
+  if (liveFrameTimestamps.length >= 2) {
+    const elapsedSeconds = (liveFrameTimestamps[liveFrameTimestamps.length - 1] - liveFrameTimestamps[0]) / 1000;
+    actualFps.value = elapsedSeconds > 0 ? (liveFrameTimestamps.length - 1) / elapsedSeconds : 0;
+  } else {
+    actualFps.value = 0;
+  }
+  if (actualFpsResetTimer) window.clearTimeout(actualFpsResetTimer);
+  actualFpsResetTimer = window.setTimeout(() => {
+    resetActualFps();
+  }, 2000);
+};
+
+const sampleLiveFrameSignature = () => {
+  const image = streamImageRef.value;
+  if (!image || !image.naturalWidth || !image.naturalHeight) return '';
+  const canvas = document.createElement('canvas');
+  const width = 12;
+  const height = 12;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return '';
+  try {
+    context.drawImage(image, 0, 0, width, height);
+    const data = context.getImageData(0, 0, width, height).data;
+    let hash = 2166136261;
+    for (let index = 0; index < data.length; index += 4) {
+      hash ^= data[index];
+      hash = Math.imul(hash, 16777619);
+      hash ^= data[index + 1];
+      hash = Math.imul(hash, 16777619);
+      hash ^= data[index + 2];
+      hash = Math.imul(hash, 16777619);
+    }
+    return String(hash >>> 0);
+  } catch {
+    return '';
+  }
+};
+
+const pollActualFps = () => {
+  if (!streamEnabled.value || windowViewMode.value === 'off') return;
+  const signature = sampleLiveFrameSignature();
+  if (!signature) return;
+  if (lastLiveFrameSample && signature !== lastLiveFrameSample) {
+    recordLiveFrameArrival();
+  }
+  lastLiveFrameSample = signature;
+};
+
+const stopActualFpsSampler = () => {
+  if (actualFpsSamplerTimer) {
+    window.clearInterval(actualFpsSamplerTimer);
+    actualFpsSamplerTimer = null;
+  }
+};
+
+const startActualFpsSampler = () => {
+  stopActualFpsSampler();
+  actualFpsSamplerTimer = window.setInterval(pollActualFps, 80);
 };
 
 const syncMatchCanvas = () => {
@@ -3808,13 +4388,25 @@ const captureCurrentLiveFrameDataUrl = () => {
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
   ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', Math.max(0.1, Math.min(1, Number(quality.value || 82) / 100)));
+  return canvas.toDataURL('image/png');
 };
 
-const shouldUseAdbFrame = () => selectedWindowKey.value === 'mumu';
+const resolveMumuChannelForUse = (use: RuntimeChannelUse = 'frontend'): MumuChannel => {
+  const policy = RUNTIME_CHANNEL_POLICIES[use] ?? RUNTIME_CHANNEL_POLICIES.frontend;
+  return policy.mumu === 'selected' ? mumuChannel.value : policy.mumu;
+};
 
-const captureCurrentFrameDataUrl = async () => {
-  if (shouldUseAdbFrame() && selectedEntryId.value) {
+const resolveRuntimeInputBackend = (use: RuntimeChannelUse = 'frontend'): MumuChannel => (
+  selectedWindowKey.value === 'mumu' ? resolveMumuChannelForUse(use) : 'desktop'
+);
+
+const shouldCaptureWithAdb = (use: RuntimeChannelUse = 'frontend') => (
+  selectedWindowKey.value === 'mumu' && resolveMumuChannelForUse(use) === 'adb'
+);
+
+const captureCurrentFrameDataUrl = async (use: RuntimeChannelUse = 'frontend') => {
+  const useAdb = shouldCaptureWithAdb(use);
+  if (useAdb && selectedEntryId.value) {
     try {
       const blob = await screencapFanxiuGameWindow2(selectedEntryId.value);
       return await blobToDataUrl(blob);
@@ -3825,41 +4417,68 @@ const captureCurrentFrameDataUrl = async () => {
   return captureCurrentLiveFrameDataUrl();
 };
 
+const revokeAdbFrameUrl = () => {
+  if (!adbFrameUrl.value) return;
+  URL.revokeObjectURL(adbFrameUrl.value);
+  adbFrameUrl.value = '';
+};
+
+const stopAdbFramePolling = () => {
+  if (adbFrameTimer) {
+    window.clearInterval(adbFrameTimer);
+    adbFrameTimer = null;
+  }
+};
+
+const setWindowViewModeOff = async () => {
+  windowViewMode.value = 'off';
+  stopAdbFramePolling();
+  stopBurstCapture();
+  stopActualFpsSampler();
+  resetActualFps();
+  gameMacroRecording.value = false;
+  gameMacroCapturePending.value = false;
+  streamEnabled.value = false;
+  controlEnabled.value = false;
+  runtimeStatus.value = null;
+  streamToken.value = '';
+  streamTokenExpiresAt.value = 0;
+  revokeAdbFrameUrl();
+  if (streamImageRef.value) streamImageRef.value.src = '';
+  await nextTick(syncCanvas);
+};
+
 const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
   streamError.value = message;
+  void setWindowViewModeOff();
   ElMessage.error(message);
 };
 
 const restartStream = async () => {
   streamError.value = '';
+  shapeDetectLiveBoxes.value = [];
+  stopAdbFramePolling();
+  stopActualFpsSampler();
+  resetActualFps();
   if (windowViewMode.value === 'off') {
-    streamEnabled.value = false;
-    controlEnabled.value = false;
-    runtimeStatus.value = null;
-    streamToken.value = '';
-    streamTokenExpiresAt.value = 0;
-    if (streamImageRef.value) streamImageRef.value.src = '';
-    await nextTick(syncCanvas);
+    await setWindowViewModeOff();
     return;
   }
   streamEnabled.value = true;
   controlEnabled.value = windowViewMode.value === 'control';
+  revokeAdbFrameUrl();
   await ensureStreamToken();
   streamNonce.value = Date.now();
+  startActualFpsSampler();
   void nextTick(syncCanvas);
 };
 
 const connectWindow = async () => {
   if (!selectedEntryId.value) return;
   if (windowViewMode.value === 'off') {
-    streamEnabled.value = false;
-    controlEnabled.value = false;
-    runtimeStatus.value = null;
-    streamToken.value = '';
-    streamTokenExpiresAt.value = 0;
-    if (streamImageRef.value) streamImageRef.value.src = '';
+    await setWindowViewModeOff();
     return;
   }
   connectionLoading.value = true;
@@ -3914,9 +4533,183 @@ const saveCurrentFrame = async () => {
     addSavedFrameToAssetTree(node);
     ElMessage.success(`已保存到文件树：${result.filename}`);
   } catch (error) {
+    streamError.value = getErrorMessage(error);
+    await setWindowViewModeOff();
     ElMessage.error(getErrorMessage(error));
   } finally {
     saveFrameLoading.value = false;
+  }
+};
+
+const burstFramePayload = async () => ({
+  entry_id: selectedEntryId.value,
+  title: targetTitle.value.trim(),
+  title_match: titleMatch.value,
+  mode: 'screen' as const,
+  area: captureArea.value,
+  crop: cropText.value.trim(),
+  trim_border: trimBorderText.value.trim(),
+  rotate: rotateDegrees.value,
+  fixed_width: fixedFrameWidth.value,
+  fixed_height: fixedFrameHeight.value,
+  current_frame_data_url: await captureCurrentFrameDataUrl(),
+});
+
+const releaseBurstPreviewUrls = () => {
+  Object.values(burstPreviewUrls.value).forEach((url) => URL.revokeObjectURL(url));
+  burstPreviewUrls.value = {};
+};
+
+const loadBurstFrames = async () => {
+  if (!selectedEntryId.value) return;
+  burstLoading.value = true;
+  try {
+    const response = await listFanxiuGameWindow2BurstFrames(selectedEntryId.value, burstPage.value, burstPageSize);
+    burstTotal.value = response.total;
+    burstItems.value = response.items;
+    const names = new Set(response.items.map((item) => item.filename));
+    selectedBurstFilenames.value = selectedBurstFilenames.value.filter((name) => names.has(name));
+    releaseBurstPreviewUrls();
+    const previews: Record<string, string> = {};
+    await Promise.all(response.items.map(async (item) => {
+      const blob = await getFanxiuGameWindow2BurstFrameImage(selectedEntryId.value, item.filename);
+      previews[item.filename] = URL.createObjectURL(blob);
+    }));
+    burstPreviewUrls.value = previews;
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    burstLoading.value = false;
+  }
+};
+
+const toggleBurstFrameSelection = (filename: string) => {
+  selectedBurstFilenames.value = selectedBurstFilenames.value.includes(filename)
+    ? selectedBurstFilenames.value.filter((item) => item !== filename)
+    : [...selectedBurstFilenames.value, filename];
+};
+
+const importSelectedBurstFrames = async () => {
+  if (!selectedEntryId.value || !selectedBurstFilenames.value.length) return;
+  try {
+    const response = await importFanxiuGameWindow2BurstFrames(selectedEntryId.value, selectedBurstFilenames.value);
+    await loadScreenshotList();
+    const importedNodes = response.imported.map((item) => createAssetImageNode(item.filename, {
+      filename: item.filename,
+      width: item.width,
+      height: item.height,
+    }));
+    for (const node of importedNodes) addSavedFrameToAssetTree(node);
+    selectedBurstFilenames.value = [];
+    ElMessage.success(`已保存 ${response.imported_count} 张到文件树`);
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  }
+};
+
+const saveBurstFrameOnce = async () => {
+  if (!selectedEntryId.value || burstCaptureSaving.value) return;
+  burstCaptureSaving.value = true;
+  try {
+    const result = await saveFanxiuGameWindow2BurstFrame(await burstFramePayload());
+    if (result.saved) {
+      burstSavedCount.value += 1;
+      if (burstDialogVisible.value) await loadBurstFrames();
+    } else if (result.skipped) {
+      burstSkippedCount.value += 1;
+    }
+  } catch (error) {
+    stopBurstCapture();
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    burstCaptureSaving.value = false;
+  }
+};
+
+const stopBurstCapture = () => {
+  if (burstCaptureTimer) {
+    window.clearInterval(burstCaptureTimer);
+    burstCaptureTimer = null;
+  }
+  burstCaptureRunning.value = false;
+};
+
+const startBurstCapture = () => {
+  if (!selectedEntryId.value || burstCaptureRunning.value) return;
+  burstCaptureRunning.value = true;
+  void saveBurstFrameOnce();
+  const interval = Math.max(200, Math.round(1000 / Math.max(1, Number(fps.value) || 1)));
+  burstCaptureTimer = window.setInterval(() => {
+    void saveBurstFrameOnce();
+  }, interval);
+};
+
+const toggleBurstCapture = () => {
+  if (burstCaptureRunning.value) {
+    stopBurstCapture();
+    return;
+  }
+  startBurstCapture();
+};
+
+const openBurstDialog = () => {
+  burstDialogVisible.value = true;
+  void loadBurstFrames();
+};
+
+const handleBurstPageChange = (page: number) => {
+  burstPage.value = page;
+  void loadBurstFrames();
+};
+
+const clearBurstFrames = async () => {
+  if (!selectedEntryId.value) return;
+  try {
+    await ElMessageBox.confirm('清空全部连拍缓存？', '清空连拍', { type: 'warning' });
+    const result = await clearFanxiuGameWindow2BurstFrames(selectedEntryId.value);
+    burstSavedCount.value = 0;
+    burstSkippedCount.value = 0;
+    burstPage.value = 1;
+    burstTotal.value = 0;
+    burstItems.value = [];
+    selectedBurstFilenames.value = [];
+    releaseBurstPreviewUrls();
+    ElMessage.success(`已清空 ${result.cleared} 张`);
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return;
+    ElMessage.error(getErrorMessage(error));
+  }
+};
+
+const resetAssetFrame = async (node: GameWindow3AssetNode) => {
+  if (!selectedEntryId.value || node.type !== 'image' || !node.filename) return;
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+  const result = await saveFanxiuGameWindow2Frame({
+    entry_id: selectedEntryId.value,
+    title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
+    mode: 'screen',
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
+    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    current_frame_data_url: currentFrameDataUrl,
+    overwrite_filename: node.filename,
+  });
+  node.filename = result.filename;
+  node.width = result.width;
+  node.height = result.height;
+  delete node.imageDataUrl;
+  assetImagePreviewUrls.value = {
+    ...assetImagePreviewUrls.value,
+    [node.id]: currentFrameDataUrl,
+  };
+  if (selectedAssetId.value === node.id) {
+    await nextTick();
+    void ensureSelectedImagePreview();
   }
 };
 
@@ -4064,6 +4857,66 @@ const recordVisualMacroInput = async (
   }
 };
 
+const recordGameMacroInput = async (
+  action: 'click' | 'drag',
+  point: VisualPoint,
+  endPoint: VisualPoint | null = null,
+  durationMs = 0,
+) => {
+  if (!gameMacroRecording.value || !selectedEntryId.value) return;
+  if (gameMacroCapturePending.value) return;
+  gameMacroCapturePending.value = true;
+  gameMacroStatusText.value = '录制宏：捕捉画面';
+  try {
+    const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+    const frame = await findOrCreateGameMacroFrame(currentFrameDataUrl);
+    setGameMacroPendingJumpTarget(frame.image);
+    const fallbackBox = buildGameMacroFallbackBox(frame.image, action, point, endPoint);
+    const shape = createRecordedGameShape(frame.image, action, point, endPoint, durationMs, { box: fallbackBox });
+    const frameText = frame.created ? `新帧 ${frame.image.title}` : `${assetImageIdMark(frame.image)} ${frame.image.title}`;
+    gameMacroStatusText.value = `录制宏：${frameText}，已生成 ${shape.title}`;
+    if (gameMacroConfig.value.annotationMode === 'ai') {
+      void refineRecordedGameShapeWithAi(
+        frame.image,
+        shape,
+        action,
+        point,
+        endPoint,
+        durationMs,
+        currentFrameDataUrl,
+        fallbackBox,
+      );
+    }
+  } catch (error) {
+    gameMacroStatusText.value = '录制宏：记录失败';
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    gameMacroCapturePending.value = false;
+  }
+};
+
+const toggleGameMacroRecording = async () => {
+  if (!selectedEntryId.value) {
+    ElMessage.warning('先选择设备并连接画面');
+    return;
+  }
+  gameMacroRecording.value = !gameMacroRecording.value;
+  if (!gameMacroRecording.value) {
+    gameMacroCapturePending.value = false;
+    gameMacroPendingJump.value = null;
+    gameMacroStatusText.value = '录制宏：已停止';
+    return;
+  }
+  windowViewMode.value = 'control';
+  controlEnabled.value = true;
+  if (!streamEnabled.value || !serviceActive.value) {
+    await connectWindow();
+  } else {
+    await restartStream();
+  }
+  gameMacroStatusText.value = '录制宏：记录下一次操作';
+};
+
 const toggleVisualMacroRecording = (cardId: string) => {
   if (!selectedEntryId.value) {
     ElMessage.warning('先选择设备并连接画面');
@@ -4196,9 +5049,10 @@ const runVisualSimilarityProbeOnce = async () => {
       stopVisualSimilarityProbe();
       return;
     }
-    const similarity = instruction.scan === 'fixed'
-      ? response.fixed_similarity ?? response.similarity
-      : response.template_similarity ?? response.template_crop_similarity ?? response.similarity;
+    const similarity = response.fixed_pixel_similarity
+      ?? response.fixed_exact_pixel_similarity
+      ?? response.fixed_similarity
+      ?? response.similarity;
     visualSimilarityProbeText.value = `${Math.round(Number(similarity) || 0)}%`;
   } catch (error) {
     visualSimilarityProbeText.value = getErrorMessage(error);
@@ -4280,9 +5134,8 @@ const runScreenshotBoxMatch = async (box: OverlayBox) => {
     appendMatchResult(response, URL.createObjectURL(blob));
     await nextTick();
     syncMatchCanvas();
-    const fixedText = `原位${response.fixed_similarity ?? response.similarity}%`;
-    const templateText = response.template_similarity === undefined ? '' : ` 模板${response.template_similarity}%`;
-    ElMessage.success(`${fixedText}${templateText}`);
+    const fixedText = `原位${response.fixed_pixel_similarity ?? response.fixed_exact_pixel_similarity ?? response.fixed_similarity ?? response.similarity}%`;
+    ElMessage.success(fixedText);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   } finally {
@@ -4675,7 +5528,7 @@ const normalizeControlPoint = (point: { x: number; y: number }) => ({
   y: Math.round(clamp(point.y, 0, Math.max(0, naturalHeight.value - 1))),
 });
 
-const buildRemoteInputPayloadBase = () => ({
+const buildRemoteInputPayloadBase = (use: RuntimeChannelUse = 'frontend') => ({
   entry_id: selectedEntryId.value,
   title: targetTitle.value.trim(),
   title_match: titleMatch.value,
@@ -4688,6 +5541,7 @@ const buildRemoteInputPayloadBase = () => ({
   fixed_height: fixedFrameHeight.value,
   frame_width: naturalWidth.value,
   frame_height: naturalHeight.value,
+  input_backend: resolveRuntimeInputBackend(use),
 });
 
 const sendRemoteClick = async (point: { x: number; y: number }) => {
@@ -4764,11 +5618,13 @@ const finishControlClick = async (event: PointerEvent) => {
     const startPoint = normalizeControlPoint({ x: state.frameX, y: state.frameY });
     const endPoint = normalizeControlPoint(point);
     const durationMs = Date.now() - state.startedAt;
+    await recordGameMacroInput('drag', startPoint, endPoint, durationMs);
     await recordVisualMacroInput('drag', startPoint, endPoint, durationMs);
     void sendRemoteDrag(startPoint, endPoint, durationMs);
     return;
   }
   const clickPoint = normalizeControlPoint(point);
+  await recordGameMacroInput('click', clickPoint);
   await recordVisualMacroInput('click', clickPoint);
   void sendRemoteClick(clickPoint);
 };
@@ -5358,6 +6214,7 @@ const startPolling = () => {
   pollTimer = window.setInterval(() => {
     if (windowViewMode.value === 'off') return;
     void loadRuntimeStatus(true);
+    void refreshCaptureRuntimeStatus();
   }, 5000);
 };
 
@@ -5371,7 +6228,7 @@ const stopPolling = () => {
 watch(layerVisible, drawOverlay);
 watch(boxes, drawOverlay, { deep: true });
 watch(
-  [trimBorderText, rotateDegrees, fps, quality, autoDismissPopup],
+  [trimBorderText, rotateDegrees, fps, autoDismissPopup, mumuChannel],
   persistWindowConfig,
 );
 watch(displayScale, syncCanvasSoon);
@@ -5406,8 +6263,13 @@ watch(visualMacroDefaultPointRadius, (value) => {
 watch(visualMacroDefaultPixelTolerance, (value) => {
   setVisualMacroDefaultPixelTolerance(value);
 });
+watch(gameMacroConfig, (value) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_MACRO_CONFIG_STORAGE_KEY, JSON.stringify(normalizeGameMacroConfig(value)));
+}, { deep: true });
 
 onMounted(async () => {
+  loadGameMacroConfig();
   window.addEventListener('keydown', handleKeydown);
   window.addEventListener('keyup', handleKeyup);
   window.addEventListener('blur', handleWindowBlur);
@@ -5424,17 +6286,28 @@ onMounted(async () => {
   if (selectedEntryId.value) {
     persistEntrySelection(selectedEntryId.value);
     persistWindowSelection();
+    await loadEntryAssetTree(selectedEntryId.value);
     if (windowViewMode.value !== 'off') {
-      await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+      await connectWindow();
     }
   }
+  void ensureCaptureRuntime();
   startPolling();
+  void loadStepperLogs();
   void ensureSelectedImagePreview();
   void nextTick(syncCanvas);
 });
 
 onBeforeUnmount(() => {
+  if (assetTreeSaveTimer) {
+    window.clearTimeout(assetTreeSaveTimer);
+    assetTreeSaveTimer = null;
+  }
   stopPolling();
+  stopAdbFramePolling();
+  stopActualFpsSampler();
+  stopBurstCapture();
+  resetActualFps();
   window.removeEventListener('keydown', handleKeydown);
   window.removeEventListener('keyup', handleKeyup);
   window.removeEventListener('blur', handleWindowBlur);
@@ -5449,9 +6322,12 @@ onBeforeUnmount(() => {
   cancelShapeDraft();
   finishShapeDrag();
   resizeObserver?.disconnect();
+  revokeAdbFrameUrl();
+  releaseBurstPreviewUrls();
   if (streamImageRef.value) streamImageRef.value.src = '';
   revokeScreenshotImageUrl();
   clearMatchResults();
+  releaseCaptureRuntime();
 });
 
 type GameWindow3AssetNode = {
@@ -5463,7 +6339,6 @@ type GameWindow3AssetNode = {
   imageDataUrl?: string;
   width?: number;
   height?: number;
-  occlusionMaskEnabled?: boolean;
   shapes?: GameWindow3Shape[];
 };
 
@@ -5472,9 +6347,17 @@ type GameWindow3Shape = {
   kind?: 'shape' | 'group';
   title: string;
   description: string;
+  floating?: boolean;
   isSceneIdentity?: boolean;
+  sceneIdentityRole?: ShapeMatchRole;
   sceneJumpTarget?: string;
   contentDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
+  imageMatchRole?: ShapeMatchRole;
+  pixelTolerance?: number;
+  ocrMatchRole?: ShapeMatchRole;
+  ocrEnabled?: boolean;
+  ocrText?: string;
+  ocrMatchMode?: ShapeOcrMatchMode;
   maskEnabled?: boolean;
   alphaMask?: ShapeAlphaMask | null;
   toleranceEnabled?: boolean;
@@ -5512,19 +6395,83 @@ type SceneJumpEntry = {
   count: number;
 };
 
-type StepperTask = {
-  id: string;
-  type: 'go_scene';
-  targetText: string;
-  targets: GameWindow3AssetNode[];
+type StepperTask =
+  | {
+      id: string;
+      type: 'go_scene';
+      targetText: string;
+      targets: GameWindow3AssetNode[];
+    }
+  | {
+      id: string;
+      type: 'drag_shape_to_shape';
+      sourceText: string;
+      sourceShapeTitle: string;
+      targetShapeTitle: string;
+      sourceImages: GameWindow3AssetNode[];
+    }
+  | {
+      id: string;
+      type: 'daily_find';
+      query: string;
+      matchMode: ShapeOcrMatchMode;
+      completedFallbackPattern: string;
+      completedFallbackExcludePattern: string;
+      completedFallbackMinTotal: number;
+      notFoundStatus: number;
+      timeoutSeconds: number;
+      dragCount: number;
+      requireProgress: boolean;
+      openOnReady: boolean;
+      legacySource: string;
+      note: string;
+      startedAt: number;
+      attempts: number;
+    };
+
+type StepperTaskDefinition =
+  | {
+      id: string;
+      label: string;
+      type: 'go_scene';
+      targetText: string;
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'drag_shape_to_shape';
+      sourceText: string;
+      sourceShapeTitle: string;
+      targetShapeTitle: string;
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'daily_find';
+      query: string;
+      matchMode: ShapeOcrMatchMode;
+      completedFallbackPattern?: string;
+      completedFallbackExcludePattern?: string;
+      completedFallbackMinTotal?: number;
+      notFoundStatus: number;
+      timeoutSeconds: number;
+      dragCount: number;
+      requireProgress?: boolean;
+      openOnReady?: boolean;
+      legacySource?: string;
+      note?: string;
+    };
+
+type StepperTaskFunctionId = string;
+
+type StepperTaskFunctionDefinition = {
+  id: StepperTaskFunctionId;
+  label: string;
+  task?: StepperTaskDefinition;
+  presets: StepperTaskDefinition[];
 };
 
-type StepperTaskDefinition = {
-  id: string;
-  label: string;
-  type: 'go_scene';
-  targetText: string;
-};
+type DailyFindTaskDefinition = Extract<StepperTaskDefinition, { type: 'daily_find' }>;
 
 type StepperLastAction = {
   fromImageId: string;
@@ -5543,13 +6490,33 @@ type StepperSceneCandidate = {
   count: number;
 };
 
+type StepperRankedSceneCandidate = StepperSceneCandidate & {
+  layerIndex: number;
+  layerPriority: number;
+};
+
 type StepperActionEdge = {
   from: GameWindow3AssetNode;
   shape: GameWindow3Shape;
   jumpEntries: SceneJumpEntry[];
   targets: Array<{ image: GameWindow3AssetNode; count: number }>;
   isIndependentExit: boolean;
+  isNoJump: boolean;
   hasExperience: boolean;
+};
+
+type StepperLogKind = 'start' | 'wait' | 'action' | 'success' | 'stop' | 'error' | 'detail';
+
+type StepperLogEntry = FanxiuGameWindow3StepperLogEntry & {
+  id: string;
+  time: string;
+  kind: StepperLogKind | string;
+  message: string;
+};
+
+type StepperTickOptions = {
+  verbose?: boolean;
+  waitOnIdle?: boolean;
 };
 
 type DiscriminatorGroupMember = {
@@ -5578,33 +6545,281 @@ type ShapeDraftState = {
   pointerId: number;
   startX: number;
   startY: number;
+  rect: DOMRect;
 };
 
 const GAME_WINDOW3_STORAGE_KEY = 'fanxiu.gameWindow3.assetTree.v1';
 const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorGroups.v1';
+const GAME_WINDOW3_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow3.uiState.v1';
+const GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY = 'fanxiu.gameWindow3.occlusionMaskEnabled.v1';
+const GAME_WINDOW3_STEPPER_TASKS_STORAGE_KEY = 'fanxiu.gameWindow3.stepperTasks.v1';
+const GAME_WINDOW3_STEPPER_SELECTED_FUNCTION_STORAGE_KEY = 'fanxiu.gameWindow3.selectedStepperFunction.v1';
+const GAME_WINDOW3_STEPPER_SELECTED_TASK_STORAGE_KEY = 'fanxiu.gameWindow3.selectedStepperTask.v1';
+const STEPPER_SCENE_MATCH_THRESHOLD = 80;
+const STEPPER_LOG_PAGE_SIZE = 20;
 const annotationCanvasRef = ref<HTMLElement | null>(null);
 const selectedAssetId = ref<string | null>(null);
 const selectedShapeId = ref<string | null>(null);
+const selectedShapeIds = ref<string[]>([]);
+const shapeSelectionAnchorId = ref<string | null>(null);
+const globalOcclusionMaskEnabled = ref(false);
+const copiedShapes = ref<GameWindow3Shape[]>([]);
+const expandedAssetNodeIds = ref<string[]>([]);
+const expandedShapeNodeIds = ref<string[]>([]);
 const assetImagePreviewUrls = ref<Record<string, string>>({});
-const stepperTaskDefinitions: StepperTaskDefinition[] = [
+const assetImagePreviewLoadingIds = ref<Record<string, boolean>>({});
+const dailyTaskPresetToDefinition = (
+  preset: DailyTaskPreset,
+  openOnReady = false,
+): DailyFindTaskDefinition => ({
+  id: openOnReady ? preset.id.replace('daily-find-', 'daily-enter-') : preset.id,
+  label: preset.label,
+  type: 'daily_find',
+  query: preset.query,
+  matchMode: preset.matchMode,
+  completedFallbackPattern: preset.completedFallbackPattern,
+  completedFallbackExcludePattern: preset.completedFallbackExcludePattern,
+  completedFallbackMinTotal: preset.completedFallbackMinTotal,
+  notFoundStatus: preset.notFoundStatus,
+  timeoutSeconds: preset.timeoutSeconds,
+  dragCount: preset.dragCount,
+  requireProgress: preset.requireProgress,
+  openOnReady,
+  legacySource: preset.legacySource,
+  note: preset.note,
+});
+
+const defaultDailyFindTaskDefinitions = (): DailyFindTaskDefinition[] => (
+  defaultDailyTaskPresets().map((preset) => dailyTaskPresetToDefinition(preset))
+);
+
+const defaultDailyEnterTaskDefinitions = (): DailyFindTaskDefinition[] => (
+  defaultDailyTaskPresets().map((preset) => dailyTaskPresetToDefinition(preset, true))
+);
+
+const defaultStepperTaskDefinitions = (): StepperTaskDefinition[] => [
   {
     id: 'go-world',
     label: '到世界',
     type: 'go_scene',
     targetText: '世界',
   },
+  {
+    id: 'hide-floating-window',
+    label: '隐藏浮动窗',
+    type: 'drag_shape_to_shape',
+    sourceText: '#58',
+    sourceShapeTitle: '图标',
+    targetShapeTitle: '隐藏区',
+  },
+  ...defaultDailyFindTaskDefinitions(),
+  ...defaultDailyEnterTaskDefinitions(),
 ];
-const selectedStepperTaskId = ref(stepperTaskDefinitions[0]?.id ?? '');
+
+const stepperTaskFunctionIdOf = (task: StepperTaskDefinition): StepperTaskFunctionId => (
+  task.type === 'go_scene' ? task.type : (task.type === 'daily_find' ? (task.openOnReady ? 'daily_enter' : 'daily_find') : task.id)
+);
+
+const stepperTaskFunctionLabelOf = (task: StepperTaskDefinition) => (
+  task.type === 'go_scene' ? '到场景' : (task.type === 'daily_find' ? (task.openOnReady ? '日常进入' : '日常定位') : task.label)
+);
+
+const normalizeStepperTaskDefinition = (item: unknown): StepperTaskDefinition | null => {
+  if (!item || typeof item !== 'object') return null;
+  const raw = item as Partial<StepperTaskDefinition>;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+  if (!id || !label) return null;
+  if (raw.type === 'go_scene') {
+    const targetText = typeof raw.targetText === 'string' ? raw.targetText.trim() : '';
+    if (!targetText) return null;
+    return { id, label, type: 'go_scene', targetText };
+  }
+  if (raw.type === 'drag_shape_to_shape') {
+    const sourceText = typeof raw.sourceText === 'string' ? raw.sourceText.trim() : '';
+    const sourceShapeTitle = typeof raw.sourceShapeTitle === 'string' ? raw.sourceShapeTitle.trim() : '';
+    const targetShapeTitle = typeof raw.targetShapeTitle === 'string' ? raw.targetShapeTitle.trim() : '';
+    if (!sourceText || !sourceShapeTitle || !targetShapeTitle) return null;
+    return { id, label, type: 'drag_shape_to_shape', sourceText, sourceShapeTitle, targetShapeTitle };
+  }
+  if (raw.type === 'daily_find') {
+    const query = typeof raw.query === 'string' ? raw.query.trim() : '';
+    if (!query) return null;
+    const notFoundStatus = Number(raw.notFoundStatus);
+    const timeoutSeconds = Number(raw.timeoutSeconds);
+    const dragCount = Number(raw.dragCount);
+    const completedFallbackMinTotal = Number(raw.completedFallbackMinTotal);
+    return {
+      id,
+      label,
+      type: 'daily_find',
+      query,
+      matchMode: raw.matchMode === 'exact' || raw.matchMode === 'wildcard' || raw.matchMode === 'regex' ? raw.matchMode as DailyTaskMatchMode : 'contains',
+      completedFallbackPattern: typeof raw.completedFallbackPattern === 'string' ? raw.completedFallbackPattern.trim() : '',
+      completedFallbackExcludePattern: typeof raw.completedFallbackExcludePattern === 'string' ? raw.completedFallbackExcludePattern.trim() : '',
+      completedFallbackMinTotal: Number.isFinite(completedFallbackMinTotal) ? Math.max(0, Math.round(completedFallbackMinTotal)) : 0,
+      notFoundStatus: Number.isFinite(notFoundStatus) ? Math.round(notFoundStatus) : -1,
+      timeoutSeconds: Number.isFinite(timeoutSeconds) ? clamp(Math.round(timeoutSeconds), 1, 600) : 90,
+      dragCount: Number.isFinite(dragCount) ? clamp(Math.round(dragCount), 0, 200) : 20,
+      requireProgress: raw.requireProgress !== false,
+      openOnReady: raw.openOnReady === true || id.startsWith('daily-enter-'),
+      legacySource: typeof raw.legacySource === 'string' ? raw.legacySource.trim() : '',
+      note: typeof raw.note === 'string' ? raw.note.trim() : '',
+    };
+  }
+  return null;
+};
+
+const normalizeStepperTaskDefinitions = (items: unknown): StepperTaskDefinition[] => {
+  const defaults = defaultStepperTaskDefinitions();
+  const defaultsById = new Map(defaults.map((item) => [item.id, item]));
+  const normalized = Array.isArray(items)
+    ? items.map(normalizeStepperTaskDefinition).filter((item): item is StepperTaskDefinition => Boolean(item))
+    : [];
+  const merged = new Map<string, StepperTaskDefinition>();
+  for (const item of defaults) merged.set(item.id, item);
+  for (const item of normalized) {
+    const defaultItem = defaultsById.get(item.id);
+    if (item.type === 'daily_find' && defaultItem?.type === 'daily_find') {
+      merged.set(item.id, {
+        ...item,
+        query: defaultItem.query,
+        matchMode: defaultItem.matchMode,
+        completedFallbackPattern: defaultItem.completedFallbackPattern,
+        completedFallbackExcludePattern: defaultItem.completedFallbackExcludePattern,
+        completedFallbackMinTotal: defaultItem.completedFallbackMinTotal,
+        notFoundStatus: defaultItem.notFoundStatus,
+        timeoutSeconds: defaultItem.timeoutSeconds,
+        dragCount: defaultItem.dragCount,
+        requireProgress: defaultItem.requireProgress,
+        legacySource: item.legacySource || defaultItem.legacySource || '',
+        note: item.note || defaultItem.note || '',
+        openOnReady: item.openOnReady ?? defaultItem.openOnReady,
+      });
+    } else {
+      merged.set(item.id, item);
+    }
+  }
+  return Array.from(merged.values());
+};
+
+const loadStepperTaskDefinitions = () => {
+  if (typeof window === 'undefined') return defaultStepperTaskDefinitions();
+  try {
+    return normalizeStepperTaskDefinitions(JSON.parse(window.localStorage.getItem(GAME_WINDOW3_STEPPER_TASKS_STORAGE_KEY) || '[]'));
+  } catch {
+    return defaultStepperTaskDefinitions();
+  }
+};
+
+const loadSelectedStepperTaskId = (tasks: StepperTaskDefinition[]) => {
+  if (typeof window === 'undefined') return tasks[0]?.id ?? '';
+  const saved = window.localStorage.getItem(GAME_WINDOW3_STEPPER_SELECTED_TASK_STORAGE_KEY) || '';
+  return tasks.some((task) => task.id === saved) ? saved : (tasks[0]?.id ?? '');
+};
+
+const loadSelectedStepperFunctionId = (tasks: StepperTaskDefinition[], selectedTaskId: string): StepperTaskFunctionId => {
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId);
+  const fallback = selectedTask ? stepperTaskFunctionIdOf(selectedTask) : (tasks[0] ? stepperTaskFunctionIdOf(tasks[0]) : 'go_scene');
+  if (typeof window === 'undefined') return fallback;
+  const saved = window.localStorage.getItem(GAME_WINDOW3_STEPPER_SELECTED_FUNCTION_STORAGE_KEY);
+  return saved && tasks.some((task) => stepperTaskFunctionIdOf(task) === saved) ? saved : fallback;
+};
+
+const stepperTaskDefinitions = ref<StepperTaskDefinition[]>(loadStepperTaskDefinitions());
+const selectedStepperTaskId = ref(loadSelectedStepperTaskId(stepperTaskDefinitions.value));
+const selectedStepperFunctionId = ref<StepperTaskFunctionId>(loadSelectedStepperFunctionId(stepperTaskDefinitions.value, selectedStepperTaskId.value));
+const stepperTaskFunctionDefinitions = computed<StepperTaskFunctionDefinition[]>(() => {
+  const grouped = new Map<StepperTaskFunctionId, StepperTaskFunctionDefinition>();
+  for (const task of stepperTaskDefinitions.value) {
+    const id = stepperTaskFunctionIdOf(task);
+    const current = grouped.get(id) ?? {
+      id,
+      label: stepperTaskFunctionLabelOf(task),
+      task,
+      presets: [],
+    };
+    if (task.type === 'go_scene' || task.type === 'daily_find') {
+      current.presets.push(task);
+      current.task = current.presets[0];
+    } else {
+      current.task = task;
+      current.presets = [];
+    }
+    grouped.set(id, current);
+  }
+  return Array.from(grouped.values());
+});
+const selectedStepperFunctionDefinition = computed(() => (
+  stepperTaskFunctionDefinitions.value.find((fn) => fn.id === selectedStepperFunctionId.value) ?? stepperTaskFunctionDefinitions.value[0] ?? null
+));
+const selectedStepperTaskDefinition = computed(() => {
+  const fn = selectedStepperFunctionDefinition.value;
+  if (!fn) return null;
+  if (!fn.presets.length) return fn.task ?? null;
+  return fn.presets.find((preset) => preset.id === selectedStepperTaskId.value) ?? fn.presets[0] ?? null;
+});
+const selectedStepperPresetDefinitions = computed(() => (
+  selectedStepperFunctionDefinition.value?.presets ?? []
+));
 const stepperRunning = ref(false);
+const stepperStepping = ref(false);
 const stepperStopRequested = ref(false);
 const stepperRunStatus = ref('');
+const stepperLogDialogVisible = ref(false);
+const stepperLogs = ref<StepperLogEntry[]>([]);
+const stepperLogPage = ref(1);
 const stepperTaskStack = ref<StepperTask[]>([]);
 const stepperLastAction = ref<StepperLastAction | null>(null);
+const stepperLastDailyFindResult = ref<StepperDailyFindResult | null>(null);
+const stepperLastDailyFindSummaryText = computed(() => {
+  const result = stepperLastDailyFindResult.value;
+  if (!result) return '';
+  const summary = result.summary;
+  const decisionText = result.decision === 'ready'
+    ? '待执行'
+    : result.decision === 'completed'
+      ? '已完成'
+      : result.decision === 'ongoing'
+        ? '进行中'
+        : result.decision === 'retry'
+          ? '需复核'
+          : '未找到';
+  const progressText = summary?.progress ? ` ${summary.progress.current}/${summary.progress.total}` : '';
+  const statusText = summary?.status ? ` ${summary.status}` : '';
+  const pointText = summary ? ` @${summary.clickPoint.x},${summary.clickPoint.y}` : '';
+  return `日常 ${decisionText} S${result.statusCode}${statusText}${progressText}${pointText}`;
+});
+const stepperLastDailyFindDetailText = computed(() => {
+  const result = stepperLastDailyFindResult.value;
+  if (!result) return '';
+  const summary = result.summary;
+  const parts = [
+    `查询：${result.query}`,
+    result.matchedText ? `命中：${result.matchedText}` : '',
+    `判断：${result.decision}`,
+    `状态码：${result.statusCode}`,
+    `原因：${result.reason}`,
+    summary?.anchorText ? `锚点：${summary.anchorText}` : '',
+    summary?.candidateText && summary.candidateText !== summary?.anchorText ? `候选行：${summary.candidateText}` : '',
+    summary?.status ? `状态：${summary.status}` : '',
+    summary?.statusText && summary.statusText !== summary?.status ? `状态字段：${summary.statusText}` : '',
+    summary?.progress ? `进度：${summary.progress.current}/${summary.progress.total}` : '',
+    summary?.progressText ? `进度字段：${summary.progressText}` : '',
+    summary ? `点击点：${summary.clickPoint.x},${summary.clickPoint.y}` : '',
+    summary ? `来源：${summary.source}` : '',
+  ].filter(Boolean);
+  return parts.join('\n');
+});
+const stepperTriedActionEdges = ref<Set<string>>(new Set());
+const stepperTickCount = ref(0);
 const shapeDragState = ref<ShapeDragState | null>(null);
 const shapeDraftState = ref<ShapeDraftState | null>(null);
 const shapeDraftBox = ref<GameWindow3Shape | null>(null);
 const shapeDetectingId = ref<string | null>(null);
 const shapeDetectResults = ref<Record<string, string>>({});
+const shapeDetectLiveBoxes = ref<FanxiuGameWindow2MatchBox[]>([]);
+const shapeDetectSeq = ref(0);
 const shapeMaskDialogVisible = ref(false);
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
@@ -5618,6 +6833,7 @@ const shapeMaskStats = ref<{
   height: number;
   min: Uint8ClampedArray;
   max: Uint8ClampedArray;
+  baseAlpha: Uint8ClampedArray | null;
   reference: ImageData | null;
 } | null>(null);
 const shapeToleranceDialogVisible = ref(false);
@@ -5680,6 +6896,13 @@ const shapeTreeProps = {
   label: 'title',
 };
 
+type GameWindow3UiState = {
+  selectedAssetId?: string | null;
+  selectedShapeId?: string | null;
+  expandedAssetNodeIds?: string[];
+  expandedShapeNodeIds?: string[];
+};
+
 const createAssetId = (prefix: string) => prefix + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
 
 const createAssetImageNode = (
@@ -5690,7 +6913,6 @@ const createAssetImageNode = (
   type: 'image',
   title,
   ...options,
-  occlusionMaskEnabled: false,
   shapes: [],
 });
 
@@ -5707,13 +6929,46 @@ const normalizeShapeContentDirection = (value: unknown): GameWindow3Shape['conte
   value === 'up' || value === 'down' || value === 'left' || value === 'right' ? value : 'none'
 );
 
+const normalizeShapePixelTolerance = (value: unknown) => {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 0, 255) : 5;
+};
+
+const normalizeShapeMatchRole = (value: unknown, fallback: ShapeMatchRole = 'off'): ShapeMatchRole => (
+  value === 'optional' || value === 'required' || value === 'off' ? value : fallback
+);
+
+const normalizeShapeOcrMatchMode = (value: unknown): ShapeOcrMatchMode => (
+  value === 'exact' || value === 'wildcard' || value === 'regex' ? value : 'contains'
+);
+
+const SHAPE_MATCH_ROLE_ORDER: ShapeMatchRole[] = ['off', 'required', 'optional'];
+const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
+  off: '关',
+  optional: '定',
+  required: '必',
+}[role]);
+const shapeMatchRoleTitle = (kind: 'image' | 'ocr' | 'scene', role: ShapeMatchRole) => {
+  const name = kind === 'image' ? '图像' : (kind === 'ocr' ? 'OCR' : '场景标识');
+  return {
+    off: `${name}：不要求`,
+    optional: `${name}：命中即定`,
+    required: `${name}：必须命中`,
+  }[role];
+};
+const nextShapeMatchRole = (role: ShapeMatchRole) => {
+  const current = normalizeShapeMatchRole(role);
+  const index = SHAPE_MATCH_ROLE_ORDER.indexOf(current);
+  return SHAPE_MATCH_ROLE_ORDER[(index + 1) % SHAPE_MATCH_ROLE_ORDER.length];
+};
+
 const parseSceneJumpEntry = (value: string): SceneJumpEntry | null => {
   const text = value.trim();
   if (!text || text === '?') return null;
   if (text === '-1') return { label: '-1', count: 0 };
   const match = text.match(/^(.+?)\((\d+)\)$/);
   const label = (match ? match[1] : text).trim();
-  if (!label || label === '?' || label === '-1') return null;
+  if (!label || label === '?') return null;
   const count = match ? Math.max(0, Math.floor(Number(match[2]) || 0)) : 0;
   return { label, count };
 };
@@ -5746,20 +7001,47 @@ const normalizeSceneJumpTargetText = (value: string | number | null | undefined)
   return serializeSceneJumpEntries(parseSceneJumpEntries(value));
 };
 
-const normalizeShapes = (shapes: GameWindow3Shape[] = []): GameWindow3Shape[] => shapes.flatMap((shape) => {
+const DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION = '日常滚动窗口内的单个任务块模板。它本身是普通 shape，同时作为字段子树的父节点；运行时由任务块模板整体浮动，子字段只按父 shape 相对位置读取状态、次数和活跃度。';
+
+const isDailyTaskBlockTemplateShape = (shape: GameWindow3Shape) => (
+  shape.id === 'shape-daily-task-block-template' || shape.title === '任务块模板'
+);
+
+const normalizeShapes = (
+  shapes: GameWindow3Shape[] = [],
+  parentIsDailyTaskBlockTemplate = false,
+): GameWindow3Shape[] => shapes.flatMap((shape) => {
   if (shape.id === 'scene-identity') {
-    return normalizeShapes(shape.children ?? []);
+    return normalizeShapes(shape.children ?? [], parentIsDailyTaskBlockTemplate);
   }
+  const isDailyTaskBlockTemplate = isDailyTaskBlockTemplateShape(shape);
+  const isDailyTaskBlockField = parentIsDailyTaskBlockTemplate;
+  const normalizedSceneIdentityRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+  const normalizedImageMatchRole = normalizeShapeMatchRole(
+    shape.imageMatchRole,
+    shape.floating ? 'required' : (normalizedSceneIdentityRole !== 'off' ? normalizedSceneIdentityRole : 'off'),
+  );
+  const normalizedOcrMatchRole = normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
   return [{
     ...shape,
-    kind: shape.kind === 'group' ? 'group' : 'shape',
+    kind: isDailyTaskBlockTemplate ? 'shape' : (shape.kind === 'group' ? 'group' : 'shape'),
     title: typeof shape.title === 'string' ? shape.title : '',
-    description: typeof shape.description === 'string' ? shape.description : '',
-    isSceneIdentity: Boolean(shape.isSceneIdentity),
+    description: isDailyTaskBlockTemplate
+      ? DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION
+      : (typeof shape.description === 'string' ? shape.description : ''),
+    floating: isDailyTaskBlockField ? false : Boolean(shape.floating),
+    isSceneIdentity: normalizedSceneIdentityRole !== 'off',
+    sceneIdentityRole: normalizedSceneIdentityRole,
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
       ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
       : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
     contentDirection: normalizeShapeContentDirection(shape.contentDirection),
+    imageMatchRole: normalizedImageMatchRole,
+    pixelTolerance: normalizeShapePixelTolerance(shape.pixelTolerance),
+    ocrMatchRole: normalizedOcrMatchRole,
+    ocrEnabled: Boolean(shape.ocrEnabled),
+    ocrText: typeof shape.ocrText === 'string' ? shape.ocrText : '',
+    ocrMatchMode: normalizeShapeOcrMatchMode(shape.ocrMatchMode),
     maskEnabled: Boolean(shape.maskEnabled),
     alphaMask: shape.alphaMask && typeof shape.alphaMask === 'object'
       ? {
@@ -5789,7 +7071,7 @@ const normalizeShapes = (shapes: GameWindow3Shape[] = []): GameWindow3Shape[] =>
     y: typeof shape.y === 'number' ? shape.y : 0,
     w: typeof shape.w === 'number' ? shape.w : 0.1,
     h: typeof shape.h === 'number' ? shape.h : 0.1,
-    children: normalizeShapes(shape.children ?? []),
+    children: normalizeShapes(shape.children ?? [], isDailyTaskBlockTemplate),
   }];
 });
 
@@ -5800,17 +7082,23 @@ const normalizeAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode
       children: normalizeAssetTree(node.children ?? []),
     };
   }
+  const normalizedNode = { ...node } as GameWindow3AssetNode & { occlusionMaskEnabled?: boolean };
+  delete normalizedNode.occlusionMaskEnabled;
   return {
-    ...node,
+    ...normalizedNode,
     filename: typeof node.filename === 'string' ? node.filename : undefined,
     imageDataUrl: !node.filename && typeof node.imageDataUrl === 'string' ? node.imageDataUrl : undefined,
     width: typeof node.width === 'number' ? node.width : undefined,
     height: typeof node.height === 'number' ? node.height : undefined,
-    occlusionMaskEnabled: Boolean(node.occlusionMaskEnabled),
     shapes: normalizeShapes(node.shapes ?? []),
     children: normalizeAssetTree(node.children ?? []),
   };
 });
+
+const loadGlobalOcclusionMaskEnabled = () => {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY) === 'true';
+};
 
 const loadAssetTree = (): GameWindow3AssetNode[] => {
   if (typeof window === 'undefined') return createDefaultAssetTree();
@@ -5848,7 +7136,208 @@ const sendRemoteText = async (text: string) => {
   }
 };
 
+globalOcclusionMaskEnabled.value = loadGlobalOcclusionMaskEnabled();
+
 const assetTree = ref<GameWindow3AssetNode[]>(loadAssetTree());
+const assetTreeBackendHydrating = ref(false);
+const assetTreeBackendUpdatedAt = ref(0);
+let assetTreeSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+const cloneAssetTree = (nodes: GameWindow3AssetNode[]) => (
+  JSON.parse(JSON.stringify(nodes)) as GameWindow3AssetNode[]
+);
+
+const assetNodeMergeKey = (node: GameWindow3AssetNode) => (
+  node.type === 'image'
+    ? `image:${node.filename || node.title}`
+    : `folder:${node.title}`
+);
+
+const collectAssetNodeMergeKeys = (nodes: GameWindow3AssetNode[], keys = new Set<string>()) => {
+  for (const node of nodes) {
+    keys.add(assetNodeMergeKey(node));
+    collectAssetNodeMergeKeys(node.children ?? [], keys);
+  }
+  return keys;
+};
+
+const findMergeTargetFolder = (nodes: GameWindow3AssetNode[], title: string) => {
+  for (const node of nodes) {
+    if (node.type === 'folder' && node.title === title) return node;
+    const found = findMergeTargetFolder(node.children ?? [], title);
+    if (found) return found;
+  }
+  return null;
+};
+
+const findAssetNodeByMergeKey = (nodes: GameWindow3AssetNode[], key: string): GameWindow3AssetNode | null => {
+  for (const node of nodes) {
+    if (assetNodeMergeKey(node) === key) return node;
+    const found = findAssetNodeByMergeKey(node.children ?? [], key);
+    if (found) return found;
+  }
+  return null;
+};
+
+const mergeDuplicateAssetNode = (target: GameWindow3AssetNode, source: GameWindow3AssetNode) => {
+  if (!target.filename && source.filename) target.filename = source.filename;
+  if (!target.imageDataUrl && source.imageDataUrl) target.imageDataUrl = source.imageDataUrl;
+  if (!target.width && source.width) target.width = source.width;
+  if (!target.height && source.height) target.height = source.height;
+  if (target.type === 'folder' && source.type === 'folder') {
+    target.children = mergeAssetTreeNodes(target.children ?? [], source.children ?? []);
+  }
+  if (target.type === 'image' && source.type === 'image') {
+    const shapeIds = new Set((target.shapes ?? []).map((shape) => shape.id));
+    const extraShapes = (source.shapes ?? []).filter((shape) => !shapeIds.has(shape.id));
+    if (extraShapes.length) {
+      target.shapes = [
+        ...(target.shapes ?? []),
+        ...(JSON.parse(JSON.stringify(extraShapes)) as GameWindow3Shape[]),
+      ];
+    }
+  }
+};
+
+const removeAssetNodeByReference = (
+  nodes: GameWindow3AssetNode[],
+  target: GameWindow3AssetNode,
+): boolean => {
+  const index = nodes.indexOf(target);
+  if (index >= 0) {
+    nodes.splice(index, 1);
+    return true;
+  }
+  return nodes.some((node) => removeAssetNodeByReference(node.children ?? [], target));
+};
+
+const compactDuplicateAssetNodes = (nodes: GameWindow3AssetNode[]) => {
+  const merged = cloneAssetTree(nodes);
+  const seen = new Map<string, GameWindow3AssetNode>();
+  const visit = (items: GameWindow3AssetNode[]) => {
+    for (const node of [...items]) {
+      const key = assetNodeMergeKey(node);
+      const previous = seen.get(key);
+      if (previous && previous !== node) {
+        mergeDuplicateAssetNode(node, previous);
+        removeAssetNodeByReference(merged, previous);
+        seen.set(key, node);
+      } else {
+        seen.set(key, node);
+      }
+      visit(node.children ?? []);
+    }
+  };
+  visit(merged);
+  return merged;
+};
+
+const mergeAssetTreeNodes = (baseNodes: GameWindow3AssetNode[], extraNodes: GameWindow3AssetNode[]) => {
+  const merged = cloneAssetTree(baseNodes);
+  const knownKeys = collectAssetNodeMergeKeys(merged);
+  const appendMissing = (target: GameWindow3AssetNode[], incoming: GameWindow3AssetNode[]) => {
+    for (const node of incoming) {
+      const key = assetNodeMergeKey(node);
+      const existingNode = findAssetNodeByMergeKey(merged, key);
+      if (existingNode) mergeDuplicateAssetNode(existingNode, node);
+      if (node.type === 'folder') {
+        const targetFolder = findMergeTargetFolder(merged, node.title);
+        if (targetFolder) {
+          targetFolder.children = targetFolder.children ?? [];
+          appendMissing(targetFolder.children, node.children ?? []);
+          continue;
+        }
+      }
+      if (knownKeys.has(key)) continue;
+      const cloned = cloneAssetTree([node])[0];
+      target.push(cloned);
+      collectAssetNodeMergeKeys([cloned], knownKeys);
+    }
+  };
+  appendMissing(merged, extraNodes);
+  return compactDuplicateAssetNodes(merged);
+};
+
+const mergeEntryAssetTrees = (localTree: GameWindow3AssetNode[], backendTree: GameWindow3AssetNode[]) => {
+  const mergedTree = mergeAssetTreeNodes(backendTree, localTree);
+  return compactDuplicateAssetNodes(mergedTree);
+};
+
+const selectFirstAvailableAsset = () => {
+  if (selectedAssetId.value && findAssetNode(assetTree.value, selectedAssetId.value)) return;
+  selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
+};
+
+const flushAssetTreeToBackend = async (entryId: string, tree: GameWindow3AssetNode[]) => {
+  try {
+    const response = await saveFanxiuGameWindow3AssetTree(entryId, tree);
+    assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
+  } catch {
+    // 文件树仍保留在本地缓存；后端短暂失败时不打断标注操作。
+  }
+};
+
+const scheduleAssetTreeBackendSave = () => {
+  if (assetTreeBackendHydrating.value || !selectedEntryId.value) return;
+  const entryId = selectedEntryId.value;
+  const tree = JSON.parse(JSON.stringify(assetTree.value)) as GameWindow3AssetNode[];
+  if (assetTreeSaveTimer) window.clearTimeout(assetTreeSaveTimer);
+  assetTreeSaveTimer = window.setTimeout(() => {
+    assetTreeSaveTimer = null;
+    void flushAssetTreeToBackend(entryId, tree);
+  }, 400);
+};
+
+const loadEntryAssetTree = async (entryId: string) => {
+  if (!entryId) return;
+  assetTreeBackendHydrating.value = true;
+  try {
+    const localTree = loadAssetTree();
+    const response = await getFanxiuGameWindow3AssetTree(entryId);
+    if (response.exists && Array.isArray(response.tree) && response.tree.length) {
+      const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
+      const mergedTree = mergeEntryAssetTrees(localTree, backendTree);
+      assetTree.value = mergedTree;
+      if (JSON.stringify(mergedTree) !== JSON.stringify(backendTree)) {
+        void flushAssetTreeToBackend(entryId, mergedTree);
+      }
+      assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
+    } else {
+      assetTree.value = localTree;
+      void flushAssetTreeToBackend(entryId, localTree);
+    }
+    selectFirstAvailableAsset();
+    void nextTick(syncCanvas);
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    assetTreeBackendHydrating.value = false;
+  }
+};
+
+const refreshEntryAssetTreeIfChanged = async () => {
+  if (!selectedEntryId.value || assetTreeBackendHydrating.value) return;
+  const entryId = selectedEntryId.value;
+  const selectedNode = selectedAssetNode.value;
+  const selectedKey = selectedNode ? assetNodeMergeKey(selectedNode) : '';
+  try {
+    const response = await getFanxiuGameWindow3AssetTree(entryId);
+    const backendUpdatedAt = Number(response.updated_at) || 0;
+    if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
+    assetTreeBackendHydrating.value = true;
+    const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
+    const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
+    assetTree.value = mergedTree;
+    assetTreeBackendUpdatedAt.value = backendUpdatedAt;
+    if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
+    const restoredNode = selectedKey ? findAssetNodeByMergeKey(mergedTree, selectedKey) : null;
+    selectedAssetId.value = restoredNode?.id ?? findFirstImageNode(mergedTree)?.id ?? null;
+  } catch {
+    // 切换节点时的后台刷新不应打断用户选择。
+  } finally {
+    assetTreeBackendHydrating.value = false;
+  }
+};
 
 const normalizeDiscriminatorGroups = (groups: DiscriminatorGroup[] = []): DiscriminatorGroup[] => groups.map((group) => ({
   id: typeof group.id === 'string' ? group.id : createAssetId('disc-group'),
@@ -5878,6 +7367,34 @@ const loadDiscriminatorGroups = (): DiscriminatorGroup[] => {
 };
 
 const discriminatorGroups = ref<DiscriminatorGroup[]>(loadDiscriminatorGroups());
+
+const normalizeStringIdArray = (value: unknown) => (
+  Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string => typeof id === 'string' && Boolean(id)))]
+    : []
+);
+
+const loadGameWindow3UiState = (): GameWindow3UiState => {
+  if (typeof window === 'undefined') return {};
+  const raw = window.localStorage.getItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as GameWindow3UiState;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const persistGameWindow3UiState = () => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY, JSON.stringify({
+    selectedAssetId: selectedAssetId.value,
+    selectedShapeId: selectedShapeId.value,
+    expandedAssetNodeIds: expandedAssetNodeIds.value,
+    expandedShapeNodeIds: expandedShapeNodeIds.value,
+  }));
+};
 
 const findAssetNode = (nodes: GameWindow3AssetNode[], id: string | null): GameWindow3AssetNode | null => {
   if (!id) return null;
@@ -5982,6 +7499,7 @@ const findAssetParentChildren = (
 };
 
 const selectedAssetNode = computed(() => findAssetNode(assetTree.value, selectedAssetId.value));
+const assetContextMenuNode = computed(() => findAssetNode(assetTree.value, assetContextMenu.value.nodeId));
 const selectedImageNode = computed(() => {
   const node = selectedAssetNode.value;
   return node?.type === 'image' ? node : null;
@@ -5995,6 +7513,10 @@ const selectedImagePreviewUrl = computed(() => {
   const image = selectedImageNode.value;
   if (!image) return '';
   return assetImagePreviewUrls.value[image.id] || image.imageDataUrl || '';
+});
+const selectedImagePreviewLoading = computed(() => {
+  const image = selectedImageNode.value;
+  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewLoadingIds.value[image.id]);
 });
 const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
 const isDrawableShape = (shape: GameWindow3Shape) => shape.kind !== 'group';
@@ -6026,6 +7548,57 @@ const findShapeById = (shapes: GameWindow3Shape[], id: string | null): GameWindo
   }
   return null;
 };
+
+const filterExistingAssetNodeIds = (ids: string[]) => ids.filter((id) => Boolean(findAssetNode(assetTree.value, id)));
+const filterExistingShapeNodeIds = (ids: string[]) => {
+  const image = selectedImageNode.value;
+  if (!image) return [];
+  return ids.filter((id) => Boolean(findShapeById(image.shapes ?? [], id)));
+};
+
+const collectAssetFolderIds = (nodes: GameWindow3AssetNode[]): string[] => nodes.flatMap((node) => [
+  ...(node.type === 'folder' ? [node.id] : []),
+  ...collectAssetFolderIds(node.children ?? []),
+]);
+
+const collectExpandableShapeIds = (shapes: GameWindow3Shape[]): string[] => shapes.flatMap((shape) => [
+  ...((shape.children ?? []).length ? [shape.id] : []),
+  ...collectExpandableShapeIds(shape.children ?? []),
+]);
+
+const restoreGameWindow3UiState = () => {
+  const state = loadGameWindow3UiState();
+  const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
+  const savedAsset = savedAssetId ? findAssetNode(assetTree.value, savedAssetId) : null;
+  selectedAssetId.value = savedAsset?.id ?? findFirstImageNode(assetTree.value)?.id ?? null;
+  expandedAssetNodeIds.value = Array.isArray(state.expandedAssetNodeIds)
+    ? filterExistingAssetNodeIds(normalizeStringIdArray(state.expandedAssetNodeIds))
+    : collectAssetFolderIds(assetTree.value);
+
+  const image = selectedImageNode.value;
+  const savedShapeId = typeof state.selectedShapeId === 'string' ? state.selectedShapeId : null;
+  selectedShapeId.value = image && savedShapeId && findShapeById(image.shapes ?? [], savedShapeId)
+    ? savedShapeId
+    : (image ? flattenShapes(image.shapes ?? [])[0]?.id ?? null : null);
+  expandedShapeNodeIds.value = Array.isArray(state.expandedShapeNodeIds)
+    ? filterExistingShapeNodeIds(normalizeStringIdArray(state.expandedShapeNodeIds))
+    : collectExpandableShapeIds(image?.shapes ?? []);
+};
+
+const setExpandedNodeId = (ids: string[], id: string, expanded: boolean) => {
+  if (!id) return ids;
+  if (expanded) return ids.includes(id) ? ids : [...ids, id];
+  return ids.filter((item) => item !== id);
+};
+
+const setAssetNodeExpanded = (id: string, expanded: boolean) => {
+  expandedAssetNodeIds.value = setExpandedNodeId(expandedAssetNodeIds.value, id, expanded);
+};
+
+const setShapeNodeExpanded = (id: string, expanded: boolean) => {
+  expandedShapeNodeIds.value = setExpandedNodeId(expandedShapeNodeIds.value, id, expanded);
+};
+
 const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape[] | null => {
   if (!id) return null;
   if (shapes.some((shape) => shape.id === id)) return shapes;
@@ -6035,6 +7608,26 @@ const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null):
   }
   return null;
 };
+
+const findShapeParentShape = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape | null => {
+  if (!id) return null;
+  for (const shape of shapes) {
+    if ((shape.children ?? []).some((child) => child.id === id)) return shape;
+    const found = findShapeParentShape(shape.children ?? [], id);
+    if (found) return found;
+  }
+  return null;
+};
+
+const isShapeDescendantOf = (shape: GameWindow3Shape, ancestorId: string): boolean => (
+  (shape.children ?? []).some((child) => child.id === ancestorId || isShapeDescendantOf(child, ancestorId))
+);
+
+const cloneShapeTreeWithNewIds = (shape: GameWindow3Shape): GameWindow3Shape => ({
+  ...JSON.parse(JSON.stringify(shape)) as GameWindow3Shape,
+  id: createAssetId('shape'),
+  children: (shape.children ?? []).map(cloneShapeTreeWithNewIds),
+});
 const annotationShapes = computed(() => flattenShapes(selectedImageShapes.value).filter(isDrawableShape));
 const occlusionMaskShapes = computed(() => (
   collectOcclusionAssetImages(assetTree.value)
@@ -6042,17 +7635,44 @@ const occlusionMaskShapes = computed(() => (
     .filter(isDrawableShape)
 ));
 const occlusionOverlayShapes = computed(() => (
-  selectedImageNode.value?.occlusionMaskEnabled ? occlusionMaskShapes.value : []
+  globalOcclusionMaskEnabled.value ? occlusionMaskShapes.value : []
 ));
 const selectedShape = computed(() => findShapeById(selectedImageShapes.value, selectedShapeId.value));
+const selectedShapeCopyCount = computed(() => {
+  if (selectedShapeIds.value.length) return selectedShapeIds.value.length;
+  return selectedShape.value ? 1 : 0;
+});
 const selectedShapeDetectResult = computed(() => (
   selectedShapeId.value ? shapeDetectResults.value[selectedShapeId.value] || '' : ''
 ));
+const selectedShapeImageMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.imageMatchRole));
+const selectedShapeOcrMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.ocrMatchRole, selectedShape.value?.ocrEnabled ? 'required' : 'off'));
+const selectedShapeSceneIdentityRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.sceneIdentityRole, selectedShape.value?.isSceneIdentity ? 'required' : 'off'));
+const cycleSelectedShapeMatchRole = (kind: 'image' | 'ocr') => {
+  const shape = selectedShape.value;
+  if (!shape || !isDrawableShape(shape)) return;
+  if (kind === 'image') {
+    shape.imageMatchRole = nextShapeMatchRole(normalizeShapeMatchRole(shape.imageMatchRole));
+    return;
+  }
+  shape.ocrMatchRole = nextShapeMatchRole(normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off'));
+  shape.ocrEnabled = shape.ocrMatchRole !== 'off';
+};
+const cycleSelectedShapeSceneIdentityRole = () => {
+  const shape = selectedShape.value;
+  if (!shape || !isDrawableShape(shape)) return;
+  shape.sceneIdentityRole = nextShapeMatchRole(normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off'));
+  shape.isSceneIdentity = shape.sceneIdentityRole !== 'off';
+  if (shape.sceneIdentityRole !== 'off' && !shapePrimaryMatchKind(shape)) {
+    shape.imageMatchRole = shape.sceneIdentityRole;
+  }
+};
 const canDetectSelectedShape = computed(() => Boolean(
   selectedEntryId.value
   && selectedImageNode.value?.filename
   && selectedShape.value
   && isDrawableShape(selectedShape.value)
+  && shapePrimaryMatchKind(selectedShape.value)
   && !shapeDetectingId.value
 ));
 const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): FanxiuGameWindow2MatchBox => {
@@ -6066,6 +7686,26 @@ const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): 
     h: Math.round(shape.h * height),
   };
 };
+
+const shapePixelTolerance = (shape: GameWindow3Shape) => normalizeShapePixelTolerance(shape.pixelTolerance);
+const shapeImageMatchRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.imageMatchRole);
+const shapeOcrMatchRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
+type ShapeMatchKind = 'image' | 'ocr';
+const shapeMatchRoleForKind = (shape: GameWindow3Shape, kind: ShapeMatchKind) => (
+  kind === 'image' ? shapeImageMatchRole(shape) : shapeOcrMatchRole(shape)
+);
+const shapeActiveMatchKinds = (shape: GameWindow3Shape): ShapeMatchKind[] => [
+  ...(shapeImageMatchRole(shape) !== 'off' ? ['image' as const] : []),
+  ...(shapeOcrMatchRole(shape) !== 'off' && shape.ocrText?.trim() ? ['ocr' as const] : []),
+];
+const shapeCanFloat = (shape: GameWindow3Shape) => Boolean(shapeActiveMatchKinds(shape).length);
+const shapePrimaryMatchKind = (shape: GameWindow3Shape): ShapeMatchKind | null => shapeActiveMatchKinds(shape)[0] ?? null;
+const shapeHasRequiredMatch = (shape: GameWindow3Shape) => (
+  shapeImageMatchRole(shape) === 'required'
+  || (shapeOcrMatchRole(shape) === 'required' && Boolean(shape.ocrText?.trim()))
+);
+const shapeSceneIdentityRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+const isSceneIdentityShape = (shape: GameWindow3Shape) => shapeSceneIdentityRole(shape) !== 'off';
 
 const shapeBoxIou = (a: GameWindow3Shape, b: GameWindow3Shape) => {
   const left = Math.max(a.x, b.x);
@@ -6107,7 +7747,7 @@ const buildOcclusionAlphaMaskDataUrl = (
   targetShape: GameWindow3Shape,
   box: FanxiuGameWindow2MatchBox,
 ) => {
-  if (!image.occlusionMaskEnabled || box.w <= 0 || box.h <= 0) return '';
+  if (!globalOcclusionMaskEnabled.value || box.w <= 0 || box.h <= 0) return '';
   const occlusionShapes = occlusionMaskShapes.value
     .filter((shape) => isDrawableShape(shape) && shape.id !== targetShape.id);
   if (!occlusionShapes.length) return '';
@@ -6132,8 +7772,8 @@ const buildOcclusionAlphaMaskDataUrl = (
   return canvas.toDataURL('image/png');
 };
 const annotationCanvasStyle = computed(() => {
-  const width = selectedImageNode.value?.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 9;
-  const height = selectedImageNode.value?.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 16;
+  const width = selectedImageNode.value?.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH;
+  const height = selectedImageNode.value?.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT;
   const scale = displayScale.value / 100;
   const stageWidth = Math.max(1, Math.round(width * scale));
   const stageHeight = Math.max(1, Math.round(height * scale));
@@ -6148,11 +7788,13 @@ const annotationContentStyle = computed(() => ({
   transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
 }));
 
-selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
+restoreGameWindow3UiState();
 
 watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(GAME_WINDOW3_STORAGE_KEY, JSON.stringify(value));
+  expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
+  scheduleAssetTreeBackendSave();
 }, { deep: true });
 
 watch(discriminatorGroups, (value) => {
@@ -6160,11 +7802,79 @@ watch(discriminatorGroups, (value) => {
   window.localStorage.setItem(GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY, JSON.stringify(value));
 }, { deep: true });
 
+watch(globalOcclusionMaskEnabled, (value) => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY, value ? 'true' : 'false');
+});
+watch(stepperTaskDefinitions, (value) => {
+  if (typeof window === 'undefined') return;
+  const normalized = normalizeStepperTaskDefinitions(value);
+  window.localStorage.setItem(GAME_WINDOW3_STEPPER_TASKS_STORAGE_KEY, JSON.stringify(normalized));
+  if (!normalized.some((task) => stepperTaskFunctionIdOf(task) === selectedStepperFunctionId.value)) {
+    selectedStepperFunctionId.value = normalized[0] ? stepperTaskFunctionIdOf(normalized[0]) : 'go_scene';
+  }
+  if (!normalized.some((task) => task.id === selectedStepperTaskId.value && stepperTaskFunctionIdOf(task) === selectedStepperFunctionId.value)) {
+    selectedStepperTaskId.value = normalized.find((task) => stepperTaskFunctionIdOf(task) === selectedStepperFunctionId.value)?.id ?? normalized[0]?.id ?? '';
+  }
+}, { deep: true });
+watch(selectedStepperFunctionId, (value) => {
+  if (typeof window !== 'undefined') window.localStorage.setItem(GAME_WINDOW3_STEPPER_SELECTED_FUNCTION_STORAGE_KEY, value);
+  const fn = selectedStepperFunctionDefinition.value;
+  if (!fn) {
+    selectedStepperTaskId.value = '';
+    return;
+  }
+  selectedStepperTaskId.value = fn.presets.length
+    ? (fn.presets.some((preset) => preset.id === selectedStepperTaskId.value) ? selectedStepperTaskId.value : fn.presets[0].id)
+    : (fn.task?.id ?? '');
+});
+watch(selectedStepperTaskId, (value) => {
+  if (typeof window === 'undefined') return;
+  if (value) {
+    window.localStorage.setItem(GAME_WINDOW3_STEPPER_SELECTED_TASK_STORAGE_KEY, value);
+    const task = stepperTaskDefinitions.value.find((item) => item.id === value);
+    if (task && stepperTaskFunctionIdOf(task) !== selectedStepperFunctionId.value) selectedStepperFunctionId.value = stepperTaskFunctionIdOf(task);
+  } else {
+    window.localStorage.removeItem(GAME_WINDOW3_STEPPER_SELECTED_TASK_STORAGE_KEY);
+  }
+});
+
 watch(selectedImageNode, (node) => {
   const firstShape = node ? flattenShapes(node.shapes ?? [])[0] ?? null : null;
-  selectedShapeId.value = firstShape?.id ?? null;
+  selectedShapeId.value = node && selectedShapeId.value && findShapeById(node.shapes ?? [], selectedShapeId.value)
+    ? selectedShapeId.value
+    : firstShape?.id ?? null;
+  selectedShapeIds.value = [];
+  shapeSelectionAnchorId.value = selectedShapeId.value;
+  expandedShapeNodeIds.value = filterExistingShapeNodeIds(expandedShapeNodeIds.value);
+  shapeDetectResults.value = {};
+  shapeDetectLiveBoxes.value = [];
+  drawOverlay();
   resetScreenshotViewState();
   void ensureSelectedImagePreview();
+});
+
+watch(selectedShapeId, (id) => {
+  shapeDetectLiveBoxes.value = [];
+  drawOverlay();
+  if (!id || !shapeDetectResults.value[id]) return;
+  const next = { ...shapeDetectResults.value };
+  delete next[id];
+  shapeDetectResults.value = next;
+});
+
+watch(
+  [selectedAssetId, selectedShapeId, expandedAssetNodeIds, expandedShapeNodeIds],
+  persistGameWindow3UiState,
+  { deep: true },
+);
+
+watch(stepperLogs, () => {
+  if (stepperLogPage.value > stepperLogPageCount.value) goStepperLogLastPage();
+}, { deep: true });
+
+watch(stepperLogDialogVisible, (visible) => {
+  if (visible) goStepperLogLastPage();
 });
 
 watch(shapeDiscriminatorNewImageId, () => {
@@ -6224,13 +7934,23 @@ const getAssetImageDataUrl = async (image: GameWindow3AssetNode) => {
   if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
   if (image.imageDataUrl) return image.imageDataUrl;
   if (!selectedEntryId.value || !image.filename) return '';
-  const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, image.filename);
-  const dataUrl = await blobToDataUrl(blob);
-  assetImagePreviewUrls.value = {
-    ...assetImagePreviewUrls.value,
-    [image.id]: dataUrl,
+  assetImagePreviewLoadingIds.value = {
+    ...assetImagePreviewLoadingIds.value,
+    [image.id]: true,
   };
-  return dataUrl;
+  try {
+    const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, image.filename);
+    const dataUrl = await blobToDataUrl(blob);
+    assetImagePreviewUrls.value = {
+      ...assetImagePreviewUrls.value,
+      [image.id]: dataUrl,
+    };
+    return dataUrl;
+  } finally {
+    const next = { ...assetImagePreviewLoadingIds.value };
+    delete next[image.id];
+    assetImagePreviewLoadingIds.value = next;
+  }
 };
 
 const ensureSelectedImagePreview = async () => {
@@ -6243,8 +7963,280 @@ const ensureSelectedImagePreview = async () => {
   }
 };
 
-const addSavedFrameToAssetTree = (node: GameWindow3AssetNode) => {
+const insertSavedFrameNode = (node: GameWindow3AssetNode) => {
+  const selectedNode = selectedAssetNode.value;
+  if (selectedNode?.type === 'folder') {
+    selectedNode.children = selectedNode.children ?? [];
+    selectedNode.children.push(node);
+    expandedAssetNodeIds.value = setExpandedNodeId(expandedAssetNodeIds.value, selectedNode.id, true);
+    selectedAssetId.value = node.id;
+    return;
+  }
   insertAssetNodeAfterSelection(node);
+};
+
+const addSavedFrameToAssetTree = (node: GameWindow3AssetNode) => {
+  insertSavedFrameNode(node);
+};
+
+const saveFrameDataUrlToAssetTree = async (currentFrameDataUrl: string) => {
+  if (!selectedEntryId.value) return null;
+  const result = await saveFanxiuGameWindow2Frame({
+    entry_id: selectedEntryId.value,
+    title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
+    mode: 'screen',
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
+    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    current_frame_data_url: currentFrameDataUrl,
+  });
+  const node = createAssetImageNode(result.filename, {
+    filename: result.filename,
+    width: result.width,
+    height: result.height,
+  });
+  assetImagePreviewUrls.value = {
+    ...assetImagePreviewUrls.value,
+    [node.id]: currentFrameDataUrl,
+  };
+  addSavedFrameToAssetTree(node);
+  return node;
+};
+
+const gameMacroFrameTargetText = (image: GameWindow3AssetNode) => {
+  const numeric = assetNumericImageId(image);
+  return numeric !== null ? String(numeric) : image.title.trim();
+};
+
+const setGameMacroPendingJumpTarget = (targetImage: GameWindow3AssetNode) => {
+  const pending = gameMacroPendingJump.value;
+  if (!pending) return;
+  const sourceImage = findAssetNode(assetTree.value, pending.imageId);
+  const shape = sourceImage?.type === 'image' ? findShapeById(sourceImage.shapes ?? [], pending.shapeId) : null;
+  if (!shape) {
+    gameMacroPendingJump.value = null;
+    return;
+  }
+  const label = gameMacroFrameTargetText(targetImage);
+  if (label) shape.sceneJumpTarget = serializeSceneJumpEntries([{ label, count: 1 }]);
+  gameMacroPendingJump.value = null;
+};
+
+const findOrCreateGameMacroFrame = async (currentFrameDataUrl: string) => {
+  const candidates = flattenAssetImages(assetTree.value)
+    .filter((image) => image.filename && isStepperSceneAsset(image));
+  if (candidates.length) {
+    const result = await matchStepperLayer(candidates, currentFrameDataUrl, 4);
+    const best = result.candidates.find((candidate) => candidate.score >= STEPPER_SCENE_MATCH_THRESHOLD);
+    if (best) return { image: best.image, created: false, score: best.score };
+  }
+  const image = await saveFrameDataUrlToAssetTree(currentFrameDataUrl);
+  if (!image) throw new Error('保存录制帧失败');
+  return { image, created: true, score: 0 };
+};
+
+const boxToShapeRect = (
+  image: GameWindow3AssetNode,
+  box: { x: number; y: number; w: number; h: number },
+) => {
+  const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
+  const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  return {
+    x: clamp(box.x / width, 0, 1),
+    y: clamp(box.y / height, 0, 1),
+    w: clamp(box.w / width, 0.001, 1),
+    h: clamp(box.h / height, 0.001, 1),
+  };
+};
+
+const pointShapeBox = (point: VisualPoint, image: GameWindow3AssetNode) => {
+  const size = gameMacroConfig.value.defaultShapeSize;
+  const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || size;
+  const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || size;
+  const w = Math.min(size, width);
+  const h = Math.min(size, height);
+  return {
+    x: Math.round(clamp(point.x - w / 2, 0, Math.max(0, width - w))),
+    y: Math.round(clamp(point.y - h / 2, 0, Math.max(0, height - h))),
+    w,
+    h,
+  };
+};
+
+const dragShapeBox = (start: VisualPoint, end: VisualPoint, image: GameWindow3AssetNode) => {
+  const size = gameMacroConfig.value.defaultShapeSize;
+  const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || size;
+  const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || size;
+  const minX = Math.min(start.x, end.x);
+  const maxX = Math.max(start.x, end.x);
+  const minY = Math.min(start.y, end.y);
+  const maxY = Math.max(start.y, end.y);
+  const x = Math.round(clamp(minX - size / 2, 0, Math.max(0, width - 1)));
+  const y = Math.round(clamp(minY - size / 2, 0, Math.max(0, height - 1)));
+  const right = Math.round(clamp(maxX + size / 2, x + 1, width));
+  const bottom = Math.round(clamp(maxY + size / 2, y + 1, height));
+  return { x, y, w: right - x, h: bottom - y };
+};
+
+const dragDirectionOf = (start: VisualPoint, end: VisualPoint): GameWindow3Shape['contentDirection'] => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+  return dy >= 0 ? 'down' : 'up';
+};
+
+const gameMacroDragDurationMs = (durationMs: number) => (
+  gameMacroConfig.value.dragDurationMode === 'fixed'
+    ? gameMacroConfig.value.defaultDragDurationMs
+    : Math.round(durationMs)
+);
+
+const buildGameMacroFallbackBox = (
+  image: GameWindow3AssetNode,
+  action: 'click' | 'drag',
+  point: VisualPoint,
+  endPoint: VisualPoint | null,
+): FanxiuGameWindow2MatchBox => {
+  const box = action === 'drag' && endPoint ? dragShapeBox(point, endPoint, image) : pointShapeBox(point, image);
+  return { name: action === 'drag' ? '拖拽' : '点击', ...box };
+};
+
+const gameMacroFrameSize = (image: GameWindow3AssetNode) => ({
+  width: image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1,
+  height: image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1,
+});
+
+const applyGameMacroShapeAnnotation = (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  annotation: GameMacroShapeAnnotation,
+  action: 'click' | 'drag',
+  durationMs: number,
+) => {
+  const rect = boxToShapeRect(image, annotation.box);
+  shape.x = rect.x;
+  shape.y = rect.y;
+  shape.w = rect.w;
+  shape.h = rect.h;
+  const label = (annotation.label || '').trim();
+  if (label) shape.title = label;
+  const descriptions: string[] = [];
+  if (action === 'drag') {
+    const mode = gameMacroConfig.value.dragDurationMode;
+    descriptions.push(`duration=${gameMacroDragDurationMs(durationMs)}ms`);
+    descriptions.push(`duration_mode=${mode}`);
+  }
+  if (annotation.usedAi) {
+    descriptions.push(`ai_confidence=${Math.round((annotation.confidence ?? 0) * 100)}%`);
+  }
+  shape.description = descriptions.join('\n');
+};
+
+const createRecordedGameShape = (
+  image: GameWindow3AssetNode,
+  action: 'click' | 'drag',
+  point: VisualPoint,
+  endPoint: VisualPoint | null,
+  durationMs: number,
+  annotation?: GameMacroShapeAnnotation,
+) => {
+  image.shapes ??= [];
+  const existingShapes = flattenShapes(image.shapes).filter(isDrawableShape);
+  const shouldMarkScene = gameMacroConfig.value.markFirstShapeAsSceneIdentity
+    && !existingShapes.some(isSceneIdentityShape);
+  const box = annotation?.box ?? buildGameMacroFallbackBox(image, action, point, endPoint);
+  const rect = boxToShapeRect(image, box);
+  const shape: GameWindow3Shape = {
+    id: createAssetId('shape'),
+    kind: 'shape',
+    title: (annotation?.label || '').trim() || (action === 'drag' ? '拖拽' : '点击'),
+    description: '',
+    floating: false,
+    isSceneIdentity: shouldMarkScene,
+    sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
+    sceneJumpTarget: '',
+    contentDirection: action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none',
+    imageMatchRole: shouldMarkScene ? 'required' : 'off',
+    pixelTolerance: 5,
+    ocrMatchRole: 'off',
+    ocrEnabled: false,
+    ocrText: '',
+    ocrMatchMode: 'contains',
+    maskEnabled: false,
+    alphaMask: null,
+    toleranceEnabled: false,
+    toleranceRange: null,
+    discriminatorEnabled: false,
+    discriminator: null,
+    discriminatorGroupId: null,
+    discriminatorValue: '',
+    ...rect,
+    children: [],
+  };
+  applyGameMacroShapeAnnotation(image, shape, annotation ?? { box }, action, durationMs);
+  image.shapes.push(shape);
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = shape.id;
+  gameMacroPendingJump.value = { imageId: image.id, shapeId: shape.id };
+  return shape;
+};
+
+const refineRecordedGameShapeWithAi = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  action: 'click' | 'drag',
+  point: VisualPoint,
+  endPoint: VisualPoint | null,
+  durationMs: number,
+  currentFrameDataUrl: string,
+  fallbackBox: FanxiuGameWindow2MatchBox,
+) => {
+  const size = gameMacroFrameSize(image);
+  const direction = action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none';
+  let response: FanxiuGameWindow3MacroAnnotateResponse | null = null;
+  try {
+    gameMacroStatusText.value = `录制宏：${shape.title} 已生成，AI 标注中`;
+    response = await annotateFanxiuGameWindow3MacroShape({
+      image_data_url: currentFrameDataUrl,
+      action,
+      start: point,
+      end: endPoint,
+      fallback_box: fallbackBox,
+      frame_width: size.width,
+      frame_height: size.height,
+      duration_ms: action === 'drag' ? gameMacroDragDurationMs(durationMs) : Math.round(durationMs),
+      direction,
+    });
+  } catch (error) {
+    gameMacroStatusText.value = `录制宏：AI 标注失败，保留工程框（${getErrorMessage(error)}）`;
+    return;
+  }
+  if (!response.ok || !response.used_ai) {
+    gameMacroStatusText.value = response.reason
+      ? `录制宏：AI 标注不可用，保留工程框（${response.reason}）`
+      : '录制宏：AI 标注不可用，保留工程框';
+    return;
+  }
+  applyGameMacroShapeAnnotation(
+    image,
+    shape,
+    {
+      box: response.box,
+      label: response.label,
+      confidence: response.confidence,
+      usedAi: true,
+    },
+    action,
+    durationMs,
+  );
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = shape.id;
+  gameMacroStatusText.value = `录制宏：AI 已修正 ${shape.title}（${Math.round(response.confidence * 100)}%）`;
 };
 
 const deleteSelectedAsset = async () => {
@@ -6260,6 +8252,7 @@ const deleteSelectedAsset = async () => {
 const selectAssetNode = (node: GameWindow3AssetNode) => {
   closeAssetContextMenu();
   selectedAssetId.value = node.id;
+  void refreshEntryAssetTreeIfChanged();
 };
 
 const closeAssetContextMenu = () => {
@@ -6295,24 +8288,46 @@ const deleteAssetFromContextMenu = async () => {
   await deleteSelectedAsset();
 };
 
-const renameAssetFromContextMenu = async () => {
-  selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
-  const node = selectedAssetNode.value;
+const selectAssetRenameInputText = async () => {
+  await nextTick();
+  const input = document.querySelector<HTMLInputElement>('.el-message-box__input input');
+  input?.focus();
+  input?.select();
+};
+
+const renameAssetNode = async (node: GameWindow3AssetNode) => {
+  selectedAssetId.value = node.id;
   closeAssetContextMenu();
-  if (!node) return;
   const nodeKindText = node.type === 'folder' ? '目录' : '图片';
   try {
-    const result = await ElMessageBox.prompt(nodeKindText + '名称', '重命名' + nodeKindText, {
+    const prompt = ElMessageBox.prompt(nodeKindText + '名称', '重命名' + nodeKindText, {
       inputValue: node.title,
       inputPattern: /\S+/,
       inputErrorMessage: '请输入' + nodeKindText + '名称',
       confirmButtonText: '保存',
       cancelButtonText: '取消',
     });
+    void selectAssetRenameInputText();
+    const result = await prompt;
     const nextTitle = String(result.value ?? '').trim();
     if (nextTitle) node.title = nextTitle;
   } catch {
     // User cancelled.
+  }
+};
+
+const resetAssetFrameFromContextMenu = async () => {
+  selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
+  const node = selectedAssetNode.value;
+  closeAssetContextMenu();
+  if (!node || node.type !== 'image' || !node.filename) return;
+  try {
+    await ElMessageBox.confirm(`用当前画面覆盖 ${node.filename}？`, '重置帧', { type: 'warning' });
+    await resetAssetFrame(node);
+    ElMessage.success(`已重置 ${node.filename}`);
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return;
+    ElMessage.error(getErrorMessage(error));
   }
 };
 
@@ -6325,9 +8340,17 @@ const addAnnotationShape = () => {
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes).filter(isDrawableShape).length + 1),
     description: '',
+    floating: false,
     isSceneIdentity: false,
+    sceneIdentityRole: 'off',
     sceneJumpTarget: '',
     contentDirection: 'none',
+    imageMatchRole: 'off',
+    pixelTolerance: 5,
+    ocrMatchRole: 'off',
+    ocrEnabled: false,
+    ocrText: '',
+    ocrMatchMode: 'contains',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -6344,19 +8367,99 @@ const addAnnotationShape = () => {
   };
   image.shapes.push(shape);
   selectedShapeId.value = shape.id;
+  selectedShapeIds.value = [];
+  shapeSelectionAnchorId.value = shape.id;
+};
+
+const isShapeSelected = (id: string) => selectedShapeId.value === id || selectedShapeIds.value.includes(id);
+
+const shapeTreeLinearIds = () => flattenShapes(selectedImageShapes.value).map((shape) => shape.id);
+
+const selectShapeRange = (fromId: string, toId: string) => {
+  const ids = shapeTreeLinearIds();
+  const fromIndex = ids.indexOf(fromId);
+  const toIndex = ids.indexOf(toId);
+  if (fromIndex < 0 || toIndex < 0) {
+    selectedShapeIds.value = [toId];
+    return;
+  }
+  const start = Math.min(fromIndex, toIndex);
+  const end = Math.max(fromIndex, toIndex);
+  selectedShapeIds.value = ids.slice(start, end + 1);
+};
+
+const selectedShapeRoots = () => {
+  const ids = selectedShapeIds.value.length
+    ? selectedShapeIds.value
+    : (selectedShapeId.value ? [selectedShapeId.value] : []);
+  const selected = ids
+    .map((id) => findShapeById(selectedImageShapes.value, id))
+    .filter((shape): shape is GameWindow3Shape => Boolean(shape));
+  return selected.filter((shape) => !selected.some((other) => other.id !== shape.id && isShapeDescendantOf(other, shape.id)));
+};
+
+const removeShapesByIds = (shapes: GameWindow3Shape[], ids: Set<string>) => {
+  for (let index = shapes.length - 1; index >= 0; index -= 1) {
+    const shape = shapes[index];
+    if (ids.has(shape.id)) {
+      shapes.splice(index, 1);
+    } else if (shape.children?.length) {
+      removeShapesByIds(shape.children, ids);
+    }
+  }
 };
 
 const deleteSelectedShape = () => {
   const image = selectedImageNode.value;
-  if (!image?.shapes || !selectedShapeId.value) return;
-  const parent = findShapeParentChildren(image.shapes, selectedShapeId.value);
-  const index = parent?.findIndex((shape) => shape.id === selectedShapeId.value) ?? -1;
-  if (parent && index >= 0) parent.splice(index, 1);
+  if (!image?.shapes) return;
+  const targets = selectedShapeRoots();
+  if (!targets.length) return;
+  removeShapesByIds(image.shapes, new Set(targets.map((shape) => shape.id)));
+  selectedShapeIds.value = [];
   selectedShapeId.value = flattenShapes(image.shapes)[0]?.id ?? null;
+  shapeSelectionAnchorId.value = selectedShapeId.value;
 };
 
-const selectShape = (id: string | null) => {
+const selectShape = (id: string | null, event?: MouseEvent) => {
+  if (id && event?.shiftKey) {
+    const anchorId = shapeSelectionAnchorId.value || selectedShapeId.value || id;
+    selectShapeRange(anchorId, id);
+    selectedShapeId.value = id;
+    return;
+  }
   selectedShapeId.value = id;
+  selectedShapeIds.value = [];
+  shapeSelectionAnchorId.value = id;
+};
+
+const handleShapeTreeNodeClick = (
+  data: GameWindow3Shape,
+  _node: unknown,
+  _component: unknown,
+  event?: MouseEvent,
+) => {
+  selectShape(data.id, event);
+};
+
+const copySelectedShapes = () => {
+  const targets = selectedShapeRoots();
+  if (!targets.length) return;
+  copiedShapes.value = targets.map((shape) => JSON.parse(JSON.stringify(shape)) as GameWindow3Shape);
+  closeShapeContextMenu();
+  ElMessage.success(`已复制 ${copiedShapes.value.length} 个 shape`);
+};
+
+const pasteCopiedShapes = () => {
+  const image = selectedImageNode.value;
+  if (!image || !copiedShapes.value.length) return;
+  image.shapes ??= [];
+  const pasted = copiedShapes.value.map(cloneShapeTreeWithNewIds);
+  image.shapes.push(...pasted);
+  selectedShapeIds.value = [];
+  selectedShapeId.value = pasted[0]?.id ?? selectedShapeId.value;
+  shapeSelectionAnchorId.value = selectedShapeId.value;
+  closeShapeContextMenu();
+  ElMessage.success(`已粘贴 ${pasted.length} 个 shape`);
 };
 
 const closeShapeContextMenu = () => {
@@ -6370,7 +8473,12 @@ const closeShapeContextMenu = () => {
 
 const openShapeContextMenu = (event: MouseEvent, shapeId: string) => {
   event.preventDefault();
+  event.stopPropagation();
+  if (!selectedShapeIds.value.includes(shapeId)) {
+    selectedShapeIds.value = [];
+  }
   selectedShapeId.value = shapeId;
+  shapeSelectionAnchorId.value = shapeId;
   shapeContextMenu.value = {
     visible: true,
     x: event.clientX,
@@ -6383,10 +8491,244 @@ const openShapeTreeContextMenu = (event: MouseEvent, data: GameWindow3Shape) => 
   openShapeContextMenu(event, data.id);
 };
 
+const openShapeTreeBlankContextMenu = (event: MouseEvent) => {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('.el-tree-node')) return;
+  shapeContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    shapeId: '',
+  };
+};
+
 const deleteShapeFromContextMenu = () => {
   selectedShapeId.value = shapeContextMenu.value.shapeId || selectedShapeId.value;
   closeShapeContextMenu();
   deleteSelectedShape();
+};
+
+const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
+const stepperImageLabel = (image: GameWindow3AssetNode) => `${assetImageIdMark(image)} ${image.title}`;
+
+const stepperScoreText = (score: number) => `${Math.round(score)}%`;
+
+const stepperCandidateSummary = (candidates: StepperSceneCandidate[], limit = 5) => (
+  candidates.slice(0, limit)
+    .map((candidate) => `${stepperImageLabel(candidate.image)} ${stepperScoreText(candidate.score)}`)
+    .join('，') || '无'
+);
+
+const stepperActionSummary = (edge: StepperActionEdge) => (
+  `${edge.hasExperience ? '经验' : '探索'} ${edge.shape.title || 'shape'}`
+);
+
+const findShapeByTitle = (image: GameWindow3AssetNode, title: string) => (
+  flattenShapes(image.shapes ?? []).find((shape) => isDrawableShape(shape) && shape.title.trim() === title.trim()) ?? null
+);
+
+const boxCenterPoint = (box: FanxiuGameWindow2MatchBox) => ({
+  x: Math.round(box.x + box.w / 2),
+  y: Math.round(box.y + box.h / 2),
+});
+
+const runtimeShapeMatchScoreOf = (response: FanxiuGameWindow2MatchResponse) => Number(
+  (() => {
+    const localPixelSimilarity = Number(response.fixed_pixel_similarity ?? response.fixed_exact_pixel_similarity ?? NaN);
+    if (Number.isFinite(localPixelSimilarity)) return localPixelSimilarity;
+    return 0;
+  })(),
+);
+
+const matchCandidateScoreOf = (candidate: NonNullable<FanxiuGameWindow2MatchResponse['matches']>[number]) => Number(
+  candidate.crop_similarity ?? candidate.similarity ?? 0,
+);
+
+type RuntimeShapeMatchResult = {
+  kind: ShapeMatchKind;
+  response: FanxiuGameWindow2MatchResponse;
+  score: number;
+};
+
+type RuntimeShapeMatchDetails = {
+  results: RuntimeShapeMatchResult[];
+  response: FanxiuGameWindow2MatchResponse;
+};
+
+const bestRuntimeShapeMatchOf = (shape: GameWindow3Shape, response: FanxiuGameWindow2MatchResponse) => {
+  if (shape.floating && response.matches?.length) {
+    const best = [...response.matches].sort((a, b) => matchCandidateScoreOf(b) - matchCandidateScoreOf(a))[0];
+    return {
+      score: matchCandidateScoreOf(best),
+      box: best.box,
+    };
+  }
+  return {
+    score: runtimeShapeMatchScoreOf(response),
+    box: response.current_box ?? response.fixed_box ?? response.box,
+  };
+};
+
+const shapeDetectResultTextOf = (shape: GameWindow3Shape, response: FanxiuGameWindow2MatchResponse) => {
+  if (response.match_strategy === 'ocr') {
+    const bestText = response.matches?.[0]?.ocr_text || response.ocr_text || '';
+    const suffix = bestText ? `「${bestText}」` : '';
+    if (!shape.floating) return `OCR ${runtimeShapeMatchScoreOf(response)}%${suffix}`;
+    const matches = [...(response.matches ?? [])].sort((a, b) => matchCandidateScoreOf(b) - matchCandidateScoreOf(a));
+    const accepted = matches.filter((item, index) => index === 0 || matchCandidateScoreOf(item) >= STEPPER_SCENE_MATCH_THRESHOLD);
+    if (!accepted.length) return `OCR 最佳 ${runtimeShapeMatchScoreOf(response)}%${suffix}`;
+    return accepted
+      .map((item, index) => `${index === 0 ? '最佳' : `#${index + 1}`} ${Math.round(matchCandidateScoreOf(item))}%「${item.ocr_text || ''}」`)
+      .join('，');
+  }
+  const bestScore = runtimeShapeMatchScoreOf(response);
+  if (!shape.floating) return `原位 ${bestScore}%`;
+  const matches = [...(response.matches ?? [])].sort((a, b) => matchCandidateScoreOf(b) - matchCandidateScoreOf(a));
+  const accepted = matches.filter((item, index) => index === 0 || matchCandidateScoreOf(item) >= STEPPER_SCENE_MATCH_THRESHOLD);
+  if (!accepted.length) return `浮动 最佳 ${bestScore}%`;
+  return accepted
+    .map((item, index) => `${index === 0 ? '最佳' : `#${index + 1}`} ${Math.round(matchCandidateScoreOf(item))}%`)
+    .join('，');
+};
+
+const ocrTextOfResponse = (response: FanxiuGameWindow2MatchResponse) => (
+  response.matches?.[0]?.ocr_text || response.ocr_text || ''
+);
+
+const shapeDetectResultTextOfDetails = (shape: GameWindow3Shape, details: RuntimeShapeMatchDetails) => {
+  const parts = details.results.map((result) => {
+    const role = shapeMatchRoleLabel(shapeMatchRoleForKind(shape, result.kind));
+    if (result.kind === 'ocr') {
+      const text = ocrTextOfResponse(result.response);
+      return `OCR${role} ${Math.round(result.score)}%${text ? `「${text}」` : ''}`;
+    }
+    const prefix = shape.floating ? '图像浮动' : '图像原位';
+    return `${prefix}${role} ${Math.round(result.score)}%`;
+  });
+  return parts.join('，');
+};
+
+const shapeDetectLiveBoxesOf = (shape: GameWindow3Shape, response: FanxiuGameWindow2MatchResponse) => {
+  if (!shape.floating) return [];
+  const matches = [...(response.matches ?? [])].sort((a, b) => matchCandidateScoreOf(b) - matchCandidateScoreOf(a));
+  return matches
+    .filter((item, index) => index === 0 || matchCandidateScoreOf(item) >= STEPPER_SCENE_MATCH_THRESHOLD)
+    .slice(0, 12)
+    .map((item) => item.box);
+};
+
+const buildRuntimeShapeMatchPayload = (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  currentFrameDataUrl: string,
+  matchKind: ShapeMatchKind | null = shapePrimaryMatchKind(shape),
+): FanxiuGameWindow2MatchPayload | null => {
+  if (!selectedEntryId.value || !image.filename || !isDrawableShape(shape)) return null;
+  if (!matchKind) return null;
+  const box = shapeToMatchBox(shape, image);
+  if (box.w <= 0 || box.h <= 0) return null;
+  const occlusionAlphaMaskDataUrl = buildOcclusionAlphaMaskDataUrl(image, shape, box);
+  const parentShape = shape.floating ? findShapeParentShape(image.shapes ?? [], shape.id) : null;
+  const scanBox = parentShape && isDrawableShape(parentShape) ? shapeToMatchBox(parentShape, image) : undefined;
+  return {
+    entry_id: selectedEntryId.value,
+    filename: image.filename,
+    box,
+    scan: Boolean(shape.floating),
+    scan_box: scanBox,
+    pixel_tolerance: shapePixelTolerance(shape),
+    alpha_mask_data_url: occlusionAlphaMaskDataUrl || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
+    tolerance_min_data_url: shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
+    tolerance_max_data_url: shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
+    ocr_enabled: matchKind === 'ocr',
+    ocr_text: shape.ocrText?.trim() || undefined,
+    ocr_match_mode: normalizeShapeOcrMatchMode(shape.ocrMatchMode),
+    title: targetTitle.value.trim(),
+    title_match: titleMatch.value,
+    mode: 'screen',
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: fixedFrameWidth.value,
+    fixed_height: fixedFrameHeight.value,
+    fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
+    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+    auto_dismiss_popup: autoDismissPopup.value,
+    current_frame_data_url: currentFrameDataUrl,
+  };
+};
+
+const resolveRuntimeShapeBox = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  currentFrameDataUrl?: string,
+  channelUse: RuntimeChannelUse = 'frontend',
+) => {
+  const fallbackBox = shapeToMatchBox(shape, image);
+  const needsRuntimeMatch = Boolean((shape.floating && shapeCanFloat(shape)) || shapeHasRequiredMatch(shape));
+  if (!needsRuntimeMatch) {
+    return {
+      box: fallbackBox,
+      score: 100,
+      floating: false,
+    };
+  }
+  const frameDataUrl = currentFrameDataUrl || await captureCurrentFrameDataUrl(channelUse);
+  const response = await matchRuntimeShape(image, shape, frameDataUrl);
+  if (!response) {
+    throw new Error(`无法匹配 shape：${shape.title || 'shape'}`);
+  }
+  const best = bestRuntimeShapeMatchOf(shape, response);
+  if (best.score < STEPPER_SCENE_MATCH_THRESHOLD) {
+    throw new Error(`shape「${shape.title || 'shape'}」匹配不足：${stepperScoreText(best.score)}`);
+  }
+  return {
+    box: best.box,
+    score: best.score,
+    floating: Boolean(shape.floating && shapeCanFloat(shape)),
+  };
+};
+
+const matchRuntimeShapeByKind = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  currentFrameDataUrl: string,
+  matchKind: ShapeMatchKind,
+) => {
+  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, matchKind);
+  return payload ? matchFanxiuGameWindow2Screenshot(payload) : null;
+};
+
+const matchRuntimeShape = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  currentFrameDataUrl: string,
+) => {
+  const details = await matchRuntimeShapeDetails(image, shape, currentFrameDataUrl);
+  return details?.response ?? null;
+};
+
+const matchRuntimeShapeDetails = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  currentFrameDataUrl: string,
+): Promise<RuntimeShapeMatchDetails | null> => {
+  const results: RuntimeShapeMatchResult[] = [];
+  for (const kind of shapeActiveMatchKinds(shape)) {
+    const response = await matchRuntimeShapeByKind(image, shape, currentFrameDataUrl, kind);
+    if (!response) continue;
+    results.push({ kind, response, score: bestRuntimeShapeMatchOf(shape, response).score });
+  }
+  if (!results.length) return null;
+  const required = results.filter((result) => shapeMatchRoleForKind(shape, result.kind) === 'required');
+  const failedRequired = required.find((result) => result.score < STEPPER_SCENE_MATCH_THRESHOLD);
+  const selected = failedRequired ?? [...results].sort((a, b) => b.score - a.score)[0];
+  return {
+    results,
+    response: selected.response,
+  };
 };
 
 const detectSelectedShape = async () => {
@@ -6402,35 +8744,40 @@ const detectSelectedShape = async () => {
     ElMessage.warning('请先框选有效区域');
     return;
   }
-  const occlusionAlphaMaskDataUrl = buildOcclusionAlphaMaskDataUrl(image, shape, box);
+  const requestSeq = shapeDetectSeq.value + 1;
+  shapeDetectSeq.value = requestSeq;
+  const requestImageId = image.id;
+  const requestShapeId = shape.id;
+  shapeDetectResults.value = {
+    ...shapeDetectResults.value,
+    [shape.id]: '',
+  };
+  shapeDetectLiveBoxes.value = [];
+  drawOverlay();
   shapeDetectingId.value = shape.id;
   try {
-    const response = await matchFanxiuGameWindow2Screenshot({
-      entry_id: selectedEntryId.value,
-      filename: image.filename,
-      box,
-      pixel_tolerance: visualMacroDefaultPixelTolerance.value,
-      alpha_mask_data_url: occlusionAlphaMaskDataUrl || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
-      tolerance_min_data_url: shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
-      tolerance_max_data_url: shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
-      title: targetTitle.value.trim(),
-      title_match: titleMatch.value,
-      mode: 'screen',
-      area: captureArea.value,
-      crop: cropText.value.trim(),
-      trim_border: trimBorderText.value.trim(),
-      rotate: rotateDegrees.value,
-      fixed_width: fixedFrameWidth.value,
-      fixed_height: fixedFrameHeight.value,
-      fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
-      quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-      auto_dismiss_popup: autoDismissPopup.value,
-      current_frame_data_url: await captureCurrentFrameDataUrl(),
-    });
+    const details = await matchRuntimeShapeDetails(image, shape, await captureCurrentFrameDataUrl());
+    if (!details) {
+      ElMessage.warning('请先框选有效区域');
+      return;
+    }
+    if (
+      requestSeq !== shapeDetectSeq.value
+      || selectedImageNode.value?.id !== requestImageId
+      || selectedShapeId.value !== requestShapeId
+    ) {
+      return;
+    }
+    const response = details.response;
     const geometryIssue = matchFrameAspectMismatchText(response);
     if (geometryIssue) ElMessage.warning(geometryIssue);
-    const resultText = `原位 ${response.fixed_similarity ?? response.similarity}%`;
-    shapeDetectResults.value[shape.id] = resultText;
+    const resultText = shapeDetectResultTextOfDetails(shape, details);
+    shapeDetectLiveBoxes.value = shapeDetectLiveBoxesOf(shape, response);
+    drawOverlay();
+    shapeDetectResults.value = {
+      ...shapeDetectResults.value,
+      [requestShapeId]: resultText,
+    };
     ElMessage.success(resultText);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -6439,13 +8786,27 @@ const detectSelectedShape = async () => {
   }
 };
 
-const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
-
-const stepperImageLabel = (image: GameWindow3AssetNode) => `${assetImageIdMark(image)} ${image.title}`;
-
 const stepperSceneIdentityShapes = (image: GameWindow3AssetNode) => (
-  flattenShapes(image.shapes ?? []).filter((shape) => isDrawableShape(shape) && shape.isSceneIdentity)
+  flattenShapes(image.shapes ?? []).filter((shape) => (
+    isDrawableShape(shape)
+    && isSceneIdentityShape(shape)
+    && !isBlankExitShape(shape)
+    && !isIndependentExitShape(shape)
+  ))
 );
+
+const stepperFallbackIdentityShapes = (image: GameWindow3AssetNode) => (
+  flattenShapes(image.shapes ?? []).filter((shape) => (
+    isDrawableShape(shape)
+    && isSceneIdentityShape(shape)
+    && !isBlankExitShape(shape)
+  ))
+);
+
+const stepperSceneMatchShapes = (image: GameWindow3AssetNode) => {
+  const primary = stepperSceneIdentityShapes(image);
+  return primary.length ? primary : stepperFallbackIdentityShapes(image);
+};
 
 const isStepperSceneAsset = (image: GameWindow3AssetNode) => (
   findAssetParentFolder(assetTree.value, image.id)?.title.trim() !== '遮挡标记'
@@ -6453,69 +8814,51 @@ const isStepperSceneAsset = (image: GameWindow3AssetNode) => (
 
 const isIndependentExitShape = (shape: GameWindow3Shape) => normalizeSceneJumpTargetText(shape.sceneJumpTarget) === '-1';
 
+const isNoJumpShape = (shape: GameWindow3Shape) => normalizeSceneJumpTargetText(shape.sceneJumpTarget) === '0';
+
 const isIndependentSceneImage = (image: GameWindow3AssetNode) => (
   flattenShapes(image.shapes ?? []).some((shape) => isDrawableShape(shape) && isIndependentExitShape(shape))
 );
 
 const matchStepperShape = async (
   image: GameWindow3AssetNode,
-  shape: GameWindow3Shape | null,
+  shape: GameWindow3Shape,
   currentFrameDataUrl: string,
 ) => {
-  if (!selectedEntryId.value || !image.filename) return 0;
-  const width = image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
-  const height = image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
-  const box = shape ? shapeToMatchBox(shape, image) : { name: 'scene', x: 0, y: 0, w: width, h: height };
-  if (box.w <= 0 || box.h <= 0) return 0;
-  const response = await matchFanxiuGameWindow2Screenshot({
-    entry_id: selectedEntryId.value,
-    filename: image.filename,
-    box,
-    pixel_tolerance: visualMacroDefaultPixelTolerance.value,
-    alpha_mask_data_url: shape && image.occlusionMaskEnabled
-      ? buildOcclusionAlphaMaskDataUrl(image, shape, box) || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined)
-      : (shape?.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
-    tolerance_min_data_url: shape?.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
-    tolerance_max_data_url: shape?.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
-    title: targetTitle.value.trim(),
-    title_match: titleMatch.value,
-    mode: 'screen',
-    area: captureArea.value,
-    crop: cropText.value.trim(),
-    trim_border: trimBorderText.value.trim(),
-    rotate: rotateDegrees.value,
-    fixed_width: fixedFrameWidth.value,
-    fixed_height: fixedFrameHeight.value,
-    fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
-    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-    auto_dismiss_popup: autoDismissPopup.value,
-    current_frame_data_url: currentFrameDataUrl,
-  });
-  return Number(response.fixed_similarity ?? response.similarity ?? 0);
+  const response = await matchRuntimeShape(image, shape, currentFrameDataUrl);
+  return response ? bestRuntimeShapeMatchOf(shape, response).score : 0;
 };
 
 const matchStepperSceneCandidate = async (
   image: GameWindow3AssetNode,
   currentFrameDataUrl: string,
 ): Promise<StepperSceneCandidate> => {
-  const identityShapes = stepperSceneIdentityShapes(image);
-  const full = await matchStepperShape(image, null, currentFrameDataUrl);
-  const scores: number[] = [];
+  const identityShapes = stepperSceneMatchShapes(image);
+  const results: Array<{ shape: GameWindow3Shape; role: ShapeMatchRole; score: number }> = [];
   for (const shape of identityShapes) {
     if (stepperStopRequested.value) break;
     try {
-      scores.push(await matchStepperShape(image, shape, currentFrameDataUrl));
+      results.push({ shape, role: shapeSceneIdentityRole(shape), score: await matchStepperShape(image, shape, currentFrameDataUrl) });
     } catch {
-      scores.push(0);
+      results.push({ shape, role: shapeSceneIdentityRole(shape), score: 0 });
     }
   }
-  const min = scores.length ? Math.min(...scores) : full;
-  const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : full;
-  const identityScore = min * 0.7 + average * 0.3;
+  const scores = results.map((result) => result.score);
+  const required = results.filter((result) => result.role === 'required');
+  const failedRequired = required.filter((result) => result.score < STEPPER_SCENE_MATCH_THRESHOLD);
+  const min = scores.length ? Math.min(...scores) : 0;
+  const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
+  const requiredMin = required.length ? Math.min(...required.map((result) => result.score)) : 0;
+  const optionalMax = results
+    .filter((result) => result.role === 'optional')
+    .reduce((best, result) => Math.max(best, result.score), 0);
+  const identityScore = failedRequired.length
+    ? Math.min(...failedRequired.map((result) => result.score))
+    : (required.length ? requiredMin * 0.75 + average * 0.25 : optionalMax);
   return {
     image,
-    score: scores.length ? identityScore * 0.85 + full * 0.15 : Math.min(full, 30),
-    full,
+    score: scores.length ? identityScore : 0,
+    full: 0,
     min,
     average,
     count: scores.length,
@@ -6526,26 +8869,26 @@ const matchStepperLayer = async (
   images: GameWindow3AssetNode[],
   currentFrameDataUrl: string,
   concurrency = 4,
-  highConfidence = 85,
 ) => {
   const queue = [...images];
   let best: StepperSceneCandidate | null = null;
-  let highHit: StepperSceneCandidate | null = null;
+  const candidates: StepperSceneCandidate[] = [];
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-    while (queue.length && !stepperStopRequested.value && !highHit) {
+    while (queue.length && !stepperStopRequested.value) {
       const image = queue.shift();
       if (!image) break;
       try {
         const candidate = await matchStepperSceneCandidate(image, currentFrameDataUrl);
+        candidates.push(candidate);
         if (!best || candidate.score > best.score) best = candidate;
-        if (candidate.score >= highConfidence) highHit = candidate;
       } catch {
         // A failed candidate should not stop the whole tick.
       }
     }
   });
   await Promise.all(workers);
-  return highHit ?? best;
+  candidates.sort((a, b) => b.score - a.score);
+  return { best, candidates };
 };
 
 const uniqueImages = (images: GameWindow3AssetNode[]) => (
@@ -6587,18 +8930,6 @@ const buildStepperCandidateLayers = (lastAction: StepperLastAction | null) => {
   return [history, independent, rest].filter((layer) => layer.length);
 };
 
-const identifyStepperScene = async (
-  lastAction: StepperLastAction | null,
-): Promise<StepperSceneCandidate | null> => {
-  const currentFrameDataUrl = await captureCurrentFrameDataUrl();
-  for (const layer of buildStepperCandidateLayers(lastAction)) {
-    if (stepperStopRequested.value) return null;
-    const candidate = await matchStepperLayer(layer, currentFrameDataUrl);
-    if (candidate && candidate.score >= 55) return candidate;
-  }
-  return null;
-};
-
 const isBlankExitShape = (shape: GameWindow3Shape) => shape.title.trim() === '空白';
 
 const buildStepperActionEdges = () => {
@@ -6606,8 +8937,10 @@ const buildStepperActionEdges = () => {
   for (const image of flattenAssetImages(assetTree.value)) {
     if (!isStepperSceneAsset(image)) continue;
     for (const shape of flattenShapes(image.shapes ?? []).filter(isDrawableShape)) {
+      if (isSceneIdentityShape(shape)) continue;
+      const isNoJump = isNoJumpShape(shape);
       const isIndependentExit = isIndependentExitShape(shape);
-      const jumpEntries = isIndependentExit ? [] : parseSceneJumpEntries(shape.sceneJumpTarget);
+      const jumpEntries = isIndependentExit || isNoJump ? [] : parseSceneJumpEntries(shape.sceneJumpTarget);
       const targets = jumpEntries.flatMap((entry) => (
         resolveStepperSceneTargets(entry.label).map((target) => ({ image: target, count: entry.count }))
       ));
@@ -6620,6 +8953,7 @@ const buildStepperActionEdges = () => {
         jumpEntries,
         targets: uniqueTargets,
         isIndependentExit,
+        isNoJump,
         hasExperience: uniqueTargets.length > 0,
       });
     }
@@ -6680,25 +9014,88 @@ const findStepperNextAction = (
     .sort((a, b) => stepperActionPriority(b, targetIds) - stepperActionPriority(a, targetIds))[0] ?? null;
 };
 
+const isStepperCandidateActionable = (
+  candidate: StepperSceneCandidate,
+  task: Extract<StepperTask, { type: 'go_scene' }>,
+  triedEdges: Set<string>,
+) => (
+  task.targets.some((target) => target.id === candidate.image.id)
+  || Boolean(findStepperNextAction(candidate.image, task.targets, triedEdges))
+);
+
+const identifyStepperScene = async (
+  lastAction: StepperLastAction | null,
+  task: Extract<StepperTask, { type: 'go_scene' }>,
+  triedEdges: Set<string>,
+  options: StepperTickOptions = {},
+): Promise<StepperSceneCandidate | null> => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  detailLog(`开始识别：目标 ${task.targetText}，上次动作 ${lastAction?.shapeTitle || '无'}`);
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
+  detailLog('已截取当前帧，开始按候选层匹配');
+  const acceptCandidate = (candidate: StepperSceneCandidate) => (
+    candidate.score >= STEPPER_SCENE_MATCH_THRESHOLD && isStepperCandidateActionable(candidate, task, triedEdges)
+  );
+  const layers = buildStepperCandidateLayers(lastAction);
+  detailLog(`候选层：${layers.map((layer, index) => `第 ${index + 1} 层 ${layer.length} 个`).join('，') || '无'}`);
+  const rankedCandidates: StepperRankedSceneCandidate[] = [];
+  for (const [index, layer] of layers.entries()) {
+    if (stepperStopRequested.value) return null;
+    detailLog(`匹配第 ${index + 1} 层：${layer.map(stepperImageLabel).join('，') || '无候选'}`);
+    const result = await matchStepperLayer(layer, currentFrameDataUrl, 4);
+    detailLog(`第 ${index + 1} 层结果：${stepperCandidateSummary(result.candidates)}`);
+    rankedCandidates.push(...result.candidates.map((candidate) => ({
+      ...candidate,
+      layerIndex: index,
+      layerPriority: index,
+    })));
+  }
+  const accepted = rankedCandidates
+    .filter(acceptCandidate)
+    .sort((a, b) => (a.layerPriority - b.layerPriority) || (b.score - a.score));
+  if (accepted.length) {
+    const candidate = accepted[0];
+    detailLog(`可执行命中：第 ${candidate.layerIndex + 1} 层 ${stepperImageLabel(candidate.image)} ${stepperScoreText(candidate.score)}`);
+    return candidate;
+  }
+  const visible = rankedCandidates
+    .filter((candidate) => candidate.score >= STEPPER_SCENE_MATCH_THRESHOLD)
+    .sort((a, b) => (a.layerPriority - b.layerPriority) || (b.score - a.score));
+  if (visible.length) {
+    detailLog(`已识别但无可执行路径：${visible.slice(0, 5).map((candidate) => `第 ${candidate.layerIndex + 1} 层 ${stepperImageLabel(candidate.image)} ${stepperScoreText(candidate.score)}`).join('，')}`);
+  }
+  detailLog('没有识别到可执行场景');
+  return null;
+};
+
 const clickStepperShape = async (image: GameWindow3AssetNode, shape: GameWindow3Shape) => {
-  if (!selectedEntryId.value) return;
+  if (!selectedEntryId.value) return null;
   const width = image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
   const height = image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
+  const resolved = await resolveRuntimeShapeBox(image, shape, undefined, 'stepper');
+  const center = boxCenterPoint(resolved.box);
   await clickFanxiuGameWindow2({
-    ...buildRemoteInputPayloadBase(),
+    ...buildRemoteInputPayloadBase('stepper'),
     frame_width: naturalWidth.value || width,
     frame_height: naturalHeight.value || height,
-    x: Math.round((shape.x + shape.w / 2) * width),
-    y: Math.round((shape.y + shape.h / 2) * height),
+    x: center.x,
+    y: center.y,
   });
+  return {
+    point: center,
+    score: resolved.score,
+    floating: resolved.floating,
+  };
 };
 
 const incrementSceneJumpExperience = (shape: GameWindow3Shape, target: GameWindow3AssetNode) => {
-  if (isIndependentExitShape(shape)) return;
+  if (isIndependentExitShape(shape) || isNoJumpShape(shape)) return;
   const targetId = assetNumericImageId(target);
   const label = targetId !== null ? String(targetId) : target.title.trim();
   if (!label) return;
-  const entries = parseSceneJumpEntries(shape.sceneJumpTarget).filter((entry) => entry.label !== '-1');
+  const entries = parseSceneJumpEntries(shape.sceneJumpTarget).filter((entry) => entry.label !== '-1' && entry.label !== '0');
   const found = entries.find((entry) => entry.label === label || resolveStepperSceneTargets(entry.label).some((image) => image.id === target.id));
   if (found) {
     found.count += 1;
@@ -6717,82 +9114,922 @@ const applyStepperObservedTransition = (candidate: StepperSceneCandidate) => {
   incrementSceneJumpExperience(shape, candidate.image);
 };
 
+const stepperLogKindLabel = (kind: string) => ({
+  start: '开始',
+  detail: '细节',
+  wait: '等待',
+  action: '动作',
+  success: '完成',
+  stop: '停止',
+  error: '异常',
+}[kind as StepperLogKind] ?? kind);
+
+const stepperLogPageCount = computed(() => Math.max(1, Math.ceil(stepperLogs.value.length / STEPPER_LOG_PAGE_SIZE)));
+const pagedStepperLogs = computed(() => {
+  const page = clamp(stepperLogPage.value, 1, stepperLogPageCount.value);
+  const start = (page - 1) * STEPPER_LOG_PAGE_SIZE;
+  return stepperLogs.value.slice(start, start + STEPPER_LOG_PAGE_SIZE);
+});
+const stepperLogPageStart = computed(() => (
+  stepperLogs.value.length ? (clamp(stepperLogPage.value, 1, stepperLogPageCount.value) - 1) * STEPPER_LOG_PAGE_SIZE + 1 : 0
+));
+const stepperLogPageEnd = computed(() => Math.min(stepperLogs.value.length, stepperLogPageStart.value + STEPPER_LOG_PAGE_SIZE - 1));
+const goStepperLogLastPage = () => {
+  stepperLogPage.value = stepperLogPageCount.value;
+};
+
+const appendStepperLog = (kind: StepperLogKind, message: string) => {
+  const entry: StepperLogEntry = {
+    id: createAssetId('stepper-log'),
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    kind,
+    message,
+    ts: new Date().toISOString(),
+  };
+  stepperLogs.value.push(entry);
+  if (stepperLogs.value.length > 200) {
+    stepperLogs.value = stepperLogs.value.slice(-200);
+  }
+  goStepperLogLastPage();
+  appendFanxiuGameWindow3StepperLog(entry).catch(() => {
+    // 页面日志不因为持久化失败而中断步进器运行。
+  });
+};
+
+const setStepperRunStatus = (message: string, kind?: StepperLogKind) => {
+  stepperRunStatus.value = message;
+  if (kind) appendStepperLog(kind, message);
+};
+
+const loadStepperLogs = async () => {
+  try {
+    const response = await getFanxiuGameWindow3StepperLogs(500);
+    stepperLogs.value = response.entries;
+    goStepperLogLastPage();
+  } catch {
+    // 日志读取失败不影响页面主体功能。
+  }
+};
+
+const clearStepperLogs = async () => {
+  const response = await clearFanxiuGameWindow3StepperLogs();
+  stepperLogs.value = response.entries;
+  goStepperLogLastPage();
+};
+
 const stopStepperRun = () => {
   stepperStopRequested.value = true;
-  stepperRunStatus.value = '正在停止';
+  setStepperRunStatus('正在停止', 'stop');
+};
+
+const resetStepperTaskState = (task: StepperTask, label: string) => {
+  stepperTaskStack.value = [task];
+  stepperLastAction.value = null;
+  stepperLastDailyFindResult.value = null;
+  shapeDetectLiveBoxes.value = [];
+  drawOverlay();
+  stepperTriedActionEdges.value = new Set();
+  stepperTickCount.value = 0;
+  setStepperRunStatus(`开始任务：${label}`, 'start');
+};
+
+const ensureStepperTask = (forceReset = false) => {
+  const taskDefinition = selectedStepperTaskDefinition.value;
+  if (!taskDefinition) {
+    ElMessage.warning('没有可运行的步进器任务');
+    return false;
+  }
+  const currentTask = stepperTaskStack.value.at(-1);
+  if (!forceReset && currentTask && currentTask.type === taskDefinition.type) {
+    if (taskDefinition.type === 'go_scene' && currentTask.type === 'go_scene' && currentTask.targetText === taskDefinition.targetText) return true;
+    if (
+      taskDefinition.type === 'daily_find'
+      && currentTask.type === 'daily_find'
+      && currentTask.query === taskDefinition.query
+      && currentTask.matchMode === taskDefinition.matchMode
+      && currentTask.completedFallbackPattern === (taskDefinition.completedFallbackPattern ?? '')
+      && currentTask.completedFallbackExcludePattern === (taskDefinition.completedFallbackExcludePattern ?? '')
+      && currentTask.completedFallbackMinTotal === (taskDefinition.completedFallbackMinTotal ?? 0)
+      && currentTask.requireProgress === (taskDefinition.requireProgress !== false)
+      && currentTask.openOnReady === (taskDefinition.openOnReady === true)
+    ) return true;
+    if (
+      taskDefinition.type === 'drag_shape_to_shape'
+      && currentTask.type === 'drag_shape_to_shape'
+      && currentTask.sourceText === taskDefinition.sourceText
+      && currentTask.sourceShapeTitle === taskDefinition.sourceShapeTitle
+      && currentTask.targetShapeTitle === taskDefinition.targetShapeTitle
+    ) return true;
+  }
+  if (taskDefinition.type === 'go_scene') {
+    const targets = resolveStepperSceneTargets(taskDefinition.targetText);
+    if (!targets.length) {
+      ElMessage.warning(`没有找到目标场景：${taskDefinition.targetText}`);
+      return false;
+    }
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'go_scene',
+      targetText: taskDefinition.targetText,
+      targets,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'daily_find') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'daily_find',
+      query: taskDefinition.query,
+      matchMode: taskDefinition.matchMode,
+      completedFallbackPattern: taskDefinition.completedFallbackPattern ?? '',
+      completedFallbackExcludePattern: taskDefinition.completedFallbackExcludePattern ?? '',
+      completedFallbackMinTotal: taskDefinition.completedFallbackMinTotal ?? 0,
+      notFoundStatus: taskDefinition.notFoundStatus,
+      timeoutSeconds: taskDefinition.timeoutSeconds,
+      dragCount: taskDefinition.dragCount,
+      requireProgress: taskDefinition.requireProgress !== false,
+      openOnReady: taskDefinition.openOnReady === true,
+      legacySource: taskDefinition.legacySource ?? '',
+      note: taskDefinition.note ?? '',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  const sourceImages = resolveStepperSceneTargets(taskDefinition.sourceText);
+  if (!sourceImages.length) {
+    ElMessage.warning(`没有找到参考截图：${taskDefinition.sourceText}`);
+    return false;
+  }
+  resetStepperTaskState({
+    id: createAssetId('stepper-task'),
+    type: 'drag_shape_to_shape',
+    sourceText: taskDefinition.sourceText,
+    sourceShapeTitle: taskDefinition.sourceShapeTitle,
+    targetShapeTitle: taskDefinition.targetShapeTitle,
+    sourceImages,
+  }, taskDefinition.label);
+  return true;
+};
+
+const dragStepperFramePoints = async (
+  startPoint: { x: number; y: number },
+  endPoint: { x: number; y: number },
+  durationMs = 450,
+) => {
+  if (!selectedEntryId.value) return;
+  const frameWidth = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth;
+  const frameHeight = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight;
+  const normalize = (point: { x: number; y: number }) => ({
+    x: Math.round(clamp(point.x, 0, Math.max(0, frameWidth - 1))),
+    y: Math.round(clamp(point.y, 0, Math.max(0, frameHeight - 1))),
+  });
+  const start = normalize(startPoint);
+  const end = normalize(endPoint);
+  await dragFanxiuGameWindow2({
+    ...buildRemoteInputPayloadBase('stepper'),
+    frame_width: frameWidth,
+    frame_height: frameHeight,
+    start_x: start.x,
+    start_y: start.y,
+    end_x: end.x,
+    end_y: end.y,
+    duration_ms: durationMs,
+  });
+};
+
+const normalizeStepperSearchText = (text: string) => text.replace(/\s+/g, '').trim();
+
+const escapeStepperRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const stepperWildcardToRegExp = (pattern: string) => new RegExp(
+  `^${normalizeStepperSearchText(pattern).split('').map((char) => {
+    if (char === '*') return '.*';
+    if (char === '?') return '.';
+    return escapeStepperRegExp(char);
+  }).join('')}$`,
+  'i',
+);
+
+const stepperTextMatches = (text: string, query: string, mode: ShapeOcrMatchMode) => {
+  const normalizedText = normalizeStepperSearchText(text);
+  const normalizedQuery = normalizeStepperSearchText(query);
+  if (!normalizedText || !normalizedQuery) return false;
+  if (mode === 'exact') return normalizedText === normalizedQuery;
+  if (mode === 'wildcard') return stepperWildcardToRegExp(normalizedQuery).test(normalizedText);
+  if (mode === 'regex') {
+    try {
+      return new RegExp(normalizedQuery, 'i').test(normalizedText);
+    } catch {
+      return false;
+    }
+  }
+  return normalizedText.includes(normalizedQuery);
+};
+
+const stepperOcrLineCenter = (line: FanxiuGameWindow3OcrFrameLine) => ({
+  x: Math.round(line.x + line.w / 2),
+  y: Math.round(line.y + line.h / 2),
+});
+
+type StepperFrameRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+
+const stepperOcrLineRect = (line: FanxiuGameWindow3OcrFrameLine): StepperFrameRect => ({
+  left: line.x,
+  top: line.y,
+  right: line.x + line.w,
+  bottom: line.y + line.h,
+  width: line.w,
+  height: line.h,
+});
+
+type StepperDailyTaskSummary = {
+  text: string;
+  anchorText: string;
+  candidateText: string;
+  status: string;
+  statusCode: DailyFindStatusCode;
+  progress: DailyFindProgress | null;
+  blockBox: StepperFrameRect | null;
+  anchorBox: StepperFrameRect;
+  statusBox: StepperFrameRect | null;
+  progressBox: StepperFrameRect | null;
+  statusText: string;
+  progressText: string;
+  activityText: string;
+  clickPoint: { x: number; y: number };
+  source: 'template' | 'heuristic';
+};
+
+type StepperDailyFindDecision = DailyFindDecision;
+
+type StepperDailyFindResult = DailyFindResult<StepperDailyTaskSummary>;
+
+type StepperDailyAnchorCandidate = {
+  anchor: FanxiuGameWindow3OcrFrameLine;
+  text: string;
+};
+
+const shapeTitleEquals = (shape: GameWindow3Shape, title: string) => shape.title.trim() === title;
+
+const findNestedShapeByTitle = (shapes: GameWindow3Shape[], title: string): GameWindow3Shape | null => {
+  for (const shape of shapes) {
+    if (shapeTitleEquals(shape, title)) return shape;
+    const found = findNestedShapeByTitle(shape.children ?? [], title);
+    if (found) return found;
+  }
+  return null;
+};
+
+const stepperShapeFrameRect = (image: GameWindow3AssetNode, shape: GameWindow3Shape): StepperFrameRect => {
+  const width = image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH;
+  const height = image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT;
+  const left = shape.x * width;
+  const top = shape.y * height;
+  const rectWidth = shape.w * width;
+  const rectHeight = shape.h * height;
+  return {
+    left,
+    top,
+    right: left + rectWidth,
+    bottom: top + rectHeight,
+    width: rectWidth,
+    height: rectHeight,
+  };
+};
+
+const translateStepperRect = (rect: StepperFrameRect, dx: number, dy: number): StepperFrameRect => ({
+  left: rect.left + dx,
+  top: rect.top + dy,
+  right: rect.right + dx,
+  bottom: rect.bottom + dy,
+  width: rect.width,
+  height: rect.height,
+});
+
+const expandStepperRect = (
+  rect: StepperFrameRect,
+  dx: number,
+  dy: number,
+): StepperFrameRect => ({
+  left: rect.left - dx,
+  top: rect.top - dy,
+  right: rect.right + dx,
+  bottom: rect.bottom + dy,
+  width: rect.width + dx * 2,
+  height: rect.height + dy * 2,
+});
+
+const stepperLineInRect = (line: FanxiuGameWindow3OcrFrameLine, rect: StepperFrameRect) => {
+  const center = stepperOcrLineCenter(line);
+  return center.x >= rect.left && center.x <= rect.right && center.y >= rect.top && center.y <= rect.bottom;
+};
+
+const collectStepperTextInRect = (lines: FanxiuGameWindow3OcrFrameLine[], rect: StepperFrameRect) => (
+  lines
+    .filter((line) => stepperLineInRect(line, rect))
+    .sort((a, b) => (a.y - b.y) || (a.x - b.x))
+    .map((line) => line.text)
+    .join('')
+);
+
+const findStepperDailyTemplate = () => {
+  for (const image of flattenAssetImages(assetTree.value)) {
+    const shapes = image.shapes ?? [];
+    const listShape = findNestedShapeByTitle(shapes, '滚动窗口');
+    const templateShape = findNestedShapeByTitle(shapes, '任务块模板');
+    const titleShape = templateShape ? findNestedShapeByTitle(templateShape.children ?? [], '标题') : null;
+    if (listShape && templateShape && titleShape) return { image, listShape, templateShape, titleShape };
+  }
+  return null;
+};
+
+const findStepperDailySceneAnchor = () => {
+  const template = findStepperDailyTemplate();
+  if (!template) return null;
+  const shape = findNestedShapeByTitle(template.image.shapes ?? [], '日常');
+  return shape ? { image: template.image, shape } : null;
+};
+
+const getStepperDailySceneEvidence = (lines: FanxiuGameWindow3OcrFrameLine[]) => {
+  const anchor = findStepperDailySceneAnchor();
+  if (!anchor) return { ok: true, text: '', box: null as StepperFrameRect | null };
+  const box = expandStepperRect(stepperShapeFrameRect(anchor.image, anchor.shape), 18, 12);
+  const text = collectStepperTextInRect(lines, box);
+  return {
+    ok: /日\s*常|周\s*常/.test(text),
+    text,
+    box,
+  };
+};
+
+const stepperDailyFindListBox = () => {
+  const template = findStepperDailyTemplate();
+  if (template) {
+    const rect = stepperShapeFrameRect(template.image, template.listShape);
+    return {
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+      bottom: rect.bottom,
+      anchorLeft: rect.left,
+      anchorRight: rect.right,
+      width: template.image.width || naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH,
+      height: template.image.height || naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT,
+    };
+  }
+  const frameWidth = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH;
+  const frameHeight = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT;
+  return {
+    left: frameWidth * 0.08,
+    right: frameWidth * 0.95,
+    top: frameHeight * 0.245,
+    bottom: frameHeight * 0.80,
+    anchorLeft: frameWidth * 0.40,
+    anchorRight: frameWidth * 0.95,
+    width: frameWidth,
+    height: frameHeight,
+  };
+};
+
+const isStepperDailyFindLineInList = (line: FanxiuGameWindow3OcrFrameLine) => {
+  const box = stepperDailyFindListBox();
+  const center = stepperOcrLineCenter(line);
+  return center.x >= box.left && center.x <= box.right && center.y >= box.top && center.y <= box.bottom;
+};
+
+const isStepperDailyFindAnchorLine = (line: FanxiuGameWindow3OcrFrameLine) => {
+  const box = stepperDailyFindListBox();
+  const center = stepperOcrLineCenter(line);
+  return center.x >= box.anchorLeft && center.x <= box.anchorRight && center.y >= box.top && center.y <= box.bottom;
+};
+
+const buildStepperDailyAnchorCandidates = (
+  lines: FanxiuGameWindow3OcrFrameLine[],
+): StepperDailyAnchorCandidate[] => {
+  const anchorLines = lines.filter((line) => isStepperDailyFindAnchorLine(line));
+  return anchorLines.map((anchor) => {
+    const center = stepperOcrLineCenter(anchor);
+    const yTolerance = Math.max(24, anchor.h * 1.6);
+    const rowText = lines
+      .filter((line) => isStepperDailyFindLineInList(line))
+      .filter((line) => Math.abs(stepperOcrLineCenter(line).y - center.y) <= yTolerance)
+      .sort((a, b) => a.x - b.x)
+      .map((line) => line.text)
+      .join('');
+    return {
+      anchor,
+      text: rowText || anchor.text,
+    };
+  });
+};
+
+const safeStepperRegExp = (pattern: string) => {
+  try {
+    return pattern.trim() ? new RegExp(normalizeStepperSearchText(pattern), 'i') : null;
+  } catch {
+    return null;
+  }
+};
+
+const findStepperDailyCompletedFallback = (
+  task: Extract<StepperTask, { type: 'daily_find' }>,
+  lines: FanxiuGameWindow3OcrFrameLine[],
+): StepperDailyAnchorCandidate | null => {
+  const pattern = safeStepperRegExp(task.completedFallbackPattern);
+  if (!pattern) return null;
+  const excludePattern = safeStepperRegExp(task.completedFallbackExcludePattern);
+  const minTotal = Math.max(0, task.completedFallbackMinTotal);
+  return buildStepperDailyAnchorCandidates(lines).find((candidate) => {
+    const text = normalizeStepperSearchText(candidate.text);
+    if (excludePattern?.test(text)) return false;
+    if (!pattern.test(text)) return false;
+    const progress = extractStepperDailyProgress(text);
+    const status = extractDailyStatusText(text);
+    const progressDone = Boolean(progress && progress.current >= progress.total && progress.total >= minTotal);
+    const statusDone = getDailyStatusCode(status, progress) === 2;
+    return progressDone || statusDone;
+  }) ?? null;
+};
+
+const extractStepperDailyProgress = extractDailyProgress;
+
+const stepperRectCenter = (rect: StepperFrameRect) => ({
+  x: Math.round(rect.left + rect.width / 2),
+  y: Math.round(rect.top + rect.height / 2),
+});
+
+const stepperRectToMatchBox = (name: string, rect: StepperFrameRect): FanxiuGameWindow2MatchBox => ({
+  name,
+  x: Math.round(rect.left),
+  y: Math.round(rect.top),
+  w: Math.max(1, Math.round(rect.width)),
+  h: Math.max(1, Math.round(rect.height)),
+});
+
+const showStepperDailyFindBoxes = (summary: StepperDailyTaskSummary) => {
+  const boxes: FanxiuGameWindow2MatchBox[] = [
+    summary.blockBox ? stepperRectToMatchBox('任务块', summary.blockBox) : null,
+    stepperRectToMatchBox('标题', summary.anchorBox),
+    summary.statusBox ? stepperRectToMatchBox('状态', summary.statusBox) : null,
+    summary.progressBox ? stepperRectToMatchBox('次数', summary.progressBox) : null,
+  ].filter((box): box is FanxiuGameWindow2MatchBox => Boolean(box));
+  shapeDetectLiveBoxes.value = boxes;
+  drawOverlay();
+};
+
+const decideStepperDailyFindResult = decideDailyFindResult<StepperDailyTaskSummary>;
+
+const summarizeStepperDailyTaskByTemplate = (
+  anchor: FanxiuGameWindow3OcrFrameLine,
+  lines: FanxiuGameWindow3OcrFrameLine[],
+  candidateText = anchor.text,
+): StepperDailyTaskSummary | null => {
+  const template = findStepperDailyTemplate();
+  if (!template) return null;
+  const { image, templateShape, titleShape } = template;
+  const titleRect = stepperShapeFrameRect(image, titleShape);
+  const anchorCenter = stepperOcrLineCenter(anchor);
+  const titleCenter = {
+    x: titleRect.left + titleRect.width / 2,
+    y: titleRect.top + titleRect.height / 2,
+  };
+  const dx = anchorCenter.x - titleCenter.x;
+  const dy = anchorCenter.y - titleCenter.y;
+  const blockBox = translateStepperRect(stepperShapeFrameRect(image, templateShape), dx, dy);
+  const childRect = (title: string) => {
+    const child = findNestedShapeByTitle(templateShape.children ?? [], title);
+    return child ? translateStepperRect(stepperShapeFrameRect(image, child), dx, dy) : null;
+  };
+  const statusBox = childRect('任务状态');
+  const progressBox = childRect('次数');
+  const activityBox = childRect('活跃度');
+  const statusText = collectStepperTextInRect(lines, statusBox ?? blockBox);
+  const progressText = collectStepperTextInRect(lines, progressBox ?? blockBox);
+  const activityText = activityBox ? collectStepperTextInRect(lines, activityBox) : '';
+  const blockText = collectStepperTextInRect(lines, blockBox);
+  const status = extractDailyStatusText(statusText) || extractDailyStatusText(blockText);
+  const progress = extractStepperDailyProgress(progressText) ?? extractStepperDailyProgress(blockText);
+  return {
+    text: blockText || [anchor.text, progressText, statusText].filter(Boolean).join(''),
+    anchorText: anchor.text,
+    candidateText,
+    status,
+    statusCode: getDailyStatusCode(status, progress),
+    progress,
+    blockBox,
+    anchorBox: stepperOcrLineRect(anchor),
+    statusBox,
+    progressBox,
+    statusText,
+    progressText,
+    activityText,
+    clickPoint: stepperRectCenter(statusBox ?? blockBox),
+    source: 'template',
+  };
+};
+
+const summarizeStepperDailyTaskHeuristic = (
+  anchor: FanxiuGameWindow3OcrFrameLine,
+  lines: FanxiuGameWindow3OcrFrameLine[],
+  candidateText = anchor.text,
+): StepperDailyTaskSummary => {
+  const center = stepperOcrLineCenter(anchor);
+  const rowTop = center.y - Math.max(60, anchor.h * 2.5);
+  const rowBottom = center.y + Math.max(95, anchor.h * 4);
+  const rowLines = lines
+    .filter((line) => isStepperDailyFindLineInList(line))
+    .filter((line) => {
+      const lineCenter = stepperOcrLineCenter(line);
+      return lineCenter.y >= rowTop && lineCenter.y <= rowBottom;
+    })
+    .sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const text = rowLines.map((line) => line.text).join('');
+  const status = extractDailyStatusText(text);
+  const progress = extractStepperDailyProgress(text);
+  return {
+    text,
+    anchorText: anchor.text,
+    candidateText,
+    status,
+    statusCode: getDailyStatusCode(status, progress),
+    progress,
+    blockBox: {
+      left: stepperDailyFindListBox().left,
+      right: stepperDailyFindListBox().right,
+      top: rowTop,
+      bottom: rowBottom,
+      width: stepperDailyFindListBox().right - stepperDailyFindListBox().left,
+      height: rowBottom - rowTop,
+    },
+    anchorBox: stepperOcrLineRect(anchor),
+    statusBox: null,
+    progressBox: null,
+    statusText: status,
+    progressText: text,
+    activityText: '',
+    clickPoint: {
+      x: Math.round(stepperDailyFindListBox().right - stepperDailyFindListBox().width * 0.12),
+      y: center.y + 20,
+    },
+    source: 'heuristic',
+  };
+};
+
+const summarizeStepperDailyTask = (
+  anchor: FanxiuGameWindow3OcrFrameLine,
+  lines: FanxiuGameWindow3OcrFrameLine[],
+  candidateText = anchor.text,
+): StepperDailyTaskSummary => {
+  return summarizeStepperDailyTaskByTemplate(anchor, lines, candidateText) ?? summarizeStepperDailyTaskHeuristic(anchor, lines, candidateText);
+};
+
+const shouldStepperDailyFindRecenter = (line: FanxiuGameWindow3OcrFrameLine, summary?: StepperDailyTaskSummary) => {
+  const box = stepperDailyFindListBox();
+  const bottom = summary?.blockBox?.bottom ?? (line.y + line.h);
+  return (box.bottom - bottom) < Math.max(90, box.height * 0.08);
+};
+
+const STEPPER_DAILY_DRAG_PERCENT = 0.5;
+const STEPPER_DAILY_RECENTER_DRAG_PERCENT = 0.18;
+
+const dragStepperDailyTaskList = async (percent = STEPPER_DAILY_DRAG_PERCENT) => {
+  const box = stepperDailyFindListBox();
+  const x = box.width * 0.52;
+  await dragStepperFramePoints(
+    { x, y: box.top + (box.bottom - box.top) * 0.72 },
+    { x, y: box.top + (box.bottom - box.top) * (0.72 - percent) },
+    520,
+  );
+};
+
+const clickStepperDailyFindResult = async (result: StepperDailyFindResult) => {
+  const point = result.summary?.clickPoint;
+  if (!point || !selectedEntryId.value || !naturalWidth.value || !naturalHeight.value) return false;
+  const normalized = normalizeControlPoint(point);
+  await clickFanxiuGameWindow2({
+    ...buildRemoteInputPayloadBase('stepper'),
+    x: normalized.x,
+    y: normalized.y,
+  });
+  return true;
+};
+
+const runStepperDailyFindTick = async (
+  task: Extract<StepperTask, { type: 'daily_find' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  const elapsedSeconds = Math.round((Date.now() - task.startedAt) / 1000);
+  if (elapsedSeconds > task.timeoutSeconds) {
+    const result = decideStepperDailyFindResult(task, '', null);
+    stepperLastDailyFindResult.value = result;
+    shapeDetectLiveBoxes.value = [];
+    drawOverlay();
+    setStepperRunStatus(`日常定位「${task.query}」超时，返回状态 ${task.notFoundStatus}：${result.reason}`, 'wait');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  detailLog(`Tick ${tickNo} 开始：OCR 查找「${task.query}」`);
+  if (task.legacySource) detailLog(`旧版来源：${task.legacySource}`);
+  if (task.note) detailLog(`预设说明：${task.note}`);
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
+  const response = await recognizeFanxiuGameWindow3OcrFrame(currentFrameDataUrl);
+  const lines = response.lines ?? [];
+  detailLog(`OCR 文本：${lines.slice(0, 16).map((line) => `「${line.text}」`).join('，') || '无'}`);
+  const sceneEvidence = getStepperDailySceneEvidence(lines);
+  if (!sceneEvidence.ok) {
+    stepperLastDailyFindResult.value = null;
+    shapeDetectLiveBoxes.value = sceneEvidence.box ? [stepperRectToMatchBox('日常场景标识', sceneEvidence.box)] : [];
+    drawOverlay();
+    const evidenceText = sceneEvidence.text ? `，场景框 OCR「${sceneEvidence.text}」` : '，场景框未识别到日常标题';
+    setStepperRunStatus(`日常定位「${task.query}」停止：当前不像日常页${evidenceText}。请先运行到场景「日常」或保存/修正日常场景标识。`, 'wait');
+    detailLog(`日常场景确认失败${evidenceText}`);
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const matched = buildStepperDailyAnchorCandidates(lines)
+    .find((candidate) => stepperTextMatches(candidate.text, task.query, task.matchMode));
+  if (matched) {
+    const center = stepperOcrLineCenter(matched.anchor);
+    const summary = summarizeStepperDailyTask(matched.anchor, lines, matched.text);
+    if (shouldStepperDailyFindRecenter(matched.anchor, summary) && task.attempts <= task.dragCount) {
+      setStepperRunStatus(`Tick ${tickNo}：命中「${matched.text}」但靠近底部，小幅上滑后复核`, 'action');
+      await dragStepperDailyTaskList(STEPPER_DAILY_RECENTER_DRAG_PERCENT);
+      if (options.waitOnIdle) await sleep(1000);
+      return 'continue';
+    }
+    const progressText = summary.progress ? `，进度 ${summary.progress.current}/${summary.progress.total}` : '';
+    const statusText = summary.status ? `，状态「${summary.status}」` : '';
+    const sourceText = summary.source === 'template' ? '模板' : '启发式';
+    const result = decideStepperDailyFindResult(task, matched.text, summary);
+    stepperLastDailyFindResult.value = result;
+    showStepperDailyFindBoxes(summary);
+    const decisionText = result.decision === 'ready'
+      ? '待执行'
+      : result.decision === 'completed'
+        ? '已完成'
+        : result.decision === 'ongoing'
+          ? '进行中'
+          : result.decision === 'retry'
+            ? '需复核'
+            : '未找到';
+    detailLog(`任务块文本（${sourceText}）：${summary.text || matched.text}`);
+    detailLog(`任务块锚点：${summary.anchorText}，候选行：${summary.candidateText}`);
+    detailLog(`任务块字段：状态字段=${summary.statusText || '无'}，进度字段=${summary.progressText || '无'}`);
+    detailLog(`任务块点击点：(${summary.clickPoint.x},${summary.clickPoint.y})，活跃度文本：${summary.activityText || '无'}`);
+    if (task.openOnReady && result.decision === 'ready') {
+      await clickStepperDailyFindResult(result);
+      setStepperRunStatus(`日常进入「${matched.text}」${statusText}${progressText}，点击 (${summary.clickPoint.x},${summary.clickPoint.y})`, 'action');
+      if (options.waitOnIdle) await sleep(1000);
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    const blockedEnterText = task.openOnReady ? '，未进入' : '';
+    setStepperRunStatus(`日常定位命中「${matched.text}」@(${center.x},${center.y})${statusText}${progressText}，${decisionText}${blockedEnterText}，状态码 ${result.statusCode}：${result.reason}`, 'success');
+    ElMessage.success(stepperRunStatus.value);
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const completedFallback = findStepperDailyCompletedFallback(task, lines);
+  if (completedFallback) {
+    const summary = summarizeStepperDailyTask(completedFallback.anchor, lines, completedFallback.text);
+    const result = decideStepperDailyFindResult(task, completedFallback.text, summary);
+    stepperLastDailyFindResult.value = {
+      ...result,
+      statusCode: 2,
+      decision: 'completed',
+      reason: `完成行兜底确认：${result.reason}`,
+    };
+    showStepperDailyFindBoxes(summary);
+    detailLog(`完成行兜底命中：${completedFallback.text}`);
+    detailLog(`任务块字段：状态字段=${summary.statusText || '无'}，进度字段=${summary.progressText || '无'}`);
+    setStepperRunStatus(
+      `日常定位「${task.query}」未命中入口，但完成行兜底确认「${completedFallback.text}」，状态码 2`,
+      'success',
+    );
+    ElMessage.success(stepperRunStatus.value);
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  if (task.attempts <= task.dragCount) {
+    setStepperRunStatus(
+      `Tick ${tickNo}：未找到「${task.query}」，滚动任务清单 ${task.attempts}/${task.dragCount}`,
+      'action',
+    );
+    await dragStepperDailyTaskList();
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+
+  const result = decideStepperDailyFindResult(task, '', null);
+  stepperLastDailyFindResult.value = result;
+  shapeDetectLiveBoxes.value = [];
+  drawOverlay();
+  setStepperRunStatus(
+    `Tick ${tickNo}：未找到「${task.query}」，返回状态 ${task.notFoundStatus}：${result.reason}${options.waitOnIdle ? '，等待 1 秒' : ''}`,
+    'wait',
+  );
+  stepperTaskStack.value.pop();
+  if (options.waitOnIdle) await sleep(1000);
+  return 'done';
+};
+
+const runStepperDragShapeToShapeTick = async (
+  task: Extract<StepperTask, { type: 'drag_shape_to_shape' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  detailLog(`Tick ${tickNo} 开始：检测 ${task.sourceText} 的「${task.sourceShapeTitle}」`);
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
+  let best: {
+    image: GameWindow3AssetNode;
+    sourceShape: GameWindow3Shape;
+    targetShape: GameWindow3Shape;
+    score: number;
+    box: FanxiuGameWindow2MatchBox;
+  } | null = null;
+  const scores: string[] = [];
+  for (const image of task.sourceImages) {
+    if (stepperStopRequested.value) return 'continue';
+    const sourceShape = findShapeByTitle(image, task.sourceShapeTitle);
+    const targetShape = findShapeByTitle(image, task.targetShapeTitle);
+    if (!sourceShape || !targetShape) {
+      detailLog(`${stepperImageLabel(image)} 缺少「${!sourceShape ? task.sourceShapeTitle : task.targetShapeTitle}」shape`);
+      continue;
+    }
+    try {
+      const response = await matchRuntimeShape(image, sourceShape, currentFrameDataUrl);
+      if (!response) continue;
+      const match = bestRuntimeShapeMatchOf(sourceShape, response);
+      scores.push(`${stepperImageLabel(image)} ${stepperScoreText(match.score)}`);
+      if (!best || match.score > best.score) {
+        best = {
+          image,
+          sourceShape,
+          targetShape,
+          score: match.score,
+          box: match.box,
+        };
+      }
+    } catch (error) {
+      detailLog(`${stepperImageLabel(image)} 检测失败：${getErrorMessage(error)}`);
+    }
+  }
+  detailLog(`检测结果：${scores.join('，') || '无'}`);
+  if (!best || best.score < STEPPER_SCENE_MATCH_THRESHOLD) {
+    setStepperRunStatus(
+      `Tick ${tickNo}：未检测到${task.sourceText}「${task.sourceShapeTitle}」${best ? `，最佳 ${stepperScoreText(best.score)}` : ''}${options.waitOnIdle ? '，等待 1 秒' : ''}`,
+      'wait',
+    );
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+  const start = boxCenterPoint(best.box);
+  let targetMatch: Awaited<ReturnType<typeof resolveRuntimeShapeBox>>;
+  try {
+    targetMatch = await resolveRuntimeShapeBox(best.image, best.targetShape, currentFrameDataUrl);
+  } catch (error) {
+    setStepperRunStatus(
+      `Tick ${tickNo}：未检测到目标「${task.targetShapeTitle}」${options.waitOnIdle ? '，等待 1 秒' : ''}`,
+      'wait',
+    );
+    detailLog(`目标检测失败：${getErrorMessage(error)}`);
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+  const end = boxCenterPoint(targetMatch.box);
+  detailLog(`拖拽：${task.sourceShapeTitle} (${start.x},${start.y}) -> ${task.targetShapeTitle} (${end.x},${end.y})`);
+  if (targetMatch.floating) {
+    detailLog(`目标浮动重检：${stepperScoreText(targetMatch.score)}`);
+  }
+  selectedAssetId.value = best.image.id;
+  selectedShapeId.value = best.sourceShape.id;
+  setStepperRunStatus(
+    `Tick ${tickNo}：拖拽 ${task.sourceShapeTitle} -> ${task.targetShapeTitle}，识别 ${stepperScoreText(best.score)}`,
+    'action',
+  );
+  await dragStepperFramePoints(start, end);
+  stepperTaskStack.value.pop();
+  setStepperRunStatus('已隐藏浮动窗', 'success');
+  return 'done';
+};
+
+const runStepperTick = async (options: StepperTickOptions = {}) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const task = stepperTaskStack.value.at(-1);
+  if (!task) return 'done';
+  if (task.type === 'drag_shape_to_shape') return runStepperDragShapeToShapeTick(task, options);
+  if (task.type === 'daily_find') return runStepperDailyFindTick(task, options);
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  detailLog(`Tick ${tickNo} 开始：目标 ${task.targetText}`);
+  const current = await identifyStepperScene(stepperLastAction.value, task, stepperTriedActionEdges.value, options);
+  if (!current) {
+    setStepperRunStatus(`Tick ${tickNo}：过渡中${options.waitOnIdle ? '，等待 1 秒' : ''}`, 'wait');
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+  detailLog(`当前场景：${stepperImageLabel(current.image)}，识别分 ${stepperScoreText(current.score)}，标识 ${current.count} 个`);
+  applyStepperObservedTransition(current);
+  stepperLastAction.value = null;
+  if (task.targets.some((target) => target.id === current.image.id)) {
+    setStepperRunStatus(`已到达 ${stepperImageLabel(current.image)}`, 'success');
+    ElMessage.success(stepperRunStatus.value);
+    selectedAssetId.value = current.image.id;
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const next = findStepperNextAction(current.image, task.targets, stepperTriedActionEdges.value);
+  if (!next) {
+    detailLog(`决策结果：${stepperImageLabel(current.image)} 没有未尝试的可推进动作`);
+    setStepperRunStatus(`Tick ${tickNo}：没有可推进动作${options.waitOnIdle ? '，等待 1 秒' : ''}`, 'wait');
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+  const candidateActions = buildStepperActionEdges()
+    .filter((edge) => edge.from.id === current.image.id)
+    .filter((edge) => !stepperTriedActionEdges.value.has(`${edge.from.id}:${edge.shape.id}`))
+    .map(stepperActionSummary);
+  detailLog(`可选动作：${candidateActions.join('，') || '无'}`);
+  detailLog(`决策动作：${stepperActionSummary(next)}，预期 ${next.targets.map((target) => stepperImageLabel(target.image)).join('，') || '未知'}`);
+  stepperTriedActionEdges.value.add(`${next.from.id}:${next.shape.id}`);
+  setStepperRunStatus(`Tick ${tickNo}：${stepperImageLabel(current.image)} -> ${next.hasExperience ? '点击' : '探索'} ${next.shape.title || 'shape'}`, 'action');
+  selectedAssetId.value = current.image.id;
+  selectedShapeId.value = next.shape.id;
+  stepperLastAction.value = {
+    fromImageId: current.image.id,
+    shapeId: next.shape.id,
+    shapeTitle: next.shape.title,
+    isIndependentExit: next.isIndependentExit,
+    expectedTargets: next.targets.map((target) => target.image),
+  };
+  detailLog(`点击坐标：${next.shape.title || 'shape'} ${next.shape.floating ? '浮动重检后中心' : '原位中心'}`);
+  const clickResult = await clickStepperShape(current.image, next.shape);
+  if (clickResult?.floating) {
+    detailLog(`浮动重检：${stepperScoreText(clickResult.score)}，点击 (${clickResult.point.x},${clickResult.point.y})`);
+  }
+  detailLog('点击完成，等待画面过渡 1 秒');
+  await sleep(1000);
+  return 'continue';
+};
+
+const runStepperSingleTick = async () => {
+  if (!selectedEntryId.value || stepperRunning.value || stepperStepping.value) return;
+  if (!ensureStepperTask(false)) return;
+  stepperStepping.value = true;
+  stepperStopRequested.value = false;
+  try {
+    await runStepperTick({ verbose: true });
+  } catch (error) {
+    setStepperRunStatus(getErrorMessage(error), 'error');
+    ElMessage.error(stepperRunStatus.value);
+  } finally {
+    stepperStepping.value = false;
+    stepperStopRequested.value = false;
+  }
 };
 
 const runStepperToTarget = async () => {
-  if (!selectedEntryId.value || stepperRunning.value) return;
-  const taskDefinition = stepperTaskDefinitions.find((task) => task.id === selectedStepperTaskId.value) ?? stepperTaskDefinitions[0];
-  if (!taskDefinition) {
-    ElMessage.warning('没有可运行的步进器任务');
-    return;
-  }
-  const targets = resolveStepperSceneTargets(taskDefinition.targetText);
-  if (!targets.length) {
-    ElMessage.warning(`没有找到目标场景：${taskDefinition.targetText}`);
-    return;
-  }
-  stepperTaskStack.value = [{
-    id: createAssetId('stepper-task'),
-    type: taskDefinition.type,
-    targetText: taskDefinition.targetText,
-    targets,
-  }];
+  if (!selectedEntryId.value || stepperRunning.value || stepperStepping.value) return;
+  if (!ensureStepperTask(true)) return;
   stepperRunning.value = true;
   stepperStopRequested.value = false;
-  stepperLastAction.value = null;
-  const triedActionEdges = new Set<string>();
   try {
     for (let step = 0; step < 24; step += 1) {
       if (stepperStopRequested.value) break;
-      const task = stepperTaskStack.value.at(-1);
-      if (!task) break;
-      stepperRunStatus.value = `Tick ${step + 1}：识别当前场景`;
-      const current = await identifyStepperScene(stepperLastAction.value);
-      if (!current) {
-        stepperRunStatus.value = `Tick ${step + 1}：过渡中，等待 1 秒`;
-        await sleep(1000);
-        continue;
-      }
-      applyStepperObservedTransition(current);
-      stepperLastAction.value = null;
-      if (task.targets.some((target) => target.id === current.image.id)) {
-        stepperRunStatus.value = `已到达 ${stepperImageLabel(current.image)}`;
-        ElMessage.success(stepperRunStatus.value);
-        selectedAssetId.value = current.image.id;
-        stepperTaskStack.value.pop();
-        return;
-      }
-      const next = findStepperNextAction(current.image, task.targets, triedActionEdges);
-      if (!next) {
-        stepperRunStatus.value = `${stepperImageLabel(current.image)} 没有可尝试动作`;
-        ElMessage.warning(stepperRunStatus.value);
-        return;
-      }
-      triedActionEdges.add(`${next.from.id}:${next.shape.id}`);
-      stepperRunStatus.value = `Tick ${step + 1}：${stepperImageLabel(current.image)} -> ${next.hasExperience ? '点击' : '探索'} ${next.shape.title || 'shape'}`;
-      selectedAssetId.value = current.image.id;
-      selectedShapeId.value = next.shape.id;
-      stepperLastAction.value = {
-        fromImageId: current.image.id,
-        shapeId: next.shape.id,
-        shapeTitle: next.shape.title,
-        isIndependentExit: next.isIndependentExit,
-        expectedTargets: next.targets.map((target) => target.image),
-      };
-      await clickStepperShape(current.image, next.shape);
-      await sleep(1000);
+      const result = await runStepperTick({ waitOnIdle: true });
+      if (result === 'done') return;
     }
     if (stepperStopRequested.value) {
-      stepperRunStatus.value = '已停止';
+      setStepperRunStatus('已停止', 'stop');
       return;
     }
-    stepperRunStatus.value = '超过最大步数，未到达目标';
+    setStepperRunStatus('超过最大步数，未到达目标', 'error');
     ElMessage.warning(stepperRunStatus.value);
   } catch (error) {
-    stepperRunStatus.value = getErrorMessage(error);
+    setStepperRunStatus(getErrorMessage(error), 'error');
     ElMessage.error(stepperRunStatus.value);
   } finally {
     stepperRunning.value = false;
@@ -6841,6 +10078,27 @@ const cropImageDataUrlByShape = async (imageDataUrl: string, shape: GameWindow3S
   return context.getImageData(0, 0, width, height);
 };
 
+const cropImageDataUrlByBox = async (imageDataUrl: string, box: FanxiuGameWindow2MatchBox, width: number, height: number) => {
+  const image = await loadMaskImage(imageDataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(
+    image,
+    box.x,
+    box.y,
+    box.w,
+    box.h,
+    0,
+    0,
+    width,
+    height,
+  );
+  return context.getImageData(0, 0, width, height);
+};
+
 const loadShapeAlphaMask = async (shape: GameWindow3Shape, width: number, height: number) => {
   if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
   const image = await loadMaskImage(shape.alphaMask.dataUrl);
@@ -6869,31 +10127,37 @@ const applyAlphaToPreview = (imageData: ImageData, alpha: Uint8ClampedArray | nu
   return preview;
 };
 
+const alphaToMaskImageData = (alpha: Uint8ClampedArray, width: number, height: number) => {
+  const image = new ImageData(width, height);
+  const total = width * height;
+  for (let index = 0; index < total; index += 1) {
+    const value = alpha[index] ?? 255;
+    const offset = index * 4;
+    image.data[offset] = value;
+    image.data[offset + 1] = value;
+    image.data[offset + 2] = value;
+    image.data[offset + 3] = 255;
+  }
+  return image;
+};
+
 const cropImageDataUrlToShape = async (imageDataUrl: string, width: number, height: number) => {
   return cropImageDataUrlByShape(imageDataUrl, selectedShape.value, width, height);
 };
 
-const captureLiveShapeImageData = (width: number, height: number) => {
+const captureLiveShapeImageData = async (width: number, height: number) => {
   const shape = selectedShape.value;
-  const image = streamImageRef.value;
-  if (!shape || !image?.naturalWidth || !image.naturalHeight) return null;
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d');
-  if (!context) return null;
-  context.drawImage(
-    image,
-    shape.x * image.naturalWidth,
-    shape.y * image.naturalHeight,
-    shape.w * image.naturalWidth,
-    shape.h * image.naturalHeight,
-    0,
-    0,
-    width,
-    height,
-  );
-  return context.getImageData(0, 0, width, height);
+  const selectedImage = selectedImageNode.value;
+  if (!shape) return null;
+  const currentFrameDataUrl = captureCurrentLiveFrameDataUrl();
+  if (!currentFrameDataUrl) return null;
+  if (shape.floating && selectedImage?.filename) {
+    const response = await matchRuntimeShape(selectedImage, shape, currentFrameDataUrl);
+    if (!response) return null;
+    const best = bestRuntimeShapeMatchOf(shape, response);
+    return cropImageDataUrlByBox(currentFrameDataUrl, best.box, width, height);
+  }
+  return cropImageDataUrlByShape(currentFrameDataUrl, shape, width, height);
 };
 
 const imageDataToDataUrl = (imageData: ImageData) => {
@@ -6914,9 +10178,10 @@ const refreshShapeMaskPreview = () => {
   const resultImage = new ImageData(new Uint8ClampedArray(stats.reference.data), stats.width, stats.height);
   for (let index = 0; index < total; index += 1) {
     const volatility = stats.max[index] - stats.min[index];
-    const alpha = volatility <= shapeMaskThreshold.value
+    const dynamicAlpha = volatility <= shapeMaskThreshold.value
       ? 255
       : Math.max(0, 255 - Math.round((volatility - shapeMaskThreshold.value) * 5));
+    const alpha = Math.min(stats.baseAlpha?.[index] ?? 255, dynamicAlpha);
     const offset = index * 4;
     maskImage.data[offset] = alpha;
     maskImage.data[offset + 1] = alpha;
@@ -6926,6 +10191,106 @@ const refreshShapeMaskPreview = () => {
   }
   shapeMaskAlphaDataUrl.value = imageDataToDataUrl(maskImage);
   shapeMaskResultPreviewUrl.value = imageDataToDataUrl(resultImage);
+};
+
+const currentShapeMaskAlpha = () => {
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) return null;
+  const total = stats.width * stats.height;
+  const alpha = new Uint8ClampedArray(total);
+  for (let index = 0; index < total; index += 1) {
+    const volatility = stats.max[index] - stats.min[index];
+    const dynamicAlpha = volatility <= shapeMaskThreshold.value
+      ? 255
+      : Math.max(0, 255 - Math.round((volatility - shapeMaskThreshold.value) * 5));
+    alpha[index] = Math.min(stats.baseAlpha?.[index] ?? 255, dynamicAlpha);
+  }
+  return alpha;
+};
+
+const referencePixelSaturation = (reference: ImageData, index: number) => {
+  const offset = index * 4;
+  const r = reference.data[offset];
+  const g = reference.data[offset + 1];
+  const b = reference.data[offset + 2];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max - min;
+};
+
+const cleanAlphaLargestComponent = (
+  alpha: Uint8ClampedArray,
+  reference: ImageData,
+  width: number,
+  height: number,
+) => {
+  const total = width * height;
+  const solid = new Uint8Array(total);
+  for (let index = 0; index < total; index += 1) {
+    solid[index] = alpha[index] >= 150 && referencePixelSaturation(reference, index) >= 24 ? 1 : 0;
+  }
+  const visited = new Uint8Array(total);
+  let best: number[] = [];
+  const queue: number[] = [];
+  for (let start = 0; start < total; start += 1) {
+    if (!solid[start] || visited[start]) continue;
+    const component: number[] = [];
+    visited[start] = 1;
+    queue.length = 0;
+    queue.push(start);
+    for (let head = 0; head < queue.length; head += 1) {
+      const index = queue[head];
+      component.push(index);
+      const x = index % width;
+      const y = Math.floor(index / width);
+      const neighbors = [
+        x > 0 ? index - 1 : -1,
+        x < width - 1 ? index + 1 : -1,
+        y > 0 ? index - width : -1,
+        y < height - 1 ? index + width : -1,
+      ];
+      for (const next of neighbors) {
+        if (next >= 0 && solid[next] && !visited[next]) {
+          visited[next] = 1;
+          queue.push(next);
+        }
+      }
+    }
+    if (component.length > best.length) best = component;
+  }
+  const keep = new Uint8Array(total);
+  for (const index of best) keep[index] = 1;
+  const cleaned = new Uint8ClampedArray(total);
+  for (let index = 0; index < total; index += 1) {
+    if (!keep[index]) continue;
+    cleaned[index] = 255;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    const neighbors = [
+      x > 0 ? index - 1 : -1,
+      x < width - 1 ? index + 1 : -1,
+      y > 0 ? index - width : -1,
+      y < height - 1 ? index + width : -1,
+    ];
+    for (const next of neighbors) {
+      if (next >= 0 && alpha[next] >= 220) cleaned[next] = Math.max(cleaned[next], 220);
+    }
+  }
+  return cleaned;
+};
+
+const cleanShapeMaskAlpha = () => {
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) return;
+  const alpha = currentShapeMaskAlpha();
+  if (!alpha) return;
+  const cleaned = cleanAlphaLargestComponent(alpha, stats.reference, stats.width, stats.height);
+  stats.baseAlpha = cleaned;
+  stats.min.fill(255);
+  stats.max.fill(0);
+  shapeMaskFrameCount.value = 0;
+  shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(cleaned, stats.width, stats.height));
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, cleaned));
 };
 
 const updateShapeMaskStats = (frame: ImageData) => {
@@ -6950,9 +10315,10 @@ const updateShapeMaskStats = (frame: ImageData) => {
 };
 
 const scheduleShapeMaskSampling = () => {
-  shapeMaskSamplingFrame.value = window.requestAnimationFrame(() => {
+  shapeMaskSamplingFrame.value = window.requestAnimationFrame(async () => {
     if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !shapeMaskRunning.value) return;
-    const frame = captureLiveShapeImageData(shapeMaskStats.value.width, shapeMaskStats.value.height);
+    const frame = await captureLiveShapeImageData(shapeMaskStats.value.width, shapeMaskStats.value.height);
+    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !shapeMaskRunning.value) return;
     if (frame) updateShapeMaskStats(frame);
     scheduleShapeMaskSampling();
   });
@@ -6968,31 +10334,38 @@ const pauseShapeMaskSampling = () => {
 
 const stopShapeMaskSampling = pauseShapeMaskSampling;
 
-const resetShapeMaskSampling = async () => {
+const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   pauseShapeMaskSampling();
+  const shape = selectedShape.value;
   const image = selectedImageNode.value;
   const size = getSelectedShapePixelSize();
-  if (!image || !size) return;
+  if (!shape || !image || !size) return;
   const imageDataUrl = await getAssetImageDataUrl(image);
   if (!imageDataUrl) return;
   const reference = await cropImageDataUrlToShape(imageDataUrl, size.width, size.height);
   if (!reference) return;
   const total = size.width * size.height;
+  const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height) : null;
   shapeMaskFrameCount.value = 0;
   shapeMaskLivePreviewUrl.value = '';
-  shapeMaskAlphaDataUrl.value = '';
-  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(reference);
+  shapeMaskAlphaDataUrl.value = baseAlpha ? imageDataToDataUrl(alphaToMaskImageData(baseAlpha, size.width, size.height)) : '';
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(reference, baseAlpha));
   shapeMaskStats.value = {
     width: size.width,
     height: size.height,
     min: new Uint8ClampedArray(total).fill(255),
     max: new Uint8ClampedArray(total),
+    baseAlpha,
     reference,
   };
 };
 
+const resetShapeMaskSampling = async () => {
+  await initializeShapeMaskSampling(false);
+};
+
 const startShapeMaskSampling = async () => {
-  if (!shapeMaskStats.value) await resetShapeMaskSampling();
+  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
   if (!shapeMaskStats.value || shapeMaskRunning.value) return;
   shapeMaskRunning.value = true;
   scheduleShapeMaskSampling();
@@ -7002,7 +10375,7 @@ const openShapeMaskDialog = async () => {
   if (!selectedShape.value || selectedShape.value.kind === 'group') return;
   shapeMaskDialogVisible.value = true;
   await nextTick();
-  await resetShapeMaskSampling();
+  await initializeShapeMaskSampling(true);
 };
 
 const saveShapeMaskAndClose = () => {
@@ -7058,9 +10431,10 @@ const updateShapeToleranceStats = (frame: ImageData) => {
 };
 
 const scheduleShapeToleranceSampling = () => {
-  shapeToleranceSamplingFrame.value = window.requestAnimationFrame(() => {
+  shapeToleranceSamplingFrame.value = window.requestAnimationFrame(async () => {
     if (!shapeToleranceDialogVisible.value || !shapeToleranceStats.value || !shapeToleranceRunning.value) return;
-    const frame = captureLiveShapeImageData(shapeToleranceStats.value.width, shapeToleranceStats.value.height);
+    const frame = await captureLiveShapeImageData(shapeToleranceStats.value.width, shapeToleranceStats.value.height);
+    if (!shapeToleranceDialogVisible.value || !shapeToleranceStats.value || !shapeToleranceRunning.value) return;
     if (frame) updateShapeToleranceStats(frame);
     scheduleShapeToleranceSampling();
   });
@@ -7205,9 +10579,17 @@ const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number,
     kind: 'shape',
     title: label || source?.title || image.title,
     description: '',
+    floating: Boolean(source?.floating),
     isSceneIdentity: false,
+    sceneIdentityRole: 'off',
     sceneJumpTarget: '',
     contentDirection: 'none',
+    imageMatchRole: source?.imageMatchRole ?? 'off',
+    pixelTolerance: 5,
+    ocrMatchRole: 'off',
+    ocrEnabled: false,
+    ocrText: '',
+    ocrMatchMode: 'contains',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -7608,14 +10990,22 @@ const showSceneJumpHelp = () => {
       ],
     },
     {
-      title: '5. 目录路径',
+      title: '5. 0',
+      lines: [
+        '0 必须单独填写。',
+        '它表示这个 shape 不产生场景跳转记录，但仍然可以作为动作被执行。',
+        '适合会触发局部状态变化、开关、展开等不切换场景的区域。',
+      ],
+    },
+    {
+      title: '6. 目录路径',
       lines: [
         '可以写目录名，例如 登录弹窗。',
         '表示该目录下的一组场景都可能进入。',
       ],
     },
     {
-      title: '6. 旧写法',
+      title: '7. 旧写法',
       lines: ['? 不再作为有效配置。未知路径由步进器运行时探索，不需要写进字段。'],
     },
   ]);
@@ -7640,8 +11030,9 @@ const showStepperHelp = () => {
     {
       title: '3. 分层并行',
       lines: [
-        '识别先匹配上一步动作的历史目标，再匹配独立场景，最后匹配其他场景。',
-        '每层内部有限并发匹配，命中高置信结果后停止继续扫描后续候选。',
+        '识别候选按三组排序：上一步动作的历史目标、独立场景、其他场景。',
+        '这三组只是优先级，不是阻塞条件；每个 tick 会收集所有组的候选再统一决策。',
+        '前组候选如果有通向目标的可执行路径会优先尝试；尝试不通后，后续 tick 可以落到后组候选继续探索。',
       ],
     },
     {
@@ -7673,9 +11064,17 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   kind: 'shape',
   title: '',
   description: '',
+  floating: false,
   isSceneIdentity: false,
+  sceneIdentityRole: 'off',
   sceneJumpTarget: '',
   contentDirection: 'none',
+  imageMatchRole: 'off',
+  pixelTolerance: 5,
+  ocrMatchRole: 'off',
+  ocrEnabled: false,
+  ocrText: '',
+  ocrMatchMode: 'contains',
   maskEnabled: false,
   alphaMask: null,
   toleranceEnabled: false,
@@ -7691,11 +11090,16 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   children: [],
 });
 
-const getAnnotationPoint = (event: PointerEvent) => {
+const getAnnotationRect = () => {
   const canvas = annotationCanvasRef.value;
   if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return null;
+  return rect;
+};
+
+const getAnnotationPoint = (event: PointerEvent, rect = getAnnotationRect()) => {
+  if (!rect) return null;
   return {
     x: clamp((event.clientX - rect.left) / rect.width, 0, 1),
     y: clamp((event.clientY - rect.top) / rect.height, 0, 1),
@@ -7711,7 +11115,7 @@ const clampShapeBox = (shape: GameWindow3Shape) => {
 
 const updateShapeDraft = (event: PointerEvent) => {
   const state = shapeDraftState.value;
-  const point = getAnnotationPoint(event);
+  const point = getAnnotationPoint(event, state?.rect);
   if (!state || state.pointerId !== event.pointerId || !point) return;
   shapeDraftBox.value = buildShapeBox(state.startX, state.startY, point.x, point.y);
 };
@@ -7733,7 +11137,6 @@ const finishShapeDraft = (event: PointerEvent) => {
     // Pointer capture may already be released by the browser.
   }
   if (!draft || !image) {
-    selectedShapeId.value = null;
     return;
   }
   image.shapes ??= [];
@@ -7743,9 +11146,17 @@ const finishShapeDraft = (event: PointerEvent) => {
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes ?? []).filter(isDrawableShape).length + 1),
     description: '',
+    floating: false,
     isSceneIdentity: false,
+    sceneIdentityRole: 'off',
     sceneJumpTarget: '',
     contentDirection: 'none',
+    imageMatchRole: 'off',
+    pixelTolerance: 5,
+    ocrMatchRole: 'off',
+    ocrEnabled: false,
+    ocrText: '',
+    ocrMatchMode: 'contains',
     maskEnabled: false,
     alphaMask: null,
     toleranceEnabled: false,
@@ -7772,14 +11183,17 @@ const cancelShapeDraft = () => {
 
 const startShapeDraft = (event: PointerEvent) => {
   if (event.button !== 0 || !selectedImageNode.value || shapeDragState.value || screenshotSpacePressed.value || screenshotPanState.value) return;
-  const point = getAnnotationPoint(event);
+  const rect = getAnnotationRect();
+  const point = getAnnotationPoint(event, rect);
   if (!point) return;
-  selectedShapeId.value = null;
+  event.preventDefault();
+  event.stopPropagation();
   annotationCanvasRef.value?.setPointerCapture(event.pointerId);
   shapeDraftState.value = {
     pointerId: event.pointerId,
     startX: point.x,
     startY: point.y,
+    rect: rect as DOMRect,
   };
   shapeDraftBox.value = buildShapeBox(point.x, point.y, point.x, point.y);
   window.addEventListener('pointermove', updateShapeDraft);
@@ -7923,8 +11337,18 @@ const finishShapeDrag = () => {
   max-width: 100%;
 }
 
-.behavior-target-input {
-  width: 120px;
+.behavior-function-select {
+  width: 92px;
+}
+
+.behavior-preset-select {
+  width: 168px;
+}
+
+.behavior-row-break {
+  flex-basis: 100%;
+  width: 0;
+  height: 0;
 }
 
 .behavior-run-status {
@@ -7937,10 +11361,214 @@ const finishShapeDrag = () => {
   white-space: nowrap;
 }
 
+.daily-find-summary {
+  max-width: 360px;
+  overflow: hidden;
+  color: #337ecc;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stepper-log-list {
+  height: 50vh;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.stepper-log-row {
+  display: grid;
+  grid-template-columns: 76px 44px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 30px;
+  padding: 7px 10px;
+  color: #374151;
+  font-size: 12px;
+  line-height: 1.35;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.stepper-log-row:last-child {
+  border-bottom: 0;
+}
+
+.stepper-log-row.is-action {
+  background: #eff6ff;
+}
+
+.stepper-log-row.is-success {
+  background: #f0fdf4;
+}
+
+.stepper-log-row.is-error {
+  background: #fef2f2;
+}
+
+.stepper-log-time,
+.stepper-log-kind {
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.stepper-log-message {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.stepper-log-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.stepper-log-empty {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: #9ca3af;
+  font-size: 13px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.burst-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+}
+
+.burst-summary {
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.burst-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.burst-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  min-height: 260px;
+  max-height: 50vh;
+  overflow: auto;
+  padding: 2px;
+}
+
+.burst-card {
+  position: relative;
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  cursor: pointer;
+}
+
+.burst-card.is-selected {
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.35);
+}
+
+.burst-card-check {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  z-index: 1;
+}
+
+.burst-card img,
+.burst-card-empty {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: contain;
+  background: #0b0f14;
+}
+
+.burst-card-empty {
+  display: grid;
+  place-items: center;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.burst-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.burst-card-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.burst-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.burst-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.game-macro-config {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-macro-config-row {
+  display: grid;
+  grid-template-columns: 120px max-content;
+  align-items: center;
+  gap: 12px;
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.game-macro-config-row .el-input-number {
+  width: 72px;
+}
+
+.game-macro-config-row .el-select {
+  width: 140px;
+}
+
 .switch-field {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.switch-row {
+  width: 100%;
 }
 
 .compact-checkbox {
@@ -7996,12 +11624,38 @@ const finishShapeDrag = () => {
   width: 126px;
 }
 
+.channel-select {
+  width: 76px;
+}
+
 .mode-select {
   width: 76px;
 }
 
-.connection-button {
-  min-width: 74px;
+.connection-status {
+  min-width: 48px;
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.connection-status.is-ready {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.capture-runtime-link {
+  border: 0;
+  background: transparent;
+  color: #5f6b7a;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.capture-runtime-link:hover {
+  color: #1677ff;
 }
 
 .crop-input {
@@ -8014,6 +11668,12 @@ const finishShapeDrag = () => {
 
 .number-input {
   width: 58px;
+}
+
+.actual-fps-text {
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .scale-input {
@@ -8052,7 +11712,7 @@ const finishShapeDrag = () => {
 
 .live-workspace {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 14px;
   width: 100%;
 }
@@ -9395,11 +13055,6 @@ const finishShapeDrag = () => {
   background: #ecfdf5;
 }
 
-.match-row.is-template.is-active {
-  border-color: #f97316;
-  background: #fff7ed;
-}
-
 .match-number {
   width: 24px;
   height: 24px;
@@ -9436,12 +13091,6 @@ const finishShapeDrag = () => {
 .match-row.is-fixed .match-score {
   color: #047857;
 }
-
-.match-row.is-template .match-kind,
-.match-row.is-template .match-score {
-  color: #c2410c;
-}
-
 
 @media (max-width: 980px) {
   .topbar {
@@ -9530,11 +13179,16 @@ const finishShapeDrag = () => {
   min-width: 0;
 }
 
-.asset-tree {
+.asset-tree-scroll {
   flex: 1 1 auto;
   min-height: 0;
   padding: 6px 8px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: scroll;
+}
+
+.asset-tree {
+  min-width: max-content;
 }
 
 .asset-tree-node {
@@ -9635,6 +13289,8 @@ const finishShapeDrag = () => {
 
 .annotation-image-wrap {
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
 }
 
 .empty-image-surface {
@@ -9645,13 +13301,7 @@ const finishShapeDrag = () => {
   justify-content: center;
   color: #909399;
   font-size: 13px;
-  background-image:
-    linear-gradient(45deg, rgba(144, 147, 153, 0.12) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(144, 147, 153, 0.12) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(144, 147, 153, 0.12) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(144, 147, 153, 0.12) 75%);
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-  background-size: 16px 16px;
+  background: #f8fafc;
   pointer-events: none;
 }
 
@@ -9707,12 +13357,17 @@ const finishShapeDrag = () => {
   cursor: nwse-resize;
 }
 
-.shape-tree {
+.shape-tree-scroll {
   flex: 1 1 0;
   min-width: 180px;
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: scroll;
   border: 1px solid #ebeef5;
+}
+
+.shape-tree {
+  min-width: max-content;
 }
 
 .shape-tree-node.is-group {
@@ -9726,6 +13381,10 @@ const finishShapeDrag = () => {
   gap: 6px;
 }
 
+.shape-tree-node.is-selected {
+  color: #409eff;
+}
+
 .shape-fields {
   display: flex;
   flex-direction: column;
@@ -9737,27 +13396,91 @@ const finishShapeDrag = () => {
 .shape-detect-row {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 10px 14px;
   min-height: 24px;
   flex-wrap: wrap;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
 }
 
 .shape-action-group {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.shape-condition-toggle {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shape-condition-toggle.is-optional {
+  border-color: #409eff;
+  color: #409eff;
+  background: #ecf5ff;
+}
+
+.shape-condition-toggle.is-required {
+  border-color: #67c23a;
+  color: #fff;
+  background: #67c23a;
+}
+
+.shape-detect-row :deep(.el-checkbox) {
+  height: 24px;
+  margin-right: 0;
+  --el-checkbox-font-size: 12px;
+}
+
+.shape-detect-row :deep(.el-checkbox__label) {
+  padding-left: 6px;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.shape-detect-row :deep(.el-checkbox__inner) {
+  width: 14px;
+  height: 14px;
+}
+
+.shape-detect-row :deep(.el-button--small) {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.shape-detect-row :deep(.el-input--small .el-input__wrapper),
+.shape-detect-row :deep(.el-input-number--small .el-input__wrapper),
+.shape-detect-row :deep(.el-select--small .el-select__wrapper) {
+  min-height: 24px;
+  height: 24px;
+  font-size: 12px;
 }
 
 .shape-jump-field {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
   color: var(--el-text-color-regular);
   font-size: 12px;
   line-height: 1;
 }
 
 .shape-jump-field span {
+  color: var(--el-text-color-regular);
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -9783,17 +13506,51 @@ const finishShapeDrag = () => {
   width: 84px;
 }
 
+.shape-jump-field .shape-pixel-tolerance-input {
+  width: 48px;
+}
+
+.shape-ocr-config {
+  gap: 6px;
+}
+
+.shape-ocr-text-input {
+  width: 160px;
+}
+
+.shape-ocr-mode-select {
+  width: 72px;
+}
+
+.shape-row-break {
+  flex-basis: 100%;
+  width: 0;
+  height: 0;
+}
+
 .shape-jump-field .shape-direction-select {
   width: 44px;
 }
 
 .shape-jump-field :deep(.el-input__wrapper) {
+  height: 24px;
   min-height: 24px;
 }
 
 .shape-jump-field :deep(.el-input__inner) {
   height: 22px;
   line-height: 22px;
+  font-size: 12px;
+}
+
+.shape-jump-field :deep(.el-select__wrapper) {
+  min-height: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+.shape-jump-field :deep(.el-select__placeholder),
+.shape-jump-field :deep(.el-select__selected-item) {
   font-size: 12px;
 }
 
@@ -10008,7 +13765,7 @@ const finishShapeDrag = () => {
     flex-direction: column;
   }
 
-  .shape-tree {
+  .shape-tree-scroll {
     width: 100%;
     max-width: none;
     max-height: 220px;
