@@ -315,6 +315,23 @@ export interface AttendanceCompletionResponse {
   row_index: number
 }
 
+export interface AttendanceVideoRevisionCell {
+  row_index: number
+  column_index: number
+}
+
+export interface AttendanceVideoRevisionRequest {
+  revision_label: string
+  cells: AttendanceVideoRevisionCell[]
+}
+
+export interface AttendanceVideoRevisionResponse {
+  sheet: NoteSheetDetail
+  revision_label: string
+  updated_count: number
+  recalculation: Record<string, unknown>
+}
+
 export interface AttendanceCourseScriptStatusItem {
   row_index: number
   course_type: string
@@ -637,7 +654,7 @@ export async function startNoteSheetRegistrationMatchRun(
     `/note-sheets/sheets/${sheetId}/registration/match-runs`,
     {
       action: payload.action,
-      use_browser_fallback: payload.useBrowserFallback ?? false,
+      use_browser_fallback: payload.useBrowserFallback,
       force_restart: payload.forceRestart ?? false,
     },
     {
@@ -782,6 +799,24 @@ export async function setAttendanceRowCompleted(
       params: {
         workbook_id: options?.workbookId ?? undefined,
       },
+    },
+  )
+  return response.data
+}
+
+export async function applyAttendanceVideoRevision(
+  sheetId: number,
+  payload: AttendanceVideoRevisionRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceVideoRevisionResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance/video-revision`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
     },
   )
   return response.data

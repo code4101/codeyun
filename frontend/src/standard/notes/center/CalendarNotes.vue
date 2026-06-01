@@ -142,7 +142,16 @@
                   <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
                     {{ day.isRest === true ? '休' : '班' }}
                   </span>
-                  <el-button v-if="allowCreate" class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
+                  <button
+                    v-if="allowCreate"
+                    class="create-note-btn"
+                    type="button"
+                    title="添加笔记"
+                    aria-label="添加笔记"
+                    @click.stop="createNoteForDay(day.date)"
+                  >
+                    +
+                  </button>
                 </div>
                 <div class="day-right">
                   <span class="lunar-info" :class="{ 'is-festival': day.festival || day.jieQi }">
@@ -496,7 +505,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, toRaw } from 'vue';
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, toRaw, defineAsyncComponent } from 'vue';
 import { useRouter } from 'vue-router';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
@@ -521,21 +530,22 @@ import {
 import { useUserStore } from '@/store/userStore';
 import { fetchCodexWorkloadForEntry, type CodexWorkloadResponse, type CodexWorkloadTurn } from '@/api/codexSessions';
 import { taskStore, type Device } from '@/store/taskStore';
-import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight, Plus } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeDisplayStyle } from '@/utils/nodeConfig';
-import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import { formatNoteDateShort } from '@/utils/noteDate';
 import { getNoteWeightScaleFactor, NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
+import { monitorPolledTask } from '@/utils/longTask';
 
 const router = useRouter();
 const noteStore = useNoteStore();
 const userStore = useUserStore();
-const props = defineProps<{
+const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
+const props = withDefaults(defineProps<{
   tabId: string;
   dataFilterRules?: NoteProgramRule[];
   fixedViewFilterRules?: NoteProgramRule[];
@@ -543,7 +553,10 @@ const props = defineProps<{
   allowCreate?: boolean;
   showCodexWorkload?: boolean;
   splitPaneStorageKey?: string;
-}>();
+}>(), {
+  allowCreate: true,
+  showFrontFilter: true,
+});
 
 const showFrontFilter = computed(() => props.showFrontFilter !== false);
 const allowCreate = computed(() => props.allowCreate !== false);
@@ -589,6 +602,40 @@ const CODEX_WORKLOAD_DEVICE_CACHE_MS = 60_000;
 const CODEX_WORKLOAD_HOUR_SECONDS = 3600;
 const CODEX_WORKLOAD_STATS_CACHE_KEY = 'codeyun:notes:calendar:codex-workload-days:v2';
 const CODEX_WORKLOAD_STATS_CACHE_VERSION = 2;
+
+const calendarPerfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
+const calendarPerfStart = calendarPerfEnabled ? performance.now() : 0;
+
+const recordCalendarPerf = (entry: Record<string, unknown>) => {
+  ((window as any).__codeyunCalendarPerfEvents ||= []).push(entry);
+  document.documentElement.setAttribute(
+    'data-codeyun-calendar-perf',
+    JSON.stringify((window as any).__codeyunCalendarPerfEvents),
+  );
+};
+
+const logCalendarPerf = (label: string, startedAt: number) => {
+  if (!calendarPerfEnabled) return;
+  const duration = performance.now() - startedAt;
+  recordCalendarPerf({ label, duration });
+  console.info(`[CalendarNotes perf] ${label}: ${duration.toFixed(1)}ms`);
+};
+
+const logCalendarPerfSinceStart = (label: string) => {
+  if (!calendarPerfEnabled) return;
+  const duration = performance.now() - calendarPerfStart;
+  recordCalendarPerf({ label, duration, sinceStart: true });
+  console.info(`[CalendarNotes perf] ${label}: ${duration.toFixed(1)}ms since module setup`);
+};
+
+const measureCalendarPerf = async <T>(label: string, task: () => Promise<T>): Promise<T> => {
+  const startedAt = calendarPerfEnabled ? performance.now() : 0;
+  try {
+    return await task();
+  } finally {
+    logCalendarPerf(label, startedAt);
+  }
+};
 
 const CALENDAR_VOLUME_DEFINITIONS: CalendarVolumeDefinition[] = [
   { id: 'v1', label: '卷一 开辟鸿蒙~2008.7', start: [1992, 1, 1], endExclusive: [2008, 8, 1] },
@@ -865,7 +912,6 @@ const createNoteFromContextMenu = async () => {
   await createNoteForDay(date);
 };
 
-const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 const isCodexDiaryImportActive = (status: string | undefined | null) => status === 'pending' || status === 'running';
 const showCodexDiaryImportError = async (message?: string | null) => {
   await ElMessageBox.alert(message || 'Codex 总结日记导入失败', 'Codex 总结日记导入失败', {
@@ -875,13 +921,16 @@ const showCodexDiaryImportError = async (message?: string | null) => {
 };
 
 const waitForCodexDiaryImportRun = async (runId: string): Promise<CodexDiaryImportRunResponse> => {
-  let latest = await fetchCodexDiaryImportRun(runId);
-  const deadline = Date.now() + CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS;
-  while (isCodexDiaryImportActive(latest.status) && Date.now() < deadline) {
-    await delay(CODEX_DIARY_IMPORT_POLL_INTERVAL_MS);
-    latest = await fetchCodexDiaryImportRun(runId);
-  }
-  return latest;
+  const initial = await fetchCodexDiaryImportRun(runId);
+  return monitorPolledTask<CodexDiaryImportRunResponse>({
+    initial,
+    poll: () => fetchCodexDiaryImportRun(runId),
+    isRunning: (run) => isCodexDiaryImportActive(run.status),
+    getUpdatedAt: (run) => run.heartbeat_at ?? run.updated_at,
+    getError: (run) => run.status === 'failed' ? (run.error_message || 'Codex 总结日记导入失败') : '',
+    pollIntervalMs: CODEX_DIARY_IMPORT_POLL_INTERVAL_MS,
+    idleTimeoutMs: CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS,
+  });
 };
 
 const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Promise<CodexDiaryImportRunResponse | null> => {
@@ -902,6 +951,11 @@ const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Prom
     };
     const detail = maybeError.response?.data?.detail;
     if (typeof detail === 'object' && detail?.code === 'active_import') {
+      const activeRunId = typeof detail.run_id === 'string' ? detail.run_id.trim() : '';
+      if (activeRunId) {
+        ElMessage.info(detail.message || 'Codex 总结日记仍在导入中，继续等待当前任务');
+        return await fetchCodexDiaryImportRun(activeRunId);
+      }
       await showCodexDiaryImportError(detail.message || '该日期的 Codex 总结日记仍在导入中，请稍后再试。');
       return null;
     }
@@ -986,6 +1040,7 @@ const extractCodexWorkloadErrorMessage = (error: any, fallback: string) => {
 };
 
 const refreshCodexWorkloadStats = async () => {
+  const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
   const requestId = ++latestCodexWorkloadRequestId;
   codexWorkloadError.value = '';
   try {
@@ -1062,6 +1117,8 @@ const refreshCodexWorkloadStats = async () => {
     codexHistoricalSecondsByDay.value = {};
     codexWorkloadLoaded.value = true;
     codexWorkloadError.value = extractCodexWorkloadErrorMessage(error, '读取 Codex workload 失败');
+  } finally {
+    logCalendarPerf('refreshCodexWorkloadStats', perfStartedAt);
   }
 };
 
@@ -1734,6 +1791,7 @@ const getYearMonthMemoTitle = (key: string) => getYearMonthMemo(key) || undefine
 const getYearTitle = (key: string) => yearTitles.value[key]?.trim() || '';
 
 const loadYearMonthMemos = async () => {
+  const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
   try {
     const response = await fetchCalendarYearMonthMemos();
     const remoteMemos = normalizeYearMonthMemos(response.memos);
@@ -1756,6 +1814,8 @@ const loadYearMonthMemos = async () => {
     });
   } catch (error) {
     console.warn('Failed to load calendar year-month memos:', error);
+  } finally {
+    logCalendarPerf('loadYearMonthMemos', perfStartedAt);
   }
 };
 
@@ -2284,6 +2344,7 @@ const getCalendarQueryLimit = () => {
 };
 
 const refreshData = async (options: { silent?: boolean } = {}) => {
+  const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
   loading.value = true;
   try {
     await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(buildCalendarProgram(), {
@@ -2297,6 +2358,7 @@ const refreshData = async (options: { silent?: boolean } = {}) => {
     }
   } finally {
     loading.value = false;
+    logCalendarPerf('refreshData(query-program)', perfStartedAt);
   }
 };
 
@@ -2341,6 +2403,8 @@ const calendarPaneHeight = computed(() => (
 ));
 
 onMounted(() => {
+  logCalendarPerfSinceStart('mounted');
+  void measureCalendarPerf('nextTick after mounted', () => nextTick());
   void loadYearMonthMemos();
   if (showCodexWorkload.value) {
     void refreshCodexWorkloadStats();
@@ -3153,12 +3217,29 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
 }
 
 .create-note-btn {
-  margin-left: 4px;
-  opacity: 0;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-left: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #409eff;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  opacity: 0.88;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
-.day-cell:hover .create-note-btn {
+.day-cell:hover .create-note-btn,
+.create-note-btn:focus-visible {
   opacity: 1;
+  background-color: #ecf5ff;
+  outline: none;
 }
 
 .day-number {
@@ -3178,6 +3259,7 @@ watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  max-width: calc(100% - 34px);
 }
 
 .codex-hours {

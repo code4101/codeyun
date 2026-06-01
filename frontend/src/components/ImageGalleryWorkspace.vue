@@ -525,6 +525,7 @@ const props = withDefaults(
     emptyBadge: string;
     emptyTitle: string;
     emptyDescription: string;
+    emptyInlineText?: string;
     emptySteps?: string[];
     storageKeyPrefix?: string;
     showSidebar: boolean;
@@ -595,7 +596,9 @@ const showSidebarModel = computed({
 });
 
 const allItemsLabel = computed(() => `全部${props.itemLabel}`);
-const emptyInlineText = computed(() => `当前筛选条件下没有可显示的${props.itemLabel}`);
+const emptyInlineText = computed(() =>
+  props.emptyInlineText || `当前筛选条件下没有可显示的${props.itemLabel}`
+);
 const showGallerySummary = computed(() => props.showGallerySummary);
 const showVisibleCountStat = computed(() => props.showVisibleCountStat);
 const showThumbnailScaleControl = computed(() => props.showThumbnailScaleControl);

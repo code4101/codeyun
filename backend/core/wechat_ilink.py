@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import random
 import re
 import secrets
@@ -111,6 +112,7 @@ _login_sessions: dict[str, LoginSession] = {}
 _login_lock = threading.RLock()
 _codex_bridge_workers: dict[str, CodexBridgeWorker] = {}
 _codex_bridge_lock = threading.RLock()
+_store_lock = threading.RLock()
 
 
 def _store_path() -> Path:
@@ -528,12 +530,13 @@ def _mask_secret(value: str) -> str:
 
 def _read_store() -> dict[str, Any]:
     path = _store_path()
-    if not path.exists():
-        return {"version": STORE_VERSION, "accounts": {}}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise WechatIlinkError("微信接入配置文件无法读取") from exc
+    with _store_lock:
+        if not path.exists():
+            return {"version": STORE_VERSION, "accounts": {}}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise WechatIlinkError("微信接入配置文件无法读取") from exc
     if not isinstance(payload, dict):
         return {"version": STORE_VERSION, "accounts": {}}
     accounts = payload.get("accounts")
@@ -549,9 +552,24 @@ def _write_store(payload: dict[str, Any]) -> None:
         "version": STORE_VERSION,
         "accounts": payload.get("accounts") if isinstance(payload.get("accounts"), dict) else {},
     }
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    body = json.dumps(data, ensure_ascii=False, indent=2)
+    with _store_lock:
+        last_error: OSError | None = None
+        for attempt in range(5):
+            tmp_path = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+            try:
+                tmp_path.write_text(body, encoding="utf-8")
+                tmp_path.replace(path)
+                return
+            except OSError as exc:
+                last_error = exc
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+        raise WechatIlinkError("微信接入配置文件无法写入，请确认 accounts.json 未被其他程序占用") from last_error
 
 
 def _normalize_base_url(value: str | None, fallback: str = DEFAULT_API_BASE_URL) -> str:

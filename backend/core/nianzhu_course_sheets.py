@@ -15,7 +15,10 @@ from typing import Any
 from sqlmodel import Session, select
 
 from backend.api.note_sheets import (
+    _delete_document_column,
+    _excel_column_label,
     _extract_document_rows,
+    _insert_document_column,
     _is_formula_expression,
     _normalize_document_columns,
     _normalize_document_data_start_row,
@@ -28,6 +31,7 @@ from backend.core.attendance_progress_style import (
     highlight_presence_progress,
     highlight_text_refund_progress,
     highlight_threshold_refund_progress,
+    parse_compact_refund_rules,
     parse_progress_percent,
     set_cell_background,
     sheet_text,
@@ -36,6 +40,7 @@ from backend.core.course_data_sheet_storage import (
     attendance_row_user_ids,
     build_registration_identity_map,
 )
+from backend.core import note_sheet_inline_links
 from backend.core.sheet_identity import allocate_new_sheet_identity
 from backend.core.sheet_refs import (
     load_sheets_by_refs,
@@ -270,6 +275,10 @@ def _is_legacy_completed_video_text(value: Any) -> bool:
     return text == "准时完成" or bool(re.match(r"延\s*\d+\s*周完成", text))
 
 
+def _is_legacy_delayed_completed_video_text(value: Any) -> bool:
+    return bool(re.match(r"延\s*\d+\s*周完成", _normalize_text(value)))
+
+
 def _video_refund_progress_percent(value: Any) -> float | None:
     if _is_legacy_completed_video_text(value):
         return 100.0
@@ -310,10 +319,13 @@ def _highlight_video_refund_for_item(
     text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
     if text_rules:
         return highlight_text_refund_progress(text_rules, value)
-    return _highlight_video_refund_progress(
+    refund_amount, color = _highlight_video_refund_progress(
         _rules_for_version(item.rules_by_version, rule_version),
         value,
     )
+    if _legacy_video_algorithm_kind(item) == "b" and _is_legacy_delayed_completed_video_text(value):
+        return refund_amount, "#FFFF80"
+    return refund_amount, color
 
 
 def _strip_progress_title(value: Any) -> str:
@@ -590,17 +602,239 @@ def _progress_column_range(columns: list[str]) -> range:
     return range(start, max(start, end))
 
 
+NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS = [
+    RULE_VERSION_COLUMN,
+    TRACKING_GROUP_COLUMN,
+    TRACKING_STATUS_COLUMN,
+    FREEZE_TIME_COLUMN,
+]
+NIANZHU_ATTENDANCE_SOURCE_ONLY_COLUMNS = [
+    "商户订单号",
+]
+NIANZHU_ATTENDANCE_MANAGED_FORMULA_COLUMNS = {
+    "禅客",
+    "完成视频数",
+    "视频应返款",
+    "打卡应返款",
+    "总应返款",
+    "当前应返款",
+}
+
+
+def _find_nianzhu_refund_insert_index(columns: list[str], header: str) -> int:
+    if header == "已返款":
+        current_refund_index = _find_column_index(columns, "当前应返款")
+        if current_refund_index is not None:
+            return current_refund_index
+        order_amount_index = _find_column_index(columns, "订单金额")
+        if order_amount_index is not None:
+            return min(order_amount_index + 1, len(columns))
+        total_refund_index = _find_column_index(columns, "总应返款")
+        if total_refund_index is not None:
+            return min(total_refund_index + 1, len(columns))
+
+    refunded_index = _find_column_index(columns, "已返款")
+    if refunded_index is not None:
+        return min(refunded_index + 1, len(columns))
+    order_amount_index = _find_column_index(columns, "订单金额")
+    if order_amount_index is not None:
+        return min(order_amount_index + 1, len(columns))
+    clockin_index = _find_column_index(columns, "打卡数")
+    return clockin_index if clockin_index is not None else len(columns)
+
+
+def _find_nianzhu_meta_insert_index(columns: list[str], header: str) -> int:
+    header_order = NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS.index(header)
+    for next_header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS[header_order + 1:]:
+        next_index = _find_column_index(columns, next_header)
+        if next_index is not None:
+            return next_index
+    for previous_header in reversed(NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS[:header_order]):
+        previous_index = _find_column_index(columns, previous_header)
+        if previous_index is not None:
+            return min(previous_index + 1, len(columns))
+    return len(columns)
+
+
+def _set_document_field_header(
+    document: dict[str, Any],
+    *,
+    column_index: int,
+    header: str,
+) -> dict[str, Any]:
+    grid_rows = document.get("grid_rows")
+    if not isinstance(grid_rows, list):
+        return document
+    try:
+        field_row_index = int(document.get("field_row_index") or 0)
+    except (TypeError, ValueError):
+        field_row_index = 0
+    if field_row_index < 0 or field_row_index >= len(grid_rows):
+        return document
+
+    columns = _normalize_document_columns(document)
+    row = _normalize_row(grid_rows[field_row_index], len(columns))
+    if column_index < 0 or column_index >= len(row) or row[column_index] == header:
+        return document
+    row[column_index] = header
+    next_grid_rows = list(grid_rows)
+    next_grid_rows[field_row_index] = row
+    return {**document, "grid_rows": next_grid_rows}
+
+
+def _insert_nianzhu_attendance_column(
+    document: dict[str, Any],
+    *,
+    header: str,
+    insert_index: int,
+    width: int = 96,
+) -> dict[str, Any]:
+    next_document = _insert_document_column(
+        document,
+        insert_index=insert_index,
+        header=header,
+        width=width,
+    )
+    return _set_document_field_header(
+        next_document,
+        column_index=min(max(insert_index, 0), len(_normalize_document_columns(next_document)) - 1),
+        header=header,
+    )
+
+
+def _fill_nianzhu_attendance_schema_defaults(
+    document: dict[str, Any],
+    *,
+    inserted_columns: set[str],
+) -> tuple[dict[str, Any], int]:
+    if not inserted_columns:
+        return document, 0
+
+    columns = _normalize_document_columns(document)
+    rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(document)]
+    indexes = {
+        header: _find_column_index(columns, header)
+        for header in [
+            "分组",
+            "已返款",
+            "当前应返款",
+            RULE_VERSION_COLUMN,
+            TRACKING_GROUP_COLUMN,
+            TRACKING_STATUS_COLUMN,
+            FREEZE_TIME_COLUMN,
+        ]
+    }
+
+    changed_cells = 0
+    for row in rows:
+        if "已返款" in inserted_columns and indexes["已返款"] is not None and not _normalize_text(row[indexes["已返款"]]):
+            row[indexes["已返款"]] = 0
+            changed_cells += 1
+        if "当前应返款" in inserted_columns and indexes["当前应返款"] is not None and not _normalize_text(row[indexes["当前应返款"]]):
+            row[indexes["当前应返款"]] = 0
+            changed_cells += 1
+        if RULE_VERSION_COLUMN in inserted_columns and indexes[RULE_VERSION_COLUMN] is not None and not _normalize_text(row[indexes[RULE_VERSION_COLUMN]]):
+            row[indexes[RULE_VERSION_COLUMN]] = CURRENT_RULE
+            changed_cells += 1
+        if TRACKING_GROUP_COLUMN in inserted_columns and indexes[TRACKING_GROUP_COLUMN] is not None:
+            tracking_group = _normalize_text(row[indexes[TRACKING_GROUP_COLUMN]])
+            source_group = ""
+            group_index = indexes["分组"]
+            if group_index is not None and group_index != indexes[TRACKING_GROUP_COLUMN]:
+                source_group = _normalize_text(row[group_index])
+            if not tracking_group and source_group:
+                row[indexes[TRACKING_GROUP_COLUMN]] = source_group
+                changed_cells += 1
+        if TRACKING_STATUS_COLUMN in inserted_columns and indexes[TRACKING_STATUS_COLUMN] is not None and not _normalize_text(row[indexes[TRACKING_STATUS_COLUMN]]):
+            row[indexes[TRACKING_STATUS_COLUMN]] = "追踪中"
+            changed_cells += 1
+        if FREEZE_TIME_COLUMN in inserted_columns and indexes[FREEZE_TIME_COLUMN] is not None and row[indexes[FREEZE_TIME_COLUMN]] is None:
+            row[indexes[FREEZE_TIME_COLUMN]] = ""
+            changed_cells += 1
+
+    if changed_cells <= 0:
+        return document, 0
+    return _replace_document_data_rows(document, rows), changed_cells
+
+
+def _ensure_nianzhu_attendance_schema(document: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    next_document = copy.deepcopy(document)
+    inserted_columns: list[str] = []
+    removed_columns: list[str] = []
+
+    for header in NIANZHU_ATTENDANCE_SOURCE_ONLY_COLUMNS:
+        columns = _normalize_document_columns(next_document)
+        column_index = _find_column_index(columns, header)
+        if column_index is None:
+            continue
+        next_document = _delete_document_column(next_document, delete_index=column_index)
+        removed_columns.append(header)
+
+    columns = _normalize_document_columns(next_document)
+    has_refund_context = any(
+        _find_column_index(columns, header) is not None
+        for header in ["总应返款", "订单金额", "已返款", "当前应返款"]
+    )
+    if has_refund_context:
+        for header in ["已返款", "当前应返款"]:
+            columns = _normalize_document_columns(next_document)
+            if _find_column_index(columns, header) is not None:
+                continue
+            next_document = _insert_nianzhu_attendance_column(
+                next_document,
+                header=header,
+                insert_index=_find_nianzhu_refund_insert_index(columns, header),
+                width=96,
+            )
+            inserted_columns.append(header)
+
+    for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS:
+        columns = _normalize_document_columns(next_document)
+        if _find_column_index(columns, header) is not None:
+            continue
+        next_document = _insert_nianzhu_attendance_column(
+            next_document,
+            header=header,
+            insert_index=_find_nianzhu_meta_insert_index(columns, header),
+            width=96,
+        )
+        inserted_columns.append(header)
+
+    next_document, defaulted_cells = _fill_nianzhu_attendance_schema_defaults(
+        next_document,
+        inserted_columns=set(inserted_columns),
+    )
+    return next_document, {
+        "schema_changed": next_document != document,
+        "schema_inserted_columns": inserted_columns,
+        "schema_removed_columns": removed_columns,
+        "schema_defaulted_cells": defaulted_cells,
+    }
+
+
 def _document_cell_link(document: dict[str, Any], *, row_index: int, column_index: int) -> str:
-    meta = document.get("cell_meta")
-    if not isinstance(meta, dict):
-        return ""
-    cell_meta = meta.get(f"{row_index}:{column_index}")
-    if not isinstance(cell_meta, dict):
-        return ""
-    link = cell_meta.get("link")
-    if not isinstance(link, dict):
-        return ""
-    return _normalize_text(link.get("url"))
+    rows = document.get("rows")
+    if isinstance(rows, list) and 0 <= row_index < len(rows):
+        row = rows[row_index]
+        if isinstance(row, list) and 0 <= column_index < len(row):
+            url = note_sheet_inline_links.inline_cell_link_url(row[column_index])
+            if url:
+                return _normalize_text(url)
+
+    grid_rows = document.get("grid_rows")
+    data_start_row = 0
+    try:
+        data_start_row = max(int(document.get("data_start_row") or 0), 0)
+    except (TypeError, ValueError):
+        data_start_row = 0
+    document_row_index = data_start_row + row_index
+    if isinstance(grid_rows, list) and 0 <= document_row_index < len(grid_rows):
+        columns = document.get("columns")
+        column_count = max(column_index + 1, len(columns) if isinstance(columns, list) else 0)
+        row = note_sheet_inline_links.normalize_row(grid_rows[document_row_index], column_count)
+        if 0 <= column_index < len(row):
+            return _normalize_text(note_sheet_inline_links.inline_cell_link_url(row[column_index]))
+    return ""
 
 
 def _parse_percentage_rules(value: Any) -> list[PercentageRefundRule]:
@@ -646,6 +880,25 @@ def _parse_timed_text_rules(value: Any) -> dict[str, int]:
         if label_text:
             result[label_text] = int(amount)
     return result
+
+
+def _parse_attendance_video_refund_rules(value: Any) -> dict[str, int]:
+    compact_rules = parse_compact_refund_rules(value)
+    if compact_rules:
+        return compact_rules
+    return _parse_timed_text_rules(value)
+
+
+def _attendance_video_refund_rules_override(document: dict[str, Any], columns: list[str]) -> dict[str, int]:
+    refund_index = _find_column_index(columns, "视频应返款")
+    if refund_index is None:
+        return {}
+    note_value = _grid_cell_value(
+        document,
+        max(_normalize_document_data_start_row(document) - 1, 0),
+        refund_index,
+    )
+    return _parse_attendance_video_refund_rules(note_value)
 
 
 def _parse_clockin_rule_from_formula(value: Any) -> str:
@@ -1567,9 +1820,10 @@ def run_nianzhu_course_sheet_step1(
     close_browser: bool = True,
 ) -> dict[str, Any]:
     from kq5034.attendance_api import _close_kqtools_browser, _normalize_shop, ensure_attendance_runtime  # type: ignore
-    from kq5034.tools import KqTools  # type: ignore
 
     ensure_attendance_runtime()
+    from kq5034.tools import KqTools  # type: ignore
+
     workbook = _get_workbook(session, workbook_id)
     attendance = _get_sheet(session, attendance_sheet_id)
     owner_key = _normalize_text(attendance.owner_key) or NIANZHU_OWNER_KEY
@@ -1958,7 +2212,11 @@ def normalize_nianzhu_course_sheet_names(
     }
 
 
-def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
+def _load_video_config(
+    document: dict[str, Any],
+    *,
+    timed_video_rules_override: dict[str, int] | None = None,
+) -> list[VideoConfigItem]:
     items: list[VideoConfigItem] = []
     source_meta = dict(document.get("source_meta") or {})
     course_name = _normalize_text(source_meta.get("course_name"))
@@ -1974,6 +2232,8 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
         item_type = "课次" if lesson_number is not None or is_zen_stage_video else ("答疑" if is_qa_item else "视频")
         participates_refund = lesson_number is not None or is_zen_stage_video
         refund_rule_mode = _normalize_text(source_meta.get("video_refund_rule_mode"))
+        if timed_video_rules_override:
+            refund_rule_mode = "timed_text"
         rules_by_version: dict[str, list[PercentageRefundRule]] = {
             CURRENT_RULE: _parse_percentage_rules(
                 DEFAULT_VIDEO_RULES[CURRENT_RULE]
@@ -1991,7 +2251,7 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
                 else "",
             ),
         }
-        custom_text_rules = _parse_timed_text_rules(source_meta.get("timed_video_rules"))
+        custom_text_rules = dict(timed_video_rules_override or _parse_timed_text_rules(source_meta.get("timed_video_rules")))
         text_rules_by_version: dict[str, dict[str, int]] = {}
         for version, rules in DEFAULT_TIMED_VIDEO_RULES.items():
             if participates_refund and refund_rule_mode == "timed_text":
@@ -2466,8 +2726,49 @@ def _load_clockin_rules(document: dict[str, Any]) -> dict[str, dict[str, list[Th
     return result
 
 
+def _extract_course_edition_number(course_name: str) -> int | None:
+    match = re.search(r"第\s*0*(\d+)\s*届", _normalize_text(course_name))
+    return int(match.group(1)) if match else None
+
+
+def _clockin_title_allowlist_for_course(course_name: str) -> set[str] | None:
+    normalized = _normalize_text(course_name)
+    edition = _extract_course_edition_number(normalized)
+    if "觉观" in normalized:
+        titles = {f"【打卡】中心教室-{index}" for index in range(1, 23)}
+        if edition:
+            titles.update(f"【打卡】第{edition}届中心教室-{index}" for index in range(1, 23))
+            titles.update(f"【第{edition}届中心教室】—第{index}课打卡" for index in range(1, 23))
+        return titles
+
+    if "念住" in normalized and "念住闯关" not in normalized:
+        titles = {f"念住学修日志-{index:02}" for index in range(1, 22)}
+        if edition:
+            titles.update(f"第{edition}届念住学修日志-{index:02}" for index in range(1, 22))
+        return titles
+
+    return None
+
+
+def _resolve_course_name_from_documents(
+    *documents: dict[str, Any],
+    course_name: str = "",
+) -> str:
+    resolved_course_name = _normalize_text(course_name)
+    if resolved_course_name:
+        return resolved_course_name
+    for document in documents:
+        source_meta = dict(document.get("source_meta") or {})
+        resolved_course_name = _normalize_text(source_meta.get("course_name"))
+        if resolved_course_name:
+            return resolved_course_name
+    return ""
+
+
 def _collect_clockin_data(
     document: dict[str, Any],
+    *,
+    allowed_titles: set[str] | None = None,
 ) -> tuple[dict[tuple[str, str], set[str]], dict[tuple[str, str], float]]:
     grouped_keys: dict[tuple[str, str], set[str]] = {}
     result: dict[tuple[str, str], float] = {}
@@ -2479,9 +2780,13 @@ def _collect_clockin_data(
             title = _normalize_text(row.get("update_title"))
             if title.startswith("测试-"):
                 continue
+            if allowed_titles is not None and title not in allowed_titles:
+                continue
             task_date = _normalize_text(row.get("task_date"))
             publish_time = _parse_datetime_cell(row.get("publish_time"))
-            if task_date:
+            if allowed_titles is not None:
+                clockin_key = f"title:{title}"
+            elif task_date:
                 clockin_key = f"task:{task_date}|{title}"
             elif publish_time is not None:
                 clockin_key = f"publish:{publish_time.date()}|{title}"
@@ -2662,19 +2967,29 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     attendance_sheet_id: int = NIANZHU_ATTENDANCE_SHEET_NUMERIC_ID,
     active_only: bool = True,
     course_name: str = "",
+    manual_video_progress_overrides: dict[tuple[int, int], str] | None = None,
 ) -> dict[str, Any]:
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
-    current_document = copy.deepcopy(dict(attendance.document_json or {}))
+    original_document = copy.deepcopy(dict(attendance.document_json or {}))
+    current_document, schema_summary = _ensure_nianzhu_attendance_schema(original_document)
+    current_document, formula_config_defaulted_cells = _ensure_refund_baseline_config_cell(current_document)
+    if formula_config_defaulted_cells:
+        schema_summary["formula_config_defaulted_cells"] = formula_config_defaulted_cells
     columns = _normalize_document_columns(current_document)
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     data_start_row = _normalize_document_data_start_row(current_document)
 
     indexes = {
         "优秀学员评分": _find_column_index(columns, "优秀学员评分"),
+        "禅客": _find_column_index(columns, "禅客"),
         "完成视频数": _find_column_index(columns, "完成视频数"),
         "视频应返款": _find_column_index(columns, "视频应返款"),
         "打卡应返款": _find_column_index(columns, "打卡应返款"),
+        "总应返款": _find_column_index(columns, "总应返款"),
+        "已返款": _find_column_index(columns, "已返款"),
+        "订单金额": _find_column_index(columns, "订单金额"),
+        "当前应返款": _find_column_index(columns, "当前应返款"),
     }
     rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
 
@@ -2685,13 +3000,27 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         video_config_sheet.version = max(int(video_config_sheet.version or 1), 1) + 1
         video_config_sheet.updated_at = time.time()
         session.add(video_config_sheet)
-    video_config = _load_video_config(video_config_document)
+    video_config = _load_video_config(
+        video_config_document,
+        timed_video_rules_override=_attendance_video_refund_rules_override(current_document, columns),
+    )
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
     clockin_output_fields = _clockin_output_fields(clockin_config_document, columns)
+    clockin_data_document = dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {})
+    clockin_title_allowlist = _clockin_title_allowlist_for_course(
+        _resolve_course_name_from_documents(
+            video_config_document,
+            clockin_config_document,
+            clockin_data_document,
+            course_name=course_name,
+        )
+    )
+    strict_clockin_source = clockin_title_allowlist is not None and bool(clockin_data_document.get("rows"))
     clockin_key_groups, clockin_numeric_counts = _collect_clockin_data(
-        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+        clockin_data_document,
+        allowed_titles=clockin_title_allowlist,
     )
     registration_identity_map = build_registration_identity_map(
         session,
@@ -2723,6 +3052,12 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     missing_identity_rows = 0
     total_video_refund = 0.0
     total_clockin_refund = 0.0
+    has_refund_tracking_context = (
+        indexes["总应返款"] is not None
+        and indexes["订单金额"] is not None
+        and indexes["已返款"] is not None
+        and indexes["当前应返款"] is not None
+    )
 
     for row_index, row in enumerate(rows):
         next_row = list(row)
@@ -2765,6 +3100,12 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             value = _select_video_progress_for_identity_keys(video_data, identity_keys, item, rule_version)
             if _is_no_video_progress_text(value) and not _is_no_video_progress_text(next_row[column_index]):
                 value = _normalize_text(next_row[column_index])
+            if manual_video_progress_overrides:
+                override_label = manual_video_progress_overrides.get((document_row, column_index))
+                if override_label is not None:
+                    override_value = _video_revision_value_for_item(item, rule_version, override_label)
+                    if override_value is not None:
+                        value = override_value
             if next_row[column_index] != value:
                 next_row[column_index] = value
                 updated_cells += 1
@@ -2800,7 +3141,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                 field_name,
             )
             existing_clockin_count = _to_float(next_row[column_index])
-            if clockin_count <= 0 and existing_clockin_count > 0:
+            if clockin_count <= 0 and existing_clockin_count > 0 and not strict_clockin_source:
                 clockin_count = existing_clockin_count
             clockin_value = _format_numeric_cell(clockin_count)
             if clockin_count <= 0 and output_name == "打卡数":
@@ -2826,19 +3167,67 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                     styled_cells += 1
 
         total_clockin_refund += clockin_refund
+        row_number = _formula_row_number(current_document, row_index)
+        completed_video_formula = _build_completed_video_count_formula(
+            video_config,
+            video_column_indexes,
+            row_number=row_number,
+            rule_version=rule_version,
+        )
+        video_refund_formula = _build_timed_video_refund_formula(
+            video_config,
+            video_column_indexes,
+            row_number=row_number,
+            rule_version=rule_version,
+        )
+        clockin_refund_formula = (
+            _build_clockin_refund_formula(
+                columns,
+                row_number=row_number,
+                rules=_clockin_refund_rules_for_formula(
+                    current_document,
+                    refund_column_index=indexes["打卡应返款"],
+                    rule_version=rule_version,
+                    clockin_rules=clockin_rules,
+                ),
+            )
+            if has_refund_tracking_context
+            else None
+        )
+        total_refund_formula = _build_total_refund_formula(
+            columns,
+            row_number=row_number,
+            config_row_number=_formula_config_row_number(current_document),
+        )
+        current_refund_formula = _build_current_refund_formula(columns, row_number=row_number)
+        zen_guest_formula = _build_zen_guest_formula(columns, row_number=row_number)
         scalar_updates = {
             "优秀学员评分": score,
-            "完成视频数": completed_video_count,
-            "视频应返款": _format_numeric_cell(video_refund),
-            "打卡应返款": _format_numeric_cell(clockin_refund),
+            "完成视频数": completed_video_formula or completed_video_count,
+            "视频应返款": video_refund_formula or _format_numeric_cell(video_refund),
+            "打卡应返款": clockin_refund_formula or _format_numeric_cell(clockin_refund),
         }
+        if zen_guest_formula:
+            scalar_updates["禅客"] = zen_guest_formula
+        if total_refund_formula:
+            scalar_updates["总应返款"] = total_refund_formula
+        if current_refund_formula:
+            scalar_updates["当前应返款"] = current_refund_formula
         total_video_refund += video_refund
         for field_name, value in scalar_updates.items():
             column_index = indexes[field_name]
-            if column_index is None or _is_formula_expression(next_row[column_index]):
+            if column_index is None:
                 continue
-            if next_row[column_index] != value:
-                next_row[column_index] = value
+            managed_formula = field_name in NIANZHU_ATTENDANCE_MANAGED_FORMULA_COLUMNS and _is_formula_expression(value)
+            if _is_formula_expression(next_row[column_index]) and not managed_formula:
+                continue
+            if _set_row_value(
+                current_document,
+                next_row,
+                document_row=document_row,
+                column_index=column_index,
+                value=value,
+            ):
                 updated_cells += 1
                 row_changed = True
 
@@ -2849,7 +3238,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     next_document = dict(current_document)
     next_document["cell_meta"] = cell_meta
     next_document = _replace_document_data_rows(next_document, next_rows)
-    if next_document != current_document:
+    if next_document != original_document:
         attendance.document_json = next_document
         attendance.version = max(int(attendance.version or 1), 1) + 1
         attendance.updated_at = time.time()
@@ -2869,7 +3258,115 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         "clockin_data_rows": len(_extract_document_rows(dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}))),
         "video_refund_total": _format_numeric_cell(total_video_refund),
         "clockin_refund_total": _format_numeric_cell(total_clockin_refund),
+        **schema_summary,
     }
+
+
+def _video_revision_value_for_item(item: VideoConfigItem, rule_version: str, label: Any) -> str | None:
+    text = re.sub(r"\s+", "", _normalize_text(label))
+    if not text:
+        return None
+
+    algorithm_kind = _legacy_video_algorithm_kind(item)
+    if algorithm_kind == "b":
+        if text in {"准时完成", "当周完成"}:
+            return "准时完成"
+        match = re.fullmatch(r"延(\d+)周完成", text)
+        if match:
+            return f"延{int(match.group(1))}周完成"
+        return None
+
+    if algorithm_kind == "c":
+        match = re.fullmatch(r"([123])遍(?:完成)?", text)
+        if match:
+            play_count = int(match.group(1))
+            progress = 100 if play_count == 1 else 150 if play_count == 2 else 200
+            return f"{play_count}遍/{progress}%"
+        return None
+
+    text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
+    if isinstance(text_rules, dict) and text_rules:
+        if text == "当堂完成":
+            return "当堂完成/100%"
+        match = re.fullmatch(r"第(\d+)天回放", text)
+        if match:
+            return f"第{int(match.group(1))}天回放/100%"
+    return None
+
+
+def apply_nianzhu_attendance_video_revision(
+    session: Session,
+    *,
+    attendance_sheet_id: int,
+    cells: list[dict[str, int]],
+    revision_label: str,
+    active_only: bool = True,
+    course_name: str = "",
+) -> dict[str, Any]:
+    attendance = _get_sheet(session, attendance_sheet_id)
+    bundle = _load_course_sheet_bundle(session, attendance=attendance)
+    current_document, _schema_summary = _ensure_nianzhu_attendance_schema(dict(attendance.document_json or {}))
+    columns = _normalize_document_columns(current_document)
+    rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
+    data_start_row = _normalize_document_data_start_row(current_document)
+    rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
+
+    video_config_sheet = bundle[VIDEO_CONFIG_SHEET_KEY]
+    video_config = _load_video_config(
+        dict(video_config_sheet.document_json or {}),
+        timed_video_rules_override=_attendance_video_refund_rules_override(current_document, columns),
+    )
+    video_course_keys = {item.course_key for item in video_config if item.course_key}
+    progress_column_by_key: dict[str, int] = {}
+    for column_index, column_name in enumerate(columns):
+        key = _course_item_key(column_name)
+        if key and key in video_course_keys and key not in progress_column_by_key:
+            progress_column_by_key[key] = column_index
+
+    item_by_column: dict[int, VideoConfigItem] = {}
+    for item in video_config:
+        column_index = progress_column_by_key.get(item.course_key)
+        if column_index is not None:
+            item_by_column[column_index] = item
+
+    if not item_by_column:
+        raise ValueError("当前考勤表没有可修订的视频数据列")
+
+    overrides: dict[tuple[int, int], str] = {}
+    seen: set[tuple[int, int]] = set()
+    for cell in cells:
+        row_index = int(cell.get("row_index", -1))
+        column_index = int(cell.get("column_index", -1))
+        if row_index < 0 or row_index >= len(rows):
+            raise ValueError("选区包含不存在的数据行")
+        item = item_by_column.get(column_index)
+        if item is None:
+            raise ValueError("选区必须完全位于视频数据区域")
+        rule_version = CURRENT_RULE
+        if rule_version_index is not None:
+            rule_version = _normalize_text(rows[row_index][rule_version_index]) or CURRENT_RULE
+        if _video_revision_value_for_item(item, rule_version, revision_label) is None:
+            raise ValueError(f"{revision_label} 不适用于选中的视频列")
+        document_row = data_start_row + row_index
+        key = (document_row, column_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        overrides[key] = revision_label
+
+    if not overrides:
+        raise ValueError("请选择要修订的视频数据单元格")
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(
+        session,
+        attendance_sheet_id=attendance_sheet_id,
+        active_only=active_only,
+        course_name=course_name,
+        manual_video_progress_overrides=overrides,
+    )
+    summary["revision_label"] = revision_label
+    summary["revision_target_count"] = len(overrides)
+    return summary
 
 
 def _grid_cell_value(document: dict[str, Any], row_index: int, column_index: int) -> Any:
@@ -2880,6 +3377,266 @@ def _grid_cell_value(document: dict[str, Any], row_index: int, column_index: int
     if not isinstance(row, list) or column_index < 0 or column_index >= len(row):
         return ""
     return row[column_index]
+
+
+def _formula_row_number(document: dict[str, Any], row_index: int) -> int:
+    return _normalize_document_data_start_row(document) + row_index + 1
+
+
+def _formula_config_row_number(document: dict[str, Any]) -> int:
+    return max(_normalize_document_data_start_row(document), 1)
+
+
+def _formula_cell_ref(column_index: int, row_number: int) -> str:
+    return f"{_excel_column_label(column_index)}{row_number}"
+
+
+def _formula_absolute_cell_ref(column_index: int, row_number: int) -> str:
+    return f"${_excel_column_label(column_index)}${row_number}"
+
+
+def _formula_row_ranges(column_indexes: list[int], row_number: int) -> list[str]:
+    sorted_indexes = sorted({index for index in column_indexes if index >= 0})
+    if not sorted_indexes:
+        return []
+
+    ranges: list[str] = []
+    start = previous = sorted_indexes[0]
+    for index in sorted_indexes[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        start_ref = _formula_cell_ref(start, row_number)
+        previous_ref = _formula_cell_ref(previous, row_number)
+        ranges.append(start_ref if start == previous else f"{start_ref}:{previous_ref}")
+        start = previous = index
+    start_ref = _formula_cell_ref(start, row_number)
+    previous_ref = _formula_cell_ref(previous, row_number)
+    ranges.append(start_ref if start == previous else f"{start_ref}:{previous_ref}")
+    return ranges
+
+
+def _build_completed_video_count_formula(
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+    *,
+    row_number: int,
+    rule_version: str,
+) -> str | None:
+    column_indexes = [
+        column_index
+        for item in video_config
+        for column_index in [video_column_indexes.get(item.lesson_id)]
+        if (
+            item.participates_refund
+            and column_index is not None
+            and (
+                _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
+                or _legacy_video_algorithm_kind(item) == "a"
+            )
+        )
+    ]
+    ranges = _formula_row_ranges(column_indexes, row_number)
+    if not ranges:
+        return None
+    parts = [
+        f'COUNTIF({range_ref},"*完成*")'
+        for range_ref in ranges
+    ]
+    parts.extend(
+        f'COUNTIF({range_ref},"*回放*")'
+        for range_ref in ranges
+    )
+    return "=" + "+".join(parts)
+
+
+def _build_timed_video_refund_formula(
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+    *,
+    row_number: int,
+    rule_version: str,
+) -> str | None:
+    column_indexes = [
+        column_index
+        for item in video_config
+        for column_index in [video_column_indexes.get(item.lesson_id)]
+        if (
+            item.participates_refund
+            and column_index is not None
+            and isinstance(
+                _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE),
+                dict,
+            )
+            and _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
+        )
+    ]
+    ranges = _formula_row_ranges(column_indexes, row_number)
+    if not ranges:
+        return None
+
+    rules_by_label: dict[str, int] = {}
+    for item in video_config:
+        text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
+        if not isinstance(text_rules, dict):
+            continue
+        for label, amount in text_rules.items():
+            if amount > 0:
+                rules_by_label[label] = amount
+    if not rules_by_label:
+        return None
+
+    parts: list[str] = []
+    for label, amount in rules_by_label.items():
+        for range_ref in ranges:
+            parts.append(f'COUNTIF({range_ref},"*{label}*")*{_format_numeric_cell(amount)}')
+    return "=" + "+".join(parts)
+
+
+def _parse_clockin_rules_from_note(value: Any) -> list[ThresholdRefundRule]:
+    text = _normalize_text(value)
+    if not text:
+        return []
+    match = re.search(
+        r"达到[^0-9]*(\d+(?:\s*/\s*\d+)+)[^0-9]+(?:累计)?返回[^0-9]*(\d+(?:\s*/\s*\d+)+)",
+        text,
+    )
+    if not match:
+        return []
+    thresholds = [int(_to_float(item)) for item in re.split(r"\s*/\s*", match.group(1)) if _normalize_text(item)]
+    amounts = [int(_to_float(item)) for item in re.split(r"\s*/\s*", match.group(2)) if _normalize_text(item)]
+    if len(thresholds) != len(amounts):
+        return []
+    return [
+        ThresholdRefundRule(float(threshold), float(amount))
+        for threshold, amount in zip(thresholds, amounts)
+        if threshold > 0 and amount >= 0
+    ]
+
+
+def _clockin_refund_rules_for_formula(
+    document: dict[str, Any],
+    *,
+    refund_column_index: int | None,
+    rule_version: str,
+    clockin_rules: dict[str, dict[str, list[ThresholdRefundRule]]],
+) -> list[ThresholdRefundRule]:
+    if refund_column_index is not None:
+        note_rules = _parse_clockin_rules_from_note(
+            _grid_cell_value(
+                document,
+                max(_normalize_document_data_start_row(document) - 1, 0),
+                refund_column_index,
+            )
+        )
+        if note_rules:
+            return sorted(note_rules, key=lambda item: item.threshold)
+    return _rules_for_version(clockin_rules.get("打卡数", {}), rule_version)
+
+
+def _build_clockin_refund_formula(
+    columns: list[str],
+    *,
+    row_number: int,
+    rules: list[ThresholdRefundRule],
+) -> str | None:
+    clockin_index = _find_column_index(columns, "打卡数")
+    if clockin_index is None or not rules:
+        return None
+    clockin_ref = _formula_cell_ref(clockin_index, row_number)
+    parts: list[str] = []
+    for rule in sorted(rules, key=lambda item: item.threshold, reverse=True):
+        parts.extend([
+            f"{clockin_ref}>={_format_numeric_cell(rule.threshold)}",
+            str(_format_numeric_cell(rule.refund_amount)),
+        ])
+    parts.append("0")
+    return "=SWITCH(TRUE," + ",".join(parts) + ")"
+
+
+def _build_total_refund_formula(
+    columns: list[str],
+    *,
+    row_number: int,
+    config_row_number: int,
+) -> str | None:
+    video_index = _find_column_index(columns, "视频应返款")
+    clockin_index = _find_column_index(columns, "打卡应返款")
+    order_amount_index = _find_column_index(columns, "订单金额")
+    refunded_index = _find_column_index(columns, "已返款")
+    if video_index is None or clockin_index is None or order_amount_index is None or refunded_index is None:
+        return None
+    video_ref = _formula_cell_ref(video_index, row_number)
+    clockin_ref = _formula_cell_ref(clockin_index, row_number)
+    order_ref = _formula_cell_ref(order_amount_index, row_number)
+    baseline_ref = _formula_absolute_cell_ref(refunded_index, config_row_number)
+    return f"=MIN(IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({baseline_ref}>0,{baseline_ref},{order_ref}),0),{order_ref})"
+
+
+def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str | None:
+    total_index = _find_column_index(columns, "总应返款")
+    refunded_index = _find_column_index(columns, "已返款")
+    order_amount_index = _find_column_index(columns, "订单金额")
+    if total_index is None or refunded_index is None or order_amount_index is None:
+        return None
+    total_ref = _formula_cell_ref(total_index, row_number)
+    refunded_ref = _formula_cell_ref(refunded_index, row_number)
+    order_ref = _formula_cell_ref(order_amount_index, row_number)
+    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
+
+
+def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
+    completed_video_index = _find_column_index(columns, "完成视频数")
+    clockin_index = _find_column_index(columns, "打卡数")
+    if completed_video_index is None or clockin_index is None:
+        return None
+    completed_video_ref = _formula_cell_ref(completed_video_index, row_number)
+    clockin_ref = _formula_cell_ref(clockin_index, row_number)
+    return f'=IF(AND({completed_video_ref}>=11,{clockin_ref}>=7),"是","")'
+
+
+def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    columns = _normalize_document_columns(document)
+    refunded_index = _find_column_index(columns, "已返款")
+    if refunded_index is None:
+        return document, 0
+
+    config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
+    if _normalize_text(_grid_cell_value(document, config_row_index, refunded_index)):
+        return document, 0
+
+    rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(document)]
+    baseline = ""
+    order_amount_index = _find_column_index(columns, "订单金额")
+    if order_amount_index is not None:
+        for row in rows:
+            amount = _to_float(row[order_amount_index])
+            if amount > 0:
+                baseline = str(_format_numeric_cell(amount))
+                break
+    if not baseline:
+        total_index = _find_column_index(columns, "总应返款")
+        baseline = _normalize_text(_grid_cell_value(document, config_row_index, total_index if total_index is not None else -1))
+    if not baseline:
+        return document, 0
+
+    grid_rows = copy.deepcopy(document.get("grid_rows") or [])
+    if not isinstance(grid_rows, list):
+        return document, 0
+    while len(grid_rows) <= config_row_index:
+        grid_rows.append([""] * len(columns))
+    config_row = _normalize_row(grid_rows[config_row_index], len(columns))
+    config_row[refunded_index] = baseline
+    grid_rows[config_row_index] = config_row
+    next_document = dict(document)
+    next_document["grid_rows"] = grid_rows
+    _set_entity_cell_value(
+        next_document,
+        document_row=config_row_index,
+        column_index=refunded_index,
+        value=baseline,
+    )
+    return next_document, 1
 
 
 def _set_entity_cell_value(
@@ -2978,7 +3735,8 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
 ) -> dict[str, Any]:
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
-    current_document = copy.deepcopy(dict(attendance.document_json or {}))
+    original_document = copy.deepcopy(dict(attendance.document_json or {}))
+    current_document, schema_summary = _ensure_nianzhu_attendance_schema(original_document)
     columns = _normalize_document_columns(current_document)
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     data_start_row = _normalize_document_data_start_row(current_document)
@@ -2986,8 +3744,17 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
     clockin_output_fields = _clockin_output_fields(clockin_config_document, columns)
+    clockin_data_document = dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {})
+    clockin_title_allowlist = _clockin_title_allowlist_for_course(
+        _resolve_course_name_from_documents(
+            dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {}),
+            clockin_config_document,
+            clockin_data_document,
+        )
+    )
     clockin_key_groups, clockin_numeric_counts = _collect_clockin_data(
-        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+        clockin_data_document,
+        allowed_titles=clockin_title_allowlist,
     )
     registration_identity_map = build_registration_identity_map(
         session,
@@ -3191,7 +3958,7 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
     next_document = dict(current_document)
     next_document["cell_meta"] = cell_meta
     next_document = _replace_document_data_rows(next_document, next_rows)
-    changed = next_document != dict(attendance.document_json or {})
+    changed = next_document != original_document
     if changed and not dry_run:
         attendance.document_json = next_document
         attendance.version = max(int(attendance.version or 1), 1) + 1
@@ -3211,6 +3978,7 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
         "missing_identity_rows": missing_identity_rows,
         "missing_source_rows": missing_source_rows,
         "changed_rows": changed_rows,
+        **schema_summary,
     }
 
 

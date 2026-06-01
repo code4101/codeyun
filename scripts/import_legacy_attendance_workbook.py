@@ -24,6 +24,7 @@ from backend.core.resource_identity import (
     RESOURCE_TYPE_WORKBOOK,
     ensure_resource_identity,
 )
+from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
 from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
@@ -260,7 +261,7 @@ def _registration_column_configs(columns: list[str], action_row: list[str]) -> d
     configs: dict[str, Any] = {}
     for index, header in enumerate(columns):
         config: dict[str, Any] = {}
-        if header in {"序号", "订单日期", "订单金额", "已返款", "匹配得分"}:
+        if header in {"订单日期", "订单金额", "已返款", "匹配得分"}:
             config["value_type"] = "number"
         if header in {"提交时间", "出生年月（必填）"}:
             config["value_type"] = "date"
@@ -660,6 +661,7 @@ def import_workbook(
                 owner_user_id=owner_user_id,
             )
             _ensure_workbook_link(session, workbook=workbook, sheet=sheet, order_index=(index + 1) * 10)
+            ensure_attendance_sheet_anonymous_viewer(session, sheet)
             sheets.append(sheet)
 
         workbook.updated_by_user_id = owner_user_id

@@ -39,7 +39,22 @@ import { Delete } from '@element-plus/icons-vue';
 import { useNoteStore, type NoteProgramRule, type TabState } from '@/api/notes';
 
 const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
-const CalendarNotes = defineAsyncComponent(() => import('./CalendarNotes.vue'));
+const loadCalendarNotes = async () => {
+  const perfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
+  const startedAt = perfEnabled ? performance.now() : 0;
+  const component = await import('./CalendarNotes.vue');
+  if (perfEnabled) {
+    const duration = performance.now() - startedAt;
+    ((window as any).__codeyunCalendarPerfEvents ||= []).push({ label: 'CalendarNotes import', duration });
+    document.documentElement.setAttribute(
+      'data-codeyun-calendar-perf',
+      JSON.stringify((window as any).__codeyunCalendarPerfEvents),
+    );
+    console.info(`[NotesCenter perf] CalendarNotes import: ${duration.toFixed(1)}ms`);
+  }
+  return component;
+};
+const CalendarNotes = defineAsyncComponent(loadCalendarNotes);
 const ListNotes = defineAsyncComponent(() => import('./ListNotes.vue'));
 
 const route = useRoute();

@@ -2422,6 +2422,8 @@ def get_fanxiu_activity_cards(
     sort_order: str = Query(default="asc"),
     limit: int = Query(default=80, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
+    item_view: str = Query(default="default"),
+    include_facets: bool = Query(default=True),
     export_root: str | None = Query(default=None),
 ) -> dict[str, Any]:
     return _run_resource_operation(
@@ -2435,6 +2437,8 @@ def get_fanxiu_activity_cards(
         sort_order=sort_order,
         limit=limit,
         offset=offset,
+        item_view=item_view,
+        include_facets=include_facets,
         export_root=export_root,
     )
 

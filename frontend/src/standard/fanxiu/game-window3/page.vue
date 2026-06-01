@@ -171,6 +171,13 @@
                     :value="preset.id"
                   />
                 </el-select>
+                <span
+                  v-if="selectedStepperTaskConfigText"
+                  class="stepper-task-config-summary"
+                  :title="selectedStepperTaskConfigText"
+                >
+                  {{ selectedStepperTaskConfigText }}
+                </span>
                 <span class="behavior-row-break" aria-hidden="true"></span>
                 <el-button
                   size="small"
@@ -265,7 +272,7 @@
 
             <aside class="annotation-panel" :style="annotationPanelStyle">
               <div class="annotation-panel-head">
-                <span>文件树</span>
+                <span>帧树</span>
                 <div class="annotation-panel-actions">
                   <el-button size="small" :icon="Plus" title="新建目录" aria-label="新建目录" @click="addAssetFolder" />
                   <el-button
@@ -295,6 +302,7 @@
 
               <div class="asset-tree-scroll">
                 <el-tree
+                  ref="assetTreeRef"
                   class="asset-tree"
                   :data="assetTree"
                   :props="assetTreeProps"
@@ -349,10 +357,17 @@
                 <el-checkbox v-if="selectedImageNode" v-model="globalOcclusionMaskEnabled" size="small">
                   遮挡标记
                 </el-checkbox>
-              </div>
-              <div class="annotation-panel-actions">
-                <el-button size="small" :icon="Plus" :disabled="!selectedImageNode" title="新建 shape" aria-label="新建 shape" @click="addAnnotationShape" />
-                <el-button size="small" :icon="Delete" :disabled="!selectedShapeCopyCount" title="删除 shape" aria-label="删除 shape" @click="deleteSelectedShape" />
+                <button
+                  v-if="selectedImageNode"
+                  type="button"
+                  class="image-compare-trigger"
+                  :disabled="imageCompareLoading"
+                  title="图片对比"
+                  aria-label="图片对比"
+                  @click="openImageCompareDialog"
+                >
+                  图片对比
+                </button>
               </div>
             </div>
 
@@ -584,11 +599,11 @@
                   <div class="shape-action-group shape-detect-group">
                     <el-button
                       size="small"
-                      :loading="shapeDetectingId === selectedShape.id"
+                      :type="shapeDetectingId === selectedShape.id ? 'primary' : 'default'"
                       :disabled="!canDetectSelectedShape"
                       @click="detectSelectedShape"
                     >
-                      检测
+                      {{ shapeDetectingId === selectedShape.id ? '停止' : '检测' }}
                     </el-button>
                     <span v-if="selectedShapeDetectResult" class="shape-detect-result">
                       {{ selectedShapeDetectResult }}
@@ -669,6 +684,59 @@
           :total="burstTotal"
           @current-change="handleBurstPageChange"
         />
+      </div>
+    </el-dialog>
+    <el-dialog
+      v-model="imageCompareDialogVisible"
+      title="图片对比"
+      width="min(96vw, 1320px)"
+      append-to-body
+      @opened="drawImageCompare"
+      @closed="closeImageCompareDialog"
+    >
+      <div v-loading="imageCompareLoading" class="image-compare-dialog">
+        <div v-if="imageCompareError" class="image-compare-error">{{ imageCompareError }}</div>
+        <template v-else>
+          <div class="image-compare-toolbar">
+            <span>{{ selectedImageTitleText }}</span>
+            <el-button size="small" @click="resetImageCompareView">重置视图</el-button>
+            <el-button size="small" @click="clearImageCompareRects">清空矩形</el-button>
+          </div>
+          <div class="image-compare-grid">
+            <div class="image-compare-pane">
+              <div class="image-compare-pane-title">截图</div>
+              <canvas
+                :key="`saved-${imageCompareSavedCanvasSize.width}x${imageCompareSavedCanvasSize.height}`"
+                ref="imageCompareSavedCanvasRef"
+                class="image-compare-canvas"
+                :width="imageCompareSavedCanvasSize.width"
+                :height="imageCompareSavedCanvasSize.height"
+                :style="imageCompareSavedCanvasStyle"
+                @wheel.prevent="event => handleImageCompareWheel(event, 'saved')"
+                @pointerdown="event => handleImageComparePointerDown(event, 'saved')"
+                @pointermove="event => handleImageComparePointerMove(event, 'saved')"
+                @pointerup="handleImageComparePointerUp"
+                @pointerleave="handleImageComparePointerLeave"
+              />
+            </div>
+            <div class="image-compare-pane">
+              <div class="image-compare-pane-title">直播帧</div>
+              <canvas
+                :key="`live-${imageCompareLiveCanvasSize.width}x${imageCompareLiveCanvasSize.height}`"
+                ref="imageCompareLiveCanvasRef"
+                class="image-compare-canvas"
+                :width="imageCompareLiveCanvasSize.width"
+                :height="imageCompareLiveCanvasSize.height"
+                :style="imageCompareLiveCanvasStyle"
+                @wheel.prevent="event => handleImageCompareWheel(event, 'live')"
+                @pointerdown="event => handleImageComparePointerDown(event, 'live')"
+                @pointermove="event => handleImageComparePointerMove(event, 'live')"
+                @pointerup="handleImageComparePointerUp"
+                @pointerleave="handleImageComparePointerLeave"
+              />
+            </div>
+          </div>
+        </template>
       </div>
     </el-dialog>
     <el-dialog
@@ -760,9 +828,18 @@
           <el-button size="small" :disabled="!shapeMaskRunning" @click="pauseShapeMaskSampling">
             暂停
           </el-button>
-          <el-button size="small" :disabled="!shapeMaskAlphaDataUrl" @click="cleanShapeMaskAlpha">
+          <el-button size="small" :disabled="!shapeMaskStats?.reference" @click="cleanShapeMaskAlpha">
             净化
           </el-button>
+          <button
+            type="button"
+            class="shape-help-button is-inline"
+            title="查看净化说明"
+            aria-label="查看净化说明"
+            @click="showShapeMaskCleanHelp"
+          >
+            ?
+          </button>
           <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
         </div>
       </div>
@@ -1045,6 +1122,7 @@ import {
   extractDailyProgress,
   extractDailyStatusText,
   getDailyStatusCode,
+  normalizeDailyOcrText,
   type DailyFindDecision,
   type DailyFindProgress,
   type DailyFindResult,
@@ -1053,6 +1131,7 @@ import {
 import {
   defaultDailyTaskPresets,
   type DailyTaskMatchMode,
+  type DailyTaskScanPlan,
   type DailyTaskPreset,
 } from './dailyTaskPresets';
 
@@ -1100,13 +1179,13 @@ interface ControlClickState {
   startedAt: number;
 }
 
-type WindowSceneKey = 'star-cloud-phone' | 'sunlogin' | 'mumu';
+type WindowSceneKey = 'sunlogin' | 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
 type WindowTitleMatch = 'contains' | 'exact';
 type MumuChannel = 'desktop' | 'adb';
-type RuntimeChannelUse = 'frontend' | 'stepper';
+type RuntimeChannelUse = 'frontend' | 'stepper' | 'save';
 type RuntimeChannelPolicyChannel = 'selected' | MumuChannel;
 
 interface RuntimeChannelPolicy {
@@ -1322,6 +1401,7 @@ const VISUAL_ACTION_MARKER_END = '-->';
 const RUNTIME_CHANNEL_POLICIES: Record<RuntimeChannelUse, RuntimeChannelPolicy> = {
   frontend: { mumu: 'selected' },
   stepper: { mumu: 'adb' },
+  save: { mumu: 'adb' },
 };
 const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'live', label: '直播' },
@@ -1329,25 +1409,6 @@ const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'off', label: '关闭' },
 ];
 const windowScenes: WindowScene[] = [
-  {
-    key: 'star-cloud-phone',
-    label: '星星云手机',
-    defaults: {
-      targetTitle: '云手机',
-      titleMatch: 'contains',
-      cropText: '0,0,0,0',
-      trimBorderText: '0,0,0,0',
-      captureArea: 'client',
-      rotateDegrees: '0',
-      fps: 12,
-      quality: 82,
-      autoDismissPopup: false,
-      displayScale: 100,
-      fixedWidth: 0,
-      fixedHeight: 0,
-      mumuChannel: 'desktop',
-    },
-  },
   {
     key: 'sunlogin',
     label: '向日葵',
@@ -1390,7 +1451,7 @@ const windowScenes: WindowScene[] = [
 
 const devices = computed(() => taskStore.devices);
 const selectedEntryId = ref('');
-const selectedWindowKey = ref<WindowSceneKey>('star-cloud-phone');
+const selectedWindowKey = ref<WindowSceneKey>('mumu');
 const runtimeStatus = ref<RuntimeStatusResponse | null>(null);
 const runtimeLoading = ref(false);
 const captureRuntimeStatus = ref<FanxiuCaptureRuntimeStatus | null>(null);
@@ -1542,6 +1603,7 @@ let actualFpsSamplerTimer: number | null = null;
 const liveFrameTimestamps: number[] = [];
 let lastLiveFrameSample = '';
 let burstCaptureTimer: number | null = null;
+let burstCaptureToken = 0;
 let screenshotSaveTimer: number | null = null;
 let visualSimilarityProbeTimer: number | null = null;
 let visualSimilarityProbeSeq = 0;
@@ -3439,7 +3501,7 @@ const chooseDefaultWindowKey = (): WindowSceneKey => {
   if (queryWindowKey) return queryWindowKey;
   const savedWindowKey = window.localStorage.getItem(WINDOW_STORAGE_KEY) || '';
   if (isWindowSceneKey(savedWindowKey)) return savedWindowKey;
-  return 'star-cloud-phone';
+  return 'mumu';
 };
 
 const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: WindowSceneDefaults): WindowSceneConfig => {
@@ -4417,6 +4479,27 @@ const captureCurrentFrameDataUrl = async (use: RuntimeChannelUse = 'frontend') =
   return captureCurrentLiveFrameDataUrl();
 };
 
+const compressFrameDataUrlForMatch = async (dataUrl: string) => {
+  if (!dataUrl) return '';
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('当前帧压缩失败'));
+    img.src = dataUrl;
+  });
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  const maxLongEdge = 960;
+  const scale = Math.min(1, maxLongEdge / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx || !canvas.width || !canvas.height) return dataUrl;
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.72);
+};
+
 const revokeAdbFrameUrl = () => {
   if (!adbFrameUrl.value) return;
   URL.revokeObjectURL(adbFrameUrl.value);
@@ -4499,7 +4582,7 @@ const saveCurrentFrame = async () => {
   if (!selectedEntryId.value) return;
   saveFrameLoading.value = true;
   try {
-    const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+    const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
     const result = await saveFanxiuGameWindow2Frame({
       entry_id: selectedEntryId.value,
       title: targetTitle.value.trim(),
@@ -4512,26 +4595,24 @@ const saveCurrentFrame = async () => {
       fixed_width: fixedFrameWidth.value,
       fixed_height: fixedFrameHeight.value,
       quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-      current_frame_data_url: currentFrameDataUrl,
+      current_frame_data_url: currentFrameDataUrl || undefined,
     });
-    let imageDataUrl = currentFrameDataUrl;
+    let imagePreviewUrl = '';
     try {
       const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, result.filename);
-      imageDataUrl = await blobToDataUrl(blob);
+      imagePreviewUrl = blobToObjectUrl(blob);
     } catch {
-      // 保存帧已经成功；预览读取失败时退回当前直播帧。
+      // 保存帧已经成功；预览读取失败时只是不立即显示缩略图。
     }
     const node = createAssetImageNode(result.filename, {
       filename: result.filename,
       width: result.width,
       height: result.height,
     });
-    assetImagePreviewUrls.value = {
-      ...assetImagePreviewUrls.value,
-      [node.id]: imageDataUrl,
-    };
+    if (imagePreviewUrl) setAssetImagePreviewUrl(node.id, imagePreviewUrl);
+    else if (currentFrameDataUrl) setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
     addSavedFrameToAssetTree(node);
-    ElMessage.success(`已保存到文件树：${result.filename}`);
+    ElMessage.success(`已保存到帧树：${result.filename}`);
   } catch (error) {
     streamError.value = getErrorMessage(error);
     await setWindowViewModeOff();
@@ -4552,7 +4633,6 @@ const burstFramePayload = async () => ({
   rotate: rotateDegrees.value,
   fixed_width: fixedFrameWidth.value,
   fixed_height: fixedFrameHeight.value,
-  current_frame_data_url: await captureCurrentFrameDataUrl(),
 });
 
 const releaseBurstPreviewUrls = () => {
@@ -4591,6 +4671,7 @@ const toggleBurstFrameSelection = (filename: string) => {
 
 const importSelectedBurstFrames = async () => {
   if (!selectedEntryId.value || !selectedBurstFilenames.value.length) return;
+  stopBurstCapture();
   try {
     const response = await importFanxiuGameWindow2BurstFrames(selectedEntryId.value, selectedBurstFilenames.value);
     await loadScreenshotList();
@@ -4601,17 +4682,23 @@ const importSelectedBurstFrames = async () => {
     }));
     for (const node of importedNodes) addSavedFrameToAssetTree(node);
     selectedBurstFilenames.value = [];
-    ElMessage.success(`已保存 ${response.imported_count} 张到文件树`);
+    ElMessage.success(`已保存 ${response.imported_count} 张到帧树`);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   }
 };
 
-const saveBurstFrameOnce = async () => {
-  if (!selectedEntryId.value || burstCaptureSaving.value) return;
+const saveBurstFrameOnce = async (token: number) => {
+  if (
+    !selectedEntryId.value
+    || !burstCaptureRunning.value
+    || token !== burstCaptureToken
+    || burstCaptureSaving.value
+  ) return;
   burstCaptureSaving.value = true;
   try {
     const result = await saveFanxiuGameWindow2BurstFrame(await burstFramePayload());
+    if (!burstCaptureRunning.value || token !== burstCaptureToken) return;
     if (result.saved) {
       burstSavedCount.value += 1;
       if (burstDialogVisible.value) await loadBurstFrames();
@@ -4627,6 +4714,7 @@ const saveBurstFrameOnce = async () => {
 };
 
 const stopBurstCapture = () => {
+  burstCaptureToken += 1;
   if (burstCaptureTimer) {
     window.clearInterval(burstCaptureTimer);
     burstCaptureTimer = null;
@@ -4636,11 +4724,13 @@ const stopBurstCapture = () => {
 
 const startBurstCapture = () => {
   if (!selectedEntryId.value || burstCaptureRunning.value) return;
+  const token = burstCaptureToken + 1;
+  burstCaptureToken = token;
   burstCaptureRunning.value = true;
-  void saveBurstFrameOnce();
+  void saveBurstFrameOnce(token);
   const interval = Math.max(200, Math.round(1000 / Math.max(1, Number(fps.value) || 1)));
   burstCaptureTimer = window.setInterval(() => {
-    void saveBurstFrameOnce();
+    void saveBurstFrameOnce(token);
   }, interval);
 };
 
@@ -4683,7 +4773,7 @@ const clearBurstFrames = async () => {
 
 const resetAssetFrame = async (node: GameWindow3AssetNode) => {
   if (!selectedEntryId.value || node.type !== 'image' || !node.filename) return;
-  const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
   const result = await saveFanxiuGameWindow2Frame({
     entry_id: selectedEntryId.value,
     title: targetTitle.value.trim(),
@@ -4696,17 +4786,14 @@ const resetAssetFrame = async (node: GameWindow3AssetNode) => {
     fixed_width: fixedFrameWidth.value,
     fixed_height: fixedFrameHeight.value,
     quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
-    current_frame_data_url: currentFrameDataUrl,
+    current_frame_data_url: currentFrameDataUrl || undefined,
     overwrite_filename: node.filename,
   });
   node.filename = result.filename;
   node.width = result.width;
   node.height = result.height;
   delete node.imageDataUrl;
-  assetImagePreviewUrls.value = {
-    ...assetImagePreviewUrls.value,
-    [node.id]: currentFrameDataUrl,
-  };
+  if (currentFrameDataUrl) setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
   if (selectedAssetId.value === node.id) {
     await nextTick();
     void ensureSelectedImagePreview();
@@ -4868,7 +4955,7 @@ const recordGameMacroInput = async (
   gameMacroCapturePending.value = true;
   gameMacroStatusText.value = '录制宏：捕捉画面';
   try {
-    const currentFrameDataUrl = await captureCurrentFrameDataUrl();
+    const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
     const frame = await findOrCreateGameMacroFrame(currentFrameDataUrl);
     setGameMacroPendingJumpTarget(frame.image);
     const fallbackBox = buildGameMacroFallbackBox(frame.image, action, point, endPoint);
@@ -6143,6 +6230,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
   if (!isTextEditing && event.code === 'Space') {
     screenshotSpacePressed.value = true;
+    imageCompareSpacePressed.value = imageCompareDialogVisible.value;
     event.preventDefault();
     return;
   }
@@ -6194,11 +6282,15 @@ const handleKeydown = (event: KeyboardEvent) => {
 };
 
 const handleKeyup = (event: KeyboardEvent) => {
-  if (event.code === 'Space') screenshotSpacePressed.value = false;
+  if (event.code === 'Space') {
+    screenshotSpacePressed.value = false;
+    imageCompareSpacePressed.value = false;
+  }
 };
 
 const handleWindowBlur = () => {
   screenshotSpacePressed.value = false;
+  imageCompareSpacePressed.value = false;
   stopLivePan();
   stopScreenshotPan();
 };
@@ -6323,6 +6415,7 @@ onBeforeUnmount(() => {
   finishShapeDrag();
   resizeObserver?.disconnect();
   revokeAdbFrameUrl();
+  releaseAssetImagePreviewUrls();
   releaseBurstPreviewUrls();
   if (streamImageRef.value) streamImageRef.value.src = '';
   revokeScreenshotImageUrl();
@@ -6415,6 +6508,11 @@ type StepperTask =
       type: 'daily_find';
       query: string;
       matchMode: ShapeOcrMatchMode;
+      scanPlan: DailyTaskScanPlan;
+      maxPages: number;
+      reversePages: number;
+      scanDirection: 'down' | 'up';
+      directionAttempts: number;
       completedFallbackPattern: string;
       completedFallbackExcludePattern: string;
       completedFallbackMinTotal: number;
@@ -6423,8 +6521,71 @@ type StepperTask =
       dragCount: number;
       requireProgress: boolean;
       openOnReady: boolean;
+      sceneNavigationAttempted: boolean;
       legacySource: string;
       note: string;
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'account_switch';
+      accountText: string;
+      matchMode: ShapeOcrMatchMode;
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_status';
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_enter_explore';
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_disable_all_stamina';
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_quick_once';
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_confirm_result';
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_return_daily';
+      routeAttempts: number;
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_auto';
+      maxRuns: number;
+      completedRuns: number;
+      startedAt: number;
+      attempts: number;
+    }
+  | {
+      id: string;
+      type: 'youli_daily_auto';
+      maxRuns: number;
+      completedRuns: number;
+      routeAttempts: number;
       startedAt: number;
       attempts: number;
     };
@@ -6450,6 +6611,9 @@ type StepperTaskDefinition =
       type: 'daily_find';
       query: string;
       matchMode: ShapeOcrMatchMode;
+      scanPlan?: DailyTaskScanPlan;
+      maxPages?: number;
+      reversePages?: number;
       completedFallbackPattern?: string;
       completedFallbackExcludePattern?: string;
       completedFallbackMinTotal?: number;
@@ -6460,6 +6624,55 @@ type StepperTaskDefinition =
       openOnReady?: boolean;
       legacySource?: string;
       note?: string;
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'account_switch';
+      accountText: string;
+      matchMode?: ShapeOcrMatchMode;
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_status';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_enter_explore';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_disable_all_stamina';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_quick_once';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_confirm_result';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_return_daily';
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_auto';
+      maxRuns?: number;
+    }
+  | {
+      id: string;
+      label: string;
+      type: 'youli_daily_auto';
+      maxRuns?: number;
     };
 
 type StepperTaskFunctionId = string;
@@ -6548,7 +6761,37 @@ type ShapeDraftState = {
   rect: DOMRect;
 };
 
+type ImageCompareSide = 'saved' | 'live';
+
+type ImageComparePoint = {
+  x: number;
+  y: number;
+};
+
+type ImageCompareRect = ImageComparePoint & {
+  id: string;
+  w: number;
+  h: number;
+};
+
+type ImageCompareDragState =
+  | {
+      mode: 'rect';
+      pointerId: number;
+      start: ImageComparePoint;
+      rectId: string;
+    }
+  | {
+      mode: 'pan';
+      pointerId: number;
+      startClientX: number;
+      startClientY: number;
+      startOffsetX: number;
+      startOffsetY: number;
+    };
+
 const GAME_WINDOW3_STORAGE_KEY = 'fanxiu.gameWindow3.assetTree.v1';
+const GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY = 'fanxiu.gameWindow3.deletedShapes.v1';
 const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorGroups.v1';
 const GAME_WINDOW3_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow3.uiState.v1';
 const GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY = 'fanxiu.gameWindow3.occlusionMaskEnabled.v1';
@@ -6566,8 +6809,41 @@ const globalOcclusionMaskEnabled = ref(false);
 const copiedShapes = ref<GameWindow3Shape[]>([]);
 const expandedAssetNodeIds = ref<string[]>([]);
 const expandedShapeNodeIds = ref<string[]>([]);
+const deletedShapeIds = ref<Set<string>>(new Set());
 const assetImagePreviewUrls = ref<Record<string, string>>({});
 const assetImagePreviewLoadingIds = ref<Record<string, boolean>>({});
+const imageCompareDialogVisible = ref(false);
+const imageCompareLoading = ref(false);
+const imageCompareError = ref('');
+const imageCompareSavedCanvasRef = ref<HTMLCanvasElement | null>(null);
+const imageCompareLiveCanvasRef = ref<HTMLCanvasElement | null>(null);
+const imageCompareSavedImage = ref<HTMLImageElement | null>(null);
+const imageCompareLiveImage = ref<HTMLImageElement | null>(null);
+const imageCompareCrosshair = ref<ImageComparePoint | null>(null);
+const imageCompareRects = ref<ImageCompareRect[]>([]);
+const imageCompareDrag = ref<ImageCompareDragState | null>(null);
+const imageCompareSpacePressed = ref(false);
+const imageCompareView = ref({
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+});
+const imageCompareCanvasSizeOf = (image: HTMLImageElement | null) => {
+  const fallbackImage = imageCompareSavedImage.value || imageCompareLiveImage.value;
+  const source = image || fallbackImage;
+  return {
+    width: Math.max(1, source?.naturalWidth || source?.width || 900),
+    height: Math.max(1, source?.naturalHeight || source?.height || 1600),
+  };
+};
+const imageCompareSavedCanvasSize = computed(() => imageCompareCanvasSizeOf(imageCompareSavedImage.value));
+const imageCompareLiveCanvasSize = computed(() => imageCompareCanvasSizeOf(imageCompareLiveImage.value));
+const imageCompareCanvasStyleOf = (size: { width: number; height: number }) => ({
+  aspectRatio: `${size.width} / ${size.height}`,
+  maxHeight: 'none',
+});
+const imageCompareSavedCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareSavedCanvasSize.value));
+const imageCompareLiveCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareLiveCanvasSize.value));
 const dailyTaskPresetToDefinition = (
   preset: DailyTaskPreset,
   openOnReady = false,
@@ -6577,6 +6853,9 @@ const dailyTaskPresetToDefinition = (
   type: 'daily_find',
   query: preset.query,
   matchMode: preset.matchMode,
+  scanPlan: preset.scanPlan,
+  maxPages: preset.maxPages,
+  reversePages: preset.reversePages,
   completedFallbackPattern: preset.completedFallbackPattern,
   completedFallbackExcludePattern: preset.completedFallbackExcludePattern,
   completedFallbackMinTotal: preset.completedFallbackMinTotal,
@@ -6605,6 +6884,97 @@ const defaultStepperTaskDefinitions = (): StepperTaskDefinition[] => [
     targetText: '世界',
   },
   {
+    id: 'go-daily',
+    label: '到日常',
+    type: 'go_scene',
+    targetText: '日常',
+  },
+  {
+    id: 'go-schedule',
+    label: '到日程',
+    type: 'go_scene',
+    targetText: '日程',
+  },
+  {
+    id: 'go-settings',
+    label: '到设置页',
+    type: 'go_scene',
+    targetText: '设置页',
+  },
+  {
+    id: 'go-login',
+    label: '到登录',
+    type: 'go_scene',
+    targetText: '登录',
+  },
+  {
+    id: 'go-account-picker',
+    label: '到挑选账号',
+    type: 'go_scene',
+    targetText: '挑选账号',
+  },
+  {
+    id: 'switch-account-tuoer',
+    label: '驼二 18850340559',
+    type: 'account_switch',
+    accountText: '18850340559',
+    matchMode: 'contains',
+  },
+  {
+    id: 'youli-status',
+    label: '#71/#72/#73 修仙传游历状态',
+    type: 'youli_status',
+  },
+  {
+    id: 'youli-enter-explore',
+    label: '#71 当前区域 -> #72 探索',
+    type: 'youli_enter_explore',
+  },
+  {
+    id: 'youli-disable-all-stamina',
+    label: '#72 关闭全部体力',
+    type: 'youli_disable_all_stamina',
+  },
+  {
+    id: 'youli-quick-once',
+    label: '#72 快速游历 1 次',
+    type: 'youli_quick_once',
+  },
+  {
+    id: 'youli-confirm-result',
+    label: '#73 确认结算 -> #72',
+    type: 'youli_confirm_result',
+  },
+  {
+    id: 'youli-return-daily',
+    label: '#73/#72/#71 返回 #69 日常',
+    type: 'youli_return_daily',
+  },
+  {
+    id: 'youli-auto-once',
+    label: '游历托管 1 次',
+    type: 'youli_auto',
+    maxRuns: 1,
+  },
+  {
+    id: 'youli-auto-8',
+    label: '游历托管 8 次',
+    type: 'youli_auto',
+    maxRuns: 8,
+  },
+  {
+    id: 'youli-daily-auto-once',
+    label: '日常游历托管 1 次',
+    type: 'youli_daily_auto',
+    maxRuns: 1,
+  },
+  {
+    id: 'youli-daily-auto-8',
+    label: '日常游历托管 8 次',
+    type: 'youli_daily_auto',
+    maxRuns: 8,
+  },
+  {
     id: 'hide-floating-window',
     label: '隐藏浮动窗',
     type: 'drag_shape_to_shape',
@@ -6617,12 +6987,41 @@ const defaultStepperTaskDefinitions = (): StepperTaskDefinition[] => [
 ];
 
 const stepperTaskFunctionIdOf = (task: StepperTaskDefinition): StepperTaskFunctionId => (
-  task.type === 'go_scene' ? task.type : (task.type === 'daily_find' ? (task.openOnReady ? 'daily_enter' : 'daily_find') : task.id)
+  task.type === 'go_scene'
+    ? task.type
+    : (task.type === 'daily_find'
+      ? (task.openOnReady ? 'daily_enter' : 'daily_find')
+      : (task.type === 'account_switch' || task.type === 'youli_status' || task.type === 'youli_enter_explore' || task.type === 'youli_disable_all_stamina' || task.type === 'youli_quick_once' || task.type === 'youli_confirm_result' || task.type === 'youli_return_daily' || task.type === 'youli_auto' || task.type === 'youli_daily_auto' ? task.type : task.id))
 );
 
-const stepperTaskFunctionLabelOf = (task: StepperTaskDefinition) => (
-  task.type === 'go_scene' ? '到场景' : (task.type === 'daily_find' ? (task.openOnReady ? '日常进入' : '日常定位') : task.label)
-);
+const stepperTaskFunctionLabelOf = (task: StepperTaskDefinition) => {
+  switch (task.type) {
+    case 'go_scene':
+      return '到场景';
+    case 'daily_find':
+      return task.openOnReady ? '日常进入' : '日常定位';
+    case 'account_switch':
+      return '账号切换';
+    case 'youli_status':
+      return '游历状态';
+    case 'youli_enter_explore':
+      return '游历进入探索';
+    case 'youli_disable_all_stamina':
+      return '游历关闭全部体力';
+    case 'youli_quick_once':
+      return '游历快速一次';
+    case 'youli_confirm_result':
+      return '游历确认结算';
+    case 'youli_return_daily':
+      return '游历返回日常';
+    case 'youli_auto':
+      return '游历托管';
+    case 'youli_daily_auto':
+      return '日常游历托管';
+    default:
+      return task.label;
+  }
+};
 
 const normalizeStepperTaskDefinition = (item: unknown): StepperTaskDefinition | null => {
   if (!item || typeof item !== 'object') return null;
@@ -6645,16 +7044,25 @@ const normalizeStepperTaskDefinition = (item: unknown): StepperTaskDefinition | 
   if (raw.type === 'daily_find') {
     const query = typeof raw.query === 'string' ? raw.query.trim() : '';
     if (!query) return null;
+    const presetDefaults = defaultDailyTaskPresets().find((preset) => preset.id === id || preset.label === label);
     const notFoundStatus = Number(raw.notFoundStatus);
     const timeoutSeconds = Number(raw.timeoutSeconds);
     const dragCount = Number(raw.dragCount);
+    const maxPages = Number(raw.maxPages);
+    const reversePages = Number(raw.reversePages);
     const completedFallbackMinTotal = Number(raw.completedFallbackMinTotal);
+    const scanPlan: DailyTaskScanPlan = raw.scanPlan === 'candidate_rows' || raw.scanPlan === 'bidirectional'
+      ? raw.scanPlan
+      : (presetDefaults?.scanPlan ?? 'normal');
     return {
       id,
       label,
       type: 'daily_find',
       query,
       matchMode: raw.matchMode === 'exact' || raw.matchMode === 'wildcard' || raw.matchMode === 'regex' ? raw.matchMode as DailyTaskMatchMode : 'contains',
+      scanPlan,
+      maxPages: Number.isFinite(maxPages) ? clamp(Math.round(maxPages), 0, 200) : (presetDefaults?.maxPages ?? 20),
+      reversePages: Number.isFinite(reversePages) ? clamp(Math.round(reversePages), 0, 200) : (presetDefaults?.reversePages ?? 0),
       completedFallbackPattern: typeof raw.completedFallbackPattern === 'string' ? raw.completedFallbackPattern.trim() : '',
       completedFallbackExcludePattern: typeof raw.completedFallbackExcludePattern === 'string' ? raw.completedFallbackExcludePattern.trim() : '',
       completedFallbackMinTotal: Number.isFinite(completedFallbackMinTotal) ? Math.max(0, Math.round(completedFallbackMinTotal)) : 0,
@@ -6667,22 +7075,67 @@ const normalizeStepperTaskDefinition = (item: unknown): StepperTaskDefinition | 
       note: typeof raw.note === 'string' ? raw.note.trim() : '',
     };
   }
+  if (raw.type === 'account_switch') {
+    const accountText = typeof raw.accountText === 'string' ? raw.accountText.trim() : '';
+    if (!accountText) return null;
+    return {
+      id,
+      label,
+      type: 'account_switch',
+      accountText,
+      matchMode: raw.matchMode === 'exact' || raw.matchMode === 'wildcard' || raw.matchMode === 'regex' ? raw.matchMode as DailyTaskMatchMode : 'contains',
+    };
+  }
+  if (raw.type === 'youli_status') {
+    return { id, label, type: 'youli_status' };
+  }
+  if (raw.type === 'youli_enter_explore') {
+    return { id, label, type: 'youli_enter_explore' };
+  }
+  if (raw.type === 'youli_disable_all_stamina') {
+    return { id, label, type: 'youli_disable_all_stamina' };
+  }
+  if (raw.type === 'youli_quick_once') {
+    return { id, label, type: 'youli_quick_once' };
+  }
+  if (raw.type === 'youli_confirm_result') {
+    return { id, label, type: 'youli_confirm_result' };
+  }
+  if (raw.type === 'youli_return_daily') {
+    return { id, label, type: 'youli_return_daily' };
+  }
+  if (raw.type === 'youli_auto') {
+    const maxRuns = Number(raw.maxRuns);
+    return { id, label, type: 'youli_auto', maxRuns: Number.isFinite(maxRuns) ? clamp(Math.round(maxRuns), 1, 50) : 8 };
+  }
+  if (raw.type === 'youli_daily_auto') {
+    const maxRuns = Number(raw.maxRuns);
+    return { id, label, type: 'youli_daily_auto', maxRuns: Number.isFinite(maxRuns) ? clamp(Math.round(maxRuns), 1, 50) : 8 };
+  }
   return null;
 };
 
 const normalizeStepperTaskDefinitions = (items: unknown): StepperTaskDefinition[] => {
   const defaults = defaultStepperTaskDefinitions();
   const defaultsById = new Map(defaults.map((item) => [item.id, item]));
+  const legacyStepperTaskIdMap = new Map([
+    ['youli-auto', 'youli-auto-8'],
+    ['youli-daily-auto', 'youli-daily-auto-8'],
+  ]);
   const normalized = Array.isArray(items)
     ? items.map(normalizeStepperTaskDefinition).filter((item): item is StepperTaskDefinition => Boolean(item))
     : [];
   const merged = new Map<string, StepperTaskDefinition>();
   for (const item of defaults) merged.set(item.id, item);
   for (const item of normalized) {
-    const defaultItem = defaultsById.get(item.id);
+    const itemId = legacyStepperTaskIdMap.get(item.id) ?? item.id;
+    const defaultItem = defaultsById.get(itemId);
+    if (legacyStepperTaskIdMap.has(item.id) && defaultItem) continue;
     if (item.type === 'daily_find' && defaultItem?.type === 'daily_find') {
-      merged.set(item.id, {
+      merged.set(itemId, {
         ...item,
+        id: itemId,
+        label: defaultItem.label,
         query: defaultItem.query,
         matchMode: defaultItem.matchMode,
         completedFallbackPattern: defaultItem.completedFallbackPattern,
@@ -6697,7 +7150,13 @@ const normalizeStepperTaskDefinitions = (items: unknown): StepperTaskDefinition[
         openOnReady: item.openOnReady ?? defaultItem.openOnReady,
       });
     } else {
-      merged.set(item.id, item);
+      const normalizedItem = item.id === itemId ? item : { ...item, id: itemId };
+      merged.set(
+        itemId,
+        defaultItem && defaultItem.type === normalizedItem.type
+          ? { ...normalizedItem, label: defaultItem.label }
+          : normalizedItem,
+      );
     }
   }
   return Array.from(merged.values());
@@ -6739,13 +7198,8 @@ const stepperTaskFunctionDefinitions = computed<StepperTaskFunctionDefinition[]>
       task,
       presets: [],
     };
-    if (task.type === 'go_scene' || task.type === 'daily_find') {
-      current.presets.push(task);
-      current.task = current.presets[0];
-    } else {
-      current.task = task;
-      current.presets = [];
-    }
+    current.presets.push(task);
+    current.task = current.presets[0];
     grouped.set(id, current);
   }
   return Array.from(grouped.values());
@@ -6761,6 +7215,39 @@ const selectedStepperTaskDefinition = computed(() => {
 });
 const selectedStepperPresetDefinitions = computed(() => (
   selectedStepperFunctionDefinition.value?.presets ?? []
+));
+const stepperTaskDefinitionConfigText = (task: StepperTaskDefinition) => {
+  if (task.type === 'go_scene') return `目标：${task.targetText}`;
+  if (task.type === 'drag_shape_to_shape') return `${task.sourceText}：${task.sourceShapeTitle} -> ${task.targetShapeTitle}`;
+  if (task.type === 'account_switch') return `账号：${task.accountText} · ${task.matchMode ?? 'contains'}`;
+  if (task.type === 'daily_find') {
+    const modeText = task.matchMode === 'regex'
+      ? '正则'
+      : task.matchMode === 'wildcard'
+        ? '通配'
+        : task.matchMode === 'exact'
+          ? '精确'
+          : '包含';
+    const scanPlan = task.scanPlan ?? 'normal';
+    const scanText = scanPlan === 'bidirectional'
+      ? `双向 ${task.maxPages ?? task.dragCount}/${task.reversePages ?? 0}`
+      : scanPlan === 'candidate_rows'
+        ? `候选行 ${task.maxPages ?? task.dragCount}`
+        : `下扫 ${task.maxPages ?? task.dragCount}`;
+    return `${modeText}：${task.query} · ${scanText} · 找不到=${task.notFoundStatus}`;
+  }
+  if (task.type === 'youli_status') return '读取 #71 游历主页 / #72 探索 / #73 结算';
+  if (task.type === 'youli_enter_explore') return '点击 #71 当前区域，进入 #72 探索';
+  if (task.type === 'youli_disable_all_stamina') return '只点 #72 全部体力勾选框，复核关闭';
+  if (task.type === 'youli_quick_once') return '需 #72 体力足够且全部体力关闭';
+  if (task.type === 'youli_confirm_result') return '点击 #73 确定，返回 #72';
+  if (task.type === 'youli_return_daily') return '#73/#72/#71 -> #34 世界 -> #69 日常';
+  if (task.type === 'youli_auto') return `最多 ${task.maxRuns ?? 8} 次，保护全部体力`;
+  if (task.type === 'youli_daily_auto') return `日常入口 + 游历托管，最多 ${task.maxRuns ?? 8} 次`;
+  return '';
+};
+const selectedStepperTaskConfigText = computed(() => (
+  selectedStepperTaskDefinition.value ? stepperTaskDefinitionConfigText(selectedStepperTaskDefinition.value) : ''
 ));
 const stepperRunning = ref(false);
 const stepperStepping = ref(false);
@@ -6820,6 +7307,7 @@ const shapeDetectingId = ref<string | null>(null);
 const shapeDetectResults = ref<Record<string, string>>({});
 const shapeDetectLiveBoxes = ref<FanxiuGameWindow2MatchBox[]>([]);
 const shapeDetectSeq = ref(0);
+let shapeDetectStopRequested = false;
 const shapeMaskDialogVisible = ref(false);
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
@@ -6827,12 +7315,15 @@ const shapeMaskLivePreviewUrl = ref('');
 const shapeMaskResultPreviewUrl = ref('');
 const shapeMaskAlphaDataUrl = ref('');
 const shapeMaskRunning = ref(false);
+const shapeMaskResetToEmpty = ref(false);
 const shapeMaskSamplingFrame = ref<number | null>(null);
+const shapeMaskLivePreviewFrame = ref<number | null>(null);
 const shapeMaskStats = ref<{
   width: number;
   height: number;
   min: Uint8ClampedArray;
   max: Uint8ClampedArray;
+  diffMax: Uint8ClampedArray;
   baseAlpha: Uint8ClampedArray | null;
   reference: ImageData | null;
 } | null>(null);
@@ -6881,6 +7372,7 @@ const assetContextMenu = ref({
   y: 0,
   nodeId: '',
 });
+const assetTreeRef = ref<({ getNode: (key: string) => { expanded?: boolean; expand?: () => void; collapse?: () => void } | null }) | null>(null);
 const shapeContextMenu = ref({
   visible: false,
   x: 0,
@@ -7016,10 +7508,11 @@ const normalizeShapes = (
   }
   const isDailyTaskBlockTemplate = isDailyTaskBlockTemplateShape(shape);
   const isDailyTaskBlockField = parentIsDailyTaskBlockTemplate;
+  const effectiveFloating = isDailyTaskBlockField ? false : Boolean(shape.floating);
   const normalizedSceneIdentityRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
   const normalizedImageMatchRole = normalizeShapeMatchRole(
     shape.imageMatchRole,
-    shape.floating ? 'required' : (normalizedSceneIdentityRole !== 'off' ? normalizedSceneIdentityRole : 'off'),
+    effectiveFloating ? 'required' : (normalizedSceneIdentityRole !== 'off' ? normalizedSceneIdentityRole : 'off'),
   );
   const normalizedOcrMatchRole = normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
   return [{
@@ -7029,7 +7522,7 @@ const normalizeShapes = (
     description: isDailyTaskBlockTemplate
       ? DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION
       : (typeof shape.description === 'string' ? shape.description : ''),
-    floating: isDailyTaskBlockField ? false : Boolean(shape.floating),
+    floating: effectiveFloating,
     isSceneIdentity: normalizedSceneIdentityRole !== 'off',
     sceneIdentityRole: normalizedSceneIdentityRole,
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
@@ -7147,11 +7640,61 @@ const cloneAssetTree = (nodes: GameWindow3AssetNode[]) => (
   JSON.parse(JSON.stringify(nodes)) as GameWindow3AssetNode[]
 );
 
+const assetFrameNumberOf = (node: GameWindow3AssetNode) => {
+  const source = node.filename || node.title || '';
+  const match = source.match(/(?:^|#|[^\d])0*(\d+)(?=\.[^.]+$|[^\d]|$)/);
+  return match ? Number(match[1]) : null;
+};
+
 const assetNodeMergeKey = (node: GameWindow3AssetNode) => (
   node.type === 'image'
-    ? `image:${node.filename || node.title}`
-    : `folder:${node.title}`
+    ? `image:${assetFrameNumberOf(node) ?? (node.filename || node.title || node.id).trim().toLowerCase()}`
+    : `folder:${(node.title || node.id).trim()}`
 );
+
+const shapeDeleteIdKey = (shapeId: string) => `id:${shapeId}`;
+
+const shapeDeleteNumberKey = (value: number) => String(Math.round(value * 10000));
+
+const shapeDeleteSignatureKey = (image: GameWindow3AssetNode, shape: GameWindow3Shape) => [
+  'sig',
+  assetNodeMergeKey(image),
+  (shape.title || '').trim(),
+  shapeDeleteNumberKey(shape.x),
+  shapeDeleteNumberKey(shape.y),
+  shapeDeleteNumberKey(shape.w),
+  shapeDeleteNumberKey(shape.h),
+].join(':');
+
+const isShapeDeletedForImage = (image: GameWindow3AssetNode, shape: GameWindow3Shape) => (
+  deletedShapeIds.value.has(shape.id)
+  || deletedShapeIds.value.has(shapeDeleteIdKey(shape.id))
+  || deletedShapeIds.value.has(shapeDeleteSignatureKey(image, shape))
+);
+
+const filterDeletedShapesForImage = (
+  image: GameWindow3AssetNode,
+  shapes: GameWindow3Shape[] = [],
+): GameWindow3Shape[] => shapes.flatMap((shape) => {
+  if (isShapeDeletedForImage(image, shape)) return [];
+  return [{
+    ...shape,
+    children: filterDeletedShapesForImage(image, shape.children ?? []),
+  }];
+});
+
+const filterDeletedShapesFromAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.map((node) => {
+  if (node.type === 'folder') {
+    return {
+      ...node,
+      children: filterDeletedShapesFromAssetTree(node.children ?? []),
+    };
+  }
+  return {
+    ...node,
+    shapes: filterDeletedShapesForImage(node, node.shapes ?? []),
+  };
+});
 
 const collectAssetNodeMergeKeys = (nodes: GameWindow3AssetNode[], keys = new Set<string>()) => {
   for (const node of nodes) {
@@ -7179,8 +7722,25 @@ const findAssetNodeByMergeKey = (nodes: GameWindow3AssetNode[], key: string): Ga
   return null;
 };
 
+const preferAssetFilename = (left = '', right = '') => {
+  if (!left) return right;
+  if (!right) return left;
+  const leftIsPng = left.toLowerCase().endsWith('.png');
+  const rightIsPng = right.toLowerCase().endsWith('.png');
+  if (rightIsPng && !leftIsPng) return right;
+  return left;
+};
+
+const shapeMergeKey = (shape: GameWindow3Shape) => [
+  (shape.title || '').trim(),
+  shapeDeleteNumberKey(shape.x),
+  shapeDeleteNumberKey(shape.y),
+  shapeDeleteNumberKey(shape.w),
+  shapeDeleteNumberKey(shape.h),
+].join(':');
+
 const mergeDuplicateAssetNode = (target: GameWindow3AssetNode, source: GameWindow3AssetNode) => {
-  if (!target.filename && source.filename) target.filename = source.filename;
+  target.filename = preferAssetFilename(target.filename, source.filename);
   if (!target.imageDataUrl && source.imageDataUrl) target.imageDataUrl = source.imageDataUrl;
   if (!target.width && source.width) target.width = source.width;
   if (!target.height && source.height) target.height = source.height;
@@ -7188,8 +7748,11 @@ const mergeDuplicateAssetNode = (target: GameWindow3AssetNode, source: GameWindo
     target.children = mergeAssetTreeNodes(target.children ?? [], source.children ?? []);
   }
   if (target.type === 'image' && source.type === 'image') {
+    target.shapes = filterDeletedShapesForImage(target, target.shapes ?? []);
     const shapeIds = new Set((target.shapes ?? []).map((shape) => shape.id));
-    const extraShapes = (source.shapes ?? []).filter((shape) => !shapeIds.has(shape.id));
+    const shapeKeys = new Set((target.shapes ?? []).map((shape) => shapeMergeKey(shape)));
+    const extraShapes = filterDeletedShapesForImage(source, source.shapes ?? [])
+      .filter((shape) => !shapeIds.has(shape.id) && !shapeKeys.has(shapeMergeKey(shape)));
     if (extraShapes.length) {
       target.shapes = [
         ...(target.shapes ?? []),
@@ -7259,8 +7822,11 @@ const mergeAssetTreeNodes = (baseNodes: GameWindow3AssetNode[], extraNodes: Game
 };
 
 const mergeEntryAssetTrees = (localTree: GameWindow3AssetNode[], backendTree: GameWindow3AssetNode[]) => {
-  const mergedTree = mergeAssetTreeNodes(backendTree, localTree);
-  return compactDuplicateAssetNodes(mergedTree);
+  const mergedTree = mergeAssetTreeNodes(
+    filterDeletedShapesFromAssetTree(backendTree),
+    filterDeletedShapesFromAssetTree(localTree),
+  );
+  return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
 const selectFirstAvailableAsset = () => {
@@ -7273,7 +7839,7 @@ const flushAssetTreeToBackend = async (entryId: string, tree: GameWindow3AssetNo
     const response = await saveFanxiuGameWindow3AssetTree(entryId, tree);
     assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
   } catch {
-    // 文件树仍保留在本地缓存；后端短暂失败时不打断标注操作。
+    // 帧树仍保留在本地缓存；后端短暂失败时不打断标注操作。
   }
 };
 
@@ -7373,6 +7939,22 @@ const normalizeStringIdArray = (value: unknown) => (
     ? [...new Set(value.filter((id): id is string => typeof id === 'string' && Boolean(id)))]
     : []
 );
+
+const loadDeletedShapeIds = () => {
+  if (typeof window === 'undefined') return new Set<string>();
+  try {
+    return new Set(normalizeStringIdArray(JSON.parse(window.localStorage.getItem(GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY) || '[]')));
+  } catch {
+    return new Set<string>();
+  }
+};
+
+const persistDeletedShapeIds = () => {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY, JSON.stringify([...deletedShapeIds.value]));
+};
+
+deletedShapeIds.value = loadDeletedShapeIds();
 
 const loadGameWindow3UiState = (): GameWindow3UiState => {
   if (typeof window === 'undefined') return {};
@@ -7673,7 +8255,7 @@ const canDetectSelectedShape = computed(() => Boolean(
   && selectedShape.value
   && isDrawableShape(selectedShape.value)
   && shapePrimaryMatchKind(selectedShape.value)
-  && !shapeDetectingId.value
+  && (!shapeDetectingId.value || shapeDetectingId.value === selectedShape.value.id)
 ));
 const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): FanxiuGameWindow2MatchBox => {
   const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
@@ -7930,6 +8512,28 @@ const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
   reader.readAsDataURL(blob);
 });
 
+const isObjectUrl = (url: string) => url.startsWith('blob:');
+
+const revokeAssetImagePreviewUrl = (url: string | undefined) => {
+  if (url && isObjectUrl(url)) URL.revokeObjectURL(url);
+};
+
+const setAssetImagePreviewUrl = (imageId: string, url: string) => {
+  const previous = assetImagePreviewUrls.value[imageId];
+  if (previous && previous !== url) revokeAssetImagePreviewUrl(previous);
+  assetImagePreviewUrls.value = {
+    ...assetImagePreviewUrls.value,
+    [imageId]: url,
+  };
+};
+
+const releaseAssetImagePreviewUrls = () => {
+  Object.values(assetImagePreviewUrls.value).forEach(revokeAssetImagePreviewUrl);
+  assetImagePreviewUrls.value = {};
+};
+
+const blobToObjectUrl = (blob: Blob) => URL.createObjectURL(blob);
+
 const getAssetImageDataUrl = async (image: GameWindow3AssetNode) => {
   if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
   if (image.imageDataUrl) return image.imageDataUrl;
@@ -7940,12 +8544,9 @@ const getAssetImageDataUrl = async (image: GameWindow3AssetNode) => {
   };
   try {
     const blob = await getFanxiuGameWindow2Screenshot(selectedEntryId.value, image.filename);
-    const dataUrl = await blobToDataUrl(blob);
-    assetImagePreviewUrls.value = {
-      ...assetImagePreviewUrls.value,
-      [image.id]: dataUrl,
-    };
-    return dataUrl;
+    const previewUrl = blobToObjectUrl(blob);
+    setAssetImagePreviewUrl(image.id, previewUrl);
+    return previewUrl;
   } finally {
     const next = { ...assetImagePreviewLoadingIds.value };
     delete next[image.id];
@@ -7961,6 +8562,248 @@ const ensureSelectedImagePreview = async () => {
   } catch {
     // Preview loading is opportunistic; matching can still use the saved filename.
   }
+};
+
+const loadImageCompareElement = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error('图片加载失败'));
+  image.src = src;
+});
+
+const imageCompareCanvasOf = (side: ImageCompareSide) => (
+  side === 'saved' ? imageCompareSavedCanvasRef.value : imageCompareLiveCanvasRef.value
+);
+
+const imageCompareImageOf = (side: ImageCompareSide) => (
+  side === 'saved' ? imageCompareSavedImage.value : imageCompareLiveImage.value
+);
+
+const getImageCompareCanvasPoint = (event: PointerEvent | WheelEvent, side: ImageCompareSide) => {
+  const canvas = imageCompareCanvasOf(side);
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / rect.width),
+    y: (event.clientY - rect.top) * (canvas.height / rect.height),
+  };
+};
+
+const getImageCompareImagePoint = (event: PointerEvent | WheelEvent, side: ImageCompareSide) => {
+  const point = getImageCompareCanvasPoint(event, side);
+  const image = imageCompareImageOf(side);
+  if (!point || !image) return null;
+  const { scale, offsetX, offsetY } = imageCompareView.value;
+  const imageWidth = image.naturalWidth || image.width;
+  const imageHeight = image.naturalHeight || image.height;
+  const x = Math.max(0, Math.min(imageWidth, (point.x - offsetX) / scale));
+  const y = Math.max(0, Math.min(imageHeight, (point.y - offsetY) / scale));
+  return {
+    x: imageWidth ? x / imageWidth : 0,
+    y: imageHeight ? y / imageHeight : 0,
+  };
+};
+
+const drawImageCompareSide = (side: ImageCompareSide) => {
+  const canvas = imageCompareCanvasOf(side);
+  const image = imageCompareImageOf(side);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (!image) return;
+  const { scale, offsetX, offsetY } = imageCompareView.value;
+  const imageWidth = image.naturalWidth || image.width;
+  const imageHeight = image.naturalHeight || image.height;
+  const width = imageWidth * scale;
+  const height = imageHeight * scale;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, offsetX, offsetY, width, height);
+
+  ctx.lineWidth = 2;
+  for (const rect of imageCompareRects.value) {
+    const x = offsetX + Math.min(rect.x, rect.x + rect.w) * imageWidth * scale;
+    const y = offsetY + Math.min(rect.y, rect.y + rect.h) * imageHeight * scale;
+    const w = Math.abs(rect.w) * imageWidth * scale;
+    const h = Math.abs(rect.h) * imageHeight * scale;
+    const activeRectId = imageCompareDrag.value?.mode === 'rect' ? imageCompareDrag.value.rectId : '';
+    ctx.strokeStyle = rect.id === activeRectId ? '#f59e0b' : '#38bdf8';
+    ctx.strokeRect(x, y, w, h);
+  }
+
+  const crosshair = imageCompareCrosshair.value;
+  if (crosshair) {
+    const x = offsetX + crosshair.x * imageWidth * scale;
+    const y = offsetY + crosshair.y * imageHeight * scale;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(239, 68, 68, 0.92)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvas.height);
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
+const drawImageCompare = () => {
+  drawImageCompareSide('saved');
+  drawImageCompareSide('live');
+};
+
+const resetImageCompareView = async () => {
+  await nextTick();
+  const canvas = imageCompareSavedCanvasRef.value || imageCompareLiveCanvasRef.value;
+  const image = imageCompareSavedImage.value || imageCompareLiveImage.value;
+  if (!canvas || !image) return;
+  const imageWidth = image.naturalWidth || image.width;
+  const imageHeight = image.naturalHeight || image.height;
+  const scale = Math.min(canvas.width / imageWidth, canvas.height / imageHeight);
+  imageCompareView.value = {
+    scale,
+    offsetX: (canvas.width - imageWidth * scale) / 2,
+    offsetY: (canvas.height - imageHeight * scale) / 2,
+  };
+  imageCompareCrosshair.value = { x: 0.5, y: 0.5 };
+  drawImageCompare();
+};
+
+const clearImageCompareRects = () => {
+  imageCompareRects.value = [];
+  drawImageCompare();
+};
+
+const openImageCompareDialog = async () => {
+  const image = selectedImageNode.value;
+  if (!image) return;
+  imageCompareDialogVisible.value = true;
+  imageCompareLoading.value = true;
+  imageCompareError.value = '';
+  imageCompareRects.value = [];
+  imageCompareDrag.value = null;
+  try {
+    const savedDataUrl = await getAssetImageDataUrl(image);
+    const liveDataUrl = await captureCurrentFrameDataUrl();
+    if (!savedDataUrl) throw new Error('当前帧截图为空');
+    if (!liveDataUrl) throw new Error('当前直播帧为空');
+    const [savedImage, liveImage] = await Promise.all([
+      loadImageCompareElement(savedDataUrl),
+      loadImageCompareElement(liveDataUrl),
+    ]);
+    imageCompareSavedImage.value = savedImage;
+    imageCompareLiveImage.value = liveImage;
+    await resetImageCompareView();
+  } catch (error) {
+    imageCompareError.value = getErrorMessage(error);
+  } finally {
+    imageCompareLoading.value = false;
+  }
+};
+
+const closeImageCompareDialog = () => {
+  imageCompareSavedImage.value = null;
+  imageCompareLiveImage.value = null;
+  imageCompareCrosshair.value = null;
+  imageCompareRects.value = [];
+  imageCompareDrag.value = null;
+  imageCompareSpacePressed.value = false;
+  imageCompareError.value = '';
+};
+
+const handleImageCompareWheel = (event: WheelEvent, side: ImageCompareSide) => {
+  const point = getImageCompareCanvasPoint(event, side);
+  if (!point) return;
+  const current = imageCompareView.value;
+  const nextScale = Math.max(0.08, Math.min(8, current.scale * (event.deltaY > 0 ? 0.9 : 1.1)));
+  const imageX = (point.x - current.offsetX) / current.scale;
+  const imageY = (point.y - current.offsetY) / current.scale;
+  imageCompareView.value = {
+    scale: nextScale,
+    offsetX: point.x - imageX * nextScale,
+    offsetY: point.y - imageY * nextScale,
+  };
+  drawImageCompare();
+};
+
+const handleImageComparePointerDown = (event: PointerEvent, side: ImageCompareSide) => {
+  const canvas = imageCompareCanvasOf(side);
+  if (!canvas) return;
+  const imagePoint = getImageCompareImagePoint(event, side);
+  if (!imagePoint) return;
+  canvas.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  imageCompareCrosshair.value = imagePoint;
+  if (event.shiftKey || event.button === 1 || imageCompareSpacePressed.value) {
+    imageCompareDrag.value = {
+      mode: 'pan',
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffsetX: imageCompareView.value.offsetX,
+      startOffsetY: imageCompareView.value.offsetY,
+    };
+  } else {
+    const rectId = createAssetId('compare-rect');
+    imageCompareRects.value = [
+      ...imageCompareRects.value,
+      { id: rectId, x: imagePoint.x, y: imagePoint.y, w: 0, h: 0 },
+    ];
+    imageCompareDrag.value = {
+      mode: 'rect',
+      pointerId: event.pointerId,
+      start: imagePoint,
+      rectId,
+    };
+  }
+  drawImageCompare();
+};
+
+const handleImageComparePointerMove = (event: PointerEvent, side: ImageCompareSide) => {
+  const drag = imageCompareDrag.value;
+  if (drag?.mode === 'pan' && drag.pointerId === event.pointerId) {
+    imageCompareView.value = {
+      ...imageCompareView.value,
+      offsetX: drag.startOffsetX + event.clientX - drag.startClientX,
+      offsetY: drag.startOffsetY + event.clientY - drag.startClientY,
+    };
+    drawImageCompare();
+    return;
+  }
+  const imagePoint = getImageCompareImagePoint(event, side);
+  if (!imagePoint) return;
+  imageCompareCrosshair.value = imagePoint;
+  if (drag?.mode === 'rect' && drag.pointerId === event.pointerId) {
+    imageCompareRects.value = imageCompareRects.value.map(rect => (
+      rect.id === drag.rectId
+        ? { ...rect, w: imagePoint.x - drag.start.x, h: imagePoint.y - drag.start.y }
+        : rect
+    ));
+  }
+  drawImageCompare();
+};
+
+const handleImageComparePointerUp = (event: PointerEvent) => {
+  const drag = imageCompareDrag.value;
+  if (drag?.pointerId !== event.pointerId) return;
+  if (drag.mode === 'rect') {
+    const image = imageCompareSavedImage.value || imageCompareLiveImage.value;
+    const minWidth = 3 / Math.max(1, image?.naturalWidth || image?.width || 900);
+    const minHeight = 3 / Math.max(1, image?.naturalHeight || image?.height || 1600);
+    imageCompareRects.value = imageCompareRects.value.filter(rect => (
+      rect.id !== drag.rectId || Math.abs(rect.w) >= minWidth || Math.abs(rect.h) >= minHeight
+    ));
+  }
+  imageCompareDrag.value = null;
+  drawImageCompare();
+};
+
+const handleImageComparePointerLeave = () => {
+  if (!imageCompareDrag.value) drawImageCompare();
 };
 
 const insertSavedFrameNode = (node: GameWindow3AssetNode) => {
@@ -8000,10 +8843,7 @@ const saveFrameDataUrlToAssetTree = async (currentFrameDataUrl: string) => {
     width: result.width,
     height: result.height,
   });
-  assetImagePreviewUrls.value = {
-    ...assetImagePreviewUrls.value,
-    [node.id]: currentFrameDataUrl,
-  };
+  setAssetImagePreviewUrl(node.id, currentFrameDataUrl);
   addSavedFrameToAssetTree(node);
   return node;
 };
@@ -8249,9 +9089,31 @@ const deleteSelectedAsset = async () => {
   selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
 };
 
-const selectAssetNode = (node: GameWindow3AssetNode) => {
+const toggleAssetFolderNode = (id: string) => {
+  const treeNode = assetTreeRef.value?.getNode(id);
+  if (!treeNode) {
+    setAssetNodeExpanded(id, !expandedAssetNodeIds.value.includes(id));
+    return;
+  }
+  if (treeNode.expanded) {
+    treeNode.collapse?.();
+  } else {
+    treeNode.expand?.();
+  }
+};
+
+const isAssetTreeExpandIconClick = (event: MouseEvent | undefined) => {
+  const target = event?.target;
+  return target instanceof Element && Boolean(target.closest('.el-tree-node__expand-icon'));
+};
+
+const selectAssetNode = (node: GameWindow3AssetNode, _treeNode?: unknown, _component?: unknown, event?: MouseEvent) => {
   closeAssetContextMenu();
   selectedAssetId.value = node.id;
+  if (node.type === 'folder') {
+    if (!isAssetTreeExpandIconClick(event)) toggleAssetFolderNode(node.id);
+    return;
+  }
   void refreshEntryAssetTreeIfChanged();
 };
 
@@ -8414,10 +9276,27 @@ const deleteSelectedShape = () => {
   if (!image?.shapes) return;
   const targets = selectedShapeRoots();
   if (!targets.length) return;
+  for (const shape of flattenShapes(targets)) {
+    deletedShapeIds.value.add(shape.id);
+    deletedShapeIds.value.add(shapeDeleteIdKey(shape.id));
+    deletedShapeIds.value.add(shapeDeleteSignatureKey(image, shape));
+  }
+  persistDeletedShapeIds();
   removeShapesByIds(image.shapes, new Set(targets.map((shape) => shape.id)));
+  image.shapes = filterDeletedShapesForImage(image, image.shapes);
   selectedShapeIds.value = [];
   selectedShapeId.value = flattenShapes(image.shapes)[0]?.id ?? null;
   shapeSelectionAnchorId.value = selectedShapeId.value;
+  if (assetTreeSaveTimer) {
+    window.clearTimeout(assetTreeSaveTimer);
+    assetTreeSaveTimer = null;
+  }
+  if (selectedEntryId.value) {
+    const entryId = selectedEntryId.value;
+    assetTree.value = filterDeletedShapesFromAssetTree(assetTree.value);
+    const tree = cloneAssetTree(assetTree.value);
+    void flushAssetTreeToBackend(entryId, tree);
+  }
 };
 
 const selectShape = (id: string | null, event?: MouseEvent) => {
@@ -8623,12 +9502,14 @@ const buildRuntimeShapeMatchPayload = (
   shape: GameWindow3Shape,
   currentFrameDataUrl: string,
   matchKind: ShapeMatchKind | null = shapePrimaryMatchKind(shape),
+  preferCached = true,
+  includeImageDataUrls = true,
 ): FanxiuGameWindow2MatchPayload | null => {
   if (!selectedEntryId.value || !image.filename || !isDrawableShape(shape)) return null;
   if (!matchKind) return null;
   const box = shapeToMatchBox(shape, image);
   if (box.w <= 0 || box.h <= 0) return null;
-  const occlusionAlphaMaskDataUrl = buildOcclusionAlphaMaskDataUrl(image, shape, box);
+  const occlusionAlphaMaskDataUrl = includeImageDataUrls ? buildOcclusionAlphaMaskDataUrl(image, shape, box) : '';
   const parentShape = shape.floating ? findShapeParentShape(image.shapes ?? [], shape.id) : null;
   const scanBox = parentShape && isDrawableShape(parentShape) ? shapeToMatchBox(parentShape, image) : undefined;
   return {
@@ -8638,9 +9519,9 @@ const buildRuntimeShapeMatchPayload = (
     scan: Boolean(shape.floating),
     scan_box: scanBox,
     pixel_tolerance: shapePixelTolerance(shape),
-    alpha_mask_data_url: occlusionAlphaMaskDataUrl || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined),
-    tolerance_min_data_url: shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
-    tolerance_max_data_url: shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
+    alpha_mask_data_url: includeImageDataUrls ? (occlusionAlphaMaskDataUrl || (shape.maskEnabled ? shape.alphaMask?.dataUrl : undefined)) : undefined,
+    tolerance_min_data_url: includeImageDataUrls && shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl : undefined,
+    tolerance_max_data_url: includeImageDataUrls && shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl : undefined,
     ocr_enabled: matchKind === 'ocr',
     ocr_text: shape.ocrText?.trim() || undefined,
     ocr_match_mode: normalizeShapeOcrMatchMode(shape.ocrMatchMode),
@@ -8657,6 +9538,7 @@ const buildRuntimeShapeMatchPayload = (
     quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     auto_dismiss_popup: autoDismissPopup.value,
     current_frame_data_url: currentFrameDataUrl,
+    prefer_cached: preferCached,
   };
 };
 
@@ -8696,8 +9578,10 @@ const matchRuntimeShapeByKind = async (
   shape: GameWindow3Shape,
   currentFrameDataUrl: string,
   matchKind: ShapeMatchKind,
+  preferCached = true,
+  includeImageDataUrls = true,
 ) => {
-  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, matchKind);
+  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, matchKind, preferCached, includeImageDataUrls);
   return payload ? matchFanxiuGameWindow2Screenshot(payload) : null;
 };
 
@@ -8714,10 +9598,12 @@ const matchRuntimeShapeDetails = async (
   image: GameWindow3AssetNode,
   shape: GameWindow3Shape,
   currentFrameDataUrl: string,
+  preferCached = true,
+  includeImageDataUrls = true,
 ): Promise<RuntimeShapeMatchDetails | null> => {
   const results: RuntimeShapeMatchResult[] = [];
   for (const kind of shapeActiveMatchKinds(shape)) {
-    const response = await matchRuntimeShapeByKind(image, shape, currentFrameDataUrl, kind);
+    const response = await matchRuntimeShapeByKind(image, shape, currentFrameDataUrl, kind, preferCached, includeImageDataUrls);
     if (!response) continue;
     results.push({ kind, response, score: bestRuntimeShapeMatchOf(shape, response).score });
   }
@@ -8731,9 +9617,59 @@ const matchRuntimeShapeDetails = async (
   };
 };
 
-const detectSelectedShape = async () => {
+const runShapeDetectLoop = async (
+  image: GameWindow3AssetNode,
+  shape: GameWindow3Shape,
+  requestSeq: number,
+  requestImageId: string,
+  requestShapeId: string,
+) => {
+  try {
+    let warnedGeometryIssue = '';
+    while (!shapeDetectStopRequested) {
+      const details = await matchRuntimeShapeDetails(image, shape, '', false, true);
+      if (!details) {
+        ElMessage.warning('请先框选有效区域');
+        return;
+      }
+      if (
+        requestSeq !== shapeDetectSeq.value
+        || selectedImageNode.value?.id !== requestImageId
+        || selectedShapeId.value !== requestShapeId
+      ) {
+        return;
+      }
+      const response = details.response;
+      const geometryIssue = matchFrameAspectMismatchText(response);
+      if (geometryIssue && geometryIssue !== warnedGeometryIssue) {
+        warnedGeometryIssue = geometryIssue;
+        ElMessage.warning(geometryIssue);
+      }
+      const resultText = shapeDetectResultTextOfDetails(shape, details);
+      shapeDetectLiveBoxes.value = shapeDetectLiveBoxesOf(shape, response);
+      drawOverlay();
+      shapeDetectResults.value = {
+        ...shapeDetectResults.value,
+        [requestShapeId]: resultText,
+      };
+      await sleep(300);
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    if (shapeDetectingId.value === requestShapeId) shapeDetectingId.value = null;
+  }
+};
+
+const detectSelectedShape = () => {
   const image = selectedImageNode.value;
   const shape = selectedShape.value;
+  if (shapeDetectingId.value === shape?.id) {
+    shapeDetectStopRequested = true;
+    shapeDetectSeq.value += 1;
+    shapeDetectingId.value = null;
+    return;
+  }
   if (!selectedEntryId.value || !image || !shape || !isDrawableShape(shape)) return;
   if (!image.filename) {
     ElMessage.warning('当前图片没有原始帧文件，无法检测');
@@ -8746,8 +9682,6 @@ const detectSelectedShape = async () => {
   }
   const requestSeq = shapeDetectSeq.value + 1;
   shapeDetectSeq.value = requestSeq;
-  const requestImageId = image.id;
-  const requestShapeId = shape.id;
   shapeDetectResults.value = {
     ...shapeDetectResults.value,
     [shape.id]: '',
@@ -8755,35 +9689,8 @@ const detectSelectedShape = async () => {
   shapeDetectLiveBoxes.value = [];
   drawOverlay();
   shapeDetectingId.value = shape.id;
-  try {
-    const details = await matchRuntimeShapeDetails(image, shape, await captureCurrentFrameDataUrl());
-    if (!details) {
-      ElMessage.warning('请先框选有效区域');
-      return;
-    }
-    if (
-      requestSeq !== shapeDetectSeq.value
-      || selectedImageNode.value?.id !== requestImageId
-      || selectedShapeId.value !== requestShapeId
-    ) {
-      return;
-    }
-    const response = details.response;
-    const geometryIssue = matchFrameAspectMismatchText(response);
-    if (geometryIssue) ElMessage.warning(geometryIssue);
-    const resultText = shapeDetectResultTextOfDetails(shape, details);
-    shapeDetectLiveBoxes.value = shapeDetectLiveBoxesOf(shape, response);
-    drawOverlay();
-    shapeDetectResults.value = {
-      ...shapeDetectResults.value,
-      [requestShapeId]: resultText,
-    };
-    ElMessage.success(resultText);
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error));
-  } finally {
-    shapeDetectingId.value = null;
-  }
+  shapeDetectStopRequested = false;
+  void runShapeDetectLoop(image, shape, requestSeq, image.id, shape.id);
 };
 
 const stepperSceneIdentityShapes = (image: GameWindow3AssetNode) => (
@@ -9207,11 +10114,36 @@ const ensureStepperTask = (forceReset = false) => {
       && currentTask.type === 'daily_find'
       && currentTask.query === taskDefinition.query
       && currentTask.matchMode === taskDefinition.matchMode
+      && currentTask.scanPlan === (taskDefinition.scanPlan ?? 'normal')
+      && currentTask.maxPages === (taskDefinition.maxPages ?? taskDefinition.dragCount)
+      && currentTask.reversePages === (taskDefinition.reversePages ?? 0)
       && currentTask.completedFallbackPattern === (taskDefinition.completedFallbackPattern ?? '')
       && currentTask.completedFallbackExcludePattern === (taskDefinition.completedFallbackExcludePattern ?? '')
       && currentTask.completedFallbackMinTotal === (taskDefinition.completedFallbackMinTotal ?? 0)
       && currentTask.requireProgress === (taskDefinition.requireProgress !== false)
       && currentTask.openOnReady === (taskDefinition.openOnReady === true)
+    ) return true;
+    if (
+      taskDefinition.type === 'account_switch'
+      && currentTask.type === 'account_switch'
+      && currentTask.accountText === taskDefinition.accountText
+      && currentTask.matchMode === (taskDefinition.matchMode ?? 'contains')
+    ) return true;
+    if (taskDefinition.type === 'youli_status' && currentTask.type === 'youli_status') return true;
+    if (taskDefinition.type === 'youli_enter_explore' && currentTask.type === 'youli_enter_explore') return true;
+    if (taskDefinition.type === 'youli_disable_all_stamina' && currentTask.type === 'youli_disable_all_stamina') return true;
+    if (taskDefinition.type === 'youli_quick_once' && currentTask.type === 'youli_quick_once') return true;
+    if (taskDefinition.type === 'youli_confirm_result' && currentTask.type === 'youli_confirm_result') return true;
+    if (taskDefinition.type === 'youli_return_daily' && currentTask.type === 'youli_return_daily') return true;
+    if (
+      taskDefinition.type === 'youli_auto'
+      && currentTask.type === 'youli_auto'
+      && currentTask.maxRuns === (taskDefinition.maxRuns ?? 8)
+    ) return true;
+    if (
+      taskDefinition.type === 'youli_daily_auto'
+      && currentTask.type === 'youli_daily_auto'
+      && currentTask.maxRuns === (taskDefinition.maxRuns ?? 8)
     ) return true;
     if (
       taskDefinition.type === 'drag_shape_to_shape'
@@ -9241,6 +10173,11 @@ const ensureStepperTask = (forceReset = false) => {
       type: 'daily_find',
       query: taskDefinition.query,
       matchMode: taskDefinition.matchMode,
+      scanPlan: taskDefinition.scanPlan ?? 'normal',
+      maxPages: taskDefinition.maxPages ?? taskDefinition.dragCount,
+      reversePages: taskDefinition.reversePages ?? 0,
+      scanDirection: 'down',
+      directionAttempts: 0,
       completedFallbackPattern: taskDefinition.completedFallbackPattern ?? '',
       completedFallbackExcludePattern: taskDefinition.completedFallbackExcludePattern ?? '',
       completedFallbackMinTotal: taskDefinition.completedFallbackMinTotal ?? 0,
@@ -9249,8 +10186,98 @@ const ensureStepperTask = (forceReset = false) => {
       dragCount: taskDefinition.dragCount,
       requireProgress: taskDefinition.requireProgress !== false,
       openOnReady: taskDefinition.openOnReady === true,
+      sceneNavigationAttempted: false,
       legacySource: taskDefinition.legacySource ?? '',
       note: taskDefinition.note ?? '',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'account_switch') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'account_switch',
+      accountText: taskDefinition.accountText,
+      matchMode: taskDefinition.matchMode ?? 'contains',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_status') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_status',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_enter_explore') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_enter_explore',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_disable_all_stamina') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_disable_all_stamina',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_quick_once') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_quick_once',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_confirm_result') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_confirm_result',
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_return_daily') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_return_daily',
+      routeAttempts: 0,
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_auto') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_auto',
+      maxRuns: taskDefinition.maxRuns ?? 8,
+      completedRuns: 0,
+      startedAt: Date.now(),
+      attempts: 0,
+    }, taskDefinition.label);
+    return true;
+  }
+  if (taskDefinition.type === 'youli_daily_auto') {
+    resetStepperTaskState({
+      id: createAssetId('stepper-task'),
+      type: 'youli_daily_auto',
+      maxRuns: taskDefinition.maxRuns ?? 8,
+      completedRuns: 0,
+      routeAttempts: 0,
       startedAt: Date.now(),
       attempts: 0,
     }, taskDefinition.label);
@@ -9691,21 +10718,33 @@ const summarizeStepperDailyTask = (
   return summarizeStepperDailyTaskByTemplate(anchor, lines, candidateText) ?? summarizeStepperDailyTaskHeuristic(anchor, lines, candidateText);
 };
 
-const shouldStepperDailyFindRecenter = (line: FanxiuGameWindow3OcrFrameLine, summary?: StepperDailyTaskSummary) => {
+const getStepperDailyFindRecenterDirection = (
+  line: FanxiuGameWindow3OcrFrameLine,
+  summary?: StepperDailyTaskSummary,
+): 'down' | 'up' | null => {
   const box = stepperDailyFindListBox();
+  const top = summary?.blockBox?.top ?? line.y;
   const bottom = summary?.blockBox?.bottom ?? (line.y + line.h);
-  return (box.bottom - bottom) < Math.max(90, box.height * 0.08);
+  const margin = Math.max(90, box.height * 0.08);
+  if ((box.bottom - bottom) < margin) return 'down';
+  if ((top - box.top) < margin) return 'up';
+  return null;
 };
 
 const STEPPER_DAILY_DRAG_PERCENT = 0.5;
 const STEPPER_DAILY_RECENTER_DRAG_PERCENT = 0.18;
 
-const dragStepperDailyTaskList = async (percent = STEPPER_DAILY_DRAG_PERCENT) => {
+const dragStepperDailyTaskList = async (
+  percent = STEPPER_DAILY_DRAG_PERCENT,
+  direction: 'down' | 'up' = 'down',
+) => {
   const box = stepperDailyFindListBox();
   const x = box.width * 0.52;
+  const fromRatio = direction === 'down' ? 0.72 : 0.28;
+  const toRatio = direction === 'down' ? (0.72 - percent) : (0.28 + percent);
   await dragStepperFramePoints(
-    { x, y: box.top + (box.bottom - box.top) * 0.72 },
-    { x, y: box.top + (box.bottom - box.top) * (0.72 - percent) },
+    { x, y: box.top + (box.bottom - box.top) * fromRatio },
+    { x, y: box.top + (box.bottom - box.top) * toRatio },
     520,
   );
 };
@@ -9744,6 +10783,7 @@ const runStepperDailyFindTick = async (
   }
 
   detailLog(`Tick ${tickNo} 开始：OCR 查找「${task.query}」`);
+  detailLog(`扫描策略：${task.scanPlan}，方向 ${task.scanDirection}，本方向 ${task.directionAttempts}/${task.scanDirection === 'down' ? task.maxPages : task.reversePages}，总尝试 ${task.attempts}/${task.dragCount}`);
   if (task.legacySource) detailLog(`旧版来源：${task.legacySource}`);
   if (task.note) detailLog(`预设说明：${task.note}`);
   const currentFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
@@ -9756,19 +10796,38 @@ const runStepperDailyFindTick = async (
     shapeDetectLiveBoxes.value = sceneEvidence.box ? [stepperRectToMatchBox('日常场景标识', sceneEvidence.box)] : [];
     drawOverlay();
     const evidenceText = sceneEvidence.text ? `，场景框 OCR「${sceneEvidence.text}」` : '，场景框未识别到日常标题';
+    if (!task.sceneNavigationAttempted) {
+      const targets = resolveStepperSceneTargets('日常');
+      if (targets.length) {
+        task.sceneNavigationAttempted = true;
+        stepperTaskStack.value.push({
+          id: createAssetId('stepper-task'),
+          type: 'go_scene',
+          targetText: '日常',
+          targets,
+        });
+        setStepperRunStatus(`日常定位「${task.query}」：当前不像日常页${evidenceText}，先自动到场景「日常」`, 'action');
+        detailLog(`日常场景确认失败${evidenceText}，压入到场景「日常」子任务`);
+        return 'continue';
+      }
+    }
     setStepperRunStatus(`日常定位「${task.query}」停止：当前不像日常页${evidenceText}。请先运行到场景「日常」或保存/修正日常场景标识。`, 'wait');
     detailLog(`日常场景确认失败${evidenceText}`);
     stepperTaskStack.value.pop();
     return 'done';
   }
-  const matched = buildStepperDailyAnchorCandidates(lines)
-    .find((candidate) => stepperTextMatches(candidate.text, task.query, task.matchMode));
+  const anchorCandidates = buildStepperDailyAnchorCandidates(lines);
+  if (task.scanPlan === 'candidate_rows') {
+    detailLog(`候选行扫描：${anchorCandidates.slice(0, 8).map((candidate) => `「${candidate.text}」`).join('，') || '无'}`);
+  }
+  const matched = anchorCandidates.find((candidate) => stepperTextMatches(candidate.text, task.query, task.matchMode));
   if (matched) {
     const center = stepperOcrLineCenter(matched.anchor);
     const summary = summarizeStepperDailyTask(matched.anchor, lines, matched.text);
-    if (shouldStepperDailyFindRecenter(matched.anchor, summary) && task.attempts <= task.dragCount) {
-      setStepperRunStatus(`Tick ${tickNo}：命中「${matched.text}」但靠近底部，小幅上滑后复核`, 'action');
-      await dragStepperDailyTaskList(STEPPER_DAILY_RECENTER_DRAG_PERCENT);
+    const recenterDirection = getStepperDailyFindRecenterDirection(matched.anchor, summary);
+    if (recenterDirection && task.attempts <= task.dragCount) {
+      setStepperRunStatus(`Tick ${tickNo}：命中「${matched.text}」但靠近${recenterDirection === 'down' ? '底部' : '顶部'}，小幅${recenterDirection === 'down' ? '上滑' : '下滑'}后复核`, 'action');
+      await dragStepperDailyTaskList(STEPPER_DAILY_RECENTER_DRAG_PERCENT, recenterDirection);
       if (options.waitOnIdle) await sleep(1000);
       return 'continue';
     }
@@ -9828,13 +10887,30 @@ const runStepperDailyFindTick = async (
   }
 
   if (task.attempts <= task.dragCount) {
+    const pageLimit = task.scanDirection === 'down' ? task.maxPages : task.reversePages;
+    if (task.directionAttempts < pageLimit) {
+      task.directionAttempts += 1;
+      setStepperRunStatus(
+        `Tick ${tickNo}：未找到「${task.query}」，${task.scanDirection === 'down' ? '向下' : '向上'}滚动任务清单 ${task.directionAttempts}/${pageLimit}`,
+        'action',
+      );
+      await dragStepperDailyTaskList(STEPPER_DAILY_DRAG_PERCENT, task.scanDirection);
+      if (options.waitOnIdle) await sleep(1000);
+      return 'continue';
+    }
+    if (task.scanPlan === 'bidirectional' && task.scanDirection === 'down' && task.reversePages > 0) {
+      task.scanDirection = 'up';
+      task.directionAttempts = 0;
+      setStepperRunStatus(`Tick ${tickNo}：向下未找到「${task.query}」，切换为向上回扫 ${task.reversePages} 页`, 'action');
+      await dragStepperDailyTaskList(STEPPER_DAILY_DRAG_PERCENT, 'up');
+      if (options.waitOnIdle) await sleep(1000);
+      return 'continue';
+    }
     setStepperRunStatus(
-      `Tick ${tickNo}：未找到「${task.query}」，滚动任务清单 ${task.attempts}/${task.dragCount}`,
-      'action',
+      `Tick ${tickNo}：未找到「${task.query}」，扫描页数已用尽`,
+      'wait',
     );
-    await dragStepperDailyTaskList();
     if (options.waitOnIdle) await sleep(1000);
-    return 'continue';
   }
 
   const result = decideStepperDailyFindResult(task, '', null);
@@ -9934,6 +11010,800 @@ const runStepperDragShapeToShapeTick = async (
   return 'done';
 };
 
+const accountSwitchSceneTargets = () => uniqueImages([
+  ...resolveStepperSceneTargets('设置页'),
+  ...resolveStepperSceneTargets('退出登录'),
+  ...resolveStepperSceneTargets('登录'),
+  ...resolveStepperSceneTargets('挑选账号'),
+]);
+
+const accountSwitchSceneKind = (image: GameWindow3AssetNode) => {
+  const title = image.title.trim();
+  const parent = findAssetParentFolder(assetTree.value, image.id)?.title.trim() ?? '';
+  const key = `${parent}/${title}`;
+  if (title === '挑选账号' || key.includes('/挑选账号')) return 'picker';
+  if (title === '退出登录' || key.includes('/退出登录')) return 'logout-confirm';
+  if (title === '设置页' || key.includes('/设置页')) return 'settings';
+  if (title === '登录' || key.includes('/登录')) return 'login';
+  return 'other';
+};
+
+const clickStepperShapeByTitle = async (
+  image: GameWindow3AssetNode,
+  title: string,
+  detailLog: (message: string) => void,
+) => {
+  const shape = findNestedShapeByTitle(image.shapes ?? [], title);
+  if (!shape) throw new Error(`当前场景缺少 shape：${title}`);
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = shape.id;
+  const result = await clickStepperShape(image, shape);
+  if (result?.floating) detailLog(`浮动重检：${title} ${stepperScoreText(result.score)}，点击 (${result.point.x},${result.point.y})`);
+  return result;
+};
+
+const recognizeStepperCurrentFrame = async () => {
+  const currentFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
+  const response = await recognizeFanxiuGameWindow3OcrFrame(currentFrameDataUrl);
+  return { currentFrameDataUrl, lines: response.lines ?? [] };
+};
+
+const runStepperAccountSwitchTick = async (
+  task: Extract<StepperTask, { type: 'account_switch' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  const targets = accountSwitchSceneTargets();
+  if (!targets.length) {
+    setStepperRunStatus('账号切换缺少登录/挑选账号/设置页标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  detailLog(`Tick ${tickNo} 开始：切换账号「${task.accountText}」`);
+  const current = await identifyStepperScene(stepperLastAction.value, {
+    id: task.id,
+    type: 'go_scene',
+    targetText: '账号切换',
+    targets,
+  }, stepperTriedActionEdges.value, options);
+  if (!current) {
+    setStepperRunStatus(`账号切换：未识别到账号链路场景${options.waitOnIdle ? '，等待 1 秒' : ''}`, 'wait');
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+  selectedAssetId.value = current.image.id;
+  const kind = accountSwitchSceneKind(current.image);
+  detailLog(`账号链路当前场景：${stepperImageLabel(current.image)} (${kind})`);
+  if (kind === 'settings') {
+    setStepperRunStatus('账号切换：设置页点击退出登录', 'action');
+    await clickStepperShapeByTitle(current.image, '退出登录', detailLog);
+    await sleep(1000);
+    return 'continue';
+  }
+  if (kind === 'logout-confirm') {
+    setStepperRunStatus('账号切换：确认退出登录', 'action');
+    await clickStepperShapeByTitle(current.image, '是', detailLog);
+    await sleep(1000);
+    return 'continue';
+  }
+  if (kind === 'login') {
+    const { lines } = await recognizeStepperCurrentFrame();
+    const accountShape = findNestedShapeByTitle(current.image.shapes ?? [], '当前账号');
+    const accountText = accountShape
+      ? collectStepperTextInRect(lines, stepperShapeFrameRect(current.image, accountShape))
+      : lines.map((line) => line.text).join('');
+    detailLog(`登录页当前账号 OCR：${accountText || '无'}`);
+    if (stepperTextMatches(accountText, task.accountText, task.matchMode)) {
+      setStepperRunStatus(`账号切换：已选中「${task.accountText}」，点击登录`, 'action');
+      await clickStepperShapeByTitle(current.image, '登录', detailLog);
+      stepperTaskStack.value.pop();
+      await sleep(1000);
+      return 'done';
+    }
+    setStepperRunStatus(`账号切换：当前账号不是「${task.accountText}」，展开账号列表`, 'action');
+    await clickStepperShapeByTitle(current.image, '展开账号', detailLog);
+    await sleep(700);
+    return 'continue';
+  }
+  if (kind === 'picker') {
+    const { lines } = await recognizeStepperCurrentFrame();
+    const matched = lines.find((line) => stepperTextMatches(line.text, task.accountText, task.matchMode));
+    detailLog(`挑选账号 OCR：${lines.map((line) => `「${line.text}」`).join('，') || '无'}`);
+    if (!matched) {
+      setStepperRunStatus(`账号切换：账号列表未找到「${task.accountText}」${options.waitOnIdle ? '，等待 1 秒' : ''}`, 'wait');
+      if (options.waitOnIdle) await sleep(1000);
+      return 'continue';
+    }
+    const point = stepperOcrLineCenter(matched);
+    const normalized = normalizeControlPoint(point);
+    setStepperRunStatus(`账号切换：选择账号「${matched.text}」`, 'action');
+    await clickFanxiuGameWindow2({
+      ...buildRemoteInputPayloadBase('stepper'),
+      x: normalized.x,
+      y: normalized.y,
+    });
+    await sleep(700);
+    return 'continue';
+  }
+  const next = findStepperNextAction(current.image, targets, stepperTriedActionEdges.value);
+  if (next) {
+    stepperTriedActionEdges.value.add(`${next.from.id}:${next.shape.id}`);
+    setStepperRunStatus(`账号切换：${stepperImageLabel(current.image)} -> 点击 ${next.shape.title || 'shape'}`, 'action');
+    stepperLastAction.value = {
+      fromImageId: current.image.id,
+      shapeId: next.shape.id,
+      shapeTitle: next.shape.title,
+      isIndependentExit: next.isIndependentExit,
+      expectedTargets: next.targets.map((target) => target.image),
+    };
+    await clickStepperShape(current.image, next.shape);
+    await sleep(1000);
+    return 'continue';
+  }
+  setStepperRunStatus(`账号切换：当前场景 ${stepperImageLabel(current.image)} 暂无可推进动作`, 'wait');
+  if (options.waitOnIdle) await sleep(1000);
+  return 'continue';
+};
+
+const findStepperYouliImage = () => (
+  resolveStepperSceneTargets('修仙传游历')[0]
+  ?? resolveStepperSceneTargets('#71')[0]
+  ?? resolveStepperSceneTargets('0071.png')[0]
+  ?? null
+);
+
+const findStepperYouliExploreImage = () => (
+  resolveStepperSceneTargets('修仙传探索')[0]
+  ?? resolveStepperSceneTargets('#72')[0]
+  ?? resolveStepperSceneTargets('0072.png')[0]
+  ?? null
+);
+
+const findStepperYouliResultImage = () => (
+  resolveStepperSceneTargets('修仙传游历结算')[0]
+  ?? resolveStepperSceneTargets('#73')[0]
+  ?? resolveStepperSceneTargets('0073.png')[0]
+  ?? null
+);
+
+const findStepperDailyImage = () => (
+  resolveStepperSceneTargets('日常')[0]
+  ?? resolveStepperSceneTargets('#69')[0]
+  ?? resolveStepperSceneTargets('0069.png')[0]
+  ?? null
+);
+
+const parseStepperFraction = (text: string) => {
+  const normalized = normalizeDailyOcrText(text);
+  const match = normalized.match(/(\d{1,5})\/(\d{1,5})/);
+  if (!match) return null;
+  const current = Number(match[1]);
+  const total = Number(match[2]);
+  return Number.isFinite(current) && Number.isFinite(total) && total > 0 ? { current, total } : null;
+};
+
+const isStepperYouliExploreText = (text: string) => /快速游历|消耗体力/.test(text);
+const isStepperYouliResultText = (text: string) => (
+  /总共获得宝物|游历消耗/.test(text)
+  || (/确定/.test(text) && /获得/.test(text) && /宝物|道具|奖励/.test(text))
+);
+const isStepperYouliBlockingLeadText = (text: string) => /天道魁首|立[即刻]前往|登临天道|天都阴火/.test(text);
+
+const clickStepperFramePoint = async (point: { x: number; y: number }) => {
+  if (!selectedEntryId.value) return false;
+  const width = naturalWidth.value || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth || FALLBACK_FRAME_WIDTH;
+  const height = naturalHeight.value || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight || FALLBACK_FRAME_HEIGHT;
+  await clickFanxiuGameWindow2({
+    ...buildRemoteInputPayloadBase('stepper'),
+    frame_width: width,
+    frame_height: height,
+    x: Math.round(clamp(point.x, 0, Math.max(0, width - 1))),
+    y: Math.round(clamp(point.y, 0, Math.max(0, height - 1))),
+  });
+  return true;
+};
+
+const clickStepperYouliBlockingLeadBlank = async (detailLog: (message: string) => void) => {
+  const ok = await clickStepperFramePoint({ x: 80, y: 1450 });
+  detailLog('点击活动引导弹窗外空白关闭区：(80,1450)');
+  await sleep(800);
+  return ok;
+};
+
+const getStepperYouliAllStaminaCheckedScore = async (
+  image: GameWindow3AssetNode | null,
+  currentFrameDataUrl: string,
+) => {
+  const shape = image ? findNestedShapeByTitle(image.shapes ?? [], '全部体力已勾选') : null;
+  if (!image || !shape) return { shape: null, score: 0 };
+  const details = await matchRuntimeShapeDetails(image, shape, currentFrameDataUrl);
+  const score = details
+    ? Math.max(0, ...details.results.map((result) => bestRuntimeShapeMatchOf(shape, result.response).score))
+    : 0;
+  return { shape, score };
+};
+
+const clickStepperYouliAllStaminaOffIfNeeded = async (
+  image: GameWindow3AssetNode,
+  currentFrameDataUrl: string,
+  detailLog: (message: string) => void,
+) => {
+  const checked = await getStepperYouliAllStaminaCheckedScore(image, currentFrameDataUrl);
+  if (!checked.shape) return { ok: false, changed: false, score: checked.score, message: '缺少「全部体力已勾选」标注' };
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = checked.shape.id;
+  shapeDetectLiveBoxes.value = [stepperRectToMatchBox('全部体力已勾选', stepperShapeFrameRect(image, checked.shape))];
+  drawOverlay();
+  detailLog(`全部体力勾选检测：${stepperScoreText(checked.score)}`);
+  if (checked.score < STEPPER_SCENE_MATCH_THRESHOLD) {
+    return { ok: true, changed: false, score: checked.score, message: `已处于关闭状态，勾选匹配 ${stepperScoreText(checked.score)}` };
+  }
+  const clickResult = await clickStepperShape(image, checked.shape);
+  detailLog(`点击全部体力勾选框：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})`);
+  await sleep(800);
+  const afterFrameDataUrl = await captureCurrentFrameDataUrl('stepper');
+  const after = await getStepperYouliAllStaminaCheckedScore(image, afterFrameDataUrl);
+  if (after.score < STEPPER_SCENE_MATCH_THRESHOLD) {
+    return { ok: true, changed: true, score: after.score, message: `已关闭，复核 ${stepperScoreText(after.score)}` };
+  }
+  return { ok: false, changed: true, score: after.score, message: `点击后仍疑似勾选，复核 ${stepperScoreText(after.score)}` };
+};
+
+const runStepperYouliStatusTick = async (
+  task: Extract<StepperTask, { type: 'youli_status' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：读取游历状态`);
+  const { currentFrameDataUrl, lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  const isHomePage = /修仙传/.test(allText);
+  const isExplorePage = isStepperYouliExploreText(allText);
+  const isResultPage = isStepperYouliResultText(allText);
+  if (!isHomePage && !isExplorePage && !isResultPage) {
+    setStepperRunStatus(`游历状态：当前不像修仙传/游历探索/结算页面${options.waitOnIdle ? '，等待 1 秒' : ''}`, 'wait');
+    if (options.waitOnIdle) await sleep(1000);
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const image = isResultPage ? findStepperYouliResultImage() : (isExplorePage ? findStepperYouliExploreImage() : findStepperYouliImage());
+  const textOfShape = (title: string) => {
+    const shape = image ? findNestedShapeByTitle(image.shapes ?? [], title) : null;
+    return shape ? collectStepperTextInRect(lines, stepperShapeFrameRect(image, shape)) : '';
+  };
+  if (isResultPage) {
+    const costText = textOfShape('游历消耗') || allText;
+    const rewardsText = textOfShape('总共获得宝物') || allText;
+    const statusParts = [
+      '结算页',
+      /游历消耗/.test(costText) ? costText : '消耗未知',
+      /总共获得宝物/.test(rewardsText) ? '可见奖励汇总' : '奖励汇总未知',
+      /确定/.test(allText) ? '可确认' : '未见确定',
+    ];
+    if (image) {
+      const boxes = ['总共获得宝物', '游历消耗', '确定', '获得宝物']
+        .map((title) => {
+          const shape = findNestedShapeByTitle(image.shapes ?? [], title);
+          return shape ? stepperRectToMatchBox(title, stepperShapeFrameRect(image, shape)) : null;
+        })
+        .filter((box): box is FanxiuGameWindow2MatchBox => Boolean(box));
+      shapeDetectLiveBoxes.value = boxes;
+      drawOverlay();
+    }
+    detailLog(`游历 OCR：${lines.map((line) => `「${line.text}」`).join('，') || '无'}`);
+    setStepperRunStatus(`游历状态：${statusParts.join('，')}`, 'success');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const powerText = textOfShape(isExplorePage ? '消耗体力' : '游历值') || allText;
+  const tabText = textOfShape('界面页签') || allText;
+  const completedText = textOfShape('探索完成') || allText;
+  const regionText = textOfShape(isExplorePage ? '魔界大陆' : '当前区域') || lines.find((line) => /大陆|界|域/.test(line.text))?.text || '';
+  const allStaminaText = textOfShape('全部体力') || allText;
+  const power = parseStepperFraction(powerText);
+  const realm = /魔界/.test(tabText) ? '魔界' : (/灵界/.test(tabText) ? '灵界' : (/人界/.test(tabText) ? '人界' : ''));
+  const completed = /探索完成/.test(completedText);
+  const allStaminaChecked = isExplorePage
+    ? await getStepperYouliAllStaminaCheckedScore(image, currentFrameDataUrl)
+    : { shape: null, score: 0 };
+  const statusParts = [
+    isExplorePage ? '探索页' : '主页',
+    power ? `${isExplorePage ? '消耗体力' : '游历值'} ${power.current}/${power.total}` : `${isExplorePage ? '消耗体力' : '游历值'}未知`,
+    realm ? `页签 ${realm}` : (isExplorePage ? '' : '页签未知'),
+    regionText ? `区域「${regionText}」` : '区域未知',
+    completed ? '当前区域探索完成' : '当前区域未确认完成',
+    isExplorePage && /全部体力/.test(allStaminaText) ? '可见全部体力开关' : '',
+    isExplorePage && allStaminaChecked.shape
+      ? `全部体力${allStaminaChecked.score >= STEPPER_SCENE_MATCH_THRESHOLD ? '已勾选' : '未勾选'} ${stepperScoreText(allStaminaChecked.score)}`
+      : '',
+  ].filter(Boolean);
+
+  if (image) {
+    const boxTitles = isExplorePage
+      ? ['魔界大陆', '消耗体力', '快速游历', '全部体力', '全部体力已勾选', '探索完成']
+      : ['修仙传', '游历值', '界面页签', '探索完成', '当前区域'];
+    const boxes = boxTitles
+      .map((title) => {
+        const shape = findNestedShapeByTitle(image.shapes ?? [], title);
+        return shape ? stepperRectToMatchBox(title, stepperShapeFrameRect(image, shape)) : null;
+      })
+      .filter((box): box is FanxiuGameWindow2MatchBox => Boolean(box));
+    shapeDetectLiveBoxes.value = boxes;
+    drawOverlay();
+  }
+  detailLog(`游历 OCR：${lines.map((line) => `「${line.text}」`).join('，') || '无'}`);
+  setStepperRunStatus(`游历状态：${statusParts.join('，')}`, 'success');
+  stepperTaskStack.value.pop();
+  return 'done';
+};
+
+const runStepperYouliEnterExploreTick = async (
+  task: Extract<StepperTask, { type: 'youli_enter_explore' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：游历进入探索`);
+  const { lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (!/修仙传/.test(allText) || isStepperYouliExploreText(allText)) {
+    setStepperRunStatus('游历进入探索：当前不是修仙传游历主页', 'wait');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const image = findStepperYouliImage();
+  if (!image) {
+    setStepperRunStatus('游历进入探索：缺少修仙传游历标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const currentRegionShape = findNestedShapeByTitle(image.shapes ?? [], '当前区域');
+  const regionListShape = findNestedShapeByTitle(image.shapes ?? [], '区域列表');
+  const targetShape = currentRegionShape ?? regionListShape;
+  if (!targetShape) {
+    setStepperRunStatus('游历进入探索：缺少「当前区域」或「区域列表」标注', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = targetShape.id;
+  const regionText = currentRegionShape ? collectStepperTextInRect(lines, stepperShapeFrameRect(image, currentRegionShape)) : '';
+  const clickResult = await clickStepperShape(image, targetShape);
+  detailLog(`点击${targetShape.title}：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})${regionText ? `，区域 ${regionText}` : ''}`);
+  await sleep(1000);
+  setStepperRunStatus(`游历进入探索：已点击${regionText ? `「${regionText}」` : targetShape.title}`, 'success');
+  stepperTaskStack.value.pop();
+  return 'done';
+};
+
+const runStepperYouliDisableAllStaminaTick = async (
+  task: Extract<StepperTask, { type: 'youli_disable_all_stamina' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：关闭游历全部体力`);
+  const { currentFrameDataUrl, lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (!isStepperYouliExploreText(allText)) {
+    setStepperRunStatus('关闭全部体力：当前不是修仙传探索页', 'wait');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const image = findStepperYouliExploreImage();
+  if (!image) {
+    setStepperRunStatus('关闭全部体力：缺少修仙传探索标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const result = await clickStepperYouliAllStaminaOffIfNeeded(image, currentFrameDataUrl, detailLog);
+  setStepperRunStatus(`关闭全部体力：${result.message}${result.ok ? '' : '，已停止避免反复切换'}`, result.ok ? 'success' : 'error');
+  stepperTaskStack.value.pop();
+  return 'done';
+};
+
+const runStepperYouliQuickOnceTick = async (
+  task: Extract<StepperTask, { type: 'youli_quick_once' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：游历快速一次`);
+  const { currentFrameDataUrl, lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (!isStepperYouliExploreText(allText)) {
+    setStepperRunStatus('游历快速一次：当前不是修仙传探索页', 'wait');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const image = findStepperYouliExploreImage();
+  if (!image) {
+    setStepperRunStatus('游历快速一次：缺少修仙传探索标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const checked = await getStepperYouliAllStaminaCheckedScore(image, currentFrameDataUrl);
+  if (checked.score >= STEPPER_SCENE_MATCH_THRESHOLD) {
+    setStepperRunStatus(`游历快速一次：全部体力仍为勾选态 ${stepperScoreText(checked.score)}，请先关闭`, 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const staminaShape = findNestedShapeByTitle(image.shapes ?? [], '消耗体力');
+  const staminaText = staminaShape ? collectStepperTextInRect(lines, stepperShapeFrameRect(image, staminaShape)) : allText;
+  const stamina = parseStepperFraction(staminaText);
+  if (!stamina) {
+    setStepperRunStatus('游历快速一次：未能读取消耗体力', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  if (stamina.current < stamina.total) {
+    setStepperRunStatus(`游历快速一次：体力不足 ${stamina.current}/${stamina.total}`, 'success');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const quickShape = findNestedShapeByTitle(image.shapes ?? [], '快速游历');
+  if (!quickShape) {
+    setStepperRunStatus('游历快速一次：缺少「快速游历」按钮标注', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = quickShape.id;
+  const clickResult = await clickStepperShape(image, quickShape);
+  detailLog(`点击快速游历：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})，体力 ${stamina.current}/${stamina.total}`);
+  await sleep(1000);
+  setStepperRunStatus(`游历快速一次：已执行一次，点击前体力 ${stamina.current}/${stamina.total}`, 'success');
+  stepperTaskStack.value.pop();
+  return 'done';
+};
+
+const runStepperYouliConfirmResultTick = async (
+  task: Extract<StepperTask, { type: 'youli_confirm_result' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：确认游历结算`);
+  const { lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (!isStepperYouliResultText(allText)) {
+    setStepperRunStatus('确认游历结算：当前不是游历结算页', 'wait');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const image = findStepperYouliResultImage();
+  if (!image) {
+    setStepperRunStatus('确认游历结算：缺少修仙传游历结算标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const confirmShape = findNestedShapeByTitle(image.shapes ?? [], '确定');
+  if (!confirmShape) {
+    setStepperRunStatus('确认游历结算：缺少「确定」按钮标注', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = confirmShape.id;
+  const clickResult = await clickStepperShape(image, confirmShape);
+  detailLog(`点击结算确定：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})`);
+  await sleep(800);
+  setStepperRunStatus('确认游历结算：已点击确定', 'success');
+  stepperTaskStack.value.pop();
+  return 'done';
+};
+
+const runStepperYouliReturnDailyTick = async (
+  task: Extract<StepperTask, { type: 'youli_return_daily' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：游历返回日常`);
+  if (task.attempts > 8) {
+    setStepperRunStatus('游历返回日常：尝试次数过多，停止', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const { currentFrameDataUrl, lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (isStepperYouliBlockingLeadText(allText)) {
+    await clickStepperYouliBlockingLeadBlank(detailLog);
+    setStepperRunStatus('游历返回日常：已关闭活动引导弹窗，继续前复核', 'wait');
+    return 'continue';
+  }
+  const dailyImage = findStepperDailyImage();
+  if (dailyImage) {
+    const dailyCandidate = await matchStepperSceneCandidate(dailyImage, currentFrameDataUrl);
+    detailLog(`日常页匹配：${stepperScoreText(dailyCandidate.score)}`);
+    if (dailyCandidate.score >= STEPPER_SCENE_MATCH_THRESHOLD) {
+      selectedAssetId.value = dailyImage.id;
+      setStepperRunStatus('游历返回日常：已在日常页', 'success');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+  }
+  if (isStepperYouliResultText(allText)) {
+    const image = findStepperYouliResultImage();
+    const confirmShape = image ? findNestedShapeByTitle(image.shapes ?? [], '确定') : null;
+    if (!image || !confirmShape) {
+      setStepperRunStatus('游历返回日常：结算页缺少确定标注', 'error');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    selectedAssetId.value = image.id;
+    selectedShapeId.value = confirmShape.id;
+    const clickResult = await clickStepperShape(image, confirmShape);
+    detailLog(`先确认游历结算：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})`);
+    await sleep(800);
+    setStepperRunStatus('游历返回日常：已确认结算，继续返回', 'wait');
+    return 'continue';
+  }
+
+  const image = isStepperYouliExploreText(allText) ? findStepperYouliExploreImage() : (/修仙传/.test(allText) ? findStepperYouliImage() : null);
+  if (!image) {
+    const targets = resolveStepperSceneTargets('日常');
+    if (!targets.length) {
+      setStepperRunStatus('游历返回日常：已离开游历链路，但缺少日常目标场景', 'error');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    if (task.routeAttempts >= 3) {
+      setStepperRunStatus(`游历返回日常：已尝试转入日常 ${task.routeAttempts} 次仍未到达，停止`, 'error');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    task.routeAttempts += 1;
+    stepperTaskStack.value.push({
+      id: createAssetId('stepper-task'),
+      type: 'go_scene',
+      targetText: '日常',
+      targets,
+    });
+    setStepperRunStatus(`游历返回日常：已离开游历链路，转入「到日常」（第 ${task.routeAttempts}/3 次）`, 'action');
+    return 'continue';
+  }
+  const backShape = findNestedShapeByTitle(image.shapes ?? [], '返回');
+  if (!backShape) {
+    setStepperRunStatus(`游历返回日常：${stepperImageLabel(image)} 缺少「返回」标注`, 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = backShape.id;
+  const clickResult = await clickStepperShape(image, backShape);
+  detailLog(`点击返回：${stepperImageLabel(image)} (${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})`);
+  await sleep(1000);
+  setStepperRunStatus(`游历返回日常：已从 ${stepperImageLabel(image)} 点击返回，继续复核`, 'wait');
+  return 'continue';
+};
+
+const runStepperYouliAutoTick = async (
+  task: Extract<StepperTask, { type: 'youli_auto' }> | Extract<StepperTask, { type: 'youli_daily_auto' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：游历托管 ${task.completedRuns}/${task.maxRuns}`);
+  const { currentFrameDataUrl, lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (isStepperYouliBlockingLeadText(allText)) {
+    await clickStepperYouliBlockingLeadBlank(detailLog);
+    setStepperRunStatus('游历托管：已关闭活动引导弹窗，继续前复核', 'wait');
+    return 'continue';
+  }
+
+  if (isStepperYouliResultText(allText)) {
+    const image = findStepperYouliResultImage();
+    const confirmShape = image ? findNestedShapeByTitle(image.shapes ?? [], '确定') : null;
+    if (!image || !confirmShape) {
+      setStepperRunStatus('游历托管：结算页缺少确定标注', 'error');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    selectedAssetId.value = image.id;
+    selectedShapeId.value = confirmShape.id;
+    const clickResult = await clickStepperShape(image, confirmShape);
+    task.completedRuns += 1;
+    detailLog(`确认第 ${task.completedRuns} 次结算：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})`);
+    await sleep(800);
+    if (task.completedRuns >= task.maxRuns) {
+      setStepperRunStatus(`游历托管：已完成 ${task.completedRuns}/${task.maxRuns} 次，停止`, 'success');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    setStepperRunStatus(`游历托管：已确认 ${task.completedRuns}/${task.maxRuns} 次结算，继续`, 'wait');
+    return 'continue';
+  }
+
+  if (!isStepperYouliExploreText(allText)) {
+    setStepperRunStatus('游历托管：当前不是修仙传探索页或结算页', 'wait');
+    if (options.waitOnIdle) await sleep(1000);
+    return 'continue';
+  }
+
+  const image = findStepperYouliExploreImage();
+  if (!image) {
+    setStepperRunStatus('游历托管：缺少修仙传探索标注场景', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const checked = await getStepperYouliAllStaminaCheckedScore(image, currentFrameDataUrl);
+  if (checked.score >= STEPPER_SCENE_MATCH_THRESHOLD) {
+    const closeResult = await clickStepperYouliAllStaminaOffIfNeeded(image, currentFrameDataUrl, detailLog);
+    if (!closeResult.ok) {
+      setStepperRunStatus(`游历托管：全部体力疑似勾选且关闭失败，${closeResult.message}，停止`, 'error');
+      stepperTaskStack.value.pop();
+      return 'done';
+    }
+    setStepperRunStatus(`游历托管：${closeResult.message}，继续前复核`, 'wait');
+    return 'continue';
+  }
+
+  const staminaShape = findNestedShapeByTitle(image.shapes ?? [], '消耗体力');
+  const staminaText = staminaShape ? collectStepperTextInRect(lines, stepperShapeFrameRect(image, staminaShape)) : allText;
+  const stamina = parseStepperFraction(staminaText);
+  if (!stamina) {
+    setStepperRunStatus('游历托管：未能读取消耗体力，停止', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  if (stamina.current < stamina.total) {
+    setStepperRunStatus(`游历托管：体力不足 ${stamina.current}/${stamina.total}，已完成 ${task.completedRuns} 次`, 'success');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  const quickShape = findNestedShapeByTitle(image.shapes ?? [], '快速游历');
+  if (!quickShape) {
+    setStepperRunStatus('游历托管：缺少「快速游历」按钮标注', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  selectedAssetId.value = image.id;
+  selectedShapeId.value = quickShape.id;
+  const clickResult = await clickStepperShape(image, quickShape);
+  detailLog(`触发第 ${task.completedRuns + 1} 次快速游历：(${clickResult?.point.x ?? '-'},${clickResult?.point.y ?? '-'})，体力 ${stamina.current}/${stamina.total}`);
+  await sleep(1000);
+  setStepperRunStatus(`游历托管：已触发第 ${task.completedRuns + 1}/${task.maxRuns} 次，等待结算`, 'wait');
+  return 'continue';
+};
+
+const createStepperDailyFindRuntimeTask = (
+  taskDefinition: DailyFindTaskDefinition,
+): Extract<StepperTask, { type: 'daily_find' }> => ({
+  id: createAssetId('stepper-task'),
+  type: 'daily_find',
+  query: taskDefinition.query,
+  matchMode: taskDefinition.matchMode,
+  scanPlan: taskDefinition.scanPlan ?? 'normal',
+  maxPages: taskDefinition.maxPages ?? taskDefinition.dragCount,
+  reversePages: taskDefinition.reversePages ?? 0,
+  scanDirection: 'down',
+  directionAttempts: 0,
+  completedFallbackPattern: taskDefinition.completedFallbackPattern ?? '',
+  completedFallbackExcludePattern: taskDefinition.completedFallbackExcludePattern ?? '',
+  completedFallbackMinTotal: taskDefinition.completedFallbackMinTotal ?? 0,
+  notFoundStatus: taskDefinition.notFoundStatus,
+  timeoutSeconds: taskDefinition.timeoutSeconds,
+  dragCount: taskDefinition.dragCount,
+  requireProgress: taskDefinition.requireProgress !== false,
+  openOnReady: taskDefinition.openOnReady === true,
+  sceneNavigationAttempted: false,
+  legacySource: taskDefinition.legacySource ?? '',
+  note: taskDefinition.note ?? '',
+  startedAt: Date.now(),
+  attempts: 0,
+});
+
+const runStepperYouliDailyAutoTick = async (
+  task: Extract<StepperTask, { type: 'youli_daily_auto' }>,
+  options: StepperTickOptions = {},
+) => {
+  const detailLog = (message: string) => {
+    if (options.verbose) appendStepperLog('detail', message);
+  };
+  const { lines } = await recognizeStepperCurrentFrame();
+  const allText = lines.map((line) => line.text).join('');
+  if (isStepperYouliBlockingLeadText(allText)) {
+    await clickStepperYouliBlockingLeadBlank(detailLog);
+    setStepperRunStatus('日常游历托管：已关闭活动引导弹窗，继续前复核', 'wait');
+    return 'continue';
+  }
+  if (isStepperYouliExploreText(allText) || isStepperYouliResultText(allText)) {
+    return runStepperYouliAutoTick(task, options);
+  }
+
+  const tickNo = stepperTickCount.value + 1;
+  stepperTickCount.value = tickNo;
+  task.attempts += 1;
+  detailLog(`Tick ${tickNo} 开始：日常游历托管，已完成 ${task.completedRuns}/${task.maxRuns}`);
+  if (/修仙传/.test(allText)) {
+    stepperTaskStack.value.push({
+      id: createAssetId('stepper-task'),
+      type: 'youli_enter_explore',
+      startedAt: Date.now(),
+      attempts: 0,
+    });
+    setStepperRunStatus('日常游历托管：当前在游历主页，先进入探索页', 'action');
+    return 'continue';
+  }
+
+  const lastDailyResult = stepperLastDailyFindResult.value;
+  if (
+    task.routeAttempts > 0
+    && lastDailyResult
+    && (lastDailyResult.query.includes('游历') || /游历|修仙/.test(lastDailyResult.matchedText))
+    && lastDailyResult.decision !== 'ready'
+  ) {
+    stepperLastDailyFindResult.value = null;
+    const level = lastDailyResult.statusCode === 2 ? 'success' : 'error';
+    setStepperRunStatus(
+      `日常游历托管：日常入口结果为${lastDailyResult.decision}，状态码 ${lastDailyResult.statusCode}：${lastDailyResult.reason}`,
+      level,
+    );
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+
+  if (task.routeAttempts >= 3) {
+    setStepperRunStatus(`日常游历托管：已尝试从日常进入游历 ${task.routeAttempts} 次仍未到达，停止`, 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  const youliPreset = defaultDailyTaskPresets().find((preset) => preset.label === '游历' || preset.id === 'daily-find-youli');
+  if (!youliPreset) {
+    setStepperRunStatus('日常游历托管：缺少「游历」日常预设', 'error');
+    stepperTaskStack.value.pop();
+    return 'done';
+  }
+  task.routeAttempts += 1;
+  const dailyEnterTask = createStepperDailyFindRuntimeTask(dailyTaskPresetToDefinition(youliPreset, true));
+  stepperTaskStack.value.push(dailyEnterTask);
+  setStepperRunStatus(`日常游历托管：当前不在游历链路，先日常进入「游历」（第 ${task.routeAttempts}/3 次）`, 'action');
+  return 'continue';
+};
+
 const runStepperTick = async (options: StepperTickOptions = {}) => {
   const detailLog = (message: string) => {
     if (options.verbose) appendStepperLog('detail', message);
@@ -9942,6 +11812,15 @@ const runStepperTick = async (options: StepperTickOptions = {}) => {
   if (!task) return 'done';
   if (task.type === 'drag_shape_to_shape') return runStepperDragShapeToShapeTick(task, options);
   if (task.type === 'daily_find') return runStepperDailyFindTick(task, options);
+  if (task.type === 'account_switch') return runStepperAccountSwitchTick(task, options);
+  if (task.type === 'youli_status') return runStepperYouliStatusTick(task, options);
+  if (task.type === 'youli_enter_explore') return runStepperYouliEnterExploreTick(task, options);
+  if (task.type === 'youli_disable_all_stamina') return runStepperYouliDisableAllStaminaTick(task, options);
+  if (task.type === 'youli_quick_once') return runStepperYouliQuickOnceTick(task, options);
+  if (task.type === 'youli_confirm_result') return runStepperYouliConfirmResultTick(task, options);
+  if (task.type === 'youli_return_daily') return runStepperYouliReturnDailyTick(task, options);
+  if (task.type === 'youli_auto') return runStepperYouliAutoTick(task, options);
+  if (task.type === 'youli_daily_auto') return runStepperYouliDailyAutoTick(task, options);
   const tickNo = stepperTickCount.value + 1;
   stepperTickCount.value = tickNo;
   detailLog(`Tick ${tickNo} 开始：目标 ${task.targetText}`);
@@ -10099,6 +11978,28 @@ const cropImageDataUrlByBox = async (imageDataUrl: string, box: FanxiuGameWindow
   return context.getImageData(0, 0, width, height);
 };
 
+const cropLiveImageDataByShape = (shape: GameWindow3Shape, width: number, height: number) => {
+  const image = streamImageRef.value;
+  if (!image || !image.naturalWidth || !image.naturalHeight) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return null;
+  context.drawImage(
+    image,
+    shape.x * image.naturalWidth,
+    shape.y * image.naturalHeight,
+    shape.w * image.naturalWidth,
+    shape.h * image.naturalHeight,
+    0,
+    0,
+    width,
+    height,
+  );
+  return context.getImageData(0, 0, width, height);
+};
+
 const loadShapeAlphaMask = async (shape: GameWindow3Shape, width: number, height: number) => {
   if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
   const image = await loadMaskImage(shape.alphaMask.dataUrl);
@@ -10141,6 +12042,14 @@ const alphaToMaskImageData = (alpha: Uint8ClampedArray, width: number, height: n
   return image;
 };
 
+const isFullShapeMaskAlpha = (alpha: Uint8ClampedArray | null | undefined) => {
+  if (!alpha) return false;
+  for (const value of alpha) {
+    if (value !== 255) return false;
+  }
+  return true;
+};
+
 const cropImageDataUrlToShape = async (imageDataUrl: string, width: number, height: number) => {
   return cropImageDataUrlByShape(imageDataUrl, selectedShape.value, width, height);
 };
@@ -10149,6 +12058,7 @@ const captureLiveShapeImageData = async (width: number, height: number) => {
   const shape = selectedShape.value;
   const selectedImage = selectedImageNode.value;
   if (!shape) return null;
+  if (!shape.floating) return cropLiveImageDataByShape(shape, width, height);
   const currentFrameDataUrl = captureCurrentLiveFrameDataUrl();
   if (!currentFrameDataUrl) return null;
   if (shape.floating && selectedImage?.filename) {
@@ -10178,10 +12088,14 @@ const refreshShapeMaskPreview = () => {
   const resultImage = new ImageData(new Uint8ClampedArray(stats.reference.data), stats.width, stats.height);
   for (let index = 0; index < total; index += 1) {
     const volatility = stats.max[index] - stats.min[index];
-    const dynamicAlpha = volatility <= shapeMaskThreshold.value
+    const volatilityAlpha = volatility <= shapeMaskThreshold.value
       ? 255
       : Math.max(0, 255 - Math.round((volatility - shapeMaskThreshold.value) * 5));
-    const alpha = Math.min(stats.baseAlpha?.[index] ?? 255, dynamicAlpha);
+    const difference = stats.diffMax[index];
+    const differenceAlpha = difference <= shapeMaskThreshold.value
+      ? 255
+      : Math.max(0, 255 - Math.round((difference - shapeMaskThreshold.value) * 5));
+    const alpha = Math.min(stats.baseAlpha?.[index] ?? 255, volatilityAlpha, differenceAlpha);
     const offset = index * 4;
     maskImage.data[offset] = alpha;
     maskImage.data[offset + 1] = alpha;
@@ -10200,10 +12114,14 @@ const currentShapeMaskAlpha = () => {
   const alpha = new Uint8ClampedArray(total);
   for (let index = 0; index < total; index += 1) {
     const volatility = stats.max[index] - stats.min[index];
-    const dynamicAlpha = volatility <= shapeMaskThreshold.value
+    const volatilityAlpha = volatility <= shapeMaskThreshold.value
       ? 255
       : Math.max(0, 255 - Math.round((volatility - shapeMaskThreshold.value) * 5));
-    alpha[index] = Math.min(stats.baseAlpha?.[index] ?? 255, dynamicAlpha);
+    const difference = stats.diffMax[index];
+    const differenceAlpha = difference <= shapeMaskThreshold.value
+      ? 255
+      : Math.max(0, 255 - Math.round((difference - shapeMaskThreshold.value) * 5));
+    alpha[index] = Math.min(stats.baseAlpha?.[index] ?? 255, volatilityAlpha, differenceAlpha);
   }
   return alpha;
 };
@@ -10218,26 +12136,97 @@ const referencePixelSaturation = (reference: ImageData, index: number) => {
   return max - min;
 };
 
-const cleanAlphaLargestComponent = (
+const shapeMaskPixelStats = (reference: ImageData, index: number) => {
+  const offset = index * 4;
+  const r = reference.data[offset];
+  const g = reference.data[offset + 1];
+  const b = reference.data[offset + 2];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return {
+    r,
+    g,
+    b,
+    luma: r * 0.299 + g * 0.587 + b * 0.114,
+    saturation: max - min,
+  };
+};
+
+const estimateShapeMaskBackground = (
   alpha: Uint8ClampedArray,
   reference: ImageData,
   width: number,
   height: number,
 ) => {
-  const total = width * height;
-  const solid = new Uint8Array(total);
-  for (let index = 0; index < total; index += 1) {
-    solid[index] = alpha[index] >= 150 && referencePixelSaturation(reference, index) >= 24 ? 1 : 0;
+  const border = Math.max(1, Math.min(6, Math.round(Math.min(width, height) * 0.12)));
+  const pixels: Array<{ r: number; g: number; b: number; luma: number; saturation: number }> = [];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (x >= border && y >= border && x < width - border && y < height - border) continue;
+      const index = y * width + x;
+      if (alpha[index] < 80) continue;
+      pixels.push(shapeMaskPixelStats(reference, index));
+    }
   }
+  if (!pixels.length) return { r: 0, g: 0, b: 0, luma: 0, saturation: 0 };
+  pixels.sort((a, b) => a.luma - b.luma);
+  const backgroundPixels = pixels.slice(0, Math.max(1, Math.ceil(pixels.length * 0.65)));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (const pixel of backgroundPixels) {
+    r += pixel.r;
+    g += pixel.g;
+    b += pixel.b;
+  }
+  r /= backgroundPixels.length;
+  g /= backgroundPixels.length;
+  b /= backgroundPixels.length;
+  return {
+    r,
+    g,
+    b,
+    luma: r * 0.299 + g * 0.587 + b * 0.114,
+    saturation: Math.max(r, g, b) - Math.min(r, g, b),
+  };
+};
+
+const dilateShapeMaskKeep = (
+  source: Uint8Array,
+  alpha: Uint8ClampedArray,
+  width: number,
+  height: number,
+  radius: number,
+) => {
+  const total = width * height;
+  const result = new Uint8Array(source);
+  for (let index = 0; index < total; index += 1) {
+    if (!source[index]) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    for (let yy = Math.max(0, y - radius); yy <= Math.min(height - 1, y + radius); yy += 1) {
+      for (let xx = Math.max(0, x - radius); xx <= Math.min(width - 1, x + radius); xx += 1) {
+        const next = yy * width + xx;
+        if (alpha[next] >= 80) result[next] = 1;
+      }
+    }
+  }
+  return result;
+};
+
+const keepLargestShapeMaskComponents = (
+  keep: Uint8Array,
+  width: number,
+  height: number,
+) => {
+  const total = width * height;
   const visited = new Uint8Array(total);
-  let best: number[] = [];
-  const queue: number[] = [];
+  const components: number[][] = [];
   for (let start = 0; start < total; start += 1) {
-    if (!solid[start] || visited[start]) continue;
+    if (!keep[start] || visited[start]) continue;
+    const queue = [start];
     const component: number[] = [];
     visited[start] = 1;
-    queue.length = 0;
-    queue.push(start);
     for (let head = 0; head < queue.length; head += 1) {
       const index = queue[head];
       component.push(index);
@@ -10250,20 +12239,72 @@ const cleanAlphaLargestComponent = (
         y < height - 1 ? index + width : -1,
       ];
       for (const next of neighbors) {
-        if (next >= 0 && solid[next] && !visited[next]) {
-          visited[next] = 1;
-          queue.push(next);
-        }
+        if (next < 0 || visited[next] || !keep[next]) continue;
+        visited[next] = 1;
+        queue.push(next);
       }
     }
-    if (component.length > best.length) best = component;
+    components.push(component);
   }
-  const keep = new Uint8Array(total);
-  for (const index of best) keep[index] = 1;
-  const cleaned = new Uint8ClampedArray(total);
-  for (let index = 0; index < total; index += 1) {
-    if (!keep[index]) continue;
-    cleaned[index] = 255;
+  components.sort((a, b) => b.length - a.length);
+  const minKeepSize = Math.max(4, Math.round(total * 0.002));
+  const result = new Uint8Array(total);
+  for (const component of components.slice(0, 12)) {
+    if (component.length < minKeepSize) continue;
+    for (const index of component) result[index] = 1;
+  }
+  return result;
+};
+
+const cleanAlphaSemanticForeground = (
+  alpha: Uint8ClampedArray,
+  reference: ImageData,
+  width: number,
+  height: number,
+) => {
+  const total = width * height;
+  const bg = estimateShapeMaskBackground(alpha, reference, width, height);
+
+  const colorDistance = (left: ReturnType<typeof shapeMaskPixelStats>, right: ReturnType<typeof shapeMaskPixelStats>) => Math.max(
+    Math.abs(left.r - right.r),
+    Math.abs(left.g - right.g),
+    Math.abs(left.b - right.b),
+  );
+
+  const background = new Uint8Array(total);
+  const queue: number[] = [];
+  const markBackground = (index: number) => {
+    if (index < 0 || background[index]) return;
+    background[index] = 1;
+    queue.push(index);
+  };
+  for (let x = 0; x < width; x += 1) {
+    markBackground(x);
+    markBackground((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y += 1) {
+    markBackground(y * width);
+    markBackground(y * width + width - 1);
+  }
+
+  const canFloodBackground = (from: number, to: number) => {
+    if (to < 0 || background[to]) return false;
+    if (alpha[to] < 80) return true;
+    const current = shapeMaskPixelStats(reference, from);
+    const next = shapeMaskPixelStats(reference, to);
+    const bgDistance = colorDistance(next, bg);
+    const localDistance = colorDistance(current, next);
+    const lumaDistance = Math.abs(next.luma - bg.luma);
+    const saturationDistance = Math.abs(next.saturation - bg.saturation);
+    return (
+      bgDistance <= 34
+      || (bgDistance <= 48 && lumaDistance <= 26 && saturationDistance <= 34)
+      || (localDistance <= 18 && bgDistance <= 58)
+    );
+  };
+
+  for (let head = 0; head < queue.length; head += 1) {
+    const index = queue[head];
     const x = index % width;
     const y = Math.floor(index / width);
     const neighbors = [
@@ -10271,10 +12312,53 @@ const cleanAlphaLargestComponent = (
       x < width - 1 ? index + 1 : -1,
       y > 0 ? index - width : -1,
       y < height - 1 ? index + width : -1,
+      x > 0 && y > 0 ? index - width - 1 : -1,
+      x < width - 1 && y > 0 ? index - width + 1 : -1,
+      x > 0 && y < height - 1 ? index + width - 1 : -1,
+      x < width - 1 && y < height - 1 ? index + width + 1 : -1,
     ];
     for (const next of neighbors) {
-      if (next >= 0 && alpha[next] >= 220) cleaned[next] = Math.max(cleaned[next], 220);
+      if (canFloodBackground(index, next)) markBackground(next);
     }
+  }
+
+  const candidate = new Uint8Array(total);
+  for (let index = 0; index < total; index += 1) {
+    candidate[index] = alpha[index] >= 80 && !background[index] ? 1 : 0;
+  }
+
+  const visited = new Uint8Array(total);
+  const keep = new Uint8Array(total);
+  const minComponentSize = Math.max(2, Math.round(total * 0.0002));
+  for (let start = 0; start < total; start += 1) {
+    if (!candidate[start] || visited[start]) continue;
+    const component: number[] = [];
+    const componentQueue = [start];
+    visited[start] = 1;
+    for (let head = 0; head < componentQueue.length; head += 1) {
+      const index = componentQueue[head];
+      component.push(index);
+      const x = index % width;
+      const y = Math.floor(index / width);
+      const neighbors = [
+        x > 0 ? index - 1 : -1,
+        x < width - 1 ? index + 1 : -1,
+        y > 0 ? index - width : -1,
+        y < height - 1 ? index + width : -1,
+      ];
+      for (const next of neighbors) {
+        if (next < 0 || visited[next] || !candidate[next]) continue;
+        visited[next] = 1;
+        componentQueue.push(next);
+      }
+    }
+    if (component.length < minComponentSize) continue;
+    for (const index of component) keep[index] = 1;
+  }
+
+  const cleaned = new Uint8ClampedArray(total);
+  for (let index = 0; index < total; index += 1) {
+    if (keep[index]) cleaned[index] = 255;
   }
   return cleaned;
 };
@@ -10284,11 +12368,13 @@ const cleanShapeMaskAlpha = () => {
   if (!stats?.reference) return;
   const alpha = currentShapeMaskAlpha();
   if (!alpha) return;
-  const cleaned = cleanAlphaLargestComponent(alpha, stats.reference, stats.width, stats.height);
+  const cleaned = cleanAlphaSemanticForeground(alpha, stats.reference, stats.width, stats.height);
   stats.baseAlpha = cleaned;
   stats.min.fill(255);
   stats.max.fill(0);
+  stats.diffMax.fill(0);
   shapeMaskFrameCount.value = 0;
+  shapeMaskResetToEmpty.value = false;
   shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(cleaned, stats.width, stats.height));
   shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, cleaned));
 };
@@ -10304,14 +12390,45 @@ const updateShapeMaskStats = (frame: ImageData) => {
       + frame.data[offset + 1] * 0.587
       + frame.data[offset + 2] * 0.114,
     );
+    const difference = Math.max(
+      Math.abs((stats.reference?.data[offset] ?? 0) - frame.data[offset]),
+      Math.abs((stats.reference?.data[offset + 1] ?? 0) - frame.data[offset + 1]),
+      Math.abs((stats.reference?.data[offset + 2] ?? 0) - frame.data[offset + 2]),
+    );
     stats.min[index] = Math.min(stats.min[index], gray);
     stats.max[index] = Math.max(stats.max[index], gray);
+    stats.diffMax[index] = Math.max(stats.diffMax[index], difference);
   }
   shapeMaskFrameCount.value += 1;
   if (shapeMaskFrameCount.value % 5 === 1) {
     shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
   }
   refreshShapeMaskPreview();
+};
+
+const updateShapeMaskLivePreview = async () => {
+  const stats = shapeMaskStats.value;
+  if (!stats) return;
+  const frame = await captureLiveShapeImageData(stats.width, stats.height);
+  if (!shapeMaskDialogVisible.value || !shapeMaskStats.value || !frame) return;
+  shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
+};
+
+const scheduleShapeMaskLivePreview = () => {
+  if (shapeMaskLivePreviewFrame.value !== null) return;
+  shapeMaskLivePreviewFrame.value = window.requestAnimationFrame(async () => {
+    shapeMaskLivePreviewFrame.value = null;
+    if (!shapeMaskDialogVisible.value || !shapeMaskStats.value) return;
+    if (!shapeMaskRunning.value) await updateShapeMaskLivePreview();
+    scheduleShapeMaskLivePreview();
+  });
+};
+
+const stopShapeMaskLivePreview = () => {
+  if (shapeMaskLivePreviewFrame.value !== null) {
+    window.cancelAnimationFrame(shapeMaskLivePreviewFrame.value);
+    shapeMaskLivePreviewFrame.value = null;
+  }
 };
 
 const scheduleShapeMaskSampling = () => {
@@ -10332,7 +12449,10 @@ const pauseShapeMaskSampling = () => {
   }
 };
 
-const stopShapeMaskSampling = pauseShapeMaskSampling;
+const stopShapeMaskSampling = () => {
+  pauseShapeMaskSampling();
+  stopShapeMaskLivePreview();
+};
 
 const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   pauseShapeMaskSampling();
@@ -10346,22 +12466,42 @@ const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
   if (!reference) return;
   const total = size.width * size.height;
   const baseAlpha = useExistingMask ? await loadShapeAlphaMask(shape, size.width, size.height) : null;
+  const fullAlpha = new Uint8ClampedArray(total).fill(255);
+  const initialAlpha = baseAlpha ?? cleanAlphaSemanticForeground(fullAlpha, reference, size.width, size.height);
   shapeMaskFrameCount.value = 0;
+  shapeMaskResetToEmpty.value = false;
   shapeMaskLivePreviewUrl.value = '';
-  shapeMaskAlphaDataUrl.value = baseAlpha ? imageDataToDataUrl(alphaToMaskImageData(baseAlpha, size.width, size.height)) : '';
-  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(reference, baseAlpha));
+  shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(initialAlpha, size.width, size.height));
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(reference, initialAlpha));
   shapeMaskStats.value = {
     width: size.width,
     height: size.height,
     min: new Uint8ClampedArray(total).fill(255),
     max: new Uint8ClampedArray(total),
-    baseAlpha,
+    diffMax: new Uint8ClampedArray(total),
+    baseAlpha: initialAlpha,
     reference,
   };
+  await updateShapeMaskLivePreview();
+  scheduleShapeMaskLivePreview();
 };
 
 const resetShapeMaskSampling = async () => {
-  await initializeShapeMaskSampling(false);
+  pauseShapeMaskSampling();
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) {
+    await initializeShapeMaskSampling(false);
+    return;
+  }
+  const fullAlpha = new Uint8ClampedArray(stats.width * stats.height).fill(255);
+  stats.baseAlpha = fullAlpha;
+  stats.min.fill(255);
+  stats.max.fill(0);
+  stats.diffMax.fill(0);
+  shapeMaskFrameCount.value = 0;
+  shapeMaskResetToEmpty.value = true;
+  shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(fullAlpha, stats.width, stats.height));
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, fullAlpha));
 };
 
 const startShapeMaskSampling = async () => {
@@ -10382,6 +12522,12 @@ const saveShapeMaskAndClose = () => {
   const shape = selectedShape.value;
   const stats = shapeMaskStats.value;
   if (!shape || !stats || !shapeMaskAlphaDataUrl.value) return;
+  if (shapeMaskResetToEmpty.value || isFullShapeMaskAlpha(stats.baseAlpha)) {
+    shape.alphaMask = null;
+    shape.maskEnabled = false;
+    shapeMaskDialogVisible.value = false;
+    return;
+  }
   shape.alphaMask = {
     width: stats.width,
     height: stats.height,
@@ -10899,6 +13045,26 @@ const showShapeMaskHelp = () => {
   ]);
 };
 
+const showShapeMaskCleanHelp = () => {
+  showStructuredHelp('净化说明', [
+    {
+      title: '1. 它做什么',
+      lines: ['基于当前抠图结果，自动去掉零散噪点，只保留最主要的一块稳定前景。'],
+    },
+    {
+      title: '2. 适用场景',
+      lines: ['抠图结果里出现小碎点、背景残留、边缘散斑时使用。'],
+    },
+    {
+      title: '3. 注意事项',
+      lines: [
+        '净化会重置采样统计，并把净化后的 alpha 作为新的基础遮罩。',
+        '如果目标本身由多个分离部件组成，净化可能只保留最大的一块。',
+      ],
+    },
+  ]);
+};
+
 const showShapeToleranceHelp = () => {
   showStructuredHelp('方框容差说明', [
     {
@@ -11338,11 +13504,20 @@ const finishShapeDrag = () => {
 }
 
 .behavior-function-select {
-  width: 92px;
+  width: 144px;
 }
 
 .behavior-preset-select {
   width: 168px;
+}
+
+.stepper-task-config-summary {
+  max-width: 360px;
+  overflow: hidden;
+  color: #6b7280;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .behavior-row-break {
@@ -13179,6 +15354,31 @@ const finishShapeDrag = () => {
   min-width: 0;
 }
 
+.image-compare-trigger {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: #fff;
+  color: #409eff;
+  font-size: 12px;
+  line-height: 22px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.image-compare-trigger:hover {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.image-compare-trigger:disabled {
+  color: #a8abb2;
+  border-color: #e4e7ed;
+  background: #f5f7fa;
+  cursor: not-allowed;
+}
+
 .asset-tree-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -13587,6 +15787,11 @@ const finishShapeDrag = () => {
   border-color: #409eff;
 }
 
+.shape-help-button.is-inline {
+  flex: 0 0 auto;
+  margin-left: -8px;
+}
+
 .shape-mask-tool {
   display: flex;
   flex-direction: column;
@@ -13712,6 +15917,60 @@ const finishShapeDrag = () => {
 .shape-mask-slider .el-slider {
   flex: 1;
   min-width: 0;
+}
+
+.image-compare-dialog {
+  min-height: 540px;
+}
+
+.image-compare-error {
+  padding: 12px;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+}
+
+.image-compare-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.image-compare-toolbar > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: #303133;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.image-compare-pane {
+  min-width: 0;
+}
+
+.image-compare-pane-title {
+  margin-bottom: 6px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.image-compare-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid #dcdfe6;
+  background: #0f172a;
+  cursor: crosshair;
 }
 
 :global(.game-window3-help-message) {

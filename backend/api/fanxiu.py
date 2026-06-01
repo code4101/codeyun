@@ -1,5 +1,6 @@
 import base64
 import json
+import mimetypes
 import re
 import tempfile
 import threading
@@ -1125,6 +1126,7 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     quality: int = Field(82, ge=1, le=100)
     current_frame_data_url: Optional[str] = None
+    prefer_cached: bool = True
     match_strategy: str = Field("auto", pattern="^(auto|anchor_pixel)$")
     ocr_enabled: bool = False
     ocr_text: str = Field("", max_length=200)
@@ -1151,6 +1153,7 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     fixed_width: int = Field(0, ge=0, le=4096)
     fixed_height: int = Field(0, ge=0, le=4096)
     current_frame_data_url: Optional[str] = None
+    prefer_cached: bool = True
     quality: int = Field(82, ge=1, le=100)
     match_strategy: str = Field("auto", pattern="^(auto|anchor_pixel)$")
     ocr_enabled: bool = False
@@ -5749,6 +5752,7 @@ def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             fixed_height=int(payload.get("fixed_height") or 0),
             quality=int(payload.get("quality") or 82),
             current_frame_data_url=payload.get("current_frame_data_url"),
+            prefer_cached=bool(payload.get("prefer_cached", True)),
             match_strategy=payload.get("match_strategy") or "auto",
             ocr_enabled=bool(payload.get("ocr_enabled")),
             ocr_text=payload.get("ocr_text"),
@@ -6006,11 +6010,12 @@ def _screenshot_game_window2_service_image(filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(
         path,
-        media_type="image/jpeg",
+        media_type=media_type,
         filename=path.name,
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "private, no-cache"},
     )
 
 
@@ -6077,7 +6082,7 @@ def _remote_game_window2_screenshot_image(entry: UserDevice, filename: str) -> R
     return Response(
         content=response.content,
         media_type=response.headers.get("content-type") or "image/jpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "private, no-cache"},
     )
 
 

@@ -17,6 +17,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.core.settings import get_settings
+from backend.core.note_sheet_inline_links import (
+    extract_inline_cell_value,
+    inline_cell_link_url,
+    strip_links_from_cell_meta,
+    strip_links_from_entity_cells,
+    with_inline_cell_link,
+)
 
 
 DEFAULT_COURSES_DIR = Path(
@@ -35,8 +42,7 @@ def _default_db_path() -> Path:
 
 
 def _normalize_stem(value: Any) -> str:
-    if isinstance(value, dict) and "value" in value:
-        value = value.get("value")
+    value = extract_inline_cell_value(value)
     text = str(value or "").strip()
     text = re.sub(r"\.py$", "", text)
     chinese_month = re.match(r"^(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<body>.+)$", text)
@@ -158,19 +164,7 @@ def _load_document(con: sqlite3.Connection, sheet_id: int, title: str) -> sqlite
 
 
 def _cell_link_url(cell: Any) -> str:
-    if not isinstance(cell, dict):
-        return ""
-    link = cell.get("link")
-    if not isinstance(link, dict):
-        return ""
-    return str(link.get("url") or "").strip()
-
-
-def _set_cell_link(cell: dict[str, Any], url: str) -> None:
-    link = cell.get("link") if isinstance(cell.get("link"), dict) else {}
-    next_link = dict(link)
-    next_link["url"] = url
-    cell["link"] = next_link
+    return inline_cell_link_url(cell)
 
 
 def _repair_document_links(
@@ -182,14 +176,8 @@ def _repair_document_links(
         raise RuntimeError(f"document does not contain field {ONLINE_SHEET_FIELD!r}")
     online_index = columns.index(ONLINE_SHEET_FIELD)
 
-    entity_columns = list(document.get("entity_columns") or [])
-    entity_rows = list(document.get("entity_rows") or [])
-    entity_cells = document.setdefault("entity_cells", {})
-    cell_meta = document.setdefault("cell_meta", {})
     data_start = int(document.get("data_start_row") or 0)
-    online_col_id = ""
-    if online_index < len(entity_columns) and isinstance(entity_columns[online_index], dict):
-        online_col_id = str(entity_columns[online_index].get("id") or "").strip()
+    grid_rows = document.get("grid_rows")
 
     fixes: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -204,46 +192,23 @@ def _repair_document_links(
 
         document_row = data_start + row_index
         expected_url = expected_item["url"]
-        current_url = ""
-        fixed_entity = False
-        if online_col_id and document_row < len(entity_rows):
-            entity_row = entity_rows[document_row]
-            row_id = str(entity_row.get("id") or "").strip() if isinstance(entity_row, dict) else ""
-            if row_id:
-                row_cells = entity_cells.setdefault(row_id, {})
-                if isinstance(row_cells, dict):
-                    cell = row_cells.setdefault(online_col_id, {})
-                    if isinstance(cell, dict):
-                        current_url = _cell_link_url(cell)
-                        if _url_key(current_url) != expected_item["key"]:
-                            _set_cell_link(cell, expected_url)
-                            fixed_entity = True
-                    else:
-                        skipped.append({"row": document_row + 1, "online": online_text, "reason": "entity cell is not object"})
-                else:
-                    skipped.append({"row": document_row + 1, "online": online_text, "reason": "entity row cells is not object"})
-
-        meta_key = f"{document_row}:{online_index}"
-        meta = cell_meta.get(meta_key)
-        if not isinstance(meta, dict):
-            meta = {}
-            cell_meta[meta_key] = meta
-        meta_url = _cell_link_url(meta)
-        fixed_meta = False
-        if _url_key(meta_url) != expected_item["key"]:
-            _set_cell_link(meta, expected_url)
-            fixed_meta = True
-
-        if fixed_entity or fixed_meta:
+        current_url = _cell_link_url(row[online_index])
+        if _url_key(current_url) != expected_item["key"]:
+            row[online_index] = with_inline_cell_link(row[online_index], {"url": expected_url})
+            if isinstance(grid_rows, list) and 0 <= document_row < len(grid_rows):
+                grid_row = grid_rows[document_row]
+                if isinstance(grid_row, list) and online_index < len(grid_row):
+                    grid_row[online_index] = row[online_index]
             fixes.append({
                 "row": document_row + 1,
                 "online": online_text,
-                "old": current_url or meta_url,
+                "old": current_url,
                 "new": expected_url,
-                "fixed_entity": fixed_entity,
-                "fixed_cell_meta": fixed_meta,
+                "fixed_inline": True,
             })
 
+    document["cell_meta"] = strip_links_from_cell_meta(document.get("cell_meta"))
+    document["entity_cells"] = strip_links_from_entity_cells(document.get("entity_cells"))
     return document, fixes, skipped
 
 

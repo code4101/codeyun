@@ -1,5 +1,6 @@
 import api, { getDeviceEntryPath } from '@/api';
 import type { GalleryItemKind, GallerySortProgram } from '@/utils/imageGallery';
+import { monitorPolledTask, runLongTask, type LongTaskSnapshot } from '@/utils/longTask';
 
 export type DeviceMediaSortMode = 'path' | 'modified-desc' | 'size-desc' | 'weight-desc';
 export type DeviceDirectorySortField =
@@ -121,6 +122,7 @@ export interface DeviceMediaListing {
   media: DeviceImageRecord[];
 }
 
+const DEVICE_MEDIA_LIST_IDLE_TIMEOUT_MS = 30_000;
 const DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS = 10_000;
 const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
 
@@ -243,6 +245,7 @@ export interface DeviceDeleteTask {
   status: DeviceDeleteTaskStatus;
   queued_at: number | null;
   started_at: number | null;
+  updated_at: number | null;
   finished_at: number | null;
   pid: number | null;
   pid_started_at: number | null;
@@ -355,6 +358,7 @@ const normalizeDeleteTask = (raw: any): DeviceDeleteTask => ({
   status: raw?.status ?? 'unknown',
   queued_at: raw?.queued_at ?? null,
   started_at: raw?.started_at ?? null,
+  updated_at: raw?.updated_at ?? null,
   finished_at: raw?.finished_at ?? null,
   pid: normalizeNullableNumber(raw?.pid),
   pid_started_at: normalizeNullableNumber(raw?.pid_started_at),
@@ -423,28 +427,66 @@ export const fetchDeviceMedia = async (
   entryId: string,
   payload: DeviceMediaListRequest
 ): Promise<DeviceMediaListing> => {
+  return runLongTask<DeviceMediaListing>({
+    start: () => startDeviceMediaListTask(entryId, payload),
+    poll: (taskId) => fetchDeviceMediaListTask(entryId, taskId),
+    idleTimeoutMs: usesDuplicateClusterSort(payload)
+      ? DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS
+      : DEVICE_MEDIA_LIST_IDLE_TIMEOUT_MS,
+  });
+};
+
+const normalizeDeviceMediaListing = (raw: any): DeviceMediaListing => ({
+  root: raw?.root ?? null,
+  path: raw?.path ?? '',
+  absolute_path: raw?.absolute_path ?? '',
+  sort_mode: raw?.sort_mode ?? 'path',
+  sort_program: raw?.sort_program ?? null,
+  snapshot_id: raw?.snapshot_id ?? null,
+  total_count: raw?.total_count ?? 0,
+  total_bytes: raw?.total_bytes ?? 0,
+  visual_hash_status: raw?.visual_hash_status ?? null,
+  offset: raw?.offset ?? 0,
+  limit: raw?.limit ?? 0,
+  has_more: Boolean(raw?.has_more),
+  next_offset: raw?.next_offset ?? null,
+  layout: raw?.layout ?? null,
+  media: raw?.media ?? [],
+});
+
+export const fetchDeviceMediaSync = async (
+  entryId: string,
+  payload: DeviceMediaListRequest
+): Promise<DeviceMediaListing> => {
   const response = await api.post(getDeviceEntryPath(entryId, '/files/media/list'), payload, {
     timeout: usesDuplicateClusterSort(payload)
       ? DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS
       : DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS,
   });
-  return {
-    root: response.data.root ?? null,
-    path: response.data.path ?? '',
-    absolute_path: response.data.absolute_path ?? '',
-    sort_mode: response.data.sort_mode ?? 'path',
-    sort_program: response.data.sort_program ?? null,
-    snapshot_id: response.data.snapshot_id ?? null,
-    total_count: response.data.total_count ?? 0,
-    total_bytes: response.data.total_bytes ?? 0,
-    visual_hash_status: response.data.visual_hash_status ?? null,
-    offset: response.data.offset ?? 0,
-    limit: response.data.limit ?? 0,
-    has_more: Boolean(response.data.has_more),
-    next_offset: response.data.next_offset ?? null,
-    layout: response.data.layout ?? null,
-    media: response.data.media ?? [],
-  };
+  return normalizeDeviceMediaListing(response.data);
+};
+
+export const startDeviceMediaListTask = async (
+  entryId: string,
+  payload: DeviceMediaListRequest
+): Promise<LongTaskSnapshot<DeviceMediaListing>> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/media/list/tasks'), payload);
+  return response.data;
+};
+
+export const fetchDeviceMediaListTask = async (
+  entryId: string,
+  taskId: string
+): Promise<LongTaskSnapshot<DeviceMediaListing>> => {
+  const response = await api.get(getDeviceEntryPath(entryId, `/files/media/list/tasks/${encodeURIComponent(taskId)}`));
+  const snapshot = response.data as LongTaskSnapshot<any>;
+  if (snapshot.status === 'completed' && snapshot.result) {
+    return {
+      ...snapshot,
+      result: normalizeDeviceMediaListing(snapshot.result),
+    };
+  }
+  return snapshot;
 };
 
 export const fetchDeviceDirectoryItems = async (
@@ -464,10 +506,18 @@ export const fetchDeviceDuplicateFiles = async (
   entryId: string,
   payload: DeviceDuplicateListRequest
 ): Promise<DeviceDuplicateListing> => {
-  const response = await api.post(getDeviceEntryPath(entryId, '/files/duplicates'), payload, {
-    timeout: payload.rules?.includes('sha256') ? 180000 : 120000,
+  const initial = await startDeviceDuplicateAnalysis(entryId, payload);
+  return monitorPolledTask<DeviceDuplicateAnalysis>({
+    initial,
+    poll: (task) => fetchDeviceDuplicateAnalysis(entryId, task.task_id, {
+      page: task.page,
+      page_size: task.page_size,
+    }),
+    isRunning: (task) => task.running,
+    getUpdatedAt: (task) => task.updated_at,
+    getError: (task) => task.status === 'failed' ? (task.error || task.message || '重复文件分析失败') : '',
+    idleTimeoutMs: payload.rules?.includes('sha256') ? 120_000 : 30_000,
   });
-  return normalizeDuplicateListing(response.data);
 };
 
 export const startDeviceDuplicateAnalysis = async (

@@ -9,6 +9,7 @@
     :lock-node-type="lockNodeType"
     :lock-note-form="lockNoteForm"
     :editor-layout="editorLayout"
+    :editor-min-height="props.editorMinHeight"
     :draft-storage-key="draftStorageKey"
     :on-save="onSave"
     :on-save-keepalive="onSaveKeepalive"
@@ -29,7 +30,7 @@ import type { NoteNode } from '@/api/notes';
 import SharedNoteEditor from './SharedNoteEditor.vue';
 import type { EditableNotePatch } from '@/utils/noteAutoSave';
 
-defineProps<{
+const props = defineProps<{
   modelValue?: NoteNode;
   loading?: boolean;
   readonly?: boolean;
@@ -39,6 +40,7 @@ defineProps<{
   lockNodeType?: boolean;
   lockNoteForm?: boolean;
   editorLayout?: 'fill' | 'flow';
+  editorMinHeight?: number;
   draftStorageKey?: string | null;
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;

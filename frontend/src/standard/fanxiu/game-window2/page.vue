@@ -1181,7 +1181,7 @@ interface ControlClickState {
   startedAt: number;
 }
 
-type WindowSceneKey = 'star-cloud-phone' | 'sunlogin' | 'mumu';
+type WindowSceneKey = 'sunlogin' | 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
@@ -1367,24 +1367,6 @@ const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
 ];
 const windowScenes: WindowScene[] = [
   {
-    key: 'star-cloud-phone',
-    label: '星星云手机',
-    defaults: {
-      targetTitle: '云手机',
-      titleMatch: 'contains',
-      cropText: '0,0,0,0',
-      trimBorderText: '0,0,0,0',
-      captureArea: 'client',
-      rotateDegrees: '0',
-      fps: 12,
-      quality: 82,
-      autoDismissPopup: false,
-      displayScale: 100,
-      fixedWidth: 0,
-      fixedHeight: 0,
-    },
-  },
-  {
     key: 'sunlogin',
     label: '向日葵',
     defaults: {
@@ -1424,7 +1406,7 @@ const windowScenes: WindowScene[] = [
 
 const devices = computed(() => taskStore.devices);
 const selectedEntryId = ref('');
-const selectedWindowKey = ref<WindowSceneKey>('star-cloud-phone');
+const selectedWindowKey = ref<WindowSceneKey>('mumu');
 const runtimeStatus = ref<RuntimeStatusResponse | null>(null);
 const runtimeLoading = ref(false);
 const connectionLoading = ref(false);
@@ -3391,7 +3373,7 @@ const chooseDefaultWindowKey = (): WindowSceneKey => {
   if (queryWindowKey) return queryWindowKey;
   const savedWindowKey = window.localStorage.getItem(WINDOW_STORAGE_KEY) || '';
   if (isWindowSceneKey(savedWindowKey)) return savedWindowKey;
-  return 'star-cloud-phone';
+  return 'mumu';
 };
 
 const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: WindowSceneDefaults): WindowSceneConfig => {

@@ -11,6 +11,7 @@ from backend.core.fanxiu_tcp_flow import (
     _normalize_fanxiu_worldline_activity_item,
     decode_fanxiu_tcp_pcap,
     get_latest_fanxiu_worldline_activity_schedule,
+    list_fanxiu_worldline_activity_schedule_snapshots,
     list_tcp_streams_with_tshark,
     resolve_fanxiu_tcp_store_root,
 )
@@ -101,6 +102,36 @@ def _activity_record_key(item: dict[str, Any]) -> str:
         str(item.get(key) or "")
         for key in ("activityId", "id", "startTime", "endTime", "closePanelTime", "scheduleId", "loopDay")
     )
+
+
+def _activity_identity_key(item: dict[str, Any]) -> str:
+    values = [
+        item.get("activityId"),
+        item.get("id"),
+        item.get("scheduleId"),
+        item.get("loopDay"),
+        item.get("name"),
+    ]
+    key = "|".join("" if value is None else str(value) for value in values)
+    return key if key.strip("|") else _activity_record_key(item)
+
+
+def _has_activity_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    if isinstance(value, list | dict | tuple | set):
+        return bool(value)
+    return True
+
+
+def _merge_activity_item(existing: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in item.items():
+        if _has_activity_value(value) or key not in merged:
+            merged[key] = value
+    return merged
 
 
 def _extract_worldline_items(entry: dict[str, Any], *, export_root: str | Path | None = None) -> list[dict[str, Any]]:
@@ -271,7 +302,7 @@ def _merge_record(existing: dict[str, Any] | None, item: dict[str, Any], entry: 
     }
     if not existing:
         return {
-            "key": _activity_record_key(item),
+            "key": _activity_identity_key(item),
             "item": item,
             "first_seen_at": entry.get("decoded_at") or _now_text(),
             "last_seen_at": entry.get("decoded_at") or _now_text(),
@@ -279,7 +310,8 @@ def _merge_record(existing: dict[str, Any] | None, item: dict[str, Any], entry: 
         }, True
 
     next_record = dict(existing)
-    next_record["item"] = {**(existing.get("item") or {}), **item}
+    next_record["key"] = _activity_identity_key(_merge_activity_item(existing.get("item") or {}, item))
+    next_record["item"] = _merge_activity_item(existing.get("item") or {}, item)
     next_record["last_seen_at"] = entry.get("decoded_at") or existing.get("last_seen_at") or _now_text()
     evidence_rows = [row for row in existing.get("evidence") or [] if isinstance(row, dict)]
     evidence_keys = {str(row.get("packet_id") or "") for row in evidence_rows}
@@ -365,7 +397,7 @@ def sync_fanxiu_activity_packets(
     store = _load_records(data_dir)
     rank_store = _load_rank_records(data_dir)
     records_by_key = {
-        str(row.get("key") or ""): row
+        _activity_identity_key(row.get("item") or {}) or str(row.get("key") or ""): row
         for row in store.get("records") or []
         if isinstance(row, dict) and str(row.get("key") or "")
     }
@@ -389,6 +421,25 @@ def sync_fanxiu_activity_packets(
     rank_skipped_duplicates = 0
     last_entry: dict[str, Any] | None = None
     last_rank_entry: dict[str, Any] | None = None
+    for snapshot in reversed(list_fanxiu_worldline_activity_schedule_snapshots(data_dir=data_dir, export_root=export_root)):
+        snapshot_entry = {
+            "id": snapshot.get("source_path") or "",
+            "decoded_at": snapshot.get("created_at") or _now_text(),
+            "record_id": "",
+            "pcap_name": Path(str(snapshot.get("pcap") or snapshot.get("source_path") or "")).name,
+            "source_kind": snapshot.get("source_kind") or "",
+            "name": snapshot.get("protocol") or WORLDLINE_ACTIVITY_PROTOCOL,
+            "pro_id": snapshot.get("pro_id") or 51006,
+        }
+        for item in snapshot.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            key = _activity_identity_key(item)
+            if not key.strip("|"):
+                continue
+            merged, _changed = _merge_record(records_by_key.get(key), item, snapshot_entry)
+            records_by_key[key] = merged
+
     for entry in entries:
         server_names.update(_server_names_from_packet(entry.get("content")))
         name = str(entry.get("name") or "")
@@ -405,7 +456,7 @@ def sync_fanxiu_activity_packets(
                 if items:
                     matched_packets += 1
                 for item in items:
-                    key = _activity_record_key(item)
+                    key = _activity_identity_key(item)
                     if not key.strip("|"):
                         continue
                     merged, changed = _merge_record(records_by_key.get(key), item, entry)
@@ -572,18 +623,22 @@ def get_fanxiu_activity_packet_schedule(
     store = _load_records(data_dir)
     records = [row for row in store.get("records") or [] if isinstance(row, dict)]
     latest = get_latest_fanxiu_worldline_activity_schedule(data_dir=data_dir, export_root=export_root)
-    if records:
+    snapshots = list_fanxiu_worldline_activity_schedule_snapshots(data_dir=data_dir, export_root=export_root)
+    if records or snapshots:
         items_by_key: dict[str, dict[str, Any]] = {}
         for row in records:
             item = row.get("item")
             if isinstance(item, dict):
-                items_by_key[_activity_record_key(item)] = item
+                key = _activity_identity_key(item)
+                items_by_key[key] = _merge_activity_item(items_by_key.get(key) or {}, item)
 
-        for item in latest.get("items") or []:
-            if isinstance(item, dict):
-                # The most recent live schedule is usually a fuller snapshot than
-                # the incremental packet record, so let it refresh matching rows.
-                items_by_key[_activity_record_key(item)] = item
+        if not snapshots and latest.get("items"):
+            snapshots = [latest]
+        for snapshot in reversed(snapshots):
+            for item in snapshot.get("items") or []:
+                if isinstance(item, dict):
+                    key = _activity_identity_key(item)
+                    items_by_key[key] = _merge_activity_item(items_by_key.get(key) or {}, item)
 
         items = sorted(
             items_by_key.values(),
@@ -613,6 +668,7 @@ def get_fanxiu_activity_packet_schedule(
                 "cursor": (_load_state(data_dir).get("worldline_activity") or {}),
                 "record_count": len(records),
                 "latest_count": len(latest.get("items") or []),
+                "snapshot_count": len(snapshots),
             },
         }
     return latest

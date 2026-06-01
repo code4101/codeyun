@@ -169,6 +169,7 @@ from backend.core.git_tools import (
     create_git_commit,
     inspect_git_repository,
 )
+from backend.core.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.core.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
@@ -211,9 +212,11 @@ from backend.models import User, UserDevice
 router = APIRouter()
 MEDIA_STREAM_TOKEN_SCOPE = "device-media-stream"
 MEDIA_STREAM_TOKEN_EXPIRE_HOURS = 12
+REMOTE_MEDIA_LIST_TIMEOUT_SECONDS = 15 * 60
 AI_NOTEBOOK_FEATURE_KEY = "tools.ai-notebook"
 _GIT_REDUCTION_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 _GIT_REDUCTION_RUN_STATE_LOCK = threading.Lock()
+_DEVICE_MEDIA_LIST_TASK_MANAGER = LongTaskManager("device-media-list", max_workers=2, max_records=64)
 
 
 class CodexDailySummaryMultiRunRequest(BaseModel):
@@ -549,7 +552,7 @@ def _fetch_remote_json(
     *,
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Any] = None,
-    timeout: int = 10,
+    timeout: int | float | None = 10,
 ) -> tuple[Dict[str, Any] | List[Any], requests.Response | None]:
     target_url = f"{_remote_base_url(entry)}/api{path}"
     headers = _proxy_headers(entry)
@@ -727,6 +730,180 @@ def _index_device_media_payload(
 
     if snapshots:
         upsert_device_file_metadata_batch(session, entry.device_id, snapshots)
+
+
+def _media_task_progress_callback(context: LongTaskContext):
+    def heartbeat(progress: dict[str, Any]) -> None:
+        context.heartbeat(
+            stage=str(progress.get("stage") or "running"),
+            message=str(progress.get("message") or "运行中"),
+            progress_current=progress.get("progress_current"),
+            progress_total=progress.get("progress_total"),
+        )
+
+    return heartbeat
+
+
+def _run_local_media_list_task(entry_id: str, req: MediaListRequest, context: LongTaskContext) -> dict:
+    with Session(engine) as task_session:
+        entry = task_session.get(UserDevice, entry_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Device entry not found")
+        payload = list_media_entries(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            recursive=req.recursive,
+            scan_limit=req.scan_limit,
+            session=task_session,
+            sort_mode=req.sort_mode,
+            sort_program=req.sort_program,
+            snapshot_id=req.snapshot_id,
+            offset=req.offset,
+            limit=req.limit,
+            layout_mode=req.layout_mode,
+            layout_columns=req.layout_columns,
+            layout_column_width=req.layout_column_width,
+            layout_gap=req.layout_gap,
+            layout_column_heights=req.layout_column_heights,
+            progress_callback=_media_task_progress_callback(context),
+        )
+        _index_device_media_payload(task_session, entry, req.root, payload, response_key="media")
+        return payload
+
+
+def _request_remote_json_direct(
+    base_url: str,
+    headers: dict[str, str],
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: Any = None,
+    timeout: int | float | None = 30,
+) -> tuple[dict[str, Any], requests.Response | None]:
+    try:
+        resp = requests.request(
+            method=method,
+            url=f"{base_url}/api{path}",
+            headers=headers,
+            params=params,
+            json=json_body,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to reach remote device: {exc}") from exc
+
+    if resp.status_code >= 400:
+        return {}, resp
+
+    content_type = resp.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        raise HTTPException(status_code=502, detail="Remote device returned a non-JSON task response")
+    payload = resp.json()
+    return payload if isinstance(payload, dict) else {}, None
+
+
+def _run_remote_media_list_task(
+    entry_id: str,
+    root: str | None,
+    remote_base_url: str,
+    headers: dict[str, str],
+    req_payload: dict[str, Any],
+    context: LongTaskContext,
+) -> dict:
+    start_payload, start_error = _request_remote_json_direct(
+        remote_base_url,
+        headers,
+        "POST",
+        "/fs/media/list/tasks",
+        json_body=req_payload,
+        timeout=30,
+    )
+    if start_error is not None:
+        if start_error.status_code == 404:
+            return _run_remote_media_list_sync_task(
+                entry_id,
+                root,
+                remote_base_url,
+                headers,
+                req_payload,
+                context,
+            )
+        _raise_remote_json_error(start_error)
+
+    remote_task_id = str(start_payload.get("task_id") or "")
+    if not remote_task_id:
+        raise HTTPException(status_code=502, detail="Remote device did not return a media task id")
+
+    last_remote_updated_at = None
+    while True:
+        task_payload, task_error = _request_remote_json_direct(
+            remote_base_url,
+            headers,
+            "GET",
+            f"/fs/media/list/tasks/{remote_task_id}",
+            timeout=30,
+        )
+        if task_error is not None:
+            _raise_remote_json_error(task_error)
+        remote_updated_at = task_payload.get("updated_at")
+        task_running = bool(task_payload.get("running"))
+        if remote_updated_at != last_remote_updated_at or not task_running:
+            context.heartbeat(
+                stage=str(task_payload.get("stage") or task_payload.get("status") or "running"),
+                message=str(task_payload.get("message") or "远程媒体列表运行中"),
+                progress_current=task_payload.get("progress_current"),
+                progress_total=task_payload.get("progress_total"),
+                metadata={
+                    "remote_task_id": remote_task_id,
+                    "remote_updated_at": remote_updated_at,
+                },
+            )
+            last_remote_updated_at = remote_updated_at
+        if not task_running:
+            status = str(task_payload.get("status") or "")
+            if status == "completed":
+                result = task_payload.get("result")
+                if not isinstance(result, dict):
+                    raise HTTPException(status_code=502, detail="Remote media task completed without a result")
+                with Session(engine) as task_session:
+                    entry = task_session.get(UserDevice, entry_id)
+                    if entry is not None:
+                        _index_device_media_payload(task_session, entry, root, result, response_key="media")
+                return result
+            raise HTTPException(
+                status_code=int(task_payload.get("error_status_code") or 502),
+                detail=str(task_payload.get("error") or task_payload.get("message") or "Remote media task failed"),
+            )
+        time.sleep(1.0)
+
+
+def _run_remote_media_list_sync_task(
+    entry_id: str,
+    root: str | None,
+    remote_base_url: str,
+    headers: dict[str, str],
+    req_payload: dict[str, Any],
+    context: LongTaskContext,
+) -> dict:
+    context.heartbeat(stage="remote-sync", message="远程设备暂不支持任务心跳，正在等待媒体列表返回")
+    payload, error_response = _request_remote_json_direct(
+        remote_base_url,
+        headers,
+        "POST",
+        "/fs/media/list",
+        json_body=req_payload,
+        timeout=REMOTE_MEDIA_LIST_TIMEOUT_SECONDS,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    with Session(engine) as task_session:
+        entry = task_session.get(UserDevice, entry_id)
+        if entry is not None:
+            _index_device_media_payload(task_session, entry, root, payload, response_key="media")
+    return payload
 
 
 def _mirror_scanned_device_files_to_cache(
@@ -3662,12 +3839,78 @@ def list_media_for_entry(
         "POST",
         "/fs/media/list",
         json_body=_filesystem_payload(req),
+        timeout=REMOTE_MEDIA_LIST_TIMEOUT_SECONDS,
     )
     if error_response is not None:
         return _proxy_response(error_response)
     assert isinstance(payload, dict)
     _index_device_media_payload(session, entry, req.root, payload, response_key="media")
     return payload
+
+
+@router.post("/{entry_id}/files/media/list/tasks")
+def start_media_list_for_entry_task(
+    entry_id: str,
+    req: MediaListRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    task_req = req.model_copy(deep=True)
+    metadata = {
+        "entry_id": entry.entry_id,
+        "device_id": entry.device_id,
+        "user_id": current_user.id,
+        "root": req.root,
+        "path": req.path,
+        "absolute_path": req.absolute_path,
+        "recursive": req.recursive,
+        "scan_limit": req.scan_limit,
+    }
+
+    if entry.mode == "local":
+        return _DEVICE_MEDIA_LIST_TASK_MANAGER.start(
+            lambda context: _run_local_media_list_task(entry.entry_id, task_req, context),
+            stage="queued",
+            message="媒体列表任务已排队",
+            metadata=metadata,
+        )
+
+    remote_base_url = _remote_base_url(entry)
+    headers = _proxy_headers(entry)
+    req_payload = _filesystem_payload(req)
+    return _DEVICE_MEDIA_LIST_TASK_MANAGER.start(
+        lambda context: _run_remote_media_list_task(
+            entry.entry_id,
+            req.root,
+            remote_base_url,
+            headers,
+            req_payload,
+            context,
+        ),
+        stage="queued",
+        message="远程媒体列表任务已排队",
+        metadata=metadata,
+    )
+
+
+@router.get("/{entry_id}/files/media/list/tasks/{task_id}")
+def get_media_list_for_entry_task(
+    entry_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    _get_entry_or_404(session, current_user, entry_id)
+    try:
+        record = _DEVICE_MEDIA_LIST_TASK_MANAGER.get(task_id)
+    except LongTaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Media list task not found") from exc
+
+    metadata = record.metadata or {}
+    if metadata.get("entry_id") != entry_id or metadata.get("user_id") != current_user.id:
+        raise HTTPException(status_code=404, detail="Media list task not found")
+    return _DEVICE_MEDIA_LIST_TASK_MANAGER.serialize(record)
 
 
 @router.post("/{entry_id}/files/duplicates")

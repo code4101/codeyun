@@ -92,3 +92,53 @@ def note_to_response_dict(
     payload["completion_progress_expr"] = get_completion_progress_expr(payload.get("custom_fields"))
     payload["completion_progress"] = evaluate_completion_progress_expr(payload.get("completion_progress_expr"))
     return payload
+
+
+def note_to_list_response_dict(note: NoteNode, current_user: Optional[User]) -> dict[str, Any]:
+    payload = {
+        "id": note_public_api_id(note),
+        "numeric_id": note.numeric_id,
+        "user_id": note.user_id,
+        "title": note.title or "",
+        "weight": note.weight or 0,
+        "node_type": note.node_type,
+        "note_types": note.note_types or [],
+        "note_categories": note.note_categories or [],
+        "primary_category": note.primary_category,
+        "note_form": note.note_form,
+        "note_kind": note.note_kind,
+        "note_scene": note.note_scene,
+        "node_status": note.node_status,
+        "lifecycle_stage": note.lifecycle_stage,
+        "color": note.color,
+        "weight_mode": note.weight_mode,
+        "private_level": note.private_level or 0,
+        "custom_fields": _normalize_custom_fields_for_response(note.custom_fields),
+        "can_edit": can_edit_note(note, current_user),
+        "created_at": float(note.created_at or 0),
+        "updated_at": float(note.updated_at or 0),
+        "start_at": float(note.start_at or 0),
+        "deleted_at": note.deleted_at,
+        "deleted_by_user_id": note.deleted_by_user_id,
+        "history": note.history if isinstance(note.history, list) else [],
+    }
+
+    if payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
+        normalized = derive_legacy_semantics_from_taxonomy(
+            payload.get("note_categories"),
+            payload.get("primary_category") or NOTE_CATEGORY_DEFAULT,
+            payload.get("note_form") or NOTE_FORM_DEFAULT,
+            payload.get("note_scene") or payload.get("note_kind") or NOTE_SCENE_DEFAULT,
+            payload.get("lifecycle_stage") or payload.get("node_status") or NOTE_LIFECYCLE_STAGE_DEFAULT,
+        )
+    else:
+        normalized = derive_note_taxonomy_from_legacy(
+            payload.get("note_types"),
+            payload.get("node_type"),
+            payload.get("note_kind"),
+            payload.get("node_status"),
+        )
+    payload.update(normalized)
+    payload["completion_progress_expr"] = get_completion_progress_expr(payload.get("custom_fields"))
+    payload["completion_progress"] = evaluate_completion_progress_expr(payload.get("completion_progress_expr"))
+    return payload

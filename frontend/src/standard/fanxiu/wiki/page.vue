@@ -4232,12 +4232,32 @@ function getItemSubTypeDisplay(item: FanxiuItemCard | null | undefined) {
 
 type TimelineCarrier = {
   time_hints?: FanxiuTimelineHint[];
+  schedule_time_hints?: unknown[];
   first_time_hint?: FanxiuTimelineHint | null;
 } | null | undefined
+
+function decodeScheduleTimeHint(value: unknown): FanxiuTimelineHint | null {
+  if (!Array.isArray(value)) return null
+  const [source, label, date, time, kind, confidence, timeCode, evidence] = value
+  return {
+    source: String(source || ''),
+    label: String(label || ''),
+    date: String(date || ''),
+    time: String(time || ''),
+    kind: String(kind || ''),
+    confidence: String(confidence || ''),
+    time_code: String(timeCode || ''),
+    evidence: String(evidence || ''),
+  }
+}
 
 function getTimelineHints(item: TimelineCarrier) {
   const hints = item?.time_hints?.filter(Boolean) ?? []
   if (hints.length) return hints
+  const scheduleHints = item?.schedule_time_hints
+    ?.map(decodeScheduleTimeHint)
+    .filter((hint): hint is FanxiuTimelineHint => Boolean(hint)) ?? []
+  if (scheduleHints.length) return scheduleHints
   return item?.first_time_hint ? [item.first_time_hint] : []
 }
 
@@ -7708,10 +7728,12 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
       ...objectSortParams.value,
       limit: isNonListMode ? NON_LIST_ACTIVITY_PAGE_SIZE : pageSize.value,
       offset: isNonListMode ? 0 : (page.value - 1) * pageSize.value,
+      item_view: isPeriodMode ? 'schedule' : 'default',
+      include_facets: !isNonListMode,
     })
     const documentPromise = isDocumentMode ? loadActivityDocumentNotes() : Promise.resolve()
     const worldlinePromise = isPeriodMode
-      ? syncActivityPacketHistory({ reloadSchedule: false }).then(() => loadActivityWorldlineSchedule())
+      ? loadActivityWorldlineSchedule()
       : Promise.resolve()
     const response = await responsePromise
     await documentPromise
@@ -8384,7 +8406,6 @@ async function selectActivity(activityId: string | number) {
     selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     loadingDetail.value = false
-    void syncActivityPacketHistory()
     return
   }
   loadingDetail.value = true
@@ -8398,7 +8419,6 @@ async function selectActivity(activityId: string | number) {
     selectedLingjieCard.value = null
     selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
-    void syncActivityPacketHistory()
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动详情失败')
@@ -9156,6 +9176,8 @@ function applyActivityServerScope(value: string) {
 function applyActivityViewMode(value: ActivityViewMode) {
   const nextMode = normalizeActivityViewMode(value)
   if (activityViewMode.value === nextMode) return
+  loadingList.value = true
+  activityItems.value = []
   activityViewMode.value = nextMode
   page.value = 1
   loadCurrentCards()
@@ -12308,6 +12330,7 @@ onBeforeUnmount(() => {
               empty-text="活动笔记加载中..."
               class="activity-note-editor"
               editor-layout="flow"
+              :editor-min-height="250"
               :readonly="selectedActivityNote?.can_edit === false"
               :show-private-toggle="false"
               :lock-title="true"

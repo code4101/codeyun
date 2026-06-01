@@ -4556,6 +4556,63 @@ def v65_add_resource_trash_columns(session: Session):
         print("  Resource trash columns already exist, skipping.")
 
 
+def v66_migrate_note_sheet_links_to_inline_cells(session: Session):
+    """
+    Migration V66: Move sheet hyperlinks from legacy metadata maps into the
+    canonical inline cell shape: {"value": ..., "link": {"url": ...}}.
+    """
+    print("Running System Upgrade V66: Migrate note sheet links to inline cells...")
+    if not _table_exists(session, "sheetdocument"):
+        return
+
+    from backend.core.note_sheet_inline_links import canonicalize_sheet_document_inline_links
+
+    rows = session.exec(text("SELECT id, document_json FROM sheetdocument")).all()
+    updated = 0
+    legacy_links = 0
+    stripped_meta = 0
+    now = time.time()
+
+    for row in rows:
+        row_id = row[0]
+        document_json = _load_json_value(row[1], {})
+        if not isinstance(document_json, dict):
+            continue
+        next_document, stats = canonicalize_sheet_document_inline_links(
+            document_json,
+            migrate_legacy_links=True,
+            strip_legacy_links=True,
+        )
+        if not stats.get("changed"):
+            continue
+        updated += 1
+        legacy_links += int(stats.get("legacy") or 0)
+        stripped_meta += int(stats.get("stripped_meta") or 0)
+        session.exec(
+            text(
+                """
+                UPDATE sheetdocument
+                SET document_json = :document_json,
+                    version = COALESCE(version, 1) + 1,
+                    updated_at = :updated_at
+                WHERE id = :id
+                """
+            ),
+            {
+                "document_json": _dump_json_value(next_document),
+                "updated_at": now,
+                "id": row_id,
+            },
+        )
+
+    session.commit()
+    print(
+        "V66 migrated "
+        f"{updated} sheet documents; moved {legacy_links} legacy links; "
+        f"stripped legacy link metadata from {stripped_meta} maps."
+    )
+
+
 def run_startup_schema_repairs(engine):
     """
     Apply small idempotent repairs required before the full migration chain can
@@ -4639,6 +4696,7 @@ MIGRATIONS = [
     (63, "Add task next run time", v63_add_task_next_run_at),
     (64, "Add Fanxiu pseudo-code cards", v64_add_fanxiu_pseudocode_cards),
     (65, "Add resource trash columns", v65_add_resource_trash_columns),
+    (66, "Migrate note sheet links to inline cells", v66_migrate_note_sheet_links_to_inline_cells),
 ]
 
 def get_current_version(session: Session) -> int:

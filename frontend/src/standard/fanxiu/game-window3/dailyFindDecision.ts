@@ -40,17 +40,30 @@ export const normalizeDailyOcrText = (text: string) => (
     .replace(/\s+/g, '')
 );
 
+const normalizeDailyProgressPair = (rawCurrent: number, total: number): DailyFindProgress | null => {
+  if (total <= 0) return null;
+  const current = rawCurrent > total && rawCurrent >= 10 ? rawCurrent % 10 : rawCurrent;
+  return current <= total ? { current, total } : null;
+};
+
 export const extractDailyProgress = (text: string): DailyFindProgress | null => {
   const normalized = normalizeDailyOcrText(text);
   const pairs = Array.from(normalized.matchAll(/(?<!\d)(\d{1,3})\s*\/\s*(\d{1,3})(?!\d)/g))
     .map((match) => {
       const rawCurrent = Number(match[1]);
       const total = Number(match[2]);
-      const foldedCurrent = rawCurrent > total && rawCurrent >= 10 ? rawCurrent % 10 : rawCurrent;
-      return { current: foldedCurrent, total };
+      return normalizeDailyProgressPair(rawCurrent, total);
     })
-    .filter((item) => item.total > 0 && item.current <= item.total);
-  return pairs.at(-1) ?? null;
+    .filter((item): item is DailyFindProgress => Boolean(item));
+  const slashProgress = pairs.at(-1) ?? null;
+  if (slashProgress) return slashProgress;
+
+  const numbers = Array.from(normalized.matchAll(/\d{1,3}/g)).map((match) => Number(match[0]));
+  for (let index = numbers.length - 2; index >= 0; index -= 1) {
+    const fallback = normalizeDailyProgressPair(numbers[index], numbers[index + 1]);
+    if (fallback) return fallback;
+  }
+  return null;
 };
 
 export const extractDailyStatusText = (text: string): string => (

@@ -593,6 +593,7 @@ import {
   type WeChatStorageRoot,
 } from '@/api/wechatArchive';
 import { taskStore, type Device } from '@/store/taskStore';
+import { monitorPolledTask } from '@/utils/longTask';
 
 type StorageSource = 'cluster' | 'wechat';
 
@@ -717,6 +718,7 @@ interface ActiveDeleteTask {
   name: string;
   path: string;
   pid: number | null;
+  updatedAt: number | null;
   errorMessage: string | null;
 }
 
@@ -819,8 +821,8 @@ const tableConfigMenu = ref<TableConfigMenuState>({
   y: 0,
 });
 let nodeSeq = 0;
-let deleteTaskPollTimer: number | null = null;
-let duplicateTaskPollTimer: number | null = null;
+let deleteTaskPollVersion = 0;
+let duplicateTaskPollVersion = 0;
 let workspaceStateReady = false;
 let workspacePersistTimer: number | null = null;
 let lastTableScrollTop = 0;
@@ -1871,10 +1873,7 @@ function buildDuplicateRequest(page: number, reuseSnapshot: boolean) {
 }
 
 function stopDuplicateTaskPolling() {
-  if (duplicateTaskPollTimer != null && typeof window !== 'undefined') {
-    window.clearInterval(duplicateTaskPollTimer);
-  }
-  duplicateTaskPollTimer = null;
+  duplicateTaskPollVersion += 1;
 }
 
 async function refreshDuplicateTask(taskId: string, page: number, showError = false) {
@@ -1909,14 +1908,51 @@ async function refreshDuplicateTask(taskId: string, page: number, showError = fa
 }
 
 function startDuplicateTaskPolling(taskId: string) {
-  stopDuplicateTaskPolling();
-  if (typeof window === 'undefined') {
+  const entryId = selectedEntryId.value;
+  const initial = duplicateListing.value;
+  if (!entryId || !initial?.running) {
     return;
   }
-  duplicateTaskPollTimer = window.setInterval(() => {
-    const page = duplicateListing.value?.page ?? 1;
-    void refreshDuplicateTask(taskId, page);
-  }, 1200);
+  const pollVersion = ++duplicateTaskPollVersion;
+  void monitorPolledTask<DeviceDuplicateAnalysis>({
+    initial,
+    poll: async (task) => {
+      if (pollVersion !== duplicateTaskPollVersion) {
+        return { ...task, running: false };
+      }
+      const page = duplicateListing.value?.page ?? task.page ?? 1;
+      return fetchDeviceDuplicateAnalysis(entryId, taskId, {
+        page,
+        page_size: DUPLICATE_PAGE_SIZE,
+      });
+    },
+    isRunning: (task) => task.running && pollVersion === duplicateTaskPollVersion,
+    getUpdatedAt: (task) => task.updated_at,
+    getError: (task) => task.status === 'failed' ? (task.error || task.message || '重复文件分析失败') : '',
+    pollIntervalMs: 1200,
+    idleTimeoutMs: 30_000,
+    onUpdate: (analysis) => {
+      if (pollVersion !== duplicateTaskPollVersion) {
+        return;
+      }
+      duplicateListing.value = analysis;
+      duplicateLoading.value = analysis.running;
+    },
+  }).then((analysis) => {
+    if (pollVersion !== duplicateTaskPollVersion) {
+      return;
+    }
+    duplicateListing.value = analysis;
+    duplicateLoading.value = false;
+  }).catch((error: any) => {
+    if (pollVersion !== duplicateTaskPollVersion) {
+      return;
+    }
+    const detail = error?.message || '重复文件分析失败';
+    duplicateError.value = detail;
+    duplicateLoading.value = false;
+    ElMessage.error(detail);
+  });
 }
 
 async function analyzeDuplicates(page = 1, reuseSnapshot = false) {
@@ -2108,65 +2144,66 @@ function toActiveDeleteTask(task: DeviceDeleteTask): ActiveDeleteTask {
     name: task.entry_name || String(task.metadata?.entry_name ?? '') || '目标',
     path: task.target_path || String(task.metadata?.target_path ?? ''),
     pid: task.pid,
+    updatedAt: task.updated_at,
     errorMessage: task.error_message,
   };
 }
 
 function stopDeleteTaskPolling() {
-  if (deleteTaskPollTimer != null && typeof window !== 'undefined') {
-    window.clearInterval(deleteTaskPollTimer);
-  }
-  deleteTaskPollTimer = null;
+  deleteTaskPollVersion += 1;
 }
 
 function startDeleteTaskPolling() {
-  if (deleteTaskPollTimer != null || typeof window === 'undefined') {
-    return;
-  }
-  deleteTaskPollTimer = window.setInterval(() => {
-    void pollActiveDeleteTask();
-  }, 2500);
-}
-
-async function pollActiveDeleteTask() {
-  const task = activeDeleteTask.value;
   const entryId = selectedEntryId.value;
-  if (!task || !entryId) {
-    stopDeleteTaskPolling();
+  const initial = activeDeleteTask.value;
+  if (!entryId || !initial || !isActiveDeleteStatus(initial.status)) {
     return;
   }
-  try {
-    const latestTask = await fetchDeviceEntryDeleteTask(entryId, task.id);
-    activeDeleteTask.value = toActiveDeleteTask(latestTask);
-    if (isActiveDeleteStatus(latestTask.status)) {
+  const pollVersion = ++deleteTaskPollVersion;
+  void monitorPolledTask<ActiveDeleteTask>({
+    initial,
+    poll: async (task) => {
+      if (pollVersion !== deleteTaskPollVersion) {
+        return { ...task, status: 'unknown' };
+      }
+      return toActiveDeleteTask(await fetchDeviceEntryDeleteTask(entryId, task.id));
+    },
+    isRunning: (task) => isActiveDeleteStatus(task.status) && pollVersion === deleteTaskPollVersion,
+    getUpdatedAt: (task) => task.updatedAt,
+    getError: (task) => task.status === 'failed' ? (task.errorMessage || '后台删除失败') : '',
+    pollIntervalMs: 2500,
+    idleTimeoutMs: 60_000,
+    onUpdate: (task) => {
+      if (pollVersion === deleteTaskPollVersion) {
+        activeDeleteTask.value = task;
+      }
+    },
+  }).then(async (task) => {
+    if (pollVersion !== deleteTaskPollVersion) {
       return;
     }
-
-    stopDeleteTaskPolling();
-    if (latestTask.status === 'completed') {
-      ElMessage.success(`后台删除完成：${activeDeleteTask.value.name}`);
+    activeDeleteTask.value = task;
+    if (task.status === 'completed') {
+      ElMessage.success(`后台删除完成：${task.name}`);
       activeDeleteTask.value = null;
       await reloadCurrent();
       return;
     }
-
-    if (latestTask.status === 'partial_failed') {
-      ElMessage.warning(latestTask.error_message || '后台删除部分完成，少数路径被跳过');
+    if (task.status === 'partial_failed') {
+      ElMessage.warning(task.errorMessage || '后台删除部分完成，少数路径被跳过');
       await reloadCurrent();
+    }
+  }).catch((error: any) => {
+    if (pollVersion !== deleteTaskPollVersion || !activeDeleteTask.value) {
       return;
     }
-
-    if (latestTask.status === 'failed') {
-      ElMessage.error(latestTask.error_message || '后台删除失败');
-    }
-  } catch (error: any) {
-    stopDeleteTaskPolling();
     activeDeleteTask.value = {
-      ...task,
+      ...activeDeleteTask.value,
       status: 'unknown',
-      errorMessage: error?.response?.data?.detail || error?.message || '删除任务状态读取失败',
+      errorMessage: error?.message || '删除任务状态读取失败',
     };
-  }
+    ElMessage.error(activeDeleteTask.value.errorMessage);
+  });
 }
 
 async function syncLatestDeleteTaskForCurrentDevice() {

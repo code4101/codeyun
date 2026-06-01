@@ -384,6 +384,7 @@
         :readOnly="effectiveReadonly"
         :show-toolbar="!readonlyPresentationActive"
         :show-wrap-toggle="!readonlyPresentationActive"
+        :min-height="props.editorMinHeight"
         @change="handleContentChange"
       />
       <div
@@ -471,6 +472,7 @@ const props = defineProps<{
   lockNoteForm?: boolean;
   readonlyPresentation?: boolean;
   editorLayout?: 'fill' | 'flow';
+  editorMinHeight?: number;
   draftStorageKey?: string | null;
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;

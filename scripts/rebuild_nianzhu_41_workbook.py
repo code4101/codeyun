@@ -37,6 +37,7 @@ from backend.core.nianzhu_course_sheets import (
     VIDEO_DATA_COLUMNS,
     VIDEO_DATA_SHEET_KEY,
 )
+from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.core.sheet_identity import allocate_new_sheet_identity
 from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.db import engine
@@ -668,6 +669,7 @@ def run(*, apply: bool, template_path: Path) -> dict[str, Any]:
         session.add(registration)
         _ensure_link(session, workbook=workbook, sheet=attendance, order_index=5)
         _ensure_link(session, workbook=workbook, sheet=registration, order_index=10)
+        ensure_attendance_sheet_anonymous_viewer(session, attendance)
 
         storage_documents = _course_storage_documents(attendance_document)
         storage_specs = [

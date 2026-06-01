@@ -43,7 +43,7 @@ CODEX_DIARY_RUN_TIME = "00:10"
 ATTENDANCE_SUMMARY_RUN_TIME = "00:00"
 MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
 MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
-MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
+MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT = 200
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
@@ -374,10 +374,11 @@ def _run_media_sync_home_discovery_job() -> None:
         print(f"Media sync home discovery skipped: plugin unavailable ({exc})")
         return
 
-    result = run_scheduled_home_discovery(download_limit=MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT)
+    result = run_scheduled_home_discovery(target_count=MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT)
     print(
-        "Media sync home discovery completed: "
+        "Media candidate replenishment completed: "
         f"profiles={result.get('profile_count', 0)} "
+        f"target={result.get('target_count', 0)} "
         f"success={result.get('success_count', 0)} "
         f"failed={len(result.get('failures') or {})}"
     )
@@ -529,13 +530,13 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     ),
     BackgroundTaskSpec(
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
-        title="媒体首页发现",
+        title="媒体候选补齐",
         category="图片",
-        description="每天在自动 Git 提交之后，按当前媒体同步配置从首页推荐流增量发现新图。",
+        description="每天检查两个候选池的本地存量，低于目标数量时分别补齐；两个候选池互不占用同一个运行锁。",
         schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_media_sync_home_discovery,
-        manual_warning="会使用媒体同步插件和浏览器登录态访问 Pixiv、Pinterest 首页推荐流，并写入当前媒体同步根目录。",
+        manual_warning=f"会使用媒体同步插件和浏览器登录态访问外部推荐流，并把每个候选池分别补齐到 {MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT} 张。",
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,

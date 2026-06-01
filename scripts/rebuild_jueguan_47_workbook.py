@@ -27,20 +27,66 @@ from backend.core.nianzhu_course_sheets import (  # noqa: E402
     VIDEO_DATA_COLUMNS,
     VIDEO_DATA_SHEET_KEY,
 )
+from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer  # noqa: E402
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity  # noqa: E402
 from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases  # noqa: E402
 from backend.db import engine  # noqa: E402
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink  # noqa: E402
-from scripts.import_legacy_attendance_workbook import _attendance_document, _registration_document  # noqa: E402
+from scripts.import_legacy_attendance_workbook import (  # noqa: E402
+    REGISTRATION_ACTION_LABELS,
+    REGISTRATION_ACTION_ROW_NOTES,
+    _attendance_document,
+    _default_view_settings,
+    _registration_column_configs,
+)
 
 
 DEFAULT_TEMPLATE_PATH = Path(r"C:\Users\kzche\Downloads\20260501第46届觉观.xlsx")
 COURSE_NAME = "d260601第47届觉观"
-SUMMARY_ONLINE_SHEET_NAME = "20260601第47届觉观"
+SUMMARY_ONLINE_SHEET_NAME = "第47届觉观"
 OWNER_KEY = "20260601-jueguan-47"
 TEMPLATE_COURSE_START_DATE = date(2026, 5, 1)
 COURSE_START_DATE = date(2026, 6, 1)
 OFFICIAL_LESSON_COUNT = 21
+STANDARD_REGISTRATION_COLUMNS = [
+    "分组",
+    "序号",
+    "备注",
+    "提交时间",
+    "姓名",
+    "微信昵称",
+    "手机号",
+    "错误手机号",
+    "微信支付订单号",
+    "订单日期",
+    "商户订单号",
+    "订单金额",
+    "用户ID",
+    "匹配得分",
+    "参考信息",
+    "报名项目（必填）",
+    "性别（必填）",
+    "微信昵称（必填）",
+    "出生年月（必填）",
+    "常住地址（必填）",
+    "学历（必填）",
+    "专业（必填）",
+    "职业（必填）",
+    "您的首要学习动机是？（必填）",
+    "禅修经历（必填）",
+    "在本系统开始学修的时间（必填）",
+    "主修法门（必填）",
+    "系统内觉观禅地面营经历（必填）",
+    "系统外学修经历",
+    "您了解我们课程的渠道是？（必填）",
+    "版权承诺（必填）",
+    "进入学习群",
+    "提交者（自动）",
+]
+REGISTRATION_EXTRA_ACTION_LABELS = {
+    "提交时间": ("registration_add_student", "新增学员"),
+    "匹配得分": ("registration_composite_update", "综合更新"),
+}
 
 COURSE_LESSON_CONFIG = [
     {"lesson_id2": "l_69536897e4b0694ca162e9bd", "shop_id": 1, "start_date": "2026-06-01 05:20:00", "next_update": "2026-06-01 06:18:30", "video_duration": 3510},
@@ -290,23 +336,48 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
-def _empty_registration_document(document: dict[str, Any]) -> dict[str, Any]:
-    doc = _map_text(copy.deepcopy(document))
-    data_start = int(doc.get("data_start_row") or 0)
-    doc["rows"] = []
-    doc["grid_rows"] = list(doc.get("grid_rows") or [])[:data_start]
-    doc["cell_meta"] = {
-        key: value
-        for key, value in dict(doc.get("cell_meta") or {}).items()
-        if int(str(key).split(":", 1)[0]) < data_start
+def _standard_registration_document() -> dict[str, Any]:
+    columns = list(STANDARD_REGISTRATION_COLUMNS)
+    action_row = [""] * len(columns)
+    for header, (_action_type, label) in REGISTRATION_ACTION_LABELS.items():
+        if header in columns:
+            action_row[columns.index(header)] = label
+    for header, note in REGISTRATION_ACTION_ROW_NOTES.items():
+        if header in columns:
+            action_row[columns.index(header)] = note
+
+    cell_meta: dict[str, Any] = {
+        f"0:{column_index}": {"style": {"background_color": "#9DC3E6"}}
+        for column_index in range(len(columns))
     }
-    doc["source_meta"] = {
-        **dict(doc.get("source_meta") or {}),
-        "course_name": COURSE_NAME,
-        "business_template": "20260501第46届觉观",
-        "business_structure": "jueguan_46",
+    for header, (action_type, label) in {
+        **REGISTRATION_ACTION_LABELS,
+        **REGISTRATION_EXTRA_ACTION_LABELS,
+    }.items():
+        if header in columns:
+            cell_meta[f"1:{columns.index(header)}"] = {"action": {"type": action_type, "label": label}}
+
+    return {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [columns, action_row],
+        "data_start_row": 2,
+        "field_row_index": 0,
+        "column_widths": [88, 72, 120, 150, 100, 120, 120, 120, 210, 100, 180, 90, 220, 90, 180, *([160] * (len(columns) - 15))],
+        "column_configs": _registration_column_configs(columns, action_row),
+        "cell_meta": cell_meta,
+        "merged_cells": [],
+        "header_groups": [],
+        "formula_reference_origin": "sheet_v2",
+        "view_settings": _default_view_settings(row_marker_numbering="global"),
+        "source_meta": {
+            "course_name": COURSE_NAME,
+            "business_template": "20260601第41届念住",
+            "business_structure": "standard_registration",
+            "columns": len(columns),
+        },
     }
-    return doc
 
 
 def _simple_document(columns: list[str], rows: list[list[Any]], source_meta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -365,7 +436,7 @@ def _load_documents(template_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     workbook = load_workbook(template_path, read_only=False, data_only=False)
     try:
         attendance = _adapt_attendance_document(_attendance_document(workbook["考勤表"]))
-        registration = _empty_registration_document(_registration_document(workbook["报名表"]))
+        registration = _standard_registration_document()
         return attendance, registration
     finally:
         workbook.close()
@@ -510,6 +581,7 @@ def run(*, apply: bool, template_path: Path, owner_user_id: int = 2) -> dict[str
         for sheet_key, title, order_index, document in specs:
             sheet = _upsert_sheet(session, workbook, sheet_key, title, document)
             _ensure_link(session, workbook, sheet, order_index)
+            ensure_attendance_sheet_anonymous_viewer(session, sheet)
             sheets.append(sheet)
 
         summary_linked = _link_summary_c4(session, workbook, sheets[0])

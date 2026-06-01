@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from functools import cmp_to_key
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterable, Iterator, List, Literal, Optional
+from typing import Any, Callable, Iterable, Iterator, List, Literal, Optional
 from uuid import uuid4
 
 import psutil
@@ -44,6 +44,7 @@ from backend.core.ocr_preview import (
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.db import engine, get_session
 from backend.models import DeviceFile
 
@@ -216,6 +217,7 @@ _duplicate_analysis_tasks: OrderedDict[str, DuplicateAnalysisTask] = OrderedDict
 _duplicate_analysis_task_lock = RLock()
 _duplicate_analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="duplicate-analysis")
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
+_media_list_task_manager = LongTaskManager("fs-media-list", max_workers=2, max_records=64)
 _visual_hash_prewarm_lock = RLock()
 _visual_hash_prewarm_active_keys: set[str] = set()
 _EVERYTHING3_UINT64_MAX = (1 << 64) - 1
@@ -3856,6 +3858,7 @@ def _list_supported_entries(
     layout_column_width: int = 0,
     layout_gap: int = 0,
     layout_column_heights: list[float] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
     include_visual_hash = _media_sort_rules_use_duplicate_cluster(normalized_rules)
@@ -3929,6 +3932,15 @@ def _list_supported_entries(
 
     root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
     entries = []
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "stage": "scanning",
+                "message": "正在扫描媒体文件",
+                "progress_current": 0,
+                "progress_total": normalized_scan_limit,
+            }
+        )
 
     def _append_supported_file(file_path: Path) -> None:
         media_info = _resolve_media_kind(file_path)
@@ -3969,13 +3981,33 @@ def _list_supported_entries(
             }
         )
 
+    scanned_count = 0
     for file_path in _iter_scanned_media_files(
         target_path,
         recursive=recursive,
         scan_limit=normalized_scan_limit,
     ):
+        scanned_count += 1
         _append_supported_file(file_path)
+        if progress_callback is not None and (scanned_count == 1 or scanned_count % 100 == 0):
+            progress_callback(
+                {
+                    "stage": "scanning",
+                    "message": f"正在扫描媒体文件，已检查 {scanned_count} 个文件",
+                    "progress_current": scanned_count,
+                    "progress_total": normalized_scan_limit,
+                }
+            )
 
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "stage": "indexing",
+                "message": f"正在整理 {len(entries)} 个媒体文件",
+                "progress_current": scanned_count,
+                "progress_total": normalized_scan_limit,
+            }
+        )
     visual_hash_status = _attach_cached_media_metadata(
         entries,
         session,
@@ -3996,6 +4028,15 @@ def _list_supported_entries(
         total_bytes=total_bytes,
         visual_hash_status=visual_hash_status,
     )
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "stage": "responding",
+                "message": f"正在生成媒体列表，共 {len(entries)} 项",
+                "progress_current": len(entries),
+                "progress_total": len(entries),
+            }
+        )
     return _build_media_listing_response(
         root=resolved["root"],
         path=resolved["path"],
@@ -4055,6 +4096,7 @@ def list_media_entries(
     layout_column_width: int = 0,
     layout_gap: int = 0,
     layout_column_heights: list[float] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict:
     return _list_supported_entries(
         root_key,
@@ -4075,6 +4117,7 @@ def list_media_entries(
         layout_column_width=layout_column_width,
         layout_gap=layout_gap,
         layout_column_heights=layout_column_heights,
+        progress_callback=progress_callback,
     )
 
 
@@ -4194,6 +4237,7 @@ def write_records(state_path, records):
 def update_record(state_path, task_id, updates):
     records = read_records(state_path)
     record = dict(records.get(task_id) or {})
+    updates["updated_at"] = time.time()
     record.update(updates)
     records[task_id] = record
     write_records(state_path, records)
@@ -4338,6 +4382,7 @@ def _update_delete_task_record(task_id: str, updates: dict[str, Any]) -> dict[st
     with _filesystem_delete_task_lock:
         records = _read_delete_task_records_unlocked()
         record = dict(records.get(task_id) or {})
+        updates["updated_at"] = time.time()
         record.update(updates)
         records[task_id] = record
         _write_delete_task_records_unlocked(records)
@@ -4415,8 +4460,6 @@ def _refresh_delete_task_record(record: dict[str, Any]) -> dict[str, Any]:
     latest = refreshed
     pid = latest.get("pid")
     if _delete_process_is_alive(pid, latest.get("pid_started_at")):
-        if status == "running":
-            return latest
         return _update_delete_task_record(
             task_id,
             {
@@ -4468,6 +4511,7 @@ def _serialize_delete_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "status": snapshot.get("status") or "unknown",
         "queued_at": snapshot.get("queued_at"),
         "started_at": snapshot.get("started_at"),
+        "updated_at": snapshot.get("updated_at"),
         "finished_at": snapshot.get("finished_at"),
         "pid": snapshot.get("pid"),
         "pid_started_at": snapshot.get("pid_started_at"),
@@ -5388,6 +5432,61 @@ def list_media(req: MediaListRequest, session: Session = Depends(get_session)):
         layout_gap=req.layout_gap,
         layout_column_heights=req.layout_column_heights,
     )
+
+
+def _run_media_list_task(req: MediaListRequest, context: LongTaskContext) -> dict:
+    def heartbeat(progress: dict[str, Any]) -> None:
+        context.heartbeat(
+            stage=str(progress.get("stage") or "running"),
+            message=str(progress.get("message") or "运行中"),
+            progress_current=progress.get("progress_current"),
+            progress_total=progress.get("progress_total"),
+        )
+
+    with Session(engine) as task_session:
+        return list_media_entries(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            recursive=req.recursive,
+            scan_limit=req.scan_limit,
+            session=task_session,
+            sort_mode=req.sort_mode,
+            sort_program=req.sort_program,
+            snapshot_id=req.snapshot_id,
+            offset=req.offset,
+            limit=req.limit,
+            layout_mode=req.layout_mode,
+            layout_columns=req.layout_columns,
+            layout_column_width=req.layout_column_width,
+            layout_gap=req.layout_gap,
+            layout_column_heights=req.layout_column_heights,
+            progress_callback=heartbeat,
+        )
+
+
+@router.post("/media/list/tasks")
+def start_media_list_task(req: MediaListRequest):
+    return _media_list_task_manager.start(
+        lambda context: _run_media_list_task(req, context),
+        stage="queued",
+        message="媒体列表任务已排队",
+        metadata={
+            "root": req.root,
+            "path": req.path,
+            "absolute_path": req.absolute_path,
+            "recursive": req.recursive,
+            "scan_limit": req.scan_limit,
+        },
+    )
+
+
+@router.get("/media/list/tasks/{task_id}")
+def get_media_list_task(task_id: str):
+    try:
+        return _media_list_task_manager.serialize_task(task_id)
+    except LongTaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Media list task not found") from exc
 
 
 @router.post("/duplicates")
