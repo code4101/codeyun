@@ -1808,11 +1808,11 @@ def _fanxiu_worldline_items_from_decoded(data: dict[str, Any], *, export_root: s
     return []
 
 
-def get_latest_fanxiu_worldline_activity_schedule(
+def list_fanxiu_worldline_activity_schedule_snapshots(
     *,
     data_dir: str | Path | None = None,
     export_root: str | Path | None = None,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
     candidates: list[dict[str, Any]] = []
 
@@ -1871,6 +1871,18 @@ def get_latest_fanxiu_worldline_activity_schedule(
             }
         )
 
+    candidates.sort(key=lambda item: float(item.get("source_mtime") or 0), reverse=True)
+    for candidate in candidates:
+        candidate["count"] = len(candidate.get("items") or [])
+    return candidates
+
+
+def get_latest_fanxiu_worldline_activity_schedule(
+    *,
+    data_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    candidates = list_fanxiu_worldline_activity_schedule_snapshots(data_dir=data_dir, export_root=export_root)
     if not candidates:
         return {
             "available": False,
@@ -1888,9 +1900,8 @@ def get_latest_fanxiu_worldline_activity_schedule(
             "decode_warnings": [],
             "items": [],
         }
-    latest = max(candidates, key=lambda item: float(item.get("source_mtime") or 0))
+    latest = candidates[0]
     latest["available"] = True
-    latest["count"] = len(latest.get("items") or [])
     latest.pop("source_mtime", None)
     return latest
 
@@ -1900,7 +1911,28 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
     sources: list[dict[str, Any]] = []
     seen: set[tuple[str, int, str]] = set()
 
-    for record in list_fanxiu_tcp_records(data_dir=data_dir, limit=500)["items"]:
+    record_rows: list[dict[str, Any]] = []
+    if root.is_dir():
+        for meta_path in sorted(root.glob("*/meta.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+            meta = _load_json_file(meta_path) or {}
+            record_dir = meta_path.parent
+            decoded_path = Path(str(meta.get("decoded_path") or record_dir / "decoded.json"))
+            stored_pcap_text = str(meta.get("stored_pcap") or "")
+            stored_pcap = Path(stored_pcap_text) if stored_pcap_text else None
+            record_rows.append(
+                {
+                    "record_id": meta.get("record_id") or record_dir.name,
+                    "decoded_path": str(decoded_path),
+                    "source_pcap": meta.get("source_pcap") or "",
+                    "stored_pcap": str(stored_pcap) if stored_pcap else "",
+                    "stream": int(meta.get("stream") or 0),
+                    "capture_sha256": meta.get("capture_sha256") or "",
+                    "pcap_name": meta.get("pcap_name") or (stored_pcap.name if stored_pcap else ""),
+                    "created_at": meta.get("created_at") or "",
+                }
+            )
+
+    for record in record_rows:
         decoded_path = Path(str(record.get("decoded_path") or ""))
         if not decoded_path.is_file():
             continue

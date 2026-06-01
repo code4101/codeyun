@@ -72,3 +72,7 @@ backend/data/
 /.tmp-dev-observe
 /.tmp_*/
 /.tmp_git_reduce_debug/
+
+# Auto Git ignored local artifacts
+tmp/
+tmp_mask_debug/

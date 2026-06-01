@@ -60,7 +60,6 @@ from backend.models import (
     AttendanceOrderRefundHistory,
     AttendanceWjxDataEntry,
     AttendanceWjxDataSyncState,
-    ResourceAccessGrant,
     SheetDocument,
     User,
     UserDevice,
@@ -68,6 +67,8 @@ from backend.models import (
     WorkbookSheetLink,
 )
 from backend.core.resource_identity import RESOURCE_TYPE_SHEET, allocate_resource_id
+from backend.core.note_sheet_access import ensure_sheet_anonymous_viewer
+from backend.core import note_sheet_inline_links
 from backend.core.sheet_identity import allocate_new_sheet_identity
 from backend.core.sheet_refs import (
     load_sheets_by_refs,
@@ -120,10 +121,6 @@ ATTENDANCE_WJX_DATA_COLUMNS = [
 ]
 ATTENDANCE_WJX_OMITTED_COURSE_OWNER_NAMES = ("陈坤泽",)
 FEEDBACK_COURSE_SOURCE_SHEET_ID = 4
-NOTE_SHEET_PUBLIC_RESOURCE_TYPE = "sheet"
-NOTE_SHEET_PUBLIC_SUBJECT_TYPE = "anonymous"
-NOTE_SHEET_PUBLIC_SUBJECT_KEY = "anonymous"
-NOTE_SHEET_PUBLIC_VIEWER_ROLE = "viewer"
 FEEDBACK_COURSE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_name": ("课程名称", 1),
     "online_sheet": ("在线考勤表", 2),
@@ -571,7 +568,10 @@ def _build_attendance_header_document(
             },
         }
         if cell.url:
-            entry["link"] = {"url": cell.url}
+            second_row[cell.column_index] = note_sheet_inline_links.with_inline_cell_link(
+                second_row[cell.column_index],
+                {"url": cell.url},
+            )
         cell_meta[f"1:{cell.column_index}"] = entry
 
     return {
@@ -680,7 +680,11 @@ def _build_attendance_header_tool_response(course_name_source: Any) -> Attendanc
         raise HTTPException(status_code=404, detail="没有找到可生成的表头数据")
 
     document_json = _build_attendance_header_document(groups, cells)
-    rows = list(document_json["grid_rows"])
+    rows = [
+        [_extract_inline_cell_text(cell) for cell in row]
+        for row in list(document_json["grid_rows"])
+        if isinstance(row, list)
+    ]
     return AttendanceHeaderToolResponse(
         course_name=course_name,
         course_type="禅宗",
@@ -722,41 +726,8 @@ def _ensure_note_sheet_anonymous_viewer(session: Session, document: SheetDocumen
     numeric_id = int(document.numeric_id or 0)
     if numeric_id <= 0:
         raise HTTPException(status_code=500, detail="考勤表格资源编号缺失")
-    resource_id = str(numeric_id)
-
-    grant = session.exec(
-        select(ResourceAccessGrant)
-        .where(ResourceAccessGrant.resource_type == NOTE_SHEET_PUBLIC_RESOURCE_TYPE)
-        .where(ResourceAccessGrant.resource_id == resource_id)
-        .where(ResourceAccessGrant.subject_key == NOTE_SHEET_PUBLIC_SUBJECT_KEY)
-    ).first()
-    now = time.time()
-    mutated = False
-    if grant is None:
-        grant = ResourceAccessGrant(
-            resource_type=NOTE_SHEET_PUBLIC_RESOURCE_TYPE,
-            resource_id=resource_id,
-            subject_key=NOTE_SHEET_PUBLIC_SUBJECT_KEY,
-            subject_type=NOTE_SHEET_PUBLIC_SUBJECT_TYPE,
-            role=NOTE_SHEET_PUBLIC_VIEWER_ROLE,
-            created_at=now,
-            updated_at=now,
-        )
-        mutated = True
-    elif (
-        grant.role != NOTE_SHEET_PUBLIC_VIEWER_ROLE
-        or grant.subject_type != NOTE_SHEET_PUBLIC_SUBJECT_TYPE
-        or grant.subject_user_id is not None
-    ):
-        grant.role = NOTE_SHEET_PUBLIC_VIEWER_ROLE
-        grant.subject_type = NOTE_SHEET_PUBLIC_SUBJECT_TYPE
-        grant.subject_user_id = None
-        grant.updated_at = now
-        mutated = True
-
-    if mutated:
-        session.add(grant)
-        session.commit()
+    ensure_sheet_anonymous_viewer(session, document)
+    session.commit()
     return _build_public_note_sheet_url(document)
 
 
@@ -795,6 +766,42 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
 
 def _normalize_attendance_wjx_sheet_cell(value: Any) -> str:
     return _normalize_wjx_data_text(value)
+
+
+def _coerce_inline_cell_object(value: Any) -> dict[str, Any] | None:
+    return note_sheet_inline_links.coerce_inline_cell_object(value)
+
+
+def _extract_inline_cell_text(value: Any) -> str:
+    record = _coerce_inline_cell_object(value)
+    if record is not None:
+        for key in ("value", "text", "title", "label", "name"):
+            if key in record:
+                text = _extract_inline_cell_text(record.get(key))
+                if text:
+                    return text
+        link = record.get("link")
+        if isinstance(link, dict):
+            return _extract_inline_cell_text(link.get("title") or link.get("url"))
+        return ""
+
+    if isinstance(value, (list, tuple)):
+        return ", ".join(
+            text
+            for text in (_extract_inline_cell_text(item) for item in value)
+            if text
+        )
+    return _normalize_scalar_wjx_data_text(value)
+
+
+def _extract_inline_cell_link_url(value: Any) -> str:
+    record = _coerce_inline_cell_object(value)
+    if record is None:
+        return ""
+    link = record.get("link")
+    if not isinstance(link, dict):
+        return ""
+    return _extract_inline_cell_text(link.get("url"))
 
 
 def _normalize_attendance_wjx_course_owner_display(value: Any) -> str:
@@ -912,6 +919,58 @@ def _remap_attendance_wjx_sheet_cell_meta_columns(
     return remapped
 
 
+def _strip_attendance_wjx_sheet_cell_meta_links(cell_meta: Any) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+    next_meta: dict[str, Any] = {}
+    for key, entry in cell_meta.items():
+        if not isinstance(entry, dict):
+            next_meta[str(key)] = entry
+            continue
+        next_entry = dict(entry)
+        next_entry.pop("link", None)
+        if next_entry:
+            next_meta[str(key)] = next_entry
+    return next_meta
+
+
+def _apply_attendance_wjx_sheet_inline_links_to_rows(
+    rows: list[list[Any]],
+    rows_source: Any,
+    *,
+    source_columns: list[str],
+    target_columns: list[str],
+) -> bool:
+    if not isinstance(rows_source, list):
+        return False
+    source_index_by_target: dict[int, int] = {}
+    for target_index, header in enumerate(target_columns):
+        try:
+            source_index_by_target[target_index] = source_columns.index(header)
+        except ValueError:
+            continue
+
+    changed = False
+    for row_index, row in enumerate(rows):
+        source_row = rows_source[row_index] if row_index < len(rows_source) else None
+        if not isinstance(source_row, list):
+            continue
+        for target_index, source_index in source_index_by_target.items():
+            if source_index >= len(source_row) or target_index >= len(row):
+                continue
+            url = _extract_inline_cell_link_url(source_row[source_index])
+            if not url:
+                continue
+            next_cell = {
+                "value": _extract_inline_cell_text(row[target_index]),
+                "link": {"url": url},
+            }
+            if row[target_index] != next_cell:
+                row[target_index] = next_cell
+                changed = True
+    return changed
+
+
 def _remap_attendance_wjx_sheet_column_widths(
     column_widths: Any,
     *,
@@ -1016,7 +1075,7 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
         target_columns=columns,
     )
     if cell_meta is not None:
-        normalized["cell_meta"] = cell_meta
+        normalized["cell_meta"] = _strip_attendance_wjx_sheet_cell_meta_links(cell_meta)
     column_widths = _remap_attendance_wjx_sheet_column_widths(
         source.get("column_widths"),
         source_columns=source_columns,
@@ -1039,6 +1098,15 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
             prefix_rows.append(_normalize_attendance_wjx_sheet_row(row, columns, source_columns=source_columns))
         normalized["grid_rows"] = [*prefix_rows, *rows]
         normalized["data_start_row"] = data_start_row
+    _apply_attendance_wjx_sheet_inline_links_to_rows(
+        rows,
+        rows_source,
+        source_columns=source_columns,
+        target_columns=columns,
+    )
+    if isinstance(normalized.get("grid_rows"), list):
+        data_start_row = _normalize_attendance_wjx_sheet_data_start_row(normalized)
+        normalized["grid_rows"] = [*normalized["grid_rows"][:data_start_row], *rows]
     return normalized
 
 
@@ -1061,29 +1129,51 @@ def _set_attendance_wjx_sheet_cell_link(
     column_index: int,
     url: str,
 ) -> bool:
-    cell_meta = dict(document_json.get("cell_meta") if isinstance(document_json.get("cell_meta"), dict) else {})
     row_offset = _normalize_attendance_wjx_sheet_data_start_row(document_json)
-    document_row_index = row_index + row_offset
-    key = f"{document_row_index}:{column_index}"
-    entry = dict(cell_meta.get(key) if isinstance(cell_meta.get(key), dict) else {})
     normalized_url = _normalize_attendance_wjx_sheet_cell(url)
-    changed = False
+    rows = document_json.get("rows")
+    if not isinstance(rows, list) or row_index < 0 or row_index >= len(rows):
+        return False
+    row = rows[row_index]
+    if not isinstance(row, list):
+        return False
+    while len(row) <= column_index:
+        row.append("")
 
-    if normalized_url:
-        current_link = entry.get("link") if isinstance(entry.get("link"), dict) else {}
-        if _normalize_attendance_wjx_sheet_cell(current_link.get("url")) != normalized_url:
-            entry["link"] = {"url": normalized_url}
-            cell_meta[key] = entry
-            changed = True
-    else:
-        if "link" in entry:
-            entry.pop("link", None)
-            if entry:
-                cell_meta[key] = entry
+    current_cell = row[column_index]
+    current_value = _extract_inline_cell_text(current_cell)
+    current_url = _extract_inline_cell_link_url(current_cell)
+    next_cell: Any = (
+        {"value": current_value, "link": {"url": normalized_url}}
+        if normalized_url
+        else current_value
+    )
+    changed = next_cell != current_cell or current_url != normalized_url
+    row[column_index] = next_cell
+
+    grid_rows = document_json.get("grid_rows")
+    document_row_index = row_index + row_offset
+    if isinstance(grid_rows, list) and 0 <= document_row_index < len(grid_rows):
+        grid_row = grid_rows[document_row_index]
+        if isinstance(grid_row, list):
+            while len(grid_row) <= column_index:
+                grid_row.append("")
+            if grid_row[column_index] != next_cell:
+                grid_row[column_index] = next_cell
+                changed = True
+
+    cell_meta = dict(document_json.get("cell_meta") if isinstance(document_json.get("cell_meta"), dict) else {})
+    for meta_row in (document_row_index, row_index):
+        key = f"{meta_row}:{column_index}"
+        entry = cell_meta.get(key)
+        if isinstance(entry, dict) and "link" in entry:
+            next_entry = dict(entry)
+            next_entry.pop("link", None)
+            if next_entry:
+                cell_meta[key] = next_entry
             else:
                 cell_meta.pop(key, None)
             changed = True
-
     document_json["cell_meta"] = cell_meta
     return changed
 
@@ -1164,14 +1254,37 @@ def _clear_attendance_wjx_sheet_column_links(
     column_index: int,
     row_count: int,
 ) -> bool:
-    cell_meta = document_json.get("cell_meta")
-    if not isinstance(cell_meta, dict) or row_count <= 0:
+    if row_count <= 0:
         return False
 
     row_offset = _normalize_attendance_wjx_sheet_data_start_row(document_json)
+    rows = document_json.get("rows")
+    grid_rows = document_json.get("grid_rows")
+    changed = False
+    if isinstance(rows, list):
+        for row_index, row in enumerate(rows[:row_count]):
+            if not isinstance(row, list) or column_index >= len(row):
+                continue
+            cell = row[column_index]
+            if _extract_inline_cell_link_url(cell):
+                row[column_index] = _extract_inline_cell_text(cell)
+                changed = True
+    if isinstance(grid_rows, list):
+        for row_index in range(row_offset, min(row_offset + row_count, len(grid_rows))):
+            row = grid_rows[row_index]
+            if not isinstance(row, list) or column_index >= len(row):
+                continue
+            cell = row[column_index]
+            if _extract_inline_cell_link_url(cell):
+                row[column_index] = _extract_inline_cell_text(cell)
+                changed = True
+
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict):
+        return changed
+
     candidate_rows = set(range(row_count)) | set(range(row_offset, row_offset + row_count))
     next_meta = dict(cell_meta)
-    changed = False
     for row_index in candidate_rows:
         key = f"{row_index}:{column_index}"
         entry = next_meta.get(key)
@@ -1787,7 +1900,7 @@ def _normalize_order_history_text(value: Any) -> str:
 
 
 def _normalize_feedback_sheet_text(value: Any) -> str:
-    return "" if value is None else str(value).strip()
+    return _normalize_wjx_data_text(value)
 
 
 def _normalize_feedback_sheet_columns(document_json: dict[str, Any]) -> list[str]:
@@ -1835,17 +1948,19 @@ def _extract_feedback_sheet_cell(row: Any, column_index: int, columns: list[str]
 
 
 def _extract_feedback_sheet_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
-    cell_meta = document_json.get("cell_meta")
-    if not isinstance(cell_meta, dict):
-        return ""
     meta_row_index = row_index + _normalize_feedback_sheet_data_start_row(document_json)
-    entry = cell_meta.get(f"{meta_row_index}:{column_index}")
-    if not isinstance(entry, dict):
-        return ""
-    link = entry.get("link")
-    if not isinstance(link, dict):
-        return ""
-    return _normalize_feedback_sheet_text(link.get("url"))
+    rows = _extract_feedback_sheet_rows(document_json)
+    columns = _normalize_feedback_sheet_columns(document_json)
+    if 0 <= row_index < len(rows):
+        url = _extract_inline_cell_link_url(_extract_feedback_sheet_cell(rows[row_index], column_index, columns))
+        if url:
+            return url
+    grid_rows = document_json.get("grid_rows")
+    if isinstance(grid_rows, list) and 0 <= meta_row_index < len(grid_rows):
+        url = _extract_inline_cell_link_url(_extract_feedback_sheet_cell(grid_rows[meta_row_index], column_index, columns))
+        if url:
+            return url
+    return ""
 
 
 def _extract_feedback_course_options_from_sheet(document_json: dict[str, Any]) -> list[AttendanceFeedbackCourseOption]:
@@ -2291,7 +2406,7 @@ def _build_order_refund_history_page(session: Session, *, page: int, page_size: 
     )
 
 
-def _normalize_wjx_data_text(value: Any) -> str:
+def _normalize_scalar_wjx_data_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -2303,6 +2418,10 @@ def _normalize_wjx_data_text(value: Any) -> str:
             return str(int(value))
         return f"{value:g}"
     return str(value).strip()
+
+
+def _normalize_wjx_data_text(value: Any) -> str:
+    return _extract_inline_cell_text(value)
 
 
 def _normalize_required_feedback_text(value: Any, *, field_name: str) -> str:

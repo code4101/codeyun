@@ -499,17 +499,23 @@ const normalizeCodexDiaryImportRun = (raw: any): CodexDiaryImportRunResponse => 
   heartbeat_at: raw.heartbeat_at ? raw.heartbeat_at * 1000 : null
 });
 
+const CODEX_DIARY_IMPORT_REQUEST_TIMEOUT_MS = 60_000;
+
 export const startCodexDiaryImportRun = async (
   payload: CodexDiaryImportRunRequest
 ): Promise<CodexDiaryImportRunResponse> => {
-  const response = await api.post('/notes/codex-diary/import-runs', payload);
+  const response = await api.post('/notes/codex-diary/import-runs', payload, {
+    timeout: CODEX_DIARY_IMPORT_REQUEST_TIMEOUT_MS,
+  });
   return normalizeCodexDiaryImportRun(response.data);
 };
 
 export const fetchCodexDiaryImportRun = async (
   runId: string
 ): Promise<CodexDiaryImportRunResponse> => {
-  const response = await api.get(`/notes/codex-diary/import-runs/${runId}`);
+  const response = await api.get(`/notes/codex-diary/import-runs/${runId}`, {
+    timeout: CODEX_DIARY_IMPORT_REQUEST_TIMEOUT_MS,
+  });
   return normalizeCodexDiaryImportRun(response.data);
 };
 

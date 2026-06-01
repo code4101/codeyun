@@ -66,7 +66,7 @@ from backend.core.codex_sessions import (
 from backend.core.codex_device_summary import collect_multi_codex_daily_summary_source
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.guest_notes import get_current_active_or_guest_notes_user
-from backend.core.note_access import note_to_response_dict
+from backend.core.note_access import note_to_list_response_dict, note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
     NOTE_CATEGORY_DEFAULT,
@@ -115,7 +115,7 @@ from backend.core.note_refs import (
     note_public_id,
     note_ref_aliases,
 )
-from backend.core.note_walker import NoteGraphContext, NoteWalker
+from backend.core.note_walker import NoteGraphContext, NoteWalker, _resolve_time_point_expr
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.resource_identity import RESOURCE_TYPE_NOTE
 import time
@@ -3292,7 +3292,7 @@ def _apply_completion_progress_expr_to_note_data(
 
 
 def _serialize_note_list(note: NoteNode, current_user: User) -> dict[str, Any]:
-    return note_to_response_dict(note, current_user)
+    return note_to_list_response_dict(note, current_user)
 
 
 def _serialize_note_read(
@@ -4259,6 +4259,94 @@ def _normalize_note_program_public_ids(request: NoteProgramRequest, current_user
                 rule.matcher.ids = normalize_ids(rule.matcher.ids)
 
 
+def _program_matcher_to_filter_rule(matcher) -> Optional[NoteFilterRule]:
+    if matcher.kind != "field" or not matcher.field:
+        return None
+
+    op = matcher.op or "eq"
+    if matcher.field in {"start_at", "updated_at"} and (matcher.time_value is not None or matcher.time_values):
+        if op == "between":
+            values = [
+                resolved
+                for resolved in (_resolve_time_point_expr(expr) for expr in (matcher.time_values or []))
+                if resolved is not None
+            ]
+            if len(values) < 2:
+                return None
+            return NoteFilterRule(field=matcher.field, op=op, values=values[:2])
+
+        value = _resolve_time_point_expr(matcher.time_value)
+        if value is None:
+            return None
+        return NoteFilterRule(field=matcher.field, op=op, value=value)
+
+    return NoteFilterRule(
+        field=matcher.field,
+        op=op,
+        value=matcher.value,
+        values=list(matcher.values or []),
+    )
+
+
+def _try_execute_note_program_sql_scan(
+    request: NoteProgramRequest,
+    *,
+    current_user: User,
+    user_id: int,
+    session: Session,
+) -> Optional[dict[str, Any]]:
+    if request.executor.kind != "scan" or request.result.include_edges:
+        return None
+    if request.program.expand.default or request.program.expand.rules:
+        return None
+    if request.program.select.default:
+        return None
+
+    select_rules = request.program.select.rules
+    if not select_rules:
+        return None
+
+    first_rule = select_rules[0]
+    first_filter = _program_matcher_to_filter_rule(first_rule.matcher)
+    if first_rule.action != "include" or first_filter is None:
+        return None
+    if first_filter.field not in {"start_at", "updated_at"} or first_filter.op != "between":
+        return None
+
+    tail_rules = select_rules[1:]
+    if any(rule.action != "exclude" for rule in tail_rules):
+        return None
+
+    query = select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
+    query, handled = _apply_sql_rule(query, first_filter)
+    if not handled:
+        return None
+
+    candidate_notes = session.exec(query).all()
+    exclude_rules: list[NoteFilterRule] = []
+    for rule in tail_rules:
+        filter_rule = _program_matcher_to_filter_rule(rule.matcher)
+        if filter_rule is None:
+            return None
+        exclude_rules.append(filter_rule)
+
+    filtered_notes = [
+        note
+        for note in candidate_notes
+        if not any(_matches_rule(note, rule) for rule in exclude_rules)
+    ]
+    sorted_notes = _sort_notes(filtered_notes, request.result.order_by, request.result.order_desc)
+    total_nodes = len(sorted_notes)
+    visible_nodes = sorted_notes[request.result.skip: request.result.skip + request.result.limit]
+
+    return {
+        "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
+        "edges": [],
+        "total_nodes": total_nodes,
+        "total_edges": 0,
+    }
+
+
 def _execute_note_program(
     request: NoteProgramRequest,
     *,
@@ -4268,6 +4356,15 @@ def _execute_note_program(
 ):
     need_edges = request.result.include_edges or request.executor.kind == "component"
     _normalize_note_program_public_ids(request, current_user, session)
+    sql_scan_result = _try_execute_note_program_sql_scan(
+        request,
+        current_user=current_user,
+        user_id=user_id,
+        session=session,
+    )
+    if sql_scan_result is not None:
+        return sql_scan_result
+
     context = _load_note_context(user_id, session, include_edges=need_edges)
     walker = _build_program_walker(context, request)
 

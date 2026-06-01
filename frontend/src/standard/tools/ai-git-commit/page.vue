@@ -767,6 +767,7 @@ import { taskStore, type Device } from '@/store/taskStore'
 import { useAiProviderStore } from '@/store/aiProviderStore'
 import { useAiAppStore } from '@/store/aiAppStore'
 import { useUserStore } from '@/store/userStore'
+import { monitorPolledTask } from '@/utils/longTask'
 
 interface PersistedAiGitCommitForm {
   entryId: string
@@ -960,8 +961,7 @@ const fileDiffMap = ref<Record<string, GitFileDiffResponse>>({})
 const fileDiffErrorMap = ref<Record<string, string>>({})
 const loadingFileDiffPath = ref('')
 const addRepoDialogVisible = ref(false)
-let reductionRunPollTimer: ReturnType<typeof setInterval> | null = null
-let reductionRunPollInFlight = false
+let reductionRunPollVersion = 0
 const addRepoForm = reactive<AddRepoFormState>({
   name: '',
   entryId: '',
@@ -1378,54 +1378,59 @@ function resetWorkspaceResult() {
 }
 
 function stopReductionRunPolling() {
-  if (reductionRunPollTimer !== null) {
-    clearInterval(reductionRunPollTimer)
-    reductionRunPollTimer = null
-  }
+  reductionRunPollVersion += 1
 }
 
-async function refreshReductionRunSilently(entryId: string, runId: string) {
-  if (reductionRunPollInFlight) {
+function startReductionRunPolling(entryId: string, runId: string) {
+  const initial = reductionRun.value
+  if (!initial || initial.id !== runId || initial.status !== 'running') {
     return
   }
-  reductionRunPollInFlight = true
-  try {
-    const nextRun = await fetchDeviceEntryGitReductionRun(entryId, runId)
-    reductionRun.value = nextRun
-    if (nextRun.status === 'completed') {
-      stopReductionRunPolling()
-      if (nextRun.result) {
-        applyDraftResponse(nextRun.result)
+  const pollVersion = ++reductionRunPollVersion
+  void monitorPolledTask<GitReductionRunRead>({
+    initial,
+    poll: async (run) => {
+      if (pollVersion !== reductionRunPollVersion) {
+        return { ...run, status: 'completed' }
       }
-      if (nextRun.commit) {
-        lastCommit.value = nextRun.commit
-        ElMessage.success(`已拆分归纳并提交：${nextRun.commit.short_hash}`)
+      return fetchDeviceEntryGitReductionRun(entryId, runId)
+    },
+    isRunning: (run) => run.status === 'running' && pollVersion === reductionRunPollVersion,
+    getUpdatedAt: (run) => run.updated_at,
+    getError: (run) => run.status === 'failed' ? (run.error_message || '分层拆分失败') : '',
+    pollIntervalMs: 1500,
+    idleTimeoutMs: 45_000,
+    onUpdate: (run) => {
+      if (pollVersion === reductionRunPollVersion) {
+        reductionRun.value = run
+      }
+    },
+  }).then(async (run) => {
+    if (pollVersion !== reductionRunPollVersion) {
+      return
+    }
+    reductionRun.value = run
+    if (run.status === 'completed') {
+      if (run.result) {
+        applyDraftResponse(run.result)
+      }
+      if (run.commit) {
+        lastCommit.value = run.commit
+        ElMessage.success(`已拆分归纳并提交：${run.commit.short_hash}`)
         await loadInspectResult({ silentClean: true })
         await loadHistoryStats({ silent: true })
         if (selectedSavedRepoId.value) {
           await markSavedRepoAsUsed(selectedSavedRepoId.value)
         }
       } else {
-        ElMessage.success(`已完成分层拆分，共 ${nextRun.level_count || nextRun.estimated_level_count || '-'} 层`)
+        ElMessage.success(`已完成分层拆分，共 ${run.level_count || run.estimated_level_count || '-'} 层`)
       }
-    } else if (nextRun.status === 'failed') {
-      stopReductionRunPolling()
-      ElMessage.error(nextRun.error_message || '分层拆分失败')
     }
-  } catch (error: any) {
-    stopReductionRunPolling()
-    ElMessage.error(getErrorMessage(error))
-  } finally {
-    reductionRunPollInFlight = false
-  }
-}
-
-function startReductionRunPolling(entryId: string, runId: string) {
-  stopReductionRunPolling()
-  void refreshReductionRunSilently(entryId, runId)
-  reductionRunPollTimer = window.setInterval(() => {
-    void refreshReductionRunSilently(entryId, runId)
-  }, 1500)
+  }).catch((error: any) => {
+    if (pollVersion === reductionRunPollVersion) {
+      ElMessage.error(getErrorMessage(error))
+    }
+  })
 }
 
 async function loadSavedRepos() {

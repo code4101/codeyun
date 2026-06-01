@@ -128,7 +128,7 @@ def _get_anonymous_sheet_grant(session, sheet: SheetDocument) -> ResourceAccessG
     ).first()
 
 
-def _course_row(course_name: str, online_sheet: str, completed_date: object = "") -> list[object]:
+def _course_row(course_name: str, online_sheet: object, completed_date: object = "") -> list[object]:
     return ["", course_name, online_sheet, "", "", "", "", "", "", "", completed_date]
 
 
@@ -333,18 +333,22 @@ def test_attendance_feedback_form_meta_reads_unfinished_courses_from_summary_she
     _create_attendance_summary_course_sheet(
         session,
         rows=[
-            _course_row("2025念住闯关第2部分", "20250106念住闯关"),
-            _course_row("第40届念住", "20260501第40届念住"),
+            _course_row(
+                "2025念住闯关第2部分",
+                {"value": "20250106念住闯关", "link": {"url": "https://www.kdocs.cn/l/nianzhu"}},
+            ),
+            _course_row(
+                "第40届念住",
+                {"value": "20260501第40届念住", "link": {"url": "https://www.kdocs.cn/l/nianzhu40"}},
+            ),
             _course_row("第39届念住", "20260401第39届念住", "46142"),
-            _course_row("第46届觉观", "20260501第46届觉观"),
+            _course_row(
+                "第46届觉观",
+                {"value": "20260501第46届觉观", "link": {"url": "https://www.kdocs.cn/l/jueguan46"}},
+            ),
             _course_row("重复课程", "20260501第46届觉观"),
             _course_row("梵呗初阶", ""),
         ],
-        cell_meta={
-            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu"}},
-            "1:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu40"}},
-            "3:2": {"link": {"url": "https://www.kdocs.cn/l/jueguan46"}},
-        },
         updated_at=5678.0,
     )
 
@@ -371,7 +375,7 @@ def test_attendance_feedback_form_meta_reads_unfinished_courses_from_summary_she
     assert _get_anonymous_sheet_grant(session, source_sheet) is None
 
 
-def test_attendance_feedback_form_meta_reads_links_from_grid_row_cell_meta(client: TestClient, session):
+def test_attendance_feedback_form_meta_reads_links_from_grid_row_inline_cells(client: TestClient, session):
     _create_attendance_summary_course_sheet(
         session,
         rows=[
@@ -379,22 +383,18 @@ def test_attendance_feedback_form_meta_reads_links_from_grid_row_cell_meta(clien
             _course_row("梵呗初阶", "20260601梵呗初阶"),
             _course_row("禅宗1至3期5阶", "20260308禅宗1至3期五阶"),
         ],
-        cell_meta=_shift_cell_meta_rows(
-            {
-                "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu"}},
-                "2:2": {"link": {"url": "https://www.kdocs.cn/l/zen-five"}},
-            },
-            1,
-        ),
         updated_at=5678.0,
     )
     source_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
     document_json = dict(source_sheet.document_json or {})
     columns = list(document_json["columns"])
     rows = list(document_json["rows"])
+    grid_rows = [columns, *rows]
+    grid_rows[1][2] = {"value": "20250106念住闯关", "link": {"url": "https://www.kdocs.cn/l/nianzhu"}}
+    grid_rows[3][2] = {"value": "20260308禅宗1至3期五阶", "link": {"url": "https://www.kdocs.cn/l/zen-five"}}
     source_sheet.document_json = {
         **document_json,
-        "grid_rows": [columns, *rows],
+        "grid_rows": grid_rows,
         "data_start_row": 1,
         "field_row_index": 0,
     }
@@ -458,7 +458,8 @@ def test_attendance_header_tool_builds_zen_week_headers(monkeypatch):
         {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
         {"row": 0, "col": 2, "rowspan": 1, "colspan": 2},
     ]
-    assert payload.document_json["cell_meta"]["1:2"]["link"]["url"] == payload.cells[2].url
+    assert payload.document_json["grid_rows"][1][2]["link"]["url"] == payload.cells[2].url
+    assert not any("link" in entry for entry in payload.document_json.get("cell_meta", {}).values() if isinstance(entry, dict))
 
 
 def test_attendance_header_tool_accepts_plain_date_prefix(monkeypatch):
@@ -1042,6 +1043,7 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
         "修正需求",
         "补充说明",
         "处理状态",
+        "AI初判",
     ]
     assert "处理说明" not in sheet.document_json["columns"]
     assert all(config.get("hidden") is not True for config in sheet.document_json["column_configs"].values())
@@ -1059,6 +1061,7 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
         "补第2课",
         "备注1",
         "已补登",
+        "",
     ]]
     link = session.exec(
         select(WorkbookSheetLink)
@@ -1095,6 +1098,7 @@ def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client:
             "旧问题",
             "",
             "人工已处理",
+            "",
         ]],
     }
     assert columns == sheet.document_json["columns"]
@@ -1128,6 +1132,7 @@ def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client:
         "今天没有收到退款",
         "来自公开采集页",
         "",
+        "",
     ]
 
 
@@ -1137,11 +1142,11 @@ def test_attendance_feedback_submission_links_course_cell_from_summary_sheet(cli
     _create_attendance_summary_course_sheet(
         session,
         rows=[
-            _course_row("第39届念住", "20260408第39届念住"),
+            _course_row(
+                "第39届念住",
+                {"value": "20260408第39届念住", "link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
+            ),
         ],
-        cell_meta={
-            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
-        },
     )
 
     submit_response = client.post(
@@ -1159,20 +1164,41 @@ def test_attendance_feedback_submission_links_course_cell_from_summary_sheet(cli
     sheet = session.exec(
         select(SheetDocument).where(SheetDocument.owner_type == attendance_api.ATTENDANCE_WJX_DATA_OWNER_TYPE)
     ).one()
-    assert sheet.document_json["rows"][0][3] == "20260408第39届念住"
-    assert sheet.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu39"
+    assert sheet.document_json["rows"][0][3] == {
+        "value": "20260408第39届念住",
+        "link": {"url": "https://www.kdocs.cn/l/nianzhu39"},
+    }
+    assert not any("link" in entry for entry in sheet.document_json.get("cell_meta", {}).values() if isinstance(entry, dict))
 
 
 def test_attendance_wjx_sheet_upsert_inserts_by_seq_desc_and_shifts_cell_meta():
     document = attendance_api._create_default_attendance_wjx_sheet_document()
     document["rows"] = [
-        ["900", "2026/4/18 08:00:00", "微信", "旧课程1", "", "39", "吴菲", "旧问题1", "", ""],
-        ["800", "2026/4/17 08:00:00", "微信", "旧课程2", "", "40", "王五", "旧问题2", "", ""],
+        [
+            "900",
+            "2026/4/18 08:00:00",
+            "微信",
+            {"value": "旧课程1", "link": {"url": "https://example.com/old-900"}},
+            "",
+            "39",
+            "吴菲",
+            "旧问题1",
+            "",
+            "",
+        ],
+        [
+            "800",
+            "2026/4/17 08:00:00",
+            "微信",
+            {"value": "旧课程2", "link": {"url": "https://example.com/old-800"}},
+            "",
+            "40",
+            "王五",
+            "旧问题2",
+            "",
+            "",
+        ],
     ]
-    document["cell_meta"] = {
-        "0:3": {"link": {"url": "https://example.com/old-900"}},
-        "1:3": {"link": {"url": "https://example.com/old-800"}},
-    }
 
     next_document, inserted, changed = attendance_api._upsert_attendance_wjx_sheet_values(
         document,
@@ -1194,9 +1220,52 @@ def test_attendance_wjx_sheet_upsert_inserts_by_seq_desc_and_shifts_cell_meta():
     assert inserted is True
     assert changed is True
     assert [row[0] for row in next_document["rows"]] == ["901", "900", "800"]
-    assert next_document["cell_meta"]["0:3"]["link"]["url"] == "https://example.com/new"
-    assert next_document["cell_meta"]["1:3"]["link"]["url"] == "https://example.com/old-900"
-    assert next_document["cell_meta"]["2:3"]["link"]["url"] == "https://example.com/old-800"
+    assert next_document["rows"][0][3]["link"]["url"] == "https://example.com/new"
+    assert next_document["rows"][1][3]["link"]["url"] == "https://example.com/old-900"
+    assert next_document["rows"][2][3]["link"]["url"] == "https://example.com/old-800"
+    assert not any("link" in entry for entry in next_document.get("cell_meta", {}).values() if isinstance(entry, dict))
+
+
+def test_attendance_wjx_sheet_normalizes_inline_link_course_cells():
+    document = attendance_api._create_default_attendance_wjx_sheet_document()
+    document["rows"] = [
+        [
+            "666",
+            "2026/5/31 09:08:00",
+            "微信",
+            {"value": "20260308禅宗8期4.5阶", "link": {"url": "https://www.kdocs.cn/l/cjEE1jEybxRO"}},
+            "",
+            "2-17",
+            "敏兮",
+            "问题1",
+            "",
+            "",
+        ],
+        [
+            "663",
+            "2026/5/25 13:43:00",
+            "微信",
+            "{'value': '20260308禅宗8期4.5阶', 'link': {'url': 'https://www.kdocs.cn/l/copnS6juyN2T'}}",
+            "",
+            "2-18",
+            "敏兮",
+            "问题2",
+            "",
+            "",
+        ],
+    ]
+
+    normalized = attendance_api._normalize_attendance_wjx_sheet_document(document)
+
+    assert normalized["rows"][0][3] == {
+        "value": "20260308禅宗8期4.5阶",
+        "link": {"url": "https://www.kdocs.cn/l/cjEE1jEybxRO"},
+    }
+    assert normalized["rows"][1][3] == {
+        "value": "20260308禅宗8期4.5阶",
+        "link": {"url": "https://www.kdocs.cn/l/copnS6juyN2T"},
+    }
+    assert not any("link" in entry for entry in normalized.get("cell_meta", {}).values() if isinstance(entry, dict))
 
 
 def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: TestClient, session):
@@ -1205,11 +1274,11 @@ def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: 
     _create_attendance_summary_course_sheet(
         session,
         rows=[
-            _course_row("第39届念住", "20260408第39届念住"),
+            _course_row(
+                "第39届念住",
+                {"value": "20260408第39届念住", "link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
+            ),
         ],
-        cell_meta={
-            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
-        },
     )
     _override_user(admin_user)
     try:
@@ -1256,15 +1325,16 @@ def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: 
         "10",
         "2026/4/19 08:00:00",
         "微信",
-        "20260408第39届念住",
+        {"value": "20260408第39届念住", "link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
         "",
         "2-17",
         "薛伟",
         "更新后的问题",
         "补充",
         "人工已处理",
+        "",
     ]]
-    assert sheet.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu39"
+    assert not any("link" in entry for entry in sheet.document_json.get("cell_meta", {}).values() if isinstance(entry, dict))
 
 
 def test_attendance_feedback_submission_persists_and_keeps_existing_rows(client: TestClient, session):

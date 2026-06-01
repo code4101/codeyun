@@ -756,6 +756,7 @@ export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFram
   tolerance_min_data_url?: string;
   tolerance_max_data_url?: string;
   current_frame_data_url?: string;
+  prefer_cached?: boolean;
   match_strategy?: 'auto' | 'anchor_pixel';
   ocr_enabled?: boolean;
   ocr_text?: string;
@@ -2935,6 +2936,7 @@ export interface FanxiuActivitySearchItem {
   description_preview?: string;
   reward_preview?: string;
   time_hints?: FanxiuTimelineHint[];
+  schedule_time_hints?: unknown[];
   first_time_hint?: FanxiuTimelineHint | null;
   loop_entries?: FanxiuActivityLoopEntry[];
   source_table?: string;
@@ -4774,6 +4776,8 @@ export const searchFanxiuActivityCards = (params: {
   sort_order?: string;
   limit?: number;
   offset?: number;
+  item_view?: 'default' | 'schedule';
+  include_facets?: boolean;
 } = {}) => {
   return api.get<FanxiuActivitySearchResponse>('/fanxiu/resources/activities/cards', { params }).then(res => res.data);
 };

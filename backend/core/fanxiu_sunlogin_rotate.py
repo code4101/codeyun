@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -210,11 +211,12 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
     value = str(text or "")
     if not value:
         raise RuntimeError("text 不能为空")
-    # Android `input text` is reliable for ASCII-style text. Spaces must be encoded as %s.
+    if any(ord(char) < 32 for char in value):
+        raise RuntimeError("text 不能包含控制字符")
+    # Android input treats %s as a space token. Quote the argument so Chinese
+    # and punctuation survive the adb shell layer.
     escaped = value.replace("%", "%25").replace(" ", "%s")
-    if not re.fullmatch(r"[A-Za-z0-9_@.%:+\\-]+(?:%s[A-Za-z0-9_@.%:+\\-]+)*", escaped):
-        raise RuntimeError("ADB text 当前仅支持英文、数字和常见账号字符；中文输入后续需要专用 IME 通道")
-    result = _run_mumu_adb_input(f"input text {escaped}")
+    result = _run_mumu_adb_input(f"input text {shlex.quote(escaped)}")
     return {**result, "text_length": len(value)}
 
 
@@ -1760,19 +1762,55 @@ def _match_scan_frame(
                 template_offset_x = left
                 template_offset_y = top
 
-    rects = ImageTools.base_find_img(
-        scan_template,
-        search_crop,
-        grayscale=False,
-        confidence=0.5,
-        sort_by_confidence=True,
-    )
+    import cv2
+    import numpy as np
+
+    def scan_template_candidates(template: Any, haystack: Any, confidence: float = 0.5) -> list[tuple[int, int, int, int, float]]:
+        template_frame = _ensure_bgr_frame(template)
+        haystack_frame = _ensure_bgr_frame(haystack)
+        if template_frame.size == 0 or haystack_frame.size == 0:
+            return []
+        if template_frame.shape[0] > haystack_frame.shape[0] or template_frame.shape[1] > haystack_frame.shape[1]:
+            return []
+        template_gray = cv2.cvtColor(template_frame, cv2.COLOR_BGR2GRAY)
+        haystack_gray = cv2.cvtColor(haystack_frame, cv2.COLOR_BGR2GRAY)
+        if float(np.std(template_gray)) < 1e-6:
+            return []
+        result = cv2.matchTemplate(haystack_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        ys, xs = np.where(result >= float(confidence))
+        candidates = [
+            (int(x), int(y), int(template_frame.shape[1]), int(template_frame.shape[0]), float(result[int(y), int(x)]))
+            for y, x in zip(ys, xs)
+        ]
+        candidates.sort(key=lambda item: item[4], reverse=True)
+        selected: list[tuple[int, int, int, int, float]] = []
+        for candidate in candidates:
+            cx, cy, cw, ch, _score = candidate
+            keep = True
+            for sx0, sy0, sw0, sh0, _ in selected:
+                ix1 = max(cx, sx0)
+                iy1 = max(cy, sy0)
+                ix2 = min(cx + cw, sx0 + sw0)
+                iy2 = min(cy + ch, sy0 + sh0)
+                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                union = cw * ch + sw0 * sh0 - inter
+                if union > 0 and inter / union >= 0.5:
+                    keep = False
+                    break
+            if keep:
+                selected.append(candidate)
+                if len(selected) >= 50:
+                    break
+        return selected
+
+    rects = scan_template_candidates(scan_template, search_crop, confidence=0.75)
     best_box = current_box
     best_similarity = 0
     best_score = 0.0
     matches: list[dict[str, Any]] = []
     for rect in rects:
         x, y, _w, _h = [int(round(v)) for v in rect[:4]]
+        template_score = max(0.0, min(1.0, float(rect[4]) if len(rect) > 4 else 0.0))
         full_x = sx + x - template_offset_x
         full_y = sy + y - template_offset_y
         if full_x < 0 or full_y < 0 or full_x + template_width > frame_width or full_y + template_height > frame_height:
@@ -1796,6 +1834,9 @@ def _match_scan_frame(
             tolerance_min,
             tolerance_max,
         )
+        if template_score > score:
+            score = template_score
+            similarity = int(round(score * 100))
         matches.append(
             {
                 "box": candidate_box,
@@ -1842,6 +1883,7 @@ def match_fanxiu_screenshot_box_frame(
     tolerance_min_data_url: str | None = None,
     tolerance_max_data_url: str | None = None,
     current_frame_data_url: str | None = None,
+    prefer_cached: bool = True,
     match_strategy: str = "auto",
     ocr_enabled: bool = False,
     ocr_text: str | None = None,
@@ -1871,7 +1913,7 @@ def match_fanxiu_screenshot_box_frame(
             rotate=rotate,
             fixed_width=fixed_width,
             fixed_height=fixed_height,
-            prefer_cached=True,
+            prefer_cached=prefer_cached,
         )
     current_frame, data, match_frame_suffix = _prepare_current_frame_for_reference(current_frame, source_path, quality)
     current_height, current_width = current_frame.shape[:2]

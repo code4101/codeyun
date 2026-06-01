@@ -42,6 +42,8 @@ from backend.core.attendance_service import (
 )
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import ensure_feature_access
+from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core import note_sheet_inline_links
 from backend.core.settings import get_settings
 from backend.db import engine, get_session
 from backend.models import (
@@ -77,7 +79,7 @@ MAX_NOTE_SHEET_PAGE_SIZE = 1000
 NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "deepseek"
 NOTE_SHEET_EXCEL_IMPORT_MODEL = "deepseek-v4-pro"
 NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
-NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS = 2
+NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS = 3
 NOTE_SHEET_EXCEL_IMPORT_RETRY_DELAY_SECONDS = 1.0
 NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS = 12
@@ -113,10 +115,12 @@ NOTE_SHEET_REGISTRATION_FROZEN_GROUP = "A组"
 NOTE_SHEET_REGISTRATION_FROZEN_STATUS = "已冻结"
 NOTE_SHEET_REGISTRATION_ACTIVE_GROUP = "B组"
 NOTE_SHEET_REGISTRATION_ACTIVE_STATUS = "追踪中"
+NOTE_SHEET_REGISTRATION_ARCHIVED_BACKGROUND = "#F2F2F2"
+NOTE_SHEET_REGISTRATION_ARCHIVED_TEXT = "#6B7280"
 NOTE_SHEET_LEGACY_TEXT_PREFIX_STRIP_COLUMNS = {"微信支付订单号", "商户订单号", "手机号", "错误手机号", "微信号"}
 NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID = 1
 NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE = os.environ.get("CODEYUN_NOTE_SHEET_ORDER_LOOKUP_MODE", "db_only")
-NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT = False
+NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT = True
 NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS = {
     NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
     NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
@@ -176,6 +180,22 @@ NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS = {
     NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
     NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
 }
+NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_BACKGROUND_COLORS = [
+    "#DDEBF7",
+    "#FCE4D6",
+    "#E2F0D9",
+    "#FFF2CC",
+    "#E4DFEC",
+    "#DAEEF3",
+    "#F4CCCC",
+    "#EADCF8",
+]
+NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_END_COLUMNS = (
+    "禅客",
+    "优秀学员评分",
+    "用户ID",
+    "商户订单号",
+)
 NOTE_SHEET_ATTENDANCE_TRAILING_META_COLUMNS = {
     "规则版本",
     NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
@@ -230,10 +250,11 @@ ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
     r"(?:(?P<date>\d{8}|\d{6})\s*)?第(?P<edition>\d+)届(?P<course>\S+)",
 )
 ATTENDANCE_TEMPLATE_LEADING_DATE_RE = re.compile(r"^(?P<date>\d{8}|\d{6})(?P<body>.*)$")
+ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT = Path(r"D:\home\chenkunze\slns\kq5034\courses")
 ATTENDANCE_COURSE_SCRIPT_DIR = Path(
     os.environ.get(
         "CODEYUN_KQ5034_COURSES_DIR",
-        r"D:\home\chenkunze\slns\kq5034\courses",
+        os.fspath(ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT),
     )
 )
 ATTENDANCE_KQ5034_REPO_DIR = Path(
@@ -252,6 +273,14 @@ ATTENDANCE_COURSE_SCRIPT_STEM_RE = re.compile(r"^d(?P<date>\d{6})(?P<body>.+)$")
 ATTENDANCE_COURSE_SCRIPT_INIT_TOKEN_RE = re.compile(
     r"(super\(\).__init__\(\s*[^,]+,\s*(?:XlPath|XPath)\(__file__\)\.stem\s*,\s*)"
     r"(?P<quote>['\"])(?P<token>[^'\"]+)(?P=quote)",
+    re.DOTALL,
+)
+ATTENDANCE_COURSE_SCRIPT_CODEYUN_ATTENDANCE_REF_RE = re.compile(
+    r"attendance\s*=\s*CodeYunSheetRef\(\s*"
+    r"(?P<workbook_id>\d+)\s*,\s*"
+    r"(?P<sheet_id>\d+)\s*,\s*"
+    r"(?P<quote>['\"])考勤表(?P=quote)\s*"
+    r"\)",
     re.DOTALL,
 )
 ATTENDANCE_COURSE_SCRIPT_KDOCS_TOKEN_RE = re.compile(r"kdocs\.cn/l/(?P<token>[A-Za-z0-9]+)")
@@ -302,12 +331,19 @@ NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 
 - 跳过标题、二维码、空行、分组标题、说明文字、统计行、日志批阅师资名单等非报名记录，除非用户补充说明明确要求导入。
 - 如果源表用“1组/2组/第1组”等行表示分组，把该分组填入后续报名记录的“分组”字段，直到遇到下一组。
 - 姓名、微信昵称、手机号/手机、微信号、交易单号/微信支付订单号、订单日期、商户订单号、订单金额、退款状态、用户ID 等同义字段要映射到目标列。
+- 区分两类订单字段：“微信支付订单号/交易单号/支付订单号”通常是微信支付交易单号，常见为 420... 等长数字；“商户订单号/商户单号/订单号”通常是商户侧订单号，常见为 MA... 等商户前缀。源表只有“订单号”且值是 MA... 时，必须映射到“商户订单号”，不要放入“微信支付订单号”。
 - 手机号、订单号、微信号必须按文本保留；不要转成科学计数法，不要自行补全未知位。
 - 不要给手机号、订单号、微信号添加用于 Excel 文本识别的反引号、单引号等前缀字符。
 - “备注”只用于源表明确表达退课、退款、国际学生、人工备注等当前报名表备注语义的信息；不要把无法匹配的普通源字段塞进“备注”。
 - “参考信息”是目标表人工备用字段；除非用户补充说明明确要求，否则不要自动导入到“参考信息”。
 - 如果源表存在目标表没有的真实业务字段，放入 extra_columns，并在每行对象里用对应字段名保存值；常见如“选择促学金模式/自觉自律完成学修”归为“促学金模式”，“微信号”在目标表没有专门列时归为“微信号”。
-- 如果源表序号是每组内序号或全局序号，按源表可见语义填入；无法判断时按源记录顺序从 1 开始。
+- 如果目标表同时有标准列和源表同名扩展列，例如“微信昵称”和“微信昵称（必填）”、“姓名”和“真实姓名（必填）”，不要只按列名机械映射；要结合具体内容判断哪一个才是用户真实填写的字段。
+- “微信昵称”这类字段要优先选择像人类昵称、中文名、英文名、常用网名的内容；不要选择明显是系统生成的数字字母代码、用户 id、提交者账号、openid/unionid 风格字符串、随机 token 或机器标识。
+- 如果一个字段名更接近目标列但内容明显是系统代码，另一个字段名略有后缀但内容像真实昵称，应把真实昵称填入目标“微信昵称”，并按需保留源字段列。
+- “序号”在报名表里也是考勤表“学号”。如果源表已给出 1_02、2_17、1组02号 等组内学号，必须保留为“组号_两位组内号”的形式，例如 1_02。
+- 如果源表按分组独立编号（每个组都从 1 重新开始，或跨组出现重复序号），必须结合“分组”生成“组号_两位组内号”，例如“一组 + 2”写成 1_02，“二组 + 1”写成 2_01。
+- 如果源表序号本身是全局唯一流水号，并且没有组内重号或重置迹象，才保留全局序号。
+- 无法判断是组内编号还是全局编号时，保持源表可见语义，不要为了凑格式而编造分组前缀；完全缺失序号时再按源记录顺序从 1 开始。
 
 返回 JSON 形状：
 {
@@ -372,9 +408,11 @@ class NoteSheetPaginationResponse(BaseModel):
     page: int = 1
     page_size: int = DEFAULT_NOTE_SHEET_PAGE_SIZE
     total_rows: int = 0
+    unfiltered_total_rows: Optional[int] = None
     page_count: int = 1
     row_offset: int = 0
     loaded_row_count: int = 0
+    row_indexes: Optional[list[int]] = None
 
 
 class NoteSheetColumnOptionItemResponse(BaseModel):
@@ -505,7 +543,7 @@ class NoteSheetRegistrationMatchResponse(BaseModel):
 
 class NoteSheetRegistrationMatchRunRequest(BaseModel):
     action: Literal["registration_order_match", "registration_user_match", "registration_composite_update"]
-    use_browser_fallback: bool = NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT
+    use_browser_fallback: bool | None = None
     force_restart: bool = False
 
 
@@ -599,6 +637,23 @@ class NoteSheetAttendanceCompletionRequest(BaseModel):
 class NoteSheetAttendanceCompletionResponse(BaseModel):
     sheet: NoteSheetDetailResponse
     row_index: int
+
+
+class NoteSheetAttendanceVideoRevisionCell(BaseModel):
+    row_index: int = Field(ge=0)
+    column_index: int = Field(ge=0)
+
+
+class NoteSheetAttendanceVideoRevisionRequest(BaseModel):
+    revision_label: str
+    cells: list[NoteSheetAttendanceVideoRevisionCell] = Field(default_factory=list)
+
+
+class NoteSheetAttendanceVideoRevisionResponse(BaseModel):
+    sheet: NoteSheetDetailResponse
+    revision_label: str
+    updated_count: int = 0
+    recalculation: dict[str, Any] = Field(default_factory=dict)
 
 
 class NoteSheetAttendanceCourseScriptStatusItem(BaseModel):
@@ -806,113 +861,40 @@ def _create_default_sheet_document() -> dict[str, Any]:
 def _normalize_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return _create_default_sheet_document()
-    return _materialize_row_cell_links(dict(value))
+    return _canonicalize_sheet_document_links(dict(value), migrate_legacy_links=True)
 
 
 def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return _create_default_sheet_document()
-    return _materialize_row_cell_links(dict(value))
+    return _canonicalize_sheet_document_links(dict(value), migrate_legacy_links=True)
+
+
+def _canonicalize_sheet_document_links(
+    document_json: dict[str, Any],
+    *,
+    migrate_legacy_links: bool,
+) -> dict[str, Any]:
+    normalized, _stats = note_sheet_inline_links.canonicalize_sheet_document_inline_links(
+        document_json,
+        migrate_legacy_links=migrate_legacy_links,
+        strip_legacy_links=True,
+    )
+    return normalized
+
+
+def _coerce_inline_cell_object(value: Any) -> dict[str, Any] | None:
+    return note_sheet_inline_links.coerce_inline_cell_object(value)
 
 
 def _inline_cell_link_url(value: Any) -> str:
-    if not isinstance(value, dict):
-        return ""
-    link = value.get("link")
-    if not isinstance(link, dict):
-        return ""
-    return str(link.get("url") or "").strip()
+    return note_sheet_inline_links.inline_cell_link_url(value)
 
 
 def _with_inline_cell_link(value: Any, url: str) -> Any:
     if not url:
         return value
-    if isinstance(value, dict):
-        next_cell = dict(value)
-        if "value" not in next_cell:
-            next_cell["value"] = ""
-        next_cell["link"] = {"url": url}
-        return next_cell
-    return {"value": "" if value is None else value, "link": {"url": url}}
-
-
-def _legacy_cell_meta_link_url(document_json: dict[str, Any], document_row: int, data_row: int, column_index: int) -> str:
-    cell_meta = document_json.get("cell_meta")
-    if not isinstance(cell_meta, dict):
-        return ""
-    for candidate_row in (document_row, data_row):
-        if candidate_row == data_row and data_row < document_row:
-            continue
-        entry = cell_meta.get(f"{candidate_row}:{column_index}")
-        if isinstance(entry, dict):
-            url = _inline_cell_link_url(entry)
-            if url:
-                return url
-    return ""
-
-
-def _legacy_entity_cell_link_url(document_json: dict[str, Any], document_row: int, column_index: int) -> str:
-    entity_rows = document_json.get("entity_rows")
-    entity_columns = document_json.get("entity_columns")
-    entity_cells = document_json.get("entity_cells")
-    if not isinstance(entity_rows, list) or not isinstance(entity_columns, list) or not isinstance(entity_cells, dict):
-        return ""
-    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
-        return ""
-    entity_row = entity_rows[document_row]
-    entity_column = entity_columns[column_index]
-    row_id = str(entity_row.get("id") or "").strip() if isinstance(entity_row, dict) else ""
-    column_id = str(entity_column.get("id") or "").strip() if isinstance(entity_column, dict) else ""
-    if not row_id or not column_id:
-        return ""
-    row_cells = entity_cells.get(row_id)
-    if not isinstance(row_cells, dict):
-        return ""
-    return _inline_cell_link_url(row_cells.get(column_id))
-
-
-def _materialize_row_cell_links(document_json: dict[str, Any]) -> dict[str, Any]:
-    rows = document_json.get("rows")
-    columns = document_json.get("columns")
-    if not isinstance(rows, list) or not isinstance(columns, list):
-        return document_json
-
-    try:
-        data_start_row = int(document_json.get("data_start_row") or 0)
-    except (TypeError, ValueError):
-        data_start_row = 0
-
-    changed = False
-    next_rows: list[Any] = []
-    for data_row, row in enumerate(rows):
-        if not isinstance(row, list):
-            next_rows.append(row)
-            continue
-
-        next_row = list(row)
-        for column_index in range(min(len(columns), len(next_row))):
-            cell = next_row[column_index]
-            if _inline_cell_link_url(cell):
-                continue
-            document_row = data_start_row + data_row
-            url = (
-                _legacy_entity_cell_link_url(document_json, document_row, column_index)
-                or _legacy_cell_meta_link_url(document_json, document_row, data_row, column_index)
-            )
-            if not url:
-                continue
-            next_row[column_index] = _with_inline_cell_link(cell, url)
-            changed = True
-        next_rows.append(next_row)
-
-    if not changed:
-        return document_json
-    next_document = dict(document_json)
-    next_document["rows"] = next_rows
-    grid_rows = next_document.get("grid_rows")
-    if isinstance(grid_rows, list):
-        next_document["grid_rows"] = [*grid_rows[:data_start_row], *next_rows]
-    return next_document
+    return note_sheet_inline_links.with_inline_cell_link(value, {"url": url})
 
 
 def _is_defined_name_valid(name: str) -> bool:
@@ -2854,9 +2836,7 @@ def _normalize_sheet_row(row: Any, column_count: int) -> list[Any]:
 
 
 def _extract_cell_value(value: Any) -> Any:
-    if isinstance(value, dict) and "value" in value:
-        return value.get("value")
-    return value
+    return note_sheet_inline_links.extract_inline_cell_value(value)
 
 
 def _normalize_sheet_text(value: Any) -> str:
@@ -3155,6 +3135,13 @@ def _replace_document_rows_for_excel_import(
         action_column=action_column,
     )
     normalized_import_rows = [_normalize_sheet_row(row, column_count) for row in import_rows]
+    if _is_registration_append_sheet(columns):
+        normalized_import_rows = _normalize_registration_import_sequences(
+            preserved_rows,
+            normalized_import_rows,
+            columns,
+            append_mode=False,
+        )
     next_document = _replace_document_data_rows(normalized, [*preserved_rows, *normalized_import_rows])
 
     data_start_row = _normalize_document_data_start_row(next_document)
@@ -3173,6 +3160,8 @@ def _replace_document_rows_for_excel_import(
         next_document,
         max_document_row=max_preserved_document_row,
     )
+    if _is_registration_append_sheet(columns):
+        next_document = _repair_registration_sequence_column_config(next_document)
     return next_document, len(preserved_rows)
 
 
@@ -3356,6 +3345,73 @@ def _registration_dynamic_group_sort_key(
     return 1, 0, -day, -second, source_index
 
 
+def _is_registration_archived_style(style: Any) -> bool:
+    if not isinstance(style, dict):
+        return False
+    return (
+        _normalize_sheet_text(style.get("background_color")).upper() == NOTE_SHEET_REGISTRATION_ARCHIVED_BACKGROUND
+        and _normalize_sheet_text(style.get("text_color")).upper() == NOTE_SHEET_REGISTRATION_ARCHIVED_TEXT
+    )
+
+
+def _apply_registration_archived_row_styles(
+    document_json: dict[str, Any],
+    *,
+    now: date | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    if not rows or not _is_registration_append_sheet(columns):
+        return normalized
+
+    data_start_row = _normalize_document_data_start_row(normalized)
+    cell_meta = dict(normalized.get("cell_meta")) if isinstance(normalized.get("cell_meta"), dict) else {}
+    changed = False
+
+    for data_row_index, row in enumerate(rows):
+        document_row = data_start_row + data_row_index
+        archived = _is_archived_registration_row(row, columns, now=now)
+        for column_index in range(len(columns)):
+            key = f"{document_row}:{column_index}"
+            current_meta = cell_meta.get(key)
+            next_meta = dict(current_meta) if isinstance(current_meta, dict) else {}
+            current_style = next_meta.get("style")
+            next_style = dict(current_style) if isinstance(current_style, dict) else {}
+            if archived:
+                if (
+                    next_style.get("background_color") == NOTE_SHEET_REGISTRATION_ARCHIVED_BACKGROUND
+                    and next_style.get("text_color") == NOTE_SHEET_REGISTRATION_ARCHIVED_TEXT
+                ):
+                    continue
+                next_style["background_color"] = NOTE_SHEET_REGISTRATION_ARCHIVED_BACKGROUND
+                next_style["text_color"] = NOTE_SHEET_REGISTRATION_ARCHIVED_TEXT
+                next_meta["style"] = next_style
+                cell_meta[key] = next_meta
+                changed = True
+                continue
+
+            if not _is_registration_archived_style(next_style):
+                continue
+            next_style.pop("background_color", None)
+            next_style.pop("text_color", None)
+            if next_style:
+                next_meta["style"] = next_style
+            else:
+                next_meta.pop("style", None)
+            if next_meta:
+                cell_meta[key] = next_meta
+            else:
+                cell_meta.pop(key, None)
+            changed = True
+
+    if not changed and normalized.get("cell_meta") == cell_meta:
+        return normalized
+    next_document = dict(normalized)
+    next_document["cell_meta"] = cell_meta
+    return next_document
+
+
 def _remap_document_entity_data_rows(
     document_json: dict[str, Any],
     source_document_json: dict[str, Any],
@@ -3419,7 +3475,7 @@ def _order_registration_rows_by_dynamic_expiration(
         key=lambda index: _registration_dynamic_group_sort_key(rows[index], columns, index, now=now),
     )
     if ordered_source_indexes == list(range(len(rows))) and not tracking_changed:
-        return normalized
+        return _apply_registration_archived_row_styles(normalized, now=now)
 
     row_index_map = {
         source_index: target_index
@@ -3451,13 +3507,240 @@ def _order_registration_rows_by_dynamic_expiration(
         row_index_map=row_index_map,
         data_row_count=len(rows),
     )
-    return next_document
+    return _apply_registration_archived_row_styles(next_document, now=now)
 
 
 def _get_registration_active_row_count(rows: list[list[Any]], columns: list[str]) -> int:
     if not _is_registration_append_sheet(columns):
         return len(rows)
     return sum(1 for row in rows if not _is_archived_registration_row(row, columns))
+
+
+CHINESE_INTEGER_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+REGISTRATION_GROUP_SEQUENCE_RE = re.compile(
+    r"^\s*(?P<group>\d{1,3})\s*(?:[_\-－–—]|组)\s*(?P<number>\d{1,4})\s*(?:号)?\s*$"
+)
+
+
+def _parse_chinese_integer(value: str) -> int | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if any(char not in (set(CHINESE_INTEGER_DIGITS) | {"十"}) for char in text):
+        return None
+    if "十" in text:
+        left, _sep, right = text.partition("十")
+        tens = 1 if not left else CHINESE_INTEGER_DIGITS.get(left)
+        ones = 0 if not right else CHINESE_INTEGER_DIGITS.get(right)
+        if tens is None or ones is None:
+            return None
+        return tens * 10 + ones
+    if len(text) == 1:
+        return CHINESE_INTEGER_DIGITS.get(text)
+    digits = [CHINESE_INTEGER_DIGITS.get(char) for char in text]
+    if any(digit is None for digit in digits):
+        return None
+    return int("".join(str(digit) for digit in digits if digit is not None))
+
+
+def _parse_registration_group_number(value: Any) -> str | None:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None
+    match = re.search(r"(?:第\s*)?(\d{1,3})\s*(?:小组|组)", text)
+    if match:
+        return str(int(match.group(1)))
+    match = re.search(r"(?:第\s*)?([零〇一二两三四五六七八九十]{1,4})\s*(?:小组|组)", text)
+    if match:
+        number = _parse_chinese_integer(match.group(1))
+        return str(number) if number and number > 0 else None
+    return None
+
+
+def _parse_registration_group_sequence(value: Any) -> tuple[str, int, int] | None:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None
+    match = REGISTRATION_GROUP_SEQUENCE_RE.fullmatch(text)
+    if not match:
+        return None
+    member_text = match.group("number")
+    member = int(member_text)
+    return str(int(match.group("group"))), member, max(len(member_text), 2)
+
+
+def _parse_registration_plain_sequence(value: Any) -> int | None:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    return None
+
+
+def _format_registration_group_sequence(group_number: str, member_number: int, *, width: int = 2) -> str:
+    return f"{int(group_number)}_{int(member_number):0{max(width, 2)}d}"
+
+
+def _registration_rows_have_group_scoped_sequences(rows: list[list[Any]], sequence_index: int) -> bool:
+    if sequence_index < 0:
+        return False
+    return any(
+        _parse_registration_group_sequence(row[sequence_index] if sequence_index < len(row) else "") is not None
+        for row in rows
+    )
+
+
+def _registration_import_has_group_sequence_reset(
+    import_rows: list[list[Any]],
+    columns: list[str],
+) -> bool:
+    sequence_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    if sequence_index < 0 or group_index < 0:
+        return False
+
+    pairs: list[tuple[str, int]] = []
+    for row in import_rows:
+        group_number = _parse_registration_group_number(row[group_index] if group_index < len(row) else "")
+        sequence_number = _parse_registration_plain_sequence(row[sequence_index] if sequence_index < len(row) else "")
+        if group_number and sequence_number is not None:
+            pairs.append((group_number, sequence_number))
+
+    if len({group for group, _sequence in pairs}) < 2:
+        return False
+
+    sequence_groups: dict[int, set[str]] = {}
+    for group_number, sequence_number in pairs:
+        sequence_groups.setdefault(sequence_number, set()).add(group_number)
+    if any(len(groups) > 1 for groups in sequence_groups.values()):
+        return True
+
+    previous_group = ""
+    previous_sequence: int | None = None
+    for group_number, sequence_number in pairs:
+        if previous_group and group_number != previous_group and previous_sequence is not None and sequence_number <= previous_sequence:
+            return True
+        previous_group = group_number
+        previous_sequence = sequence_number
+    return False
+
+
+def _should_use_registration_group_scoped_sequences(
+    existing_rows: list[list[Any]],
+    import_rows: list[list[Any]],
+    columns: list[str],
+) -> bool:
+    sequence_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    return (
+        _registration_rows_have_group_scoped_sequences(existing_rows, sequence_index)
+        or _registration_rows_have_group_scoped_sequences(import_rows, sequence_index)
+        or _registration_import_has_group_sequence_reset(import_rows, columns)
+    )
+
+
+def _normalize_registration_import_sequences(
+    existing_rows: list[list[Any]],
+    import_rows: list[list[Any]],
+    columns: list[str],
+    *,
+    append_mode: bool,
+) -> list[list[Any]]:
+    sequence_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    if sequence_index < 0 or not import_rows:
+        return import_rows
+
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    use_group_scoped = _should_use_registration_group_scoped_sequences(existing_rows, import_rows, columns)
+    used_sequences = {
+        _normalize_sheet_text(row[sequence_index])
+        for row in existing_rows
+        if sequence_index < len(row) and _normalize_sheet_text(row[sequence_index])
+    }
+
+    next_global_sequence = 1
+    group_state: dict[str, tuple[int, int]] = {}
+    for row in existing_rows:
+        value = row[sequence_index] if sequence_index < len(row) else ""
+        grouped = _parse_registration_group_sequence(value)
+        if grouped is not None:
+            group_number, member_number, width = grouped
+            current_member, current_width = group_state.get(group_number, (0, 2))
+            group_state[group_number] = (max(current_member, member_number), max(current_width, width))
+            continue
+        plain = _parse_registration_plain_sequence(value)
+        if plain is not None:
+            next_global_sequence = max(next_global_sequence, plain + 1)
+
+    def next_group_sequence(group_number: str) -> str:
+        current_member, current_width = group_state.get(group_number, (0, 2))
+        next_member = current_member + 1
+        group_state[group_number] = (next_member, current_width)
+        return _format_registration_group_sequence(group_number, next_member, width=current_width)
+
+    normalized_rows: list[list[Any]] = []
+    for raw_row in import_rows:
+        row = list(raw_row)
+        while len(row) <= sequence_index:
+            row.append("")
+
+        current_sequence = _normalize_sheet_text(row[sequence_index])
+        if use_group_scoped:
+            grouped = _parse_registration_group_sequence(current_sequence)
+            group_number = (
+                _parse_registration_group_number(row[group_index])
+                if group_index >= 0 and group_index < len(row)
+                else None
+            )
+            if grouped is not None:
+                sequence_group, member_number, width = grouped
+                candidate_group = group_number or sequence_group
+                candidate = _format_registration_group_sequence(candidate_group, member_number, width=width)
+                current_member, current_width = group_state.get(candidate_group, (0, 2))
+                group_state[candidate_group] = (max(current_member, member_number), max(current_width, width))
+            else:
+                plain = _parse_registration_plain_sequence(current_sequence)
+                candidate = (
+                    _format_registration_group_sequence(group_number, plain, width=2)
+                    if group_number and plain is not None
+                    else current_sequence
+                )
+                if group_number and plain is not None:
+                    current_member, current_width = group_state.get(group_number, (0, 2))
+                    group_state[group_number] = (max(current_member, plain), current_width)
+
+            if append_mode and (not candidate or candidate in used_sequences):
+                fallback_group = (
+                    group_number
+                    or (grouped[0] if grouped is not None else None)
+                )
+                if fallback_group:
+                    candidate = next_group_sequence(fallback_group)
+            row[sequence_index] = candidate
+            if candidate:
+                used_sequences.add(candidate)
+        elif append_mode:
+            row[sequence_index] = str(next_global_sequence)
+            used_sequences.add(row[sequence_index])
+            next_global_sequence += 1
+
+        normalized_rows.append(row)
+    return normalized_rows
 
 
 def _coerce_registration_import_rows(
@@ -3478,13 +3761,6 @@ def _coerce_registration_import_rows(
             for order_id in (_strip_legacy_text_prefix(row[order_index]) for row in existing_rows)
             if order_id and order_id != "/"
         }
-    next_sequence = 1
-    if sequence_index >= 0:
-        for row in existing_rows:
-            text = _normalize_sheet_text(row[sequence_index])
-            if re.fullmatch(r"\d+", text):
-                next_sequence = max(next_sequence, int(text) + 1)
-
     default_group = ""
     if group_index >= 0:
         for row in reversed(existing_rows):
@@ -3503,12 +3779,59 @@ def _coerce_registration_import_rows(
                     continue
                 existing_order_ids.add(order_id)
         next_row = list(row)
-        if sequence_index >= 0:
-            next_row[sequence_index] = str(next_sequence + len(coerced_rows))
         if group_index >= 0 and not _normalize_sheet_text(next_row[group_index]) and default_group:
             next_row[group_index] = default_group
         coerced_rows.append(next_row)
-    return coerced_rows
+    return _normalize_registration_import_sequences(
+        existing_rows,
+        coerced_rows,
+        columns,
+        append_mode=True,
+    )
+
+
+def _repair_group_scoped_sequence_column_config(document_json: dict[str, Any], column_name: str) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+
+    sequence_index = _get_column_index(columns, column_name)
+    if sequence_index < 0:
+        return document_json
+
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    if not _registration_rows_have_group_scoped_sequences(rows, sequence_index):
+        return document_json
+
+    configs = normalized.get("column_configs")
+    if not isinstance(configs, dict):
+        return document_json
+
+    current = configs.get(column_name)
+    if not isinstance(current, dict) or "value_type" not in current:
+        return document_json
+
+    next_config = dict(current)
+    next_config.pop("value_type", None)
+    next_configs = dict(configs)
+    if next_config:
+        next_configs[column_name] = next_config
+    else:
+        next_configs.pop(column_name, None)
+
+    next_document = dict(normalized)
+    next_document["column_configs"] = next_configs
+    return next_document
+
+
+def _repair_registration_sequence_column_config(document_json: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    if not _is_registration_append_sheet(_normalize_document_columns(normalized)):
+        return document_json
+    return _repair_group_scoped_sequence_column_config(normalized, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+
+
+def _repair_attendance_student_id_column_config(document_json: dict[str, Any]) -> dict[str, Any]:
+    return _repair_group_scoped_sequence_column_config(document_json, "学号")
 
 
 def _insert_document_data_rows_for_excel_import(
@@ -3562,7 +3885,8 @@ def _append_document_rows_for_excel_import(
             next_document,
             max_document_row=_normalize_document_data_start_row(next_document),
         )
-        return _order_registration_rows_by_dynamic_expiration(next_document), preserved_row_count
+        next_document = _order_registration_rows_by_dynamic_expiration(next_document)
+        return _repair_registration_sequence_column_config(next_document), preserved_row_count
 
     return (
         _insert_document_data_rows_for_excel_import(normalized, len(existing_rows), normalized_import_rows),
@@ -4697,6 +5021,180 @@ def _is_archived_attendance_row(row: list[Any], columns: list[str]) -> bool:
     return False
 
 
+def _parse_attendance_registration_datetime(value: Any, *, now: date | None = None) -> datetime | None:
+    parsed = _parse_registration_submitted_at_datetime(value)
+    if parsed is not None:
+        return parsed
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None
+    current = now or date.today()
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+        try:
+            parsed_without_year = datetime.strptime(f"{current.year}/{text}", fmt)
+        except ValueError:
+            continue
+        return parsed_without_year
+    return None
+
+
+def _is_attendance_tracking_sheet(columns: list[str]) -> bool:
+    if _get_column_index(columns, "报名日期") < 0:
+        return False
+    return any(
+        _get_column_index(columns, header) >= 0
+        for header in (
+            NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
+            NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
+            NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
+            NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN,
+        )
+    )
+
+
+def _apply_attendance_tracking_values_to_row(
+    row: list[Any],
+    columns: list[str],
+    *,
+    now: date | None = None,
+) -> bool:
+    submitted_at_index = _get_column_index(columns, "报名日期")
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN)
+    status_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN)
+    deadline_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN)
+    frozen_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN)
+    if submitted_at_index < 0:
+        return False
+
+    submitted_at = _parse_attendance_registration_datetime(row[submitted_at_index], now=now)
+    current_date = now or date.today()
+    current_datetime = datetime.combine(current_date, datetime.now().time()) if now is not None else datetime.now()
+    changed = False
+
+    def set_cell(column_index: int, value: str) -> None:
+        nonlocal changed
+        if column_index < 0 or column_index >= len(row):
+            return
+        if _normalize_sheet_text(row[column_index]) == value:
+            return
+        row[column_index] = value
+        changed = True
+
+    if submitted_at is None:
+        return False
+
+    submitted_date = submitted_at.date()
+    archived = submitted_date < _registration_cutoff_date(current_date)
+    if archived:
+        set_cell(group_index, NOTE_SHEET_REGISTRATION_FROZEN_GROUP)
+        set_cell(status_index, NOTE_SHEET_REGISTRATION_FROZEN_STATUS)
+        if frozen_at_index >= 0 and not _normalize_sheet_text(row[frozen_at_index]):
+            set_cell(frozen_at_index, _format_registration_tracking_datetime(current_datetime))
+    else:
+        if group_index >= 0 and _normalize_sheet_text(row[group_index]) in {"", NOTE_SHEET_REGISTRATION_FROZEN_GROUP}:
+            set_cell(group_index, NOTE_SHEET_REGISTRATION_ACTIVE_GROUP)
+        set_cell(status_index, NOTE_SHEET_REGISTRATION_ACTIVE_STATUS)
+        set_cell(frozen_at_index, "")
+    set_cell(deadline_index, _format_registration_tracking_date(_add_registration_months(submitted_date, 2)))
+    return changed
+
+
+def _attendance_dynamic_group_sort_key(
+    row: list[Any],
+    columns: list[str],
+    source_index: int,
+    *,
+    now: date | None = None,
+) -> tuple[Any, ...]:
+    submitted_at_index = _get_column_index(columns, "报名日期")
+    submitted_at = (
+        _parse_attendance_registration_datetime(row[submitted_at_index], now=now)
+        if submitted_at_index >= 0
+        else None
+    )
+    if submitted_at is None:
+        return 0, 1, source_index
+    day = submitted_at.date().toordinal()
+    second = submitted_at.hour * 3600 + submitted_at.minute * 60 + submitted_at.second
+    if day >= _registration_cutoff_date(now).toordinal():
+        return 0, 0, day, second, source_index
+    return 1, 0, -day, -second, source_index
+
+
+def _order_attendance_rows_by_dynamic_expiration(
+    document_json: dict[str, Any],
+    *,
+    now: date | None = None,
+) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if not _is_attendance_tracking_sheet(columns):
+        return normalized, 0
+
+    rows: list[list[Any]] = []
+    tracking_changed_count = 0
+    for row in _extract_document_rows(normalized):
+        next_row = _normalize_sheet_row(row, len(columns))
+        if _apply_attendance_tracking_values_to_row(next_row, columns, now=now):
+            tracking_changed_count += 1
+        rows.append(next_row)
+
+    ordered_source_indexes = sorted(
+        range(len(rows)),
+        key=lambda index: _attendance_dynamic_group_sort_key(rows[index], columns, index, now=now),
+    )
+    order_changed = ordered_source_indexes != list(range(len(rows)))
+    if not order_changed and tracking_changed_count <= 0:
+        return normalized, 0
+
+    row_index_map = {
+        source_index: target_index
+        for target_index, source_index in enumerate(ordered_source_indexes)
+    }
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    next_rows = [
+        _remap_row_formula_cell_references(
+            rows[source_index],
+            columns=columns,
+            row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
+        )
+        for source_index in ordered_source_indexes
+    ]
+    next_document = _replace_document_data_rows({
+        **normalized,
+        "columns": columns,
+    }, next_rows)
+    if isinstance(normalized.get("cell_meta"), dict):
+        next_document["cell_meta"] = _remap_cell_meta_rows(
+            normalized.get("cell_meta"),
+            row_index_map,
+            row_offset=_normalize_document_data_start_row(normalized),
+        )
+    next_document = _remap_document_entity_data_rows(
+        next_document,
+        normalized,
+        row_index_map=row_index_map,
+        data_row_count=len(rows),
+    )
+    next_document, style_repaired_count = _apply_attendance_archived_row_styles(
+        next_document,
+        next_rows,
+        columns,
+    )
+    return next_document, tracking_changed_count + style_repaired_count + (1 if order_changed else 0)
+
+
+def _is_refunded_registration_row(row: list[Any], columns: list[str]) -> bool:
+    remark_index = _get_column_index(columns, "备注")
+    if remark_index < 0:
+        return False
+    remark = _normalize_sheet_text(row[remark_index])
+    if not remark:
+        return False
+    return bool(re.search(r"已?\s*退\s*(?:费|款|课)", remark))
+
+
 def _get_attendance_append_insert_index(rows: list[list[Any]], columns: list[str]) -> int:
     for index, row in enumerate(rows):
         if _is_archived_attendance_row(row, columns):
@@ -5081,6 +5579,256 @@ def _attendance_cell_meta_template_column_limit(columns: list[str]) -> int:
     return _attendance_progress_style_start_column(columns)
 
 
+def _attendance_group_identity_end_column_index(columns: list[str]) -> int:
+    for header in NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_END_COLUMNS:
+        index = _get_column_index(columns, header)
+        if index >= 0:
+            return index
+    return -1
+
+
+def _attendance_group_background_key(row: list[Any], columns: list[str]) -> str:
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    group_number = _parse_registration_group_number(row[group_index] if group_index >= 0 else "")
+    if group_number:
+        return group_number
+
+    student_id_index = _get_column_index(columns, "学号")
+    parsed_sequence = _parse_registration_group_sequence(row[student_id_index] if student_id_index >= 0 else "")
+    if parsed_sequence is not None:
+        return parsed_sequence[0]
+
+    return _normalize_sheet_text(row[group_index] if group_index >= 0 else "")
+
+
+def _attendance_group_color_for_key(group_key: str, color_by_group: dict[str, str]) -> str:
+    if group_key not in color_by_group:
+        palette = NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_BACKGROUND_COLORS
+        color_by_group[group_key] = palette[len(color_by_group) % len(palette)]
+    return color_by_group[group_key]
+
+
+def _set_cell_meta_background(
+    cell_meta: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    color: str,
+) -> bool:
+    key = f"{document_row}:{column_index}"
+    previous_meta = cell_meta.get(key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    style = dict(next_meta.get("style")) if isinstance(next_meta.get("style"), dict) else {}
+    previous_color = style.get("background_color")
+    style["background_color"] = color
+    next_meta["style"] = style
+    cell_meta[key] = next_meta
+    return previous_color != color
+
+
+def _set_entity_cell_background(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    color: str,
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
+        return False
+
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return False
+
+    entity_cells = _extract_document_entity_cells(document_json)
+    row_cells = dict(entity_cells.get(row_id)) if isinstance(entity_cells.get(row_id), dict) else {}
+    previous_cell = row_cells.get(column_id)
+    next_cell = dict(previous_cell) if isinstance(previous_cell, dict) else {}
+    style = dict(next_cell.get("style")) if isinstance(next_cell.get("style"), dict) else {}
+    previous_color = style.get("background_color")
+    style["background_color"] = color
+    next_cell["style"] = style
+    row_cells[column_id] = next_cell
+    entity_cells[row_id] = row_cells
+    document_json["entity_cells"] = entity_cells
+    return previous_color != color
+
+
+def _set_entity_cell_style(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    style: dict[str, Any],
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
+        return False
+
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return False
+
+    entity_cells = _extract_document_entity_cells(document_json)
+    row_cells = dict(entity_cells.get(row_id)) if isinstance(entity_cells.get(row_id), dict) else {}
+    previous_cell = row_cells.get(column_id)
+    next_cell = dict(previous_cell) if isinstance(previous_cell, dict) else {}
+    previous_style = next_cell.get("style")
+    next_cell["style"] = dict(style)
+    row_cells[column_id] = next_cell
+    entity_cells[row_id] = row_cells
+    document_json["entity_cells"] = entity_cells
+    return previous_style != next_cell["style"]
+
+
+def _remove_entity_cell_archived_style(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
+        return False
+
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return False
+
+    entity_cells = _extract_document_entity_cells(document_json)
+    row_cells = dict(entity_cells.get(row_id)) if isinstance(entity_cells.get(row_id), dict) else {}
+    current_cell = row_cells.get(column_id)
+    if not isinstance(current_cell, dict) or not _is_registration_archived_style(current_cell.get("style")):
+        return False
+
+    next_cell = dict(current_cell)
+    next_cell.pop("style", None)
+    if next_cell:
+        row_cells[column_id] = next_cell
+    else:
+        row_cells.pop(column_id, None)
+    if row_cells:
+        entity_cells[row_id] = row_cells
+    else:
+        entity_cells.pop(row_id, None)
+    document_json["entity_cells"] = entity_cells
+    return True
+
+
+def _apply_attendance_archived_row_styles(
+    document_json: dict[str, Any],
+    rows: list[list[Any]],
+    columns: list[str],
+) -> tuple[dict[str, Any], int]:
+    if not rows or not columns:
+        return document_json, 0
+
+    next_document = dict(document_json)
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    row_offset = _normalize_document_data_start_row(next_document) if _extract_document_grid_rows(next_document) else 0
+    archived_style = {
+        "background_color": NOTE_SHEET_REGISTRATION_ARCHIVED_BACKGROUND,
+        "text_color": NOTE_SHEET_REGISTRATION_ARCHIVED_TEXT,
+    }
+    changed_rows: set[int] = set()
+
+    for row_index, row in enumerate(rows):
+        archived = _is_archived_attendance_row(_normalize_sheet_row(row, len(columns)), columns)
+        document_row = row_offset + row_index
+        for column_index in range(len(columns)):
+            key = f"{document_row}:{column_index}"
+            current_meta = cell_meta.get(key)
+            next_meta = dict(current_meta) if isinstance(current_meta, dict) else {}
+            current_style = next_meta.get("style")
+            next_style = dict(current_style) if isinstance(current_style, dict) else {}
+            if archived:
+                merged_style = {**next_style, **archived_style}
+                if next_style != merged_style:
+                    next_meta["style"] = merged_style
+                    cell_meta[key] = next_meta
+                    changed_rows.add(row_index)
+                if _set_entity_cell_style(
+                    next_document,
+                    document_row=document_row,
+                    column_index=column_index,
+                    style=merged_style,
+                ):
+                    changed_rows.add(row_index)
+                continue
+
+            if _is_registration_archived_style(next_style):
+                next_style.pop("background_color", None)
+                next_style.pop("text_color", None)
+                if next_style:
+                    next_meta["style"] = next_style
+                else:
+                    next_meta.pop("style", None)
+                if next_meta:
+                    cell_meta[key] = next_meta
+                else:
+                    cell_meta.pop(key, None)
+                changed_rows.add(row_index)
+            if _remove_entity_cell_archived_style(
+                next_document,
+                document_row=document_row,
+                column_index=column_index,
+            ):
+                changed_rows.add(row_index)
+
+    next_document["cell_meta"] = cell_meta
+    return next_document, len(changed_rows)
+
+
+def _apply_attendance_group_identity_backgrounds(
+    document_json: dict[str, Any],
+    rows: list[list[Any]],
+    columns: list[str],
+) -> tuple[dict[str, Any], int]:
+    end_column_index = _attendance_group_identity_end_column_index(columns)
+    if end_column_index < 0:
+        return document_json, 0
+
+    next_document = dict(document_json)
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    row_offset = _normalize_document_data_start_row(next_document) if _extract_document_grid_rows(next_document) else 0
+    changed_rows: set[int] = set()
+    color_by_group: dict[str, str] = {}
+    for row_index, row in enumerate(rows):
+        normalized_row = _normalize_sheet_row(row, len(columns))
+        if _is_archived_attendance_row(normalized_row, columns):
+            continue
+        group_key = _attendance_group_background_key(normalized_row, columns)
+        if not group_key:
+            continue
+        color = _attendance_group_color_for_key(group_key, color_by_group)
+        document_row = row_offset + row_index
+        for column_index in range(0, min(end_column_index + 1, len(columns))):
+            legacy_changed = _set_cell_meta_background(
+                cell_meta,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            entity_changed = _set_entity_cell_background(
+                next_document,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            if legacy_changed or entity_changed:
+                changed_rows.add(row_index)
+
+    next_document["cell_meta"] = cell_meta
+    return next_document, len(changed_rows)
+
+
 def _attendance_progress_style_column_range(columns: list[str]) -> tuple[int, int]:
     start_index = _attendance_progress_style_start_column(columns)
     if start_index >= len(columns):
@@ -5324,17 +6072,21 @@ def _sync_registration_rows_to_attendance_document(
         if _is_archived_registration_row(row, registration_columns):
             skipped_count += 1
             continue
-        user_id = _normalize_sheet_text(row[registration_user_id_index]) if registration_user_id_index >= 0 else ""
-        if not user_id:
+        if _is_refunded_registration_row(row, registration_columns):
             skipped_count += 1
             continue
+        user_id = _normalize_sheet_text(row[registration_user_id_index]) if registration_user_id_index >= 0 else ""
         student_id = _normalize_sheet_text(row[registration_student_id_index]) if registration_student_id_index >= 0 else ""
         merchant_order_id = (
             _strip_legacy_text_prefix(row[registration_merchant_order_index])
             if registration_merchant_order_index >= 0
             else ""
         )
-        existing_index = existing_user_id_rows.get(user_id)
+        if not user_id and not student_id and not merchant_order_id:
+            skipped_count += 1
+            continue
+
+        existing_index = existing_user_id_rows.get(user_id) if user_id else None
         if existing_index is None and student_id:
             existing_index = existing_student_id_rows.get(student_id)
         if existing_index is None and merchant_order_id:
@@ -5394,14 +6146,25 @@ def _sync_registration_rows_to_attendance_document(
             continue
 
         pending_registration_rows.append(row)
-        existing_user_ids.add(user_id)
-        existing_user_id_rows[user_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+        pending_row_index = len(attendance_rows) + len(pending_registration_rows) - 1
+        if user_id:
+            existing_user_ids.add(user_id)
+            existing_user_id_rows[user_id] = pending_row_index
         if student_id:
             existing_student_ids.add(student_id)
-            existing_student_id_rows[student_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+            existing_student_id_rows[student_id] = pending_row_index
         if merchant_order_id:
             existing_merchant_order_ids.add(merchant_order_id)
-            existing_merchant_order_id_rows[merchant_order_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+            existing_merchant_order_id_rows[merchant_order_id] = pending_row_index
+
+    tracking_repaired_count = 0
+    if pending_registration_rows:
+        attendance_document = _replace_document_data_rows(attendance_document, attendance_rows)
+        attendance_document, tracking_repaired_count = _order_attendance_rows_by_dynamic_expiration(attendance_document)
+        attendance_rows = [
+            _normalize_sheet_row(row, len(attendance_columns))
+            for row in _extract_document_rows(attendance_document)
+        ]
 
     insert_index = _get_attendance_append_insert_index(attendance_rows, attendance_columns)
     template_index = _find_attendance_row_template_index(attendance_rows, attendance_columns, insert_index)
@@ -5417,7 +6180,19 @@ def _sync_registration_rows_to_attendance_document(
         for offset, row in enumerate(pending_registration_rows)
     ]
 
-    if not inserted_rows and repaired_count <= 0 and formula_repaired_count <= 0:
+    if not inserted_rows and repaired_count <= 0 and formula_repaired_count <= 0 and tracking_repaired_count <= 0:
+        styled_document, group_style_repaired_count = _apply_attendance_group_identity_backgrounds(
+            attendance_document,
+            attendance_rows,
+            attendance_columns,
+        )
+        if group_style_repaired_count > 0:
+            return styled_document, _build_registration_match_summary(
+                updated_count=group_style_repaired_count,
+                matched_count=group_style_repaired_count,
+                skipped_count=skipped_count,
+                repaired_count=group_style_repaired_count,
+            )
         return attendance_document, _build_registration_match_summary(skipped_count=skipped_count)
 
     if inserted_rows:
@@ -5478,12 +6253,18 @@ def _sync_registration_rows_to_attendance_document(
                 column_limit=column_limit,
             )
         next_document["cell_meta"] = next_cell_meta
+    next_document = _repair_attendance_student_id_column_config(next_document)
+    next_document, group_style_repaired_count = _apply_attendance_group_identity_backgrounds(
+        next_document,
+        next_rows,
+        attendance_columns,
+    )
     return next_document, _build_registration_match_summary(
-        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count,
-        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count,
+        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
+        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
         skipped_count=skipped_count,
         inserted_count=len(inserted_rows),
-        repaired_count=repaired_count + formula_repaired_count,
+        repaired_count=repaired_count + formula_repaired_count + tracking_repaired_count + group_style_repaired_count,
     )
 
 
@@ -5566,6 +6347,15 @@ def _run_registration_match_action(
         warning_count=summary["warning_count"],
         message=message,
     )
+
+
+def _default_registration_match_browser_fallback(action: str) -> bool:
+    if action in {
+        NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+        NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
+    }:
+        return True
+    return bool(NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT)
 
 
 _REGISTRATION_MATCH_RUN_LOCK = threading.RLock()
@@ -6820,151 +7610,261 @@ def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[
     return normalized_rows, extra_columns
 
 
-NOTE_SHEET_EXCEL_IMPORT_DIRECT_ALIASES: dict[str, tuple[str, ...]] = {
-    "姓名": ("姓名", "真实姓名", "真实姓名（必填）", "提交者", "提交者（自动）"),
-    "微信昵称": ("微信昵称", "昵称", "微信名"),
-    "手机号": ("手机号", "手机", "手机号码", "联系电话"),
-    "微信支付订单号": ("微信支付订单号", "交易单号", "订单号", "支付订单号"),
-    "序号": ("序号", "编号"),
-    "提交时间": ("提交时间", "提交日期", "报名时间"),
-    "备注": ("备注", "说明"),
-}
-
-
 def _normalize_excel_import_header_key(value: Any) -> str:
     header = _normalize_excel_import_extra_column_header(value)
     header = re.sub(r"（\s*(?:必填|自动)\s*）|\(\s*(?:必填|自动)\s*\)", "", header)
     return _normalize_import_record_key(header)
 
 
-def _get_direct_import_target_alias_keys(column: str) -> tuple[str, ...]:
-    aliases = (column, *NOTE_SHEET_EXCEL_IMPORT_DIRECT_ALIASES.get(column, ()))
-    keys: list[str] = []
-    seen: set[str] = set()
-    for alias in aliases:
-        key = _normalize_excel_import_header_key(alias)
-        if key and key not in seen:
-            keys.append(key)
-            seen.add(key)
-    return tuple(keys)
+REGISTRATION_GROUP_SEQUENCE_SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
+    "group": ("分组", "组别", "组号"),
+    "sequence": ("序号", "编号", "学号"),
+    "remark": ("备注", "说明"),
+    "submitted_at": ("提交时间", "提交日期", "报名时间"),
+    "name": ("姓名", "真实姓名", "真实姓名（必填）", "提交者", "提交者（自动）"),
+    "nickname": ("微信昵称", "昵称", "微信名"),
+    "phone": ("手机号", "手机", "手机号码", "联系电话"),
+    "payment_order": ("微信支付订单号", "交易单号", "支付订单号"),
+    "merchant_order": ("商户订单号", "商户单号", "订单号"),
+    "amount": ("订单金额", "支付金额", "金额", "订单金额 "),
+}
+REGISTRATION_GROUP_SEQUENCE_SOURCE_KEYS = {
+    field: {_normalize_excel_import_header_key(alias) for alias in aliases}
+    for field, aliases in REGISTRATION_GROUP_SEQUENCE_SOURCE_ALIASES.items()
+}
 
 
-def _try_direct_excel_import_by_header(
-    *,
-    workbook_payload: dict[str, Any],
-    columns: list[str],
-) -> tuple[list[list[Any]], list[str], list[str], list[str]] | None:
-    target_alias_keys = {
-        key
-        for column in columns
-        for key in _get_direct_import_target_alias_keys(column)
-    }
+def _registration_source_header_field(value: Any) -> str | None:
+    key = _normalize_excel_import_header_key(value)
+    if not key:
+        return None
+    for field, keys in REGISTRATION_GROUP_SEQUENCE_SOURCE_KEYS.items():
+        if key in keys:
+            return field
+    return None
+
+
+def _registration_group_sequence_row_keys(row: dict[str, str]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    phone = _strip_legacy_text_prefix(row.get("phone"))
+    merchant_order = _strip_legacy_text_prefix(row.get("merchant_order"))
+    payment_order = _strip_legacy_text_prefix(row.get("payment_order"))
+    name = _normalize_sheet_text(row.get("name"))
+    nickname = _normalize_sheet_text(row.get("nickname"))
+    if phone:
+        keys.append(("phone", phone))
+    if merchant_order:
+        keys.append(("merchant_order", merchant_order))
+        keys.append(("order", merchant_order))
+    if payment_order:
+        keys.append(("payment_order", payment_order))
+        keys.append(("order", payment_order))
+    if name and nickname:
+        keys.append(("name_nickname", f"{name}\n{nickname}"))
+    if name:
+        keys.append(("name", name))
+    return keys
+
+
+def _extract_registration_group_sequence_source_rows(workbook_payload: dict[str, Any]) -> list[dict[str, str]]:
+    source_rows: list[dict[str, str]] = []
     sheets = workbook_payload.get("sheets")
     if not isinstance(sheets, list):
-        return None
+        return source_rows
 
     for sheet in sheets:
         sheet_rows = sheet.get("rows") if isinstance(sheet, dict) else None
         if not isinstance(sheet_rows, list) or not sheet_rows:
             continue
 
-        header_row_index = -1
-        header_values: list[Any] = []
+        best_header_index = -1
+        best_fields: dict[int, str] = {}
         best_score = 0
-        for index, raw_row in enumerate(sheet_rows[:8]):
+        for index, raw_row in enumerate(sheet_rows[:12]):
             values = raw_row.get("values") if isinstance(raw_row, dict) else None
             if not isinstance(values, list):
                 continue
-            score = sum(
-                1
-                for value in values
-                if _normalize_excel_import_header_key(value) in target_alias_keys
-            )
+            fields = {
+                column_index: field
+                for column_index, value in enumerate(values)
+                if (field := _registration_source_header_field(value))
+            }
+            score = len(set(fields.values()))
+            if "sequence" in fields.values():
+                score += 3
+            if {"phone", "merchant_order", "payment_order"} & set(fields.values()):
+                score += 2
             if score > best_score:
+                best_header_index = index
+                best_fields = fields
                 best_score = score
-                header_row_index = index
-                header_values = values
 
-        if header_row_index < 0 or best_score < 2:
+        if best_header_index < 0 or "sequence" not in best_fields.values() or best_score < 4:
             continue
 
-        source_key_to_index: dict[str, int] = {}
-        source_headers: list[str] = []
-        for index, value in enumerate(header_values):
-            header = _normalize_excel_import_extra_column_header(value)
-            source_headers.append(header)
-            key = _normalize_excel_import_header_key(header)
-            if key and key not in source_key_to_index:
-                source_key_to_index[key] = index
-
-        target_to_source_index: dict[str, int] = {}
-        used_source_indexes: set[int] = set()
-        for column in columns:
-            for key in _get_direct_import_target_alias_keys(column):
-                source_index = source_key_to_index.get(key)
-                if source_index is None:
-                    continue
-                target_to_source_index[column] = source_index
-                used_source_indexes.add(source_index)
-                break
-
-        if len(target_to_source_index) < 2:
-            continue
-
-        data_rows = sheet_rows[header_row_index + 1:]
-        source_has_value: dict[int, bool] = {}
-        for raw_row in data_rows:
+        current_group = ""
+        for raw_row in sheet_rows[best_header_index + 1:]:
             values = raw_row.get("values") if isinstance(raw_row, dict) else None
             if not isinstance(values, list):
                 continue
-            for index, value in enumerate(values):
-                if _normalize_sheet_text(value):
-                    source_has_value[index] = True
-
-        extra_columns: list[str] = []
-        used_header_keys = {_normalize_import_record_key(column) for column in columns}
-        for index, header in enumerate(source_headers):
-            if index in used_source_indexes or not header or not source_has_value.get(index):
+            row = {
+                field: _normalize_excel_import_cell(values[column_index] if column_index < len(values) else "")
+                for column_index, field in best_fields.items()
+            }
+            visible_values = [_normalize_sheet_text(value) for value in row.values()]
+            if not any(visible_values):
                 continue
-            _append_excel_import_extra_column_header(extra_columns, used_header_keys, header)
+            if any(
+                _normalize_excel_import_header_key(value) in REGISTRATION_GROUP_SEQUENCE_SOURCE_KEYS["sequence"]
+                for value in visible_values
+            ):
+                continue
 
-        direct_rows: list[dict[str, Any]] = []
-        extra_column_source_indexes = {
-            header: index
-            for index, header in enumerate(source_headers)
-            if header in extra_columns
+            row_group_text = _normalize_sheet_text(row.get("group"))
+            if _parse_registration_group_number(row_group_text):
+                current_group = row_group_text
+
+            grouped = _parse_registration_group_sequence(row.get("sequence"))
+            if grouped is None:
+                continue
+
+            group_number, member_number, width = grouped
+            row["sequence"] = _format_registration_group_sequence(group_number, member_number, width=width)
+            row_group_number = _parse_registration_group_number(row_group_text)
+            current_group_number = _parse_registration_group_number(current_group)
+            if row_group_number and row_group_number != group_number:
+                row["group"] = f"{group_number}组"
+            elif not row_group_number and current_group_number and current_group_number != group_number:
+                row["group"] = f"{group_number}组"
+            elif not row_group_number:
+                row["group"] = current_group or f"{group_number}组"
+            if _registration_group_sequence_row_keys(row):
+                source_rows.append(row)
+
+    return source_rows
+
+
+def _build_unique_registration_group_sequence_lookup(
+    source_rows: list[dict[str, str]],
+) -> dict[tuple[str, str], dict[str, str]]:
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for row in source_rows:
+        for key in _registration_group_sequence_row_keys(row):
+            grouped.setdefault(key, []).append(row)
+
+    lookup: dict[tuple[str, str], dict[str, str]] = {}
+    for key, rows in grouped.items():
+        sequence_values = {_normalize_sheet_text(row.get("sequence")) for row in rows}
+        if len(sequence_values) == 1:
+            lookup[key] = rows[0]
+    return lookup
+
+
+def _prefer_registration_group_sequences_from_workbook(
+    *,
+    workbook_payload: dict[str, Any],
+    rows: list[list[Any]],
+    columns: list[str],
+) -> tuple[list[list[Any]], int, int]:
+    if not rows or not _is_registration_append_sheet(columns):
+        return rows, 0, 0
+
+    sequence_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    if sequence_index < 0:
+        return rows, 0, 0
+
+    source_rows = _extract_registration_group_sequence_source_rows(workbook_payload)
+    if not source_rows:
+        return rows, 0, 0
+    lookup = _build_unique_registration_group_sequence_lookup(source_rows)
+    if not lookup:
+        return rows, 0, 0
+
+    field_indexes = {
+        "phone": _get_column_index(columns, "手机号"),
+        "merchant_order": _get_column_index(columns, "商户订单号"),
+        "payment_order": _get_column_index(columns, "微信支付订单号"),
+        "amount": _get_column_index(columns, "订单金额"),
+        "submitted_at": _get_column_index(columns, "提交时间"),
+        "remark": _get_column_index(columns, "备注"),
+        "name": _get_column_index(columns, "姓名"),
+        "nickname": _get_column_index(columns, "微信昵称"),
+    }
+
+    def cell(row: list[Any], field: str) -> str:
+        index = field_indexes.get(field, -1)
+        return _normalize_sheet_text(row[index]) if index >= 0 and index < len(row) else ""
+
+    changed_count = 0
+    source_field_count = 0
+    next_rows: list[list[Any]] = []
+    for raw_row in rows:
+        row = _normalize_sheet_row(raw_row, len(columns))
+        candidate = {
+            "phone": _strip_legacy_text_prefix(cell(row, "phone")),
+            "merchant_order": _strip_legacy_text_prefix(cell(row, "merchant_order")),
+            "payment_order": _strip_legacy_text_prefix(cell(row, "payment_order")),
+            "name": cell(row, "name"),
+            "nickname": cell(row, "nickname"),
         }
-        for raw_row in data_rows:
-            values = raw_row.get("values") if isinstance(raw_row, dict) else None
-            if not isinstance(values, list) or not any(_normalize_sheet_text(value) for value in values):
-                continue
-            row_payload: dict[str, Any] = {}
-            for column, source_index in target_to_source_index.items():
-                row_payload[column] = values[source_index] if source_index < len(values) else ""
-            for header, source_index in extra_column_source_indexes.items():
-                row_payload[header] = values[source_index] if source_index < len(values) else ""
-            if any(_normalize_sheet_text(value) for value in row_payload.values()):
-                direct_rows.append(row_payload)
-
-        if not direct_rows:
+        matched_source: dict[str, str] | None = None
+        for key in _registration_group_sequence_row_keys(candidate):
+            matched_source = lookup.get(key)
+            if matched_source is not None:
+                break
+        if matched_source is None:
+            next_rows.append(row)
             continue
 
-        import_rows, normalized_extra_columns = _coerce_note_sheet_excel_import_rows(
-            {
-                "extra_columns": extra_columns,
-                "rows": direct_rows,
-            },
-            columns,
-        )
-        sheet_name = _normalize_sheet_text(sheet.get("name")) if isinstance(sheet, dict) else ""
-        return (
-            import_rows,
-            normalized_extra_columns,
-            ["AI 导入失败，已按 Excel 表头直接映射导入"],
-            [f"使用工作表“{sheet_name or '未命名'}”第 {header_row_index + 1} 行作为表头"],
-        )
+        next_sequence = _normalize_sheet_text(matched_source.get("sequence"))
+        if next_sequence and _normalize_sheet_text(row[sequence_index]) != next_sequence:
+            row[sequence_index] = next_sequence
+            changed_count += 1
+        if group_index >= 0 and not _normalize_sheet_text(row[group_index]):
+            group_value = _normalize_sheet_text(matched_source.get("group"))
+            if group_value:
+                row[group_index] = group_value
 
-    return None
+        source_field_changed = False
+        for field, target_column in (
+            ("submitted_at", "提交时间"),
+            ("remark", "备注"),
+            ("amount", "订单金额"),
+        ):
+            index = field_indexes.get(field, -1)
+            value = _normalize_sheet_text(matched_source.get(field))
+            if index >= 0 and value and _normalize_sheet_text(row[index]) != value:
+                row[index] = value
+                source_field_changed = True
+
+        merchant_index = field_indexes.get("merchant_order", -1)
+        payment_index = field_indexes.get("payment_order", -1)
+        source_merchant_order = _strip_legacy_text_prefix(matched_source.get("merchant_order"))
+        source_payment_order = _strip_legacy_text_prefix(matched_source.get("payment_order"))
+        if merchant_index >= 0 and source_merchant_order:
+            if _strip_legacy_text_prefix(row[merchant_index]) != source_merchant_order:
+                row[merchant_index] = source_merchant_order
+                source_field_changed = True
+            if (
+                payment_index >= 0
+                and not source_payment_order
+                and _strip_legacy_text_prefix(row[payment_index]) == source_merchant_order
+            ):
+                row[payment_index] = ""
+                source_field_changed = True
+        if (
+            payment_index >= 0
+            and source_payment_order
+            and _strip_legacy_text_prefix(row[payment_index]) != source_payment_order
+        ):
+            row[payment_index] = source_payment_order
+            source_field_changed = True
+        if source_field_changed:
+            source_field_count += 1
+        next_rows.append(row)
+
+    return next_rows, changed_count, source_field_count
 
 
 def _normalize_import_message_list(value: Any) -> list[str]:
@@ -6999,12 +7899,14 @@ def _run_note_sheet_excel_import_deepseek(
     attempts = max(1, int(os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS") or NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS))
     provider_id = str(runtime.get("provider") or NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID)
     model = os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL") or runtime.get("model") or NOTE_SHEET_EXCEL_IMPORT_MODEL
-    last_error: HTTPException | None = None
+    last_error_status = 502
+    last_error_detail = ""
+    last_error_attempt = 0
 
     for attempt in range(1, attempts + 1):
         retry_suffix = ""
-        if attempt > 1 and last_error is not None:
-            retry_suffix = "\n\n上一次 AI 导入失败，请严格返回合法 JSON 对象，并确保 rows 是可导入的数据行。上一次错误：" + _normalize_sheet_text(last_error.detail)
+        if attempt > 1 and last_error_detail:
+            retry_suffix = "\n\n上一次 AI 导入失败，请严格返回合法 JSON 对象，并确保 rows 是可导入的数据行。上一次错误：" + last_error_detail
         try:
             response = chat_with_provider(
                 provider_id=provider_id,
@@ -7026,21 +7928,31 @@ def _run_note_sheet_excel_import_deepseek(
                 _normalize_import_message_list(payload.get("mapping_notes")),
             )
         except OllamaClientError as exc:
-            last_error = HTTPException(status_code=502, detail=str(exc))
+            last_error_status = 502
+            last_error_detail = f"模型调用异常：{_normalize_sheet_text(str(exc)) or exc.__class__.__name__}"
+            last_error_attempt = attempt
         except HTTPException as exc:
             if exc.status_code not in {502, 422}:
                 raise
-            last_error = exc
+            last_error_status = exc.status_code
+            detail = _normalize_sheet_text(exc.detail)
+            if exc.status_code == 422:
+                last_error_detail = f"AI 返回数据无效：{detail}"
+            else:
+                last_error_detail = f"AI 返回解析错误：{detail}"
+            last_error_attempt = attempt
 
         if attempt < attempts:
             time.sleep(NOTE_SHEET_EXCEL_IMPORT_RETRY_DELAY_SECONDS * attempt)
 
-    if last_error is None:
-        raise HTTPException(status_code=502, detail="AI 导入失败")
-    detail = _normalize_sheet_text(last_error.detail)
+    if not last_error_detail:
+        raise HTTPException(status_code=502, detail="AI 导入未完成：没有收到模型响应或解析结果")
     raise HTTPException(
-        status_code=last_error.status_code,
-        detail=f"AI 导入失败（已重试 {attempts} 次）：{detail}" if attempts > 1 else detail,
+        status_code=last_error_status,
+        detail=(
+            f"AI 导入未完成：已尝试 {attempts} 次，最后错误发生在第 {last_error_attempt or attempts} 次；"
+            f"模型 {provider_id}/{model}；{last_error_detail}"
+        ),
     )
 
 
@@ -7219,6 +8131,14 @@ def _insert_cell_into_grid_row(row: Any, column_count: int, insert_index: int) -
     ]
 
 
+def _delete_cell_from_grid_row(row: Any, column_count: int, delete_index: int) -> list[Any]:
+    normalized_row = _normalize_sheet_row(row, column_count)
+    return [
+        *normalized_row[:delete_index],
+        *normalized_row[delete_index + 1:],
+    ]
+
+
 def _insert_document_column(
     document_json: dict[str, Any],
     *,
@@ -7290,6 +8210,168 @@ def _insert_document_column(
             bounded_insert_index,
             1,
         )
+    return next_document
+
+
+def _shift_cell_meta_columns_for_delete(cell_meta: Any, delete_index: int) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+
+    shifted: dict[str, Any] = {}
+    for key, meta in cell_meta.items():
+        parsed = _parse_cell_meta_key(key)
+        if parsed is None:
+            shifted[str(key)] = meta
+            continue
+        row_index, column_index = parsed
+        if column_index == delete_index:
+            continue
+        next_column_index = column_index - 1 if column_index > delete_index else column_index
+        shifted[f"{row_index}:{next_column_index}"] = meta
+    return shifted
+
+
+def _shift_merged_cell_columns_for_delete(merged_cells: Any, delete_index: int) -> list[Any]:
+    if not isinstance(merged_cells, list):
+        return []
+
+    shifted: list[Any] = []
+    for cell in merged_cells:
+        if not isinstance(cell, dict):
+            continue
+        row = int(cell.get("row") or 0)
+        col = int(cell.get("col") or 0)
+        rowspan = max(int(cell.get("rowspan") or 1), 1)
+        colspan = max(int(cell.get("colspan") or 1), 1)
+        if col <= delete_index < col + colspan:
+            colspan -= 1
+        elif col > delete_index:
+            col -= 1
+        if rowspan > 1 or colspan > 1:
+            shifted.append({"row": row, "col": col, "rowspan": rowspan, "colspan": colspan})
+    return shifted
+
+
+def _delete_columns_from_header_groups(header_groups: Any, delete_index: int) -> list[Any]:
+    if not isinstance(header_groups, list):
+        return []
+
+    next_groups: list[Any] = []
+    for row in header_groups:
+        if not isinstance(row, list):
+            next_groups.append(row)
+            continue
+
+        next_row: list[Any] = []
+        current_index = 0
+        for cell in row:
+            if isinstance(cell, dict):
+                next_cell = dict(cell)
+                colspan = int(next_cell.get("colspan") or 1)
+            else:
+                next_cell = cell
+                colspan = 1
+            colspan = max(colspan, 1)
+            cell_end = current_index + colspan
+            if current_index <= delete_index < cell_end:
+                if colspan > 1:
+                    if isinstance(next_cell, dict):
+                        next_cell["colspan"] = colspan - 1
+                    else:
+                        next_cell = {"label": str(next_cell), "colspan": colspan - 1}
+                    next_row.append(next_cell)
+            else:
+                next_row.append(next_cell)
+            current_index = cell_end
+        next_groups.append(next_row)
+    return next_groups
+
+
+def _delete_document_column(
+    document_json: dict[str, Any],
+    *,
+    delete_index: int,
+) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if delete_index < 0 or delete_index >= len(columns):
+        return normalized
+    deleted_header = columns[delete_index]
+    column_index_map = {
+        index: (None if index == delete_index else index - 1 if index > delete_index else index)
+        for index in range(len(columns))
+    }
+
+    remapped_rows = [
+        _remap_row_formula_cell_references(row, columns=columns, column_index_map=column_index_map)
+        for row in _extract_document_rows(normalized)
+    ]
+    next_rows: list[Any] = []
+    for row in remapped_rows:
+        if isinstance(row, list):
+            normalized_row = _normalize_sheet_row(row, len(columns))
+            next_rows.append([*normalized_row[:delete_index], *normalized_row[delete_index + 1:]])
+        elif isinstance(row, dict):
+            next_row = dict(row)
+            next_row.pop(str(deleted_header), None)
+            next_rows.append(next_row)
+        else:
+            next_rows.append([""] * (len(columns) - 1))
+
+    source_widths = normalized.get("column_widths")
+    if isinstance(source_widths, list):
+        next_widths = [*source_widths[:delete_index], *source_widths[delete_index + 1:]]
+    else:
+        next_widths = [96] * (len(columns) - 1)
+
+    next_document = {
+        **normalized,
+        "columns": [*columns[:delete_index], *columns[delete_index + 1:]],
+        "rows": next_rows,
+        "column_widths": next_widths,
+    }
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        next_grid_rows: list[Any] = []
+        for row in grid_rows:
+            remapped_row = _remap_row_formula_cell_references(row, columns=columns, column_index_map=column_index_map)
+            next_grid_rows.append(_delete_cell_from_grid_row(remapped_row, len(columns), delete_index))
+        next_document["grid_rows"] = next_grid_rows
+    if "cell_meta" in normalized:
+        next_document["cell_meta"] = _shift_cell_meta_columns_for_delete(
+            normalized.get("cell_meta"),
+            delete_index,
+        )
+    if "merged_cells" in normalized:
+        next_document["merged_cells"] = _shift_merged_cell_columns_for_delete(
+            normalized.get("merged_cells"),
+            delete_index,
+        )
+    if "header_groups" in normalized:
+        next_document["header_groups"] = _delete_columns_from_header_groups(
+            normalized.get("header_groups"),
+            delete_index,
+        )
+    if isinstance(normalized.get("column_configs"), list):
+        configs = list(normalized.get("column_configs") or [])
+        next_document["column_configs"] = [*configs[:delete_index], *configs[delete_index + 1:]]
+    entity_columns = normalized.get("entity_columns")
+    entity_cells = normalized.get("entity_cells")
+    if isinstance(entity_columns, list):
+        deleted_column = entity_columns[delete_index] if delete_index < len(entity_columns) else None
+        deleted_column_id = _get_document_entity_column_id(deleted_column)
+        next_document["entity_columns"] = [*entity_columns[:delete_index], *entity_columns[delete_index + 1:]]
+        if isinstance(entity_cells, dict) and deleted_column_id:
+            next_entity_cells: dict[str, Any] = {}
+            for row_id, row_cells in entity_cells.items():
+                if not isinstance(row_cells, dict):
+                    next_entity_cells[row_id] = row_cells
+                    continue
+                next_row_cells = dict(row_cells)
+                next_row_cells.pop(deleted_column_id, None)
+                if next_row_cells:
+                    next_entity_cells[row_id] = next_row_cells
+            next_document["entity_cells"] = next_entity_cells
     return next_document
 
 
@@ -7808,6 +8890,10 @@ def _increment_attendance_template_edition(text: str, course_type: str) -> str:
     return ATTENDANCE_TEMPLATE_COURSE_TEXT_RE.sub(replace, text, count=1)
 
 
+def _should_strip_attendance_template_date_prefix(course_type: str) -> bool:
+    return _normalize_sheet_text(course_type) in {"念住", "觉观"}
+
+
 def _derive_attendance_template_text(value: Any, *, course_type: str, target_date: date) -> str:
     text = _normalize_sheet_text(value)
     if not text:
@@ -7817,7 +8903,7 @@ def _derive_attendance_template_text(value: Any, *, course_type: str, target_dat
     body = text
     leading_date = ATTENDANCE_TEMPLATE_LEADING_DATE_RE.match(text)
     if leading_date:
-        date_prefix = _format_attendance_course_date(target_date)
+        date_prefix = "" if _should_strip_attendance_template_date_prefix(course_type) else _format_attendance_course_date(target_date)
         body = leading_date.group("body")
 
     body = _increment_attendance_template_edition(body, course_type)
@@ -7964,7 +9050,8 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
 
         current_document = _normalize_document_json(dict(document.document_json or {}))
         current_document, repaired = _repair_attendance_summary_cell_meta(current_document)
-        if repaired:
+        current_document, links_repaired = _repair_attendance_summary_online_sheet_links(current_document)
+        if repaired or links_repaired:
             document.document_json = current_document
             document.version = max(int(document.version or 1), 1) + 1
             document.updated_by_user_id = document.owner_user_id
@@ -7995,10 +9082,10 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
 
 
 def _repair_attendance_summary_cell_meta(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """修复因插入课程模板导致的 cell_meta 超链接错位。
+    """修复因插入课程模板导致的 cell_meta/entity_rows 行错位。
 
-    检测当前文档中是否存在本应无 cell_meta 的新课程行却持有
-    旧数据行超链接的情况，若检测到则重新执行正确的移位。
+    链接已经迁移为行内单元格；这里仅处理样式、动作等表格元数据
+    以及实体行编号的旧错位。
     返回 (修复后文档, 是否执行了修复)。
     """
     normalized = _normalize_document_json(document_json)
@@ -8434,41 +9521,8 @@ def _standardize_attendance_course_script_stem(value: Any) -> str:
     return text.strip(" .")
 
 
-def _get_document_cell_meta_link_url(entry: Any) -> str:
-    if not isinstance(entry, dict):
-        return ""
-    link = entry.get("link")
-    if not isinstance(link, dict):
-        return ""
-    return _normalize_sheet_text(link.get("url"))
-
-
-def _get_document_entity_cell_link_url(
-    document_json: dict[str, Any],
-    document_row_index: int,
-    column_index: int,
-) -> str:
-    entity_rows = _extract_document_entity_rows(document_json)
-    entity_columns = _extract_document_entity_columns(document_json)
-    if document_row_index < 0 or document_row_index >= len(entity_rows):
-        return ""
-    if column_index < 0 or column_index >= len(entity_columns):
-        return ""
-
-    row_id = _get_document_entity_row_id(entity_rows[document_row_index])
-    column_id = _get_document_entity_column_id(entity_columns[column_index])
-    if not row_id or not column_id:
-        return ""
-
-    row_cells = _extract_document_entity_cells(document_json).get(row_id)
-    if not isinstance(row_cells, dict):
-        return ""
-    return _get_document_cell_meta_link_url(row_cells.get(column_id))
-
-
 def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
     data_start_row = _normalize_document_data_start_row(document_json)
-    document_row_index = data_start_row + row_index
     rows = _extract_document_rows(document_json)
     if 0 <= row_index < len(rows):
         row = _normalize_sheet_row(rows[row_index], len(_normalize_document_columns(document_json)))
@@ -8476,42 +9530,63 @@ def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, c
             inline_url = _inline_cell_link_url(row[column_index])
             if inline_url:
                 return inline_url
-
-    entity_url = _get_document_entity_cell_link_url(document_json, document_row_index, column_index)
-    if entity_url:
-        return entity_url
-
-    cell_meta = document_json.get("cell_meta")
-    if not isinstance(cell_meta, dict):
-        return ""
-    for candidate_row in (document_row_index, row_index):
-        # 跳过可能与表头行碰撞的 data-relative 备选查找：
-        # row_index < data_start_row 时，它和表头行的文档索引重合，
-        # 会误把表头的链接返回给数据行。
-        if candidate_row == row_index and row_index < data_start_row:
-            continue
-        url = _get_document_cell_meta_link_url(cell_meta.get(f"{candidate_row}:{column_index}"))
-        if url:
-            return url
+    grid_rows = _extract_document_grid_rows(document_json)
+    document_row_index = data_start_row + row_index
+    if 0 <= document_row_index < len(grid_rows):
+        row = _normalize_sheet_row(grid_rows[document_row_index], len(_normalize_document_columns(document_json)))
+        if 0 <= column_index < len(row):
+            return _inline_cell_link_url(row[column_index])
     return ""
 
 
-def _iter_attendance_course_script_files() -> list[Path]:
-    base_dir = ATTENDANCE_COURSE_SCRIPT_DIR
-    paths: list[Path] = []
-    for directory in (base_dir, base_dir / "已完结"):
-        if not directory.exists() or not directory.is_dir():
+def _attendance_course_script_dir_candidates() -> list[Path]:
+    configured_dir = os.fspath(ATTENDANCE_COURSE_SCRIPT_DIR) != os.fspath(ATTENDANCE_COURSE_SCRIPT_DIR_DEFAULT)
+    if configured_dir and ATTENDANCE_COURSE_SCRIPT_DIR.exists() and ATTENDANCE_COURSE_SCRIPT_DIR.is_dir():
+        return [ATTENDANCE_COURSE_SCRIPT_DIR]
+
+    candidate_paths = [
+        ATTENDANCE_COURSE_SCRIPT_DIR,
+        ATTENDANCE_XLPROJECT_SRC_DIR / "xlsln" / "kq5034" / "courses",
+        Path(__file__).resolve().parents[3] / "xlproject" / "src" / "xlsln" / "kq5034" / "courses",
+    ]
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for path in candidate_paths:
+        try:
+            key = os.fspath(path.resolve())
+        except OSError:
+            key = os.fspath(path)
+        if key in seen:
             continue
-        paths.extend(path for path in directory.glob("*.py") if _parse_attendance_course_script_stem(path.stem))
+        seen.add(key)
+        candidates.append(path)
+    return candidates
+
+
+def _get_attendance_course_script_dir() -> Path:
+    return next(
+        (path for path in _attendance_course_script_dir_candidates() if path.exists() and path.is_dir()),
+        ATTENDANCE_COURSE_SCRIPT_DIR,
+    )
+
+
+def _iter_attendance_course_script_files() -> list[Path]:
+    paths: list[Path] = []
+    for base_dir in _attendance_course_script_dir_candidates():
+        for directory in (base_dir, base_dir / "已完结"):
+            if not directory.exists() or not directory.is_dir():
+                continue
+            paths.extend(path for path in directory.glob("*.py") if _parse_attendance_course_script_stem(path.stem))
     return paths
 
 
 def _find_attendance_course_script_by_stem(stem: str) -> Path | None:
     filename = f"{stem}.py"
-    for directory in (ATTENDANCE_COURSE_SCRIPT_DIR, ATTENDANCE_COURSE_SCRIPT_DIR / "已完结"):
-        path = directory / filename
-        if path.exists() and path.is_file():
-            return path
+    for base_dir in _attendance_course_script_dir_candidates():
+        for directory in (base_dir, base_dir / "已完结"):
+            path = directory / filename
+            if path.exists() and path.is_file():
+                return path
     return None
 
 
@@ -8735,6 +9810,136 @@ def _resolve_attendance_course_lookup_name(
     return _sanitize_attendance_course_script_body(online_sheet or course_name)
 
 
+def _extract_attendance_course_script_attendance_url(source_text: str) -> str:
+    codeyun_match = ATTENDANCE_COURSE_SCRIPT_CODEYUN_ATTENDANCE_REF_RE.search(source_text)
+    if codeyun_match:
+        return (
+            f"/workbook/{int(codeyun_match.group('workbook_id'))}"
+            f"?sheet={int(codeyun_match.group('sheet_id'))}"
+        )
+
+    init_token_match = ATTENDANCE_COURSE_SCRIPT_INIT_TOKEN_RE.search(source_text)
+    if init_token_match:
+        token = init_token_match.group("token").strip()
+        return f"https://www.kdocs.cn/l/{token}" if token else ""
+
+    kdocs_match = ATTENDANCE_COURSE_SCRIPT_KDOCS_TOKEN_RE.search(source_text)
+    if kdocs_match:
+        return f"https://www.kdocs.cn/l/{kdocs_match.group('token')}"
+    return ""
+
+
+def _resolve_attendance_summary_online_sheet_url(
+    document_json: dict[str, Any],
+    *,
+    row: list[Any],
+    row_index: int,
+    columns: list[Any],
+) -> str:
+    lookup_name = _resolve_attendance_course_lookup_name(
+        document_json,
+        row=row,
+        row_index=row_index,
+        columns=columns,
+    )
+    if not lookup_name:
+        return ""
+
+    script_path = _find_attendance_course_script_by_stem(lookup_name)
+    if script_path is None:
+        return ""
+
+    try:
+        source_text = script_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return _extract_attendance_course_script_attendance_url(source_text)
+
+
+def _repair_attendance_summary_online_sheet_links(document_json: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    online_sheet_index = _find_attendance_column_index(columns, "online_sheet")
+    if online_sheet_index is None:
+        return normalized, 0
+
+    next_rows = list(rows)
+    repaired = 0
+    for row_index, source_row in enumerate(rows):
+        row = _normalize_sheet_row(source_row, len(columns))
+        online_sheet = _normalize_sheet_text(row[online_sheet_index])
+        if not online_sheet:
+            continue
+        if _get_document_cell_link_url(normalized, row_index, online_sheet_index):
+            continue
+
+        url = _resolve_attendance_summary_online_sheet_url(
+            normalized,
+            row=row,
+            row_index=row_index,
+            columns=columns,
+        )
+        if not url:
+            continue
+
+        next_rows[row_index] = _set_row_cell_value(
+            source_row,
+            columns,
+            online_sheet_index,
+            _with_inline_cell_link(online_sheet, url),
+        )
+        repaired += 1
+
+    if not repaired:
+        return normalized, 0
+    return _normalize_document_json(_replace_document_data_rows(normalized, next_rows)), repaired
+
+
+def _preserve_attendance_summary_online_sheet_links(
+    current_document: dict[str, Any],
+    incoming_document: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    normalized_current = _normalize_document_json(current_document)
+    normalized_incoming = _normalize_document_json(incoming_document)
+    current_columns = _normalize_document_columns(normalized_current)
+    incoming_columns = _normalize_document_columns(normalized_incoming)
+    current_online_index = _find_attendance_column_index(current_columns, "online_sheet")
+    incoming_online_index = _find_attendance_column_index(incoming_columns, "online_sheet")
+    if current_online_index is None or incoming_online_index is None:
+        return normalized_incoming, 0
+
+    current_rows = _extract_document_rows(normalized_current)
+    incoming_rows = _extract_document_rows(normalized_incoming)
+    next_rows = list(incoming_rows)
+    preserved = 0
+    for row_index, incoming_source_row in enumerate(incoming_rows):
+        if row_index >= len(current_rows):
+            continue
+        current_row = _normalize_sheet_row(current_rows[row_index], len(current_columns))
+        incoming_row = _normalize_sheet_row(incoming_source_row, len(incoming_columns))
+        current_link = note_sheet_inline_links.inline_cell_link(current_row[current_online_index])
+        if not current_link or note_sheet_inline_links.inline_cell_link(incoming_row[incoming_online_index]):
+            continue
+
+        current_value = _normalize_sheet_text(current_row[current_online_index])
+        incoming_value = _normalize_sheet_text(incoming_row[incoming_online_index])
+        if not current_value or current_value != incoming_value:
+            continue
+
+        next_rows[row_index] = _set_row_cell_value(
+            incoming_source_row,
+            incoming_columns,
+            incoming_online_index,
+            note_sheet_inline_links.with_inline_cell_link(incoming_value, current_link),
+        )
+        preserved += 1
+
+    if not preserved:
+        return normalized_incoming, 0
+    return _normalize_document_json(_replace_document_data_rows(normalized_incoming, next_rows)), preserved
+
+
 def _extract_attendance_link_item_url(item: Any) -> str:
     if isinstance(item, dict):
         return _normalize_sheet_text(item.get("url"))
@@ -8903,7 +10108,8 @@ def _generate_attendance_course_script(
     *,
     row_index: int,
 ) -> NoteSheetAttendanceCourseScriptGenerationResponse:
-    if not ATTENDANCE_COURSE_SCRIPT_DIR.exists() or not ATTENDANCE_COURSE_SCRIPT_DIR.is_dir():
+    course_script_dir = _get_attendance_course_script_dir()
+    if not course_script_dir.exists() or not course_script_dir.is_dir():
         raise HTTPException(status_code=400, detail="考勤脚本目录不存在")
 
     script_files = _iter_attendance_course_script_files()
@@ -8934,7 +10140,7 @@ def _generate_attendance_course_script(
     if not next_token:
         raise HTTPException(status_code=400, detail="在线考勤表链接不是可识别的 KDocs 链接")
 
-    target_path = ATTENDANCE_COURSE_SCRIPT_DIR / status.target_filename
+    target_path = course_script_dir / status.target_filename
     if target_path.exists():
         raise HTTPException(status_code=409, detail="对应 py 脚本已存在")
 
@@ -8974,7 +10180,8 @@ def _is_attendance_script_in_directory(path: Path, directory: Path) -> bool:
 def _organize_attendance_course_scripts(
     document_json: dict[str, Any],
 ) -> NoteSheetAttendanceCourseScriptOrganizeResponse:
-    if not ATTENDANCE_COURSE_SCRIPT_DIR.exists() or not ATTENDANCE_COURSE_SCRIPT_DIR.is_dir():
+    course_script_dir = _get_attendance_course_script_dir()
+    if not course_script_dir.exists() or not course_script_dir.is_dir():
         raise HTTPException(status_code=400, detail="考勤脚本目录不存在")
 
     normalized = _normalize_document_json(document_json)
@@ -8984,7 +10191,7 @@ def _organize_attendance_course_scripts(
     if completed_index is None:
         raise HTTPException(status_code=400, detail="当前表缺少考勤实际完成结点字段")
 
-    completed_dir = ATTENDANCE_COURSE_SCRIPT_DIR / "已完结"
+    completed_dir = course_script_dir / "已完结"
     moved: list[NoteSheetAttendanceCourseScriptOrganizeItem] = []
     skipped: list[NoteSheetAttendanceCourseScriptOrganizeItem] = []
 
@@ -9008,7 +10215,7 @@ def _organize_attendance_course_scripts(
             continue
 
         source_path = Path(status.existing_path)
-        desired_dir = completed_dir if completed else ATTENDANCE_COURSE_SCRIPT_DIR
+        desired_dir = completed_dir if completed else course_script_dir
         target_path = desired_dir / status.target_filename
         item.source_path = str(source_path)
         item.target_path = str(target_path)
@@ -10196,6 +11403,32 @@ def _evaluate_formula_arithmetic(
     defined_names: dict[str, str] | None = None,
     name_stack: tuple[str, ...] = (),
 ) -> Any | None:
+    terms, operators = _split_formula_top_level_operators(expr, {"+", "-"})
+    if operators:
+        first = _evaluate_table_formula_expr(
+            terms[0],
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+            name_stack=name_stack,
+        )
+        result = _coerce_formula_number(first)
+        if result is None:
+            return None
+        for operator, term in zip(operators, terms[1:]):
+            value = _evaluate_table_formula_expr(
+                term,
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )
+            number = _coerce_formula_number(value)
+            if number is None:
+                return None
+            result = result + number if operator == "+" else result - number
+        return _format_formula_number(result)
+
     multiply_parts, multiply_operators = _split_formula_top_level_operators(expr, {"*", "/"})
     if multiply_operators:
         first = _evaluate_table_formula_expr(
@@ -10225,32 +11458,6 @@ def _evaluate_formula_arithmetic(
                 if number == 0:
                     return None
                 result /= number
-        return _format_formula_number(result)
-
-    terms, operators = _split_formula_top_level_operators(expr, {"+", "-"})
-    if operators:
-        first = _evaluate_table_formula_expr(
-            terms[0],
-            grid_rows=grid_rows,
-            cache=cache,
-            defined_names=defined_names,
-            name_stack=name_stack,
-        )
-        result = _coerce_formula_number(first)
-        if result is None:
-            return None
-        for operator, term in zip(operators, terms[1:]):
-            value = _evaluate_table_formula_expr(
-                term,
-                grid_rows=grid_rows,
-                cache=cache,
-                defined_names=defined_names,
-                name_stack=name_stack,
-            )
-            number = _coerce_formula_number(value)
-            if number is None:
-                return None
-            result = result + number if operator == "+" else result - number
         return _format_formula_number(result)
     return None
 
@@ -11924,6 +13131,13 @@ def update_note_sheet(
     next_document = _remove_orphan_document_entity_cells(next_document)
     next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
 
+    if _is_attendance_summary_document(session, document):
+        next_document, _online_links_preserved_count = _preserve_attendance_summary_online_sheet_links(
+            current_document,
+            next_document,
+        )
+        next_document, _online_links_repaired_count = _repair_attendance_summary_online_sheet_links(next_document)
+
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
 
@@ -11969,7 +13183,6 @@ async def import_note_sheet_excel_reset(
     file: UploadFile = File(...),
     instruction: str = Form(default=""),
     mode: Literal["append", "reset"] = Form(default="reset"),
-    allow_direct_fallback: bool = Form(default=False),
     action_document_row: int | None = Form(default=None),
     action_column: int | None = Form(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
@@ -11994,29 +13207,35 @@ async def import_note_sheet_excel_reset(
     raw_bytes = await file.read()
     workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
     current_document = _normalize_document_json(dict(document.document_json or {}))
-    try:
-        import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
-            document_json=current_document,
-            workbook_payload=workbook_payload,
-            instruction=instruction,
-            session=session,
-            current_user=current_user,
-            action_document_row=action_document_row,
-            action_column=action_column,
-        )
-    except HTTPException as exc:
-        if not allow_direct_fallback:
-            raise
-        fallback = _try_direct_excel_import_by_header(
-            workbook_payload=workbook_payload,
-            columns=_normalize_document_columns(current_document),
-        )
-        if fallback is None:
-            raise
-        import_rows, extra_columns, warnings, mapping_notes = fallback
-        detail = _normalize_sheet_text(exc.detail)
-        if detail:
-            warnings = [*warnings, f"原 AI 导入错误：{detail}"]
+    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
+        document_json=current_document,
+        workbook_payload=workbook_payload,
+        instruction=instruction,
+        session=session,
+        current_user=current_user,
+        action_document_row=action_document_row,
+        action_column=action_column,
+    )
+    effective_document, _effective_extra_columns = _append_document_extra_columns_for_excel_import(
+        current_document,
+        extra_columns,
+    )
+    effective_columns = _normalize_document_columns(effective_document)
+    import_rows, grouped_sequence_count, source_field_count = _prefer_registration_group_sequences_from_workbook(
+        workbook_payload=workbook_payload,
+        rows=import_rows,
+        columns=effective_columns,
+    )
+    if grouped_sequence_count:
+        mapping_notes = [
+            *mapping_notes,
+            f"检测到源 Excel 中存在分组学号，已优先使用分组序号覆盖 {grouped_sequence_count} 行",
+        ]
+    if source_field_count:
+        mapping_notes = [
+            *mapping_notes,
+            f"已按源 Excel 补正提交时间、商户订单号、订单金额等字段 {source_field_count} 行",
+        ]
     if mode == "append":
         next_document, preserved_row_count = _append_document_rows_for_excel_import(
             current_document,
@@ -12124,7 +13343,7 @@ def get_note_sheet_active_clockin_link_detection_run(
         workbook_id=workbook_id,
     )
     run = _get_active_clockin_link_detection_run_snapshot(_require_sheet_numeric_id(document))
-    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user) if run is not None else None
     return _serialize_clockin_link_detection_run(
         run,
         sheet=sheet,
@@ -12186,7 +13405,11 @@ def start_note_sheet_registration_match_run(
         workbook_id=workbook_id,
         action=payload.action,
         current_user=current_user,
-        use_browser_fallback=payload.use_browser_fallback,
+        use_browser_fallback=(
+            payload.use_browser_fallback
+            if payload.use_browser_fallback is not None
+            else _default_registration_match_browser_fallback(payload.action)
+        ),
         force_restart=payload.force_restart,
     )
     return run_response
@@ -12211,7 +13434,7 @@ def get_note_sheet_active_registration_match_run(
         workbook_id=workbook_id,
     )
     run = _get_active_registration_match_run_snapshot(_require_sheet_numeric_id(document), action)
-    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user) if run is not None else None
     return _serialize_registration_match_run(
         run,
         sheet=sheet,
@@ -12469,7 +13692,7 @@ def repair_attendance_summary_cell_meta(
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
-    """修复因插入课程模板导致的 cell_meta 超链接错位。"""
+    """修复因插入课程模板导致的 cell_meta/entity_rows 行错位。"""
     document, access, _workbook = _get_note_sheet_or_404(
         session,
         current_user,
@@ -12698,6 +13921,68 @@ def set_attendance_summary_row_completed(
             current_user=current_user,
         ),
         row_index=next_row_index,
+    )
+
+
+@router.post(
+    "/sheets/{sheet_id}/attendance/video-revision",
+    response_model=NoteSheetAttendanceVideoRevisionResponse,
+)
+def revise_attendance_video_progress(
+    sheet_id: int,
+    payload: NoteSheetAttendanceVideoRevisionRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+
+    revision_label = payload.revision_label.strip()
+    if not revision_label:
+        raise HTTPException(status_code=400, detail="修订类型不能为空")
+
+    try:
+        from backend.core.nianzhu_course_sheets import apply_nianzhu_attendance_video_revision
+
+        recalculation = apply_nianzhu_attendance_video_revision(
+            session,
+            attendance_sheet_id=int(document.numeric_id or sheet_id),
+            cells=[cell.model_dump() for cell in payload.cells],
+            revision_label=revision_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能") from exc
+
+    document.updated_by_user_id = current_user.id
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+
+    next_document = _normalize_document_json(dict(document.document_json or {}))
+    return NoteSheetAttendanceVideoRevisionResponse(
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
+        revision_label=revision_label,
+        updated_count=int(recalculation.get("revision_target_count") or 0),
+        recalculation=recalculation,
     )
 
 
@@ -13138,6 +14423,7 @@ def save_as_workbook(
         session.flush()
         document.sheet_key = str(_require_sheet_numeric_id(document))
         session.add(document)
+        ensure_attendance_sheet_anonymous_viewer(session, document)
         session.add(
             WorkbookSheetLink(
                 workbook_id=_workbook_link_ref(workbook),

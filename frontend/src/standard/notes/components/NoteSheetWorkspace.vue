@@ -23,6 +23,7 @@ import {
   fetchWorkbookDefinedNames,
   fetchSheetDefinedNames,
   exportAttendanceSheet,
+  applyAttendanceVideoRevision,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
   getNoteSheetApiErrorStatus,
@@ -37,6 +38,7 @@ import {
   updateWorkbookDefinedNames,
   type AttendanceLinkCountFieldKey,
   type AttendanceCourseScriptStatusItem,
+  type AttendanceVideoRevisionCell,
   type NoteSheetDefinedNameItem,
   type NoteSheetDefinedNameWorksheetScope,
   type NoteSheetDefinedNamesResponse,
@@ -219,6 +221,43 @@ const ATTENDANCE_FIELD_BINDINGS = {
   clockinLinks: { header: '打卡链接', fallbackIndex: 5 },
   completedDate: { header: '考勤实际完成结点', fallbackIndex: 10 },
 } as const
+const ATTENDANCE_VIDEO_REVISION_LABELS = [
+  '当堂完成',
+  '第1天回放',
+  '第2天回放',
+  '第3天回放',
+  '1遍',
+  '2遍',
+  '3遍',
+  '准时完成',
+  '延1周完成',
+  '延2周完成',
+  '延3周完成',
+] as const
+const ATTENDANCE_TIMED_VIDEO_REVISION_LABELS = new Set(['当堂完成', '第1天回放', '第2天回放', '第3天回放'])
+const ATTENDANCE_CHALLENGE_VIDEO_REVISION_LABELS = new Set(['1遍', '2遍', '3遍'])
+const ATTENDANCE_LEGACY_VIDEO_REVISION_LABELS = new Set(['准时完成', '延1周完成', '延2周完成', '延3周完成'])
+const ATTENDANCE_NON_VIDEO_HEADERS = new Set([
+  '报名日期',
+  '分组',
+  '学号',
+  '姓名',
+  '昵称',
+  '用户ID',
+  '禅客',
+  '考试资格',
+  '优秀学员评分',
+  '完成视频数',
+  '视频应返款',
+  '打卡应返款',
+  '总应返款',
+  '订单金额',
+  '已返款',
+  '当前应返款',
+  '打卡数',
+  '共学打卡',
+  '共修打卡',
+])
 const FULL_ACCESS_CAPABILITIES: NoteSheetAccessCapabilities = {
   can_read: true,
   can_use_local_view: true,
@@ -1247,7 +1286,7 @@ const pageRowIndexes = ref<number[] | null>(null)
 const pendingDeletedPageRowIndexes = ref<number[]>([])
 
 const storageKey = computed(() => (
-  `notes.sheet.${props.sheetId ?? 'empty'}.page.${currentPage.value}.size.${pageSize.value}.draft.v2`
+  `notes.sheet.${props.sheetId ?? 'empty'}.page.${currentPage.value}.size.${pageSize.value}.draft.v3`
 ))
 
 let textMeasureContext: CanvasRenderingContext2D | null = null
@@ -3894,6 +3933,32 @@ function buildRowsWithInlineLinks(
   })
 }
 
+function buildGridRowsWithInlineLinks(
+  normalizedRows: SheetRow[],
+  entityRows: SheetEntityRow[],
+  entityColumns: SheetEntityColumn[],
+  cells: SheetEntityCellMap,
+): SheetStoredRow[] {
+  return normalizedRows.map((row, rowIndex) => {
+    const entityRow = entityRows[rowIndex]
+    if (!entityRow) {
+      return row
+    }
+
+    let changed = false
+    const nextRow = row.map((value, columnIndex): SheetStoredCell => {
+      const entityColumn = entityColumns[columnIndex]
+      const link = entityColumn ? cells[entityRow.id]?.[entityColumn.id]?.link : null
+      if (!link) {
+        return value
+      }
+      changed = true
+      return { value, link }
+    })
+    return changed ? nextRow : row
+  })
+}
+
 function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[]) {
   const headerRows = sheetGridRows.value
     .slice(0, sheetHeaderRowCount.value)
@@ -3919,7 +3984,7 @@ function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[
       const legacyMeta = cellMeta.value[createCellMetaKey(getDocumentRow(rowIndex), columnIndex)] ?? null
       const cell = extractEntityCellForSave(
         documentRows[rowIndex]?.[columnIndex] ?? '',
-        existingMeta ?? legacyMeta,
+        mergeCellMetaEntries(legacyMeta, existingMeta),
       )
       if (cell) {
         nextRowCells[column.id] = cell
@@ -4468,23 +4533,6 @@ function createColumnInsertMenuRenderer() {
 
 const contextMenu = {
   items: {
-    undo_change: {
-      name: '撤销',
-      disabled: () => !canUndoSheetChange(),
-      callback: () => {
-        undoSheetChange()
-      },
-    },
-    redo_change: {
-      name: '重做',
-      disabled: () => !canRedoSheetChange(),
-      callback: () => {
-        redoSheetChange()
-      },
-    },
-    hsep_undo: {
-      name: '---------',
-    },
     row_detail: {
       name: '单独显示此条',
       hidden: () => !canOpenSelectedRowDetailDialog(),
@@ -4677,6 +4725,25 @@ const contextMenu = {
         void handleSetAttendanceCompletedFromSelection()
       },
     },
+    hsep_attendance_video_revision: {
+      name: '---------',
+      hidden: () => !canRunAttendanceVideoRevisionFromSelection() || !canRunSheetActions.value || !canEditData.value,
+    },
+    revise_attendance_video: {
+      name: '修订',
+      hidden: () => !canRunAttendanceVideoRevisionFromSelection() || !canRunSheetActions.value || !canEditData.value,
+      disabled: () => workspaceLoading.value,
+      submenu: {
+        items: ATTENDANCE_VIDEO_REVISION_LABELS.map((label) => ({
+          key: `revise_attendance_video:${label}`,
+          name: label,
+          hidden: () => !canRunAttendanceVideoRevisionLabelFromSelection(label),
+          callback: () => {
+            void handleAttendanceVideoRevisionFromSelection(label)
+          },
+        })),
+      },
+    },
     hsep_attendance_course_template: {
       name: '---------',
       hidden: () => !canGenerateAttendanceCourseTemplateFromSelection() || !canRunSheetActions.value,
@@ -4847,6 +4914,7 @@ function getCurrentSheetHotRenderSettings() {
     contextMenu: sheetHotRenderContextMenu.value,
     cells: sheetHotRenderCellMetaResolver.value,
     rowHeights: sheetHotRenderRowHeightResolver.value,
+    afterRenderer: sheetHotRenderAfterRenderer.value,
   }
 }
 
@@ -4947,6 +5015,7 @@ async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
 
     const hot = getHotInstance()
     if (hot) {
+      hot.updateSettings(getCurrentSheetHotRenderSettings())
       hot.render()
       trace?.mark('render')
       void updateSheetViewportHeight('renderEnhancement')
@@ -5259,9 +5328,9 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
     userMatchRunStatus.value = status.status === 'idle' ? null : status
     if (status.status !== 'idle') {
       userMatchUseBrowserFallback.value = status.use_browser_fallback
+      applyRegistrationActionRunSheetDetail(status)
+      getHotInstance()?.render()
     }
-    applyRegistrationActionRunSheetDetail(status)
-    getHotInstance()?.render()
     if (isRegistrationMatchRunActive(status)) {
       scheduleUserMatchRunPolling()
     } else {
@@ -5334,8 +5403,10 @@ async function refreshClockinLinkDetectionRunStatus(runId?: string, options: { s
       : await fetchNoteSheetActiveClockinLinkDetectionRun(props.sheetId, { workbookId: props.workbookId })
 
     clockinLinkDetectionRunStatus.value = status.status === 'idle' ? null : status
-    applyClockinLinkDetectionRunSheetDetail(status)
-    getHotInstance()?.render()
+    if (status.status !== 'idle') {
+      applyClockinLinkDetectionRunSheetDetail(status)
+      getHotInstance()?.render()
+    }
     if (isClockinLinkDetectionRunActive(status)) {
       scheduleClockinLinkDetectionRunPolling()
     } else {
@@ -6292,8 +6363,18 @@ function resetWorkspaceState() {
 }
 
 function normalizeCellValue(value: unknown): string {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return normalizeCellValue((value as Record<string, unknown>).value)
+  const inlineCell = coerceInlineCellRecord(value)
+  if (inlineCell) {
+    for (const key of ['value', 'text', 'title', 'label', 'name']) {
+      if (Object.prototype.hasOwnProperty.call(inlineCell, key)) {
+        return normalizeCellValue(inlineCell[key])
+      }
+    }
+    const link = normalizeCellLink(inlineCell.link)
+    if (link) {
+      return link.title || link.url
+    }
+    return ''
   }
   return value == null ? '' : String(value)
 }
@@ -6789,14 +6870,79 @@ function parseCellMetaKey(key: string) {
   }
 }
 
-function normalizeCellLink(source: unknown): SheetCellLink | null {
-  if (!source || typeof source !== 'object') {
+function decodeInlineCellStringToken(value: string) {
+  return value
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+}
+
+function extractInlineCellStringField(source: string, field: string) {
+  const pattern = new RegExp(`['"]${field}['"]\\s*:\\s*(?:'((?:\\\\'|[^'])*)'|"((?:\\\\"|[^"])*)")`)
+  const match = source.match(pattern)
+  if (!match) {
+    return ''
+  }
+  return decodeInlineCellStringToken(match[1] ?? match[2] ?? '')
+}
+
+function parseInlineCellRecordString(source: string): Record<string, unknown> | null {
+  const text = source.trim()
+  if (!text.startsWith('{') || (!text.includes('value') && !text.includes('link'))) {
     return null
   }
 
-  const record = source as Record<string, unknown>
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // Python repr strings from old saves are handled by field extraction below.
+  }
+
+  const value = extractInlineCellStringField(text, 'value')
+  const url = extractInlineCellStringField(text, 'url')
+  const title = extractInlineCellStringField(text, 'title')
+  if (!value && !url && !title) {
+    return null
+  }
+
+  const record: Record<string, unknown> = {}
+  if (value) {
+    record.value = value
+  }
+  if (url) {
+    record.link = title ? { url, title } : { url }
+  }
+  return record
+}
+
+function coerceInlineCellRecord(source: unknown): Record<string, unknown> | null {
+  if (source && typeof source === 'object' && !Array.isArray(source)) {
+    return source as Record<string, unknown>
+  }
+  if (typeof source === 'string') {
+    return parseInlineCellRecordString(source)
+  }
+  return null
+}
+
+function normalizeCellLink(source: unknown): SheetCellLink | null {
+  const inlineRecord = coerceInlineCellRecord(source)
+  if (inlineRecord && inlineRecord !== source && inlineRecord.link) {
+    return normalizeCellLink(inlineRecord.link)
+  }
+  if (!inlineRecord) {
+    return null
+  }
+
+  const record = inlineRecord
   const url = normalizeHyperlinkUrl(record.url)
   if (!url) {
+    if (record.link) {
+      return normalizeCellLink(record.link)
+    }
     return null
   }
 
@@ -7004,11 +7150,11 @@ function normalizeRichTextForText(source: unknown, text: string) {
 }
 
 function normalizeCellMetaEntry(source: unknown): SheetCellMeta | null {
-  if (!source || typeof source !== 'object') {
+  const record = coerceInlineCellRecord(source)
+  if (!record) {
     return null
   }
 
-  const record = source as Record<string, unknown>
   const cellType = normalizeStoredCellFormatType(record.cell_type)
   const link = normalizeCellLink(record.link)
   const action = normalizeCellAction(record.action)
@@ -7055,6 +7201,44 @@ function normalizeCellMetaMap(source: unknown, columnCount: number): SheetCellMe
     }
   }
   return normalized
+}
+
+function stripCellLinkFromMeta(meta: SheetCellMeta | null | undefined): SheetCellMeta | null {
+  if (!meta) {
+    return null
+  }
+  const nextMeta: SheetCellMeta = { ...meta }
+  delete nextMeta.link
+  return Object.keys(nextMeta).length ? nextMeta : null
+}
+
+function stripCellLinksFromMetaMap(source: SheetCellMetaMap): SheetCellMetaMap {
+  const nextMeta: SheetCellMetaMap = {}
+  for (const [key, meta] of Object.entries(source)) {
+    const stripped = stripCellLinkFromMeta(meta)
+    if (stripped) {
+      nextMeta[key] = stripped
+    }
+  }
+  return nextMeta
+}
+
+function stripCellLinksFromEntityCellMap(source: SheetEntityCellMap): SheetEntityCellMap {
+  const nextCells: SheetEntityCellMap = {}
+  for (const [rowId, rowCells] of Object.entries(source)) {
+    const nextRowCells: Record<string, SheetEntityCell> = {}
+    for (const [columnId, cell] of Object.entries(rowCells)) {
+      const nextCell: SheetEntityCell = { ...cell }
+      delete nextCell.link
+      if (Object.keys(nextCell).length) {
+        nextRowCells[columnId] = nextCell
+      }
+    }
+    if (Object.keys(nextRowCells).length) {
+      nextCells[rowId] = nextRowCells
+    }
+  }
+  return nextCells
 }
 
 let sheetEntityIdCounter = 0
@@ -7160,6 +7344,19 @@ function normalizeEntityCellMap(source: unknown): SheetEntityCellMap {
 
 function getEntityCellMeta(cell: SheetEntityCell | null | undefined): SheetCellMeta | null {
   return normalizeCellMetaEntry(cell ?? null)
+}
+
+function mergeCellMetaEntries(
+  baseMeta: SheetCellMeta | null | undefined,
+  overlayMeta: SheetCellMeta | null | undefined,
+): SheetCellMeta | null {
+  if (!baseMeta && !overlayMeta) {
+    return null
+  }
+  return normalizeCellMetaEntry({
+    ...(baseMeta ?? {}),
+    ...(overlayMeta ?? {}),
+  })
 }
 
 function replaceEntityCellMeta(entry: SheetEntityCell, meta: SheetCellMeta | null): SheetEntityCell {
@@ -8322,9 +8519,6 @@ function normalizeRow(row: unknown, headers: string[]): SheetRow {
 }
 
 function getInlineCellMeta(source: unknown): SheetCellMeta | null {
-  if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    return null
-  }
   return normalizeCellMetaEntry(source)
 }
 
@@ -8348,6 +8542,37 @@ function mergeInlineCellMetaIntoCellMeta(
       nextMeta[key] = normalizeCellMetaEntry({ ...(nextMeta[key] ?? {}), ...inlineMeta }) ?? inlineMeta
     })
   })
+  return normalizeCellMetaMap(nextMeta, headers.length)
+}
+
+function mergeSourceDocumentInlineLinksIntoCellMeta(
+  sourceMeta: SheetCellMetaMap,
+  source: unknown,
+  dataStartRow: number,
+  headers: string[],
+) {
+  if (!source || typeof source !== 'object') {
+    return sourceMeta
+  }
+
+  const record = source as Record<string, unknown>
+  let nextMeta = normalizeCellMetaMap(sourceMeta, headers.length)
+  if (record.cell_meta && typeof record.cell_meta === 'object' && !Array.isArray(record.cell_meta)) {
+    const rawMeta = normalizeCellMetaMap(record.cell_meta, headers.length)
+    nextMeta = normalizeCellMetaMap({ ...nextMeta, ...rawMeta }, headers.length)
+  }
+  if (Array.isArray(record.rows)) {
+    nextMeta = mergeInlineCellMetaIntoCellMeta(nextMeta, record.rows, dataStartRow, headers)
+  }
+  if (Array.isArray(record.grid_rows)) {
+    const sourceDataStartRow = normalizeNonNegativeInt(record.data_start_row, dataStartRow)
+    nextMeta = mergeInlineCellMetaIntoCellMeta(
+      nextMeta,
+      record.grid_rows.slice(sourceDataStartRow),
+      dataStartRow,
+      headers,
+    )
+  }
   return normalizeCellMetaMap(nextMeta, headers.length)
 }
 
@@ -8413,13 +8638,14 @@ function normalizeSheetDocument(
   const record = source as Record<string, unknown>
   const headers = normalizeHeaders(record.columns)
   const sourceRows = Array.isArray(record.rows) ? record.rows : []
+  const sourceUnifiedGridRows = Array.isArray(record.grid_rows) ? record.grid_rows : []
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   let normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
   const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
   const hasConfigColumnNotes = headers.some((header) => getDocumentColumnNote(header, normalizedColumnConfigs) !== '')
   const hasUnifiedGridRows = Array.isArray(record.grid_rows)
   const unifiedSourceGridRows = hasUnifiedGridRows
-    ? (record.grid_rows as unknown[]).map((row) => normalizeRow(row, headers))
+    ? sourceUnifiedGridRows.map((row) => normalizeRow(row, headers))
     : []
   const inferredFieldRowIndex = normalizeNonNegativeInt(record.field_row_index, sourceHeaderGroups.length)
   const inferredDataStartRow = normalizeNonNegativeInt(record.data_start_row, sourceHeaderGroups.length + 1)
@@ -8551,10 +8777,24 @@ function normalizeSheetDocument(
           : normalizeCellMetaMap(record.cell_meta, headers.length)
       )
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
+  const sourceCellMetaWithInlineRowLinks = mergeInlineCellMetaIntoCellMeta(
+    stripCellLinksFromMetaMap(sourceCellMeta),
+    sourceRows,
+    dataStartRow,
+    headers,
+  )
+  const sourceCellMetaWithInlineLinks = hasUnifiedGridRows
+    ? mergeInlineCellMetaIntoCellMeta(
+      sourceCellMetaWithInlineRowLinks,
+      sourceUnifiedGridRows.slice(previousDataStartRow),
+      dataStartRow,
+      headers,
+    )
+    : sourceCellMetaWithInlineRowLinks
   const normalizedCellMeta = addDefaultRegistrationCompositeUpdateAction(
     addDefaultRegistrationAddStudentAction(
       addLegacySheetCellActions(
-        mergeInlineCellMetaIntoCellMeta(sourceCellMeta, sourceRows, dataStartRow, headers),
+        sourceCellMetaWithInlineLinks,
         normalizedGridRows,
         headers.length,
       ),
@@ -8576,7 +8816,7 @@ function normalizeSheetDocument(
       Array.isArray(record.entity_rows) ? Math.max(0, record.entity_rows.length - dataStartRow) : 0,
     ),
   )
-  const normalizedEntityCells = normalizeEntityCellMap(record.entity_cells)
+  const normalizedEntityCells = stripCellLinksFromEntityCellMap(normalizeEntityCellMap(record.entity_cells))
   const normalizedFormulaHeaderRows = normalizedGridRows
     .slice(0, dataStartRow)
     .map((row) => normalizeRow(row, headers))
@@ -8750,24 +8990,109 @@ function isRemoteHeaderPrefixCompatibleWithLocalDraft(localDocument: SheetDocume
   return true
 }
 
+function getDocumentStoredCell(document: SheetDocument, dataRowIndex: number, columnIndex: number): unknown {
+  const row = Array.isArray(document.rows) ? document.rows[dataRowIndex] : null
+  if (Array.isArray(row) && columnIndex < row.length) {
+    return row[columnIndex]
+  }
+
+  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, 0)
+  const gridRow = Array.isArray(document.grid_rows) ? document.grid_rows[dataStartRow + dataRowIndex] : null
+  if (Array.isArray(gridRow) && columnIndex < gridRow.length) {
+    return gridRow[columnIndex]
+  }
+  return ''
+}
+
+function getDocumentStoredCellLink(document: SheetDocument, dataRowIndex: number, columnIndex: number) {
+  const inlineLink = normalizeCellLink(getDocumentStoredCell(document, dataRowIndex, columnIndex))
+  if (inlineLink) {
+    return inlineLink
+  }
+
+  const headers = normalizeHeaders(document.columns)
+  if (columnIndex < 0 || columnIndex >= headers.length) {
+    return null
+  }
+
+  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, 0)
+  const documentRow = dataStartRow + dataRowIndex
+  const cellMeta = normalizeCellMetaEntry((document.cell_meta ?? {})[createCellMetaKey(documentRow, columnIndex)])
+  if (cellMeta?.link) {
+    return cellMeta.link
+  }
+
+  const entityRows = normalizeEntityRows(
+    document.entity_rows,
+    dataStartRow,
+    normalizeNonNegativeInt(document.field_row_index, Math.max(0, dataStartRow - 1)),
+    Math.max(0, document.rows.length),
+  )
+  const entityColumns = normalizeEntityColumns(document.entity_columns, headers)
+  const rowId = entityRows[documentRow]?.id
+  const columnId = entityColumns[columnIndex]?.id
+  if (!rowId || !columnId) {
+    return null
+  }
+
+  return getEntityCellMeta(normalizeEntityCellMap(document.entity_cells)[rowId]?.[columnId])?.link ?? null
+}
+
+function isDraftPreservingRemoteCellLinks(localDocument: SheetDocument, remoteDocument: SheetDocument) {
+  const headers = normalizeHeaders(remoteDocument.columns)
+  const localHeaders = normalizeHeaders(localDocument.columns)
+  if (
+    headers.length !== localHeaders.length
+    || headers.some((header, index) => header !== localHeaders[index])
+  ) {
+    return true
+  }
+
+  const rowCount = Math.min(localDocument.rows.length, remoteDocument.rows.length)
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
+      const remoteCell = getDocumentStoredCell(remoteDocument, rowIndex, columnIndex)
+      const remoteLink = getDocumentStoredCellLink(remoteDocument, rowIndex, columnIndex)
+      if (!remoteLink) {
+        continue
+      }
+
+      const localCell = getDocumentStoredCell(localDocument, rowIndex, columnIndex)
+      if (normalizeCellValue(localCell) !== normalizeCellValue(remoteCell)) {
+        continue
+      }
+      if (!getDocumentStoredCellLink(localDocument, rowIndex, columnIndex)) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
 function buildCurrentDocument(): SheetDocument {
   const headers = normalizeHeaders(columnHeaders.value)
   const normalizedRows = trimTrailingBlankRows(rows.value.map((row) => normalizeRow(row, headers)))
   const entitySnapshot = buildCurrentEntitySnapshot(headers, normalizedRows)
+  const normalizedGridRows = sheetGridRows.value.map((row) => normalizeRow(row, headers))
   return {
     schema_version: 1,
     columns: headers,
     rows: entitySnapshot.rows,
-    grid_rows: sheetGridRows.value.map((row) => normalizeRow(row, headers)),
+    grid_rows: buildGridRowsWithInlineLinks(
+      normalizedGridRows,
+      entitySnapshot.entity_rows,
+      entitySnapshot.entity_columns,
+      entitySnapshot.entity_cells,
+    ),
     data_start_row: sheetHeaderRowCount.value,
     field_row_index: columnHeaderLevel.value,
     merged_cells: normalizeMergedCells(mergedCells.value, sheetHeaderRowCount.value + totalRowCount.value, headers.length),
     formula_reference_origin: 'sheet_v2',
     header_groups: normalizeHeaderGroups(headerGroups.value, headers.length),
-    cell_meta: entitySnapshot.cell_meta,
+    cell_meta: stripCellLinksFromMetaMap(entitySnapshot.cell_meta),
     entity_columns: entitySnapshot.entity_columns,
     entity_rows: entitySnapshot.entity_rows,
-    entity_cells: entitySnapshot.entity_cells,
+    entity_cells: stripCellLinksFromEntityCellMap(entitySnapshot.entity_cells),
     column_configs: normalizeColumnConfigs(columnConfigs.value, headers),
     column_widths: headers.map((_, index) => columnWidths.value[index] ?? getAutoColumnWidth(
       index,
@@ -8846,7 +9171,7 @@ function initializeSheetEntitiesFromDocument(
         ?? null
       const existingMeta = getEntityCellMeta(existingCell)
       const legacyMeta = normalizedCellMeta[createCellMetaKey(documentRow, columnIndex)] ?? null
-      const cell = extractEntityCellForSave(row[columnIndex] ?? '', existingMeta ?? legacyMeta)
+      const cell = extractEntityCellForSave(row[columnIndex] ?? '', mergeCellMetaEntries(legacyMeta, existingMeta))
       if (cell) {
         rowCells[column.id] = cell
       }
@@ -11671,11 +11996,12 @@ function restoreLocalHistorySnapshot(snapshot: SheetLocalHistorySnapshot) {
     pendingDeletedPageRowIndexes.value = normalizePaginationDeletedRowIndexes(snapshot.pageState.deletedRowIndexes) ?? []
 
     beginSheetCoreRenderPhase()
+    const snapshotDocument = cloneSheetDocumentSnapshot(snapshot.document)
     loadSheetDocument(normalizeSheetDocument(
-      cloneSheetDocumentSnapshot(snapshot.document),
+      snapshotDocument,
       {},
       getDefaultSheetHeightMode(),
-    ))
+    ), snapshotDocument)
     sheetContentReady.value = true
     scheduleSheetRenderEnhancement()
     invalidateColumnFilterGlobalOptionsCache()
@@ -14693,9 +15019,6 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
     }
     TD.classList.toggle('sheet-cell-formula', formulaText != null)
     TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
-    if (formulaText != null) {
-      TD.title = value && value !== formulaText ? `${value}\n= ${formulaText}` : formulaText
-    }
     return
   }
 
@@ -14725,12 +15048,7 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   }
   TD.classList.toggle('sheet-cell-formula', formulaText != null)
   TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
-  if (formulaText != null) {
-    TD.title = [
-      note && note !== formulaText ? `${note}\n= ${formulaText}` : formulaText,
-      link?.url,
-    ].filter(Boolean).join('\n')
-  } else if (link) {
+  if (link) {
     TD.title = link.url
   }
 }
@@ -15131,7 +15449,7 @@ async function applySheetSettings() {
   scheduleRemoteSave()
 }
 
-function loadSheetDocument(document: SheetDocument) {
+function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
@@ -15185,7 +15503,12 @@ function loadSheetDocument(document: SheetDocument) {
     dataStartRow,
   )
   const normalizedRows = repairedRows.length ? repairedRows : [createEmptyRow(normalizedHeaders.length)]
-  cellMeta.value = normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length)
+  cellMeta.value = mergeSourceDocumentInlineLinksIntoCellMeta(
+    normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length),
+    sourceDocument ?? document,
+    dataStartRow,
+    normalizedHeaders,
+  )
   sheetViewSettings.value = normalizeSheetViewSettings(
     document.view_settings,
     normalizedHeaders.length,
@@ -15427,7 +15750,10 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     pendingDeletedPageRowIndexes.value = []
     emitSheetSync(effectiveDetail)
     beginSheetCoreRenderPhase()
-    loadSheetDocument(normalizeSheetDocument(effectiveDetail.document_json, {}, getDefaultSheetHeightMode()))
+    loadSheetDocument(
+      normalizeSheetDocument(effectiveDetail.document_json, {}, getDefaultSheetHeightMode()),
+      effectiveDetail.document_json,
+    )
     sheetContentReady.value = true
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
@@ -15463,7 +15789,10 @@ function applyInlineSheetDocument() {
     sheetTitle.value = props.inlineTitle || '未命名表格'
     sheetVersion.value = 0
     beginSheetCoreRenderPhase()
-    loadSheetDocument(normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()))
+    loadSheetDocument(
+      normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()),
+      props.inlineDocument,
+    )
     applyPaginationState(null)
     pendingDeletedPageRowIndexes.value = []
     sheetContentReady.value = true
@@ -15817,6 +16146,146 @@ function getAttendanceLinkCountColumnIndex(fieldKey: AttendanceLinkCountFieldKey
     ? ATTENDANCE_FIELD_BINDINGS.lessonLinks
     : ATTENDANCE_FIELD_BINDINGS.clockinLinks
   return columnHeaders.value.findIndex((header) => normalizeCellValue(header).trim() === binding.header)
+}
+
+function isLikelyAttendanceVideoRevisionColumn(columnIndex: number) {
+  const header = normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim()
+  if (!header || ATTENDANCE_NON_VIDEO_HEADERS.has(header)) {
+    return false
+  }
+  if (/^[A-Z]{1,3}$/.test(header)) {
+    return false
+  }
+  if (/打卡|返款|订单|金额|完成视频数|评分|禅客|姓名|昵称|学号|分组|用户ID/.test(header)) {
+    return false
+  }
+  if (/^\d{1,2}:\d{2}\s*[~～-]\s*\d{1,2}:\d{2}/.test(header)) {
+    return true
+  }
+  if (/第\s*0*\d+\s*课|答疑|讲座/.test(header)) {
+    return true
+  }
+  const currentRefundIndex = columnHeaders.value.findIndex((name) => normalizeCellValue(name).trim() === '当前应返款')
+  return (
+    currentRefundIndex >= 0
+    && columnIndex > currentRefundIndex
+    && /[\u4e00-\u9fff]/.test(header)
+  )
+}
+
+function isLikelyTimedAttendanceVideoColumn(columnIndex: number) {
+  const header = normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim()
+  return (
+    /^\d{1,2}:\d{2}\s*[~～-]\s*\d{1,2}:\d{2}/.test(header)
+    || /第\s*0*\d+\s*课/.test(header)
+  )
+}
+
+function getAttendanceVideoRevisionKindForColumn(columnIndex: number): 'timed' | 'challenge' | 'legacy' {
+  const values = rows.value
+    .slice(0, 80)
+    .map((row) => normalizeCellValue(row?.[columnIndex] ?? '').trim())
+    .filter(Boolean)
+  if (values.some((value) => /^\d+\s*遍\s*\/\s*\d+(?:\.\d+)?%/.test(value))) {
+    return 'challenge'
+  }
+  if (values.some((value) => value === '准时完成' || /^延\s*\d+\s*周完成$/.test(value))) {
+    return 'legacy'
+  }
+  return isLikelyTimedAttendanceVideoColumn(columnIndex) ? 'timed' : 'legacy'
+}
+
+function getSelectedAttendanceVideoRevisionCells(): AttendanceVideoRevisionCell[] {
+  const cells = getSelectedDataCells()
+  if (!cells.length) {
+    return []
+  }
+  if (cells.some((cell) => !isLikelyAttendanceVideoRevisionColumn(cell.column))) {
+    return []
+  }
+  return cells.map((cell) => ({
+    row_index: cell.documentRow,
+    column_index: cell.column,
+  }))
+}
+
+function getAttendanceVideoRevisionLabelsFromSelection() {
+  const cells = getSelectedAttendanceVideoRevisionCells()
+  if (!cells.length) {
+    return []
+  }
+  const selectedKinds = new Set(cells.map((cell) => getAttendanceVideoRevisionKindForColumn(cell.column_index)))
+  const allowed = new Set<string>()
+  if (selectedKinds.has('timed')) {
+    ATTENDANCE_TIMED_VIDEO_REVISION_LABELS.forEach((label) => allowed.add(label))
+  }
+  if (selectedKinds.has('challenge')) {
+    ATTENDANCE_CHALLENGE_VIDEO_REVISION_LABELS.forEach((label) => allowed.add(label))
+  }
+  if (selectedKinds.has('legacy')) {
+    ATTENDANCE_LEGACY_VIDEO_REVISION_LABELS.forEach((label) => allowed.add(label))
+  }
+  return ATTENDANCE_VIDEO_REVISION_LABELS.filter((label) => allowed.has(label))
+}
+
+function canRunAttendanceVideoRevisionLabelFromSelection(label: string) {
+  return getAttendanceVideoRevisionLabelsFromSelection().includes(label as typeof ATTENDANCE_VIDEO_REVISION_LABELS[number])
+}
+
+function canRunAttendanceVideoRevisionFromSelection() {
+  return getAttendanceVideoRevisionLabelsFromSelection().length > 0
+}
+
+async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string) {
+  if (props.sheetId == null || workspaceLoading.value) {
+    return
+  }
+  if (!ensureCanRunSheetActions()) {
+    return
+  }
+  if (!ensureCanEditData()) {
+    return
+  }
+  const cells = getSelectedAttendanceVideoRevisionCells()
+  if (!cells.length) {
+    return
+  }
+
+  const cellText = cells.length === 1 ? '当前视频数据' : `${cells.length} 个视频数据单元格`
+  try {
+    await ElMessageBox.confirm(
+      `将把${cellText}强制修订为“${revisionLabel}”，并立即重算考勤表。`,
+      '确认修订',
+      {
+        confirmButtonText: '确认修订',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+
+  workspaceLoading.value = true
+  try {
+    const scrollPosition = captureSheetScrollPosition()
+    await flushRemoteSave()
+    const result = await applyAttendanceVideoRevision(props.sheetId, {
+      revision_label: revisionLabel,
+      cells,
+    }, {
+      workbookId: props.workbookId,
+    })
+    applyRemoteSheetDetail(result.sheet)
+    await updateSheetViewportHeight()
+    restoreSheetScrollPosition(scrollPosition)
+    ElMessage.success(`已修订 ${result.updated_count || cells.length} 个视频数据`)
+  } catch (error) {
+    console.warn('Failed to revise attendance video progress', error)
+    ElMessage.error('修订失败')
+  } finally {
+    workspaceLoading.value = false
+  }
 }
 
 async function refreshAttendanceCourseScriptStatuses() {
@@ -16439,6 +16908,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     emitSheetSync(remote)
 
     let activeDocument = remoteDocument
+    let activeSourceDocument: unknown = remote.document_json
     let shouldSyncLocalDraft = false
     if (
       localDraft?.document
@@ -16459,13 +16929,19 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
         localDraft.document,
         remoteDocument,
       )
+      const localDraftPreservesRemoteLinks = isDraftPreservingRemoteCellLinks(
+        localDraft.document,
+        remoteDocument,
+      )
       if (
         localDraftVersionStillCurrent
         && localDraftIsNewer
         && localDraftHeaderPrefixCompatible
+        && localDraftPreservesRemoteLinks
         && (localDraftIsMeaningful || !remoteDocumentIsMeaningful)
       ) {
         activeDocument = mergeRemoteHeaderPrefixIntoLocalDraft(localDraft.document, remoteDocument)
+        activeSourceDocument = localDraft.document
         sheetTitle.value = localDraft.title || sheetTitle.value
         if (localDraft.pageState) {
           pageRowOffset.value = localDraft.pageState.rowOffset
@@ -16490,7 +16966,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       return
     }
     beginSheetCoreRenderPhase()
-    loadSheetDocument(activeDocument)
+    loadSheetDocument(activeDocument, activeSourceDocument)
     trace?.mark('load-document')
     sheetContentReady.value = true
     sheetLoadErrorText.value = ''
@@ -20033,9 +20509,10 @@ function unmergeSelectedCells() {
 }
 
 function getCellMetaAt(documentRow: number, columnIndex: number) {
-  return getEntityCellMeta(getEntityCellAt(documentRow, columnIndex))
-    ?? cellMeta.value[createCellMetaKey(documentRow, columnIndex)]
-    ?? null
+  return mergeCellMetaEntries(
+    cellMeta.value[createCellMetaKey(documentRow, columnIndex)] ?? null,
+    getEntityCellMeta(getEntityCellAt(documentRow, columnIndex)),
+  )
 }
 
 function getCellLinkAt(documentRow: number, columnIndex: number) {
@@ -21505,6 +21982,7 @@ function applyCellLinkDialog() {
       setColumnHeaderLink(target.column, '')
     }
     pushLocalUndoEntry(undoEntry)
+    scheduleRemoteSave(0)
     closeCellLinkDialog()
     return
   }
@@ -21517,6 +21995,7 @@ function applyCellLinkDialog() {
     setColumnHeaderLink(target.column, normalizedUrl)
   }
   pushLocalUndoEntry(undoEntry)
+  scheduleRemoteSave(0)
   closeCellLinkDialog()
 }
 
@@ -22830,12 +23309,12 @@ function getRegistrationStudentInsertDataIndex() {
 function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
   const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
   if (groupColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
-    return
+    return ''
   }
 
   const currentGroup = normalizeCellValue(rows.value[targetDataIndex]?.[groupColumn]).trim()
   if (currentGroup) {
-    return
+    return currentGroup
   }
 
   let groupValue = ''
@@ -22846,7 +23325,7 @@ function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
     }
   }
   if (!groupValue) {
-    return
+    return ''
   }
 
   const nextValue = normalizeCellInputValueForColumn(groupValue, groupColumn)
@@ -22854,13 +23333,84 @@ function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
   const gridRow = getGridRowIndex(targetDataIndex)
   if (hot && gridRow >= sheetHeaderRowCount.value) {
     hot.setDataAtCell(gridRow, toHotColumnIndex(groupColumn), nextValue, 'registration-add-student')
-    return
+    return nextValue
   }
 
   const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
   nextRows[targetDataIndex][groupColumn] = nextValue
   rows.value = nextRows
   scheduleRemoteSave()
+  return nextValue
+}
+
+const REGISTRATION_GROUP_SEQUENCE_PATTERN = /^\s*(\d{1,3})\s*(?:[_\-－–—]|组)\s*(\d{1,4})\s*(?:号)?\s*$/
+const REGISTRATION_CHINESE_DIGITS: Record<string, number> = {
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
+
+function parseRegistrationChineseInteger(value: string) {
+  const text = value.trim()
+  if (!text) {
+    return null
+  }
+  if (/^\d+$/.test(text)) {
+    return Number(text)
+  }
+  if ([...text].some((char) => !(char in REGISTRATION_CHINESE_DIGITS) && char !== '十')) {
+    return null
+  }
+  if (text.includes('十')) {
+    const [left, right = ''] = text.split('十')
+    const tens = left ? REGISTRATION_CHINESE_DIGITS[left] : 1
+    const ones = right ? REGISTRATION_CHINESE_DIGITS[right] : 0
+    return tens == null || ones == null ? null : tens * 10 + ones
+  }
+  if (text.length === 1) {
+    return REGISTRATION_CHINESE_DIGITS[text] ?? null
+  }
+  const digits = [...text].map((char) => REGISTRATION_CHINESE_DIGITS[char])
+  return digits.some((digit) => digit == null) ? null : Number(digits.join(''))
+}
+
+function parseRegistrationGroupNumber(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  if (!text) {
+    return null
+  }
+  const digitMatch = text.match(/(?:第\s*)?(\d{1,3})\s*(?:小组|组)/)
+  if (digitMatch) {
+    return String(Number(digitMatch[1]))
+  }
+  const chineseMatch = text.match(/(?:第\s*)?([零〇一二两三四五六七八九十]{1,4})\s*(?:小组|组)/)
+  if (chineseMatch) {
+    const number = parseRegistrationChineseInteger(chineseMatch[1])
+    return number && number > 0 ? String(number) : null
+  }
+  return null
+}
+
+function parseRegistrationGroupedSequenceValue(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  const match = text.match(REGISTRATION_GROUP_SEQUENCE_PATTERN)
+  if (!match) {
+    return null
+  }
+  return {
+    group: String(Number(match[1])),
+    member: Number(match[2]),
+    width: Math.max(match[2].length, 2),
+  }
 }
 
 function parseRegistrationSequenceValue(value: unknown) {
@@ -22869,19 +23419,74 @@ function parseRegistrationSequenceValue(value: unknown) {
     return null
   }
 
-  const numericValue = Number(text)
-  if (!Number.isFinite(numericValue)) {
+  if (!/^\d+(?:\.0+)?$/.test(text)) {
     return null
   }
 
-  const integerValue = Math.floor(numericValue)
+  const integerValue = Math.floor(Number(text))
   return integerValue >= 0 ? integerValue : null
 }
 
-function getNextRegistrationSequenceValue(targetDataIndex: number) {
+function shouldUseRegistrationGroupedSequenceForInsert() {
+  const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
+  const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
+  if (sequenceColumn < 0) {
+    return false
+  }
+
+  const plainSequenceGroups = new Map<number, Set<string>>()
+  for (const row of rows.value) {
+    if (parseRegistrationGroupedSequenceValue(row?.[sequenceColumn])) {
+      return true
+    }
+    if (groupColumn < 0) {
+      continue
+    }
+    const groupNumber = parseRegistrationGroupNumber(row?.[groupColumn])
+    const sequence = parseRegistrationSequenceValue(row?.[sequenceColumn])
+    if (!groupNumber || sequence == null) {
+      continue
+    }
+    const groups = plainSequenceGroups.get(sequence) ?? new Set<string>()
+    groups.add(groupNumber)
+    plainSequenceGroups.set(sequence, groups)
+    if (groups.size > 1) {
+      return true
+    }
+  }
+  return false
+}
+
+function getNextRegistrationSequenceValue(targetDataIndex: number, preferredGroup = '') {
   const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
   if (sequenceColumn < 0) {
     return ''
+  }
+
+  const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
+  const groupNumber = parseRegistrationGroupNumber(preferredGroup)
+    ?? (groupColumn >= 0 ? parseRegistrationGroupNumber(rows.value[targetDataIndex]?.[groupColumn]) : null)
+  if (groupNumber && shouldUseRegistrationGroupedSequenceForInsert()) {
+    let maxMember = 0
+    let width = 2
+    rows.value.forEach((row, rowIndex) => {
+      if (rowIndex === targetDataIndex) {
+        return
+      }
+      const grouped = parseRegistrationGroupedSequenceValue(row?.[sequenceColumn])
+      if (grouped?.group === groupNumber) {
+        maxMember = Math.max(maxMember, grouped.member)
+        width = Math.max(width, grouped.width)
+        return
+      }
+      if (groupColumn >= 0 && parseRegistrationGroupNumber(row?.[groupColumn]) === groupNumber) {
+        const sequence = parseRegistrationSequenceValue(row?.[sequenceColumn])
+        if (sequence != null) {
+          maxMember = Math.max(maxMember, sequence)
+        }
+      }
+    })
+    return `${groupNumber}_${String(maxMember + 1).padStart(width, '0')}`
   }
 
   const maxSequence = rows.value.reduce((maxValue, row, rowIndex) => {
@@ -22895,7 +23500,7 @@ function getNextRegistrationSequenceValue(targetDataIndex: number) {
   return String(maxSequence + 1)
 }
 
-function applyRegistrationStudentSequenceDefault(targetDataIndex: number) {
+function applyRegistrationStudentSequenceDefault(targetDataIndex: number, preferredGroup = '') {
   const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
   if (sequenceColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
     return
@@ -22905,7 +23510,7 @@ function applyRegistrationStudentSequenceDefault(targetDataIndex: number) {
     return
   }
 
-  const nextValue = normalizeCellInputValueForColumn(getNextRegistrationSequenceValue(targetDataIndex), sequenceColumn)
+  const nextValue = normalizeCellInputValueForColumn(getNextRegistrationSequenceValue(targetDataIndex, preferredGroup), sequenceColumn)
   const hot = getHotInstance()
   const gridRow = getGridRowIndex(targetDataIndex)
   if (hot && gridRow >= sheetHeaderRowCount.value) {
@@ -22941,8 +23546,8 @@ function addRegistrationStudentRow() {
     pendingRowInsertionTemplate = null
   }
 
-  applyRegistrationStudentGroupDefault(targetDataIndex)
-  applyRegistrationStudentSequenceDefault(targetDataIndex)
+  const groupValue = applyRegistrationStudentGroupDefault(targetDataIndex)
+  applyRegistrationStudentSequenceDefault(targetDataIndex, groupValue)
   void nextTick(() => {
     selectRowFromMarker(getGridRowIndex(targetDataIndex))
     openRowDetailDialog(targetDataIndex)
@@ -23754,12 +24359,7 @@ function handleAfterRenderer(
     delete TD.dataset.hyperlinkUrl
   }
 
-  if (formulaText != null) {
-    const formulaSource = rawText
-    title = formulaSource && formulaSource !== formulaText
-      ? `${formulaSource}\n= ${formulaText}`
-      : formulaText
-  } else if (renderedText !== rawText && rawText) {
+  if (formulaText == null && renderedText !== rawText && rawText) {
     title = `${rawText}\n= ${renderedText}`
   }
 

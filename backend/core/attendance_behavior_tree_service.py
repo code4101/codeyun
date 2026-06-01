@@ -247,7 +247,7 @@ def _collect_attendance_process_targets() -> tuple[
 ]:
     current_pid = os.getpid()
     script_path = Path(_status_paths()["script_path"])
-    direct: dict[int, tuple[psutil.Process, str]] = {}
+    matched: dict[int, tuple[psutil.Process, str]] = {}
     for proc in process_candidates_by_name(PYTHON_PROCESS_NAMES):
         if proc.pid == current_pid:
             continue
@@ -256,8 +256,13 @@ def _collect_attendance_process_targets() -> tuple[
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
             continue
         if reason:
-            direct[proc.pid] = (proc, reason)
+            matched[proc.pid] = (proc, reason)
 
+    direct = {
+        pid: (proc, reason)
+        for pid, (proc, reason) in matched.items()
+        if _safe_ppid(proc) not in matched
+    }
     targets: dict[int, tuple[psutil.Process, str]] = dict(direct)
     for root_pid, (proc, _reason) in direct.items():
         try:
@@ -268,6 +273,35 @@ def _collect_attendance_process_targets() -> tuple[
             if child.pid != current_pid:
                 targets.setdefault(child.pid, (child, f"descendant-of:{root_pid}"))
     return direct, targets
+
+
+def _wait_processes_safely(
+    processes: list[psutil.Process],
+    *,
+    timeout: float,
+    errors: list[dict[str, Any]],
+) -> list[psutil.Process]:
+    if not processes:
+        return []
+    try:
+        _gone, alive = psutil.wait_procs(processes, timeout=max(0.1, float(timeout)))
+        return list(alive)
+    except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
+        errors.append({"pid": None, "error": f"等待进程退出时遇到系统限制：{exc}"})
+
+    alive: list[psutil.Process] = []
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    for proc in processes:
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            proc.wait(timeout=remaining)
+        except psutil.TimeoutExpired:
+            alive.append(proc)
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
+            errors.append({"pid": proc.pid, "error": str(exc)})
+    return alive
 
 
 def list_attendance_behavior_tree_processes() -> list[dict[str, Any]]:
@@ -323,7 +357,11 @@ def terminate_attendance_behavior_tree_processes(timeout: float = 5.0) -> dict[s
         except (psutil.AccessDenied, psutil.ZombieProcess, OSError) as exc:
             errors.append({"pid": proc.pid, "error": str(exc)})
 
-    _gone, alive = psutil.wait_procs([proc for proc, _reason in targets.values()], timeout=max(0.1, float(timeout)))
+    alive = _wait_processes_safely(
+        [proc for proc, _reason in targets.values()],
+        timeout=timeout,
+        errors=errors,
+    )
     for proc in alive:
         try:
             reason = targets.get(proc.pid, (proc, "matched-or-descendant"))[1]
@@ -337,7 +375,7 @@ def terminate_attendance_behavior_tree_processes(timeout: float = 5.0) -> dict[s
             errors.append({"pid": proc.pid, "error": str(exc)})
 
     if alive:
-        psutil.wait_procs(alive, timeout=timeout)
+        _wait_processes_safely(alive, timeout=timeout, errors=errors)
 
     time.sleep(0.2)
     return {

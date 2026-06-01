@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from sqlmodel import Session
 
+from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
 from backend.db import engine
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
@@ -332,6 +333,7 @@ def main():
         )
         session.add(att)
         session.flush()
+        ensure_attendance_sheet_anonymous_viewer(session, att)
         print(f"[2] Attendance: numeric_id={att.numeric_id}, cols={len(att_doc['columns'])}")
 
         # ── 报名表 ──

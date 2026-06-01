@@ -1,10 +1,14 @@
 export type DailyTaskMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
+export type DailyTaskScanPlan = 'normal' | 'candidate_rows' | 'bidirectional';
 
 export type DailyTaskPreset = {
   id: string;
   label: string;
   query: string;
   matchMode: DailyTaskMatchMode;
+  scanPlan: DailyTaskScanPlan;
+  maxPages: number;
+  reversePages: number;
   completedFallbackPattern: string;
   completedFallbackExcludePattern: string;
   completedFallbackMinTotal: number;
@@ -26,6 +30,9 @@ const createDailyTaskPreset = (
   label,
   query,
   matchMode: options.matchMode ?? 'contains',
+  scanPlan: options.scanPlan ?? 'normal',
+  maxPages: options.maxPages ?? options.dragCount ?? 20,
+  reversePages: options.reversePages ?? 0,
   completedFallbackPattern: options.completedFallbackPattern ?? '',
   completedFallbackExcludePattern: options.completedFallbackExcludePattern ?? '',
   completedFallbackMinTotal: options.completedFallbackMinTotal ?? 0,
@@ -61,12 +68,17 @@ export const defaultDailyTaskPresets = (): DailyTaskPreset[] => [
   }),
   createDailyTaskPreset('daily-find-youli', '游历', '游历|修仙.?传|修仙.*历|传.?游', {
     matchMode: 'regex',
+    scanPlan: 'candidate_rows',
     notFoundStatus: 2,
     legacySource: '日常功能.py: 日常_查找游历任务',
     note: '游历标题 OCR 不稳定，旧版使用逐屏候选扫描；找不到保持默认完成态。',
   }),
   createDailyTaskPreset('daily-find-baiye', '拜谒', '一次拜|拜谒', {
     matchMode: 'regex',
+    scanPlan: 'bidirectional',
+    maxPages: 8,
+    reversePages: 6,
+    dragCount: 14,
     notFoundStatus: 2,
     requireProgress: false,
     legacySource: '日常功能.py: 日常_拜谒 -> 点击日常拜谒任务',
@@ -90,14 +102,23 @@ export const defaultDailyTaskPresets = (): DailyTaskPreset[] => [
     legacySource: '日常功能.py: 日常_灵祖 -> 日常_查找("灵祖", not_found_status=-1)',
     note: '常规日常入口，进入后走灵祖挑战链路。',
   }),
-  createDailyTaskPreset('daily-find-jianling', '剑灵', '挑战*剑试', {
-    matchMode: 'wildcard',
+  createDailyTaskPreset('daily-find-jianling', '剑灵', '挑战.*剑试', {
+    matchMode: 'regex',
     requireProgress: false,
     legacySource: '日常功能.py: 日常_剑灵 -> 日常_查找("挑战.+剑试", not_found_status=-1)',
     note: '旧版注释说淬剑试炼中间字容易 OCR 错，使用稳定两端匹配。',
   }),
+  createDailyTaskPreset('daily-find-xundao-lilian', '寻道历练', '寻道历练|仙侣历练|历练1次', {
+    matchMode: 'regex',
+    legacySource: '日常功能.py: 日常_仙侣历练；当前日常页 OCR 可见“寻道历练1次”',
+    note: '旧版仙侣历练主要从大地图历练助手进入；新版先补日常页入口定位，后续再接历练助手状态机。',
+  }),
   createDailyTaskPreset('daily-find-xianyuan', '挑战仙缘', '挑战\\s*仙缘|仙缘人物', {
     matchMode: 'regex',
+    scanPlan: 'bidirectional',
+    maxPages: 14,
+    reversePages: 18,
+    dragCount: 32,
     notFoundStatus: 2,
     timeoutSeconds: 180,
     completedFallbackPattern: '挑战.*仙缘|仙缘.*人物',

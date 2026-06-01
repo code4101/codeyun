@@ -1868,6 +1868,46 @@ def _format_activity_search_item(card: dict[str, Any], score: int) -> dict[str, 
     }
 
 
+def _compact_activity_schedule_hint(hint: dict[str, Any]) -> list[Any]:
+    row = [
+        hint.get("source") or "",
+        hint.get("label") or "",
+        hint.get("date") or "",
+        hint.get("time") or "",
+        hint.get("kind") or "",
+        hint.get("confidence") or "",
+        hint.get("time_code") or "",
+        "" if hint.get("date") else hint.get("evidence") or "",
+    ]
+    while row and row[-1] == "":
+        row.pop()
+    return row
+
+
+def _format_activity_schedule_search_item(card: dict[str, Any], score: int) -> dict[str, Any]:
+    schedule_sources = {
+        "Activity.prepareTime",
+        "Activity.startTime",
+        "Activity.endTime",
+        "Activity.rewardTime",
+        "Activity.closePanelTime",
+    }
+    schedule_hints = [
+        _compact_activity_schedule_hint(hint)
+        for hint in card.get("time_hints") or []
+        if str(hint.get("source") or "") in schedule_sources or hint.get("kind") == "activity_start"
+    ]
+    return {
+        "id": card.get("id"),
+        "name": card.get("name") or str(card.get("id") or "未命名"),
+        "activity_type": card.get("activity_type"),
+        "base_id": card.get("base_id"),
+        "schedule_time_hints": schedule_hints,
+        "source_table": card.get("source_table"),
+        "is_stale": bool(card.get("is_stale")),
+    }
+
+
 def _build_activity_facet_index(scored_rows: list[tuple[int, int, dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
     rows: dict[str, dict[str, list[str]]] = {
         "kind_key": {},
@@ -2345,6 +2385,8 @@ def search_fanxiu_activity_cards(
     sort_order: str = "asc",
     limit: int = 80,
     offset: int = 0,
+    item_view: str = "default",
+    include_facets: bool = True,
     export_root: str | Path | None = None,
     rebuild_missing: bool = True,
 ) -> dict[str, Any]:
@@ -2362,6 +2404,9 @@ def search_fanxiu_activity_cards(
         sort_by = "default"
     if sort_order not in {"asc", "desc"}:
         sort_order = "asc"
+    item_view = str(item_view or "default").strip()
+    if item_view not in {"default", "schedule"}:
+        item_view = "default"
     terms = tuple(item.strip().lower() for item in re.split(r"\s+", query or "") if item.strip())
     query_rows: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
     for doc in runtime_index["search_docs"]:
@@ -2394,7 +2439,8 @@ def search_fanxiu_activity_cards(
     else:
         scored_rows.sort(key=lambda item: (1 if item[2].get("is_stale") else 0, _sort_value(item[2].get("sort")), _sort_value(item[2].get("id")), item[1]))
     page_rows = scored_rows[offset : offset + limit]
-    return {
+    format_item = _format_activity_schedule_search_item if item_view == "schedule" else _format_activity_search_item
+    response = {
         "query": query,
         "kind_key": kind_key,
         "time_kind": time_kind,
@@ -2402,6 +2448,7 @@ def search_fanxiu_activity_cards(
         "server_scope": server.get("scope") if server else "",
         "sort_by": sort_by,
         "sort_order": sort_order,
+        "item_view": item_view,
         "limit": limit,
         "offset": offset,
         "total": len(scored_rows),
@@ -2410,9 +2457,11 @@ def search_fanxiu_activity_cards(
         "kind_options": runtime_index["kind_options"],
         "time_options": runtime_index["time_options"],
         "activity_type_options": runtime_index["activity_type_options"],
-        "facet_index": _build_activity_facet_index(server_query_rows),
-        "items": [_format_activity_search_item(card, score) for score, _index, card in page_rows],
+        "items": [format_item(card, score) for score, _index, card in page_rows],
     }
+    if include_facets:
+        response["facet_index"] = _build_activity_facet_index(server_query_rows)
+    return response
 
 
 def get_fanxiu_activity_card(

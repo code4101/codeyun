@@ -37,6 +37,7 @@
           :storage-key-prefix="galleryStorageKey"
           item-label="媒体"
           item-count-label="项媒体"
+          :empty-inline-text="mediaEmptyInlineText"
           :show-folder-filter="false"
           :ensure-image-ready="ensureMediaReady"
           :set-video-cover="setVideoCover"
@@ -255,6 +256,7 @@
                 :media-items="mediaItems"
                 :media-total-count="mediaTotalCount"
                 :can-browse="canBrowse"
+                :reload-directory="loadDirectory"
               />
             </div>
           </template>
@@ -430,7 +432,6 @@ import { ElMessage } from 'element-plus';
 import { Document, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera } from '@element-plus/icons-vue';
 
 import {
-  deleteDeviceEntry,
   fetchDeviceDirectoryItems,
   fetchDeviceFileBlob,
   fetchDeviceFileStreamUrl,
@@ -440,10 +441,13 @@ import {
   revealDeviceEntryInFolder,
   setDeviceFileCover,
   setDeviceFileWeight,
+  startDeviceEntryDelete,
+  fetchDeviceEntryDeleteTask,
   type DeviceDirectoryItem,
   type DeviceDirectorySortField,
   type DeviceDirectorySortProgram,
   type DeviceDirectoryListing,
+  type DeviceDeleteTask,
   type DeviceFileSelector,
   type DeviceImageRecord,
   type DeviceMediaListRequest,
@@ -466,6 +470,7 @@ import {
   type GallerySortProgram,
   type GalleryUrlVariant,
 } from '@/utils/imageGallery';
+import { monitorPolledTask } from '@/utils/longTask';
 
 const props = withDefaults(defineProps<{
   fixedDeviceId?: string;
@@ -984,6 +989,11 @@ const previewPositionText = computed(() => {
   }
   return `${previewIndex.value + 1} / ${orderedMediaItems.value.length}`;
 });
+const mediaEmptyInlineText = computed(() =>
+  isLoadingMediaPage.value
+    ? '媒体索引加载中，目录可先浏览'
+    : '当前筛选条件下没有可显示的媒体'
+);
 
 const syncPathInputFromSelection = () => {
   pathInputValue.value = formatPathInput(selectedPath.value);
@@ -1662,9 +1672,19 @@ const updateImageWeight = async (imageId: string, nextWeight: number) => {
 const deleteImage = async (imageId: string) => {
   const target = mediaItems.value.find((item) => item.id === imageId);
   if (!target || !selectedEntryId.value) return false;
+  const entryId = selectedEntryId.value;
 
   try {
-    await deleteDeviceEntry(selectedEntryId.value, { absolute_path: target.absolutePath });
+    const started = await startDeviceEntryDelete(entryId, { absolute_path: target.absolutePath });
+    await monitorPolledTask<DeviceDeleteTask>({
+      initial: started.task,
+      poll: (task) => fetchDeviceEntryDeleteTask(entryId, task.task_id || task.id),
+      isRunning: (task) => task.status === 'pending' || task.status === 'running',
+      getUpdatedAt: (task) => task.updated_at,
+      getError: (task) => task.status === 'failed' ? (task.error_message || '删除文件失败') : '',
+      pollIntervalMs: 1000,
+      idleTimeoutMs: 30_000,
+    });
     if (listing.value) {
       listing.value = {
         ...listing.value,
