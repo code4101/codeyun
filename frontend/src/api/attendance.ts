@@ -313,6 +313,8 @@ export interface AttendanceFeedbackSubmitRequest {
   student_name: string
   correction_request: string
   extra_note?: string
+  workbook_id?: number | null
+  sheet_id?: number | null
 }
 
 export interface AttendanceWjxDataUpdateRequest {
@@ -325,6 +327,8 @@ export interface AttendanceWjxDataUpdateRequest {
 export interface AttendanceWjxAiPrecheckRequest {
   persist?: boolean
   use_codex_cli?: boolean
+  auto_repair?: boolean
+  repair_with_remote_browser?: boolean
 }
 
 export interface AttendanceWjxAiPrecheckResponse {

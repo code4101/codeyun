@@ -43,6 +43,7 @@ from scripts.import_legacy_attendance_workbook import (  # noqa: E402
 
 DEFAULT_TEMPLATE_PATH = Path(r"C:\Users\kzche\Downloads\20260501第46届觉观.xlsx")
 COURSE_NAME = "d260601第47届觉观"
+WORKBOOK_TITLE = "第47届觉观"
 SUMMARY_ONLINE_SHEET_NAME = "第47届觉观"
 OWNER_KEY = "20260601-jueguan-47"
 TEMPLATE_COURSE_START_DATE = date(2026, 5, 1)
@@ -443,7 +444,9 @@ def _load_documents(template_path: Path) -> tuple[dict[str, Any], dict[str, Any]
 
 
 def _find_or_create_workbook(session: Session, owner_user_id: int) -> WorkbookDocument:
-    workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.title == COURSE_NAME)).first()
+    workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.title == WORKBOOK_TITLE)).first()
+    if workbook is None:
+        workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.title == COURSE_NAME)).first()
     if workbook is not None:
         return workbook
     identity = allocate_new_workbook_identity(session)
@@ -452,7 +455,7 @@ def _find_or_create_workbook(session: Session, owner_user_id: int) -> WorkbookDo
         id=identity.primary_id,
         numeric_id=identity.numeric_id,
         legacy_id=identity.legacy_id,
-        title=COURSE_NAME,
+        title=WORKBOOK_TITLE,
         owner_user_id=owner_user_id,
         created_by_user_id=owner_user_id,
         updated_by_user_id=owner_user_id,
@@ -564,7 +567,7 @@ def run(*, apply: bool, template_path: Path, owner_user_id: int = 2) -> dict[str
     storage_documents = _storage_documents()
     with Session(engine) as session:
         workbook = _find_or_create_workbook(session, owner_user_id)
-        workbook.title = COURSE_NAME
+        workbook.title = WORKBOOK_TITLE
         workbook.updated_by_user_id = owner_user_id
         workbook.updated_at = time.time()
         session.add(workbook)

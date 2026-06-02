@@ -25,7 +25,7 @@ DEFAULT_LEGACY_OCR_TOKEN = "log@a#zJy4&"
 DEFAULT_OCR_CLIENT_TIMEOUT_SECONDS = "60"
 DEFAULT_OCR_CLIENT_RETRIES = "2"
 DEFAULT_OCR_CLIENT_RETRY_INTERVAL_SECONDS = "1"
-DEFAULT_FANXIU_SERVICE_HOSTS = {"codepc_mi15", "mi15"}
+DEFAULT_FANXIU_SERVICE_HOSTS: set[str] = set()
 PYTHON_RUNNER_NAMES = {"py.exe", "python.exe", "pythonw.exe", "uv.exe"}
 _RFC1918_LAN_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -115,6 +115,22 @@ def _resolve_fanxiu_ocr_device(settings: Any | None = None) -> str:
 
 
 def is_fanxiu_behavior_tree_service_enabled() -> bool:
+    services_text = os.getenv("FX_RUNTIME_SERVICES")
+    if services_text is not None:
+        services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
+        return bool(
+            services
+            & {
+                "*",
+                "all",
+                "fanxiu",
+                FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
+                "fanxiu_behavior_tree",
+                "behavior_tree",
+                "凡修行为树",
+            }
+        )
+
     configured = os.getenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED")
     if configured is not None:
         return configured.strip().lower() not in {"0", "false", "no", "off", "disabled"}

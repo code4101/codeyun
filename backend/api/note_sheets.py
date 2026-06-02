@@ -1264,6 +1264,15 @@ def _sync_attendance_questionnaire_course_links(
     return _sync_attendance_wjx_sheet_course_links(session, document_json)
 
 
+def _sync_attendance_questionnaire_entry_statuses(
+    session: Session,
+    document_json: dict[str, Any],
+) -> int:
+    from backend.api.attendance import _sync_attendance_wjx_entries_from_sheet_document
+
+    return _sync_attendance_wjx_entries_from_sheet_document(session, document_json)
+
+
 def _sync_attendance_questionnaire_sheet_document(session: Session, document: SheetDocument) -> None:
     if not _is_attendance_questionnaire_data_sheet(document):
         return
@@ -1272,15 +1281,16 @@ def _sync_attendance_questionnaire_sheet_document(session: Session, document: Sh
         session,
         dict(document.document_json or {}),
     )
-    if not changed:
-        return
+    if changed:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        next_document = dict(document.document_json or {})
 
-    document.document_json = next_document
-    document.version = max(int(document.version or 1), 1) + 1
-    document.updated_at = time.time()
-    session.add(document)
-    session.commit()
-    session.refresh(document)
+    _sync_attendance_questionnaire_entry_statuses(session, next_document)
 
 
 def _build_paged_document(
@@ -13150,6 +13160,9 @@ def update_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+
+    if _is_attendance_questionnaire_data_sheet(document):
+        _sync_attendance_questionnaire_entry_statuses(session, dict(document.document_json or {}))
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)

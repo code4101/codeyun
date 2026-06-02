@@ -1,14 +1,18 @@
 import base64
 import json
 import mimetypes
+import os
 import re
 import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, time as dt_time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from types import GeneratorType
 from typing import Any, Callable, List, Optional
 
 import requests
@@ -19,6 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 from passlib.context import CryptContext
 from sqlmodel import Session, or_, select
 from starlette.background import BackgroundTask
+from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, Every, Node, Root, Status as BehaviorTreeStatus, WithServices
 
 from backend.api.device import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.auth import (
@@ -40,13 +45,6 @@ from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_alias
 from backend.db import get_session
 from backend.models import FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
-from backend.core.fanxiu_status import (
-    derive_status_snapshot,
-    load_status_payload,
-    resolve_status_path_config,
-    save_status_payload,
-    save_status_config,
-)
 from backend.core.fanxiu_sunlogin_rotate import (
     activate_sunlogin_rotate_window,
     capture_sunlogin_rotate_frame,
@@ -60,6 +58,7 @@ from backend.core.fanxiu_sunlogin_rotate import (
     get_sunlogin_rotate_status,
     import_fanxiu_burst_frames,
     keyevent_mumu_adb,
+    keyevents_mumu_adb,
     list_fanxiu_burst_frames,
     list_fanxiu_screenshots,
     match_fanxiu_screenshot_box_frame,
@@ -107,6 +106,11 @@ from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu_activity_packet_sync import (
     get_fanxiu_activity_packet_schedule,
     sync_fanxiu_activity_packets,
+)
+from backend.core.fanxiu_packet_insights import (
+    get_fanxiu_packet_runtime_insights,
+    get_fanxiu_packet_storage_bag_snapshot,
+    sync_fanxiu_packet_runtime_insights,
 )
 from backend.core.fanxiu_tcp_flow import (
     decode_fanxiu_tcp_pcap,
@@ -342,53 +346,6 @@ SPIRIT_ARTIFACT_EXCLUSIVE_ATTRIBUTE_BASES = {
     },
 }
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
-
-
-class FanxiuTaskStatusItem(BaseModel):
-    name: str
-    scheduled_at: str
-    due: bool
-    seconds_until_due: int
-    is_next: bool = False
-
-
-class FanxiuAccountStatusItem(BaseModel):
-    name: str
-    phone: Optional[str] = None
-    is_current: bool = False
-    has_due_task: bool = False
-    due_count: int = 0
-    task_count: int = 0
-    next_task_name: Optional[str] = None
-    next_task_at: Optional[str] = None
-    tasks: List[FanxiuTaskStatusItem] = Field(default_factory=list)
-
-
-class FanxiuRuntimeTimerItem(BaseModel):
-    name: str
-    scheduled_at: str
-    due: bool
-    seconds_until_due: int
-
-
-class FanxiuStatusConfigRead(BaseModel):
-    status_path: Optional[str] = None
-    auto_detected_path: Optional[str] = None
-    effective_path: Optional[str] = None
-    mode: str
-    file_exists: bool = False
-
-
-class FanxiuStatusConfigUpdate(BaseModel):
-    status_path: Optional[str] = None
-
-
-class FanxiuStatusParseRequest(BaseModel):
-    raw_status: dict[str, Any]
-
-
-class FanxiuStatusUpdateRequest(BaseModel):
-    raw_status: dict[str, Any]
 
 
 class FanxiuProcessItem(BaseModel):
@@ -637,6 +594,12 @@ class FanxiuCaptureRuntimeStatus(BaseModel):
     tcpdump_started_at: str = ""
     device_id: str = ""
     package_name: str = ""
+    watchdog_running: bool = False
+    watchdog_started_at: str = ""
+    watchdog_interval_seconds: float = 0
+    watchdog_last_check_at: str = ""
+    watchdog_last_action: str = ""
+    watchdog_last_error: str = ""
 
 
 class FanxiuActivityPacketSyncRequest(BaseModel):
@@ -661,6 +624,35 @@ class FanxiuActivityPacketSyncResponse(BaseModel):
     rank_skipped_duplicates: int = 0
     record_count: int = 0
     rank_record_count: int = 0
+
+
+class FanxiuPacketInsightSyncRequest(BaseModel):
+    force: bool = False
+
+
+class FanxiuPacketInsightResponse(BaseModel):
+    ok: bool = True
+    changed: bool = False
+    stale: bool = False
+    state_schema_version: int = 0
+    schema_version: int = 0
+    state_path: str = ""
+    snapshot_path: str = ""
+    source_signature: dict[str, Any] = Field(default_factory=dict)
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuPacketStorageBagResponse(BaseModel):
+    ok: bool = True
+    changed: bool = False
+    stale: bool = False
+    state_schema_version: int = 0
+    schema_version: int = 0
+    state_path: str = ""
+    snapshot_path: str = ""
+    source_signature: dict[str, Any] = Field(default_factory=dict)
+    bag: dict[str, Any] | None = None
+    worship: dict[str, Any] | None = None
 
 
 class FanxiuPacketPayloadDirection(BaseModel):
@@ -1005,11 +997,13 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
 
 class FanxiuGameWindow2KeyeventRequest(BaseModel):
     entry_id: str
-    key: str
+    key: Optional[str] = None
+    keys: Optional[list[str]] = None
 
 
 class FanxiuGameWindow2ServiceKeyeventRequest(BaseModel):
-    key: str
+    key: Optional[str] = None
+    keys: Optional[list[str]] = None
 
 
 class FanxiuGameWindow2TextRequest(BaseModel):
@@ -1272,21 +1266,136 @@ class FanxiuGameWindow2ServiceScreenshotPreLabelSaveRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuGameWindow3StepperLogEntry(BaseModel):
+class FanxiuGameWindow3RuntimeLogEntry(BaseModel):
     id: str = ""
     time: str = ""
     kind: str = ""
+    scope: str = ""
+    item_id: str = ""
     message: str = ""
     ts: str = ""
 
 
-class FanxiuGameWindow3StepperLogAppendRequest(BaseModel):
-    entry: FanxiuGameWindow3StepperLogEntry
-
-
-class FanxiuGameWindow3StepperLogResponse(BaseModel):
-    entries: list[FanxiuGameWindow3StepperLogEntry] = Field(default_factory=list)
+class FanxiuGameWindow3RuntimeLogResponse(BaseModel):
+    entries: list[FanxiuGameWindow3RuntimeLogEntry] = Field(default_factory=list)
     path: str = ""
+
+
+class FanxiuGameWindow3WorldFactsResponse(BaseModel):
+    ok: bool = True
+    facts: dict[str, Any] = Field(default_factory=dict)
+    path: str = ""
+
+
+class FanxiuGameWindow3RuntimeStatus(BaseModel):
+    ok: bool = True
+    running: bool = False
+    guard_enabled: bool = False
+    guard_running: bool = False
+    guard_entry_id: str = ""
+    guard_interval_seconds: float = 2.0
+    guard_items: dict[str, Any] = Field(default_factory=dict)
+    status: str = "idle"
+    entry_id: str = ""
+    task_type: str = ""
+    current_task: str = ""
+    phase: str = ""
+    current_scene: Optional[int] = None
+    message: str = ""
+    current_index: int = 0
+    total: int = 0
+    current_code: str = ""
+    current_task_id: str = ""
+    priority: int = 100
+    interruptible: bool = True
+    last_guard_event: dict[str, Any] = Field(default_factory=dict)
+    started_at: float = 0
+    updated_at: float = 0
+    finished_at: float = 0
+    error: str = ""
+    logs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FanxiuGameWindow3RuntimeTaskRequest(BaseModel):
+    entry_id: str
+    task_type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuGameWindow3RuntimeStopRequest(BaseModel):
+    entry_id: Optional[str] = None
+
+
+class FanxiuGameWindow3RuntimeGuardRequest(BaseModel):
+    entry_id: str
+    guard_id: str = "close_popups"
+    enabled: bool
+    interval_seconds: float = Field(2.0, ge=0.5, le=30)
+
+
+class FanxiuGameWindow3SchedulerTaskItem(BaseModel):
+    id: str
+    task_type: str
+    label: str = ""
+    supported: bool = False
+    source: str = "manual"
+    schedule_kind: str = "manual"
+    legacy_name: str = ""
+    enabled: bool = False
+    priority: int = 100
+    interruptible: bool = True
+    next_time: Optional[str] = None
+    schedule_times: list[str] = Field(default_factory=list)
+    window: Optional[list[str]] = None
+    last_run_at: Optional[str] = None
+    last_result: str = ""
+    retry_after: Optional[str] = None
+    cooldown_seconds: int = 0
+    payload: dict[str, Any] = Field(default_factory=dict)
+    checkpoint: Optional[dict[str, Any]] = None
+
+
+class FanxiuGameWindow3SchedulerTasksResponse(BaseModel):
+    ok: bool = True
+    tasks: list[FanxiuGameWindow3SchedulerTaskItem] = Field(default_factory=list)
+    path: str = ""
+
+
+class FanxiuGameWindow3SchedulerPlanItem(BaseModel):
+    id: str
+    task_type: str
+    label: str = ""
+    supported: bool = False
+    enabled: bool = False
+    due: bool = False
+    runnable: bool = False
+    priority: int = 100
+    reason: str = ""
+    next_time: Optional[str] = None
+    retry_after: Optional[str] = None
+    last_result: str = ""
+    fact: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuGameWindow3SchedulerPlanResponse(BaseModel):
+    ok: bool = True
+    next_action: str = "idle"
+    message: str = ""
+    runtime: dict[str, Any] = Field(default_factory=dict)
+    facts_summary: dict[str, Any] = Field(default_factory=dict)
+    due_tasks: list[FanxiuGameWindow3SchedulerPlanItem] = Field(default_factory=list)
+    tasks: list[FanxiuGameWindow3SchedulerPlanItem] = Field(default_factory=list)
+    path: str = ""
+
+
+class FanxiuGameWindow3SchedulerRunDueRequest(BaseModel):
+    entry_id: str
+
+
+class FanxiuGameWindow3SchedulerRunNowRequest(BaseModel):
+    entry_id: str
+    task_id: str
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuGameWindow3OcrFrameRequest(BaseModel):
@@ -1330,33 +1439,6 @@ class FanxiuGameWindow3MacroAnnotateResponse(BaseModel):
     label: str = ""
     reason: str = ""
     raw: str = ""
-
-
-_GAME_WINDOW3_STEPPER_LOG_LOCK = threading.Lock()
-
-
-def _game_window3_stepper_log_path() -> Path:
-    return get_settings().data_dir / "fanxiu" / "game-window3" / "stepper.log"
-
-
-def _read_game_window3_stepper_log_entries(limit: int = 500) -> list[FanxiuGameWindow3StepperLogEntry]:
-    path = _game_window3_stepper_log_path()
-    if not path.exists():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=f"读取步进器日志失败：{exc}") from exc
-    entries: list[FanxiuGameWindow3StepperLogEntry] = []
-    for line in lines[-max(1, min(5000, limit)):]:
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            payload = {"kind": "error", "message": line}
-        entries.append(FanxiuGameWindow3StepperLogEntry.model_validate(payload))
-    return entries
 
 
 def _extract_game_macro_annotation_json(raw: Any) -> dict[str, Any]:
@@ -1579,23 +1661,6 @@ def _annotate_game_macro_shape_with_ai(
         reason=str(payload.get("reason") or "").strip()[:300],
         raw=raw,
     )
-
-
-class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
-    loaded_at: str
-    error: Optional[str] = None
-    current_account: Optional[str] = None
-    recommended_account: Optional[str] = None
-    next_task_path: Optional[str] = None
-    next_task_name: Optional[str] = None
-    next_task_at: Optional[str] = None
-    next_task_seconds_until_due: Optional[int] = None
-    program_initialized: bool = False
-    all_tasks_completed: bool = False
-    watchdog_hash: Optional[str] = None
-    runtime_timers: List[FanxiuRuntimeTimerItem] = Field(default_factory=list)
-    accounts: List[FanxiuAccountStatusItem] = Field(default_factory=list)
-    raw_status: Optional[dict[str, Any]] = None
 
 
 class FanxiuWardrobeItem(BaseModel):
@@ -4618,107 +4683,6 @@ def serialize_fanxiu_note_read(
     return payload
 
 
-@status_router.get("/status/config", response_model=FanxiuStatusConfigRead)
-def get_fanxiu_status_config():
-    return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
-
-
-@status_router.put("/status/config", response_model=FanxiuStatusConfigRead)
-def update_fanxiu_status_config(
-    payload: FanxiuStatusConfigUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    save_status_config(payload.status_path)
-    return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
-
-
-@status_router.get("/status", response_model=FanxiuStatusSnapshot)
-def get_fanxiu_status_snapshot():
-    payload = load_status_payload()
-    raw_status = payload.pop("raw_status", None)
-    snapshot: dict[str, Any] = {
-        **payload,
-        "loaded_at": "",
-        "runtime_timers": [],
-        "accounts": [],
-        "current_account": None,
-        "recommended_account": None,
-        "next_task_path": None,
-        "next_task_name": None,
-        "next_task_at": None,
-        "next_task_seconds_until_due": None,
-        "program_initialized": False,
-        "all_tasks_completed": False,
-        "watchdog_hash": None,
-        "raw_status": raw_status,
-    }
-    if raw_status is not None:
-        snapshot.update(derive_status_snapshot(raw_status))
-    else:
-        snapshot["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    return FanxiuStatusSnapshot.model_validate(snapshot)
-
-
-@status_router.post("/status/parse", response_model=FanxiuStatusSnapshot)
-def parse_fanxiu_status_snapshot(payload: FanxiuStatusParseRequest):
-    snapshot: dict[str, Any] = {
-        "status_path": None,
-        "auto_detected_path": None,
-        "effective_path": None,
-        "mode": "unset",
-        "file_exists": False,
-        "error": None,
-    }
-    snapshot.update(derive_status_snapshot(payload.raw_status))
-    return FanxiuStatusSnapshot.model_validate(snapshot)
-
-
-@status_router.put("/status", response_model=FanxiuStatusSnapshot)
-def update_fanxiu_status_snapshot(
-    payload: FanxiuStatusUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        saved_payload = save_status_payload(payload.raw_status)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except NotADirectoryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存状态文件失败：{exc}") from exc
-
-    raw_status = saved_payload.pop("raw_status", None)
-    snapshot: dict[str, Any] = {
-        **saved_payload,
-        "loaded_at": "",
-        "runtime_timers": [],
-        "accounts": [],
-        "current_account": None,
-        "recommended_account": None,
-        "next_task_path": None,
-        "next_task_name": None,
-        "next_task_at": None,
-        "next_task_seconds_until_due": None,
-        "program_initialized": False,
-        "all_tasks_completed": False,
-        "watchdog_hash": None,
-        "raw_status": raw_status,
-    }
-    if raw_status is not None:
-        snapshot.update(derive_status_snapshot(raw_status))
-    else:
-        snapshot["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    return FanxiuStatusSnapshot.model_validate(snapshot)
-
-
 @status_router.get("/scripts", response_model=LocalScriptProcessListResponse)
 def get_local_script_processes(
     current_user: User = Depends(get_current_active_user),
@@ -4855,6 +4819,39 @@ def sync_fanxiu_activity_packet_history(
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuActivityPacketSyncResponse.model_validate(
         sync_fanxiu_activity_packets(force=payload.force)
+    )
+
+
+@status_router.get("/packet-capture/tcp/insights", response_model=FanxiuPacketInsightResponse)
+def get_fanxiu_packet_insights(
+    auto_sync: bool = Query(True),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketInsightResponse.model_validate(
+        get_fanxiu_packet_runtime_insights(sync=auto_sync)
+    )
+
+
+@status_router.get("/packet-capture/tcp/storage-bag")
+def get_fanxiu_packet_storage_bag(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return get_fanxiu_packet_storage_bag_snapshot(sync=False)
+
+
+@status_router.post("/packet-capture/tcp/insights/sync", response_model=FanxiuPacketInsightResponse)
+def sync_fanxiu_packet_insights(
+    payload: FanxiuPacketInsightSyncRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketInsightResponse.model_validate(
+        sync_fanxiu_packet_runtime_insights(force=payload.force)
     )
 
 
@@ -5386,38 +5383,6 @@ def _stream_fanxiu_game_window(
     )
 
 
-@status_router.get("/game-window/stream")
-def stream_fanxiu_game_window(
-    title: Optional[str] = Query(None),
-    fps: float = Query(10.0, ge=1.0, le=30.0),
-    quality: int = Query(80, ge=1, le=100),
-    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
-    area: str = Query("outer", pattern="^(outer|client)$"),
-    crop: Optional[str] = Query(None),
-    trim_border: Optional[str] = Query(None),
-    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
-    fixed_width: int = Query(0, ge=0, le=4096),
-    fixed_height: int = Query(0, ge=0, le=4096),
-    adb_screencap: bool = Query(False),
-    auto_dismiss_popup: bool = Query(False),
-    popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
-):
-    return _stream_fanxiu_game_window(
-        title=title,
-        fps=fps,
-        quality=quality,
-        mode=mode,
-        area=area,
-        crop=crop,
-        trim_border=trim_border,
-        rotate=rotate,
-        fixed_width=fixed_width,
-        fixed_height=fixed_height,
-        auto_dismiss_popup=auto_dismiss_popup,
-        popup_check_interval=popup_check_interval,
-    )
-
-
 @status_router.get("/live-annotation/stream")
 def stream_fanxiu_live_annotation(
     title: Optional[str] = Query(None),
@@ -5681,6 +5646,9 @@ def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _keyevent_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
+        keys = payload.get("keys")
+        if isinstance(keys, list) and keys:
+            return keyevents_mumu_adb(keys)
         return keyevent_mumu_adb(str(payload.get("key") or ""))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5880,7 +5848,7 @@ def _drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dic
         if response.status_code == 404:
             raise HTTPException(
                 status_code=502,
-                detail="远程 codeyun 缺少拖拽接口，请更新并重启 mi15 的 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
+                detail="目标 codeyun 缺少拖拽接口，请更新并重启 codepc_mf 的 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
             )
         raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
     try:
@@ -6125,6 +6093,3429 @@ def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Respon
         media_type=response.headers.get("content-type") or "image/jpeg",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@dataclass(frozen=True)
+class _GameWindow3RuntimeGroupSpec:
+    group_id: str
+    label: str
+    priority: int
+    preempt_same_group: bool = False
+
+
+@dataclass(frozen=True)
+class _GameWindow3RuntimeNodeSpec:
+    node_id: str
+    group_id: str
+    label: str
+    priority: int
+    enabled: bool
+
+
+class _GameWindow3RuntimeContainer:
+    """Builds the dynamic Fanxiu runtime tree from backend-owned config."""
+
+    group_definitions = (
+        _GameWindow3RuntimeGroupSpec("guard", "守护", 10, preempt_same_group=False),
+        _GameWindow3RuntimeGroupSpec("manual_job", "手动作业", 50, preempt_same_group=False),
+        _GameWindow3RuntimeGroupSpec("job", "作业", 100, preempt_same_group=False),
+    )
+
+    def __init__(
+        self,
+        owner: "_GameWindow3RuntimeRunner",
+        *,
+        runtime_ctx: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+    ) -> None:
+        self.owner = owner
+        self.runtime_ctx = runtime_ctx
+        self.asset_tree_path = asset_tree_path
+        self.stop_event = stop_event
+
+    def group_specs(self) -> list[_GameWindow3RuntimeGroupSpec]:
+        return sorted(self.group_definitions, key=lambda item: item.priority)
+
+    def guard_specs(self) -> list[_GameWindow3RuntimeNodeSpec]:
+        return [
+            _GameWindow3RuntimeNodeSpec(
+                node_id=guard_id,
+                group_id="guard",
+                label=str(definition.get("label") or guard_id),
+                priority=int(definition.get("priority") or 100),
+                enabled=self.owner._runtime_guard_enabled(guard_id),
+            )
+            for guard_id, definition in self.owner.guard_definitions.items()
+        ]
+
+    def guard_nodes(self) -> list[Node]:
+        return [
+            Action(
+                lambda guard_id=spec.node_id: self.owner._runtime_guard_service_tick(
+                    guard_id,
+                    self.runtime_ctx,
+                    self.asset_tree_path,
+                    self.stop_event,
+                ),
+                label=spec.label,
+            )
+            for spec in self.guard_specs()
+        ]
+
+    def build_job_tree(self, *, action: Callable[[], Any], label: str, result_holder: dict[str, Any]) -> Root:
+        def guarded_action() -> Any:
+            result = action()
+            if isinstance(result, GeneratorType):
+                result = yield from result
+            result_holder["value"] = result
+            return BehaviorTreeStatus.SUCCESS
+
+        # Same-group preemption is intentionally disabled. One job action keeps
+        # its generator memory until it completes; higher-priority groups only
+        # pause it for the current tick through WithServices.
+        job_node = Every(
+            24 * 60 * 60,
+            child=Action(guarded_action, label=label),
+            label=label,
+        )
+        return Root(WithServices(job_node, *self.guard_nodes()))
+
+    def run_job_until_complete(
+        self,
+        *,
+        action: Callable[[], Any],
+        label: str,
+        tick_seconds: float = 1.0,
+    ) -> Any:
+        result_holder: dict[str, Any] = {}
+        runner = BehaviorTreeRunner(
+            self.build_job_tree(action=action, label=label, result_holder=result_holder),
+            state_path=None,
+            trace=0,
+        )
+        while True:
+            self.owner._raise_if_stopped(self.stop_event)
+            status = runner.run_once()
+            if status == BehaviorTreeStatus.SUCCESS:
+                return result_holder.get("value")
+            if status == BehaviorTreeStatus.FAILURE:
+                raise RuntimeError(f"行为树节点失败：{label}")
+            self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
+
+    def run_poll_forever(
+        self,
+        *,
+        action: Callable[[], Any],
+        label: str,
+        tick_seconds: float,
+    ) -> None:
+        runner = BehaviorTreeRunner(Root(Action(action, label=label)), state_path=None, trace=0)
+        while not self.stop_event.is_set():
+            runner.run_once()
+            self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
+
+
+class _GameWindow3RuntimeRunner:
+    guard_definitions = {
+        "close_popups": {
+            "id": "close_popups",
+            "label": "关闭弹窗",
+            "message": "弹窗分组",
+        },
+        "wanling_invite": {
+            "id": "wanling_invite",
+            "label": "万灵切磋邀请",
+            "message": "空实现",
+        },
+    }
+    scene_ids = {
+        "world": 34,
+        "world_menu": 35,
+        "settings": 49,
+        "hide_floating": 58,
+        "daily": 69,
+        "wanling_invite": 70,
+        "youli": 71,
+        "youli_explore": 72,
+        "youli_result": 73,
+        "daily_activity": 75,
+        "signup": 23,
+        "signup_reward": 24,
+        "gift": 78,
+        "reward": 81,
+        "duplicated": 82,
+    }
+    scene_threshold = 68
+    scene_thresholds = {"gift": 60, "daily": 60, "hide_floating": 55}
+    overlay_threshold = 55
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stop_event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+        self._guard_stop_event: threading.Event | None = None
+        self._guard_thread: threading.Thread | None = None
+        self._guard_enabled = False
+        self._guard_entry_id = ""
+        self._guard_interval_seconds = 2.0
+        self._guard_items: dict[str, dict[str, Any]] = {}
+        self._auto_close_candidates_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
+        self._log_scope = ""
+        self._log_item_id = ""
+        self._status: dict[str, Any] = self._initial_status()
+
+    def _initial_status(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "running": False,
+            "guard_enabled": False,
+            "guard_running": False,
+            "guard_entry_id": "",
+            "guard_interval_seconds": 2.0,
+            "guard_items": {},
+            "status": "idle",
+            "entry_id": "",
+            "task_type": "",
+            "current_task": "",
+            "phase": "",
+            "current_scene": None,
+            "message": "",
+            "current_index": 0,
+            "total": 0,
+            "current_code": "",
+            "current_task_id": "",
+            "priority": 100,
+            "interruptible": True,
+            "last_guard_event": {},
+            "started_at": 0,
+            "updated_at": 0,
+            "finished_at": 0,
+            "error": "",
+            "logs": [],
+        }
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            self._sync_guard_status_locked()
+            return json.loads(json.dumps(self._status, ensure_ascii=False))
+
+    def replace_logs(self, logs: list[dict[str, Any]]) -> dict[str, Any]:
+        with self._lock:
+            self._status["logs"] = list(logs)
+            self._status["updated_at"] = time.time()
+            self._sync_guard_status_locked()
+            return json.loads(json.dumps(self._status, ensure_ascii=False))
+
+    def can_preempt(self, priority: int) -> bool:
+        with self._lock:
+            if not self._status.get("running"):
+                return True
+            current_priority = int(self._status.get("priority") or 100)
+            return bool(self._status.get("interruptible", True)) and int(priority) < current_priority
+
+    def wait_until_idle(self, timeout_seconds: float = 5.0) -> bool:
+        deadline = time.time() + max(0.0, timeout_seconds)
+        while time.time() < deadline:
+            with self._lock:
+                running = bool(self._status.get("running"))
+                stopping = str(self._status.get("status") or "") == "stopping"
+            if not running and not stopping:
+                return True
+            time.sleep(0.1)
+        with self._lock:
+            return not bool(self._status.get("running"))
+
+    def _sync_guard_status_locked(self) -> None:
+        guard_running = self._guard_thread is not None and self._guard_thread.is_alive()
+        guard_items: dict[str, dict[str, Any]] = {}
+        for guard_id, definition in self.guard_definitions.items():
+            state = self._guard_items.get(guard_id)
+            if not isinstance(state, dict):
+                state = {}
+            enabled = bool(state.get("enabled"))
+            entry_id = str(state.get("entry_id") or "")
+            running = False
+            message = str(definition.get("message") or "")
+            if guard_id == "close_popups":
+                enabled = bool(self._guard_enabled)
+                entry_id = self._guard_entry_id
+                running = bool(guard_running)
+                last_guard_event = self._status.get("last_guard_event")
+                if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
+                    message = str(last_guard_event.get("title") or "")
+            guard_items[guard_id] = {
+                **definition,
+                "enabled": enabled,
+                "running": running,
+                "entry_id": entry_id,
+                "updated_at": float(state.get("updated_at") or 0),
+                "message": message,
+            }
+        self._status.update({
+            "guard_enabled": bool(self._guard_enabled),
+            "guard_running": bool(guard_running),
+            "guard_entry_id": self._guard_entry_id,
+            "guard_interval_seconds": self._guard_interval_seconds,
+            "guard_items": guard_items,
+        })
+
+    def stop(self, entry_id: str) -> dict[str, Any]:
+        with self._lock:
+            if entry_id and self._status.get("entry_id") not in {"", entry_id}:
+                return self.status()
+            if self._stop_event is not None:
+                self._stop_event.set()
+            self._set_status_locked("stopping", "停止请求已发送")
+        return self.status()
+
+    def set_guard(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        enabled: bool,
+        interval_seconds: float,
+        guard_id: str = "close_popups",
+        asset_tree_path: Path,
+    ) -> dict[str, Any]:
+        guard_id = str(guard_id or "close_popups").strip() or "close_popups"
+        interval_seconds = max(0.5, min(30.0, float(interval_seconds or 2.0)))
+        with self._lock:
+            guard_item = self._guard_items.setdefault(guard_id, {})
+            guard_item.update({
+                "enabled": bool(enabled),
+                "entry_id": entry_id if enabled else "",
+                "updated_at": time.time(),
+            })
+            if guard_id != "close_popups":
+                self._set_status_locked(str(self._status.get("status") or "idle"), f"守护{'已开启' if enabled else '已关闭'}：{guard_id}")
+                self._sync_guard_status_locked()
+                self._log_locked("info", self._status["message"], scope="guard", item_id=guard_id)
+                return json.loads(json.dumps(self._status, ensure_ascii=False))
+            self._guard_enabled = bool(enabled)
+            self._guard_entry_id = entry_id if enabled else ""
+            self._guard_interval_seconds = interval_seconds
+            if not enabled:
+                if self._guard_stop_event is not None:
+                    self._guard_stop_event.set()
+                self._guard_stop_event = None
+                self._set_status_locked("idle" if not self._status.get("running") else str(self._status.get("status") or "running"), "守护已关闭")
+                self._sync_guard_status_locked()
+                start_thread = None
+            elif self._guard_thread is not None and self._guard_thread.is_alive():
+                self._set_status_locked(str(self._status.get("status") or "idle"), "守护已开启")
+                self._sync_guard_status_locked()
+                start_thread = None
+            else:
+                stop_event = threading.Event()
+                self._guard_stop_event = stop_event
+                self._set_status_locked(str(self._status.get("status") or "idle"), "守护已开启")
+                thread = threading.Thread(
+                    target=self._run_guard,
+                    kwargs={
+                        "entry": entry,
+                        "entry_id": entry_id,
+                        "asset_tree_path": asset_tree_path,
+                        "stop_event": stop_event,
+                    },
+                    name="fanxiu-game-window3-guard",
+                    daemon=True,
+                )
+                self._guard_thread = thread
+                self._sync_guard_status_locked()
+                start_thread = thread
+        if start_thread is not None:
+            start_thread.start()
+        return self.status()
+
+    def start(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        codes: list[str],
+        asset_tree_path: Path,
+        task_id: str = "",
+        priority: int = 100,
+        interruptible: bool = True,
+    ) -> dict[str, Any]:
+        normalized_codes = [code.strip() for code in codes if code and code.strip()]
+        if not normalized_codes:
+            raise HTTPException(status_code=400, detail="礼包码列表为空")
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise HTTPException(status_code=409, detail="兑换礼包码任务正在运行")
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            now = time.time()
+            self._status = {
+                **self._initial_status(),
+                "running": True,
+                "status": "running",
+                "entry_id": entry_id,
+                "task_type": "gift_code_redeem",
+                "current_task": "兑换礼包码",
+                "phase": "start",
+                "message": "任务已启动",
+                "total": len(normalized_codes),
+                "current_task_id": task_id,
+                "priority": int(priority),
+                "interruptible": bool(interruptible),
+                "started_at": now,
+                "updated_at": now,
+            }
+            self._log_locked("info", f"启动兑换礼包码任务，共 {len(normalized_codes)} 个")
+            thread = threading.Thread(
+                target=self._run,
+                kwargs={
+                    "entry": entry,
+                    "entry_id": entry_id,
+                    "codes": normalized_codes,
+                    "asset_tree_path": asset_tree_path,
+                    "stop_event": stop_event,
+                    "task_id": task_id,
+                },
+                name="fanxiu-game-window3-runtime-task",
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return self.status()
+
+    def start_runtime_task(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        task_type: str,
+        payload: dict[str, Any],
+        asset_tree_path: Path,
+    ) -> dict[str, Any]:
+        task_type = str(task_type or "").strip()
+        if task_type == "gift_code_redeem":
+            raw_codes = payload.get("codes")
+            codes = [str(item) for item in raw_codes] if isinstance(raw_codes, list) else []
+            return self.start(
+                entry=entry,
+                entry_id=entry_id,
+                codes=codes,
+                asset_tree_path=asset_tree_path,
+                task_id=str(payload.get("__scheduler_task_id") or ""),
+                priority=int(payload.get("__scheduler_priority") or 100),
+                interruptible=bool(payload.get("__scheduler_interruptible", True)),
+            )
+        if task_type == "go_scene":
+            target_scene_id = int(payload.get("target_scene_id") or payload.get("target") or 49)
+            if target_scene_id != 49:
+                raise HTTPException(status_code=400, detail="Runtime v1 当前只验收到场景 #49")
+            return self.start_generic_runtime_task(
+                entry=entry,
+                entry_id=entry_id,
+                task_type=task_type,
+                payload={**payload, "target_scene_id": target_scene_id},
+                asset_tree_path=asset_tree_path,
+            )
+        if task_type == "hide_floating_window":
+            return self.start_generic_runtime_task(
+                entry=entry,
+                entry_id=entry_id,
+                task_type=task_type,
+                payload=payload,
+                asset_tree_path=asset_tree_path,
+            )
+        raise HTTPException(status_code=400, detail=f"暂不支持的任务类型：{task_type}")
+
+    def start_generic_runtime_task(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        task_type: str,
+        payload: dict[str, Any],
+        asset_tree_path: Path,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise HTTPException(status_code=409, detail="游戏窗口3 Runtime 正在运行任务")
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            now = time.time()
+            label = self._runtime_task_label(task_type, payload)
+            self._status = {
+                **self._initial_status(),
+                "running": True,
+                "status": "running",
+                "entry_id": entry_id,
+                "task_type": task_type,
+                "current_task": label,
+                "phase": "start",
+                "message": "任务已启动",
+                "total": 1,
+                "current_task_id": str(payload.get("__scheduler_task_id") or ""),
+                "priority": int(payload.get("__scheduler_priority") or 100),
+                "interruptible": bool(payload.get("__scheduler_interruptible", True)),
+                "started_at": now,
+                "updated_at": now,
+            }
+            self._log_locked("info", f"启动 Runtime 任务：{label}")
+            thread = threading.Thread(
+                target=self._run_generic_runtime_task,
+                kwargs={
+                    "entry": entry,
+                    "entry_id": entry_id,
+                    "task_type": task_type,
+                    "payload": dict(payload),
+                    "asset_tree_path": asset_tree_path,
+                    "stop_event": stop_event,
+                },
+                name="fanxiu-game-window3-runtime-task",
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return self.status()
+
+    def start_manual_runtime_task(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        task: dict[str, Any],
+        asset_tree_path: Path,
+    ) -> dict[str, Any]:
+        task_id = str(task.get("id") or uuid.uuid4().hex)
+        task_type = str(task.get("task_type") or "detect_scene")
+        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        label = str(task.get("label") or self._runtime_task_label(task_type, payload) or task_type)
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise HTTPException(status_code=409, detail="游戏窗口3 Runtime 正在运行任务")
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            now = time.time()
+            self._status = {
+                **self._initial_status(),
+                "running": True,
+                "status": "running",
+                "entry_id": entry_id,
+                "task_type": task_type,
+                "current_task": label,
+                "phase": "manual_job",
+                "message": f"手动作业已启动：{label}",
+                "total": 1,
+                "current_task_id": task_id,
+                "priority": int(task.get("priority") or 50),
+                "interruptible": bool(task.get("interruptible", True)),
+                "started_at": now,
+                "updated_at": now,
+            }
+            self._log_locked(
+                "info",
+                self._manual_job_log_message(task_id, self._status["message"]),
+                scope="manual_job",
+                item_id="manual_job",
+            )
+            thread = threading.Thread(
+                target=self._run_manual_runtime_task,
+                kwargs={
+                    "entry": entry,
+                    "entry_id": entry_id,
+                    "task": dict(task),
+                    "asset_tree_path": asset_tree_path,
+                    "stop_event": stop_event,
+                },
+                name="fanxiu-game-window3-manual-job",
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return self.status()
+
+    def start_go_scene(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        target_scene_id: int,
+        asset_tree_path: Path,
+    ) -> dict[str, Any]:
+        if target_scene_id != 49:
+            raise HTTPException(status_code=400, detail="Runtime v1 当前只验收到场景 #49")
+        return self.start_generic_runtime_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_type="go_scene",
+            payload={"target_scene_id": target_scene_id},
+            asset_tree_path=asset_tree_path,
+        )
+
+    def start_scheduler_tasks(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        tasks: list[dict[str, Any]],
+        all_tasks: list[dict[str, Any]],
+        asset_tree_path: Path,
+        run_label: str = "执行全部到期任务",
+    ) -> dict[str, Any]:
+        if not tasks:
+            raise HTTPException(status_code=400, detail="没有可执行的到期任务")
+        is_run_due = run_label == "执行全部到期任务"
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise HTTPException(status_code=409, detail="游戏窗口3 Runtime 正在运行任务")
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            now = time.time()
+            self._status = {
+                **self._initial_status(),
+                "running": True,
+                "status": "running",
+                "entry_id": entry_id,
+                "task_type": "scheduler_run_due" if is_run_due else "scheduler_run_now",
+                "current_task": run_label,
+                "phase": "start",
+                "message": f"Scheduler 已启动：{run_label}，共 {len(tasks)} 个任务",
+                "total": len(tasks),
+                "current_task_id": "scheduler_run_due" if is_run_due else str(tasks[0].get("id") or "scheduler_run_now"),
+                "priority": min([int(item.get("priority") or 100) for item in tasks] or [100]),
+                "interruptible": all(bool(item.get("interruptible", True)) for item in tasks),
+                "started_at": now,
+                "updated_at": now,
+            }
+            self._log_locked("info", f"启动 Scheduler：{run_label}，共 {len(tasks)} 个")
+            thread = threading.Thread(
+                target=self._run_scheduler_tasks,
+                kwargs={
+                    "entry": entry,
+                    "entry_id": entry_id,
+                    "tasks": [dict(item) for item in tasks],
+                    "all_tasks": [dict(item) for item in all_tasks],
+                    "asset_tree_path": asset_tree_path,
+                    "stop_event": stop_event,
+                    "run_label": run_label,
+                },
+                name="fanxiu-game-window3-scheduler",
+                daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return self.status()
+
+    def _set_status_locked(self, status: str, message: str = "", **extra: Any) -> None:
+        self._status.update({"status": status, "updated_at": time.time(), **extra})
+        if message:
+            self._status["message"] = message
+
+    def _set_log_context(self, scope: str, item_id: str) -> tuple[str, str]:
+        with self._lock:
+            previous = (self._log_scope, self._log_item_id)
+            self._log_scope = str(scope or "")
+            self._log_item_id = str(item_id or "")
+            return previous
+
+    def _restore_log_context(self, previous: tuple[str, str]) -> None:
+        with self._lock:
+            self._log_scope, self._log_item_id = previous
+
+    def _log_locked(self, kind: str, message: str, *, scope: str | None = None, item_id: str | None = None) -> None:
+        logs = list(self._status.get("logs") or [])
+        log_scope = self._log_scope if scope is None else str(scope or "")
+        log_item_id = self._log_item_id if item_id is None else str(item_id or "")
+        logs.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "kind": kind,
+            "scope": log_scope,
+            "item_id": log_item_id,
+            "message": message,
+        })
+        self._status["logs"] = logs[-500:]
+        self._status["updated_at"] = time.time()
+
+    def _log(self, kind: str, message: str) -> None:
+        with self._lock:
+            self._log_locked(kind, message)
+
+    def _manual_job_log_message(self, task_id: str, message: str) -> str:
+        task_id = str(task_id or "").strip()
+        return f"[{task_id}] {message}" if task_id else message
+
+    def _persist_status(self) -> None:
+        try:
+            _persist_game_window3_runtime_status(self.status())
+        except Exception:
+            pass
+
+    def _defer_start_pending_manual_job(self, entry: UserDevice, entry_id: str, asset_tree_path: Path) -> None:
+        def worker() -> None:
+            for _ in range(30):
+                thread = self._thread
+                if thread is None or not thread.is_alive():
+                    break
+                time.sleep(0.1)
+            try:
+                _start_next_game_window3_manual_job_if_idle(entry, entry_id)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=worker,
+            name="fanxiu-game-window3-manual-job-drain",
+            daemon=True,
+        ).start()
+
+    def _runtime_task_label(self, task_type: str, payload: dict[str, Any] | None = None) -> str:
+        labels = {
+            "gift_code_redeem": "兑换礼包码",
+            "go_scene": "到场景",
+            "hide_floating_window": "隐藏浮动窗",
+        }
+        label = labels.get(task_type, task_type)
+        if task_type == "go_scene":
+            target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
+            if target:
+                label = f"到场景 #{target}"
+        return label
+
+    def _runtime_guard_enabled(self, guard_id: str) -> bool:
+        guard_id = str(guard_id or "").strip()
+        with self._lock:
+            if guard_id == "close_popups":
+                return bool(self._guard_enabled)
+            state = self._guard_items.get(guard_id)
+            return bool(state.get("enabled")) if isinstance(state, dict) else False
+
+    def _runtime_guard_service_tick(
+        self,
+        guard_id: str,
+        runtime_ctx: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+    ) -> BehaviorTreeStatus:
+        self._raise_if_stopped(stop_event)
+        guard_id = str(guard_id or "").strip()
+        if not self._runtime_guard_enabled(guard_id):
+            return BehaviorTreeStatus.SKIP
+        if guard_id != "close_popups":
+            return BehaviorTreeStatus.SKIP
+        previous_log_context = self._set_log_context("guard", "close_popups")
+        try:
+            frame = self._screencap(runtime_ctx)
+            if not self._auto_close_popup_guard_step(runtime_ctx, asset_tree_path, frame):
+                return BehaviorTreeStatus.SKIP
+            self._persist_status()
+            self._clear_tick_frame(runtime_ctx)
+            return BehaviorTreeStatus.RUNNING
+        finally:
+            self._restore_log_context(previous_log_context)
+
+    def _run_runtime_behavior_tree(
+        self,
+        *,
+        runtime_ctx: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+        action: Callable[[], Any],
+        label: str,
+        tick_seconds: float = 1.0,
+    ) -> Any:
+        return _GameWindow3RuntimeContainer(
+            self,
+            runtime_ctx=runtime_ctx,
+            asset_tree_path=asset_tree_path,
+            stop_event=stop_event,
+        ).run_job_until_complete(action=action, label=label, tick_seconds=tick_seconds)
+
+    def _run_runtime_behavior_tree_forever(
+        self,
+        *,
+        action: Callable[[], Any],
+        label: str,
+        stop_event: threading.Event,
+        tick_seconds: float,
+    ) -> None:
+        _GameWindow3RuntimeContainer(
+            self,
+            runtime_ctx={},
+            asset_tree_path=Path(),
+            stop_event=stop_event,
+        ).run_poll_forever(action=action, label=label, tick_seconds=tick_seconds)
+
+    def _run_generic_runtime_task(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        task_type: str,
+        payload: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+    ) -> None:
+        task_id = str(payload.get("__scheduler_task_id") or "")
+        previous_log_context = self._set_log_context("job", task_id) if task_id else None
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            task_result = self._run_runtime_behavior_tree(
+                runtime_ctx=ctx,
+                asset_tree_path=asset_tree_path,
+                stop_event=stop_event,
+                action=lambda: self._execute_runtime_task(ctx, task_type, payload, stop_event),
+                label=self._runtime_task_label(task_type, payload),
+            )
+            with self._lock:
+                self._status.update({
+                    "running": False,
+                    "status": "success" if task_result == "success" else str(task_result or "success"),
+                    "phase": "done",
+                    "message": f"{self._runtime_task_label(task_type, payload)}完成" if task_result == "success" else f"{self._runtime_task_label(task_type, payload)}已跳过",
+                    "finished_at": time.time(),
+                    "updated_at": time.time(),
+                    "current_index": 1,
+                    "current_code": "",
+                })
+                self._log_locked("success" if task_result == "success" else "skip", self._status["message"])
+        except InterruptedError:
+            with self._lock:
+                self._status.update({"running": False, "status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("stop", "任务已停止")
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            with self._lock:
+                self._status.update({"ok": False, "running": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("error", str(detail))
+        finally:
+            if previous_log_context is not None:
+                self._restore_log_context(previous_log_context)
+            self._persist_status()
+            self._defer_start_pending_manual_job(entry, entry_id, asset_tree_path)
+
+    def _run_manual_runtime_task(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        task: dict[str, Any],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+    ) -> None:
+        task_id = str(task.get("id") or "")
+        previous_log_context = self._set_log_context("manual_job", "manual_job")
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            result = self._run_runtime_behavior_tree(
+                runtime_ctx=ctx,
+                asset_tree_path=asset_tree_path,
+                stop_event=stop_event,
+                action=lambda: self._execute_runtime_task(ctx, str(task.get("task_type") or ""), task.get("payload") if isinstance(task.get("payload"), dict) else {}, stop_event),
+                label=str(task.get("label") or task.get("task_type") or "手动作业"),
+            )
+            with self._lock:
+                self._status.update({
+                    "running": False,
+                    "status": "success" if (result or "success") == "success" else str(result or "success"),
+                    "phase": "done",
+                    "message": f"手动作业完成：{task.get('label') or task.get('task_type') or task_id}",
+                    "finished_at": time.time(),
+                    "updated_at": time.time(),
+                    "current_index": 1,
+                })
+                self._log_locked("success", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
+        except InterruptedError:
+            with self._lock:
+                self._status.update({"running": False, "status": "stopped", "phase": "stopped", "message": "手动作业已停止", "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("stop", self._manual_job_log_message(task_id, "手动作业已停止"), scope="manual_job", item_id="manual_job")
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            with self._lock:
+                self._status.update({"ok": False, "running": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("error", self._manual_job_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
+        finally:
+            if previous_log_context is not None:
+                self._restore_log_context(previous_log_context)
+            self._persist_status()
+            self._defer_start_pending_manual_job(entry, entry_id, asset_tree_path)
+
+    def _run(self, *, entry: UserDevice, entry_id: str, codes: list[str], asset_tree_path: Path, stop_event: threading.Event, task_id: str = "") -> None:
+        previous_log_context = self._set_log_context("job", task_id) if task_id else None
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            self._run_runtime_behavior_tree(
+                runtime_ctx=ctx,
+                asset_tree_path=asset_tree_path,
+                stop_event=stop_event,
+                action=lambda: self._execute_gift_code_task(ctx, codes, stop_event),
+                label="兑换礼包码",
+            )
+            with self._lock:
+                self._status.update({"running": False, "status": "success", "phase": "done", "message": "兑换礼包码任务完成", "finished_at": time.time(), "updated_at": time.time(), "current_index": len(codes), "current_code": ""})
+                self._log_locked("success", "任务完成，已从 #49 回退")
+        except InterruptedError:
+            with self._lock:
+                self._status.update({"running": False, "status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("stop", "任务已停止")
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            with self._lock:
+                self._status.update({"ok": False, "running": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("error", str(detail))
+        finally:
+            if previous_log_context is not None:
+                self._restore_log_context(previous_log_context)
+            self._persist_status()
+            self._defer_start_pending_manual_job(entry, entry_id, asset_tree_path)
+
+    def _run_scheduler_tasks(
+        self,
+        *,
+        entry: UserDevice,
+        entry_id: str,
+        tasks: list[dict[str, Any]],
+        all_tasks: list[dict[str, Any]],
+        asset_tree_path: Path,
+        stop_event: threading.Event,
+        run_label: str = "执行全部到期任务",
+    ) -> None:
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            for index, task in enumerate(tasks):
+                self._raise_if_stopped(stop_event)
+                task_id = str(task.get("id") or "")
+                label = str(task.get("label") or task_id or task.get("task_type") or "未命名任务")
+                previous_log_context = self._set_log_context("job", task_id) if task_id else None
+                try:
+                    with self._lock:
+                        self._set_status_locked(
+                            "running",
+                            f"Scheduler 执行 {index + 1}/{len(tasks)}：{label}",
+                            current_index=index,
+                            current_task=label,
+                            task_type=str(task.get("task_type") or ""),
+                            phase="scheduler_task",
+                            current_task_id=task_id,
+                            priority=int(task.get("priority") or 100),
+                            interruptible=bool(task.get("interruptible", True)),
+                        )
+                        self._log_locked("action", f"开始到期任务：{label}")
+                    self._mark_scheduler_task(all_tasks, task_id, "running")
+                    result = self._run_runtime_behavior_tree(
+                        runtime_ctx=ctx,
+                        asset_tree_path=asset_tree_path,
+                        stop_event=stop_event,
+                        action=lambda task=task: self._execute_runtime_task(
+                            ctx,
+                            str(task.get("task_type") or ""),
+                            _game_window3_task_payload_with_meta(task),
+                            stop_event,
+                        ),
+                        label=label,
+                    )
+                    self._mark_scheduler_task(all_tasks, task_id, result or "success")
+                    with self._lock:
+                        self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")
+                finally:
+                    if previous_log_context is not None:
+                        self._restore_log_context(previous_log_context)
+            with self._lock:
+                self._status.update({
+                    "running": False,
+                    "status": "success",
+                    "task_type": "scheduler_run_due" if run_label == "执行全部到期任务" else "scheduler_run_now",
+                    "current_task": run_label,
+                    "phase": "done",
+                    "message": f"{run_label}完成",
+                    "finished_at": time.time(),
+                    "updated_at": time.time(),
+                    "current_index": len(tasks),
+                    "current_code": "",
+                })
+                self._log_locked("success", f"Scheduler {run_label}完成")
+        except InterruptedError:
+            with self._lock:
+                self._status.update({"running": False, "status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("stop", "Scheduler 任务已停止")
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            current_task_id = ""
+            with self._lock:
+                current_task_id = str(self._status.get("current_task_id") or "")
+                self._status.update({"ok": False, "running": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
+                self._log_locked("error", str(detail), scope="job" if current_task_id else None, item_id=current_task_id or None)
+            if current_task_id:
+                self._mark_scheduler_task(all_tasks, current_task_id, "error")
+        finally:
+            self._persist_status()
+            self._defer_start_pending_manual_job(entry, entry_id, asset_tree_path)
+
+    def _mark_scheduler_task(self, tasks: list[dict[str, Any]], task_id: str, result: str) -> None:
+        if not task_id:
+            return
+        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        changed = False
+        for item in tasks:
+            if str(item.get("id") or "") != task_id:
+                continue
+            if result == "running":
+                item["last_run_at"] = now_text
+                item["retry_after"] = None
+            elif result in {"success", "skipped", "unsupported"}:
+                item["retry_after"] = None
+                item["next_time"] = _next_game_window3_scheduler_time(item)
+            elif result == "error":
+                cooldown_seconds = int(item.get("cooldown_seconds") or 0)
+                if cooldown_seconds > 0:
+                    item["retry_after"] = (datetime.now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            item["last_result"] = result
+            changed = True
+            break
+        if changed:
+            _write_game_window3_scheduler_tasks(tasks)
+            _record_game_window3_scheduler_task_fact(item, result)
+
+    def _execute_runtime_task(self, ctx: dict[str, Any], task_type: str, payload: dict[str, Any], stop_event: threading.Event) -> str:
+        if task_type in {"detect_scene", "manual_tick"}:
+            frame = self._screencap(ctx)
+            key, score = self._identify_scene(ctx, frame)
+            scene_id = self.scene_ids.get(key) if self._scene_matches(key, score) else None
+            with self._lock:
+                self._status.update({
+                    "phase": "manual_tick",
+                    "current_scene": scene_id,
+                    "message": f"单步识别：{key if scene_id is not None else 'unknown'} {score:.0f}%",
+                    "updated_at": time.time(),
+                })
+                self._log_locked("detail", self._status["message"])
+            return "success"
+        if task_type == "gift_code_redeem":
+            raw_codes = payload.get("codes")
+            codes = [str(item).strip() for item in raw_codes] if isinstance(raw_codes, list) else []
+            codes = [code for code in codes if code]
+            if not codes:
+                self._log("skip", "礼包码为空，跳过")
+                return "skipped"
+            self._execute_gift_code_task(ctx, codes, stop_event)
+            return "success"
+        if task_type == "go_scene":
+            target_scene_id = int(payload.get("target_scene_id") or payload.get("target") or 49)
+            with self._lock:
+                self._set_status_locked("running", f"场景移动到 #{target_scene_id}", phase="go_scene")
+            asset_tree_path = ctx.get("asset_tree_path")
+            if not isinstance(asset_tree_path, Path):
+                raise RuntimeError("缺少场景移动资产树路径")
+            return self._go_scene_task(ctx, asset_tree_path, target_scene_id, stop_event)
+        if task_type == "hide_floating_window":
+            self._execute_hide_floating_window(ctx, stop_event)
+            return "success"
+        if task_type in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_name = str(payload.get("legacy_name") or task_type)
+            self._log("skip", f"旧版任务「{legacy_name}」尚未迁移，已跳过")
+            return "unsupported"
+        raise RuntimeError(f"暂不支持的任务类型：{task_type}")
+
+    def _execute_gift_code_task(self, ctx: dict[str, Any], codes: list[str], stop_event: threading.Event) -> None:
+        with self._lock:
+            self._set_status_locked("running", "对齐 #49 设置页", phase="align_settings")
+        self._align_settings(ctx, stop_event)
+        for index, code in enumerate(codes):
+            self._raise_if_stopped(stop_event)
+            with self._lock:
+                self._set_status_locked("running", f"处理第 {index + 1}/{len(codes)} 个：{code}", current_index=index, current_code=code, phase="process_code")
+                self._log_locked("action", f"开始兑换：{code}")
+            self._process_code(ctx, code, index == len(codes) - 1, stop_event)
+        with self._lock:
+            self._set_status_locked("running", "从 #49 回退", phase="finish_back")
+        self._finish_from_settings(ctx, stop_event)
+
+    def _run_guard(self, *, entry: UserDevice, entry_id: str, asset_tree_path: Path, stop_event: threading.Event) -> None:
+        last_scene_id: int | None = None
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            with self._lock:
+                self._sync_guard_status_locked()
+                self._log_locked("info", "守护空转已启动", scope="guard", item_id="close_popups")
+
+            def poll_once() -> BehaviorTreeStatus:
+                nonlocal last_scene_id
+                with self._lock:
+                    task_running = bool(self._status.get("running"))
+                    interval = self._guard_interval_seconds
+                    guard_enabled = bool(self._guard_enabled)
+                if not guard_enabled:
+                    stop_event.set()
+                    return BehaviorTreeStatus.SKIP
+                if task_running:
+                    return BehaviorTreeStatus.SKIP
+                try:
+                    frame = self._screencap(ctx)
+                    previous_log_context = self._set_log_context("guard", "close_popups")
+                    try:
+                        handled = self._auto_close_popup_guard_step(ctx, asset_tree_path, frame)
+                    finally:
+                        self._restore_log_context(previous_log_context)
+                    if handled:
+                        _persist_game_window3_runtime_status(self.status())
+                        self._clear_tick_frame(ctx)
+                        stop_event.wait(max(0.2, min(interval, 1.2)))
+                        return BehaviorTreeStatus.RUNNING
+                    key, score = self._identify_scene(ctx, frame)
+                    scene_id = self.scene_ids.get(key)
+                    if scene_id is not None and self._scene_matches(key, score):
+                        with self._lock:
+                            self._status.update({
+                                "entry_id": entry_id,
+                                "current_scene": scene_id,
+                                "message": f"守护识别：{key} {score:.0f}%",
+                                "updated_at": time.time(),
+                            })
+                            if scene_id != last_scene_id:
+                                self._log_locked("detail", f"守护识别：#{scene_id} {key} {score:.0f}%", scope="guard", item_id="close_popups")
+                        last_scene_id = scene_id
+                    else:
+                        with self._lock:
+                            self._status.update({
+                                "entry_id": entry_id,
+                                "message": f"守护识别：unknown {score:.0f}%",
+                                "updated_at": time.time(),
+                            })
+                    _persist_game_window3_runtime_status(self.status())
+                except Exception as exc:
+                    with self._lock:
+                        self._log_locked("error", f"守护检测失败：{exc}", scope="guard", item_id="close_popups")
+                self._clear_tick_frame(ctx)
+                return BehaviorTreeStatus.SUCCESS
+
+            while not stop_event.is_set():
+                with self._lock:
+                    interval = self._guard_interval_seconds
+                self._run_runtime_behavior_tree_forever(
+                    action=poll_once,
+                    label="关闭弹窗",
+                    stop_event=stop_event,
+                    tick_seconds=interval,
+                )
+        finally:
+            with self._lock:
+                self._guard_enabled = False
+                self._guard_entry_id = ""
+                self._sync_guard_status_locked()
+                self._log_locked("info", "守护空转已停止", scope="guard", item_id="close_popups")
+
+    def _raise_if_stopped(self, stop_event: threading.Event) -> None:
+        if stop_event.is_set():
+            raise InterruptedError()
+
+    def _load_asset_tree(self, path: Path) -> list[dict[str, Any]]:
+        if not path.is_file():
+            raise RuntimeError("未找到帧树，请先保存帧树标注")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise RuntimeError("帧树格式错误")
+        return [item for item in payload if isinstance(item, dict)]
+
+    def _image_number(self, image: dict[str, Any]) -> int | None:
+        title = str(image.get("title") or "")
+        filename = str(image.get("filename") or "")
+        id_text = str(image.get("id") or "")
+        for text in (filename, title, id_text):
+            match = re.search(r"(\d+)", text)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _find_child_image_by_number(self, image: dict[str, Any], number: int) -> dict[str, Any] | None:
+        def visit(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "image" and self._image_number(item) == number:
+                    return item
+                children = item.get("children")
+                if isinstance(children, list):
+                    found = visit([child for child in children if isinstance(child, dict)])
+                    if found is not None:
+                        return found
+            return None
+
+        children = image.get("children")
+        if not isinstance(children, list):
+            return None
+        return visit([child for child in children if isinstance(child, dict)])
+
+    def _index_images(self, nodes: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        result: dict[int, dict[str, Any]] = {}
+        def visit(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                if item.get("type") == "image":
+                    number = self._image_number(item)
+                    if number is not None:
+                        result[number] = item
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)])
+        visit(nodes)
+        return result
+
+    def _jump_target_text(self, shape: dict[str, Any]) -> str:
+        return str(shape.get("sceneJumpTarget") or "").strip()
+
+    def _parse_scene_jump_entries(self, value: Any) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for raw_token in str(value or "").split(","):
+            token = raw_token.strip()
+            if not token:
+                continue
+            count = 0
+            match = re.match(r"^(.*?)\((\d+)\)$", token)
+            if match:
+                token = match.group(1).strip()
+                count = int(match.group(2))
+            if token:
+                entries.append({"label": token, "count": count})
+        return entries
+
+    def _serialize_scene_jump_entries(self, entries: list[dict[str, Any]]) -> str:
+        normalized: list[dict[str, Any]] = []
+        for entry in entries:
+            label = str(entry.get("label") or "").strip()
+            if not label:
+                continue
+            count = max(0, int(entry.get("count") or 0))
+            normalized.append({"label": label, "count": count})
+        normalized.sort(key=lambda item: int(item.get("count") or 0), reverse=True)
+        return ",".join(
+            f"{item['label']}({item['count']})" if int(item.get("count") or 0) > 0 else item["label"]
+            for item in normalized
+        )
+
+    def _increment_scene_jump_target(self, shape: dict[str, Any], target_scene_id: int) -> bool:
+        current_text = self._jump_target_text(shape)
+        if current_text in {"-1", "0"}:
+            return False
+        target_label = str(int(target_scene_id))
+        entries = self._parse_scene_jump_entries(current_text)
+        for entry in entries:
+            if self._scene_jump_label_number(entry.get("label")) == target_scene_id:
+                entry["count"] = int(entry.get("count") or 0) + 1
+                shape["sceneJumpTarget"] = self._serialize_scene_jump_entries(entries)
+                return True
+        entries.append({"label": target_label, "count": 1})
+        shape["sceneJumpTarget"] = self._serialize_scene_jump_entries(entries)
+        return True
+
+    def _scene_jump_label_number(self, label: Any) -> int | None:
+        text = str(label or "").strip()
+        if text.startswith("#"):
+            text = text[1:].strip()
+        return int(text) if text.isdecimal() else None
+
+    def _collect_folder_image_numbers(self, node: dict[str, Any]) -> list[int]:
+        result: list[int] = []
+        children = node.get("children")
+        if not isinstance(children, list):
+            return result
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            if child.get("type") == "image":
+                number = self._image_number(child)
+                if number is not None:
+                    result.append(number)
+            result.extend(self._collect_folder_image_numbers(child))
+        return result
+
+    def _resolve_scene_jump_label(self, tree: list[dict[str, Any]], label: Any) -> list[int]:
+        number = self._scene_jump_label_number(label)
+        if number is not None:
+            return [number]
+        target = str(label or "").strip()
+        if not target:
+            return []
+        found: list[int] = []
+
+        def visit(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("title") or "").strip() == target:
+                    if item.get("type") == "image":
+                        number = self._image_number(item)
+                        if number is not None:
+                            found.append(number)
+                    elif item.get("type") == "folder":
+                        found.extend(self._collect_folder_image_numbers(item))
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)])
+
+        visit(tree)
+        return found
+
+    def _scene_jump_target_ids(self, tree: list[dict[str, Any]], shape: dict[str, Any]) -> list[int]:
+        result: list[int] = []
+        for entry in self._parse_scene_jump_entries(self._jump_target_text(shape)):
+            for scene_id in self._resolve_scene_jump_label(tree, entry.get("label")):
+                if scene_id not in result:
+                    result.append(scene_id)
+        return result
+
+    def _scene_id_key(self, scene_id: int) -> str:
+        for key, value in self.scene_ids.items():
+            if int(value) == int(scene_id):
+                return key
+        return str(scene_id)
+
+    def _scene_match_threshold(self, scene_id: int) -> float:
+        key = self._scene_id_key(scene_id)
+        return float(self.scene_thresholds.get(key, self.scene_threshold))
+
+    def _scene_matches_id(self, scene_id: int, score: float) -> bool:
+        return score >= self._scene_match_threshold(scene_id)
+
+    def _identify_scene_number(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        preferred_scene_ids: list[int] | None = None,
+    ) -> tuple[int | None, float]:
+        images: dict[int, dict[str, Any]] = ctx.get("images") or {}
+        if preferred_scene_ids:
+            for scene_id in preferred_scene_ids:
+                image = images.get(scene_id)
+                if not image:
+                    continue
+                score = self._scene_score(ctx, image, frame_data_url)
+                if self._scene_matches_id(scene_id, score):
+                    return scene_id, score
+            return None, 0.0
+
+        candidates: list[tuple[int, float]] = []
+        for scene_id, image in images.items():
+            score = self._scene_score(ctx, image, frame_data_url)
+            candidates.append((scene_id, score))
+        candidates.sort(key=lambda item: (item[1], -item[0]), reverse=True)
+        if not candidates:
+            return None, 0.0
+        scene_id, score = candidates[0]
+        return (scene_id, score) if self._scene_matches_id(scene_id, score) else (None, score)
+
+    def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+        edges: dict[int, list[dict[str, Any]]] = {}
+
+        def visit(items: list[dict[str, Any]]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "image":
+                    source_id = self._image_number(item)
+                    if source_id is not None:
+                        for shape in self._flatten_shapes(item.get("shapes")):
+                            if shape.get("kind") == "group":
+                                continue
+                            target_text = self._jump_target_text(shape)
+                            if not target_text or target_text in {"-1", "0"}:
+                                continue
+                            target_ids = self._scene_jump_target_ids(tree, shape)
+                            if target_ids:
+                                edges.setdefault(source_id, []).append({
+                                    "source_id": source_id,
+                                    "image": item,
+                                    "shape": shape,
+                                    "target_ids": target_ids,
+                                })
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)])
+
+        visit(tree)
+        return edges
+
+    def _find_scene_route(self, tree: list[dict[str, Any]], start_scene_id: int, target_scene_id: int) -> list[dict[str, Any]] | None:
+        if start_scene_id == target_scene_id:
+            return []
+        edges = self._scene_jump_edges(tree)
+        queue: list[tuple[int, list[dict[str, Any]]]] = [(start_scene_id, [])]
+        visited = {start_scene_id}
+        while queue:
+            scene_id, route = queue.pop(0)
+            for edge in edges.get(scene_id, []):
+                for next_scene_id in edge["target_ids"]:
+                    if next_scene_id in visited:
+                        continue
+                    next_route = [*route, edge]
+                    if next_scene_id == target_scene_id:
+                        return next_route
+                    visited.add(next_scene_id)
+                    queue.append((next_scene_id, next_route))
+        return None
+
+    def _write_asset_tree(self, asset_tree_path: Path, tree: list[dict[str, Any]]) -> None:
+        _write_game_window3_json(asset_tree_path, tree)
+        self._auto_close_candidates_cache.pop(str(asset_tree_path), None)
+
+    def _save_unknown_scene_frame(
+        self,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        tree: list[dict[str, Any]],
+        frame_data_url: str,
+        *,
+        target_scene_id: int,
+        current_scene_id: int | None,
+        action_shape: dict[str, Any] | None,
+        elapsed_seconds: float,
+        history: list[str],
+    ) -> dict[str, Any]:
+        entry: UserDevice = ctx["entry"]
+        payload = {
+            "title": "未知场景",
+            "title_match": "contains",
+            "mode": "screen",
+            "area": "client",
+            "rotate": "0",
+            "fixed_width": 0,
+            "fixed_height": 0,
+            "quality": 82,
+            "current_frame_data_url": frame_data_url,
+        }
+        saved = _save_game_window2_service(payload) if entry.mode == "local" else _save_remote_game_window2_frame(entry, payload)
+        filename = str(saved.get("filename") or f"unknown-{uuid.uuid4().hex}.png")
+        width = int(saved.get("width") or 900)
+        height = int(saved.get("height") or 1600)
+        now_ms = int(time.time() * 1000)
+        description = "\n".join([
+            "Runtime 场景跳转未知帧",
+            f"目标场景：#{target_scene_id}",
+            f"点击前场景：#{current_scene_id}" if current_scene_id is not None else "点击前场景：unknown",
+            f"动作 shape：{action_shape.get('title') if isinstance(action_shape, dict) else 'unknown'}",
+            f"累计等待：{elapsed_seconds:.1f}s",
+            "识别日志：",
+            *history[-30:],
+        ])
+        node = {
+            "id": f"image-runtime-unknown-{now_ms}-{uuid.uuid4().hex[:8]}",
+            "type": "image",
+            "title": f"未知场景 {datetime.now().strftime('%m-%d %H:%M:%S')}",
+            "filename": filename,
+            "width": width,
+            "height": height,
+            "shapes": [
+                {
+                    "id": f"shape-runtime-unknown-{now_ms}-{uuid.uuid4().hex[:8]}",
+                    "kind": "rect",
+                    "title": "未知场景备注",
+                    "x": 0.02,
+                    "y": 0.02,
+                    "w": 0.12,
+                    "h": 0.08,
+                    "description": description,
+                },
+            ],
+        }
+        target_folder = None
+        for item in tree:
+            if isinstance(item, dict) and item.get("type") == "folder" and str(item.get("title") or "") == "未知场景":
+                target_folder = item
+                break
+        if target_folder is None:
+            target_folder = {"id": f"folder-runtime-unknown-{now_ms}", "type": "folder", "title": "未知场景", "children": []}
+            tree.append(target_folder)
+        children = target_folder.setdefault("children", [])
+        if isinstance(children, list):
+            children.append(node)
+        self._write_asset_tree(asset_tree_path, tree)
+        self._log("error", f"场景跳转识别不到场景，已保存未知帧：{filename}")
+        return node
+
+    def _is_independent_exit_shape(self, shape: dict[str, Any]) -> bool:
+        return self._jump_target_text(shape) == "-1"
+
+    def _auto_close_guard_action_shape(self, image: dict[str, Any]) -> dict[str, Any] | None:
+        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
+        for title in ("空白", "关闭", "确定"):
+            for shape in shapes:
+                if str(shape.get("title") or "").strip() == title:
+                    return shape
+        for shape in shapes:
+                if self._is_independent_exit_shape(shape):
+                    return shape
+        return None
+
+    def _handle_auto_close_popup_47_child_84(
+        self,
+        ctx: dict[str, Any],
+        popup_47: dict[str, Any],
+        frame_data_url: str,
+        popup_score: float,
+        event: dict[str, Any],
+    ) -> bool:
+        child_84 = self._find_child_image_by_number(popup_47, 84)
+        if not child_84:
+            return False
+        child_score = self._popup_score(ctx, child_84, frame_data_url)
+        if child_score < self.overlay_threshold:
+            return False
+        no_more_prompt_shape = self._find_shape(child_84, "不再提示")
+        confirm_shape = self._find_shape(child_84, "确认")
+        if not confirm_shape:
+            with self._lock:
+                self._status.update({
+                    "current_scene": 84,
+                    "message": f"守护命中：#84 {child_score:.0f}%，缺少「确认」标注",
+                    "last_guard_event": {**event, "image": "#84", "title": str(child_84.get("title") or ""), "score": round(child_score, 1), "action": "missing_confirm"},
+                    "updated_at": time.time(),
+                })
+                self._log_locked("error", self._status["message"])
+            return True
+        if no_more_prompt_shape:
+            no_more_prompt_score = self._shape_score(ctx, child_84, no_more_prompt_shape, frame_data_url)
+            if no_more_prompt_score < self.overlay_threshold:
+                self._click_shape(ctx, child_84, no_more_prompt_shape, frame_data_url)
+                with self._lock:
+                    self._status.update({
+                        "current_scene": 84,
+                        "message": f"守护处理：#47/#84 点击「不再提示」 {popup_score:.0f}%/{child_score:.0f}%",
+                        "last_guard_event": {
+                            **event,
+                            "image": "#84",
+                            "title": str(child_84.get("title") or ""),
+                            "score": round(child_score, 1),
+                            "parent_score": round(popup_score, 1),
+                            "action": "click:不再提示",
+                        },
+                        "updated_at": time.time(),
+                    })
+                    self._log_locked("guardClick", self._status["message"])
+                return True
+        self._click_shape(ctx, child_84, confirm_shape)
+        with self._lock:
+            self._status.update({
+                "current_scene": 84,
+                "message": f"守护处理：#47/#84 点击「确认」 {popup_score:.0f}%/{child_score:.0f}%",
+                "last_guard_event": {
+                    **event,
+                    "image": "#84",
+                    "title": str(child_84.get("title") or ""),
+                    "score": round(child_score, 1),
+                    "parent_score": round(popup_score, 1),
+                    "action": "click:确认",
+                },
+                "updated_at": time.time(),
+            })
+            self._log_locked("guardClick", self._status["message"])
+        return True
+
+    def _handle_auto_close_popup_47_child_86(
+        self,
+        ctx: dict[str, Any],
+        popup_47: dict[str, Any],
+        frame_data_url: str,
+        popup_score: float,
+        event: dict[str, Any],
+    ) -> bool:
+        child_86 = self._find_child_image_by_number(popup_47, 86)
+        if not child_86:
+            return False
+        child_score = self._popup_score(ctx, child_86, frame_data_url)
+        if child_score < self.overlay_threshold:
+            return False
+        confirm_shape = self._find_shape(child_86, "确认")
+        if not confirm_shape:
+            with self._lock:
+                self._status.update({
+                    "current_scene": 86,
+                    "message": f"守护命中：#86 {child_score:.0f}%，缺少「确认」标注",
+                    "last_guard_event": {**event, "image": "#86", "title": str(child_86.get("title") or ""), "score": round(child_score, 1), "action": "missing_confirm"},
+                    "updated_at": time.time(),
+                })
+                self._log_locked("error", self._status["message"])
+            return True
+        self._click_shape(ctx, child_86, confirm_shape, frame_data_url)
+        with self._lock:
+            self._status.update({
+                "current_scene": 86,
+                "message": f"守护处理：#47/#86 点击「确认」 {popup_score:.0f}%/{child_score:.0f}%",
+                "last_guard_event": {
+                    **event,
+                    "image": "#86",
+                    "title": str(child_86.get("title") or ""),
+                    "score": round(child_score, 1),
+                    "parent_score": round(popup_score, 1),
+                    "action": "click:确认",
+                },
+                "updated_at": time.time(),
+            })
+            self._log_locked("guardClick", self._status["message"])
+        return True
+
+    def _auto_close_guard_images(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for folder in nodes:
+            if not isinstance(folder, dict) or folder.get("type") != "folder":
+                continue
+            folder_title = str(folder.get("title") or "").strip()
+            if folder_title != "弹窗":
+                continue
+            children = folder.get("children")
+            if not isinstance(children, list):
+                continue
+            for child in children:
+                if isinstance(child, dict) and child.get("type") == "image":
+                    candidates.append({
+                        "image": child,
+                        "folder_path": folder_title,
+                        "action_shape": self._auto_close_guard_action_shape(child),
+                    })
+        return candidates
+
+    def _auto_close_guard_candidates_for_path(self, asset_tree_path: Path) -> list[dict[str, Any]]:
+        try:
+            stat = asset_tree_path.stat()
+            signature = (int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            signature = (0, 0)
+        cache_key = str(asset_tree_path)
+        cached = self._auto_close_candidates_cache.get(cache_key)
+        if cached and cached[0] == signature[0] and cached[1] == signature[1]:
+            return cached[2]
+        tree = self._load_asset_tree(asset_tree_path)
+        candidates = self._auto_close_guard_images(tree)
+        self._auto_close_candidates_cache[cache_key] = (signature[0], signature[1], candidates)
+        return candidates
+
+    def _auto_close_popup_candidate_score(self, ctx: dict[str, Any], candidate: dict[str, Any], frame_data_url: str) -> float:
+        image = candidate.get("image")
+        if not isinstance(image, dict):
+            return 0.0
+        return self._popup_score(ctx, image, frame_data_url)
+
+    def _auto_close_popup_candidate_scores_serial(
+        self,
+        ctx: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        frame_data_url: str,
+    ) -> list[float]:
+        return [self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url) for candidate in candidates]
+
+    def _auto_close_popup_candidate_scores_parallel(
+        self,
+        ctx: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        frame_data_url: str,
+    ) -> list[float]:
+        if len(candidates) <= 1:
+            return self._auto_close_popup_candidate_scores_serial(ctx, candidates, frame_data_url)
+        workers = len(candidates)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-popup-match") as executor:
+            return list(executor.map(lambda candidate: self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url), candidates))
+
+    def _auto_close_popup_candidate_scores(
+        self,
+        ctx: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        frame_data_url: str,
+    ) -> list[float]:
+        return self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
+
+    def _auto_close_popup_first_match(
+        self,
+        ctx: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        frame_data_url: str,
+    ) -> tuple[dict[str, Any] | None, float]:
+        if not candidates:
+            return None, 0.0
+        scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
+        for candidate, score in zip(candidates, scores):
+            if score >= self.overlay_threshold:
+                return candidate, score
+        return None, 0.0
+
+    def _auto_close_popup_guard_step(self, ctx: dict[str, Any], asset_tree_path: Path, frame_data_url: str) -> bool:
+        candidates = self._auto_close_guard_candidates_for_path(asset_tree_path)
+        candidate, score = self._auto_close_popup_first_match(ctx, candidates, frame_data_url)
+        if candidate is not None:
+            image = candidate.get("image")
+            if not isinstance(image, dict):
+                return False
+            image_number = self._image_number(image)
+            image_label = f"#{image_number}" if image_number is not None else str(image.get("title") or image.get("filename") or "unknown")
+            folder_path = str(candidate.get("folder_path") or "")
+            action_shape = candidate.get("action_shape")
+            event = {
+                "time": time.time(),
+                "kind": "popup",
+                "image": image_label,
+                "title": str(image.get("title") or ""),
+                "folder_path": folder_path,
+                "score": round(score, 1),
+                "action": "",
+            }
+            if image_number == 47 and self._handle_auto_close_popup_47_child_84(ctx, image, frame_data_url, score, event):
+                return True
+            if image_number == 47 and self._handle_auto_close_popup_47_child_86(ctx, image, frame_data_url, score, event):
+                return True
+            if not isinstance(action_shape, dict):
+                with self._lock:
+                    self._status.update({
+                        "current_scene": image_number,
+                        "message": f"守护命中：{image_label} {score:.0f}%，缺少关闭标注",
+                        "last_guard_event": {**event, "action": "missing_action"},
+                        "updated_at": time.time(),
+                    })
+                    self._log_locked("error", self._status["message"])
+                return True
+            action_title = str(action_shape.get("title") or "shape")
+            self._click_shape(ctx, image, action_shape, frame_data_url)
+            with self._lock:
+                self._status.update({
+                    "current_scene": image_number,
+                    "message": f"守护处理：{image_label} 点击「{action_title}」 {score:.0f}%",
+                    "last_guard_event": {**event, "action": f"click:{action_title}"},
+                    "updated_at": time.time(),
+                })
+                self._log_locked("guardClick", self._status["message"])
+            return True
+        return False
+
+    def _require_assets(self, ctx: dict[str, Any]) -> None:
+        images: dict[int, dict[str, Any]] = ctx["images"]
+        if not images:
+            raise RuntimeError("缺少帧标注，请先保存帧树")
+
+    def _image(self, ctx: dict[str, Any], key: str) -> dict[str, Any] | None:
+        return ctx["images"].get(self.scene_ids[key])
+
+    def _flatten_shapes(self, shapes: Any) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        if not isinstance(shapes, list):
+            return result
+        for item in shapes:
+            if not isinstance(item, dict):
+                continue
+            result.append(item)
+            result.extend(self._flatten_shapes(item.get("children")))
+        return result
+
+    def _find_shape(self, image: dict[str, Any] | None, *titles: str, contains: bool = False) -> dict[str, Any] | None:
+        if not image:
+            return None
+        for shape in self._flatten_shapes(image.get("shapes")):
+            title = str(shape.get("title") or "").strip()
+            if not title:
+                continue
+            for target in titles:
+                if (contains and target in title) or (not contains and title == target):
+                    return shape
+        return None
+
+    def _scene_identity_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
+        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
+        return [shape for shape in shapes if bool(shape.get("isSceneIdentity"))]
+
+    def _popup_match_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
+        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
+        identity = [shape for shape in shapes if bool(shape.get("isSceneIdentity"))]
+        return identity or shapes[:4]
+
+    def _frame_size(self, image: dict[str, Any]) -> tuple[int, int]:
+        return max(1, int(image.get("width") or 900)), max(1, int(image.get("height") or 1600))
+
+    def _box(self, shape: dict[str, Any], image: dict[str, Any]) -> dict[str, Any]:
+        width, height = self._frame_size(image)
+        return {
+            "name": str(shape.get("title") or ""),
+            "x": float(shape.get("x") or 0) * width,
+            "y": float(shape.get("y") or 0) * height,
+            "w": max(1, float(shape.get("w") or 0) * width),
+            "h": max(1, float(shape.get("h") or 0) * height),
+        }
+
+    def _data_url(self, data: bytes) -> str:
+        return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+
+    def _set_tick_frame(self, ctx: dict[str, Any], frame_data_url: str | None) -> None:
+        if frame_data_url:
+            ctx["_tick_frame_data_url"] = frame_data_url
+
+    def _clear_tick_frame(self, ctx: dict[str, Any]) -> None:
+        ctx.pop("_tick_frame_data_url", None)
+
+    def _capture_frame(self, ctx: dict[str, Any]) -> str:
+        entry: UserDevice = ctx["entry"]
+        response = _screencap_game_window2_service() if entry.mode == "local" else _remote_game_window2_screencap(entry)
+        return self._data_url(bytes(response.body or b""))
+
+    def _screencap(self, ctx: dict[str, Any]) -> str:
+        frame_data_url = ctx.get("_tick_frame_data_url")
+        if isinstance(frame_data_url, str) and frame_data_url:
+            return frame_data_url
+        frame_data_url = self._capture_frame(ctx)
+        self._set_tick_frame(ctx, frame_data_url)
+        return frame_data_url
+
+    def _run_match(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        frame_data_url: str,
+        *,
+        scan: bool = False,
+        match_strategy: str = "auto",
+    ) -> dict[str, Any]:
+        filename = str(image.get("filename") or "")
+        if not filename:
+            raise RuntimeError(f"帧「{image.get('title') or image.get('id')}」缺少图片文件")
+        payload = {
+            "filename": filename,
+            "box": self._box(shape, image),
+            "scan": scan,
+            "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 5),
+            "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),
+            "tolerance_min_data_url": ((shape.get("toleranceRange") or {}).get("minDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
+            "tolerance_max_data_url": ((shape.get("toleranceRange") or {}).get("maxDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
+            "current_frame_data_url": frame_data_url,
+            "prefer_cached": False,
+            "match_strategy": match_strategy,
+        }
+        entry: UserDevice = ctx["entry"]
+        return _match_game_window2_service(payload) if entry.mode == "local" else _match_remote_game_window2(entry, payload)
+
+    def _shape_score(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        frame_data_url: str,
+        *,
+        match_strategy: str = "anchor_pixel",
+    ) -> float:
+        try:
+            return float(self._run_match(ctx, image, shape, frame_data_url, match_strategy=match_strategy).get("similarity") or 0)
+        except Exception as exc:
+            self._log("detail", f"匹配失败：{image.get('title')} / {shape.get('title')}：{exc}")
+            return 0
+
+    def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
+        return self._match_image_score(ctx, image, frame_data_url, self._scene_identity_shapes(image), log_label="场景标识")
+
+    def _popup_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
+        return self._match_image_score(ctx, image, frame_data_url, self._popup_match_shapes(image), log_label="弹窗标识")
+
+    def _match_image_score(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        frame_data_url: str,
+        shapes: list[dict[str, Any]],
+        *,
+        log_label: str,
+    ) -> float:
+        scores: list[float] = []
+        for shape in shapes:
+            score = self._shape_score(ctx, image, shape, frame_data_url)
+            if score < 50:
+                try:
+                    scan_score = float(self._run_match(ctx, image, shape, frame_data_url, scan=True, match_strategy="auto").get("similarity") or 0)
+                    score = max(score, scan_score)
+                except Exception as exc:
+                    self._log("detail", f"{log_label}扫描失败：{image.get('title')} / {shape.get('title')}：{exc}")
+            scores.append(score)
+        scores = [score for score in scores if score > 0]
+        if not scores:
+            return 0
+        scores.sort(reverse=True)
+        return sum(scores[: min(3, len(scores))]) / min(3, len(scores))
+
+    def _identify_scene(self, ctx: dict[str, Any], frame_data_url: str, keys: list[str] | None = None) -> tuple[str, float]:
+        priorities = {
+            "duplicated": 12,
+            "reward": 11,
+            "wanling_invite": 10,
+            "gift": 9,
+            "youli_result": 8,
+            "youli_explore": 7,
+            "youli": 6,
+            "daily_activity": 5,
+            "signup_reward": 5,
+            "signup": 5,
+            "daily": 4,
+            "settings": 3,
+            "world_menu": 2,
+            "hide_floating": 1,
+            "world": 0,
+        }
+        candidates: list[tuple[str, float]] = []
+        for key in keys or list(priorities):
+            image = self._image(ctx, key)
+            if image is None:
+                continue
+            score = self._scene_score(ctx, image, frame_data_url)
+            candidates.append((key, score))
+        candidates.sort(key=lambda item: (item[1], priorities.get(item[0], 0)), reverse=True)
+        return candidates[0] if candidates else ("", 0)
+
+    def _scene_matches(self, key: str, score: float) -> bool:
+        return bool(key) and score >= float(self.scene_thresholds.get(key, self.scene_threshold))
+
+    def _click_shape(self, ctx: dict[str, Any], image: dict[str, Any], shape: dict[str, Any], frame_data_url: str | None = None) -> None:
+        width, height = self._frame_size(image)
+        box = self._box(shape, image)
+        if frame_data_url and bool(shape.get("floating")):
+            result = self._run_match(ctx, image, shape, frame_data_url, scan=True)
+            fixed_box = result.get("fixed_box")
+            if isinstance(fixed_box, dict):
+                box = fixed_box
+        payload = {
+            "x": float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+            "y": float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
+            "mode": "screen",
+            "area": "client",
+            "rotate": "0",
+            "fixed_width": width,
+            "fixed_height": height,
+            "frame_width": width,
+            "frame_height": height,
+            "input_backend": "adb",
+        }
+        entry: UserDevice = ctx["entry"]
+        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
+        self._clear_tick_frame(ctx)
+
+    def _click_frame_point(self, ctx: dict[str, Any], image: dict[str, Any], x: float, y: float) -> None:
+        width, height = self._frame_size(image)
+        payload = {
+            "x": max(0.0, min(float(width - 1), float(x))),
+            "y": max(0.0, min(float(height - 1), float(y))),
+            "mode": "screen",
+            "area": "client",
+            "rotate": "0",
+            "fixed_width": width,
+            "fixed_height": height,
+            "frame_width": width,
+            "frame_height": height,
+            "input_backend": "adb",
+        }
+        entry: UserDevice = ctx["entry"]
+        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
+        self._clear_tick_frame(ctx)
+
+    def _drag_frame_point(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        duration_ms: int = 300,
+    ) -> None:
+        width, height = self._frame_size(image)
+        payload = {
+            "start_x": max(0.0, min(float(width - 1), float(start_x))),
+            "start_y": max(0.0, min(float(height - 1), float(start_y))),
+            "end_x": max(0.0, min(float(width - 1), float(end_x))),
+            "end_y": max(0.0, min(float(height - 1), float(end_y))),
+            "duration_ms": duration_ms,
+            "mode": "screen",
+            "area": "client",
+            "rotate": "0",
+            "fixed_width": width,
+            "fixed_height": height,
+            "frame_width": width,
+            "frame_height": height,
+            "input_backend": "adb",
+        }
+        entry: UserDevice = ctx["entry"]
+        (_drag_game_window2_service(payload) if entry.mode == "local" else _drag_remote_game_window2(entry, payload))
+        self._clear_tick_frame(ctx)
+
+    def _shape_center(self, shape: dict[str, Any], image: dict[str, Any], frame_data_url: str | None = None, ctx: dict[str, Any] | None = None) -> tuple[float, float]:
+        box = self._box(shape, image)
+        if ctx is not None and frame_data_url and bool(shape.get("floating")):
+            result = self._run_match(ctx, image, shape, frame_data_url, scan=True)
+            fixed_box = result.get("fixed_box")
+            if isinstance(fixed_box, dict):
+                box = fixed_box
+        return (
+            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+            float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
+        )
+
+    def _click_generic_back(self, ctx: dict[str, Any]) -> None:
+        image = self._image(ctx, "settings") or self._image(ctx, "world")
+        if not image:
+            return
+        width, height = self._frame_size(image)
+        self._click_frame_point(ctx, image, width * 0.085, height * 0.947)
+
+    def _keyevents(self, ctx: dict[str, Any], keys: list[str]) -> None:
+        payload = {"keys": keys}
+        entry: UserDevice = ctx["entry"]
+        (_keyevent_game_window2_service(payload) if entry.mode == "local" else _keyevent_remote_game_window2(entry, payload))
+        self._clear_tick_frame(ctx)
+
+    def _text(self, ctx: dict[str, Any], text: str) -> None:
+        payload = {"text": text}
+        entry: UserDevice = ctx["entry"]
+        (_text_game_window2_service(payload) if entry.mode == "local" else _text_remote_game_window2(entry, payload))
+        self._clear_tick_frame(ctx)
+
+    def _wait_for_scene(self, ctx: dict[str, Any], stop_event: threading.Event, keys: list[str], timeout: float, interval: float = 0.8) -> tuple[str, float, str]:
+        deadline = time.time() + timeout
+        last_key, last_score = "", 0.0
+        last_frame = ""
+        while time.time() < deadline:
+            self._raise_if_stopped(stop_event)
+            frame = self._screencap(ctx)
+            key, score = self._identify_scene(ctx, frame, keys)
+            last_key, last_score, last_frame = key, score, frame
+            if key in keys and self._scene_matches(key, score):
+                return key, score, frame
+            self._clear_tick_frame(ctx)
+            time.sleep(interval)
+        return last_key, last_score, last_frame
+
+    def _ocr_lines(self, frame_data_url: str) -> list[dict[str, Any]]:
+        try:
+            response = _recognize_game_window3_ocr_frame(frame_data_url)
+        except Exception as exc:
+            self._log("detail", f"OCR 失败：{exc}")
+            return []
+        return [line.model_dump() for line in response.lines]
+
+    def _ocr_text(self, lines: list[dict[str, Any]]) -> str:
+        return "".join(_sanitize_ocr_text(line.get("text")) for line in lines)
+
+    def _text_in_shape(self, lines: list[dict[str, Any]], image: dict[str, Any] | None, shape_title: str) -> str:
+        shape = self._find_shape(image, shape_title) if image else None
+        if not shape or not image:
+            return ""
+        box = self._box(shape, image)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        fragments: list[str] = []
+        for line in lines:
+            cx = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
+            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            if left <= cx <= right and top <= cy <= bottom:
+                fragments.append(_sanitize_ocr_text(line.get("text")))
+        return "".join(fragment for fragment in fragments if fragment)
+
+    def _ocr_centers_in_shape(
+        self,
+        lines: list[dict[str, Any]],
+        image: dict[str, Any] | None,
+        shape_title: str,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+    ) -> list[tuple[float, float, str]]:
+        shape = self._find_shape(image, shape_title) if image else None
+        if not shape or not image:
+            return []
+        box = self._box(shape, image)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        matches: list[tuple[float, float, str]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text:
+                continue
+            if include and not all(fragment in text for fragment in include):
+                continue
+            if exclude and any(fragment in text for fragment in exclude):
+                continue
+            cx = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
+            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            if left <= cx <= right and top <= cy <= bottom:
+                matches.append((cx, cy, text))
+        return sorted(matches, key=lambda item: (item[1], item[0]))
+
+    def _parse_fraction(self, text: str) -> tuple[int, int] | None:
+        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        match = re.search(r"(\d{1,5})/(\d{1,5})", normalized)
+        if not match:
+            return None
+        current = int(match.group(1))
+        total = int(match.group(2))
+        return (current, total) if total > 0 else None
+
+    def _current_scene(self, ctx: dict[str, Any], keys: list[str] | None = None) -> tuple[str, float, str]:
+        frame = self._screencap(ctx)
+        key, score = self._identify_scene(ctx, frame, keys)
+        if key and self._scene_matches(key, score):
+            with self._lock:
+                self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
+        return key, score, frame
+
+    def _current_scene_number(self, ctx: dict[str, Any], frame: str | None = None) -> tuple[int | None, float, str]:
+        frame_data_url = frame or self._screencap(ctx)
+        scene_id, score = self._identify_scene_number(ctx, frame_data_url)
+        if scene_id is not None:
+            with self._lock:
+                self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+        return scene_id, score, frame_data_url
+
+    def _wait_scene_jump_result(
+        self,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        tree: list[dict[str, Any]],
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        edge: dict[str, Any],
+        stop_event: threading.Event,
+    ):
+        shape = edge["shape"]
+        expected_ids = list(edge.get("target_ids") or [])
+        allows_self = source_scene_id in expected_ids
+        timeout_seconds = 30.0 if allows_self else 60.0
+        start = time.monotonic()
+        last_scene_id: int | None = None
+        last_score = 0.0
+        last_frame = ""
+        history: list[str] = []
+        left_source = False
+
+        while True:
+            self._raise_if_stopped(stop_event)
+            self._clear_tick_frame(ctx)
+            yield BehaviorTreeStatus.RUNNING
+            frame = self._screencap(ctx)
+            elapsed = time.monotonic() - start
+
+            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
+            if matched_expected is not None:
+                self._increment_scene_jump_target(shape, matched_expected)
+                self._write_asset_tree(asset_tree_path, tree)
+                ctx["images"] = self._index_images(tree)
+                self._log("info", f"场景跳转：#{source_scene_id} -> #{matched_expected}，{elapsed:.1f}s")
+                return matched_expected
+
+            scene_id, score = self._identify_scene_number(ctx, frame)
+            last_scene_id, last_score, last_frame = scene_id, score, frame
+            if scene_id is not None and scene_id != source_scene_id:
+                left_source = True
+            scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
+            history.append(f"{elapsed:.1f}s {scene_text} {score:.0f}% expected={expected_score:.0f}% left={left_source}")
+            with self._lock:
+                self._status.update({
+                    "phase": "go_scene_wait",
+                    "current_scene": scene_id,
+                    "message": f"跳转等待：#{source_scene_id} -> #{target_scene_id}，当前 {scene_text} {score:.0f}%",
+                    "updated_at": time.time(),
+                })
+
+            if elapsed < timeout_seconds:
+                continue
+
+            if allows_self and last_scene_id == source_scene_id:
+                self._increment_scene_jump_target(shape, source_scene_id)
+                self._write_asset_tree(asset_tree_path, tree)
+                ctx["images"] = self._index_images(tree)
+                self._log("info", f"场景跳转：#{source_scene_id} -> #{source_scene_id}，30s 保底确认自身")
+                return source_scene_id
+
+            if last_scene_id is None:
+                self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    last_frame or frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=source_scene_id,
+                    action_shape=shape,
+                    elapsed_seconds=elapsed,
+                    history=history,
+                )
+                raise RuntimeError("场景跳转后无法识别当前场景，已保存未知帧，等待人工标注后重试")
+
+            self._increment_scene_jump_target(shape, last_scene_id)
+            self._write_asset_tree(asset_tree_path, tree)
+            ctx["images"] = self._index_images(tree)
+            self._log("info", f"场景跳转：#{source_scene_id} -> #{last_scene_id}，超时后记录实际结果")
+            return last_scene_id
+
+    def _go_scene_task(
+        self,
+        ctx: dict[str, Any],
+        asset_tree_path: Path,
+        target_scene_id: int,
+        stop_event: threading.Event,
+    ):
+        tree = ctx.get("asset_tree")
+        if not isinstance(tree, list):
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx["asset_tree"] = tree
+            ctx["images"] = self._index_images(tree)
+
+        for _step_index in range(24):
+            self._raise_if_stopped(stop_event)
+            frame = self._screencap(ctx)
+            current_scene_id, score = self._identify_scene_number(ctx, frame)
+            if current_scene_id is None:
+                self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=None,
+                    action_shape=None,
+                    elapsed_seconds=0.0,
+                    history=[f"起点识别 unknown {score:.0f}%"],
+                )
+                raise RuntimeError("无法识别当前场景，已保存未知帧，等待人工标注后重试")
+            if current_scene_id == target_scene_id:
+                self._log("success", f"已在目标场景 #{target_scene_id}")
+                return "success"
+
+            route = self._find_scene_route(tree, current_scene_id, target_scene_id)
+            if route is None:
+                raise RuntimeError(f"没有从 #{current_scene_id} 到 #{target_scene_id} 的可规划场景跳转路径")
+            edge = route[0]
+            image = edge["image"]
+            shape = edge["shape"]
+            shape_title = str(shape.get("title") or "未命名")
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"场景移动：#{current_scene_id} -> #{target_scene_id}，点击 {shape_title}",
+                    phase="go_scene",
+                    current_scene=current_scene_id,
+                )
+            self._log("action", f"场景移动：#{current_scene_id} -> #{target_scene_id}，点击 {shape_title}")
+            self._click_shape(ctx, image, shape, frame)
+            actual_scene_id = yield from self._wait_scene_jump_result(
+                ctx,
+                asset_tree_path,
+                tree,
+                source_scene_id=current_scene_id,
+                target_scene_id=target_scene_id,
+                edge=edge,
+                stop_event=stop_event,
+            )
+            if actual_scene_id == target_scene_id:
+                self._log("success", f"到达目标场景 #{target_scene_id}")
+                return "success"
+            self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
+
+        raise RuntimeError(f"场景移动超过最大重规划步数，未到达 #{target_scene_id}")
+
+    def _execute_hide_floating_window(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        image = self._image(ctx, "hide_floating")
+        icon = self._find_shape(image, "图标")
+        target = self._find_shape(image, "隐藏区")
+        if not image or not icon or not target:
+            raise RuntimeError("#58 缺少「图标」或「隐藏区」标注")
+        frame = self._screencap(ctx)
+        score = self._shape_score(ctx, image, icon, frame)
+        if score < self.scene_thresholds.get("hide_floating", 55):
+            self._log("info", f"浮动窗未明显出现，图标匹配 {score:.0f}%")
+            return
+        start_x, start_y = self._shape_center(icon, image, frame, ctx)
+        end_x, end_y = self._shape_center(target, image)
+        with self._lock:
+            self._set_status_locked("running", f"隐藏浮动窗：图标匹配 {score:.0f}%", phase="hide_floating", current_scene=58)
+        self._drag_frame_point(ctx, image, start_x, start_y, end_x, end_y, duration_ms=350)
+        time.sleep(0.8)
+
+    def _align_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        for attempt in range(12):
+            frame = self._screencap(ctx)
+            key, score = self._identify_scene(ctx, frame, ["settings", "gift", "duplicated", "reward", "world_menu", "world"])
+            matched = key if self._scene_matches(key, score) else ""
+            self._log("detail", f"对齐 #49：当前 {matched or 'unknown'} {score:.0f}%")
+            if matched:
+                with self._lock:
+                    scene_id = self.scene_ids.get(matched)
+                    self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+            if matched == "settings":
+                return
+            if matched == "reward":
+                self._log("detail", "对齐 #49：检测到 #81 过渡奖励，等待回到设置页")
+                self._clear_tick_frame(ctx)
+                time.sleep(1.0)
+                continue
+            if matched in {"gift", "duplicated"}:
+                close_shape = self._find_shape(self._image(ctx, "gift"), "关闭窗口")
+                if close_shape is None:
+                    close_shape = self._find_shape(self._image(ctx, "gift"), "关闭", contains=True)
+                if close_shape:
+                    self._log("detail", f"对齐 #49：检测到 #{self.scene_ids.get(matched)}，点击关闭窗口")
+                    self._click_shape(ctx, self._image(ctx, "gift"), close_shape, frame)
+                    time.sleep(0.9)
+                    continue
+            if matched == "world_menu":
+                settings_shape = self._find_shape(self._image(ctx, "world_menu"), "设置")
+                if not settings_shape:
+                    raise RuntimeError("#35 缺少「设置」标注")
+                self._log("detail", "对齐 #49：确认 #35 后匹配点击浮动「设置」")
+                self._click_shape(ctx, self._image(ctx, "world_menu"), settings_shape, frame)
+                time.sleep(1.0)
+                continue
+            if matched == "world":
+                open_shape = self._find_shape(self._image(ctx, "world"), "打开下方菜单")
+                if not open_shape:
+                    raise RuntimeError("#34 缺少「打开下方菜单」标注")
+                self._log("detail", "对齐 #49：确认 #34 后点击打开下方菜单")
+                self._click_shape(ctx, self._image(ctx, "world"), open_shape, frame)
+                time.sleep(0.8)
+                continue
+            if attempt >= 3:
+                self._log("detail", "对齐 #49：未知场景，点击画面返回按钮兜底")
+                self._click_generic_back(ctx)
+                time.sleep(0.9)
+                continue
+            self._raise_if_stopped(stop_event)
+            self._clear_tick_frame(ctx)
+            time.sleep(0.8)
+        raise RuntimeError("无法对齐到 #49 设置页")
+
+    def _open_gift(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        frame = self._screencap(ctx)
+        image = self._image(ctx, "settings")
+        shape = self._find_shape(image, "兑换礼包")
+        if not image or not shape:
+            raise RuntimeError("#49 缺少「兑换礼包」标注")
+        box = self._box(shape, image)
+        _width, height = self._frame_size(image)
+        self._click_frame_point(
+            ctx,
+            image,
+            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+            float(box.get("y") or 0) - height * 0.02,
+        )
+        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["gift"], 6)
+        if key != "gift" or not self._scene_matches(key, score):
+            raise RuntimeError("点击兑换礼包后未进入 #78")
+
+    def _clear_and_type(self, ctx: dict[str, Any], code: str, stop_event: threading.Event) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "输入兑换码")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「输入兑换码」标注")
+        self._click_shape(ctx, image, shape)
+        time.sleep(0.25)
+        self._keyevents(ctx, ["KEYCODE_MOVE_END", *["KEYCODE_DEL" for _ in range(40)]])
+        time.sleep(0.25)
+        self._raise_if_stopped(stop_event)
+        self._text(ctx, code)
+        time.sleep(0.35)
+
+    def _submit_code(self, ctx: dict[str, Any], code: str) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "兑换")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「兑换」按钮标注")
+        self._click_shape(ctx, image, shape)
+        self._log("action", f"已提交：{code}")
+
+    def _settle_after_submit(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
+        deadline = time.time() + 16.0
+        plain_gift_since = 0.0
+        last_seen = ""
+        while time.time() < deadline:
+            self._raise_if_stopped(stop_event)
+            frame = self._screencap(ctx)
+            overlay = self._detect_overlay(ctx, frame)
+            if overlay == "duplicated":
+                if is_last:
+                    self._log("info", f"{code}：检测到 #82 已领取，关闭窗口")
+                    self._close_gift_to_settings(ctx, stop_event)
+                else:
+                    self._log("info", f"{code}：检测到 #82 已领取，继续下一个")
+                return
+            if overlay == "reward":
+                last_seen = "reward"
+                self._clear_tick_frame(ctx)
+                time.sleep(0.8)
+                continue
+
+            key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
+            if key == "settings" and self._scene_matches(key, score):
+                self._log("info", f"{code}：已回到 #49")
+                return
+            if key == "gift" and self._scene_matches(key, score):
+                last_seen = "gift"
+                if plain_gift_since <= 0:
+                    plain_gift_since = time.time()
+                if time.time() - plain_gift_since >= 4.0:
+                    if is_last:
+                        self._log("info", f"{code}：提交后停留 #78，关闭窗口")
+                        self._close_gift_to_settings(ctx, stop_event)
+                    else:
+                        self._log("info", f"{code}：提交后停留 #78，继续下一个")
+                    return
+            else:
+                plain_gift_since = 0.0
+                last_seen = key or last_seen
+            self._clear_tick_frame(ctx)
+            time.sleep(0.8)
+
+        if is_last:
+            self._log("info", f"{code}：等待结果超时，尝试对齐 #49")
+            self._align_settings(ctx, stop_event)
+        else:
+            self._log("info", f"{code}：等待结果超时，继续下一个（最后看到 {last_seen or 'unknown'}）")
+
+    def _detect_overlay(self, ctx: dict[str, Any], frame: str) -> str:
+        duplicated = self._image(ctx, "duplicated")
+        if duplicated:
+            for title in ("礼包已被领取", "已被领取"):
+                shape = self._find_shape(duplicated, title, contains=True)
+                if shape and self._shape_score(ctx, duplicated, shape, frame) >= self.overlay_threshold:
+                    return "duplicated"
+        reward = self._image(ctx, "reward")
+        if reward:
+            for title in ("恭喜获得", "点击继续", "奖品"):
+                shape = self._find_shape(reward, title, contains=True)
+                if shape and self._shape_score(ctx, reward, shape, frame) >= 65:
+                    return "reward"
+        return ""
+
+    def _process_code(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
+        frame = self._screencap(ctx)
+        key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
+        if key == "settings" and self._scene_matches(key, score):
+            with self._lock:
+                self._set_status_locked("running", f"进入 #78 填写：{code}", phase="open_gift", current_scene=49)
+            self._open_gift(ctx, stop_event)
+        elif key != "gift" or not self._scene_matches(key, score):
+            with self._lock:
+                self._set_status_locked("running", f"重新对齐后填写：{code}", phase="align_settings")
+            self._align_settings(ctx, stop_event)
+            self._open_gift(ctx, stop_event)
+        with self._lock:
+            self._set_status_locked("running", f"输入礼包码：{code}", phase="type_code", current_scene=78)
+        self._clear_and_type(ctx, code, stop_event)
+        with self._lock:
+            self._set_status_locked("running", f"提交礼包码：{code}", phase="submit_code")
+        self._submit_code(ctx, code)
+        with self._lock:
+            self._set_status_locked("running", f"等待兑换结果：{code}", phase="wait_result")
+        self._settle_after_submit(ctx, code, is_last, stop_event)
+
+    def _close_gift_to_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        image = self._image(ctx, "gift")
+        shape = self._find_shape(image, "关闭窗口")
+        if not image or not shape:
+            raise RuntimeError("#78 缺少「关闭窗口」标注")
+        self._click_shape(ctx, image, shape)
+        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["settings"], 2.5, interval=0.25)
+        if key == "settings" and self._scene_matches(key, score):
+            with self._lock:
+                self._status.update({"current_scene": 49, "updated_at": time.time()})
+
+    def _finish_from_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
+        image = self._image(ctx, "settings")
+        shape = self._find_shape(image, "回退")
+        if not image or not shape:
+            raise RuntimeError("#49 缺少「回退」标注")
+        with self._lock:
+            self._status.update({"current_scene": 49, "updated_at": time.time()})
+        self._click_shape(ctx, image, shape)
+        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["world", "world_menu", "settings"], 2.5, interval=0.25)
+        if key and self._scene_matches(key, score):
+            with self._lock:
+                self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
+
+
+_GAME_WINDOW3_RUNTIME_RUNNER = _GameWindow3RuntimeRunner()
+
+
+def _game_window3_runtime_dir() -> Path:
+    path = get_settings().data_dir / "fanxiu" / "game-window3" / "runtime"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _game_window3_runtime_state_path() -> Path:
+    return _game_window3_runtime_dir() / "runtime_state.json"
+
+
+def _game_window3_world_facts_path() -> Path:
+    return _game_window3_runtime_dir() / "world_facts.json"
+
+
+def _game_window3_scheduler_state_path() -> Path:
+    return _game_window3_runtime_dir() / "scheduler_tasks.json"
+
+
+def _game_window3_manual_job_state_path() -> Path:
+    return _game_window3_runtime_dir() / "manual_jobs.json"
+
+
+def _write_game_window3_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        for attempt in range(8):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if attempt >= 7:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _read_game_window3_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _initial_game_window3_world_facts() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "updated_at": time.time(),
+        "runtime": {
+            "entry_id": "",
+            "current_scene": None,
+            "current_task": "",
+            "current_task_id": "",
+            "task_type": "",
+            "phase": "",
+            "status": "idle",
+            "running": False,
+            "message": "",
+            "updated_at": None,
+        },
+        "guard": {
+            "enabled": False,
+            "running": False,
+            "entry_id": "",
+            "last_event": {},
+            "updated_at": None,
+        },
+        "discoveries": {
+            "scene": {},
+            "popup": {},
+            "occlusion": {},
+            "task": {},
+        },
+        "events": [],
+    }
+
+
+def _read_game_window3_world_facts() -> dict[str, Any]:
+    raw = _read_game_window3_json(_game_window3_world_facts_path(), None)
+    facts = _initial_game_window3_world_facts()
+    if not isinstance(raw, dict):
+        return facts
+    for key, value in raw.items():
+        if key in {"runtime", "guard", "discoveries"} and isinstance(value, dict):
+            target = facts[key]
+            if isinstance(target, dict):
+                for sub_key, sub_value in value.items():
+                    if sub_key == "discoveries":
+                        continue
+                    if isinstance(target.get(sub_key), dict) and isinstance(sub_value, dict):
+                        target[sub_key].update(sub_value)
+                    else:
+                        target[sub_key] = sub_value
+        elif key == "events" and isinstance(value, list):
+            facts["events"] = [item for item in value if isinstance(item, dict)][-200:]
+        elif key in facts:
+            facts[key] = value
+
+    # Backward compatibility for the previous flat mirror file.
+    if "current_scene" in raw and not facts["runtime"].get("current_scene"):
+        facts["runtime"].update({
+            "entry_id": raw.get("entry_id") or "",
+            "current_scene": raw.get("current_scene"),
+            "current_task": raw.get("current_task") or "",
+            "phase": raw.get("phase") or "",
+            "running": bool(raw.get("running")),
+        })
+    if "last_guard_event" in raw and isinstance(raw.get("last_guard_event"), dict):
+        facts["guard"]["last_event"] = raw.get("last_guard_event") or {}
+    return facts
+
+
+def _write_game_window3_world_facts(facts: dict[str, Any]) -> None:
+    facts["version"] = 1
+    facts["updated_at"] = time.time()
+    events = facts.get("events")
+    if isinstance(events, list):
+        facts["events"] = [item for item in events if isinstance(item, dict)][-200:]
+    _write_game_window3_json(_game_window3_world_facts_path(), facts)
+
+
+def _game_window3_fact_key(prefix: str, *parts: Any) -> str:
+    text = ":".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    return f"{prefix}:{text}" if text else prefix
+
+
+def _append_game_window3_world_fact_event(facts: dict[str, Any], kind: str, payload: dict[str, Any]) -> None:
+    event = {**payload, "time": time.time(), "kind": kind}
+    events = facts.setdefault("events", [])
+    if isinstance(events, list):
+        events.append(event)
+
+
+def _record_game_window3_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
+    task_id = str(task.get("id") or "").strip()
+    if not task_id:
+        return
+    facts = _read_game_window3_world_facts()
+    discoveries = facts.setdefault("discoveries", {})
+    if not isinstance(discoveries, dict):
+        discoveries = {}
+        facts["discoveries"] = discoveries
+    task_facts = discoveries.setdefault("task", {})
+    if not isinstance(task_facts, dict):
+        task_facts = {}
+        discoveries["task"] = task_facts
+    existing_fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+    task_facts[task_id] = {
+        **existing_fact,
+        "id": task_id,
+        "task_type": str(task.get("task_type") or ""),
+        "label": str(task.get("label") or task_id),
+        "source": str(task.get("source") or ""),
+        "schedule_kind": str(task.get("schedule_kind") or ""),
+        "last_result": result,
+        "last_run_at": task.get("last_run_at") if task.get("last_run_at") else None,
+        "next_time": task.get("next_time") if task.get("next_time") else existing_fact.get("next_time"),
+        "retry_after": task.get("retry_after") if task.get("retry_after") else existing_fact.get("retry_after"),
+        "updated_at": time.time(),
+    }
+    _append_game_window3_world_fact_event(
+        facts,
+        "scheduler_task",
+        {
+            "task_id": task_id,
+            "task_type": str(task.get("task_type") or ""),
+            "result": result,
+        },
+    )
+    _write_game_window3_world_facts(facts)
+
+
+def _persist_game_window3_runtime_status(status: dict[str, Any]) -> None:
+    _write_game_window3_json(_game_window3_runtime_state_path(), status)
+    now = time.time()
+    facts = _read_game_window3_world_facts()
+    runtime = facts.setdefault("runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+        facts["runtime"] = runtime
+    runtime.update({
+        "entry_id": status.get("entry_id") or "",
+        "current_scene": status.get("current_scene"),
+        "current_task": status.get("current_task") or "",
+        "current_task_id": status.get("current_task_id") or "",
+        "task_type": status.get("task_type") or "",
+        "phase": status.get("phase") or "",
+        "status": status.get("status") or ("running" if status.get("running") else "idle"),
+        "running": bool(status.get("running")),
+        "message": status.get("message") or "",
+        "updated_at": now,
+    })
+
+    guard = facts.setdefault("guard", {})
+    if not isinstance(guard, dict):
+        guard = {}
+        facts["guard"] = guard
+    last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
+    guard.update({
+        "enabled": bool(status.get("guard_enabled")),
+        "running": bool(status.get("guard_running")),
+        "entry_id": status.get("guard_entry_id") or "",
+        "last_event": last_guard_event,
+        "updated_at": now,
+    })
+
+    discoveries = facts.setdefault("discoveries", {})
+    if not isinstance(discoveries, dict):
+        discoveries = {}
+        facts["discoveries"] = discoveries
+    scene_id = status.get("current_scene")
+    if scene_id is not None:
+        scene_facts = discoveries.setdefault("scene", {})
+        if isinstance(scene_facts, dict):
+            scene_facts[str(scene_id)] = {
+                "scene": scene_id,
+                "entry_id": status.get("entry_id") or status.get("guard_entry_id") or "",
+                "task_type": status.get("task_type") or "",
+                "phase": status.get("phase") or "",
+                "message": status.get("message") or "",
+                "seen_at": now,
+            }
+    if last_guard_event:
+        guard_kind = str(last_guard_event.get("kind") or "popup")
+        bucket_key = "occlusion" if guard_kind == "occlusion" else "popup"
+        bucket = discoveries.setdefault(bucket_key, {})
+        if isinstance(bucket, dict):
+            fact_key = _game_window3_fact_key(
+                bucket_key,
+                last_guard_event.get("image"),
+                last_guard_event.get("title"),
+                last_guard_event.get("folder_path"),
+            )
+            bucket[fact_key] = {
+                **last_guard_event,
+                "updated_at": now,
+            }
+        _append_game_window3_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
+    _write_game_window3_world_facts(facts)
+
+
+def _read_game_window3_runtime_status() -> dict[str, Any]:
+    path = _game_window3_runtime_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_game_window3_runtime_live_empty(status: dict[str, Any]) -> bool:
+    return (
+        not bool(status.get("running"))
+        and str(status.get("status") or "idle") == "idle"
+        and not str(status.get("task_type") or "")
+        and not str(status.get("current_task") or "")
+        and not status.get("logs")
+        and not status.get("started_at")
+    )
+
+
+def _append_game_window3_runtime_log_once(status: dict[str, Any], kind: str, message: str) -> None:
+    logs = status.get("logs")
+    if not isinstance(logs, list):
+        logs = []
+    if not any(isinstance(item, dict) and item.get("kind") == kind and item.get("message") == message for item in logs):
+        logs.append({"time": datetime.now().strftime("%H:%M:%S"), "kind": kind, "message": message})
+    status["logs"] = logs[-500:]
+
+
+def _normalize_game_window3_runtime_guard_items(status: dict[str, Any]) -> None:
+    raw_items = status.get("guard_items")
+    if not isinstance(raw_items, dict):
+        raw_items = {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for guard_id, definition in _GAME_WINDOW3_RUNTIME_RUNNER.guard_definitions.items():
+        raw_item = raw_items.get(guard_id)
+        if not isinstance(raw_item, dict):
+            raw_item = {}
+        enabled = bool(raw_item.get("enabled"))
+        running = bool(raw_item.get("running"))
+        entry_id = str(raw_item.get("entry_id") or "")
+        message = str(raw_item.get("message") or definition.get("message") or "")
+        if guard_id == "close_popups":
+            enabled = bool(status.get("guard_enabled"))
+            running = bool(status.get("guard_running"))
+            entry_id = str(status.get("guard_entry_id") or "")
+            last_guard_event = status.get("last_guard_event")
+            if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
+                message = str(last_guard_event.get("title") or "")
+        normalized[guard_id] = {
+            **definition,
+            "enabled": enabled,
+            "running": running,
+            "entry_id": entry_id,
+            "updated_at": float(raw_item.get("updated_at") or 0),
+            "message": message,
+        }
+    status["guard_items"] = normalized
+
+
+def _game_window3_runtime_status() -> dict[str, Any]:
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.status()
+    persisted = _read_game_window3_runtime_status()
+    if persisted and _is_game_window3_runtime_live_empty(status):
+        status.update(persisted)
+        status["running"] = False
+        status["guard_enabled"] = False
+        status["guard_running"] = False
+        status["guard_entry_id"] = ""
+        status["updated_at"] = time.time()
+        if persisted.get("running"):
+            status["status"] = "stopped"
+            status["phase"] = "stopped"
+            status["message"] = "后端已重载，运行线程已结束"
+            status["finished_at"] = status.get("finished_at") or time.time()
+            _append_game_window3_runtime_log_once(status, "stop", "后端已重载，运行线程已结束")
+        elif persisted.get("guard_enabled") or persisted.get("guard_running"):
+            status["message"] = "后端已重载，守护已关闭"
+            _append_game_window3_runtime_log_once(status, "stop", "后端已重载，守护已关闭")
+    _normalize_game_window3_runtime_guard_items(status)
+    _persist_game_window3_runtime_status(status)
+    return status
+
+
+def _default_game_window3_scheduler_tasks() -> list[dict[str, Any]]:
+    def manual_task(
+        task_id: str,
+        task_type: str,
+        label: str,
+        *,
+        priority: int = 100,
+        interruptible: bool = True,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": label,
+            "source": "manual",
+            "schedule_kind": "manual",
+            "legacy_name": "",
+            "enabled": False,
+            "priority": priority,
+            "interruptible": interruptible,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": payload or {},
+            "checkpoint": None,
+        }
+
+    def legacy_dynamic_task(task_id: str, legacy_name: str, *, fallback_minutes: int | None = None) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": "legacy_dynamic_task",
+            "label": legacy_name.replace("_", " "),
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "dynamic",
+            "legacy_name": legacy_name,
+            "enabled": False,
+            "priority": 110,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": (fallback_minutes or 0) * 60,
+            "payload": {"legacy_name": legacy_name, **({"fallback_minutes": fallback_minutes} if fallback_minutes else {})},
+            "checkpoint": None,
+        }
+
+    def legacy_daily_task(
+        task_id: str,
+        legacy_name: str,
+        *schedule_times: str,
+        window: tuple[str, str] | None = None,
+        args: tuple[Any, ...] = (),
+    ) -> dict[str, Any]:
+        task_type = "legacy_daily_task"
+        payload: dict[str, Any] = {"legacy_name": legacy_name, "args": list(args)}
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": legacy_name.replace("_", " "),
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": legacy_name,
+            "enabled": False,
+            "priority": 120,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": list(schedule_times),
+            "window": list(window) if window else None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": payload,
+            "checkpoint": None,
+        }
+
+    return [
+        {
+            "id": "gift-code-weekly",
+            "task_type": "gift_code_redeem",
+            "label": "每周礼包码",
+            "source": "manual",
+            "schedule_kind": "manual",
+            "legacy_name": "",
+            "enabled": False,
+            "priority": 40,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": {"codes": []},
+            "checkpoint": None,
+        },
+        manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
+        manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗", priority=20),
+        legacy_dynamic_task("legacy-dynamic-daily-boss", "日常_首领"),
+        legacy_dynamic_task("legacy-dynamic-xianfu-visit", "仙府_寻访仙侣"),
+        legacy_dynamic_task("legacy-dynamic-xianfu-skill", "仙府_领悟绝技"),
+        legacy_dynamic_task("legacy-dynamic-xianlv-lilian", "日常_仙侣历练", fallback_minutes=60),
+        legacy_daily_task("legacy-daily-mozu", "日常_魔祖", "12:29", window=("12:29", "12:35")),
+        legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
+        legacy_daily_task("legacy-daily-zhenxie", "日常_镇邪", "20:59", window=("20:59", "21:05")),
+        legacy_daily_task("legacy-daily-youli", "日常_游历", "05:00", "00:00", args=("00:00", 3)),
+        legacy_daily_task("legacy-daily-assistant", "日常_助手", "05:00", "12:00", "18:00", "00:00"),
+        legacy_daily_task("legacy-daily-signup", "日常_报名", "05:00"),
+        legacy_daily_task("legacy-daily-vip", "日常_每日vip", "00:00"),
+        legacy_daily_task("legacy-daily-zongmen-redpacket", "日常_宗门红包", "05:00", "12:00", "06:00", "00:00"),
+        legacy_daily_task("legacy-daily-dongtian", "日常_洞天福地", "14:00", window=("10:00", "22:00")),
+        legacy_daily_task("legacy-daily-dongtian-clear", "日常_洞天福地_清行动力", "21:30", window=("21:30", "22:00")),
+        legacy_daily_task("legacy-daily-lingmai-clear", "日常_灵脉_清体力", "21:30", window=("21:30", "22:00")),
+        legacy_daily_task("legacy-daily-baiye", "日常_拜谒", "05:00", args=("魔道",)),
+        legacy_daily_task("legacy-daily-lingta", "日常_灵塔", "05:00"),
+        legacy_daily_task("legacy-daily-shuangxiu", "日常_双修", "05:00"),
+        legacy_daily_task("legacy-daily-xianyuan", "日常_挑战仙缘", "05:00"),
+        legacy_daily_task("legacy-daily-lingzu", "日常_灵祖", "05:00"),
+        legacy_daily_task("legacy-daily-jianling", "日常_剑灵", "05:00"),
+        legacy_daily_task("legacy-daily-yaowang", "日常_妖王来袭", "05:00"),
+        legacy_daily_task("legacy-daily-yaozu", "日常_妖族袭城", "05:00", args=(2, 0)),
+        legacy_daily_task("legacy-daily-dungeon", "日常_每日副本", "05:00", args=(6, 3)),
+        legacy_daily_task("legacy-daily-activity", "日常_活跃度", "05:00"),
+    ]
+
+
+def _normalize_game_window3_scheduler_task(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    task_id = str(item.get("id") or "").strip()
+    task_type = str(item.get("task_type") or "").strip()
+    if not task_id or not task_type:
+        return None
+    return {
+        "id": task_id,
+        "task_type": task_type,
+        "label": str(item.get("label") or task_id),
+        "source": str(item.get("source") or "manual"),
+        "schedule_kind": str(item.get("schedule_kind") or "manual"),
+        "legacy_name": str(item.get("legacy_name") or ""),
+        "enabled": bool(item.get("enabled")),
+        "priority": int(item.get("priority") if item.get("priority") is not None else 100),
+        "interruptible": bool(item.get("interruptible", True)),
+        "next_time": item.get("next_time") if item.get("next_time") else None,
+        "schedule_times": [str(value) for value in item.get("schedule_times", [])] if isinstance(item.get("schedule_times"), list) else [],
+        "window": [str(value) for value in item.get("window", [])[:2]] if isinstance(item.get("window"), list) else None,
+        "last_run_at": item.get("last_run_at") if item.get("last_run_at") else None,
+        "last_result": str(item.get("last_result") or ""),
+        "retry_after": item.get("retry_after") if item.get("retry_after") else None,
+        "cooldown_seconds": int(item.get("cooldown_seconds") or 0),
+        "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
+        "checkpoint": item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else None,
+    }
+
+
+def _read_game_window3_scheduler_tasks() -> list[dict[str, Any]]:
+    raw = _read_game_window3_json(_game_window3_scheduler_state_path(), None)
+    source = raw if isinstance(raw, list) else _default_game_window3_scheduler_tasks()
+    tasks = [task for item in source if (task := _normalize_game_window3_scheduler_task(item))]
+    if not tasks:
+        tasks = _default_game_window3_scheduler_tasks()
+    obsolete_task_ids = {"gift-code-real-test", "gift-code-test-real", "real-test-gift-code"}
+    obsolete_task_labels = {"真实测试礼包码"}
+    before_cleanup_count = len(tasks)
+    tasks = [
+        task
+        for task in tasks
+        if str(task.get("id") or "") not in obsolete_task_ids
+        and str(task.get("label") or "").strip() not in obsolete_task_labels
+    ]
+    changed = len(tasks) != before_cleanup_count
+    defaults_by_id = {
+        str(task.get("id") or ""): task
+        for task in _default_game_window3_scheduler_tasks()
+        if str(task.get("id") or "")
+    }
+    for task in tasks:
+        default_task = defaults_by_id.get(str(task.get("id") or ""))
+        if not default_task:
+            continue
+        previous_task_type = str(task.get("task_type") or "")
+        default_task_type = str(default_task.get("task_type") or "")
+        for key in ("task_type", "source", "schedule_kind", "legacy_name", "schedule_times", "window"):
+            task[key] = default_task.get(key)
+        default_payload = default_task.get("payload") if isinstance(default_task.get("payload"), dict) else {}
+        task_payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        definition_marker = "__scheduler_definition_task_type"
+        marker_matches = str(task_payload.get(definition_marker) or "") == default_task_type
+        is_migrated_legacy_task = (
+            str(default_task.get("source") or "") == "legacy_behavior_tree"
+            and default_task_type not in {"legacy_daily_task", "legacy_dynamic_task"}
+        )
+        if is_migrated_legacy_task and (
+            previous_task_type != default_task_type or not marker_matches
+        ):
+            for key in ("enabled", "priority", "interruptible", "cooldown_seconds"):
+                task[key] = default_task.get(key)
+        task["payload"] = {**default_payload, **task_payload}
+        task["payload"][definition_marker] = default_task_type
+    by_id = {str(task.get("id") or ""): task for task in tasks}
+    for default_task in defaults_by_id.values():
+        task_id = str(default_task.get("id") or "")
+        if task_id and task_id not in by_id:
+            tasks.append(_normalize_game_window3_scheduler_task(default_task) or default_task)
+            changed = True
+    if _sync_game_window3_scheduler_tasks_from_world_facts(tasks):
+        changed = True
+    for task in tasks:
+        if not _game_window3_task_supported(task) and task.get("enabled"):
+            task["enabled"] = False
+            task["last_result"] = "unsupported"
+            changed = True
+    if raw != tasks:
+        changed = True
+    if changed:
+        _write_game_window3_scheduler_tasks(tasks)
+    return tasks
+
+
+def _game_window3_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in task.items() if key not in {"supported"}}
+
+
+def _write_game_window3_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
+    _write_game_window3_json(
+        _game_window3_scheduler_state_path(),
+        [_game_window3_scheduler_task_state(task) for task in tasks],
+    )
+
+
+def _normalize_game_window3_manual_job(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    task_type = str(item.get("task_type") or "").strip()
+    if not task_type:
+        return None
+    created_at = float(item.get("created_at") or time.time())
+    task_id = str(item.get("id") or f"manual-{uuid.uuid4().hex}")
+    return {
+        "id": task_id,
+        "task_type": task_type,
+        "label": str(item.get("label") or task_type),
+        "group": "manual_job",
+        "status": str(item.get("status") or "pending"),
+        "priority": int(item.get("priority") if item.get("priority") is not None else 50),
+        "interruptible": bool(item.get("interruptible", True)),
+        "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
+        "created_at": created_at,
+        "updated_at": float(item.get("updated_at") or created_at),
+    }
+
+
+def _read_game_window3_manual_jobs() -> list[dict[str, Any]]:
+    raw = _read_game_window3_json(_game_window3_manual_job_state_path(), [])
+    source = raw if isinstance(raw, list) else []
+    return [
+        job
+        for item in source
+        if (job := _normalize_game_window3_manual_job(item))
+        and job.get("status") in {"pending", "running", "queued"}
+    ][-100:]
+
+
+def _write_game_window3_manual_jobs(jobs: list[dict[str, Any]]) -> None:
+    _write_game_window3_json(_game_window3_manual_job_state_path(), jobs[-100:])
+
+
+def _enqueue_game_window3_manual_job(task_type: str, payload: dict[str, Any] | None = None, *, label: str = "") -> dict[str, Any]:
+    now = time.time()
+    task_type = str(task_type or "detect_scene").strip() or "detect_scene"
+    job = {
+        "id": f"manual-{int(now * 1000)}-{uuid.uuid4().hex[:8]}",
+        "task_type": task_type,
+        "label": label or _GAME_WINDOW3_RUNTIME_RUNNER._runtime_task_label(task_type, payload or {}) or task_type,
+        "group": "manual_job",
+        "status": "pending",
+        "priority": 50,
+        "interruptible": True,
+        "payload": payload or {},
+        "created_at": now,
+        "updated_at": now,
+    }
+    jobs = _read_game_window3_manual_jobs()
+    jobs.append(job)
+    _write_game_window3_manual_jobs(jobs)
+    return job
+
+
+def _pop_next_game_window3_manual_job() -> dict[str, Any] | None:
+    jobs = _read_game_window3_manual_jobs()
+    pending = [job for job in jobs if str(job.get("status") or "") == "pending"]
+    if not pending:
+        return None
+    pending.sort(key=lambda item: (int(item.get("priority") or 50), float(item.get("created_at") or 0)))
+    selected = pending[0]
+    remaining = [job for job in jobs if str(job.get("id") or "") != str(selected.get("id") or "")]
+    _write_game_window3_manual_jobs(remaining)
+    return selected
+
+
+def _start_next_game_window3_manual_job_if_idle(entry: UserDevice, entry_id: str) -> dict[str, Any] | None:
+    if _GAME_WINDOW3_RUNTIME_RUNNER.status().get("running"):
+        return None
+    task = _pop_next_game_window3_manual_job()
+    if task is None:
+        return None
+    return _GAME_WINDOW3_RUNTIME_RUNNER.start_manual_runtime_task(
+        entry=entry,
+        entry_id=entry_id,
+        task=task,
+        asset_tree_path=_game_window3_asset_tree_path(entry_id),
+    )
+
+
+def _game_window3_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = fact.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and _parse_game_window3_task_time(text) is not None:
+            return text
+    return None
+
+
+def _sync_game_window3_scheduler_tasks_from_world_facts(tasks: list[dict[str, Any]]) -> bool:
+    facts = _read_game_window3_world_facts()
+    discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+    task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+    if not isinstance(task_facts, dict) or not task_facts:
+        return False
+    changed = False
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        fact = task_facts.get(task_id)
+        if not isinstance(fact, dict):
+            continue
+        task_changed = False
+        if str(task.get("schedule_kind") or "") == "dynamic":
+            next_time = _game_window3_fact_time_text(fact, "discovered_next_time", "next_time")
+            if next_time and task.get("next_time") != next_time:
+                task["next_time"] = next_time
+                task_changed = True
+                changed = True
+        retry_after = _game_window3_fact_time_text(fact, "discovered_retry_after", "retry_after")
+        if retry_after and task.get("retry_after") != retry_after:
+            task["retry_after"] = retry_after
+            task_changed = True
+            changed = True
+        if task_changed:
+            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
+            checkpoint["world_fact_synced_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
+            task["checkpoint"] = checkpoint
+    return changed
+
+
+def _parse_game_window3_task_time(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt).timestamp()
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_game_window3_daily_clock(value: Any) -> dt_time | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            pass
+    return None
+
+
+def _next_game_window3_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
+    if str(task.get("schedule_kind") or "") != "daily":
+        return None
+    clocks = [
+        clock
+        for value in task.get("schedule_times", [])
+        if (clock := _parse_game_window3_daily_clock(value)) is not None
+    ]
+    if not clocks:
+        return None
+    base = now or datetime.now()
+    candidates: list[datetime] = []
+    for day_offset in (0, 1):
+        current_date = base.date() + timedelta(days=day_offset)
+        for clock in clocks:
+            candidate = datetime.combine(current_date, clock)
+            if candidate > base:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    return min(candidates).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _game_window3_task_due(task: dict[str, Any]) -> bool:
+    if not task.get("enabled"):
+        return False
+    next_at = _parse_game_window3_task_time(task.get("next_time"))
+    retry_at = _parse_game_window3_task_time(task.get("retry_after"))
+    due_at = retry_at if retry_at is not None else next_at
+    return due_at is None or due_at <= time.time()
+
+
+def _game_window3_task_supported(task: dict[str, Any]) -> bool:
+    return str(task.get("task_type") or "") in {"gift_code_redeem", "go_scene", "hide_floating_window"}
+
+
+def _game_window3_scheduler_task_view(task: dict[str, Any]) -> dict[str, Any]:
+    return {**task, "supported": _game_window3_task_supported(task)}
+
+
+def _game_window3_scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
+    if not task.get("enabled"):
+        return "未启用"
+    retry_at = _parse_game_window3_task_time(task.get("retry_after"))
+    next_at = _parse_game_window3_task_time(task.get("next_time"))
+    if retry_at is not None and retry_at > time.time():
+        return f"等待重试：{task.get('retry_after')}"
+    if next_at is not None and next_at > time.time():
+        return f"未到时间：{task.get('next_time')}"
+    if not _game_window3_task_supported(task):
+        return "尚未纳入当前框架验收"
+    if due:
+        return "已到期"
+    return "可手动执行"
+
+
+def _game_window3_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
+    discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+    runtime = facts.get("runtime") if isinstance(facts.get("runtime"), dict) else {}
+    guard = facts.get("guard") if isinstance(facts.get("guard"), dict) else {}
+    events = facts.get("events") if isinstance(facts.get("events"), list) else []
+    return {
+        "updated_at": facts.get("updated_at"),
+        "current_scene": runtime.get("current_scene"),
+        "runtime_status": runtime.get("status") or "",
+        "runtime_task": runtime.get("current_task") or "",
+        "guard_enabled": bool(guard.get("enabled")),
+        "guard_running": bool(guard.get("running")),
+        "scene_count": len(discoveries.get("scene") or {}) if isinstance(discoveries.get("scene"), dict) else 0,
+        "popup_count": len(discoveries.get("popup") or {}) if isinstance(discoveries.get("popup"), dict) else 0,
+        "occlusion_count": len(discoveries.get("occlusion") or {}) if isinstance(discoveries.get("occlusion"), dict) else 0,
+        "task_fact_count": len(discoveries.get("task") or {}) if isinstance(discoveries.get("task"), dict) else 0,
+        "last_events": [item for item in events[-5:] if isinstance(item, dict)],
+    }
+
+
+def _build_game_window3_scheduler_plan() -> dict[str, Any]:
+    tasks = _read_game_window3_scheduler_tasks()
+    runtime = _GAME_WINDOW3_RUNTIME_RUNNER.status()
+    facts = _read_game_window3_world_facts()
+    discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+    task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) and isinstance(discoveries.get("task"), dict) else {}
+    runtime_running = bool(runtime.get("running"))
+    runtime_priority = int(runtime.get("priority") or 100)
+    plan_items: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        due = _game_window3_task_due(task)
+        task_type = str(task.get("task_type") or "")
+        unsupported = not _game_window3_task_supported(task)
+        runnable = bool(task.get("enabled")) and due and not unsupported
+        if runtime_running:
+            runnable = runnable and bool(runtime.get("interruptible", True)) and int(task.get("priority") or 100) < runtime_priority
+        item = {
+            "id": task_id,
+            "task_type": task_type,
+            "label": str(task.get("label") or task_id),
+            "supported": not unsupported,
+            "enabled": bool(task.get("enabled")),
+            "due": due,
+            "runnable": runnable,
+            "priority": int(task.get("priority") or 100),
+            "reason": _game_window3_scheduler_task_plan_reason(task, due),
+            "next_time": task.get("next_time") if task.get("next_time") else None,
+            "retry_after": task.get("retry_after") if task.get("retry_after") else None,
+            "last_result": str(task.get("last_result") or ""),
+            "fact": task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {},
+        }
+        plan_items.append(item)
+    plan_items.sort(key=lambda item: (not item["due"], item["priority"], item["id"]))
+    due_tasks = [item for item in plan_items if item["due"] and item["enabled"]]
+    runnable_tasks = [item for item in due_tasks if item["runnable"]]
+    if runtime_running:
+        next_action = "wait"
+        message = f"Runtime 正在运行：{runtime.get('current_task') or runtime.get('task_type') or '任务'}"
+        if runnable_tasks:
+            next_action = "preempt"
+            message = f"可抢占运行：{runnable_tasks[0]['label']}"
+    elif runnable_tasks:
+        next_action = "run_due"
+        message = f"建议执行到期任务：{runnable_tasks[0]['label']}"
+    elif due_tasks:
+        next_action = "blocked"
+        message = "存在到期任务，但当前均不可执行"
+    else:
+        next_action = "idle"
+        message = "没有到期任务"
+    return {
+        "next_action": next_action,
+        "message": message,
+        "runtime": {
+            "running": runtime_running,
+            "status": runtime.get("status") or "",
+            "current_task": runtime.get("current_task") or "",
+            "current_task_id": runtime.get("current_task_id") or "",
+            "task_type": runtime.get("task_type") or "",
+            "phase": runtime.get("phase") or "",
+            "current_scene": runtime.get("current_scene"),
+            "priority": runtime_priority,
+            "interruptible": bool(runtime.get("interruptible", True)),
+        },
+        "facts_summary": _game_window3_world_facts_summary(facts),
+        "due_tasks": due_tasks,
+        "tasks": plan_items,
+        "path": str(_game_window3_scheduler_state_path()),
+    }
+
+
+def _game_window3_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    return {
+        **payload,
+        "__scheduler_task_id": str(task.get("id") or ""),
+        "__scheduler_priority": int(task.get("priority") or 100),
+        "__scheduler_interruptible": bool(task.get("interruptible", True)),
+    }
+
+
+def _game_window3_scheduler_run_now_task(
+    tasks: list[dict[str, Any]],
+    task_id: str,
+    payload_override: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    task = next((item for item in tasks if item.get("id") == task_id), None)
+    if task is None:
+        return None
+    override = payload_override if isinstance(payload_override, dict) else {}
+    if not override:
+        return task
+    original_payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    return {**task, "payload": {**original_payload, **override}}
+
+
+def _prepare_game_window3_runtime_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.status()
+    if not status.get("running"):
+        return None
+    priority = int(task.get("priority") or 100)
+    task_id = str(task.get("id") or "")
+    if _GAME_WINDOW3_RUNTIME_RUNNER.can_preempt(priority):
+        current_task_id = str(status.get("current_task_id") or "")
+        changed = False
+        if current_task_id:
+            for item in tasks:
+                if str(item.get("id") or "") == current_task_id:
+                    item["last_result"] = "cancelled"
+                    _record_game_window3_scheduler_task_fact(item, "cancelled")
+                    changed = True
+                    break
+        if changed:
+            _write_game_window3_scheduler_tasks(tasks)
+        _GAME_WINDOW3_RUNTIME_RUNNER.stop(str(status.get("entry_id") or ""))
+        if _GAME_WINDOW3_RUNTIME_RUNNER.wait_until_idle(6.0):
+            return None
+        message = f"高优先级任务 {task_id or task.get('label') or task.get('task_type')} 已请求抢占，等待当前任务停止"
+        task["last_result"] = "queued"
+        _record_game_window3_scheduler_task_fact(task, "queued")
+        _write_game_window3_scheduler_tasks(tasks)
+        status.update({"message": message, "updated_at": time.time()})
+        _persist_game_window3_runtime_status(status)
+        return status
+
+    task["last_result"] = "queued"
+    _record_game_window3_scheduler_task_fact(task, "queued")
+    _write_game_window3_scheduler_tasks(tasks)
+    message = f"当前任务不可抢占，{task_id or task.get('label') or task.get('task_type')} 已排队"
+    status.update({"message": message, "updated_at": time.time()})
+    _persist_game_window3_runtime_status(status)
+    return status
+
+
+def _start_game_window3_runtime_task(entry: UserDevice, req: FanxiuGameWindow3RuntimeTaskRequest) -> dict[str, Any]:
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.start_runtime_task(
+        entry=entry,
+        entry_id=req.entry_id,
+        task_type=req.task_type,
+        payload=req.payload,
+        asset_tree_path=_game_window3_asset_tree_path(req.entry_id),
+    )
+    _persist_game_window3_runtime_status(status)
+    return status
 
 
 def _serialize_fanxiu_pseudocode_card(card: FanxiuPseudoCodeCard) -> dict[str, Any]:
@@ -6764,10 +10155,7 @@ def save_fanxiu_game_window3_asset_tree(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
     path = _game_window3_asset_tree_path(req.entry_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(req.tree, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    _write_game_window3_json(path, req.tree)
     return {
         "ok": True,
         "entry_id": req.entry_id,
@@ -6949,52 +10337,263 @@ def get_fanxiu_game_window2_match_image_service(
     return _match_game_window2_service_image(filename)
 
 
-@status_router.get("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
-def get_fanxiu_game_window3_stepper_logs(
-    limit: int = Query(500, ge=1, le=5000),
+@status_router.get("/game-window3/runtime/status", response_model=FanxiuGameWindow3RuntimeStatus)
+def get_fanxiu_game_window3_runtime_status(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    path = _game_window3_stepper_log_path()
-    return FanxiuGameWindow3StepperLogResponse(
-        entries=_read_game_window3_stepper_log_entries(limit),
-        path=str(path),
+    return FanxiuGameWindow3RuntimeStatus.model_validate(_game_window3_runtime_status())
+
+
+@status_router.post("/game-window3/runtime/task/start", response_model=FanxiuGameWindow3RuntimeStatus)
+def start_fanxiu_game_window3_runtime_task(
+    req: FanxiuGameWindow3RuntimeTaskRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(_start_game_window3_runtime_task(entry, req))
+
+
+@status_router.post("/game-window3/runtime/task/stop", response_model=FanxiuGameWindow3RuntimeStatus)
+def stop_fanxiu_game_window3_runtime_task(
+    req: FanxiuGameWindow3RuntimeStopRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.stop(req.entry_id or "")
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(status)
+
+
+@status_router.post("/game-window3/runtime/guard/set", response_model=FanxiuGameWindow3RuntimeStatus)
+def set_fanxiu_game_window3_runtime_guard(
+    req: FanxiuGameWindow3RuntimeGuardRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.set_guard(
+        entry=entry,
+        entry_id=req.entry_id,
+        guard_id=req.guard_id,
+        enabled=req.enabled,
+        interval_seconds=req.interval_seconds,
+        asset_tree_path=_game_window3_asset_tree_path(req.entry_id),
+    )
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(status)
+
+
+@status_router.post("/game-window3/runtime/task/tick", response_model=FanxiuGameWindow3RuntimeStatus)
+def tick_fanxiu_game_window3_runtime_task(
+    req: FanxiuGameWindow3RuntimeTaskRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    task_type = req.task_type or "detect_scene"
+    if task_type == "manual_tick":
+        task_type = "detect_scene"
+    job = _enqueue_game_window3_manual_job(task_type, req.payload, label="单步识别" if task_type == "detect_scene" else "")
+    started_status = _start_next_game_window3_manual_job_if_idle(entry, req.entry_id)
+    if started_status is not None:
+        status = started_status
+    else:
+        status = _GAME_WINDOW3_RUNTIME_RUNNER.status()
+        status.update({
+            "entry_id": req.entry_id,
+            "phase": "manual_job_queued",
+            "message": f"手动作业已排队：{job.get('label') or job.get('task_type')}",
+            "updated_at": time.time(),
+        })
+        logs = list(status.get("logs") or [])
+        logs.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "kind": "info",
+            "scope": "manual_job",
+            "item_id": "manual_job",
+            "message": f"[{job.get('id')}] {status['message']}",
+        })
+        status["logs"] = logs[-500:]
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(status)
+
+
+@status_router.get("/game-window3/runtime/logs", response_model=FanxiuGameWindow3RuntimeLogResponse)
+def get_fanxiu_game_window3_runtime_logs(
+    limit: int = Query(500, ge=1, le=2000),
+    scope: str = Query("", max_length=64),
+    item_id: str = Query("", max_length=128),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    status = _game_window3_runtime_status()
+    log_items = [item for item in (status.get("logs") or []) if isinstance(item, dict)]
+    scope = str(scope or "").strip()
+    item_id = str(item_id or "").strip()
+    if scope:
+        log_items = [item for item in log_items if str(item.get("scope") or "") == scope]
+    if item_id:
+        log_items = [item for item in log_items if str(item.get("item_id") or "") == item_id]
+    entries = [
+        FanxiuGameWindow3RuntimeLogEntry(
+            id=f"runtime-{index}",
+            time=str(item.get("time") or ""),
+            kind=str(item.get("kind") or ""),
+            scope=str(item.get("scope") or ""),
+            item_id=str(item.get("item_id") or ""),
+            message=str(item.get("message") or ""),
+            ts="",
+        )
+        for index, item in enumerate(log_items[-limit:])
+    ]
+    return FanxiuGameWindow3RuntimeLogResponse(entries=entries, path=str(_game_window3_runtime_state_path()))
+
+
+@status_router.get("/game-window3/runtime/world-facts", response_model=FanxiuGameWindow3WorldFactsResponse)
+def get_fanxiu_game_window3_world_facts(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return FanxiuGameWindow3WorldFactsResponse(
+        facts=_read_game_window3_world_facts(),
+        path=str(_game_window3_world_facts_path()),
     )
 
 
-@status_router.post("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
-def append_fanxiu_game_window3_stepper_log(
-    req: FanxiuGameWindow3StepperLogAppendRequest,
+@status_router.delete("/game-window3/runtime/logs", response_model=FanxiuGameWindow3RuntimeLogResponse)
+def clear_fanxiu_game_window3_runtime_logs(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    path = _game_window3_stepper_log_path()
-    entry = req.entry.model_dump()
-    if not entry.get("ts"):
-        entry["ts"] = datetime.now().isoformat(timespec="seconds")
-    with _GAME_WINDOW3_STEPPER_LOG_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
-    return FanxiuGameWindow3StepperLogResponse(
-        entries=_read_game_window3_stepper_log_entries(500),
-        path=str(path),
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.status()
+    status["logs"] = []
+    _GAME_WINDOW3_RUNTIME_RUNNER.replace_logs([])
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeLogResponse(entries=[], path=str(_game_window3_runtime_state_path()))
+
+
+@status_router.get("/game-window3/scheduler/tasks", response_model=FanxiuGameWindow3SchedulerTasksResponse)
+def get_fanxiu_game_window3_scheduler_tasks(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return FanxiuGameWindow3SchedulerTasksResponse(
+        tasks=[
+            FanxiuGameWindow3SchedulerTaskItem.model_validate(_game_window3_scheduler_task_view(item))
+            for item in _read_game_window3_scheduler_tasks()
+        ],
+        path=str(_game_window3_scheduler_state_path()),
     )
 
 
-@status_router.delete("/game-window3/stepper/logs", response_model=FanxiuGameWindow3StepperLogResponse)
-def clear_fanxiu_game_window3_stepper_logs(
+@status_router.get("/game-window3/scheduler/plan", response_model=FanxiuGameWindow3SchedulerPlanResponse)
+def get_fanxiu_game_window3_scheduler_plan(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    path = _game_window3_stepper_log_path()
-    with _GAME_WINDOW3_STEPPER_LOG_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
-    return FanxiuGameWindow3StepperLogResponse(entries=[], path=str(path))
+    return FanxiuGameWindow3SchedulerPlanResponse.model_validate(_build_game_window3_scheduler_plan())
+
+
+@status_router.put("/game-window3/scheduler/tasks", response_model=FanxiuGameWindow3SchedulerTasksResponse)
+def put_fanxiu_game_window3_scheduler_tasks(
+    tasks: list[FanxiuGameWindow3SchedulerTaskItem],
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    payload = [item.model_dump() for item in tasks]
+    _write_game_window3_scheduler_tasks(payload)
+    return FanxiuGameWindow3SchedulerTasksResponse(
+        tasks=[
+            FanxiuGameWindow3SchedulerTaskItem.model_validate(_game_window3_scheduler_task_view(item))
+            for item in _read_game_window3_scheduler_tasks()
+        ],
+        path=str(_game_window3_scheduler_state_path()),
+    )
+
+
+@status_router.post("/game-window3/scheduler/task/run-now", response_model=FanxiuGameWindow3RuntimeStatus)
+def run_now_fanxiu_game_window3_scheduler_task(
+    req: FanxiuGameWindow3SchedulerRunNowRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    manual_status = _start_next_game_window3_manual_job_if_idle(entry, req.entry_id)
+    if manual_status is not None:
+        return FanxiuGameWindow3RuntimeStatus.model_validate(manual_status)
+    tasks = _read_game_window3_scheduler_tasks()
+    state_task = next((item for item in tasks if item.get("id") == req.task_id), None)
+    run_task = _game_window3_scheduler_run_now_task(tasks, req.task_id, req.payload)
+    if state_task is None or run_task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if not _game_window3_task_supported(run_task):
+        raise HTTPException(status_code=400, detail="任务尚未纳入当前框架验收")
+    blocked_status = _prepare_game_window3_runtime_for_scheduler_task(state_task, tasks)
+    if blocked_status is not None:
+        return FanxiuGameWindow3RuntimeStatus.model_validate(blocked_status)
+    state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state_task["last_result"] = "running"
+    _write_game_window3_scheduler_tasks(tasks)
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.start_scheduler_tasks(
+        entry=entry,
+        entry_id=req.entry_id,
+        tasks=[run_task],
+        all_tasks=tasks,
+        asset_tree_path=_game_window3_asset_tree_path(req.entry_id),
+        run_label=f"手动任务：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
+    )
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(status)
+
+
+@status_router.post("/game-window3/scheduler/run-due", response_model=FanxiuGameWindow3RuntimeStatus)
+def run_due_fanxiu_game_window3_scheduler_tasks(
+    req: FanxiuGameWindow3SchedulerRunDueRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    manual_status = _start_next_game_window3_manual_job_if_idle(entry, req.entry_id)
+    if manual_status is not None:
+        return FanxiuGameWindow3RuntimeStatus.model_validate(manual_status)
+    tasks = _read_game_window3_scheduler_tasks()
+    due_tasks = sorted(
+        [item for item in tasks if _game_window3_task_due(item) and _game_window3_task_supported(item)],
+        key=lambda item: int(item.get("priority") or 100),
+    )
+    if not due_tasks:
+        status = _game_window3_runtime_status()
+        status.update({"message": "没有可执行的到期任务", "updated_at": time.time()})
+        _persist_game_window3_runtime_status(status)
+        return FanxiuGameWindow3RuntimeStatus.model_validate(status)
+    blocked_status = _prepare_game_window3_runtime_for_scheduler_task(due_tasks[0], tasks)
+    if blocked_status is not None:
+        return FanxiuGameWindow3RuntimeStatus.model_validate(blocked_status)
+    status = _GAME_WINDOW3_RUNTIME_RUNNER.start_scheduler_tasks(
+        entry=entry,
+        entry_id=req.entry_id,
+        tasks=due_tasks,
+        all_tasks=tasks,
+        asset_tree_path=_game_window3_asset_tree_path(req.entry_id),
+        run_label="执行全部到期任务",
+    )
+    _persist_game_window3_runtime_status(status)
+    return FanxiuGameWindow3RuntimeStatus.model_validate(status)
 
 
 @status_router.post("/game-window3/ocr-frame", response_model=FanxiuGameWindow3OcrFrameResponse)

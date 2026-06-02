@@ -86,9 +86,8 @@ const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
 const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
 const FANXIU_LOTTERY_MODEL_PATH = requirePageMenuPath('FanxiuLotteryModel');
 const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
-const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
-const FANXIU_GAME_WINDOW_PATH = requirePageMenuPath('FanxiuGameWindow');
-const FANXIU_GAME_WINDOW3_PATH = requirePageMenuPath('FanxiuGameWindow3');
+const FANXIU_DATA_ANNOTATION_PATH = requirePageMenuPath('FanxiuDataAnnotation');
+const FANXIU_DATA_ANNOTATION_RUNTIME_PATH = requirePageMenuPath('FanxiuDataAnnotationRuntime');
 const FANXIU_PACKET_CAPTURE_PATH = requirePageMenuPath('FanxiuPacketCapture');
 const FANXIU_WIKI_PATH = requirePageMenuPath('FanxiuWiki');
 const FANXIU_ACTIVITY_LIST_PATH = requirePageMenuPath('FanxiuActivityList');
@@ -161,9 +160,8 @@ const FANXIU_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(FANXIU_CALCULAT
 const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC_PATH);
 const FANXIU_LOTTERY_MODEL_TITLE = requirePermissionTitleByMenuPath(FANXIU_LOTTERY_MODEL_PATH);
 const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
-const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_STATUS_PATH);
-const FANXIU_GAME_WINDOW_TITLE = requirePermissionTitleByMenuPath(FANXIU_GAME_WINDOW_PATH);
-const FANXIU_GAME_WINDOW3_TITLE = requirePermissionTitleByMenuPath(FANXIU_GAME_WINDOW3_PATH);
+const FANXIU_DATA_ANNOTATION_TITLE = requirePermissionTitleByMenuPath(FANXIU_DATA_ANNOTATION_PATH);
+const FANXIU_DATA_ANNOTATION_RUNTIME_TITLE = requirePermissionTitleByMenuPath(FANXIU_DATA_ANNOTATION_RUNTIME_PATH);
 const FANXIU_PACKET_CAPTURE_TITLE = requirePermissionTitleByMenuPath(FANXIU_PACKET_CAPTURE_PATH);
 const FANXIU_WIKI_TITLE = requirePermissionTitleByMenuPath(FANXIU_WIKI_PATH);
 const FANXIU_ACTIVITY_LIST_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_PATH);
@@ -391,9 +389,7 @@ const attendanceMenuVisible = computed(() =>
 const fanxiuMenuVisible = computed(() =>
   canAccessFeature('fanxiu')
   && [
-    FANXIU_TASK_STATUS_PATH,
-    FANXIU_GAME_WINDOW_PATH,
-    FANXIU_GAME_WINDOW3_PATH,
+    FANXIU_DATA_ANNOTATION_PATH,
     FANXIU_PACKET_CAPTURE_PATH,
     FANXIU_WIKI_PATH,
     FANXIU_ACTIVITY_LIST_PATH,
@@ -833,9 +829,8 @@ watch(
               <template #title>
                 <span>{{ FANXIU_TITLE }}</span>
               </template>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_GAME_WINDOW_PATH)" :index="FANXIU_GAME_WINDOW_PATH">{{ FANXIU_GAME_WINDOW_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_GAME_WINDOW3_PATH)" :index="FANXIU_GAME_WINDOW3_PATH">{{ FANXIU_GAME_WINDOW3_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_DATA_ANNOTATION_PATH)" :index="FANXIU_DATA_ANNOTATION_PATH">{{ FANXIU_DATA_ANNOTATION_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_DATA_ANNOTATION_RUNTIME_PATH)" :index="FANXIU_DATA_ANNOTATION_RUNTIME_PATH">{{ FANXIU_DATA_ANNOTATION_RUNTIME_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_PACKET_CAPTURE_PATH)" :index="FANXIU_PACKET_CAPTURE_PATH">{{ FANXIU_PACKET_CAPTURE_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_WIKI_PATH)" :index="FANXIU_WIKI_PATH">{{ FANXIU_WIKI_TITLE }}</el-menu-item>
               <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">

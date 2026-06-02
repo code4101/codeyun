@@ -293,47 +293,25 @@
       "default_anonymous_allow": true
     },
     {
-      "key": "fanxiu.task-status",
-      "title": "任务状态",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 5,
-      "route_paths": ["/fanxiu/task-status"],
-      "menu_paths": ["/fanxiu/task-status"],
-      "api_scopes": ["fanxiu.task-status"],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "fanxiu.game-window",
-      "title": "游戏窗口",
+      "key": "fanxiu.data-annotation",
+      "title": "数据标注",
       "node_type": "feature",
       "parent_key": "fanxiu",
       "sort_order": 6,
-      "route_paths": ["/fanxiu/game-window"],
-      "menu_paths": ["/fanxiu/game-window"],
-      "api_scopes": ["fanxiu.task-status"],
+      "route_paths": ["/fanxiu/data-annotation"],
+      "menu_paths": ["/fanxiu/data-annotation"],
+      "api_scopes": ["fanxiu.data-annotation"],
       "default_anonymous_allow": false
     },
     {
-      "key": "fanxiu.game-window2",
-      "title": "游戏窗口",
+      "key": "fanxiu.behavior-tree",
+      "title": "行为树",
       "node_type": "feature",
       "parent_key": "fanxiu",
-      "sort_order": 6,
-      "route_paths": ["/fanxiu/game-window2"],
-      "menu_paths": [],
-      "api_scopes": ["fanxiu.task-status"],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "fanxiu.game-window3",
-      "title": "游戏窗口3",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 6,
-      "route_paths": ["/fanxiu/game-window3"],
-      "menu_paths": ["/fanxiu/game-window3"],
-      "api_scopes": ["fanxiu.task-status"],
+      "sort_order": 7,
+      "route_paths": ["/fanxiu/data-annotation/runtime", "/fanxiu/data-annotation/runtime/logs"],
+      "menu_paths": ["/fanxiu/data-annotation/runtime"],
+      "api_scopes": ["fanxiu.data-annotation"],
       "default_anonymous_allow": false
     },
     {

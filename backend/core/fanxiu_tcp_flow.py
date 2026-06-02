@@ -1690,7 +1690,27 @@ def decode_fanxiu_tcp_pcap(
             data_dir=data_dir,
             preserve_paths={pcap_path, record_dir, stored_pcap, output},
         )
+        _sync_fanxiu_packet_runtime_insights_after_decode(result, data_dir=data_dir, export_root=export_root)
     return result
+
+
+def _sync_fanxiu_packet_runtime_insights_after_decode(
+    result: dict[str, Any],
+    *,
+    data_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> None:
+    try:
+        from backend.core.fanxiu_packet_insights import sync_fanxiu_packet_runtime_insights_for_decode_result
+
+        sync_fanxiu_packet_runtime_insights_for_decode_result(
+            result,
+            data_dir=data_dir,
+            export_root=export_root,
+            force=False,
+        )
+    except Exception:
+        return
 
 
 def list_fanxiu_tcp_records(
@@ -1949,6 +1969,9 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
                 "pcap_name": record.get("pcap_name") or "",
                 "created_at": record.get("created_at") or "",
                 "source_kind": "record",
+                "source_pcap": record.get("source_pcap") or "",
+                "stored_pcap": record.get("stored_pcap") or "",
+                "stream": int(record.get("stream") or 0),
             }
         )
 
@@ -1971,6 +1994,9 @@ def _iter_fanxiu_tcp_decoded_sources(data_dir: str | Path | None = None) -> list
                     "pcap_name": Path(str(data.get("pcap") or decoded_path.name)).name,
                     "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
                     "source_kind": "live",
+                    "source_pcap": str(data.get("pcap") or ""),
+                    "stored_pcap": "",
+                    "stream": int(data.get("stream") or 0),
                 }
             )
     return sources
@@ -2018,6 +2044,10 @@ def _build_fanxiu_tcp_entries(data_dir: str, export_root: str | Path | None = No
                     "record_id": record_id,
                     "pcap_name": pcap_name,
                     "source_kind": source.get("source_kind") or "",
+                    "source_path": str(decoded_path),
+                    "source_pcap": source.get("source_pcap") or "",
+                    "stored_pcap": source.get("stored_pcap") or "",
+                    "stream": int(source.get("stream") or 0),
                     "direction": frame.get("direction") or "",
                     "name": name,
                     "category": protocol_category["category"],

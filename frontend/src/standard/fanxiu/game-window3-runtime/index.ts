@@ -1,9 +1,11 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 const page: AppPageDefinition = {
-  routeName: 'FanxiuDataAnnotation',
-  canonicalPath: '/fanxiu/data-annotation',
+  routeName: 'FanxiuDataAnnotationRuntime',
+  canonicalPath: '/fanxiu/data-annotation/runtime',
   component: () => import('./page.vue'),
+  permissionKey: 'fanxiu.behavior-tree',
+  menuPath: '/fanxiu/data-annotation/runtime',
   requiresAuth: true,
 }
 

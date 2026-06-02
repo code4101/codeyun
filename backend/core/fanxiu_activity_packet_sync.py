@@ -277,6 +277,28 @@ def _extract_rank_snapshot(entry: dict[str, Any], server_names: dict[int, str]) 
     if not items:
         return None
     items.sort(key=lambda item: int(item.get("rank") or 10**9))
+    personal_item = None
+    self_rank_vo = vo.get("selfRankVO")
+    if isinstance(self_rank_vo, dict):
+        parent = _rank_super(self_rank_vo)
+        rank = _as_int(parent.get("rank"))
+        if rank is not None:
+            personal_item = {
+                "rank": rank,
+                "id": parent.get("id"),
+                "name": parent.get("name") or self_rank_vo.get("name") or "",
+                "key": parent.get("key") or "",
+                "index": parent.get("index"),
+                "server_id": self_rank_vo.get("serverId"),
+                "server_name": server_names.get(_as_int(self_rank_vo.get("serverId")) or -1, ""),
+                "score": self_rank_vo.get("score"),
+                "ext_score": self_rank_vo.get("extScore"),
+                "ext_score2": self_rank_vo.get("extScore2"),
+                "club_name": self_rank_vo.get("clubName") or "",
+                "cross_union_name": self_rank_vo.get("crossUnionName") or "",
+                "camp_name": self_rank_vo.get("campName") or "",
+                "text": _rank_entry_text(activity_id, self_rank_vo, server_names),
+            }
     return {
         "activity_id": activity_id,
         "id": vo.get("id"),
@@ -287,6 +309,7 @@ def _extract_rank_snapshot(entry: dict[str, Any], server_names: dict[int, str]) 
         "rank_vo_type": rank_vos.get("_type") if isinstance(rank_vos, dict) else "",
         "rank_vo_type_id": rank_vos.get("_type_id") if isinstance(rank_vos, dict) else "",
         "items": items,
+        "personal_item": personal_item,
     }
 
 
@@ -649,6 +672,14 @@ def get_fanxiu_activity_packet_schedule(
             ),
             reverse=True,
         )
+        open_server_source = next(
+            (
+                snapshot
+                for snapshot in [latest, *snapshots]
+                if snapshot.get("openServerTime") not in (None, "")
+            ),
+            {},
+        )
         return {
             "available": bool(items),
             "source_kind": "activity_packet_sync+latest",
@@ -659,8 +690,8 @@ def get_fanxiu_activity_packet_schedule(
             "server_host": "",
             "protocol": WORLDLINE_ACTIVITY_PROTOCOL,
             "pro_id": 51006,
-            "openServerTime": "",
-            "openServerTimeText": "",
+            "openServerTime": open_server_source.get("openServerTime") or "",
+            "openServerTimeText": open_server_source.get("openServerTimeText") or "",
             "count": len(items),
             "decode_warnings": [],
             "items": items,

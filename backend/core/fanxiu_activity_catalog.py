@@ -37,7 +37,7 @@ DEFAULT_SUBPACKAGE_REWARD_ROWS = Path("parsed_configs/SubpackageRewards/rows.jso
 DEFAULT_BLLD_LEVEL_ROWS = Path("apk_static_index/hot_update_blld_levels.tsv")
 DEFAULT_BLLD_LEVEL_REWARD_ROWS = Path("apk_static_index/hot_update_blld_level_reward_items.tsv")
 DEFAULT_ACTIVITY_CATALOG = Path("parsed_configs/activity_catalog/activity_catalog.json")
-ACTIVITY_CATALOG_SCHEMA_VERSION = 8
+ACTIVITY_CATALOG_SCHEMA_VERSION = 9
 _ACTIVITY_RANK_GUARDIAN_CACHE: tuple[tuple[tuple[str, int, int], ...], dict[str, dict[int, dict[str, Any]]]] | None = None
 
 _INT_RE = re.compile(r"-?\d+")
@@ -1069,6 +1069,14 @@ def _compact_related_row(
         f"类型 {row.get('giftType')}" if row.get("giftType") not in (None, "") else "",
         f"付费 {row.get('payId')}" if row.get("payId") not in (None, "") else "",
     ]
+
+    def _range_pair(value: Any) -> tuple[Any, Any]:
+        if isinstance(value, list | tuple) and len(value) >= 2:
+            return value[0], value[1]
+        return None, None
+
+    server_day_start, server_day_end = _range_pair(row.get("serverDay"))
+    world_level_start, world_level_end = _range_pair(row.get("worldLevel"))
     return {
         "source": source,
         "row_key": row.get("_row_key") or row.get("id") or row.get("fundId"),
@@ -1082,6 +1090,10 @@ def _compact_related_row(
         "reward_items": reward_items,
         "raw_rewards": _raw_value_text(reward_values, limit=12),
         "condition": _clean_text(row.get("showCondition") or row.get("condition") or row.get("showLimitCondition")),
+        "server_day_start": server_day_start,
+        "server_day_end": server_day_end,
+        "world_level_start": world_level_start,
+        "world_level_end": world_level_end,
     }
 
 
@@ -1953,6 +1965,156 @@ def _filter_activity_detail_for_server(card: dict[str, Any], server: dict[str, A
     return next_card
 
 
+def _as_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text.lstrip("-").isdigit():
+            return int(text)
+    return None
+
+
+def _worldline_ms(value: Any) -> int | None:
+    number = _as_int_or_none(value)
+    if number is not None:
+        return number
+    return None
+
+
+def _date8_ms(value: str) -> int | None:
+    try:
+        parsed = datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        return None
+    return int(parsed.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def _activity_runtime_rows_for_card(card: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    try:
+        from backend.core.fanxiu_activity_packet_sync import get_fanxiu_activity_packet_schedule
+    except Exception:
+        return [], {}
+    try:
+        schedule = get_fanxiu_activity_packet_schedule()
+    except Exception:
+        return [], {}
+    activity_id = str(card.get("id") or "").strip()
+    if not activity_id:
+        return [], schedule
+    rows = [
+        row
+        for row in schedule.get("items") or []
+        if isinstance(row, dict)
+        and (str(row.get("activityId") or "").strip() == activity_id or str(row.get("id") or "").strip() == activity_id)
+    ]
+    return rows, schedule
+
+
+def _reward_row_matches_runtime_open_date(row: dict[str, Any], runtime_rows: list[dict[str, Any]]) -> bool:
+    condition = str(row.get("condition") or "")
+    predicates = [
+        (match.group(1), _date8_ms(match.group(3)))
+        for match in re.finditer(r"ActivityIdOpen(Before|After)\|([^_;,|]+)_(\d{8})", condition)
+    ]
+    predicates = [(direction, threshold) for direction, threshold in predicates if threshold is not None]
+    if not predicates or not runtime_rows:
+        return True
+    starts = [_worldline_ms(runtime.get("startTime")) for runtime in runtime_rows]
+    starts = [value for value in starts if value is not None]
+    if not starts:
+        return True
+    start_ms = min(starts)
+    return any(start_ms < threshold if direction == "Before" else start_ms >= threshold for direction, threshold in predicates)
+
+
+def _runtime_server_day(runtime: dict[str, Any], schedule: dict[str, Any]) -> int | None:
+    open_ms = _worldline_ms(schedule.get("openServerTime"))
+    start_ms = _worldline_ms(runtime.get("startTime"))
+    if open_ms is not None and start_ms is not None and start_ms >= open_ms:
+        return int((start_ms - open_ms) // 86_400_000) + 1
+    return _as_int_or_none(runtime.get("daoNian"))
+
+
+def _reward_row_matches_runtime_ranges(row: dict[str, Any], runtime_rows: list[dict[str, Any]], schedule: dict[str, Any]) -> bool:
+    if not runtime_rows:
+        return True
+    server_day_start = _as_int_or_none(row.get("server_day_start"))
+    server_day_end = _as_int_or_none(row.get("server_day_end"))
+    if server_day_start is not None or server_day_end is not None:
+        matched = False
+        for runtime in runtime_rows:
+            day = _runtime_server_day(runtime, schedule)
+            if day is None or day <= 0:
+                return True
+            if (server_day_start is None or day >= server_day_start) and (server_day_end is None or day <= server_day_end):
+                matched = True
+                break
+        if not matched:
+            return False
+
+    level_start = _as_int_or_none(row.get("world_level_start"))
+    level_end = _as_int_or_none(row.get("world_level_end"))
+    if level_start is not None or level_end is not None:
+        matched = False
+        for runtime in runtime_rows:
+            level = _as_int_or_none(runtime.get("avgWorldLevel"))
+            if level is None or level <= 0:
+                return True
+            if (level_start is None or level >= level_start) and (level_end is None or level <= level_end):
+                matched = True
+                break
+        if not matched:
+            return False
+    return True
+
+
+def _reward_row_cross_group_day(row: dict[str, Any]) -> str:
+    match = re.search(r"CrossGroupDay\|([^_,|]+)_([^,|]+)", str(row.get("condition") or ""))
+    return match.group(1) if match else ""
+
+
+def _filter_rows_for_activity_runtime(rows: list[dict[str, Any]], runtime_rows: list[dict[str, Any]], schedule: dict[str, Any]) -> list[dict[str, Any]]:
+    filtered = [
+        row
+        for row in rows
+        if _reward_row_matches_runtime_open_date(row, runtime_rows)
+        and _reward_row_matches_runtime_ranges(row, runtime_rows, schedule)
+    ]
+    if not runtime_rows or not any(_reward_row_cross_group_day(row) for row in filtered):
+        return filtered
+    has_cross_runtime = any("Cross" in str(runtime.get("class") or "") for runtime in runtime_rows)
+    if not has_cross_runtime:
+        return [row for row in filtered if not _reward_row_cross_group_day(row)]
+    groups = {str(runtime.get("crossGroup") or "").strip() for runtime in runtime_rows if str(runtime.get("crossGroup") or "").strip()}
+    if not groups:
+        return filtered
+    matched = [row for row in filtered if _reward_row_cross_group_day(row) in groups]
+    return matched or [row for row in filtered if not _reward_row_cross_group_day(row)]
+
+
+def _filter_activity_detail_for_runtime(card: dict[str, Any]) -> dict[str, Any]:
+    runtime_rows, schedule = _activity_runtime_rows_for_card(card)
+    if not runtime_rows:
+        return card
+    next_sections: list[dict[str, Any]] = []
+    changed = False
+    for section in card.get("reward_sections") or []:
+        rows = [row for row in section.get("rows") or [] if isinstance(row, dict)]
+        filtered_rows = _filter_rows_for_activity_runtime(rows, runtime_rows, schedule)
+        if len(filtered_rows) != len(rows):
+            changed = True
+        if filtered_rows:
+            next_sections.append({**section, "count": len(filtered_rows), "rows": filtered_rows})
+    if not changed:
+        return card
+    return {**card, "reward_sections": next_sections}
+
+
 def _activity_rank_runtime_sources() -> list[dict[str, Any]]:
     try:
         from backend.core.fanxiu_tcp_flow import _iter_fanxiu_tcp_decoded_sources, _load_json_file
@@ -2478,6 +2640,7 @@ def get_fanxiu_activity_card(
     if card:
         server = _resolve_activity_server_scope(server_scope)
         scoped_card = _filter_activity_detail_for_server(card, server, runtime_index["cards_by_id"])
+        scoped_card = _filter_activity_detail_for_runtime(scoped_card)
         scoped_card = _enrich_activity_rank_reward_rows(scoped_card, runtime_index["cards_by_id"])
         return {"catalog_path": catalog["catalog_path"], "card": {**scoped_card, "terms": (scoped_card.get("terms") or [])[:20]}}
     raise FanxiuResourceError(f"没有找到活动：{activity_id}")

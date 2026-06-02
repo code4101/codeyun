@@ -16,7 +16,7 @@ from backend.migrations.manager import (
     v29_migrate_attendance_course_sheets_to_notes_workbook,
     v30_add_numeric_sheet_and_workbook_ids,
 )
-from backend.models import ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
+from backend.models import AttendanceWjxDataEntry, ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 
 def _override_user(user: User) -> None:
@@ -3150,6 +3150,23 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
         },
     )
     session.add(sheet)
+    entry = AttendanceWjxDataEntry(
+        activity_id="264266843",
+        seq=651,
+        submitted_at_text="2026/4/20",
+        source="微信",
+        course_name="课程A",
+        student_id_text="5组6号",
+        student_name="陈香米",
+        correction_request="第一堂视频课",
+        extra_note="-",
+        process_status="",
+        process_note="",
+        synced_at=1713426373.0,
+        created_at=1713426373.0,
+        updated_at=1713426373.0,
+    )
+    session.add(entry)
     session.commit()
     session.refresh(sheet)
     session.add(ResourceAccessGrant(
@@ -3170,6 +3187,7 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
 
     rows = detail["document_json"]["rows"]
     rows[0][9] = "用户d问题，已修正"
+    page_patch = {key: value for key, value in detail["pagination"].items() if value is not None}
     update_response = client.put(
         "/api/note-sheets/sheets/5",
         json={
@@ -3177,13 +3195,16 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                 **detail["document_json"],
                 "rows": rows,
             },
-            "page_patch": detail["pagination"],
+            "page_patch": page_patch,
         },
     )
-    assert update_response.status_code == 200
+    assert update_response.status_code == 200, update_response.json()
     session.refresh(sheet)
+    session.refresh(entry)
     assert sheet.document_json["rows"][0][9] == "用户d问题，已修正"
     assert sheet.document_json["rows"][0][7] == "第一堂视频课"
+    assert entry.process_status == "用户d问题，已修正"
+    assert entry.process_note == "用户d问题，已修正"
 
     forbidden_config_response = client.put(
         "/api/note-sheets/sheets/5",
@@ -3195,7 +3216,7 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                     "AI初判": {"display_mode": "single_line"},
                 },
             },
-            "page_patch": detail["pagination"],
+            "page_patch": page_patch,
         },
     )
     assert forbidden_config_response.status_code == 403
@@ -3208,7 +3229,7 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                 **detail["document_json"],
                 "rows": rows,
             },
-            "page_patch": detail["pagination"],
+            "page_patch": page_patch,
         },
     )
     assert forbidden_response.status_code == 403

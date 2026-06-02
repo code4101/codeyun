@@ -1,6 +1,6 @@
 <template>
   <ClusterLabelmePage
-    fixed-device-id="codepc_mi15"
+    fixed-device-id="codepc_mf"
     fixed-root-path="C:\home\chenkunze\data\m2508凡修\mainwin"
   />
 </template>

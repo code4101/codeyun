@@ -2559,8 +2559,29 @@ const selectedStudentLookupDetail = computed(() => {
   const option = selectedStudentLookupOption.value
   return option ? buildRowDetail(option.rowIndex) : null
 })
+function normalizeStudentLookupFeedbackCourseName(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  if (!text) {
+    return ''
+  }
+  const normalized = text
+    .replace(/\s+/g, '')
+    .replace(/[\/／\\|-]?(考勤表|问卷数据)$/u, '')
+  return normalized || ''
+}
+
 const studentLookupFeedbackCourseName = computed(() => {
-  return normalizeCellValue(currentWorkbookTitle.value || sheetTitle.value || '').trim()
+  const workbookTitle = normalizeStudentLookupFeedbackCourseName(currentWorkbookTitle.value)
+  if (workbookTitle) {
+    return workbookTitle
+  }
+
+  const optionCourse = normalizeStudentLookupFeedbackCourseName(selectedStudentLookupOption.value?.course)
+  if (optionCourse) {
+    return optionCourse
+  }
+
+  return normalizeStudentLookupFeedbackCourseName(sheetTitle.value)
 })
 const studentLookupFeedbackStudentId = computed(() => (
   normalizeCellValue(selectedStudentLookupOption.value?.studentNumber).trim()
@@ -4714,6 +4735,14 @@ const contextMenu = {
         void handleRunAttendanceWjxAiPrecheckFromSelection()
       },
     },
+    attendance_wjx_ai_precheck_repair: {
+      name: 'AI初判并尝试修复',
+      hidden: () => !canRunAttendanceWjxAiPrecheckFromSelection() || !canRunSheetActions.value,
+      disabled: () => workspaceLoading.value || attendanceWjxAiPrecheckRunning.value,
+      callback: () => {
+        void handleRunAttendanceWjxAiPrecheckFromSelection({ autoRepair: true })
+      },
+    },
     hsep_attendance_completion: {
       name: '---------',
       hidden: () => !canSetAttendanceCompletedFromSelection() || !canRunSheetActions.value,
@@ -5238,7 +5267,7 @@ function canRunAttendanceWjxAiPrecheckFromSelection() {
   return !!getSelectedAttendanceWjxAiPrecheckCell()
 }
 
-async function handleRunAttendanceWjxAiPrecheckFromSelection() {
+async function handleRunAttendanceWjxAiPrecheckFromSelection(options: { autoRepair?: boolean } = {}) {
   const selectedCell = getSelectedAttendanceWjxAiPrecheckCell()
   if (!selectedCell) {
     ElMessage.warning('请选择一个 AI初判 单元格')
@@ -5255,10 +5284,18 @@ async function handleRunAttendanceWjxAiPrecheckFromSelection() {
     const result = await runAttendanceWjxDataAiPrecheck(selectedCell.seq, {
       persist: true,
       use_codex_cli: true,
+      auto_repair: !!options.autoRepair,
+      repair_with_remote_browser: true,
     })
     await restoreInitialDocument({ preserveContent: true })
     const summary = normalizeCellValue(result.precheck?.summary).trim()
-    ElMessage.success(summary ? `AI初判完成：${summary}` : 'AI初判已生成')
+    const autoRepair = result.precheck?.auto_repair as Record<string, unknown> | undefined
+    const repairSummary = normalizeCellValue(autoRepair?.summary).trim()
+    if (options.autoRepair && repairSummary) {
+      ElMessage.success(`AI初判完成：${repairSummary}`)
+    } else {
+      ElMessage.success(summary ? `AI初判完成：${summary}` : 'AI初判已生成')
+    }
   } catch (error) {
     console.warn('Failed to run attendance wjx AI precheck', error)
     ElMessage.error(getSheetActionErrorMessage(error, 'AI初判失败'))
@@ -23065,6 +23102,8 @@ async function submitStudentLookupFeedback() {
       student_name: studentName,
       correction_request: correctionRequest,
       extra_note: '',
+      workbook_id: props.workbookId ?? null,
+      sheet_id: props.sheetId ?? null,
     })
     studentLookupFeedbackCorrectionRequest.value = correctionRequest
     studentLookupFeedbackLastSubmittedKey.value = studentLookupFeedbackCurrentDraftKey.value

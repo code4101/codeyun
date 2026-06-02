@@ -98,7 +98,7 @@ def _default_target_title() -> str:
 def _service_status() -> dict[str, object]:
     return {
         "key": "fanxiu-game-window",
-        "title": "凡修游戏画面流",
+        "title": "凡修画面流",
         "running": True,
         "state": "running",
         "state_label": "运行中",

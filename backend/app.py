@@ -20,6 +20,8 @@ from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
 from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
+from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
 from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
 from backend.plugins import register_plugin_modules
@@ -39,6 +41,31 @@ from sqlmodel import Session
 
 settings = get_settings()
 
+
+def _env_enabled(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _fanxiu_capture_runtime_service_enabled() -> bool:
+    configured = _env_enabled(os.getenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED"))
+    if configured is not None:
+        return configured
+    services_text = os.getenv("FX_RUNTIME_SERVICES")
+    if services_text is None:
+        return False
+    services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
+    return bool(services & {"*", "all", "fanxiu", "fanxiu-capture-runtime", "fanxiu_capture_runtime", "capture_runtime", "capture", "凡修抓包"})
+
+
+def _fanxiu_capture_watchdog_interval_seconds() -> float:
+    try:
+        return float(os.getenv("FX_CAPTURE_RUNTIME_WATCHDOG_INTERVAL_SECONDS") or 60)
+    except (TypeError, ValueError):
+        return 60.0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -50,9 +77,17 @@ async def lifespan(app: FastAPI):
         start_system_metrics_monitor()
     init_background_task_runner()
     if not settings.is_test:
+        fanxiu_packet_insight_worker.start()
+    if not settings.is_test and _fanxiu_capture_runtime_service_enabled():
+        fanxiu_capture_runtime_service.start_watchdog(
+            interval_seconds=_fanxiu_capture_watchdog_interval_seconds()
+        )
+    if not settings.is_test:
         start_enabled_codex_bridges()
     yield
     if not settings.is_test:
+        fanxiu_capture_runtime_service.stop_watchdog()
+        fanxiu_packet_insight_worker.stop()
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
     shutdown_background_task_runner()

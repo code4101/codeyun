@@ -8,6 +8,7 @@ from backend.models import User
 
 EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "home",
+    "author-contact",
     "tools",
     "tools.password-generator",
     "tools.image-browser",
@@ -25,13 +26,16 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.activity-list.modao-invasion",
     "fanxiu.activity-list.shouyuan-exploration",
     "fanxiu.activity-list.divine-resource",
+    "fanxiu.activity-list.qiji-zhumo",
     "fanxiu.activity-list.xianzhou-marathon",
     "fanxiu.region-data",
+    "fanxiu.wiki",
     "fanxiu.inventory",
     "fanxiu.inventory.wardrobe-hall",
     "fanxiu.inventory.spirit-beast-hall",
     "fanxiu.inventory.magic-treasure-hall",
     "fanxiu.inventory.magic-treasure-formations",
+    "fanxiu.inventory.spirit-artifact-hall",
     "fanxiu.labelme",
     "fanxiu.recharge",
     "fanxiu.cuijian-trial",
@@ -40,6 +44,7 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "magic-craft.xor-matrix",
     "note-tools",
     "notes.center",
+    "notes.chat-data",
     "notes.infinite-canvas",
 }
 
@@ -76,7 +81,7 @@ def test_access_context_anonymous_uses_registry_defaults(client):
     assert flat_items["tools.password-generator"]["effective_value"] is True
     assert flat_items["tools.ai-chat"]["effective_value"] is False
     assert flat_items["fanxiu.calculator"]["effective_value"] is True
-    assert flat_items["fanxiu.task-status"]["effective_value"] is False
+    assert flat_items["fanxiu.data-annotation"]["effective_value"] is False
     assert flat_items["notes.center"]["effective_value"] is True
     assert flat_items["cluster.tasks"]["effective_value"] is False
     assert flat_items["admin.accounts"]["effective_value"] is False
@@ -98,7 +103,7 @@ def test_access_context_user_inherits_anonymous_defaults(client, auth_user):
     assert flat_items["tools.password-generator"]["effective_value"] is True
     assert flat_items["tools.ai-chat"]["effective_value"] is False
     assert flat_items["fanxiu.calculator"]["effective_value"] is True
-    assert flat_items["fanxiu.task-status"]["effective_value"] is False
+    assert flat_items["fanxiu.data-annotation"]["effective_value"] is False
     assert flat_items["cluster-tools"]["effective_value"] is False
     assert flat_items["cluster-tools"]["source"] == "inherit_anonymous"
     assert flat_items["cluster.tasks"]["effective_value"] is False
@@ -297,7 +302,7 @@ def test_feature_access_denied_fanxiu_api_returns_403(client):
 
     assert update_response.status_code == 200
 
-    response = client.get("/api/fanxiu/status")
+    response = client.get("/api/fanxiu/game-window3/runtime/status")
 
     assert response.status_code == 403
     assert response.json()["detail"] == "当前账号无权访问该功能"
