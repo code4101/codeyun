@@ -1,5 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { LineChart, type LineSeriesOption } from 'echarts/charts'
+import {
+  GridComponent,
+  TooltipComponent,
+  type GridComponentOption,
+  type TooltipComponentOption,
+} from 'echarts/components'
+import * as echarts from 'echarts/core'
+import type { ComposeOption, ECharts } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight, Close, Refresh, Search, TopRight } from '@element-plus/icons-vue'
@@ -33,7 +43,6 @@ import {
   isFanxiuPacketProtocolVisible,
   setFanxiuPacketProtocolVisible,
 } from '../packetProtocolVisibility'
-
 import {
   getFanxiuActivityCard,
   getFanxiuDigitDoorCharacterCard,
@@ -49,6 +58,8 @@ import {
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
+  getFanxiuPacketRuntimeInsights,
+  getFanxiuPacketStorageBag,
   getFanxiuProtocolSemantics,
   getFanxiuStaticAssetManifest,
   getFanxiuStaticAssetPreviewManifest,
@@ -59,6 +70,7 @@ import {
   listFanxiuTcpBusinessEntries,
   searchFanxiuStaticVisualByImage,
   syncFanxiuActivityPackets,
+  syncFanxiuPacketRuntimeInsights,
   searchFanxiuActivityCards,
   searchFanxiuDigitDoorCharacterCards,
   searchFanxiuDigitDoorEnhanceGroups,
@@ -175,8 +187,16 @@ import {
   type FanxiuWwiseMp3ManifestRow,
 } from '@/api/fanxiu'
 
+echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
+
+type StorageBagWorshipChartOption = ComposeOption<
+  GridComponentOption | TooltipComponentOption | LineSeriesOption
+>
+
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
 const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
+const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
+const STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY = 'fanxiu:wiki:storage-bag-worship-chart-planes'
 const ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY = 'fanxiu:wiki:activity-period-pane-height'
 const ACTIVITY_NOTE_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-binding'
 const ACTIVITY_NOTE_INDEX_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-index'
@@ -186,9 +206,34 @@ const ACTIVITY_NOTE_FIELD_ACTIVITY_NAME = '__fanxiu_activity_name'
 const FACET_OPTION_DISPLAY_LIMIT = 100
 const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
+const STORAGE_BAG_PREVIEW_LIMIT = 100
+const STORAGE_BAG_WORSHIP_CHART_WIDTH = 640
+const STORAGE_BAG_WORSHIP_CHART_HEIGHT = 260
+const STORAGE_BAG_WORSHIP_CHART_MARGIN = { top: 14, right: 18, bottom: 34, left: 58 }
+const STORAGE_BAG_WORSHIP_CHART_WINDOW_MS = 365 * 24 * 60 * 60 * 1000
+const STORAGE_BAG_WORSHIP_CHART_COLORS: Record<number, string> = {
+  1: '#111827',
+  2: '#16a34a',
+  4: '#2563eb',
+  8: '#7e22ce',
+  16: '#c2410c',
+  32: '#dc2626',
+  64: '#db2777',
+}
+const STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS = [1, 2, 4, 8, 16, 32, 64] as const
+const STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES = [1, 2, 4, 8]
+const STORAGE_BAG_MAIN_GROUPS = [
+  { key: 'all', label: '全部' },
+  { key: 'resource', label: '资源' },
+  { key: 'activity', label: '活动' },
+  { key: 'other', label: '其他' },
+] as const
+const STORAGE_BAG_RESOURCE_GROUPS = ['仙花', '炼丹', '淬体', '灵兽', '洗灵', '装备'] as const
+const STORAGE_BAG_ACTIVITY_GROUPS = ['魔道', '云梦', '兽渊', '虚天', '下棋'] as const
 const NON_LIST_ACTIVITY_PAGE_SIZE = 5000
 const ACTIVITY_CALENDAR_WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WIKI_TABS = [
+  { key: 'storage_bag', label: '储物袋' },
   { key: 'item', label: '道具' },
   { key: 'visual', label: '图片' },
   { key: 'asset', label: '素材' },
@@ -221,6 +266,7 @@ const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
 ]
 const AUXILIARY_WIKI_TAB_KEYS = new Set<WikiTab>(AUXILIARY_WIKI_TABS.map(tab => tab.key))
 const TOP_WIKI_TABS = [
+  { key: 'storage_bag', label: '储物袋' },
   { key: 'item', label: '道具' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
@@ -520,6 +566,14 @@ const hiddenPacketProtocols = ref<string[]>(getHiddenFanxiuPacketProtocols())
 const expandedPacketProtocol = ref('')
 const packetProtocolSamples = ref<FanxiuTcpBusinessEntry[]>([])
 const packetProtocolSamplesLoading = ref(false)
+const packetRuntimeInsights = ref<Record<string, any> | null>(null)
+const packetRuntimeInsightsLoading = ref(false)
+const storageBagMainGroup = ref('all')
+const storageBagSubGroup = ref('')
+const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'total_friendship'>('default')
+const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
+const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
+const storageBagWorshipTableVisible = ref(false)
 const selectedPacketCategory = ref('')
 const catalogPath = ref('')
 const gongfaQualityGradeOptions = ref<FanxiuGongfaQualityPartOption[]>([])
@@ -616,6 +670,7 @@ let homeMakeBuffOverviewRequestSeq = 0
 let applyingRouteState = false
 let internalTabNavigation = false
 let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
+let storageBagRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 function isAuxiliaryWikiTab(tab: WikiTab) {
   return AUXILIARY_WIKI_TAB_KEYS.has(tab)
@@ -632,10 +687,16 @@ function queryValue(value: unknown) {
   return String(value ?? '').trim()
 }
 
+function normalizeRouteObjectId(tab: WikiTab | null, value: unknown) {
+  const text = queryValue(value)
+  if (tab === 'activity' && text && !/^\d+$/.test(text)) return ''
+  return text
+}
+
 function applyRouteState() {
   const routeTab = normalizeWikiTab(route.query.tab)
   const hasRouteId = Object.prototype.hasOwnProperty.call(route.query, 'id')
-  const routeId = queryValue(route.query.id)
+  const routeId = normalizeRouteObjectId(routeTab, route.query.id)
   const routeSearch = queryValue(route.query.q)
   let changed = false
   applyingRouteState = true
@@ -819,6 +880,84 @@ function clearCurrentSearchHistory() {
   }
   searchHistoryVisible.value = false
   persistSearchHistory()
+}
+
+function normalizeStorageBagMainGroup(value: unknown) {
+  const text = String(value ?? '').trim()
+  return STORAGE_BAG_MAIN_GROUPS.some(group => group.key === text) ? text : 'all'
+}
+
+function normalizeStorageBagSubGroup(mainGroup: string, value: unknown) {
+  const text = String(value ?? '').trim()
+  if (text === '鲜花') return '仙花'
+  if (mainGroup === 'resource') {
+    return STORAGE_BAG_RESOURCE_GROUPS.includes(text as typeof STORAGE_BAG_RESOURCE_GROUPS[number]) ? text : ''
+  }
+  if (mainGroup === 'activity') {
+    return STORAGE_BAG_ACTIVITY_GROUPS.includes(text as typeof STORAGE_BAG_ACTIVITY_GROUPS[number]) ? text : ''
+  }
+  if (mainGroup === 'other') return text
+  return ''
+}
+
+function normalizeStorageBagWorshipChartPlanes(value: unknown) {
+  const allowed = new Set<number>(STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS)
+  const values = Array.isArray(value) ? value : []
+  return Array.from(new Set(values
+    .map(item => Number(item))
+    .filter(item => allowed.has(item))))
+    .sort((a, b) => a - b)
+}
+
+function loadStorageBagFilterConfig() {
+  if (!canUseLocalStorage()) return
+  try {
+    const raw = window.localStorage.getItem(STORAGE_BAG_FILTER_STORAGE_KEY)
+    if (!raw) return
+    const config = JSON.parse(raw) as { mainGroup?: unknown; subGroup?: unknown }
+    const mainGroup = normalizeStorageBagMainGroup(config.mainGroup)
+    storageBagMainGroup.value = mainGroup
+    storageBagSubGroup.value = normalizeStorageBagSubGroup(mainGroup, config.subGroup)
+  } catch (error) {
+    console.warn('Failed to load Fanxiu storage bag filter config:', error)
+    window.localStorage.removeItem(STORAGE_BAG_FILTER_STORAGE_KEY)
+  }
+}
+
+function loadStorageBagWorshipChartPlaneConfig() {
+  if (!canUseLocalStorage()) return
+  try {
+    const raw = window.localStorage.getItem(STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY)
+    if (!raw) return
+    storageBagWorshipChartPlanes.value = normalizeStorageBagWorshipChartPlanes(JSON.parse(raw))
+  } catch (error) {
+    console.warn('Failed to load Fanxiu storage bag worship chart plane config:', error)
+    window.localStorage.removeItem(STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY)
+  }
+}
+
+function persistStorageBagFilterConfig() {
+  if (!canUseLocalStorage()) return
+  try {
+    window.localStorage.setItem(STORAGE_BAG_FILTER_STORAGE_KEY, JSON.stringify({
+      mainGroup: storageBagMainGroup.value,
+      subGroup: storageBagSubGroup.value,
+    }))
+  } catch (error) {
+    console.warn('Failed to persist Fanxiu storage bag filter config:', error)
+  }
+}
+
+function persistStorageBagWorshipChartPlaneConfig() {
+  if (!canUseLocalStorage()) return
+  try {
+    window.localStorage.setItem(
+      STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY,
+      JSON.stringify(normalizeStorageBagWorshipChartPlanes(storageBagWorshipChartPlanes.value)),
+    )
+  } catch (error) {
+    console.warn('Failed to persist Fanxiu storage bag worship chart plane config:', error)
+  }
 }
 
 function loadPageConfig() {
@@ -1144,6 +1283,10 @@ function getActivityWorldlineRows(activity: FanxiuActivitySearchItem | FanxiuAct
   })
 }
 
+const activityUsesRuntimeSchedule = computed(() => (
+  activityViewMode.value === 'period' && Boolean(activityWorldlineSchedule.value?.available)
+))
+
 function formatWorldlineActivityRange(row: FanxiuWorldlineActivityItem) {
   const start = String(row.startTimeText || '').trim()
   const end = String(row.endTimeText || '').trim()
@@ -1194,13 +1337,59 @@ const activityDocumentItems = computed(() => activityBaseDisplayItems.value
       || String(left.name || '').localeCompare(String(right.name || ''))
   }))
 
-const activityDisplayItems = computed(() => (
-  activityViewMode.value === 'document' ? activityDocumentItems.value : activityBaseDisplayItems.value
-))
+function isActivityTemplateSearchItem(item: FanxiuActivitySearchItem | FanxiuActivityCard | null | undefined) {
+  const scheduleHints = getTimelineHints(item).filter(hint => [
+    'Activity.prepareTime',
+    'Activity.startTime',
+    'Activity.endTime',
+    'Activity.rewardTime',
+    'Activity.closePanelTime',
+  ].includes(String(hint.source || '')) || hint.kind === 'activity_start')
+  if (!scheduleHints.length) return false
+  return scheduleHints.every(hint => {
+    const kind = String(hint.kind || '')
+    const confidence = String(hint.confidence || '').toLowerCase()
+    const hasConcreteDate = Boolean(String(hint.date || '').trim())
+    return kind === 'relative_schedule' && confidence !== 'high' && !hasConcreteDate
+  })
+}
+
+const activityReverseRuntimeItems = computed(() => activityBaseDisplayItems.value
+  .filter(item => !isActivityTemplateSearchItem(item)))
+
+const activityRuntimeScheduleItems = computed(() => {
+  const seen = new Set<string>()
+  const rows: FanxiuActivitySearchItem[] = []
+  for (const entry of activityWorldlineScheduledEntries.value) {
+    const id = String(entry.item?.id ?? '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    rows.push(entry.item)
+  }
+  return rows
+})
+
+const activityDisplayItems = computed(() => {
+  if (activityViewMode.value === 'document') return activityDocumentItems.value
+  if (activityViewMode.value === 'period') {
+    return dedupeActivitySearchItems([
+      ...activityReverseRuntimeItems.value,
+      ...activityRuntimeScheduleItems.value,
+    ])
+  }
+  return activityBaseDisplayItems.value
+})
 
 const displayTotal = computed(() => {
+  if (activeTab.value === 'storage_bag') return filteredStorageBagItems.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'document') return activityDocumentItems.value.length
+  if (activeTab.value === 'activity' && activityViewMode.value === 'period') return activityDisplayItems.value.length
   return total.value
+})
+
+const resultCountUnit = computed(() => {
+  if (activeTab.value === 'storage_bag') return '种物品'
+  return '个对象'
 })
 
 function dedupeActivitySearchItems(items: FanxiuActivitySearchItem[]) {
@@ -1836,32 +2025,14 @@ function isActivityEntryOverDays(entry: ActivityScheduleEntry, days: number) {
 }
 
 function isActivityTemplateScheduleEntry(entry: ActivityScheduleEntry) {
-  const hints = getTimelineHints(entry.item)
-  const scheduleHints = hints.filter(hint => [
-    'Activity.prepareTime',
-    'Activity.startTime',
-    'Activity.endTime',
-    'Activity.rewardTime',
-    'Activity.closePanelTime',
-  ].includes(String(hint.source || '')) || hint.kind === 'activity_start')
-  if (!scheduleHints.length) return false
-  const isTemplate = scheduleHints.every(hint => {
-    const kind = String(hint.kind || '')
-    const confidence = String(hint.confidence || '').toLowerCase()
-    const hasConcreteDate = Boolean(String(hint.date || '').trim())
-    return kind === 'relative_schedule' && confidence !== 'high' && !hasConcreteDate
-  })
-  return isTemplate
+  return !entry.runtime && isActivityTemplateSearchItem(entry.item)
 }
 
 const activityVisibleScheduledEntries = computed(() => {
   let entries = [
-    ...activityScheduledEntries.value,
-    ...(activityWorldlineSchedule.value?.available ? activityWorldlineScheduledEntries.value : []),
+    ...activityScheduledEntries.value.filter(entry => !isActivityTemplateScheduleEntry(entry)),
+    ...(activityUsesRuntimeSchedule.value ? activityWorldlineScheduledEntries.value : []),
   ]
-  if (activityWorldlineSchedule.value?.available) {
-    entries = entries.filter(entry => entry.runtime || !isActivityTemplateScheduleEntry(entry))
-  }
   if (activityHideOver30Days.value) {
     entries = entries.filter(entry => !isActivityEntryOverDays(entry, 30))
   }
@@ -2232,6 +2403,7 @@ const selectedTerms = computed(() => {
 
 const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
+  if (activeTab.value === 'storage_bag') return '搜索储物袋物品 / 类型 / 品质 / ID'
   if (activeTab.value === 'visual') return '搜索图片 / 图标 / 背景 / atlas / sprite / 文件名'
   if (activeTab.value === 'asset') return '搜索语义素材 / 小绿瓶 / 道具 / 活动 / 技能 / 模型'
   if (activeTab.value === 'audio') return '搜索音乐 / BGM / WEM / bank / 文件名'
@@ -2250,6 +2422,7 @@ const searchPlaceholder = computed(() => {
 const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() => {
   if (
     activeTab.value === 'lingjie'
+    || activeTab.value === 'storage_bag'
     || activeTab.value === 'visual'
     || activeTab.value === 'asset'
     || activeTab.value === 'audio'
@@ -2276,6 +2449,7 @@ const nextSortModeLabel = computed(() => {
 
 const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
+  if (activeTab.value === 'storage_bag') return '储物袋'
   if (activeTab.value === 'visual') return '图片'
   if (activeTab.value === 'asset') return '素材'
   if (activeTab.value === 'audio') return '音乐'
@@ -2294,6 +2468,7 @@ const activeObjectLabel = computed(() => {
 const selectedProgressionSource = computed(() => {
   if (
     activeTab.value === 'lingjie'
+    || activeTab.value === 'storage_bag'
     || activeTab.value === 'asset'
     || activeTab.value === 'digitdoor'
     || activeTab.value === 'digitdoor_level'
@@ -4635,12 +4810,23 @@ function getActivityDescriptionRows(activity: FanxiuActivityCard | null | undefi
 }
 
 function getActivityLoopRows(activity: FanxiuActivityCard | null | undefined) {
-  return (activity?.loop_entries ?? [])
-    .map(entry => ({
-      key: `${entry.loop_id ?? ''}-${entry.day ?? ''}-${entry.activity_id ?? ''}`,
-      label: `轮换 ${entry.loop_id ?? '-'}`,
-      value: `第 ${entry.day ?? '-'} 天`,
-    }))
+  if (!activity || activityServerScope.value !== CURRENT_ACTIVITY_SERVER_SCOPE) return []
+  return getActivityWorldlineRows(activity)
+    .map(row => {
+      const scheduleId = String(row.scheduleId ?? '').trim()
+      const loopDay = String(row.loopDay ?? '').trim()
+      const range = formatWorldlineActivityRange(row)
+      if (!scheduleId && !loopDay && !range) return null
+      return {
+        key: `${row.id ?? row.activityId ?? ''}-${scheduleId}-${loopDay}-${row.startTime ?? ''}`,
+        label: scheduleId ? `当前服轮换 ${scheduleId}` : '当前服轮换',
+        value: [
+          range,
+          loopDay ? `第 ${loopDay} 天` : '',
+        ].filter(Boolean).join(' · '),
+      }
+    })
+    .filter((row): row is { key: string; label: string; value: string } => Boolean(row?.value))
 }
 
 function getActivityJumpTargetRows(activity: FanxiuActivityCard | null | undefined) {
@@ -4712,6 +4898,753 @@ function packetEntryDisplaySegments(entry: FanxiuTcpBusinessEntry) {
 
 function packetEntryJson(entry: FanxiuTcpBusinessEntry) {
   return JSON.stringify(entry.content ?? {}, null, 2)
+}
+
+const packetInsightSnapshot = computed<Record<string, any>>(() => packetRuntimeInsights.value ?? {})
+const packetInsightObservations = computed(() => Array.isArray(packetInsightSnapshot.value.observations) ? packetInsightSnapshot.value.observations : [])
+const packetInsightAccount = computed(() => packetInsightSnapshot.value.account?.latest_identity || packetInsightSnapshot.value.account?.latest_login || null)
+const packetInsightWalletResources = computed(() => Array.isArray(packetInsightSnapshot.value.wallet?.resources) ? packetInsightSnapshot.value.wallet.resources : [])
+const packetInsightBagItems = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.notable_items) ? packetInsightSnapshot.value.bag.notable_items : [])
+const packetInsightBagSections = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.section_summary) ? packetInsightSnapshot.value.bag.section_summary : [])
+const packetInsightPersonalRanks = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.personal_records) ? packetInsightSnapshot.value.activity_ranks.personal_records : [])
+const packetInsightRankRecords = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.records) ? packetInsightSnapshot.value.activity_ranks.records : [])
+const storageBagSnapshot = computed<Record<string, any> | null>(() => packetInsightSnapshot.value.bag ?? null)
+const storageBagWorshipSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.worship ?? {})
+const storageBagAllWorshipRecords = computed(() => {
+  const rows = storageBagWorshipSnapshot.value.records
+  return Array.isArray(rows) ? rows : []
+})
+const storageBagTargetWorshipRecords = computed(() => {
+  const targetLabel = storageBagWorshipTargetLabel.value
+  if (!targetLabel) return []
+  return storageBagAllWorshipRecords.value
+    .filter(row => worshipRecordTargetLabel(row) === targetLabel)
+})
+const storageBagWorshipRecords = computed(() => {
+  return [...storageBagTargetWorshipRecords.value]
+    .sort(compareStorageBagWorshipRecord)
+    .slice(0, 40)
+})
+const storageBagWorshipChartPlaneOptions = computed(() => {
+  const now = Date.now()
+  const minTime = now - STORAGE_BAG_WORSHIP_CHART_WINDOW_MS
+  const counts = new Map<number, number>()
+  for (const row of storageBagTargetWorshipRecords.value) {
+    const timestamp = worshipRecordTimestamp(row)
+    const score = worshipRecordScore(row)
+    const type = worshipRecordType(row)
+    if (
+      timestamp < minTime
+      || timestamp > now
+      || score <= 0
+      || String(type).includes('社团')
+    ) continue
+    const plane = storageBagWorshipPlaneNumber(worshipRecordPlane(row))
+    counts.set(plane, (counts.get(plane) || 0) + 1)
+  }
+  return STORAGE_BAG_WORSHIP_CHART_PLANE_OPTIONS.map(plane => ({
+    plane,
+    label: storageBagWorshipPlaneLabel(plane),
+    count: counts.get(plane) || 0,
+    color: STORAGE_BAG_WORSHIP_CHART_COLORS[plane] || '#475467',
+    selected: isStorageBagWorshipChartPlaneSelected(plane),
+  }))
+})
+const storageBagWorshipPackets = computed(() => {
+  const rows = storageBagWorshipSnapshot.value.packets
+  return Array.isArray(rows) ? rows : []
+})
+const storageBagRawItems = computed(() => {
+  const rows = storageBagSnapshot.value?.items
+  if (Array.isArray(rows)) return rows
+  return Array.isArray(storageBagSnapshot.value?.notable_items) ? storageBagSnapshot.value.notable_items : []
+})
+
+function storageBagAggregateKey(row: Record<string, any>) {
+  const item = row?.item || {}
+  return [
+    row?.base_id || item?.item_id || row?.item_id || '',
+    item?.name || row?.name || '',
+    item?.quality_name || '',
+    item?.type_name || '',
+  ].join('::')
+}
+
+function storageBagQualityRank(row: Record<string, any>) {
+  const quality = String(row?.item?.quality_name || '')
+  if (quality.includes('彩')) return 80
+  if (quality.includes('红')) return 70
+  if (quality.includes('橙')) return 65
+  if (quality.includes('黄') || quality.includes('金')) return 60
+  if (quality.includes('紫')) return 50
+  if (quality.includes('蓝')) return 40
+  if (quality.includes('绿')) return 30
+  if (quality.includes('白')) return 20
+  return 0
+}
+
+function storageBagQualityClass(row: Record<string, any>) {
+  const quality = String(row?.item?.quality_name || '')
+  if (quality.includes('彩')) return 'quality-colorful'
+  if (quality.includes('红')) return 'quality-red'
+  if (quality.includes('橙')) return 'quality-orange'
+  if (quality.includes('黄') || quality.includes('金')) return 'quality-yellow'
+  if (quality.includes('紫')) return 'quality-purple'
+  if (quality.includes('蓝')) return 'quality-blue'
+  if (quality.includes('绿')) return 'quality-green'
+  if (quality.includes('白')) return 'quality-white'
+  return 'quality-unknown'
+}
+
+const storageBagItems = computed(() => {
+  const merged = new Map<string, Record<string, any>>()
+  for (const row of storageBagRawItems.value) {
+    const key = storageBagAggregateKey(row)
+    const current = merged.get(key)
+    const num = Number(row?.num)
+    if (!current) {
+      merged.set(key, {
+        ...row,
+        num: Number.isFinite(num) ? num : row?.num,
+        stack_count: 1,
+      })
+      continue
+    }
+    current.stack_count = Number(current.stack_count || 0) + 1
+    if (Number.isFinite(num)) {
+      current.num = Number(current.num || 0) + num
+    }
+  }
+  return Array.from(merged.values()).sort((a, b) => {
+    const qualityDiff = storageBagQualityRank(b) - storageBagQualityRank(a)
+    if (qualityDiff) return qualityDiff
+    const countDiff = Number(b?.num || 0) - Number(a?.num || 0)
+    if (countDiff) return countDiff
+    return packetInsightItemName(a).localeCompare(packetInsightItemName(b), 'zh-Hans-CN')
+  })
+})
+function storageBagText(row: Record<string, any>) {
+  const item = row?.item || {}
+  return [
+    row?.base_id,
+    row?.instance_id,
+    item?.item_id,
+    item?.name,
+    item?.quality_name,
+    item?.type_name,
+    item?.description,
+    item?.effect_description,
+    item?.effect_detail_preview,
+  ].join(' ')
+}
+
+function storageBagOtherSubGroup(row: Record<string, any>) {
+  return String(row?.item?.type_name || '').trim() || '未分类'
+}
+
+function storageBagFriendshipValue(row: Record<string, any>) {
+  const text = storageBagText(row)
+  const match = text.match(/(?:提升|增加|获得)\s*([0-9]+(?:\.[0-9]+)?)\s*点?\s*(?:友好度|好感度)/)
+  if (!match) return 0
+  const value = Number(match[1])
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function storageBagTotalFriendshipValue(row: Record<string, any>) {
+  const friendship = storageBagFriendshipValue(row)
+  const count = Number(row?.num)
+  return friendship > 0 && Number.isFinite(count) ? friendship * count : 0
+}
+
+const showStorageBagFriendshipColumns = computed(() => (
+  storageBagMainGroup.value === 'resource' && storageBagSubGroup.value === '仙花'
+))
+
+const storageBagWorshipTargetConfig = computed(() => {
+  if (storageBagMainGroup.value !== 'resource') return null
+  if (storageBagSubGroup.value === '仙花') {
+    return { target: '天资', title: '拜谒-天资-历史榜单记录', scoreLabel: '友好度' }
+  }
+  if (storageBagSubGroup.value === '炼丹') {
+    return { target: '道丹', title: '拜谒-道丹-历史榜单记录', scoreLabel: '熟练度' }
+  }
+  return null
+})
+const storageBagWorshipTargetLabel = computed(() => storageBagWorshipTargetConfig.value?.target || '')
+const storageBagWorshipTitle = computed(() => storageBagWorshipTargetConfig.value?.title || '')
+const storageBagWorshipScoreLabel = computed(() => storageBagWorshipTargetConfig.value?.scoreLabel || '数值')
+const showStorageBagWorshipReference = computed(() => Boolean(storageBagWorshipTargetConfig.value))
+
+function classifyStorageBagItem(row: Record<string, any>) {
+  const item = row?.item || {}
+  const typeName = String(item.type_name || '')
+  const text = storageBagText(row)
+
+  if (/魔道|魔王|慑魔|镇魔|追命索/.test(text)) return { main: 'activity', sub: '魔道' }
+  if (/云梦/.test(text)) return { main: 'activity', sub: '云梦' }
+  if (/兽渊/.test(text)) return { main: 'activity', sub: '兽渊' }
+  if (/虚天/.test(text)) return { main: 'activity', sub: '虚天' }
+  if (/弈技|棋|妙手|天元|半子/.test(text)) return { main: 'activity', sub: '下棋' }
+
+  if (storageBagFriendshipValue(row) > 0) return { main: 'resource', sub: '仙花' }
+  if (/自选匣|宝匣|礼包|[^仙]匣|残页|残篇|碎片|悟境|心悟石|悟道石|悟仙石|悟技符|升阶心得|仙玉|铸形元魄/.test(text)) return { main: 'other', sub: storageBagOtherSubGroup(row) }
+  if (/可用于炼制|炼制丹药|炼丹|灵草|天雷竹|火树|堕天松|灵眼神树|蟠桃|玄玉葫芦|冥焰果|木铃花|墨玉鳞|碧灵枝|涅槃净莲|净莲/.test(text)) return { main: 'resource', sub: '炼丹' }
+  if (/灵兽|饲灵|兽神|天凰/.test(text)) return { main: 'resource', sub: '灵兽' }
+  if (/洗灵/.test(text)) return { main: 'resource', sub: '洗灵' }
+  if (['剑纹', '魂晶', '神兵部件'].includes(typeName) || /剑纹|魂晶|神兵部件/.test(text)) return { main: 'other', sub: storageBagOtherSubGroup(row) }
+  if (['仙环气铠'].includes(typeName) || /装备|玄铁|灵环|气铠|神兵|鞘|炉|图/.test(text)) return { main: 'resource', sub: '装备' }
+  if (typeName === '丹药' || /淬体|精魄|神火|龙髓|宝魄|惊蛰|圣焰|火种|金蛟|建木/.test(text)) return { main: 'resource', sub: '淬体' }
+
+  return { main: 'other', sub: storageBagOtherSubGroup(row) }
+}
+
+const storageBagGroupCounts = computed(() => {
+  const main: Record<string, number> = { all: storageBagItems.value.length, resource: 0, activity: 0, other: 0 }
+  const sub: Record<string, number> = {}
+  for (const row of storageBagItems.value) {
+    const group = classifyStorageBagItem(row)
+    main[group.main] = (main[group.main] || 0) + 1
+    sub[`${group.main}:${group.sub}`] = (sub[`${group.main}:${group.sub}`] || 0) + 1
+  }
+  return { main, sub }
+})
+
+const storageBagSubGroupOptions = computed(() => {
+  if (storageBagMainGroup.value === 'resource') return STORAGE_BAG_RESOURCE_GROUPS
+  if (storageBagMainGroup.value === 'activity') return STORAGE_BAG_ACTIVITY_GROUPS
+  if (storageBagMainGroup.value === 'other') {
+    return Object.entries(storageBagGroupCounts.value.sub)
+      .filter(([key]) => key.startsWith('other:'))
+      .map(([key, count]) => ({ label: key.slice('other:'.length), count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'zh-Hans-CN'))
+      .map(item => item.label)
+  }
+  return []
+})
+
+const filteredStorageBagItems = computed(() => {
+  const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
+  return storageBagItems.value.filter(row => {
+    const group = classifyStorageBagItem(row)
+    if (storageBagMainGroup.value !== 'all' && group.main !== storageBagMainGroup.value) return false
+    if (storageBagSubGroup.value && group.sub !== storageBagSubGroup.value) return false
+    if (!tokens.length) return true
+    const item = row?.item || {}
+    const haystack = [
+      storageBagText(row),
+      JSON.stringify(row?.ext_summary || {}),
+    ].join(' ').toLowerCase()
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+function storageBagSortValue(row: Record<string, any>) {
+  if (storageBagSortKey.value === 'num') return Number(row?.num) || 0
+  if (storageBagSortKey.value === 'friendship') return storageBagFriendshipValue(row)
+  if (storageBagSortKey.value === 'total_friendship') return storageBagTotalFriendshipValue(row)
+  return 0
+}
+
+const sortedStorageBagItems = computed(() => {
+  if (storageBagSortKey.value === 'default') return filteredStorageBagItems.value
+  return [...filteredStorageBagItems.value].sort((a, b) => {
+    const diff = storageBagSortValue(b) - storageBagSortValue(a)
+    if (diff) return diff
+    const qualityDiff = storageBagQualityRank(b) - storageBagQualityRank(a)
+    if (qualityDiff) return qualityDiff
+    return packetInsightItemName(a).localeCompare(packetInsightItemName(b), 'zh-Hans-CN')
+  })
+})
+
+const visibleStorageBagItems = computed(() => sortedStorageBagItems.value.slice(0, STORAGE_BAG_PREVIEW_LIMIT))
+
+const storageBagFriendshipTotal = computed(() => (
+  filteredStorageBagItems.value.reduce((sum, row) => sum + storageBagTotalFriendshipValue(row), 0)
+))
+
+function worshipRecordScore(row: Record<string, any>) {
+  const value = Number(row?.friendship ?? row?.score ?? row?.value)
+  return Number.isFinite(value) ? value : 0
+}
+
+function worshipRecordTimestamp(row: Record<string, any>) {
+  const raw = row?.date ?? row?.time ?? row?.captured_at
+  if (typeof raw === 'number') {
+    const timestamp = raw < 10_000_000_000 ? raw * 1000 : raw
+    return Number.isFinite(timestamp) ? timestamp : 0
+  }
+  const text = String(raw || '').trim()
+  if (!text) return 0
+  let normalized = text
+  const dotDate = text.match(/^(\d{4})\.(\d{1,2})\.(\d{1,2})(.*)$/)
+  if (dotDate) {
+    normalized = `${dotDate[1]}-${dotDate[2].padStart(2, '0')}-${dotDate[3].padStart(2, '0')}${dotDate[4] || ''}`
+  }
+  const parsed = Date.parse(normalized.replace(' ', 'T'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function worshipRecordDate(row: Record<string, any>) {
+  return row?.date || (row?.captured_at ? formatTcpBusinessTime(row.captured_at) : '-')
+}
+
+function worshipRecordType(row: Record<string, any>) {
+  return row?.rank_type_label || row?.rank_type || '-'
+}
+
+function worshipRecordTargetLabel(row: Record<string, any>) {
+  const label = String(row?.target_label || row?.worship_target_label || '').trim()
+  if (label) return label
+  const activityId = Number(row?.activity_id || row?.rank_type)
+  if (Number.isFinite(activityId)) {
+    const base = activityId % 100000
+    if (Math.floor(base / 100) === 428 || Math.floor(base / 100) === 432) return '天资'
+    if (Math.floor(base / 100) === 431) return '道丹'
+  }
+  const fazeId = Number(row?.faze_id)
+  if (Number.isFinite(fazeId)) {
+    if (fazeId >= 10050 && fazeId <= 10055) return '天资'
+    if (fazeId >= 10070 && fazeId <= 10075) return '道丹'
+  }
+  return ''
+}
+
+function worshipRecordPlane(row: Record<string, any>) {
+  const raw = row?.plane_label || row?.plane || '-'
+  const text = String(raw || '-').trim()
+  if (text === '服内' || text === '1') return '1跨'
+  return text
+}
+
+function storageBagWorshipPlaneNumber(plane: string) {
+  const value = Number.parseInt(plane, 10)
+  return Number.isFinite(value) ? value : 0
+}
+
+function storageBagWorshipPlaneColor(plane: string) {
+  const planeNumber = storageBagWorshipPlaneNumber(plane)
+  return STORAGE_BAG_WORSHIP_CHART_COLORS[planeNumber] || '#475467'
+}
+
+function storageBagWorshipPlaneLabel(planeNumber: number) {
+  return `${planeNumber}跨`
+}
+
+function isStorageBagWorshipChartPlaneSelected(planeNumber: number) {
+  return storageBagWorshipChartPlanes.value.includes(planeNumber)
+}
+
+function toggleStorageBagWorshipChartPlane(planeNumber: number) {
+  const selected = new Set(storageBagWorshipChartPlanes.value)
+  if (selected.has(planeNumber)) {
+    selected.delete(planeNumber)
+  } else {
+    selected.add(planeNumber)
+  }
+  storageBagWorshipChartPlanes.value = normalizeStorageBagWorshipChartPlanes(Array.from(selected))
+}
+
+function storageBagWorshipTypeRank(row: Record<string, any>) {
+  const type = worshipRecordType(row)
+  if (String(type).includes('社团')) return 2
+  if (String(type).includes('个人')) return 1
+  return 0
+}
+
+function compareStorageBagWorshipRecord(a: Record<string, any>, b: Record<string, any>) {
+  const sortKey = storageBagWorshipSortKey.value
+  if (sortKey === 'time') {
+    const diff = worshipRecordTimestamp(b) - worshipRecordTimestamp(a)
+    if (diff) return diff
+  } else if (sortKey === 'plane') {
+    const diff = storageBagWorshipPlaneNumber(worshipRecordPlane(b)) - storageBagWorshipPlaneNumber(worshipRecordPlane(a))
+    if (diff) return diff
+  } else if (sortKey === 'type') {
+    const diff = storageBagWorshipTypeRank(b) - storageBagWorshipTypeRank(a)
+    if (diff) return diff
+  } else {
+    const diff = worshipRecordScore(b) - worshipRecordScore(a)
+    if (diff) return diff
+  }
+  return (
+    worshipRecordScore(b) - worshipRecordScore(a)
+    || worshipRecordTimestamp(b) - worshipRecordTimestamp(a)
+    || storageBagWorshipPlaneNumber(worshipRecordPlane(b)) - storageBagWorshipPlaneNumber(worshipRecordPlane(a))
+    || String(a?.role || '').localeCompare(String(b?.role || ''), 'zh-Hans-CN')
+  )
+}
+
+function sortStorageBagWorshipBy(key: 'friendship' | 'time' | 'plane' | 'type') {
+  storageBagWorshipSortKey.value = key
+}
+
+function formatStorageBagWorshipChartDate(timestamp: number) {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '-'
+  return `${date.getMonth() + 1}/${date.getDate()}`
+}
+
+function formatStorageBagWorshipChartFullDate(timestamp: number) {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return '-'
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
+function buildStorageBagWorshipYTicks(maxScore: number) {
+  if (!Number.isFinite(maxScore) || maxScore <= 0) return [0, 1]
+  const targetStep = maxScore / 4
+  const magnitude = 10 ** Math.floor(Math.log10(targetStep))
+  const factor = targetStep / magnitude
+  const niceFactor = factor <= 1 ? 1 : factor <= 2 ? 2 : factor <= 5 ? 5 : 10
+  const step = niceFactor * magnitude
+  const yMax = Math.ceil(maxScore / step) * step
+  const ticks: number[] = []
+  for (let value = 0; value <= yMax + step * 0.5; value += step) {
+    ticks.push(value)
+  }
+  return ticks
+}
+
+function buildStorageBagWorshipChartPanel(
+  chartRows: Array<{ row: Record<string, any>, timestamp: number, score: number, type: string }>,
+  minTime: number,
+) {
+  const maxScore = Math.max(...chartRows.map(point => point.score), 0)
+  const yTickValues = buildStorageBagWorshipYTicks(maxScore)
+  const yMax = Math.max(...yTickValues, 1)
+  const yInterval = yTickValues.length >= 2 ? yTickValues[1] - yTickValues[0] : undefined
+  const points = chartRows.map(point => ({
+    ...point,
+    plane: worshipRecordPlane(point.row),
+  }))
+  const planeOrder = Array.from(new Set(points.map(point => point.plane))).sort((a, b) => {
+    const aNum = storageBagWorshipPlaneNumber(a)
+    const bNum = storageBagWorshipPlaneNumber(b)
+    if (aNum && bNum && aNum !== bNum) return aNum - bNum
+    return a.localeCompare(b, 'zh-Hans-CN')
+  })
+  const groups = planeOrder.map((plane, index) => {
+    const groupPoints = points.filter(point => point.plane === plane).sort((a, b) => a.timestamp - b.timestamp)
+    const color = storageBagWorshipPlaneColor(plane)
+    return {
+      plane,
+      color,
+      points: groupPoints,
+    }
+  })
+  const option: StorageBagWorshipChartOption = {
+    animation: false,
+    color: groups.map(group => group.color),
+    grid: {
+      left: STORAGE_BAG_WORSHIP_CHART_MARGIN.left,
+      right: STORAGE_BAG_WORSHIP_CHART_MARGIN.right,
+      top: STORAGE_BAG_WORSHIP_CHART_MARGIN.top,
+      bottom: STORAGE_BAG_WORSHIP_CHART_MARGIN.bottom,
+    },
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      formatter(params: any) {
+        const data = params?.data || {}
+        const meta = data.meta || {}
+        const marker = params?.marker || ''
+        return [
+          escapeFanxiuHtml(meta.time || ''),
+          `${marker}${escapeFanxiuHtml(meta.plane || '-')}`,
+          `角色：${escapeFanxiuHtml(meta.role || '-')}`,
+          `榜单：${escapeFanxiuHtml(meta.type || '-')}`,
+          `友好度：${escapeFanxiuHtml(meta.scoreLabel || '-')}`,
+        ].filter(Boolean).join('<br/>')
+      },
+    },
+    xAxis: {
+      type: 'time',
+      min: minTime,
+      max: minTime + STORAGE_BAG_WORSHIP_CHART_WINDOW_MS,
+      axisLine: { lineStyle: { color: '#cbd5e1' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#667085',
+        fontSize: 12,
+        formatter(value: number) {
+          return formatStorageBagWorshipChartDate(value)
+        },
+      },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yMax,
+      interval: yInterval,
+      axisLine: { show: true, lineStyle: { color: '#cbd5e1' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#667085',
+        fontSize: 12,
+        formatter(value: number) {
+          return formatChineseCompactNumber(value)
+        },
+      },
+      splitLine: {
+        lineStyle: { color: '#eef2f6' },
+      },
+    },
+    series: groups.map(group => ({
+      name: group.plane,
+      type: 'line',
+      showSymbol: true,
+      symbol: 'circle',
+      symbolSize: 7,
+      lineStyle: {
+        width: 1.7,
+        color: group.color,
+      },
+      itemStyle: {
+        color: group.color,
+        borderColor: '#fff',
+        borderWidth: 1.5,
+      },
+      emphasis: {
+        scale: true,
+      },
+      data: group.points.map(point => ({
+        value: [point.timestamp, point.score],
+        meta: {
+          time: formatStorageBagWorshipChartFullDate(point.timestamp),
+          plane: point.plane,
+          role: point.row?.role || '-',
+          type: point.type || worshipRecordType(point.row),
+          scoreLabel: formatPacketInsightScoreValue(point.score),
+        },
+      })),
+    })),
+  }
+  return {
+    key: 'worship',
+    title: '近一年趋势',
+    points,
+    groups,
+    option,
+  }
+}
+
+const storageBagWorshipChart = computed(() => {
+  const width = STORAGE_BAG_WORSHIP_CHART_WIDTH
+  const height = STORAGE_BAG_WORSHIP_CHART_HEIGHT
+  const now = Date.now()
+  const minTime = now - STORAGE_BAG_WORSHIP_CHART_WINDOW_MS
+  const selectedPlanes = new Set(storageBagWorshipChartPlanes.value)
+  const chartRows = storageBagTargetWorshipRecords.value
+    .map(row => ({
+      row,
+      timestamp: worshipRecordTimestamp(row),
+      score: worshipRecordScore(row),
+      type: worshipRecordType(row),
+    }))
+    .filter(point => (
+      point.timestamp >= minTime
+      && point.timestamp <= now
+      && point.score > 0
+      && !String(point.type).includes('社团')
+      && selectedPlanes.has(storageBagWorshipPlaneNumber(worshipRecordPlane(point.row)))
+    ))
+    .sort((a, b) => a.timestamp - b.timestamp)
+  const panels = chartRows.length ? [buildStorageBagWorshipChartPanel(chartRows, minTime)] : []
+  return {
+    width,
+    height,
+    points: chartRows,
+    panels,
+  }
+})
+
+const storageBagWorshipChartRefs = ref<Record<string, HTMLElement | null>>({})
+const storageBagWorshipChartInstances = new Map<string, ECharts>()
+let storageBagWorshipChartResizeObserver: ResizeObserver | null = null
+
+function renderStorageBagWorshipCharts() {
+  const panels = storageBagWorshipChart.value.panels
+  const activeKeys = new Set(panels.map(panel => panel?.key).filter(Boolean))
+  Array.from(storageBagWorshipChartInstances.keys()).forEach(key => {
+    if (!activeKeys.has(key)) {
+      storageBagWorshipChartInstances.get(key)?.dispose()
+      storageBagWorshipChartInstances.delete(key)
+    }
+  })
+  panels.forEach(panel => {
+    if (!panel) return
+    const el = storageBagWorshipChartRefs.value[panel.key]
+    if (!el) return
+    let chart = storageBagWorshipChartInstances.get(panel.key)
+    if (!chart) {
+      chart = echarts.init(el)
+      storageBagWorshipChartInstances.set(panel.key, chart)
+    }
+    chart.setOption(panel.option, true)
+    chart.resize()
+  })
+}
+
+function scheduleStorageBagWorshipChartRender() {
+  void nextTick(() => {
+    renderStorageBagWorshipCharts()
+  })
+}
+
+function setStorageBagWorshipChartRef(key: string, el: Element | null) {
+  const previous = storageBagWorshipChartRefs.value[key]
+  if (previous && previous !== el) {
+    storageBagWorshipChartResizeObserver?.unobserve(previous)
+  }
+  if (el instanceof HTMLElement) {
+    storageBagWorshipChartRefs.value[key] = el
+    storageBagWorshipChartResizeObserver?.observe(el)
+    scheduleStorageBagWorshipChartRender()
+  } else {
+    storageBagWorshipChartRefs.value[key] = null
+    storageBagWorshipChartInstances.get(key)?.dispose()
+    storageBagWorshipChartInstances.delete(key)
+  }
+}
+
+function disposeStorageBagWorshipCharts() {
+  storageBagWorshipChartResizeObserver?.disconnect()
+  storageBagWorshipChartResizeObserver = null
+  storageBagWorshipChartInstances.forEach(chart => chart.dispose())
+  storageBagWorshipChartInstances.clear()
+}
+
+function formatPacketInsightValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'number') return formatChineseCompactNumber(value)
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  return String(value)
+}
+
+function formatPacketInsightScoreValue(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return '0'
+  const formatUnit = (unitValue: number) => (Math.floor(unitValue * 100) / 100).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+  if (numeric >= 100000000) return `${formatUnit(numeric / 100000000)}亿`
+  if (numeric >= 10000) return `${formatUnit(numeric / 10000)}万`
+  return formatUnit(numeric)
+}
+
+function packetInsightItemName(row: Record<string, any>) {
+  return row?.item?.name || row?.name || row?.base_id || row?.item_id || '-'
+}
+
+function storageBagItemId(row: Record<string, any>) {
+  return row?.base_id || row?.item?.item_id || row?.item_id || ''
+}
+
+function packetInsightBagSectionName(row: Record<string, any>) {
+  if (row?.vo_type === 'ItemVO') return '道具'
+  if (row?.vo_type === 'GongFaItemVO') return '功法'
+  if (row?.vo_type === 'TalismanVo') return '法宝/符器'
+  return row?.vo_type || `分区 ${row?.index ?? '-'}`
+}
+
+function selectStorageBagMainGroup(group: string) {
+  storageBagMainGroup.value = group
+  storageBagSubGroup.value = ''
+}
+
+function selectStorageBagSubGroup(group: string) {
+  storageBagSubGroup.value = storageBagSubGroup.value === group ? '' : group
+}
+
+function sortStorageBagBy(key: 'num' | 'friendship' | 'total_friendship') {
+  storageBagSortKey.value = key
+}
+
+function packetInsightRankTitle(row: Record<string, any>) {
+  const personal = row.personal_item || {}
+  const activityId = row.activity_id || '-'
+  const name = personal.name || personal.subject || ''
+  const rank = personal.rank ? `第${personal.rank}名` : '未上榜'
+  return [activityId, name, rank].filter(Boolean).join(' · ')
+}
+
+async function loadPacketRuntimeInsights(autoSync = false) {
+  if (activeTab.value !== 'packet') return
+  packetRuntimeInsightsLoading.value = true
+  try {
+    const response = await getFanxiuPacketRuntimeInsights({ auto_sync: autoSync })
+    packetRuntimeInsights.value = response.snapshot ?? {}
+  } catch (error: any) {
+    console.warn('Failed to load Fanxiu packet runtime insights:', error)
+  } finally {
+    packetRuntimeInsightsLoading.value = false
+  }
+}
+
+async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  const silent = Boolean(options.silent)
+  if (!silent) {
+    loadingList.value = true
+    loadingDetail.value = false
+  }
+  try {
+    const response = await getFanxiuPacketStorageBag()
+    if (requestSeq !== listRequestSeq) return
+    packetRuntimeInsights.value = { ...(packetRuntimeInsights.value ?? {}), bag: response.bag ?? null, worship: response.worship ?? null }
+    total.value = storageBagItems.value.length
+    selectedId.value = ''
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (!silent && requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取储物袋快照失败')
+    }
+  } finally {
+    if (!silent && requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+function stopStorageBagAutoRefresh() {
+  if (storageBagRefreshTimer !== null) {
+    window.clearInterval(storageBagRefreshTimer)
+    storageBagRefreshTimer = null
+  }
+}
+
+function startStorageBagAutoRefresh() {
+  stopStorageBagAutoRefresh()
+  if (activeTab.value !== 'storage_bag') return
+  storageBagRefreshTimer = window.setInterval(() => {
+    if (activeTab.value === 'storage_bag' && !loadingList.value) {
+      void loadStorageBagSnapshot({ silent: true })
+    }
+  }, 15000)
+}
+
+async function refreshPacketRuntimeInsights(force = false) {
+  if (activeTab.value !== 'packet') return
+  packetRuntimeInsightsLoading.value = true
+  try {
+    const response = await syncFanxiuPacketRuntimeInsights({ force })
+    packetRuntimeInsights.value = response.snapshot ?? {}
+    ElMessage.success(response.changed ? '已更新抓包洞察' : '抓包洞察已是最新')
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '更新抓包洞察失败')
+  } finally {
+    packetRuntimeInsightsLoading.value = false
+  }
 }
 
 function formatTcpBusinessTime(value: string) {
@@ -4973,8 +5906,8 @@ function getActivityRankRewardCaptureProgress(row: FanxiuActivityRewardRow) {
   return getActivityRankPersonProgress(row.rank_gatekeeper)
 }
 
-function getActivityRankGatekeeperCount(section: FanxiuActivityRewardSection) {
-  return getActivityRankRewardRows(section).filter(row => Boolean(getActivityRankRewardRowMeta(row))).length
+function getActivityRankGatekeeperCount(section: FanxiuActivityRewardSection, activity: FanxiuActivityCard | null | undefined = selectedActivity.value) {
+  return getActivityRankRewardRows(section, activity).filter(row => Boolean(getActivityRankRewardRowMeta(row))).length
 }
 
 function getActivityRankSelfText(section: FanxiuActivityRewardSection) {
@@ -5026,8 +5959,11 @@ function getActivityRewardRankStart(row: FanxiuActivityRewardRow, fallback: numb
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function getActivityRankRewardRows(section: FanxiuActivityRewardSection) {
-  return [...(section.rows ?? [])].sort((left, right) => (
+function getActivityRankRewardRows(
+  section: FanxiuActivityRewardSection,
+  activity: FanxiuActivityCard | null | undefined = selectedActivity.value,
+) {
+  return [...getActivityRuntimeScopedRewardRows(section, activity)].sort((left, right) => (
     String(left.source_activity_id ?? '').localeCompare(String(right.source_activity_id ?? ''))
     || getActivityRewardRankStart(left, 10 ** 9) - getActivityRewardRankStart(right, 10 ** 9)
     || String(left.row_key ?? '').localeCompare(String(right.row_key ?? ''))
@@ -5092,8 +6028,12 @@ function formatSignedActivityDelta(value: number) {
   return `${sign}${formatChineseCompactNumber(Math.abs(value))}`
 }
 
-function getActivityRankRewardDeltaItemsForSection(section: FanxiuActivityRewardSection, index: number) {
-  return getActivityRankRewardDeltaItems(getActivityRankRewardRows(section), index)
+function getActivityRankRewardDeltaItemsForSection(
+  section: FanxiuActivityRewardSection,
+  index: number,
+  activity: FanxiuActivityCard | null | undefined = selectedActivity.value,
+) {
+  return getActivityRankRewardDeltaItems(getActivityRankRewardRows(section, activity), index)
 }
 
 function getActivityChallengeLevelKey(sectionKey: string, level: { level_id?: string | number; source_level_id?: string | number }, index: number) {
@@ -5381,11 +6321,125 @@ function formatActivityGiftNumber(value: number, digits = 2) {
   return value.toFixed(digits).replace(/\.?0+$/, '')
 }
 
-function getActivityGiftValueRows(section: FanxiuActivityRewardSection): ActivityGiftValueRow[] {
+function getActivityRewardRowCrossGroupDay(row: FanxiuActivityRewardRow) {
+  const match = String(row.condition || '').match(/CrossGroupDay\|([^_,|]+)_([^,|]+)/)
+  return match ? { group: match[1], day: match[2] } : null
+}
+
+function parseActivityOpenDateMs(value: string) {
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (!match) return null
+  return makeActivityDateTimeMs(`${match[1]}-${match[2]}-${match[3]}`, '00:00:00')
+}
+
+function getActivityRewardOpenPredicates(row: FanxiuActivityRewardRow) {
+  const condition = String(row.condition || '')
+  const matches = condition.matchAll(/ActivityIdOpen(Before|After)\|([^_;,|]+)_(\d{8})/g)
+  return Array.from(matches)
+    .map(match => ({
+      direction: match[1],
+      activityId: match[2],
+      thresholdMs: parseActivityOpenDateMs(match[3]),
+    }))
+    .filter(item => item.thresholdMs !== null)
+}
+
+function getActivityRuntimeStartMs(activity: FanxiuActivityCard | null | undefined) {
+  const runtimeRows = getActivityWorldlineRows(activity)
+  const starts = runtimeRows
+    .map(row => normalizeWorldlineMs(row.startTime))
+    .filter((value): value is number => value !== null)
+  if (starts.length) return Math.min(...starts)
+  const range = pickActivityScheduleRange(buildParsedActivityHints(activity as FanxiuActivitySearchItem))
+  return range?.startHint.ms ?? null
+}
+
+function activityRewardRowMatchesRuntimeOpenDate(
+  row: FanxiuActivityRewardRow,
+  activity: FanxiuActivityCard | null | undefined,
+) {
+  const predicates = getActivityRewardOpenPredicates(row)
+  if (!predicates.length) return true
+  const startMs = getActivityRuntimeStartMs(activity)
+  if (startMs === null) return true
+  return predicates.some(predicate => {
+    const threshold = predicate.thresholdMs ?? 0
+    return predicate.direction === 'Before' ? startMs < threshold : startMs >= threshold
+  })
+}
+
+function activityRewardRowMatchesRuntimeRange(
+  row: FanxiuActivityRewardRow,
+  activity: FanxiuActivityCard | null | undefined,
+) {
+  const runtimeRows = getActivityWorldlineRows(activity)
+  if (!runtimeRows.length) return true
+  const serverDayStart = Number(row.server_day_start)
+  const serverDayEnd = Number(row.server_day_end)
+  if (Number.isFinite(serverDayStart) || Number.isFinite(serverDayEnd)) {
+    const matched = runtimeRows.some(runtime => {
+      const openServerMs = normalizeWorldlineMs(activityWorldlineSchedule.value?.openServerTime)
+      const startMs = normalizeWorldlineMs(runtime.startTime)
+      const day = openServerMs !== null && startMs !== null
+        ? Math.floor((startMs - openServerMs) / 86400000) + 1
+        : Number(runtime.daoNian)
+      if (!Number.isFinite(day) || day <= 0) return true
+      return (!Number.isFinite(serverDayStart) || day >= serverDayStart)
+        && (!Number.isFinite(serverDayEnd) || day <= serverDayEnd)
+    })
+    if (!matched) return false
+  }
+
+  const levelStart = Number(row.world_level_start)
+  const levelEnd = Number(row.world_level_end)
+  if (Number.isFinite(levelStart) || Number.isFinite(levelEnd)) {
+    const matched = runtimeRows.some(runtime => {
+      const level = Number(runtime.avgWorldLevel)
+      if (!Number.isFinite(level) || level <= 0) return true
+      return (!Number.isFinite(levelStart) || level >= levelStart)
+        && (!Number.isFinite(levelEnd) || level <= levelEnd)
+    })
+    if (!matched) return false
+  }
+  return true
+}
+
+function getActivityRuntimeScopedRewardRows(
+  section: FanxiuActivityRewardSection,
+  activity: FanxiuActivityCard | null | undefined,
+) {
+  const rows = (section.rows ?? [])
+    .filter(row => activityRewardRowMatchesRuntimeOpenDate(row, activity))
+    .filter(row => activityRewardRowMatchesRuntimeRange(row, activity))
+  const runtimeRows = getActivityWorldlineRows(activity)
+  if (!runtimeRows.length || !rows.some(row => getActivityRewardRowCrossGroupDay(row))) return rows
+
+  const hasCrossRuntime = runtimeRows.some(row => /Cross/i.test(String(row.class || '')))
+  if (!hasCrossRuntime) {
+    return rows.filter(row => !getActivityRewardRowCrossGroupDay(row))
+  }
+
+  const runtimeGroups = new Set(
+    runtimeRows
+      .map(row => String(row.crossGroup ?? '').trim())
+      .filter(Boolean),
+  )
+  if (!runtimeGroups.size) return rows
+  const matchedRows = rows.filter(row => {
+    const cross = getActivityRewardRowCrossGroupDay(row)
+    return cross && runtimeGroups.has(cross.group)
+  })
+  return matchedRows.length ? matchedRows : rows.filter(row => !getActivityRewardRowCrossGroupDay(row))
+}
+
+function getActivityGiftValueRows(
+  section: FanxiuActivityRewardSection,
+  activity: FanxiuActivityCard | null | undefined = selectedActivity.value,
+): ActivityGiftValueRow[] {
   if (section.key !== 'gift' && !/礼包/.test(section.title || '')) return []
   const coreItemId = getActivityGiftCoreItemId(section)
   if (!coreItemId) return []
-  const rows = (section.rows ?? [])
+  const rows = getActivityRuntimeScopedRewardRows(section, activity)
     .map((row, index) => {
       const quantity = getActivityGiftCoreQuantity(row, coreItemId)
       if (quantity <= 0) return null
@@ -5406,10 +6460,24 @@ function getActivityGiftValueRows(section: FanxiuActivityRewardSection): Activit
     })
     .filter((row): row is Omit<ActivityGiftValueRow, 'cumulativeText'> => Boolean(row))
     .sort((left, right) => left.price - right.price || left.quantity - right.quantity || left.title.localeCompare(right.title))
+  const visibleRows: Array<Omit<ActivityGiftValueRow, 'cumulativeText'>> = []
+  const visibleKeys = new Set<string>()
+  for (const row of rows) {
+    const key = [
+      row.title,
+      row.priceText,
+      row.quantityText,
+      row.unitPriceText,
+      row.limitText,
+    ].join('::')
+    if (visibleKeys.has(key)) continue
+    visibleKeys.add(key)
+    visibleRows.push(row)
+  }
 
   let cumulativeQuantity = 0
   let cumulativePrice = 0
-  return rows.map(row => {
+  return visibleRows.map(row => {
     if (row.price <= 0) {
       return {
         ...row,
@@ -7770,7 +8838,7 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
     const keepSelected = options.keepSelection && Boolean(selectedId.value) && visibleItems.some(item => String(item.id) === selectedId.value)
     if (keepSelected) {
       if (!selectedActivity.value || String(selectedActivity.value.id) !== selectedId.value) {
-        void selectActivity(selectedId.value)
+        await selectActivity(selectedId.value)
       }
       return
     }
@@ -7779,7 +8847,7 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
     if (first) {
       selectedId.value = String(first.id)
       selectedActivity.value = null
-      void selectActivity(first.id)
+      await selectActivity(first.id)
     } else {
       selectedId.value = ''
       selectedActivity.value = null
@@ -8168,6 +9236,7 @@ async function loadPacketProtocolWiki() {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
   loadingDetail.value = false
+  void loadPacketRuntimeInsights(false)
   try {
     const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 1 })
     if (requestSeq !== listRequestSeq) return
@@ -8252,6 +9321,9 @@ async function loadWikiLinkIndex() {
 }
 
 function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
+  if (activeTab.value === 'storage_bag') {
+    return loadStorageBagSnapshot()
+  }
   if (activeTab.value === 'item') {
     return loadItemCards(options)
   }
@@ -8394,6 +9466,13 @@ async function selectItem(itemId: string | number) {
 
 async function selectActivity(activityId: string | number) {
   const nextId = String(activityId)
+  if (!/^\d+$/.test(nextId)) {
+    if (selectedId.value === nextId) selectedId.value = ''
+    selectedActivity.value = null
+    selectedActivityNote.value = undefined
+    loadingDetail.value = false
+    return
+  }
   selectedId.value = nextId
   const requestSeq = ++detailRequestSeq
   const cacheKey = `${nextId}::${activityServerScope.value || 'all'}`
@@ -8846,6 +9925,11 @@ function buildStandaloneWikiTabHref(tab: WikiTab) {
   return router.resolve({ path: '/standalone/fanxiu/wiki', query: nextQuery }).href
 }
 
+function buildStorageBagItemHref(row: Record<string, any>) {
+  const itemId = storageBagItemId(row)
+  return itemId ? buildFanxiuResourceHref('item', itemId) : ''
+}
+
 function getIndependentResourceType(tab: WikiTab): FanxiuResourceType | null {
   if (tab === 'gongfa' || tab === 'item' || tab === 'lingjie') return tab
   return null
@@ -8906,6 +9990,17 @@ function handleObjectContextMenu(event: MouseEvent, objectId: string | number) {
   if (!resourceType) return
   selectObject(objectId)
   showContextMenu(event, buildFanxiuResourceHref(resourceType, objectId))
+}
+
+function openStorageBagItem(row: Record<string, any>) {
+  const href = buildStorageBagItemHref(row)
+  if (href) window.location.href = href
+}
+
+function handleStorageBagItemClick(event: MouseEvent, row: Record<string, any>) {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  event.preventDefault()
+  openStorageBagItem(row)
 }
 
 function selectObject(objectId: string | number) {
@@ -9091,7 +10186,7 @@ function handleTabChange() {
   }
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
@@ -9249,9 +10344,16 @@ watch([
   pageSize,
   selectedId,
 ], persistPageConfig)
+watch([storageBagMainGroup, storageBagSubGroup], persistStorageBagFilterConfig)
+watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
 watch(activeTab, tab => {
   if (isAuxiliaryWikiTab(tab)) {
     selectedAuxiliaryTab.value = tab
+  }
+  if (tab === 'storage_bag') {
+    startStorageBagAutoRefresh()
+  } else {
+    stopStorageBagAutoRefresh()
   }
   if (tab !== 'asset') {
     staticAssetPreviewManifest.value = null
@@ -9300,6 +10402,7 @@ watch(
 watch(selectedStaticAsset, item => {
   void loadStaticAssetPreviewManifest(item)
 })
+watch(storageBagWorshipChart, scheduleStorageBagWorshipChartRender, { flush: 'post' })
 watch(
   () => [route.query.tab, route.query.id, route.query.q],
   () => {
@@ -9322,17 +10425,26 @@ onMounted(() => {
   window.addEventListener('paste', handleVisualSimilarityPaste)
   window.addEventListener('scroll', closeContextMenu, true)
   window.addEventListener('resize', handleWindowResize)
+  storageBagWorshipChartResizeObserver = new ResizeObserver(() => {
+    storageBagWorshipChartInstances.forEach(chart => chart.resize())
+  })
   loadPageConfig()
   loadSearchHistory()
+  loadStorageBagFilterConfig()
+  loadStorageBagWorshipChartPlaneConfig()
   applyRouteState()
   if (!restoreActivityPeriodPaneHeight()) {
     updateActivityPeriodPaneHeight()
   }
   void loadWikiLinkIndex()
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
+  startStorageBagAutoRefresh()
+  scheduleStorageBagWorshipChartRender()
 })
 
 onBeforeUnmount(() => {
+  stopStorageBagAutoRefresh()
+  disposeStorageBagWorshipCharts()
   stopActivityPeriodPaneResizing()
   cancelActivityPeriodResizeFrame()
   if (activityPeriodScrollTimer !== null) {
@@ -9428,13 +10540,13 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-button
-        v-if="activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
+        v-if="activeTab !== 'storage_bag' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
         @click="cycleSortMode"
       >{{ activeSortModeLabel }}</el-button>
-      <span class="result-count">{{ displayTotal }} 个对象</span>
+      <span class="result-count">{{ displayTotal }} {{ resultCountUnit }}</span>
     </div>
 
     <div v-if="activeTab === 'visual' && visualSimilarityFile" class="visual-similarity-strip">
@@ -9515,7 +10627,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
+    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div v-if="activityViewMode === 'period'" class="facet-row">
           <span class="facet-label">品阶</span>
@@ -9970,6 +11082,241 @@ onBeforeUnmount(() => {
       <div v-else class="homemake-overview-empty">没有匹配机制</div>
     </section>
 
+    <div v-if="activeTab === 'storage_bag'" class="storage-bag-workspace" v-loading="loadingList">
+      <section class="storage-bag-summary">
+        <div>
+          <h3>储物袋</h3>
+          <span v-if="storageBagSnapshot">
+            {{ storageBagSnapshot.stack_count || 0 }} 个物品格 · 已解码 {{ storageBagSnapshot.decoded_stack_count || 0 }} 个
+            {{ storageBagSnapshot.captured_at ? ` · ${formatTcpBusinessTime(storageBagSnapshot.captured_at)}` : '' }}
+            {{ storageBagSnapshot.decoded_from_pcap ? ' · pcap全量复原' : '' }}
+          </span>
+          <span v-else>还没有解析到储物袋快照</span>
+        </div>
+      </section>
+      <section v-if="storageBagSnapshot" class="storage-bag-facts">
+        <span
+          v-for="row in packetInsightBagSections.filter(item => item.decoded_count || item.declared_count)"
+          :key="`${row.index}-${row.vo_type}`"
+        >
+          {{ packetInsightBagSectionName(row) }}
+          <b>{{ row.decoded_count || 0 }}/{{ row.declared_count || 0 }}</b>
+        </span>
+        <span v-for="row in (storageBagSnapshot.type_summary || []).slice(0, 10)" :key="`type-${row.name}`">
+          {{ row.name || '未分类' }}
+          <b>{{ row.count }}</b>
+        </span>
+      </section>
+      <section v-if="storageBagSnapshot" class="storage-bag-groups">
+        <div class="storage-bag-group-row">
+          <span class="facet-label">大类</span>
+          <button
+            v-for="group in STORAGE_BAG_MAIN_GROUPS.filter(group => group.key !== 'all')"
+            :key="group.key"
+            class="facet-option"
+            :class="{ active: storageBagMainGroup === group.key }"
+            type="button"
+            @click="selectStorageBagMainGroup(group.key)"
+          >
+            <span class="facet-option-label">{{ group.label }}</span>
+            <small>{{ storageBagGroupCounts.main[group.key] || 0 }}</small>
+          </button>
+        </div>
+        <div v-if="storageBagSubGroupOptions.length" class="storage-bag-group-row">
+          <span class="facet-label">子类</span>
+          <button
+            v-for="group in storageBagSubGroupOptions"
+            :key="group"
+            class="facet-option"
+            :class="{ active: storageBagSubGroup === group }"
+            type="button"
+            @click="selectStorageBagSubGroup(group)"
+          >
+            <span class="facet-option-label">{{ group }}</span>
+            <small>{{ storageBagGroupCounts.sub[`${storageBagMainGroup}:${group}`] || 0 }}</small>
+          </button>
+        </div>
+      </section>
+      <section v-if="storageBagSnapshot" class="storage-bag-table-wrap">
+        <table class="storage-bag-table">
+          <thead>
+            <tr>
+              <th class="numeric-head">#</th>
+              <th>物品</th>
+              <th class="numeric-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: storageBagSortKey === 'num' }"
+                  type="button"
+                  @click="sortStorageBagBy('num')"
+                >数量</button>
+              </th>
+              <th v-if="showStorageBagFriendshipColumns" class="numeric-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: storageBagSortKey === 'friendship' }"
+                  type="button"
+                  @click="sortStorageBagBy('friendship')"
+                >友好度</button>
+              </th>
+              <th v-if="showStorageBagFriendshipColumns" class="numeric-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: storageBagSortKey === 'total_friendship' }"
+                  type="button"
+                  @click="sortStorageBagBy('total_friendship')"
+                >总价值</button>
+              </th>
+              <th>类型</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, index) in visibleStorageBagItems" :key="`${row.instance_id}-${row.base_id}`">
+              <td class="storage-bag-index-cell">{{ index + 1 }}</td>
+              <td>
+                <a
+                  v-if="storageBagItemId(row)"
+                  class="storage-bag-item-name storage-bag-item-link"
+                  :class="storageBagQualityClass(row)"
+                  :href="buildStorageBagItemHref(row)"
+                  @click="handleStorageBagItemClick($event, row)"
+                >
+                  <img
+                    v-if="row.item?.icon"
+                    :src="getFanxiuResourceIconUrl(row.item.icon)"
+                    alt=""
+                  >
+                  {{ packetInsightItemName(row) }}
+                </a>
+                <span v-else class="storage-bag-item-name" :class="storageBagQualityClass(row)">
+                  <img
+                    v-if="row.item?.icon"
+                    :src="getFanxiuResourceIconUrl(row.item.icon)"
+                    alt=""
+                  >
+                  {{ packetInsightItemName(row) }}
+                </span>
+              </td>
+              <td class="numeric-cell">{{ formatPacketInsightValue(row.num) }}</td>
+              <td v-if="showStorageBagFriendshipColumns" class="numeric-cell">{{ formatPacketInsightValue(storageBagFriendshipValue(row)) }}</td>
+              <td v-if="showStorageBagFriendshipColumns" class="numeric-cell">{{ formatPacketInsightValue(storageBagTotalFriendshipValue(row)) }}</td>
+              <td>{{ row.item?.type_name || '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="filteredStorageBagItems.length > visibleStorageBagItems.length" class="storage-bag-limit">
+          已显示前 {{ visibleStorageBagItems.length }} 个，继续搜索可缩小结果
+        </div>
+        <div v-if="showStorageBagFriendshipColumns" class="storage-bag-extension">
+          <span>总友好度</span>
+          <b>{{ formatPacketInsightValue(storageBagFriendshipTotal) }}</b>
+        </div>
+        <section v-if="showStorageBagWorshipReference" class="storage-bag-worship-reference">
+          <header>
+            <h4>{{ storageBagWorshipTitle }}</h4>
+            <button
+              v-if="storageBagWorshipRecords.length"
+              class="storage-bag-detail-toggle"
+              type="button"
+              @click="storageBagWorshipTableVisible = !storageBagWorshipTableVisible"
+            >
+              {{ storageBagWorshipTableVisible ? '隐藏明细' : `明细 ${storageBagWorshipRecords.length}` }}
+            </button>
+          </header>
+          <table v-if="storageBagWorshipRecords.length && storageBagWorshipTableVisible" class="storage-bag-reference-table">
+            <thead>
+              <tr>
+                <th class="numeric-head">#</th>
+                <th>
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: storageBagWorshipSortKey === 'time' }"
+                    type="button"
+                    @click="sortStorageBagWorshipBy('time')"
+                  >时间</button>
+                </th>
+                <th>
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: storageBagWorshipSortKey === 'plane' }"
+                    type="button"
+                    @click="sortStorageBagWorshipBy('plane')"
+                  >位面</button>
+                </th>
+                <th>角色</th>
+                <th>
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: storageBagWorshipSortKey === 'type' }"
+                    type="button"
+                    @click="sortStorageBagWorshipBy('type')"
+                  >榜单</button>
+                </th>
+                <th class="numeric-head">
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: storageBagWorshipSortKey === 'friendship' }"
+                    type="button"
+                    @click="sortStorageBagWorshipBy('friendship')"
+                  >{{ storageBagWorshipScoreLabel }}</button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, index) in storageBagWorshipRecords" :key="`${row.protocol || 'packet'}-${row.captured_at || row.date}-${index}`">
+                <td class="storage-bag-index-cell">{{ index + 1 }}</td>
+                <td>{{ worshipRecordDate(row) }}</td>
+                <td>{{ worshipRecordPlane(row) }}</td>
+                <td>{{ row.role || '-' }}</td>
+                <td>{{ worshipRecordType(row) }}</td>
+                <td class="numeric-cell">{{ formatPacketInsightScoreValue(worshipRecordScore(row)) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="storageBagWorshipRecords.length" class="storage-bag-worship-chart-controls" aria-label="图表位面筛选">
+            <button
+              v-for="option in storageBagWorshipChartPlaneOptions"
+              :key="option.plane"
+              class="storage-bag-worship-plane-button"
+              :class="{ active: option.selected }"
+              type="button"
+              :style="{ '--plane-color': option.color }"
+              @click="toggleStorageBagWorshipChartPlane(option.plane)"
+            >
+              <span>{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+          </div>
+          <div v-if="storageBagWorshipChart.panels.length" class="storage-bag-worship-chart">
+            <section
+              v-for="panel in storageBagWorshipChart.panels"
+              :key="panel?.key"
+              class="storage-bag-worship-chart-panel"
+            >
+              <h5>{{ panel?.title }}</h5>
+              <div
+                v-if="panel"
+                :ref="el => setStorageBagWorshipChartRef(panel.key, el)"
+                class="storage-bag-worship-echart"
+                role="img"
+                :aria-label="`近一年${storageBagWorshipTitle}折线图：${panel.title}`"
+              ></div>
+            </section>
+          </div>
+          <div v-else-if="storageBagWorshipRecords.length" class="storage-bag-reference-empty">
+            当前选择位面没有近一年个人榜单记录。
+          </div>
+          <div v-if="!storageBagWorshipRecords.length && storageBagWorshipPackets.length" class="storage-bag-reference-empty">
+            已捕获拜谒请求，但还没有捕获到{{ storageBagWorshipTargetLabel }}历史记录的服务端下行响应；后续抓到下行包会自动增量同步到这里。
+          </div>
+          <div v-else-if="!storageBagWorshipRecords.length" class="storage-bag-reference-empty">
+            还没有捕获到{{ storageBagWorshipTargetLabel }}历史记录的服务端下行响应；打开游戏里的拜谒记录时保持抓包运行，后续会自动增量同步到这里。
+          </div>
+        </section>
+        <div v-if="!filteredStorageBagItems.length" class="empty-state">没有匹配的储物袋物品</div>
+      </section>
+    </div>
+
     <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
       <aside class="object-list" :style="activityPeriodListPaneStyle" v-loading="loadingList">
         <div class="object-list-scroll">
@@ -9991,6 +11338,90 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="object-detail packet-wiki-detail" v-loading="loadingDetail">
+        <section class="packet-insight-panel" v-loading="packetRuntimeInsightsLoading">
+          <header>
+            <div>
+              <h3>运行态洞察</h3>
+              <span>{{ packetInsightSnapshot.source_summary?.entry_count || 0 }} 条历史业务包 · {{ packetInsightSnapshot.source_signature?.decoded_file_count || 0 }} 个解码文件</span>
+            </div>
+            <button class="packet-count-link" type="button" @click="refreshPacketRuntimeInsights(false)">同步</button>
+          </header>
+          <div class="packet-insight-metrics">
+            <span v-for="item in packetInsightObservations" :key="item.key">
+              <b>{{ item.title }}</b>
+              <small>{{ item.count }}{{ item.updated_at ? ` · ${formatTcpBusinessTime(item.updated_at)}` : '' }}</small>
+            </span>
+          </div>
+          <div class="packet-insight-grid">
+            <article>
+              <h4>账号</h4>
+              <p v-if="packetInsightAccount">
+                {{ packetInsightAccount.name || '-' }}
+                <small>{{ packetInsightAccount.account_id || packetInsightAccount.role_id || '' }}</small>
+              </p>
+              <dl v-if="packetInsightAccount">
+                <dt>区服</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.server) }}</dd>
+                <dt>等级</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.level) }}</dd>
+                <dt>宗门</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.club_name || packetInsightAccount.alliance_name) }}</dd>
+                <dt>战力</dt><dd>{{ formatPacketInsightValue(packetInsightAccount.battle_score) }}</dd>
+              </dl>
+              <div v-else class="empty-state">未解析到账号快照</div>
+            </article>
+            <article>
+              <h4>钱包资源</h4>
+              <div v-if="packetInsightWalletResources.length" class="packet-insight-chip-list">
+                <span v-for="row in packetInsightWalletResources.slice(0, 18)" :key="`${row.type}-${row.code}`">
+                  {{ row.item?.name || row.name || `类型 ${row.type}` }}
+                  <b>{{ formatPacketInsightValue(row.amount) }}</b>
+                </span>
+              </div>
+              <div v-else class="empty-state">未解析到钱包资源</div>
+            </article>
+            <article>
+              <h4>背包摘要</h4>
+              <p v-if="packetInsightSnapshot.bag">
+                {{ packetInsightSnapshot.bag.stack_count || 0 }} 个物品格 · 已解码 {{ packetInsightSnapshot.bag.decoded_stack_count || 0 }} 个
+                <small>
+                  {{ formatTcpBusinessTime(packetInsightSnapshot.bag.captured_at || '') }}
+                  {{ packetInsightSnapshot.bag.decoded_from_pcap ? ' · pcap全量复原' : '' }}
+                  {{ packetInsightSnapshot.bag.is_truncated ? ' · 样本截断' : '' }}
+                </small>
+              </p>
+              <div v-if="packetInsightBagSections.length" class="packet-insight-chip-list">
+                <span
+                  v-for="row in packetInsightBagSections.filter(item => item.decoded_count || item.declared_count)"
+                  :key="`${row.index}-${row.vo_type}`"
+                >
+                  {{ packetInsightBagSectionName(row) }}
+                  <b>{{ row.decoded_count || 0 }}/{{ row.declared_count || 0 }}</b>
+                </span>
+              </div>
+              <div v-if="packetInsightBagItems.length" class="packet-insight-list">
+                <span v-for="row in packetInsightBagItems.slice(0, 20)" :key="`${row.instance_id}-${row.base_id}`">
+                  {{ packetInsightItemName(row) }}
+                  <b>x{{ formatPacketInsightValue(row.num) }}</b>
+                </span>
+              </div>
+              <div v-else class="empty-state">未解析到背包快照</div>
+            </article>
+            <article>
+              <h4>活动排行</h4>
+              <div v-if="packetInsightPersonalRanks.length" class="packet-insight-list">
+                <span v-for="row in packetInsightPersonalRanks.slice(0, 8)" :key="`${row.activity_id}-${row.group}`">
+                  {{ packetInsightRankTitle(row) }}
+                  <b>{{ row.personal_item?.progress || '' }}</b>
+                </span>
+              </div>
+              <div v-else-if="packetInsightRankRecords.length" class="packet-insight-list">
+                <span v-for="row in packetInsightRankRecords.slice(0, 8)" :key="`${row.activity_id}-${row.group}`">
+                  活动 {{ row.activity_id }}
+                  <b>{{ row.top_items?.length || 0 }} 条榜单</b>
+                </span>
+              </div>
+              <div v-else class="empty-state">未解析到活动排行</div>
+            </article>
+          </div>
+        </section>
         <template v-if="selectedPacketCategoryRow">
           <section class="packet-doc-head">
             <h3>
@@ -10105,7 +11536,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-else
+      v-if="activeTab !== 'storage_bag' && activeTab !== 'packet'"
       ref="activityWorkspaceRef"
       class="object-workspace"
       :class="{
@@ -10340,7 +11771,7 @@ onBeforeUnmount(() => {
                           :class="{ selected: String(row.entry.selectId) === selectedId }"
                           :style="{ left: `${row.left}%`, width: `${row.width}%`, top: `${row.lane * ACTIVITY_PERIOD_LANE_HEIGHT + 7}px` }"
                           :title="`${row.entry.item.name} · ${row.rangeLabel}`"
-                          @click="selectObject(row.entry.selectId)"
+                          @click="selectActivity(row.entry.selectId)"
                         >
                           <span
                             v-for="segment in row.segments"
@@ -10555,7 +11986,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-if="total > 0 && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
+        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
           <el-select
             v-model="pageSize"
             class="page-size-select"
@@ -12296,7 +13727,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="getActivityLoopRows(selectedActivity).length" class="time-hint-strip">
-            <strong>轮换日程</strong>
+            <strong>当前服轮换</strong>
             <span
               v-for="row in getActivityLoopRows(selectedActivity)"
               :key="row.key"
@@ -13985,6 +15416,497 @@ onBeforeUnmount(() => {
   margin: 0 0 10px;
   color: #1f2937;
   font-size: 16px;
+}
+
+.storage-bag-workspace {
+  max-width: 1120px;
+  display: grid;
+  gap: 12px;
+}
+
+.storage-bag-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.storage-bag-summary h3 {
+  margin: 0 0 3px;
+  color: #101828;
+  font-size: 18px;
+}
+
+.storage-bag-summary span,
+.storage-bag-limit {
+  color: #667085;
+  font-size: 12px;
+}
+
+.storage-bag-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.storage-bag-facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #344054;
+  font-size: 12px;
+}
+
+.storage-bag-facts b {
+  color: #9a3412;
+  font-weight: 650;
+}
+
+.storage-bag-groups {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.storage-bag-group-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.storage-bag-group-row .facet-label {
+  padding-top: 0;
+  line-height: 28px;
+}
+
+.storage-bag-table-wrap {
+  justify-self: start;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.storage-bag-table {
+  width: max-content;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 13px;
+}
+
+.storage-bag-table th,
+.storage-bag-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.storage-bag-table th {
+  color: #475467;
+  background: #f8fafc;
+  font-weight: 650;
+}
+
+.storage-bag-table th.numeric-head,
+.storage-bag-reference-table th.numeric-head {
+  width: 1%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-bag-table th.numeric-head .storage-bag-sort-button,
+.storage-bag-reference-table th.numeric-head .storage-bag-sort-button {
+  display: inline-flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.storage-bag-table td.storage-bag-index-cell,
+.storage-bag-reference-table td.storage-bag-index-cell {
+  width: 1%;
+  color: #667085;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-bag-sort-button {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.storage-bag-sort-button::after {
+  content: "↓";
+  margin-left: 4px;
+  color: transparent;
+}
+
+.storage-bag-sort-button:hover,
+.storage-bag-sort-button.active {
+  color: #1677ff;
+}
+
+.storage-bag-sort-button.active::after {
+  color: currentColor;
+}
+
+.storage-bag-extension {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-top: 1px solid #e5e7eb;
+  color: #344054;
+  font-size: 13px;
+}
+
+.storage-bag-extension b {
+  color: #9a3412;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.storage-bag-extension small {
+  color: #667085;
+}
+
+.storage-bag-worship-reference {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.storage-bag-worship-reference header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.storage-bag-worship-reference h4 {
+  margin: 0;
+  color: #101828;
+  font-size: 14px;
+}
+
+.storage-bag-detail-toggle {
+  appearance: none;
+  padding: 2px 7px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  color: #667085;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.storage-bag-detail-toggle:hover {
+  border-color: #bcd7ff;
+  color: #1677ff;
+}
+
+.storage-bag-reference-table {
+  justify-self: start;
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 13px;
+}
+
+.storage-bag-reference-table th,
+.storage-bag-reference-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.storage-bag-reference-table th {
+  color: #475467;
+  background: #f8fafc;
+  font-weight: 650;
+}
+
+.storage-bag-reference-empty {
+  color: #667085;
+  font-size: 13px;
+}
+
+.storage-bag-worship-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-self: start;
+}
+
+.storage-bag-worship-plane-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.storage-bag-worship-plane-button.active {
+  border-color: var(--plane-color, #667085);
+  border-left-color: var(--plane-color, #667085);
+  background: #fff;
+  color: var(--plane-color, #101828);
+  font-weight: 650;
+}
+
+.storage-bag-worship-plane-button small {
+  color: #667085;
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-bag-worship-plane-button.active small {
+  color: var(--plane-color, #667085);
+}
+
+.storage-bag-worship-chart {
+  display: grid;
+  justify-self: start;
+  gap: 14px;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-top: 4px;
+}
+
+.storage-bag-worship-chart-panel {
+  display: grid;
+  gap: 4px;
+}
+
+.storage-bag-worship-chart-panel h5 {
+  margin: 0 0 -4px 58px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.storage-bag-worship-echart {
+  width: 640px;
+  height: 260px;
+}
+
+.storage-bag-item-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #101828;
+  font-weight: 600;
+}
+
+.storage-bag-item-link {
+  text-decoration: none;
+}
+
+.storage-bag-item-link:hover {
+  text-decoration: underline;
+}
+
+.storage-bag-item-name.quality-colorful {
+  color: #0f766e;
+}
+
+.storage-bag-item-name.quality-red {
+  color: #b42318;
+}
+
+.storage-bag-item-name.quality-orange {
+  color: #c2410c;
+}
+
+.storage-bag-item-name.quality-yellow {
+  color: #a15c07;
+}
+
+.storage-bag-item-name.quality-purple {
+  color: #7e22ce;
+}
+
+.storage-bag-item-name.quality-blue {
+  color: #1d4ed8;
+}
+
+.storage-bag-item-name.quality-green {
+  color: #15803d;
+}
+
+.storage-bag-item-name.quality-white,
+.storage-bag-item-name.quality-unknown {
+  color: #101828;
+}
+
+.storage-bag-item-name img {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.storage-bag-table td.numeric-cell,
+.storage-bag-reference-table td.numeric-cell {
+  width: 1%;
+  text-align: right;
+  color: #9a3412;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.packet-insight-panel {
+  max-width: 1120px;
+  display: grid;
+  gap: 12px;
+  margin: 0 auto 16px;
+  padding: 14px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.packet-insight-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.packet-insight-panel h3,
+.packet-insight-panel h4,
+.packet-insight-panel p {
+  margin: 0;
+}
+
+.packet-insight-panel h3 {
+  color: #101828;
+  font-size: 18px;
+}
+
+.packet-insight-panel header span,
+.packet-insight-panel small,
+.packet-insight-panel dt {
+  color: #667085;
+}
+
+.packet-insight-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.packet-insight-metrics > span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.packet-insight-metrics b {
+  color: #1f2937;
+  font-weight: 650;
+}
+
+.packet-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.packet-insight-grid article {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 120px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.packet-insight-grid h4 {
+  color: #344054;
+  font-size: 13px;
+}
+
+.packet-insight-grid p {
+  display: grid;
+  gap: 2px;
+  color: #101828;
+}
+
+.packet-insight-grid dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.packet-insight-grid dd {
+  margin: 0;
+  color: #1f2937;
+}
+
+.packet-insight-chip-list,
+.packet-insight-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.packet-insight-chip-list span,
+.packet-insight-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #344054;
+  font-size: 12px;
+}
+
+.packet-insight-list span {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.packet-insight-chip-list b,
+.packet-insight-list b {
+  color: #9a3412;
+  font-weight: 650;
 }
 
 .packet-protocol-doc {

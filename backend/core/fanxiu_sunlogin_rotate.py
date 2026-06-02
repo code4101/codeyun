@@ -191,20 +191,31 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
         raise RuntimeError("ADB 会话命令失败：" + "; ".join(errors))
 
 
-def keyevent_mumu_adb(key: str | int) -> dict[str, Any]:
+def _normalize_keyevent_arg(key: str | int) -> str:
     raw = str(key).strip()
     if not raw:
         raise RuntimeError("keyevent 不能为空")
     if raw.isdigit():
-        key_arg = raw
-    else:
-        normalized = raw.upper()
-        normalized = normalized if normalized.startswith("KEYCODE_") else f"KEYCODE_{normalized}"
-        if not re.fullmatch(r"KEYCODE_[A-Z0-9_]+", normalized):
-            raise RuntimeError(f"keyevent 格式非法：{raw}")
-        key_arg = normalized
+        return raw
+    normalized = raw.upper()
+    normalized = normalized if normalized.startswith("KEYCODE_") else f"KEYCODE_{normalized}"
+    if not re.fullmatch(r"KEYCODE_[A-Z0-9_]+", normalized):
+        raise RuntimeError(f"keyevent 格式非法：{raw}")
+    return normalized
+
+
+def keyevent_mumu_adb(key: str | int) -> dict[str, Any]:
+    key_arg = _normalize_keyevent_arg(key)
     result = _run_mumu_adb_input(f"input keyevent {key_arg}")
     return {**result, "keyevent": key_arg}
+
+
+def keyevents_mumu_adb(keys: list[str | int]) -> dict[str, Any]:
+    key_args = [_normalize_keyevent_arg(key) for key in keys]
+    if not key_args:
+        raise RuntimeError("keyevents 不能为空")
+    result = _run_mumu_adb_input(f"input keyevent {' '.join(key_args)}")
+    return {**result, "keyevents": key_args}
 
 
 def text_mumu_adb(text: str) -> dict[str, Any]:

@@ -11,58 +11,6 @@ import {
 } from '@/utils/noteSemantics';
 import { createEffectiveNoteTypes } from '@/utils/nodeConfig';
 
-export interface FanxiuStatusConfig {
-  status_path: string | null;
-  auto_detected_path: string | null;
-  effective_path: string | null;
-  mode: 'configured' | 'auto' | 'unset';
-  file_exists: boolean;
-}
-
-export interface FanxiuTaskStatusItem {
-  name: string;
-  scheduled_at: string;
-  due: boolean;
-  seconds_until_due: number;
-  is_next: boolean;
-}
-
-export interface FanxiuAccountStatusItem {
-  name: string;
-  phone: string | null;
-  is_current: boolean;
-  has_due_task: boolean;
-  due_count: number;
-  task_count: number;
-  next_task_name: string | null;
-  next_task_at: string | null;
-  tasks: FanxiuTaskStatusItem[];
-}
-
-export interface FanxiuRuntimeTimerItem {
-  name: string;
-  scheduled_at: string;
-  due: boolean;
-  seconds_until_due: number;
-}
-
-export interface FanxiuStatusSnapshot extends FanxiuStatusConfig {
-  loaded_at: string;
-  error: string | null;
-  current_account: string | null;
-  recommended_account: string | null;
-  next_task_path: string | null;
-  next_task_name: string | null;
-  next_task_at: string | null;
-  next_task_seconds_until_due: number | null;
-  program_initialized: boolean;
-  all_tasks_completed: boolean;
-  watchdog_hash: string | null;
-  runtime_timers: FanxiuRuntimeTimerItem[];
-  accounts: FanxiuAccountStatusItem[];
-  raw_status?: Record<string, unknown> | null;
-}
-
 export interface FanxiuProcessItem {
   pid: number;
   parent_pid: number | null;
@@ -357,6 +305,12 @@ export interface FanxiuCaptureRuntimeStatus {
   tcpdump_started_at: string;
   device_id: string;
   package_name: string;
+  watchdog_running: boolean;
+  watchdog_started_at: string;
+  watchdog_interval_seconds: number;
+  watchdog_last_check_at: string;
+  watchdog_last_action: string;
+  watchdog_last_error: string;
 }
 
 export interface FanxiuPacketActivityPayloadEvent {
@@ -647,7 +601,8 @@ export interface FanxiuGameWindow2DragPayload {
 
 export interface FanxiuGameWindow2KeyeventPayload {
   entry_id: string;
-  key: string;
+  key?: string;
+  keys?: string[];
 }
 
 export interface FanxiuGameWindow2TextPayload {
@@ -805,16 +760,122 @@ export interface FanxiuGameWindow2MatchResponse {
   height: number;
 }
 
-export interface FanxiuGameWindow3StepperLogEntry {
+export interface FanxiuGameWindow3RuntimeLogEntry {
   id: string;
   time: string;
   kind: string;
+  scope?: string;
+  item_id?: string;
   message: string;
   ts?: string;
 }
 
-export interface FanxiuGameWindow3StepperLogResponse {
-  entries: FanxiuGameWindow3StepperLogEntry[];
+export interface FanxiuGameWindow3RuntimeLogResponse {
+  entries: FanxiuGameWindow3RuntimeLogEntry[];
+  path: string;
+}
+
+export interface FanxiuGameWindow3RuntimeGuardItem {
+  id: string;
+  label: string;
+  message?: string;
+  enabled?: boolean;
+  running?: boolean;
+  entry_id?: string;
+  updated_at?: number;
+}
+
+export interface FanxiuGameWindow3WorldFactsResponse {
+  ok: boolean;
+  facts: Record<string, unknown>;
+  path: string;
+}
+
+export interface FanxiuGameWindow3RuntimeStatus {
+  ok: boolean;
+  running: boolean;
+  guard_enabled?: boolean;
+  guard_running?: boolean;
+  guard_entry_id?: string;
+  guard_interval_seconds?: number;
+  guard_items?: Record<string, FanxiuGameWindow3RuntimeGuardItem>;
+  last_guard_event?: Record<string, unknown>;
+  status: 'idle' | 'running' | 'stopping' | 'stopped' | 'success' | 'error' | string;
+  entry_id: string;
+  task_type?: string;
+  current_task?: string;
+  phase?: string;
+  current_scene?: number | null;
+  message: string;
+  current_index: number;
+  total: number;
+  current_code: string;
+  current_task_id?: string;
+  priority?: number;
+  interruptible?: boolean;
+  started_at: number;
+  updated_at: number;
+  finished_at: number;
+  error: string;
+  logs: Array<{ time: string; kind: string; message: string }>;
+}
+
+export interface FanxiuGameWindow3RuntimeTaskRequest {
+  entry_id: string;
+  task_type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface FanxiuGameWindow3SchedulerTaskItem {
+  id: string;
+  task_type: string;
+  label: string;
+  supported?: boolean;
+  source: string;
+  schedule_kind: string;
+  legacy_name: string;
+  enabled: boolean;
+  priority: number;
+  interruptible: boolean;
+  next_time?: string | null;
+  schedule_times: string[];
+  window?: string[] | null;
+  last_run_at?: string | null;
+  retry_after?: string | null;
+  cooldown_seconds: number;
+  payload: Record<string, unknown>;
+  checkpoint?: Record<string, unknown> | null;
+}
+
+export interface FanxiuGameWindow3SchedulerTasksResponse {
+  ok: boolean;
+  tasks: FanxiuGameWindow3SchedulerTaskItem[];
+  path: string;
+}
+
+export interface FanxiuGameWindow3SchedulerPlanItem {
+  id: string;
+  task_type: string;
+  label: string;
+  supported?: boolean;
+  enabled: boolean;
+  due: boolean;
+  runnable: boolean;
+  priority: number;
+  reason: string;
+  next_time?: string | null;
+  retry_after?: string | null;
+  fact: Record<string, unknown>;
+}
+
+export interface FanxiuGameWindow3SchedulerPlanResponse {
+  ok: boolean;
+  next_action: string;
+  message: string;
+  runtime: Record<string, unknown>;
+  facts_summary: Record<string, unknown>;
+  due_tasks: FanxiuGameWindow3SchedulerPlanItem[];
+  tasks: FanxiuGameWindow3SchedulerPlanItem[];
   path: string;
 }
 
@@ -2741,6 +2802,10 @@ export interface FanxiuActivityRewardRow {
   reward_items?: FanxiuGongfaLinkedItem[];
   raw_rewards?: string[];
   condition?: string;
+  server_day_start?: string | number;
+  server_day_end?: string | number;
+  world_level_start?: string | number;
+  world_level_end?: string | number;
 }
 
 export interface FanxiuActivityRewardSection {
@@ -3020,13 +3085,45 @@ export interface FanxiuActivityPacketSyncResponse {
   ok: boolean;
   state_path: string;
   records_path: string;
+  rank_records_path?: string;
   cursor: Record<string, unknown>;
+  rank_cursor?: Record<string, unknown>;
   scanned_packets: number;
   matched_packets: number;
+  matched_rank_packets?: number;
   inserted: number;
   updated: number;
+  rank_inserted?: number;
+  rank_updated?: number;
   skipped_duplicates: number;
+  rank_skipped_duplicates?: number;
   record_count: number;
+  rank_record_count?: number;
+}
+
+export interface FanxiuPacketRuntimeInsightResponse {
+  ok: boolean;
+  changed: boolean;
+  stale?: boolean;
+  state_schema_version?: number;
+  schema_version?: number;
+  state_path: string;
+  snapshot_path: string;
+  source_signature?: Record<string, unknown>;
+  snapshot: Record<string, any>;
+}
+
+export interface FanxiuPacketStorageBagResponse {
+  ok: boolean;
+  changed: boolean;
+  stale?: boolean;
+  state_schema_version?: number;
+  schema_version?: number;
+  state_path: string;
+  snapshot_path: string;
+  source_signature?: Record<string, unknown>;
+  bag?: Record<string, any> | null;
+  worship?: Record<string, any> | null;
 }
 
 export interface FanxiuActivityCardResponse {
@@ -4365,26 +4462,6 @@ export const updateFanxiuChar = (charName: string, data: Partial<NoteNode>) => {
   return api.put<NoteNode>(`/fanxiu/chars/${charName}`, toFanxiuPayload(data)).then(res => normalizeFanxiuNote(res.data));
 };
 
-export const getFanxiuStatusConfig = () => {
-  return api.get<FanxiuStatusConfig>('/fanxiu/status/config').then(res => res.data);
-};
-
-export const updateFanxiuStatusConfig = (statusPath: string | null) => {
-  return api.put<FanxiuStatusConfig>('/fanxiu/status/config', { status_path: statusPath }).then(res => res.data);
-};
-
-export const getFanxiuStatus = () => {
-  return api.get<FanxiuStatusSnapshot>('/fanxiu/status').then(res => res.data);
-};
-
-export const parseFanxiuStatus = (rawStatus: Record<string, unknown>) => {
-  return api.post<FanxiuStatusSnapshot>('/fanxiu/status/parse', { raw_status: rawStatus }).then(res => res.data);
-};
-
-export const saveFanxiuStatus = (rawStatus: Record<string, unknown>) => {
-  return api.put<FanxiuStatusSnapshot>('/fanxiu/status', { raw_status: rawStatus }).then(res => res.data);
-};
-
 export const getFanxiuProcesses = () => {
   return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
 };
@@ -4794,6 +4871,24 @@ export const syncFanxiuActivityPackets = (payload: { force?: boolean } = {}) => 
     .then(res => res.data);
 };
 
+export const getFanxiuPacketRuntimeInsights = (params: { auto_sync?: boolean } = {}) => {
+  return api
+    .get<FanxiuPacketRuntimeInsightResponse>('/fanxiu/packet-capture/tcp/insights', { params, timeout: 120000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuPacketStorageBag = () => {
+  return api
+    .get<FanxiuPacketStorageBagResponse>('/fanxiu/packet-capture/tcp/storage-bag', { timeout: 120000 })
+    .then(res => res.data);
+};
+
+export const syncFanxiuPacketRuntimeInsights = (payload: { force?: boolean } = {}) => {
+  return api
+    .post<FanxiuPacketRuntimeInsightResponse>('/fanxiu/packet-capture/tcp/insights/sync', payload, { timeout: 120000 })
+    .then(res => res.data);
+};
+
 export const getFanxiuActivityCard = (activityId: string | number, params: { server_scope?: string } = {}) => {
   return api
     .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId, ...params } })
@@ -4941,24 +5036,24 @@ export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
 };
 
 export const clickFanxiuGameWindow2 = (payload: FanxiuGameWindow2ClickPayload) => {
-  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/click', payload).then(res => res.data);
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/click', payload, { timeout: 30000 }).then(res => res.data);
 };
 
 export const dragFanxiuGameWindow2 = (payload: FanxiuGameWindow2DragPayload) => {
-  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/drag', payload).then(res => res.data);
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/drag', payload, { timeout: 30000 }).then(res => res.data);
 };
 
 export const keyeventFanxiuGameWindow2 = (payload: FanxiuGameWindow2KeyeventPayload) => {
-  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/keyevent', payload).then(res => res.data);
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/keyevent', payload, { timeout: 30000 }).then(res => res.data);
 };
 
 export const textFanxiuGameWindow2 = (payload: FanxiuGameWindow2TextPayload) => {
-  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/text', payload).then(res => res.data);
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/text', payload, { timeout: 30000 }).then(res => res.data);
 };
 
 export const screencapFanxiuGameWindow2 = (entryId: string) => {
   return api
-    .post<Blob>('/fanxiu/game-window2/screencap', { entry_id: entryId }, { responseType: 'blob' })
+    .post<Blob>('/fanxiu/game-window2/screencap', { entry_id: entryId }, { responseType: 'blob', timeout: 60000 })
     .then(res => res.data);
 };
 
@@ -5002,23 +5097,81 @@ export const importFanxiuGameWindow2BurstFrames = (entryId: string, filenames: s
 };
 
 export const matchFanxiuGameWindow2Screenshot = (payload: FanxiuGameWindow2MatchPayload) => {
-  return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload).then(res => res.data);
+  return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload, { timeout: 60000 }).then(res => res.data);
 };
 
-export const getFanxiuGameWindow3StepperLogs = (limit = 500) => {
+export const getFanxiuGameWindow3RuntimeStatus = () => {
+  return api.get<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/status').then(res => res.data);
+};
+
+const FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT = 60000;
+
+export const startFanxiuGameWindow3RuntimeTask = (entryId: string, taskType: string, payload: Record<string, unknown> = {}) => {
   return api
-    .get<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs', { params: { limit } })
+    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/start', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const appendFanxiuGameWindow3StepperLog = (entry: FanxiuGameWindow3StepperLogEntry) => {
+export const stopFanxiuGameWindow3RuntimeTask = (entryId?: string) => {
   return api
-    .post<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs', { entry })
+    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const clearFanxiuGameWindow3StepperLogs = () => {
-  return api.delete<FanxiuGameWindow3StepperLogResponse>('/fanxiu/game-window3/stepper/logs').then(res => res.data);
+export const setFanxiuGameWindow3RuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
+  return api
+    .post<FanxiuGameWindow3RuntimeStatus>(
+      '/fanxiu/game-window3/runtime/guard/set',
+      { entry_id: entryId, guard_id: guardId, enabled, interval_seconds: intervalSeconds },
+      { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT },
+    )
+    .then(res => res.data);
+};
+
+export const tickFanxiuGameWindow3RuntimeTask = (entryId: string, taskType = 'manual_tick', payload: Record<string, unknown> = {}) => {
+  return api
+    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/tick', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .then(res => res.data);
+};
+
+export const getFanxiuGameWindow3RuntimeLogs = (limit = 500, scope = '', itemId = '') => {
+  return api
+    .get<FanxiuGameWindow3RuntimeLogResponse>('/fanxiu/game-window3/runtime/logs', { params: { limit, scope, item_id: itemId } })
+    .then(res => res.data);
+};
+
+export const getFanxiuGameWindow3WorldFacts = () => {
+  return api
+    .get<FanxiuGameWindow3WorldFactsResponse>('/fanxiu/game-window3/runtime/world-facts')
+    .then(res => res.data);
+};
+
+export const clearFanxiuGameWindow3RuntimeLogs = () => {
+  return api.delete<FanxiuGameWindow3RuntimeLogResponse>('/fanxiu/game-window3/runtime/logs').then(res => res.data);
+};
+
+export const getFanxiuGameWindow3SchedulerTasks = () => {
+  return api.get<FanxiuGameWindow3SchedulerTasksResponse>('/fanxiu/game-window3/scheduler/tasks').then(res => res.data);
+};
+
+export const getFanxiuGameWindow3SchedulerPlan = () => {
+  return api.get<FanxiuGameWindow3SchedulerPlanResponse>('/fanxiu/game-window3/scheduler/plan').then(res => res.data);
+};
+
+export const saveFanxiuGameWindow3SchedulerTasks = (tasks: FanxiuGameWindow3SchedulerTaskItem[]) => {
+  return api.put<FanxiuGameWindow3SchedulerTasksResponse>('/fanxiu/game-window3/scheduler/tasks', tasks).then(res => res.data);
+};
+
+export const runNowFanxiuGameWindow3SchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}) => {
+  return api
+    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/scheduler/task/run-now', { entry_id: entryId, task_id: taskId, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .then(res => res.data);
+};
+
+export const runDueFanxiuGameWindow3SchedulerTasks = (entryId: string) => {
+  return api
+    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .then(res => res.data);
 };
 
 export const getFanxiuGameWindow3AssetTree = (entryId: string) => {

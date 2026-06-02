@@ -14,9 +14,12 @@ from backend.core.fanxiu_android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu_tcp_flow import resolve_fanxiu_tcp_live_capture_dir
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
+FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
 DEFAULT_FANXIU_DEVICE_ID = "127.0.0.1:7555"
 DEFAULT_FANXIU_PACKAGE_NAME = "com.frxxcrjpwssc3.ggws"
 DEFAULT_REMOTE_CAPTURE_DIR = "/data/local/tmp"
+DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 6.0
+DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
 
 
 def _now_label() -> str:
@@ -38,10 +41,12 @@ class FanxiuCaptureRuntimeService:
         device_id: str = DEFAULT_FANXIU_DEVICE_ID,
         package_name: str = DEFAULT_FANXIU_PACKAGE_NAME,
         supervisor_interval: float = 5.0,
+        idle_finalize_seconds: float = DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS,
     ) -> None:
         self.device_id = device_id
         self.package_name = package_name
         self.supervisor_interval = supervisor_interval
+        self.idle_finalize_seconds = max(1.0, float(idle_finalize_seconds))
         self._lock = threading.RLock()
         self._active_reasons: set[str] = set()
         self._state = "stopped"
@@ -57,8 +62,17 @@ class FanxiuCaptureRuntimeService:
         self._current_remote_pcap_path = ""
         self._current_pcap_path = ""
         self._current_pcap_size = 0
+        self._last_remote_pcap_size = 0
+        self._last_remote_pcap_size_seen_at = 0.0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog_stop_event = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_interval = DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS
+        self._watchdog_started_at = ""
+        self._watchdog_last_check_at = ""
+        self._watchdog_last_action = ""
+        self._watchdog_last_error = ""
         self._logs: deque[str] = deque(maxlen=500)
 
     def ensure_running(self, reason: str = "manual") -> dict[str, Any]:
@@ -86,6 +100,33 @@ class FanxiuCaptureRuntimeService:
             self._force_stop_locked(clear_reasons=True, state="stopped")
             return self.status()
 
+    def start_watchdog(self, *, interval_seconds: float = DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS) -> dict[str, Any]:
+        with self._lock:
+            self._watchdog_interval = max(10.0, float(interval_seconds))
+            self._watchdog_stop_event.clear()
+            if self._watchdog_thread and self._watchdog_thread.is_alive():
+                return self.status()
+            self._watchdog_started_at = _now_label()
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                name="fanxiu-capture-runtime-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+            self._log(f"watchdog started: every {self._watchdog_interval:g}s")
+            return self.status()
+
+    def stop_watchdog(self) -> dict[str, Any]:
+        with self._lock:
+            self._watchdog_stop_event.set()
+            self._active_reasons.discard(FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON)
+            if not self._active_reasons:
+                self._force_stop_locked(clear_reasons=False, state="stopped")
+            self._watchdog_started_at = ""
+            self._watchdog_last_action = "stopped"
+            self._log("watchdog stopped")
+            return self.status()
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             running = self._tcpdump_process_alive_locked()
@@ -107,6 +148,12 @@ class FanxiuCaptureRuntimeService:
                 "tcpdump_started_at": self._tcpdump_started_at,
                 "device_id": self.device_id,
                 "package_name": self.package_name,
+                "watchdog_running": bool(self._watchdog_thread and self._watchdog_thread.is_alive()),
+                "watchdog_started_at": self._watchdog_started_at,
+                "watchdog_interval_seconds": self._watchdog_interval,
+                "watchdog_last_check_at": self._watchdog_last_check_at,
+                "watchdog_last_action": self._watchdog_last_action,
+                "watchdog_last_error": self._watchdog_last_error,
             }
 
     def log_lines(self, limit: int = 500) -> list[str]:
@@ -140,6 +187,49 @@ class FanxiuCaptureRuntimeService:
                     self._mark_error_locked(exc)
             self._stop_event.wait(self.supervisor_interval)
 
+    def _watchdog_loop(self) -> None:
+        while not self._watchdog_stop_event.is_set():
+            self.watchdog_once()
+            self._watchdog_stop_event.wait(self._watchdog_interval)
+
+    def watchdog_once(self) -> dict[str, Any]:
+        try:
+            game_running = self.probe_game_running()
+            if game_running:
+                self.ensure_running(FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON)
+                with self._lock:
+                    self._watchdog_last_action = "ensure_running"
+                    self._watchdog_last_error = ""
+                    return self.status()
+            self.release(FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON)
+            with self._lock:
+                self._watchdog_last_action = "skip_no_game"
+                self._watchdog_last_error = ""
+                return self.status()
+        except Exception as exc:
+            with self._lock:
+                self._watchdog_last_check_at = _now_label()
+                self._watchdog_last_action = "error"
+                self._watchdog_last_error = str(exc)
+                self._log(f"watchdog failed: {exc}")
+                return self.status()
+
+    def probe_game_running(self) -> bool:
+        with self._lock:
+            self._watchdog_last_check_at = _now_label()
+        try:
+            self._connect_adb()
+            game_running = self._detect_game_running()
+        except Exception as exc:
+            with self._lock:
+                self._adb_connected = False
+                self._game_running = False
+                self._watchdog_last_error = str(exc)
+            return False
+        with self._lock:
+            self._game_running = game_running
+        return game_running
+
     def _supervise_once(self) -> None:
         self._connect_adb()
         self._ensure_root()
@@ -161,6 +251,7 @@ class FanxiuCaptureRuntimeService:
             if self._tcpdump_process_alive_locked():
                 self._state = "running"
                 self._last_error = ""
+                self._finalize_idle_capture_locked()
                 return
             if self._tcpdump_process is not None:
                 self._log("tcpdump exited; finalizing current pcap")
@@ -239,6 +330,8 @@ class FanxiuCaptureRuntimeService:
         self._current_remote_pcap_path = remote_path
         self._current_pcap_path = str(local_path)
         self._current_pcap_size = 0
+        self._last_remote_pcap_size = 0
+        self._last_remote_pcap_size_seen_at = time.monotonic()
         self._tcpdump_started_at = _now_label()
         self._state = "running"
         self._last_error = ""
@@ -287,35 +380,39 @@ class FanxiuCaptureRuntimeService:
                 self._current_pcap_size = Path(local_path).stat().st_size if Path(local_path).exists() else 0
                 self._log(f"pcap pulled: {local_path} ({self._current_pcap_size} bytes)")
                 if self._current_pcap_size > 0:
-                    self._start_activity_packet_sync_thread(local_path)
+                    self._start_runtime_packet_sync_thread(local_path)
             except Exception as exc:
                 self._log(f"pcap pull failed: {exc}")
         self._tcpdump_started_at = ""
+        self._last_remote_pcap_size = 0
+        self._last_remote_pcap_size_seen_at = 0.0
 
-    def _start_activity_packet_sync_thread(self, local_path: str) -> None:
+    def _start_runtime_packet_sync_thread(self, local_path: str) -> None:
         thread = threading.Thread(
-            target=self._decode_and_sync_activity_packets,
+            target=self._decode_and_sync_runtime_packets,
             args=(local_path,),
-            name="fanxiu-activity-packet-sync",
+            name="fanxiu-runtime-packet-sync",
             daemon=True,
         )
         thread.start()
-        self._log(f"activity packet sync queued: {local_path}")
+        self._log(f"runtime packet sync queued: {local_path}")
 
-    def _decode_and_sync_activity_packets(self, local_path: str) -> None:
+    def _decode_and_sync_runtime_packets(self, local_path: str) -> None:
         try:
-            from backend.core.fanxiu_activity_packet_sync import decode_and_sync_fanxiu_activity_capture
+            from backend.core.fanxiu_packet_insights import decode_and_sync_fanxiu_runtime_capture
 
-            result = decode_and_sync_fanxiu_activity_capture(local_path)
-            sync = result.get("activity_packet_sync") or {}
+            result = decode_and_sync_fanxiu_runtime_capture(local_path)
+            sync = result.get("packet_runtime_sync") or {}
             self._log(
-                "activity packet sync done: "
+                "runtime packet sync done: "
                 f"decoded={result.get('decoded_count') or 0}, "
-                f"rank_packets={sync.get('matched_rank_packets') or 0}, "
-                f"rank_records={sync.get('rank_record_count') or 0}"
+                f"runtime_packets={result.get('runtime_protocol_count') or 0}, "
+                f"worship_packets={sync.get('worship_packet_count') or 0}, "
+                f"worship_records={sync.get('worship_record_count') or 0}, "
+                f"bag_stacks={sync.get('bag_stack_count') or 0}"
             )
         except Exception as exc:
-            self._log(f"activity packet sync failed: {exc}")
+            self._log(f"runtime packet sync failed: {exc}")
 
     def _force_stop_locked(self, *, clear_reasons: bool, state: str) -> None:
         self._stop_event.set()
@@ -337,6 +434,41 @@ class FanxiuCaptureRuntimeService:
 
     def _tcpdump_process_alive_locked(self) -> bool:
         return bool(self._tcpdump_process and self._tcpdump_process.poll() is None)
+
+    def _finalize_idle_capture_locked(self) -> None:
+        remote_path = self._current_remote_pcap_path
+        if not remote_path:
+            return
+        size = self._remote_capture_size(remote_path)
+        now = time.monotonic()
+        if size != self._last_remote_pcap_size:
+            self._last_remote_pcap_size = size
+            self._last_remote_pcap_size_seen_at = now
+            return
+        if size <= 24 or now - self._last_remote_pcap_size_seen_at < self.idle_finalize_seconds:
+            return
+        self._log(f"capture idle; finalizing current pcap ({size} bytes)")
+        self._stop_tcpdump_locked()
+        self._start_tcpdump_locked()
+
+    def _remote_capture_size(self, remote_path: str) -> int:
+        output = self._run_adb(
+            [
+                "-s",
+                self.device_id,
+                "shell",
+                "sh",
+                "-c",
+                f"stat -c %s {remote_path} 2>/dev/null || wc -c < {remote_path} 2>/dev/null || echo 0",
+            ],
+            timeout=5,
+        )
+        for token in output.split():
+            try:
+                return int(token)
+            except ValueError:
+                continue
+        return 0
 
     def _refresh_current_pcap_size_locked(self) -> None:
         path = Path(self._current_pcap_path) if self._current_pcap_path else None

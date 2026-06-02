@@ -50,6 +50,7 @@ WORKBOOK_NUMERIC_ID = 10
 ATTENDANCE_SHEET_NUMERIC_ID = 54605
 REGISTRATION_SHEET_NUMERIC_ID = 54606
 COURSE_NAME = "d260601第41届念住"
+WORKBOOK_TITLE = "第41届念住"
 OWNER_KEY = "20260601-nianzhu-41"
 TEMPLATE_COURSE_START_DATE = date(2026, 5, 1)
 COURSE_START_DATE = date(2026, 6, 1)
@@ -695,7 +696,7 @@ def run(*, apply: bool, template_path: Path) -> dict[str, Any]:
                 "rows": len((sheet.document_json or {}).get("rows") or []),
             })
 
-        workbook.title = COURSE_NAME
+        workbook.title = WORKBOOK_TITLE
         workbook.updated_at = time.time()
         session.add(workbook)
 

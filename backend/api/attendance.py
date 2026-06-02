@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
 import re
 from datetime import datetime
 from typing import Any, Literal, Optional
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -47,6 +49,7 @@ from backend.core.attendance_order import (
     query_order_refund_details,
 )
 from backend.core.attendance_ai_precheck import build_attendance_wjx_ai_precheck
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
 from backend.core.feature_access_guard import (
@@ -106,6 +109,23 @@ ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
 ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
 ATTENDANCE_WJX_AI_COLUMN = "AI初判"
 ATTENDANCE_WJX_DEPRECATED_DATA_COLUMNS = {"AI初判报告"}
+ATTENDANCE_WJX_AUTO_REPAIR_PROVIDER_ID = "codex-cli"
+ATTENDANCE_WJX_AUTO_REPAIR_MODEL = "gpt-5.3-codex-spark"
+ATTENDANCE_WJX_AUTO_REPAIR_TIMEOUT_SECONDS = 90
+ATTENDANCE_WJX_EMPTY_DATA_KEYWORDS = (
+    "视频",
+    "听课",
+    "回放",
+    "打卡",
+    "作业",
+    "学完",
+    "完成",
+    "没统计",
+    "未统计",
+    "显示0",
+    "空",
+    "没有数据",
+)
 ATTENDANCE_WJX_DATA_COLUMNS = [
     "序号",
     "提交时间",
@@ -263,6 +283,13 @@ class AttendanceFeedbackSubmitRequest(BaseModel):
     student_name: str
     correction_request: str
     extra_note: str = ""
+    workbook_id: Optional[int] = None
+    sheet_id: Optional[int] = None
+
+
+class AttendanceFeedbackResolvedCourse(BaseModel):
+    name: str = ""
+    link_url: str = ""
 
 
 class AttendanceWjxDataUpdateRequest(BaseModel):
@@ -275,6 +302,8 @@ class AttendanceWjxDataUpdateRequest(BaseModel):
 class AttendanceWjxAiPrecheckRequest(BaseModel):
     persist: bool = True
     use_codex_cli: bool = True
+    auto_repair: bool = False
+    repair_with_remote_browser: bool = True
 
 
 class AttendanceWjxDataForegroundColors(BaseModel):
@@ -881,6 +910,66 @@ def _normalize_attendance_wjx_sheet_row(
     return values[:len(columns)]
 
 
+def _parse_attendance_wjx_sheet_seq_text(value: Any) -> int | None:
+    text = _normalize_attendance_wjx_sheet_cell(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    return None
+
+
+def _deduplicate_attendance_wjx_sheet_rows(rows: list[list[str]], columns: list[str]) -> list[list[str]]:
+    try:
+        seq_index = columns.index("序号")
+    except ValueError:
+        return rows
+
+    field_indexes = {header: index for index, header in enumerate(columns)}
+
+    def cell(row: list[str], header: str) -> str:
+        index = field_indexes.get(header)
+        if index is None or index >= len(row):
+            return ""
+        return _normalize_attendance_wjx_sheet_cell(row[index])
+
+    def score(row: list[str]) -> int:
+        # Prefer rows that preserve manual processing and AI diagnosis.
+        total = 0
+        if cell(row, "处理状态"):
+            total += 100000
+        if cell(row, ATTENDANCE_WJX_AI_COLUMN):
+            total += 10000
+        if cell(row, "补充说明"):
+            total += 1000
+        if cell(row, "修正需求"):
+            total += 100
+        total += sum(1 for value in row if _normalize_attendance_wjx_sheet_cell(value))
+        return total
+
+    best_by_seq: dict[int, int] = {}
+    seq_count = 0
+    for index, row in enumerate(rows):
+        seq = _parse_attendance_wjx_sheet_seq_text(row[seq_index] if seq_index < len(row) else "")
+        if seq is None:
+            continue
+        seq_count += 1
+        current_best = best_by_seq.get(seq)
+        if current_best is None or (score(row), -index) > (score(rows[current_best]), -current_best):
+            best_by_seq[seq] = index
+
+    if len(best_by_seq) == seq_count:
+        return rows
+
+    kept_indexes = set(best_by_seq.values())
+    deduped_rows: list[list[str]] = []
+    for index, row in enumerate(rows):
+        seq = _parse_attendance_wjx_sheet_seq_text(row[seq_index] if seq_index < len(row) else "")
+        if seq is None or index in kept_indexes:
+            deduped_rows.append(row)
+    return deduped_rows
+
+
 def _build_attendance_wjx_sheet_column_index_map(
     source_columns: list[str],
     target_columns: list[str],
@@ -1020,6 +1109,7 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
         _normalize_attendance_wjx_sheet_row(row, columns, source_columns=source_columns)
         for row in (rows_source if isinstance(rows_source, list) else [])
     ]
+    rows = _deduplicate_attendance_wjx_sheet_rows(rows, columns)
 
     default_document = _create_default_attendance_wjx_sheet_document()
     source_column_configs = source.get("column_configs") if isinstance(source.get("column_configs"), dict) else {}
@@ -1119,7 +1209,7 @@ def _get_attendance_wjx_sheet_column_index(columns: list[str], header: str) -> i
 
 def _get_attendance_wjx_sheet_cell(row: list[str], columns: list[str], header: str) -> str:
     index = _get_attendance_wjx_sheet_column_index(columns, header)
-    return row[index] if index < len(row) else ""
+    return _normalize_attendance_wjx_sheet_cell(row[index] if index < len(row) else "")
 
 
 def _set_attendance_wjx_sheet_cell_link(
@@ -1308,12 +1398,14 @@ def _apply_attendance_wjx_sheet_course_links(
     course_link_map: dict[str, str] | None,
     course_owner_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], bool]:
+    source_rows = document_json.get("rows") if isinstance(document_json, dict) else None
+    source_row_count = len(source_rows) if isinstance(source_rows, list) else 0
     document = _normalize_attendance_wjx_sheet_document(document_json)
+    changed = len(document["rows"]) != source_row_count
     if course_link_map is None and course_owner_map is None:
-        return document, False
+        return document, changed
 
     columns = list(document["columns"])
-    changed = False
     if course_link_map is not None:
         course_column_index = _get_attendance_wjx_sheet_column_index(columns, "课程")
         changed = _clear_attendance_wjx_sheet_column_links(
@@ -1673,11 +1765,16 @@ def _upsert_attendance_wjx_sheet_entry(
     *,
     actor: User | None = None,
     preserve_process_status: bool = True,
+    course_link_url: str = "",
 ) -> None:
     document = _ensure_attendance_wjx_sheet_document(session, create=True)
     if document is None:
         return
     course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
+    normalized_course_link_url = _normalize_attendance_wjx_sheet_cell(course_link_url)
+    if normalized_course_link_url and entry.course_name:
+        course_link_map = dict(course_link_map or {})
+        course_link_map[_normalize_attendance_wjx_sheet_cell(entry.course_name)] = normalized_course_link_url
     next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
         dict(document.document_json or {}),
         _entry_to_attendance_wjx_sheet_values(entry),
@@ -1778,6 +1875,38 @@ def _serialize_attendance_wjx_sheet_row(
     }
     item["foreground_colors"] = _build_attendance_wjx_sheet_foreground_colors(item)
     return item
+
+
+def _sync_attendance_wjx_entries_from_sheet_document(
+    session: Session,
+    document_json: dict[str, Any],
+) -> int:
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    columns = list(document["columns"])
+    updated_count = 0
+    now = time.time()
+    for row in document["rows"]:
+        seq = _parse_attendance_wjx_sheet_seq(_get_attendance_wjx_sheet_cell(row, columns, "序号"))
+        if seq is None:
+            continue
+
+        process_status = _get_attendance_wjx_sheet_cell(row, columns, "处理状态")
+        entries = session.exec(
+            select(AttendanceWjxDataEntry)
+            .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
+            .where(AttendanceWjxDataEntry.seq == seq)
+        ).all()
+        for entry in entries:
+            if entry.process_status == process_status and entry.process_note == process_status:
+                continue
+            entry.process_status = process_status
+            entry.process_note = process_status
+            entry.updated_at = now
+            session.add(entry)
+            updated_count += 1
+    if updated_count:
+        session.commit()
+    return updated_count
 
 
 def _build_attendance_wjx_sheet_data_page(
@@ -2431,6 +2560,72 @@ def _normalize_required_feedback_text(value: Any, *, field_name: str) -> str:
     return text
 
 
+def _is_generic_feedback_course_name(value: Any) -> bool:
+    normalized = re.sub(r"\s+", "", _normalize_wjx_data_text(value))
+    return normalized in {"考勤表", "问卷数据"}
+
+
+def _normalize_feedback_workbook_course_title(value: Any) -> str:
+    text = _normalize_wjx_data_text(value).strip()
+    if not text or _is_generic_feedback_course_name(text):
+        return ""
+    text = re.sub(r"^d?\d{6,8}(第\d+届(?:念住|觉观))$", r"\1", text)
+    return text
+
+
+def _build_feedback_workbook_url(workbook: WorkbookDocument, sheet: SheetDocument | None = None) -> str:
+    workbook_id = workbook.numeric_id
+    if workbook_id is None:
+        return ""
+    if sheet is not None and sheet.numeric_id is not None:
+        return f"/workbook/{workbook_id}?sheet={sheet.numeric_id}"
+    return f"/workbook/{workbook_id}"
+
+
+def _resolve_feedback_course_from_context(
+    session: Session,
+    payload: AttendanceFeedbackSubmitRequest,
+) -> AttendanceFeedbackResolvedCourse:
+    if payload.workbook_id is not None:
+        workbook = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.numeric_id == int(payload.workbook_id))
+        ).first()
+        title = _normalize_feedback_workbook_course_title(workbook.title if workbook is not None else "")
+        if title:
+            sheet = None
+            if payload.sheet_id is not None:
+                sheet = session.exec(
+                    select(SheetDocument).where(SheetDocument.numeric_id == int(payload.sheet_id))
+                ).first()
+            return AttendanceFeedbackResolvedCourse(
+                name=title,
+                link_url=_build_feedback_workbook_url(workbook, sheet),
+            )
+
+    if payload.sheet_id is not None:
+        sheet = session.exec(
+            select(SheetDocument).where(SheetDocument.numeric_id == int(payload.sheet_id))
+        ).first()
+        if sheet is not None:
+            sheet_refs = sheet_ref_aliases(sheet)
+            links = session.exec(
+                select(WorkbookSheetLink)
+                .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
+                .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+            ).all()
+            workbook_map = load_workbooks_by_refs(session, [link.workbook_id for link in links])
+            for link in links:
+                workbook = workbook_map.get(str(link.workbook_id))
+                title = _normalize_feedback_workbook_course_title(workbook.title if workbook is not None else "")
+                if title:
+                    return AttendanceFeedbackResolvedCourse(
+                        name=title,
+                        link_url=_build_feedback_workbook_url(workbook, sheet),
+                    )
+
+    return AttendanceFeedbackResolvedCourse()
+
+
 def _resolve_feedback_client_ip(request: Request) -> str:
     forwarded_for = request.headers.get("x-forwarded-for", "")
     if forwarded_for:
@@ -2526,6 +2721,17 @@ def _persist_attendance_feedback_submission(
     request: Request,
 ) -> AttendanceWjxDataEntry:
     course_name = _normalize_required_feedback_text(payload.course_name, field_name="所属课程")
+    course_link_url = ""
+    resolved_course = AttendanceFeedbackResolvedCourse()
+    if _is_generic_feedback_course_name(course_name) or payload.workbook_id is not None or payload.sheet_id is not None:
+        resolved_course = _resolve_feedback_course_from_context(session, payload)
+        course_link_url = resolved_course.link_url
+    if _is_generic_feedback_course_name(course_name):
+        course_name = resolved_course.name
+    elif resolved_course.name:
+        course_name = resolved_course.name
+    if not course_name:
+        raise HTTPException(status_code=400, detail="所属课程不能是考勤表，请从课程或工作簿名称提交")
     student_id_text = _normalize_required_feedback_text(payload.student_id_text, field_name="学号")
     student_name = _normalize_required_feedback_text(payload.student_name, field_name="姓名")
     correction_request = _normalize_required_feedback_text(payload.correction_request, field_name="修正需求")
@@ -2591,6 +2797,7 @@ def _persist_attendance_feedback_submission(
         session,
         entry,
         preserve_process_status=False,
+        course_link_url=course_link_url,
     )
     return entry
 
@@ -3547,6 +3754,761 @@ def _resolve_attendance_wjx_precheck_entry(session: Session, entry_id: int) -> A
     return get_attendance_wjx_data_entry_or_404(session, entry_id)
 
 
+def _attendance_wjx_parse_workbook_sheet_url(url: Any) -> tuple[int | None, int | None]:
+    text = _normalize_attendance_wjx_sheet_cell(url)
+    if not text:
+        return None, None
+    parse_target = text
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", parse_target):
+        parse_target = "/" + parse_target.lstrip("/")
+        parse_target = f"http://codeyun.local{parse_target}"
+    parsed = urlparse(parse_target)
+    workbook_id: int | None = None
+    sheet_id: int | None = None
+    workbook_match = re.search(r"/workbook/(?P<id>\d+)", parsed.path)
+    if workbook_match:
+        workbook_id = int(workbook_match.group("id"))
+    raw_sheet = (parse_qs(parsed.query).get("sheet") or [""])[0]
+    if re.fullmatch(r"\d+", str(raw_sheet or "")):
+        sheet_id = int(raw_sheet)
+    return workbook_id, sheet_id
+
+
+def _attendance_wjx_student_number_key(value: Any) -> tuple[int, ...] | tuple[str]:
+    text = _normalize_attendance_wjx_sheet_cell(value)
+    numbers = re.findall(r"\d+", text)
+    if numbers:
+        return tuple(int(number) for number in numbers)
+    return (text,) if text else tuple()
+
+
+def _attendance_wjx_unique_texts(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _normalize_attendance_wjx_sheet_cell(value)
+        if not text or text.lower() == "none" or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _attendance_wjx_sheet_cell_text(
+    note_sheets_api: Any,
+    row: list[Any],
+    columns: list[str],
+    header: str,
+) -> str:
+    index = note_sheets_api._find_column_index(columns, header)
+    if index is None or index < 0 or index >= len(row):
+        return ""
+    return note_sheets_api._normalize_sheet_text(row[index])
+
+
+def _attendance_wjx_set_sheet_cell(
+    note_sheets_api: Any,
+    row: list[Any],
+    columns: list[str],
+    header: str,
+    value: Any,
+) -> bool:
+    index = note_sheets_api._find_column_index(columns, header)
+    if index is None or index < 0:
+        return False
+    while len(row) < len(columns):
+        row.append("")
+    next_value = "" if value is None else str(value)
+    if row[index] == next_value:
+        return False
+    row[index] = next_value
+    return True
+
+
+def _attendance_wjx_note_sheet_rows(
+    note_sheets_api: Any,
+    document: SheetDocument,
+) -> tuple[dict[str, Any], list[str], list[list[Any]]]:
+    document_json = note_sheets_api._normalize_document_json(dict(document.document_json or {}))
+    columns = note_sheets_api._normalize_document_columns(document_json)
+    rows = [
+        note_sheets_api._normalize_sheet_row(row, len(columns))
+        for row in note_sheets_api._extract_document_rows(document_json)
+    ]
+    return document_json, columns, rows
+
+
+def _attendance_wjx_persist_note_sheet_document(
+    session: Session,
+    note_sheets_api: Any,
+    document: SheetDocument,
+    next_document: dict[str, Any],
+    *,
+    actor: User,
+) -> bool:
+    normalized = note_sheets_api._normalize_document_json(next_document)
+    if dict(document.document_json or {}) == normalized:
+        return False
+    document.document_json = normalized
+    document.version = max(int(document.version or 1), 1) + 1
+    document.updated_by_user_id = actor.id
+    document.updated_at = time.time()
+    session.add(document)
+    return True
+
+
+def _attendance_wjx_find_course_context(
+    session: Session,
+    entry: AttendanceWjxDataEntry,
+) -> dict[str, Any]:
+    note_sheets_api = __import__("backend.api.note_sheets", fromlist=["_normalize_document_json"])
+    result: dict[str, Any] = {
+        "note_sheets_api": note_sheets_api,
+        "warnings": [],
+    }
+    wjx_document = _ensure_attendance_wjx_sheet_document(session, create=False)
+    if wjx_document is None:
+        result["warnings"].append("未找到问卷数据表")
+        return result
+
+    wjx_json = _normalize_attendance_wjx_sheet_document(dict(wjx_document.document_json or {}))
+    row_index = _find_attendance_wjx_sheet_row_index(wjx_json, entry.seq)
+    if row_index is None:
+        result["warnings"].append(f"问卷数据表中未找到序号 {entry.seq}")
+        return result
+
+    columns = list(wjx_json.get("columns") or [])
+    rows = list(wjx_json.get("rows") or [])
+    row = rows[row_index] if row_index < len(rows) else []
+    course_index = _get_attendance_wjx_sheet_column_index(columns, "课程")
+    course_cell = row[course_index] if isinstance(row, list) and course_index < len(row) else ""
+    course_link_url = _extract_inline_cell_link_url(course_cell)
+    workbook_id, linked_sheet_id = _attendance_wjx_parse_workbook_sheet_url(course_link_url)
+    result.update({
+        "wjx_sheet_id": wjx_document.numeric_id,
+        "wjx_row_index": row_index,
+        "course_link_url": course_link_url,
+        "course_workbook_id": workbook_id,
+        "linked_sheet_id": linked_sheet_id,
+    })
+    if workbook_id is None:
+        result["warnings"].append("问卷课程单元格缺少 workbook 链接")
+        return result
+
+    workbook = session.exec(
+        select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)
+    ).first()
+    if workbook is None:
+        result["warnings"].append(f"未找到课程 workbook：{workbook_id}")
+        return result
+
+    registration_document = note_sheets_api._get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="registration",
+        title="报名表",
+    )
+    attendance_document = note_sheets_api._get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="attendance",
+        title="考勤表",
+    )
+    if attendance_document is None and linked_sheet_id is not None:
+        attendance_document = session.exec(
+            select(SheetDocument).where(SheetDocument.numeric_id == linked_sheet_id)
+        ).first()
+
+    result.update({
+        "workbook": workbook,
+        "registration_document": registration_document,
+        "attendance_document": attendance_document,
+    })
+    if registration_document is None:
+        result["warnings"].append("课程 workbook 中未找到报名表")
+    if attendance_document is None:
+        result["warnings"].append("课程 workbook 中未找到考勤表")
+    return result
+
+
+def _attendance_wjx_find_student_row(
+    note_sheets_api: Any,
+    rows: list[list[Any]],
+    columns: list[str],
+    entry: AttendanceWjxDataEntry,
+    *,
+    student_headers: tuple[str, ...],
+) -> tuple[int | None, list[Any] | None, dict[str, Any]]:
+    target_key = _attendance_wjx_student_number_key(entry.student_id_text)
+    target_name = _normalize_attendance_wjx_sheet_cell(entry.student_name)
+    best: tuple[int, int] | None = None
+    for index, row in enumerate(rows):
+        student_match = False
+        for header in student_headers:
+            value = _attendance_wjx_sheet_cell_text(note_sheets_api, row, columns, header)
+            if target_key and _attendance_wjx_student_number_key(value) == target_key:
+                student_match = True
+                break
+        name = _attendance_wjx_sheet_cell_text(note_sheets_api, row, columns, "姓名")
+        name_match = bool(target_name and name == target_name)
+        score = 0
+        if student_match and name_match:
+            score = 4
+        elif student_match:
+            score = 3
+        elif name_match:
+            score = 1
+        if score and (best is None or score > best[0]):
+            best = (score, index)
+
+    if best is None:
+        return None, None, {"matched": False, "reason": "未按学号/姓名匹配到行"}
+    row_index = best[1]
+    return row_index, rows[row_index], {"matched": True, "score": best[0]}
+
+
+def _attendance_wjx_number_value(value: Any) -> float:
+    text = _normalize_attendance_wjx_sheet_cell(value)
+    if not text or text.startswith("="):
+        return 0.0
+    match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    if not match:
+        return 0.0
+    try:
+        return float(match.group())
+    except ValueError:
+        return 0.0
+
+
+def _attendance_wjx_analyze_empty_attendance(
+    note_sheets_api: Any,
+    row: list[Any] | None,
+    columns: list[str],
+    entry: AttendanceWjxDataEntry,
+) -> dict[str, Any]:
+    feedback_text = " ".join([
+        _normalize_attendance_wjx_sheet_cell(entry.correction_request),
+        _normalize_attendance_wjx_sheet_cell(entry.extra_note),
+    ])
+    keyword_hit = any(keyword in feedback_text for keyword in ATTENDANCE_WJX_EMPTY_DATA_KEYWORDS)
+    if row is None:
+        return {
+            "likely_empty_user_id_issue": keyword_hit,
+            "keyword_hit": keyword_hit,
+            "numeric_nonzero_count": 0,
+            "progress_nonempty_count": 0,
+        }
+
+    numeric_headers = (
+        "完成视频数",
+        "视频应返款",
+        "打卡数",
+        "打卡应返款",
+        "总应返款",
+        "当前应返款",
+    )
+    numeric_nonzero_count = 0
+    for header in numeric_headers:
+        value = _attendance_wjx_sheet_cell_text(note_sheets_api, row, columns, header)
+        if abs(_attendance_wjx_number_value(value)) > 0.0001:
+            numeric_nonzero_count += 1
+
+    progress_nonempty_count = 0
+    for column, value in zip(columns, row):
+        column_text = _normalize_attendance_wjx_sheet_cell(column)
+        if not (("课" in column_text) or re.search(r"\d{1,2}月|\d{1,2}[/-]\d{1,2}|~|～", column_text)):
+            continue
+        text = note_sheets_api._normalize_sheet_text(value)
+        if text and not text.startswith("=") and any(token in text for token in ("完成", "回放", "%", "第")):
+            progress_nonempty_count += 1
+
+    likely_empty = keyword_hit and numeric_nonzero_count == 0 and progress_nonempty_count == 0
+    return {
+        "likely_empty_user_id_issue": likely_empty,
+        "keyword_hit": keyword_hit,
+        "numeric_nonzero_count": numeric_nonzero_count,
+        "progress_nonempty_count": progress_nonempty_count,
+    }
+
+
+def _attendance_wjx_collect_lookup_inputs(
+    note_sheets_api: Any,
+    registration_row: list[Any] | None,
+    registration_columns: list[str],
+    entry: AttendanceWjxDataEntry,
+) -> dict[str, list[str]]:
+    names = [entry.student_name]
+    phones: list[Any] = []
+    if registration_row is not None:
+        for header in ("姓名", "微信昵称", "昵称"):
+            names.append(_attendance_wjx_sheet_cell_text(note_sheets_api, registration_row, registration_columns, header))
+        for header in ("手机号", "错误手机号", "联系电话", "手机"):
+            phones.append(_attendance_wjx_sheet_cell_text(note_sheets_api, registration_row, registration_columns, header))
+    return {
+        "names": _attendance_wjx_unique_texts(names),
+        "phones": _attendance_wjx_unique_texts(phones),
+    }
+
+
+def _attendance_wjx_lookup_user_candidate(
+    session: Session,
+    current_user: User,
+    note_sheets_api: Any,
+    *,
+    entry: AttendanceWjxDataEntry,
+    workbook: WorkbookDocument,
+    registration_document: SheetDocument,
+    names: list[str],
+    phones: list[str],
+    current_user_id: str,
+    use_remote_browser: bool,
+) -> dict[str, Any]:
+    shop_id = note_sheets_api._resolve_registration_shop_id(session, registration_document, workbook)
+    result: dict[str, Any] = {
+        "shop_id": shop_id,
+        "names": names,
+        "phones": phones,
+        "local": {},
+        "remote": {},
+        "user_id": "",
+        "score": 0,
+        "source": "",
+        "warnings": [],
+    }
+
+    if not names and not phones:
+        result["warnings"].append("缺少姓名和手机号，无法查找用户")
+        return result
+
+    try:
+        get_kqdb = note_sheets_api._load_attendance_kqdb_provider()
+        lookup_user = note_sheets_api._load_attendance_user_lookup_provider()
+        kqdb = get_kqdb()
+        user_id, weight = lookup_user(
+            names,
+            phones,
+            course_name=entry.course_name,
+            course_product_name="",
+            shop_id=shop_id,
+            return_mode=1,
+            kqdb=kqdb,
+        )
+        local_user_id = _normalize_attendance_wjx_sheet_cell(user_id)
+        local_score = _attendance_wjx_number_value(weight)
+        result["local"] = {"user_id": local_user_id, "score": local_score}
+        if local_user_id:
+            result.update({"user_id": local_user_id, "score": local_score, "source": "local_db"})
+    except Exception as exc:
+        result["warnings"].append(f"本地用户库查询失败：{exc}")
+
+    needs_remote = (
+        use_remote_browser
+        and (
+            not result.get("user_id")
+            or _normalize_attendance_wjx_sheet_cell(result.get("user_id")) == current_user_id
+            or float(result.get("score") or 0) < 90
+        )
+    )
+    if needs_remote:
+        try:
+            remote_results = note_sheets_api._lookup_registration_users_with_remote_browser(
+                session,
+                current_user,
+                course_name=entry.course_name,
+                shop_id=shop_id,
+                items=[{"key": "target", "names": names, "phones": phones}],
+            )
+            remote = remote_results.get("target", {})
+            remote_user_id = _normalize_attendance_wjx_sheet_cell(remote.get("user_id"))
+            result["remote"] = dict(remote)
+            if remote_user_id and remote_user_id != result.get("user_id"):
+                result.update({"user_id": remote_user_id, "score": 95, "source": "mi15_browser"})
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else exc
+            result["warnings"].append(f"mi15 用户回查失败：{detail}")
+
+    return result
+
+
+def _attendance_wjx_extract_json_object(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        payload = json.loads(stripped)
+        return payload if isinstance(payload, dict) else None
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", stripped, re.S)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group())
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _attendance_wjx_codex_repair_decision(context: dict[str, Any]) -> dict[str, Any]:
+    prompt = (
+        "你是 CodeYun 考勤问卷空数据修复审查器，只返回 JSON。\n"
+        "任务：判断是否可以把报名表/考勤表里的用户ID改成候选用户ID。\n"
+        "只有同时满足这些条件才 decision=apply：\n"
+        "1. 学员反馈指向视频/打卡/作业等考勤数据为空或缺失；\n"
+        "2. 当前考勤行的关键统计确实接近空数据；\n"
+        "3. 候选用户ID来自本地用户库高分命中或 mi15 浏览器回查；\n"
+        "4. 候选用户ID与当前表内ID不同，且课程、姓名、学号上下文一致。\n"
+        "否则 decision=skip 或 needs_review。\n"
+        "输出格式：{\"decision\":\"apply|skip|needs_review\","
+        "\"confidence\":0.0,\"reason\":\"一句中文原因\"}。\n\n"
+        f"CONTEXT:\n{json.dumps(context, ensure_ascii=False, indent=2, default=str)}"
+    )
+    response = chat_with_provider(
+        provider_id=ATTENDANCE_WJX_AUTO_REPAIR_PROVIDER_ID,
+        model=ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt="你只做考勤用户ID修复审查，只返回 JSON。",
+        response_format="json",
+        timeout_seconds=ATTENDANCE_WJX_AUTO_REPAIR_TIMEOUT_SECONDS,
+    )
+    payload = _attendance_wjx_extract_json_object(str(response.get("content") or ""))
+    if not payload:
+        raise OllamaClientError("gpt-5.3-codex-spark 未返回可解析 JSON")
+    decision = _normalize_attendance_wjx_sheet_cell(payload.get("decision")).lower()
+    if decision not in {"apply", "skip", "needs_review"}:
+        decision = "needs_review"
+    return {
+        "decision": decision,
+        "confidence": _attendance_wjx_number_value(payload.get("confidence")),
+        "reason": _normalize_attendance_wjx_sheet_cell(payload.get("reason")),
+        "model": str(response.get("model") or ATTENDANCE_WJX_AUTO_REPAIR_MODEL),
+    }
+
+
+def _attendance_wjx_apply_user_id_repair(
+    session: Session,
+    current_user: User,
+    note_sheets_api: Any,
+    *,
+    registration_document: SheetDocument,
+    registration_json: dict[str, Any],
+    registration_columns: list[str],
+    registration_rows: list[list[Any]],
+    registration_row_index: int | None,
+    attendance_document: SheetDocument,
+    attendance_json: dict[str, Any],
+    attendance_columns: list[str],
+    attendance_rows: list[list[Any]],
+    attendance_row_index: int | None,
+    candidate_user_id: str,
+    candidate_score: float,
+) -> dict[str, Any]:
+    changed_sheets: list[str] = []
+    if registration_row_index is not None and 0 <= registration_row_index < len(registration_rows):
+        row = list(registration_rows[registration_row_index])
+        changed = _attendance_wjx_set_sheet_cell(note_sheets_api, row, registration_columns, "用户ID", candidate_user_id)
+        changed = _attendance_wjx_set_sheet_cell(
+            note_sheets_api,
+            row,
+            registration_columns,
+            "匹配得分",
+            str(int(candidate_score)) if candidate_score else "",
+        ) or changed
+        if changed:
+            registration_rows[registration_row_index] = row
+            next_document = note_sheets_api._replace_document_data_rows(registration_json, registration_rows)
+            if _attendance_wjx_persist_note_sheet_document(
+                session,
+                note_sheets_api,
+                registration_document,
+                next_document,
+                actor=current_user,
+            ):
+                changed_sheets.append("报名表")
+
+    if attendance_row_index is not None and 0 <= attendance_row_index < len(attendance_rows):
+        row = list(attendance_rows[attendance_row_index])
+        changed = _attendance_wjx_set_sheet_cell(note_sheets_api, row, attendance_columns, "用户ID", candidate_user_id)
+        if changed:
+            attendance_rows[attendance_row_index] = row
+            next_document = note_sheets_api._replace_document_data_rows(attendance_json, attendance_rows)
+            if _attendance_wjx_persist_note_sheet_document(
+                session,
+                note_sheets_api,
+                attendance_document,
+                next_document,
+                actor=current_user,
+            ):
+                changed_sheets.append("考勤表")
+
+    return {"changed_sheets": changed_sheets, "changed": bool(changed_sheets)}
+
+
+def _attendance_wjx_try_rebuild_after_user_id_repair(
+    session: Session,
+    *,
+    course_name: str,
+    attendance_sheet_id: int | None,
+) -> dict[str, Any]:
+    if attendance_sheet_id is None:
+        return {"attempted": False, "reason": "缺少考勤表 sheet_id"}
+    try:
+        if "梵呗" in course_name:
+            from backend.core.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
+
+            summary = rebuild_fanbei_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=attendance_sheet_id,
+            )
+        elif "念住" in course_name or "觉观" in course_name:
+            from backend.core.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
+
+            summary = rebuild_nianzhu_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=attendance_sheet_id,
+                active_only=True,
+                course_name=course_name,
+            )
+        else:
+            return {"attempted": False, "reason": "课程类型暂未接入本地重算"}
+        return {"attempted": True, "summary": summary}
+    except Exception as exc:
+        return {"attempted": True, "error": str(exc)}
+
+
+def _try_auto_repair_attendance_wjx_empty_user_id(
+    session: Session,
+    current_user: User,
+    entry: AttendanceWjxDataEntry,
+    *,
+    apply_changes: bool,
+    use_remote_browser: bool,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "requested": True,
+        "applied": False,
+        "status": "needs_review",
+        "summary": "",
+        "warnings": [],
+        "codex_spark": {
+            "requested": True,
+            "used": False,
+            "model": ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
+        },
+    }
+    context = _attendance_wjx_find_course_context(session, entry)
+    result["warnings"].extend(context.get("warnings") or [])
+    note_sheets_api = context.get("note_sheets_api")
+    workbook = context.get("workbook")
+    registration_document = context.get("registration_document")
+    attendance_document = context.get("attendance_document")
+    if note_sheets_api is None or workbook is None or registration_document is None or attendance_document is None:
+        result.update({"status": "not_applicable", "summary": "缺少课程报名表或考勤表上下文，未自动修复"})
+        return result
+
+    registration_json, registration_columns, registration_rows = _attendance_wjx_note_sheet_rows(
+        note_sheets_api,
+        registration_document,
+    )
+    attendance_json, attendance_columns, attendance_rows = _attendance_wjx_note_sheet_rows(
+        note_sheets_api,
+        attendance_document,
+    )
+    registration_row_index, registration_row, registration_match = _attendance_wjx_find_student_row(
+        note_sheets_api,
+        registration_rows,
+        registration_columns,
+        entry,
+        student_headers=("序号", "学号"),
+    )
+    attendance_row_index, attendance_row, attendance_match = _attendance_wjx_find_student_row(
+        note_sheets_api,
+        attendance_rows,
+        attendance_columns,
+        entry,
+        student_headers=("学号", "序号"),
+    )
+    result["matches"] = {
+        "registration": registration_match,
+        "attendance": attendance_match,
+    }
+    if registration_row is None or attendance_row is None:
+        result.update({"status": "not_applicable", "summary": "未匹配到报名表或考勤表学员行，未自动修复"})
+        return result
+
+    empty_analysis = _attendance_wjx_analyze_empty_attendance(
+        note_sheets_api,
+        attendance_row,
+        attendance_columns,
+        entry,
+    )
+    lookup_inputs = _attendance_wjx_collect_lookup_inputs(
+        note_sheets_api,
+        registration_row,
+        registration_columns,
+        entry,
+    )
+    registration_user_id = _attendance_wjx_sheet_cell_text(
+        note_sheets_api,
+        registration_row,
+        registration_columns,
+        "用户ID",
+    )
+    attendance_user_id = _attendance_wjx_sheet_cell_text(
+        note_sheets_api,
+        attendance_row,
+        attendance_columns,
+        "用户ID",
+    )
+    current_user_id = registration_user_id or attendance_user_id
+    lookup_result = _attendance_wjx_lookup_user_candidate(
+        session,
+        current_user,
+        note_sheets_api,
+        entry=entry,
+        workbook=workbook,
+        registration_document=registration_document,
+        names=lookup_inputs["names"],
+        phones=lookup_inputs["phones"],
+        current_user_id=current_user_id,
+        use_remote_browser=use_remote_browser,
+    )
+    result["warnings"].extend(lookup_result.get("warnings") or [])
+    candidate_user_id = _normalize_attendance_wjx_sheet_cell(lookup_result.get("user_id"))
+    candidate_score = _attendance_wjx_number_value(lookup_result.get("score"))
+    needs_write = bool(candidate_user_id and (
+        candidate_user_id != registration_user_id or candidate_user_id != attendance_user_id
+    ))
+    deterministic_safe = bool(
+        empty_analysis.get("likely_empty_user_id_issue")
+        and needs_write
+        and candidate_score >= 90
+    )
+    repair_context = {
+        "entry": {
+            "seq": entry.seq,
+            "course_name": entry.course_name,
+            "student_id_text": entry.student_id_text,
+            "student_name": entry.student_name,
+            "correction_request": entry.correction_request,
+            "extra_note": entry.extra_note,
+        },
+        "workbook": {
+            "numeric_id": workbook.numeric_id,
+            "title": workbook.title,
+        },
+        "registration": {
+            "sheet_id": registration_document.numeric_id,
+            "row_index": registration_row_index,
+            "current_user_id": registration_user_id,
+        },
+        "attendance": {
+            "sheet_id": attendance_document.numeric_id,
+            "row_index": attendance_row_index,
+            "current_user_id": attendance_user_id,
+            "empty_analysis": empty_analysis,
+        },
+        "lookup": lookup_result,
+        "deterministic_safe": deterministic_safe,
+        "apply_changes": apply_changes,
+    }
+    result["context"] = repair_context
+
+    if not candidate_user_id:
+        result.update({"status": "unmatched", "summary": "未查到候选用户ID，未自动修复"})
+        result["codex_spark"]["requested"] = False
+        return result
+    if not needs_write:
+        result.update({"status": "already_aligned", "summary": "候选用户ID与表内用户ID一致，未改表"})
+        result["codex_spark"]["requested"] = False
+        return result
+
+    try:
+        decision = _attendance_wjx_codex_repair_decision(repair_context)
+        result["codex_spark"].update({
+            "used": True,
+            "decision": decision.get("decision"),
+            "confidence": decision.get("confidence"),
+            "reason": decision.get("reason"),
+            "model": decision.get("model") or ATTENDANCE_WJX_AUTO_REPAIR_MODEL,
+        })
+    except OllamaClientError as exc:
+        result["warnings"].append(f"gpt-5.3-codex-spark 修复审查失败：{exc}")
+        decision = {"decision": "needs_review", "confidence": 0, "reason": "AI审查失败"}
+
+    can_apply = bool(
+        apply_changes
+        and deterministic_safe
+        and decision.get("decision") == "apply"
+        and _attendance_wjx_number_value(decision.get("confidence")) >= 0.75
+    )
+    if not can_apply:
+        result.update({
+            "status": "needs_review",
+            "summary": "已找到候选用户ID，但未通过自动写表条件",
+        })
+        return result
+
+    apply_result = _attendance_wjx_apply_user_id_repair(
+        session,
+        current_user,
+        note_sheets_api,
+        registration_document=registration_document,
+        registration_json=registration_json,
+        registration_columns=registration_columns,
+        registration_rows=registration_rows,
+        registration_row_index=registration_row_index,
+        attendance_document=attendance_document,
+        attendance_json=attendance_json,
+        attendance_columns=attendance_columns,
+        attendance_rows=attendance_rows,
+        attendance_row_index=attendance_row_index,
+        candidate_user_id=candidate_user_id,
+        candidate_score=candidate_score,
+    )
+    rebuild = _attendance_wjx_try_rebuild_after_user_id_repair(
+        session,
+        course_name=entry.course_name,
+        attendance_sheet_id=attendance_document.numeric_id,
+    )
+    result.update({
+        "applied": bool(apply_result.get("changed")),
+        "status": "applied" if apply_result.get("changed") else "already_aligned",
+        "summary": f"已将用户ID修复为 {candidate_user_id}",
+        "candidate_user_id": candidate_user_id,
+        "candidate_score": candidate_score,
+        "candidate_source": lookup_result.get("source"),
+        "apply_result": apply_result,
+        "rebuild": rebuild,
+    })
+    session.flush()
+    return result
+
+
+def _append_auto_repair_to_precheck_report(precheck: dict[str, Any], repair: dict[str, Any]) -> None:
+    summary = _normalize_attendance_wjx_sheet_cell(repair.get("summary"))
+    if not summary:
+        return
+    prefix = "自动修复尝试"
+    details = [f"{prefix}：{summary}。"]
+    if repair.get("applied"):
+        rebuild = repair.get("rebuild") if isinstance(repair.get("rebuild"), dict) else {}
+        if rebuild.get("attempted") and not rebuild.get("error"):
+            details.append("已触发本地重算；如果仍为空，需要再由 mi15 采集原始视频/打卡数据。")
+        elif rebuild.get("error"):
+            details.append(f"本地重算失败：{rebuild.get('error')}。")
+    else:
+        codex = repair.get("codex_spark") if isinstance(repair.get("codex_spark"), dict) else {}
+        reason = _normalize_attendance_wjx_sheet_cell(codex.get("reason"))
+        if reason:
+            details.append(f"AI审查原因：{reason}。")
+    report = _normalize_attendance_wjx_sheet_cell(precheck.get("report"))
+    precheck["report"] = f"{report}\n\n{''.join(details)}" if report else "".join(details)
+    precheck["auto_repair"] = repair
+    if repair.get("applied"):
+        precheck["read_only"] = False
+
+
 @router.post("/wjx-data/{entry_id}/ai-precheck", response_model=AttendanceWjxAiPrecheckResponse)
 def run_attendance_wjx_data_ai_precheck(
     entry_id: int,
@@ -3562,6 +4524,15 @@ def run_attendance_wjx_data_ai_precheck(
         session,
         use_codex_cli=payload.use_codex_cli,
     )
+    if payload.auto_repair:
+        repair = _try_auto_repair_attendance_wjx_empty_user_id(
+            session,
+            current_user,
+            entry,
+            apply_changes=payload.persist,
+            use_remote_browser=payload.repair_with_remote_browser,
+        )
+        _append_auto_repair_to_precheck_report(precheck, repair)
 
     if not payload.persist:
         item = serialize_attendance_wjx_data_entry(entry)

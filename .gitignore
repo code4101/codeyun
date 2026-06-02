@@ -76,3 +76,6 @@ backend/data/
 # Auto Git ignored local artifacts
 tmp/
 tmp_mask_debug/
+
+# Auto Git ignored local artifacts
+.tmp-dev-logs/

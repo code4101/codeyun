@@ -581,6 +581,87 @@ def test_attendance_feedback_public_endpoints_bypass_feature_access_policy(clien
     assert history_response.json()["items"][0]["student_name"] == "游客测试"
 
 
+def test_attendance_feedback_submission_rejects_generic_sheet_course_name(client: TestClient, session):
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "考勤表",
+            "student_id_text": "7",
+            "student_name": "韩淑侠",
+            "correction_request": "第一天视频没有统计",
+            "extra_note": "",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "所属课程不能是考勤表，请从课程或工作簿名称提交"
+
+
+def test_attendance_feedback_submission_resolves_generic_course_from_workbook(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    course_workbook = WorkbookDocument(
+        numeric_id=47,
+        title="20260412禅宗12期一阶",
+        owner_user_id=admin_user.id,
+        created_by_user_id=admin_user.id,
+        updated_by_user_id=admin_user.id,
+    )
+    session.add(course_workbook)
+    session.commit()
+
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "考勤表",
+            "workbook_id": 47,
+            "student_id_text": "3-05",
+            "student_name": "孟丽娜",
+            "correction_request": "第6周第7周课程全部按时完成",
+            "extra_note": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["course_name"] == "20260412禅宗12期一阶"
+    sheet = session.exec(
+        select(SheetDocument).where(SheetDocument.owner_type == attendance_api.ATTENDANCE_WJX_DATA_OWNER_TYPE)
+    ).one()
+    assert sheet.document_json["rows"][0][3] == {
+        "value": "20260412禅宗12期一阶",
+        "link": {"url": "/workbook/47"},
+    }
+
+
+def test_attendance_feedback_submission_strips_nianzhu_jueguan_workbook_date_prefix(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    course_workbook = WorkbookDocument(
+        numeric_id=48,
+        title="d260601第41届念住",
+        owner_user_id=admin_user.id,
+        created_by_user_id=admin_user.id,
+        updated_by_user_id=admin_user.id,
+    )
+    session.add(course_workbook)
+    session.commit()
+
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "考勤表",
+            "workbook_id": 48,
+            "student_id_text": "7",
+            "student_name": "韩淑侠",
+            "correction_request": "第一天视频没有统计",
+            "extra_note": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["course_name"] == "第41届念住"
+
+
 def test_order_refund_history_strips_timestamps_but_keeps_result_text(client: TestClient, session):
     admin_user = _create_admin_user(session)
     _grant_feature_access(session, user_id=admin_user.id, feature_key="attendance.orders")
@@ -821,6 +902,47 @@ def test_attendance_wjx_data_readonly_listing_is_public(client: TestClient, sess
     assert payload["items"][0]["seq"] == 800
     assert payload["items"][0]["student_name"] == "吴菲"
     assert payload["items"][0]["correction_request"] == "补第2课"
+
+
+def test_attendance_wjx_data_listing_reads_inline_link_cells_from_sheet(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    _override_user(admin_user)
+    try:
+        location = client.get("/api/attendance/wjx-data/sheet").json()
+    finally:
+        _clear_user_override()
+
+    document = attendance_api._create_default_attendance_wjx_sheet_document()
+    document["rows"] = [
+        [
+            "801",
+            "2026/4/18 08:00:00",
+            "微信",
+            {"value": "20260412禅宗12期一阶", "link": {"url": "https://docs.example/course"}},
+            "",
+            "39",
+            {"value": "吴菲", "link": {"url": "https://docs.example/student"}},
+            "补第2课",
+            "",
+            "",
+            "",
+        ]
+    ]
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    sheet.document_json = document
+    sheet.updated_at = 1713426373.0
+    session.add(sheet)
+    session.commit()
+
+    response = client.get("/api/attendance/wjx-data")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    item = payload["items"][0]
+    assert item["course_name"] == "20260412禅宗12期一阶"
+    assert item["student_name"] == "吴菲"
 
 
 def test_attendance_feedback_history_matches_course_and_identity(client: TestClient, session):

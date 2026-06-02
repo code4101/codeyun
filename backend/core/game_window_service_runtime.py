@@ -17,7 +17,7 @@ from backend.core.settings import ROOT_DIR, get_settings
 
 
 GAME_WINDOW_SERVICE_KEY = "fanxiu-game-window"
-GAME_WINDOW_SERVICE_TITLE = "凡修游戏画面流"
+GAME_WINDOW_SERVICE_TITLE = "凡修画面流"
 DEFAULT_GAME_WINDOW_SERVICE_HOST = "127.0.0.1"
 DEFAULT_GAME_WINDOW_SERVICE_PORT = 8766
 GAME_WINDOW_SERVICE_MODULE = "backend.services.game_window_daemon"
