@@ -8,7 +8,7 @@ import App from './App.vue'
 import router from './router'
 import { useFeatureAccessStore } from '@/store/featureAccessStore'
 import { useUserStore } from '@/store/userStore'
-import { ensureNoteTypePaletteLoaded, resetNoteTypePaletteState } from '@/utils/nodeConfig'
+import { resetNoteTypePaletteState } from '@/utils/nodeConfig'
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -34,13 +34,7 @@ watch(
 watch(
   () => userStore.token,
   token => {
-    if (token) {
-      ensureNoteTypePaletteLoaded(true).catch(error => {
-        console.warn('Failed to load note category palette:', error)
-      })
-      return
-    }
-    resetNoteTypePaletteState()
+    if (!token) resetNoteTypePaletteState()
   },
   { immediate: true }
 )

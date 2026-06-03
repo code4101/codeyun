@@ -39,6 +39,7 @@ export const taskStore = reactive({
     tasks: {} as Record<string, Task[]>,
     devices: [] as Device[],
     lastDeviceFetch: 0,
+    lastDeviceFetchError: '',
     
     async fetchDevices() {
         try {
@@ -57,9 +58,15 @@ export const taskStore = reactive({
             });
             
             this.lastDeviceFetch = Date.now();
+            this.lastDeviceFetchError = '';
         } catch (error) {
             console.error('Failed to fetch devices:', error);
             this.devices = [];
+            const detail = (error as any)?.response?.data?.detail;
+            const message = typeof detail === 'string' ? detail : (error as any)?.message;
+            this.lastDeviceFetchError = typeof message === 'string' && message.trim()
+                ? message
+                : '读取设备列表失败';
         }
     },
 

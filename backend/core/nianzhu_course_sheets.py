@@ -71,6 +71,7 @@ RULE_VERSION_COLUMN = "规则版本"
 CURRENT_RULE = "当前规则"
 LEGACY_AFTER_20250522_RULE = "旧规则-20250522后"
 LEGACY_BEFORE_20250522_RULE = "旧规则-20250522前"
+ZERO_REFUND_COMPLETED_BACKGROUND = "#D9D9D9"
 
 VIDEO_CONFIG_COLUMNS = [
     "lesson_id",
@@ -85,6 +86,7 @@ VIDEO_CONFIG_COLUMNS = [
 VIDEO_DATA_COLUMNS = [
     "lesson_data_id",
     "user_id2",
+    "nickname",
     "remark_nm",
     "state",
     "stay_seconds",
@@ -232,6 +234,21 @@ def _format_numeric_cell(value: float) -> int | float:
     return round(value, 2)
 
 
+def video_config_url_from_lesson_id2(value: Any) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    if text.startswith("l_"):
+        return f"https://admin.xiaoe-tech.com/t/live_management#/userOperation?id={text}&tabName=UserManage"
+    return ""
+
+
+def _video_config_url(row: dict[str, Any]) -> str:
+    return _normalize_text(row.get("url")) or video_config_url_from_lesson_id2(row.get("lesson_id2"))
+
+
 def _to_float(value: Any) -> float:
     if isinstance(value, int | float):
         return float(value)
@@ -324,7 +341,7 @@ def _highlight_video_refund_for_item(
         value,
     )
     if _legacy_video_algorithm_kind(item) == "b" and _is_legacy_delayed_completed_video_text(value):
-        return refund_amount, "#FFFF80"
+        return refund_amount, ZERO_REFUND_COMPLETED_BACKGROUND
     return refund_amount, color
 
 
@@ -757,12 +774,34 @@ def _fill_nianzhu_attendance_schema_defaults(
     return _replace_document_data_rows(document, rows), changed_cells
 
 
-def _ensure_nianzhu_attendance_schema(document: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _requires_attendance_tracking_meta_columns(document: dict[str, Any], *, course_name: str = "") -> bool:
+    resolved_course_name = _normalize_text(course_name)
+    if not resolved_course_name:
+        source_meta = dict(document.get("source_meta") or {})
+        resolved_course_name = _normalize_text(source_meta.get("course_name"))
+    if not resolved_course_name:
+        return True
+    return "闯关" in resolved_course_name
+
+
+def _ensure_nianzhu_attendance_schema(
+    document: dict[str, Any],
+    *,
+    course_name: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
     next_document = copy.deepcopy(document)
     inserted_columns: list[str] = []
     removed_columns: list[str] = []
+    requires_tracking_meta_columns = _requires_attendance_tracking_meta_columns(
+        next_document,
+        course_name=course_name,
+    )
 
-    for header in NIANZHU_ATTENDANCE_SOURCE_ONLY_COLUMNS:
+    removable_columns = [
+        *NIANZHU_ATTENDANCE_SOURCE_ONLY_COLUMNS,
+        *([] if requires_tracking_meta_columns else NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS),
+    ]
+    for header in removable_columns:
         columns = _normalize_document_columns(next_document)
         column_index = _find_column_index(columns, header)
         if column_index is None:
@@ -788,17 +827,18 @@ def _ensure_nianzhu_attendance_schema(document: dict[str, Any]) -> tuple[dict[st
             )
             inserted_columns.append(header)
 
-    for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS:
-        columns = _normalize_document_columns(next_document)
-        if _find_column_index(columns, header) is not None:
-            continue
-        next_document = _insert_nianzhu_attendance_column(
-            next_document,
-            header=header,
-            insert_index=_find_nianzhu_meta_insert_index(columns, header),
-            width=96,
-        )
-        inserted_columns.append(header)
+    if requires_tracking_meta_columns:
+        for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS:
+            columns = _normalize_document_columns(next_document)
+            if _find_column_index(columns, header) is not None:
+                continue
+            next_document = _insert_nianzhu_attendance_column(
+                next_document,
+                header=header,
+                insert_index=_find_nianzhu_meta_insert_index(columns, header),
+                width=96,
+            )
+            inserted_columns.append(header)
 
     next_document, defaulted_cells = _fill_nianzhu_attendance_schema_defaults(
         next_document,
@@ -1152,37 +1192,23 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
     }
     legacy_rows, legacy_error = _query_legacy_lesson_data_rows([int(item) for item in legacy_lesson_id_map])
     if legacy_rows:
-        result: list[list[Any]] = []
+        result: list[dict[str, Any]] = []
         for local_index, legacy_row in enumerate(legacy_rows, start=1):
             local_lesson_id = legacy_lesson_id_map.get(_normalize_text(legacy_row.get("lesson_id")))
             if local_lesson_id is None:
                 continue
-            result.append([
-                local_index,
-                _format_legacy_value(legacy_row.get("user_id2")),
-                _format_legacy_value(legacy_row.get("remark_nm")),
-                _format_legacy_value(legacy_row.get("state")),
-                _format_legacy_value(legacy_row.get("stay_seconds")),
-                _format_legacy_value(legacy_row.get("cum_seconds")),
-                _format_legacy_value(legacy_row.get("studio_seconds")),
-                _format_legacy_value(legacy_row.get("playback_seconds")),
-                _format_legacy_value(legacy_row.get("num_of_comments")),
-                _format_legacy_value(legacy_row.get("studio_amount")),
-                _format_legacy_value(legacy_row.get("study_state")),
-                _format_legacy_value(legacy_row.get("progress")),
-                _format_legacy_value(legacy_row.get("last_play_time")),
-                _format_legacy_value(legacy_row.get("shop_id")),
-                _format_legacy_value(legacy_row.get("update_time")),
-                local_lesson_id,
-                _format_legacy_value(legacy_row.get("finish_time")),
-                _format_legacy_value(legacy_row.get("comment_times")),
-                _format_legacy_value(legacy_row.get("money")),
-                _strip_course_name_prefix(
-                    _format_legacy_value(legacy_row.get("lesson_name")),
-                    _normalize_text(source_meta.get("course_name")),
-                ),
-            ])
-        document = _create_simple_document(
+            row = {
+                column: _format_legacy_value(legacy_row.get(column))
+                for column in VIDEO_DATA_COLUMNS
+            }
+            row["lesson_data_id"] = local_index
+            row["lesson_id"] = local_lesson_id
+            row["lesson_name"] = _strip_course_name_prefix(
+                _format_legacy_value(legacy_row.get("lesson_name")),
+                _normalize_text(source_meta.get("course_name")),
+            )
+            result.append(row)
+        document = _make_table_document_from_dicts(
             columns=VIDEO_DATA_COLUMNS,
             rows=result,
             numeric_columns={
@@ -1211,7 +1237,7 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
     student_id_index = _find_column_index(columns, "学号")
     name_index = _find_column_index(columns, "姓名")
     user_id_index = _find_column_index(columns, "用户ID")
-    result: list[list[Any]] = []
+    result: list[dict[str, Any]] = []
     local_index = 0
     for row in rows:
         user_id = row[user_id_index] if user_id_index is not None else ""
@@ -1226,29 +1252,15 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
             local_index += 1
             progress = parse_progress_percent(progress_text) or 0
             study_state = "已完成" if _extract_play_count(progress_text) > 0 else "学习中"
-            result.append([
-                local_index,
-                user_id,
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                study_state,
-                _format_numeric_cell(progress),
-                "",
-                "",
-                source_time,
-                _format_numeric_cell(_to_float(lesson_id)),
-                "",
-                "",
-                "",
-                "",
-            ])
-    return _create_simple_document(
+            result.append({
+                "lesson_data_id": local_index,
+                "user_id2": user_id,
+                "study_state": study_state,
+                "progress": _format_numeric_cell(progress),
+                "update_time": source_time,
+                "lesson_id": _format_numeric_cell(_to_float(lesson_id)),
+            })
+    return _make_table_document_from_dicts(
         columns=VIDEO_DATA_COLUMNS,
         rows=result,
         numeric_columns={"lesson_data_id", "progress", "lesson_id"},
@@ -1651,6 +1663,9 @@ def _parse_lesson_data_export_rows(
 
     zhname2en = {
         "用户ID": "user_id2",
+        "用户昵称": "nickname",
+        "备注名": "remark_nm",
+        "状态": "state",
         "参与状态": "study_state",
         "播放进度": "progress",
         "累计观看时长(秒)": "cum_seconds",
@@ -2109,6 +2124,114 @@ def _load_course_sheet_bundle(
             raise RuntimeError(f"念住闯关课程工作簿缺少 sheet：{sheet_key}")
         result[sheet_key] = sheet
     return result
+
+
+def _set_grid_cell_inline_link(
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    column_index: int,
+    url: str,
+) -> tuple[dict[str, Any], bool]:
+    normalized_url = _normalize_text(url)
+    if not normalized_url:
+        return document, False
+
+    columns = _normalize_document_columns(document)
+    if column_index < 0 or column_index >= len(columns):
+        return document, False
+
+    source_grid_rows = document.get("grid_rows")
+    if not isinstance(source_grid_rows, list) or row_index < 0:
+        return document, False
+
+    grid_rows = [note_sheet_inline_links.normalize_row(row, len(columns)) for row in source_grid_rows]
+    while len(grid_rows) <= row_index:
+        grid_rows.append([""] * len(columns))
+
+    next_document = dict(document)
+    changed = False
+
+    old_value = grid_rows[row_index][column_index]
+    new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
+    if new_value != old_value:
+        grid_rows[row_index][column_index] = new_value
+        next_document["grid_rows"] = grid_rows
+        changed = True
+
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    meta_key = f"{row_index}:{column_index}"
+    previous_meta = cell_meta.get(meta_key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    previous_link = next_meta.get("link")
+    previous_url = _normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
+    if previous_url != normalized_url:
+        next_meta["link"] = {"url": normalized_url}
+        cell_meta[meta_key] = next_meta
+        next_document["cell_meta"] = cell_meta
+        changed = True
+
+    return next_document, changed
+
+
+def apply_course_attendance_header_links_for_response(
+    session: Session,
+    *,
+    attendance: SheetDocument,
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    if _normalize_text(attendance.sheet_key) != ATTENDANCE_SHEET_KEY:
+        return document_json, 0
+
+    try:
+        bundle = _load_course_sheet_bundle(session, attendance=attendance)
+    except RuntimeError:
+        return document_json, 0
+
+    columns = _normalize_document_columns(document_json)
+    if not columns:
+        return document_json, 0
+
+    try:
+        header_row_index = max(int(document_json.get("field_row_index")), 0)
+    except (TypeError, ValueError):
+        header_row_index = max(_normalize_document_data_start_row(document_json) - 2, 0)
+
+    video_url_by_key: dict[str, str] = {}
+    for row in _sheet_rows_as_dicts(dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {})):
+        key = _course_item_key(row.get("lesson_name"))
+        url = _video_config_url(row)
+        if key and url:
+            video_url_by_key.setdefault(key, url)
+
+    clockin_url_by_name: dict[str, str] = {}
+    for row in _sheet_rows_as_dicts(dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})):
+        name = _normalize_text(row.get("name"))
+        url = _normalize_text(row.get("url"))
+        if name and url:
+            clockin_url_by_name.setdefault(name, url)
+
+    next_document = document_json
+    changed_count = 0
+    for column_index, column in enumerate(columns):
+        url = ""
+        if _normalize_text(column) == "打卡数":
+            url = clockin_url_by_name.get("打卡数", "")
+        if not url:
+            key = _course_item_key(column)
+            url = video_url_by_key.get(key, "") if key else ""
+        if not url:
+            continue
+        next_document, changed = _set_grid_cell_inline_link(
+            next_document,
+            row_index=header_row_index,
+            column_index=column_index,
+            url=url,
+        )
+        if changed:
+            changed_count += 1
+
+    return next_document, changed_count
 
 
 def has_nianzhu_course_storage_sheets(session: Session, *, attendance_sheet: SheetDocument) -> bool:
@@ -2972,7 +3095,17 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
     original_document = copy.deepcopy(dict(attendance.document_json or {}))
-    current_document, schema_summary = _ensure_nianzhu_attendance_schema(original_document)
+    effective_course_name = _resolve_course_name_from_documents(
+        dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+        course_name=course_name,
+    )
+    current_document, schema_summary = _ensure_nianzhu_attendance_schema(
+        original_document,
+        course_name=effective_course_name,
+    )
     current_document, formula_config_defaulted_cells = _ensure_refund_baseline_config_cell(current_document)
     if formula_config_defaulted_cells:
         schema_summary["formula_config_defaulted_cells"] = formula_config_defaulted_cells
@@ -3305,7 +3438,17 @@ def apply_nianzhu_attendance_video_revision(
 ) -> dict[str, Any]:
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
-    current_document, _schema_summary = _ensure_nianzhu_attendance_schema(dict(attendance.document_json or {}))
+    effective_course_name = _resolve_course_name_from_documents(
+        dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+        course_name=course_name,
+    )
+    current_document, _schema_summary = _ensure_nianzhu_attendance_schema(
+        dict(attendance.document_json or {}),
+        course_name=effective_course_name,
+    )
     columns = _normalize_document_columns(current_document)
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     data_start_row = _normalize_document_data_start_row(current_document)
@@ -3736,7 +3879,16 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
     original_document = copy.deepcopy(dict(attendance.document_json or {}))
-    current_document, schema_summary = _ensure_nianzhu_attendance_schema(original_document)
+    effective_course_name = _resolve_course_name_from_documents(
+        dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {}),
+        dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}),
+    )
+    current_document, schema_summary = _ensure_nianzhu_attendance_schema(
+        original_document,
+        course_name=effective_course_name,
+    )
     columns = _normalize_document_columns(current_document)
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     data_start_row = _normalize_document_data_start_row(current_document)

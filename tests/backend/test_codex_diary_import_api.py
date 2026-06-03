@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from backend.api.notes import (
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
+    _run_codex_diary_import_worker,
     mark_stale_codex_diary_import_runs,
     run_codex_diary_auto_import_job,
 )
@@ -313,6 +315,111 @@ def test_codex_diary_ai_draft_runs_in_batches(session: Session, auth_user, monke
 
     assert captured_batch_sizes == [12, 12, 2]
     assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(26)]
+
+
+def test_codex_diary_ai_draft_failure_stops_without_rule_fallback(session: Session, auth_user, monkeypatch):
+    def failing_draft(source, blocks, *, current_user, session):
+        raise ValueError("bad draft")
+
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", failing_draft)
+    blocks = [
+        {
+            "block_key": "block-1",
+            "records": [{"assistant_result": "done"}],
+        }
+    ]
+
+    try:
+        _draft_codex_diary_blocks_in_batches(
+            {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
+            blocks,
+            current_user=auth_user,
+            session=session,
+        )
+    except ValueError as exc:
+        assert "AI 日记草案失败，已停止写入" in str(exc)
+    else:
+        raise AssertionError("expected AI draft failure to stop import")
+
+    assert "title" not in blocks[0]
+
+
+def test_codex_diary_import_worker_heartbeats_while_drafting(session: Session, engine, auth_user, monkeypatch):
+    entries = _create_device_entries(session, auth_user.id)
+    run, entry_specs, root_identity, should_run = _create_codex_diary_import_run_record(
+        session,
+        current_user=auth_user,
+        diary_date_text="2026-06-01",
+        entry_ids=[entry.entry_id for entry in entries],
+    )
+    assert should_run is True
+    start_at = _ts(2026, 6, 1, 9, 0)
+
+    def fake_collect_source(entry_specs, root_identity, target_date_text, *, user_id, session):
+        return {
+            "date": target_date_text,
+            "timezone": ZoneInfo("Asia/Shanghai"),
+            "type_items": [],
+            "turn_records": [
+                {
+                    "thread_id": "local:long-draft",
+                    "thread_title": "长日记草案",
+                    "project_label": "codeyun",
+                    "time_range": "2026-06-01 09:00 ~ 2026-06-01 09:30",
+                    "user_request": "整理长日记草案。",
+                    "assistant_result": "长日记草案已整理。",
+                    "assistant_process": "",
+                    "start_at": start_at,
+                    "end_at": start_at + 30 * 60,
+                    "source_entry_id": entries[0].entry_id,
+                    "source_device_name": "codepc_mf",
+                }
+            ],
+            "threads": [],
+            "thread_count": 1,
+            "turn_count": 1,
+            "user_message_count": 1,
+            "assistant_message_count": 1,
+        }
+
+    heartbeat_seen = False
+
+    def slow_ai_draft(source, blocks, *args, **kwargs):
+        nonlocal heartbeat_seen
+        with Session(engine) as probe:
+            initial_heartbeat = probe.get(CodexDiaryImportRun, run.id).heartbeat_at or 0
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            time.sleep(0.1)
+            with Session(engine) as probe:
+                current_run = probe.get(CodexDiaryImportRun, run.id)
+                current_heartbeat = current_run.heartbeat_at if current_run else 0
+            if current_heartbeat and current_heartbeat > initial_heartbeat:
+                heartbeat_seen = True
+                break
+        assert heartbeat_seen
+        return _fake_codex_diary_ai_draft(source, blocks, *args, **kwargs)
+
+    monkeypatch.setattr("backend.api.notes._collect_codex_diary_source", fake_collect_source)
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", slow_ai_draft)
+    monkeypatch.setattr(
+        "backend.api.notes.resolve_ai_app_runtime_config",
+        lambda **kwargs: {"provider": "deepseek", "model": "deepseek-v4-pro"},
+    )
+
+    _run_codex_diary_import_worker(
+        engine,
+        run_id=run.id,
+        user_id=auth_user.id,
+        entry_specs=entry_specs,
+        root_identity=root_identity,
+    )
+
+    session.expire_all()
+    completed = session.get(CodexDiaryImportRun, run.id)
+    assert heartbeat_seen is True
+    assert completed.status == "completed"
+    assert completed.created_note_count == 1
 
 
 def test_codex_diary_import_creates_notes_from_all_active_devices(

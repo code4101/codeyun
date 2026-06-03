@@ -269,6 +269,11 @@ def _build_registration_sheet() -> dict:
         configs[col] = {"hidden": True}
     for col in ("姓名", "微信昵称", "手机号"):
         configs[col] = {"duplicate_value_highlight": True}
+    for col in ("用户ID", "关联用户ID"):
+        config = configs.setdefault(col, {})
+        config["header_background_color"] = "#9DC3E6"
+        config.setdefault("font_family", "monospace")
+        config.setdefault("width_mode", "fixed")
 
     return {
         "schema_version": 1,

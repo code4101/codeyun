@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import threading
@@ -68,6 +70,67 @@ _LATEST_FRAME_MAX_AGE_SECONDS = 3.0
 _SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.(?:jpe?g|png)$", re.IGNORECASE)
 _SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MUMU_ADB_PORTS = (7555, 16416, 5555)
+_MUMU_ADB_FAILURE_CACHE_TTL = 3.0
+_MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
+_mumu_adb_failure_cache: tuple[float, str] | None = None
+
+
+def _is_mumu_adb_unavailable_error(message: str) -> bool:
+    normalized = message.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "not found",
+            "cannot connect",
+            "connection refused",
+            "actively refused",
+            "winerror 10061",
+            "目标计算机积极拒绝",
+            "no connection could be made",
+            "failed to connect",
+            "timed out",
+            "adb 端口不可用",
+        )
+    )
+
+
+def _get_mumu_adb_failure_cache() -> str | None:
+    with _MUMU_ADB_FAILURE_CACHE_LOCK:
+        if _mumu_adb_failure_cache is None:
+            return None
+        expires_at, message = _mumu_adb_failure_cache
+        if time.monotonic() >= expires_at:
+            return None
+        return message
+
+
+def _set_mumu_adb_failure_cache(message: str) -> None:
+    global _mumu_adb_failure_cache
+    if not _is_mumu_adb_unavailable_error(message):
+        return
+    with _MUMU_ADB_FAILURE_CACHE_LOCK:
+        _mumu_adb_failure_cache = (time.monotonic() + _MUMU_ADB_FAILURE_CACHE_TTL, message)
+
+
+def _clear_mumu_adb_failure_cache() -> None:
+    global _mumu_adb_failure_cache
+    with _MUMU_ADB_FAILURE_CACHE_LOCK:
+        _mumu_adb_failure_cache = None
+
+
+def _ensure_mumu_adb_port_available() -> None:
+    cached_error = _get_mumu_adb_failure_cache()
+    if cached_error:
+        raise RuntimeError(cached_error)
+    for port in MUMU_ADB_PORTS:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.05):
+                return
+        except OSError:
+            continue
+    message = "ADB 端口不可用：" + ", ".join(f"127.0.0.1:{port}" for port in MUMU_ADB_PORTS)
+    _set_mumu_adb_failure_cache(message)
+    raise RuntimeError(message)
 
 
 def _is_mumu_target(*values: str | None) -> bool:
@@ -99,6 +162,7 @@ def _map_frame_point_to_adb(
 
 
 def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
+    _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
     except Exception as exc:
@@ -123,6 +187,7 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
 
 
 def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
     except Exception as exc:
@@ -157,6 +222,7 @@ def _close_mumu_adb_session() -> None:
 
 
 def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
     except Exception as exc:
@@ -232,9 +298,16 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
 
 
 def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
+    cached_error = _get_mumu_adb_failure_cache()
+    if cached_error:
+        raise RuntimeError(cached_error)
     try:
         data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10)
-    except Exception:
+    except Exception as session_exc:
+        session_error = str(session_exc)
+        if _is_mumu_adb_unavailable_error(session_error):
+            _set_mumu_adb_failure_cache(session_error)
+            raise RuntimeError(session_error) from session_exc
         adb_path = fanxiu_android_proxy_service.adb_path()
         serial = f"127.0.0.1:{MUMU_ADB_PORTS[0]}"
         process = subprocess.run(
@@ -247,21 +320,70 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             data = process.stdout
             meta = {"input": "adb", "adb_port": MUMU_ADB_PORTS[0], "adb_size": ""}
         else:
-            raise RuntimeError((process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}")
+            message = (process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}"
+            _set_mumu_adb_failure_cache(message)
+            raise RuntimeError(message)
     # Some adb stacks emit CRLF around PNG chunks; normalize only the common corruption pattern.
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         data = data.replace(b"\r\n", b"\n")
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("ADB screencap 返回的不是 PNG 数据")
+    _clear_mumu_adb_failure_cache()
     return data, meta
 
 
+MUMU_ADB_STREAM_MAX_FPS = 1.5
+_MUMU_ADB_STREAM_FRAME_LOCK = threading.Lock()
+_mumu_adb_stream_frame_data: bytes | None = None
+_mumu_adb_stream_frame_timestamp = 0.0
+
+
+def get_mumu_adb_cached_stream_frame(*, max_age_seconds: float = 3.0) -> bytes | None:
+    now = time.monotonic()
+    with _MUMU_ADB_STREAM_FRAME_LOCK:
+        if _mumu_adb_stream_frame_data is None:
+            return None
+        if now - _mumu_adb_stream_frame_timestamp > max_age_seconds:
+            return None
+        return _mumu_adb_stream_frame_data
+
+
+def screencap_mumu_adb_cached_png(*, cached_only: bool = False, max_age_seconds: float = 3.0) -> tuple[bytes, dict[str, Any]]:
+    cached = get_mumu_adb_cached_stream_frame(max_age_seconds=max_age_seconds)
+    if cached is not None:
+        return cached, {"input": "adb_cached_stream", "adb_port": MUMU_ADB_PORTS[0], "adb_size": ""}
+    if cached_only:
+        raise RuntimeError("当前没有可用的画面流缓存帧")
+    return screencap_mumu_adb_png()
+
+
+def _get_mumu_adb_stream_frame(*, min_interval: float) -> bytes:
+    global _mumu_adb_stream_frame_data, _mumu_adb_stream_frame_timestamp
+    now = time.monotonic()
+    with _MUMU_ADB_STREAM_FRAME_LOCK:
+        if _mumu_adb_stream_frame_data is not None and now - _mumu_adb_stream_frame_timestamp < min_interval:
+            return _mumu_adb_stream_frame_data
+        try:
+            data, _meta = screencap_mumu_adb_png()
+        except Exception:
+            if (
+                _mumu_adb_stream_frame_data is not None
+                and time.monotonic() - _mumu_adb_stream_frame_timestamp < max(2.0, min_interval * 3)
+            ):
+                return _mumu_adb_stream_frame_data
+            raise
+        _mumu_adb_stream_frame_data = data
+        _mumu_adb_stream_frame_timestamp = time.monotonic()
+        return data
+
+
 def stream_mumu_adb_screencap_mjpeg(*, fps: float = 2.0) -> Any:
-    interval = 1.0 / max(0.2, min(12.0, float(fps or 2.0)))
+    # ADB screencap is a blocking full-frame capture. High requested FPS can starve match/OCR requests.
+    interval = 1.0 / max(0.2, min(MUMU_ADB_STREAM_MAX_FPS, float(fps or 2.0)))
     while True:
         started = time.monotonic()
         try:
-            data, _meta = screencap_mumu_adb_png()
+            data = _get_mumu_adb_stream_frame(min_interval=interval)
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/png\r\n"
@@ -1459,12 +1581,14 @@ def _prepare_current_frame_for_reference(
     frame: Any,
     reference_path: Path,
     quality: int,
+    *,
+    encode_frame: bool = True,
 ) -> tuple[Any, bytes, str]:
     if reference_path.suffix.lower() in {".jpg", ".jpeg"}:
         normalized_frame, data = _jpeg_normalize_frame(frame, quality)
-        return normalized_frame, data, ".jpg"
+        return normalized_frame, data if encode_frame else b"", ".jpg"
     normalized_frame = _ensure_bgr_frame(frame)
-    return normalized_frame, _encode_png_frame(normalized_frame), ".png"
+    return normalized_frame, _encode_png_frame(normalized_frame) if encode_frame else b"", ".png"
 
 
 def _encode_png_frame(frame: Any) -> bytes:
@@ -1556,16 +1680,97 @@ def _apply_alpha_mask_for_ocr(crop: Any, alpha_mask: Any):
     return frame
 
 
+_OCR_FRAME_CACHE_TTL = 10.0
+_OCR_FRAME_CACHE_MAX_SIZE = 128
+_OCR_FRAME_CACHE_LOCK = threading.Lock()
+_OCR_FRAME_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_OCR_FRAME_INFLIGHT: dict[str, threading.Event] = {}
+
+
+def _ocr_frame_cache_key(frame: Any) -> str:
+    import cv2
+    import numpy as np
+
+    bgr = _ensure_bgr_frame(frame)
+    height, width = bgr.shape[:2]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    scale = min(1.0, 48.0 / max(1, max(width, height)))
+    small_width = max(1, int(round(width * scale)))
+    small_height = max(1, int(round(height * scale)))
+    small = cv2.resize(gray, (small_width, small_height), interpolation=cv2.INTER_AREA)
+    quantized = (small // 16).astype(np.uint8)
+    raw = f"{width}x{height}:{small_width}x{small_height}:".encode("ascii") + quantized.tobytes()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _clone_json_payload(data: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def _get_ocr_frame_cache(cache_key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _OCR_FRAME_CACHE_LOCK:
+        cached = _OCR_FRAME_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, result = cached
+        if now - cached_at > _OCR_FRAME_CACHE_TTL:
+            _OCR_FRAME_CACHE.pop(cache_key, None)
+            return None
+        return _clone_json_payload(result)
+
+
+def _set_ocr_frame_cache(cache_key: str, result: dict[str, Any]) -> None:
+    now = time.monotonic()
+    cloned = _clone_json_payload(result)
+    with _OCR_FRAME_CACHE_LOCK:
+        expired_keys = [
+            key for key, (cached_at, _) in _OCR_FRAME_CACHE.items()
+            if now - cached_at > _OCR_FRAME_CACHE_TTL
+        ]
+        for key in expired_keys:
+            _OCR_FRAME_CACHE.pop(key, None)
+        while len(_OCR_FRAME_CACHE) >= _OCR_FRAME_CACHE_MAX_SIZE:
+            oldest_key = min(_OCR_FRAME_CACHE, key=lambda key: _OCR_FRAME_CACHE[key][0])
+            _OCR_FRAME_CACHE.pop(oldest_key, None)
+        _OCR_FRAME_CACHE[cache_key] = (now, cloned)
+
+
 def _run_ocr_on_bgr_frame(frame: Any) -> dict[str, Any]:
+    encoded_frame = _encode_png_frame(frame)
+    cache_key = _ocr_frame_cache_key(frame)
+    cached = _get_ocr_frame_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    owner = False
+    with _OCR_FRAME_CACHE_LOCK:
+        inflight = _OCR_FRAME_INFLIGHT.get(cache_key)
+        if inflight is None:
+            inflight = threading.Event()
+            _OCR_FRAME_INFLIGHT[cache_key] = inflight
+            owner = True
+    if not owner:
+        if inflight.wait(timeout=2.0):
+            cached = _get_ocr_frame_cache(cache_key)
+            if cached is not None:
+                return cached
+
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
-            temp_file.write(_encode_png_frame(frame))
+            temp_file.write(encoded_frame)
             temp_path = temp_file.name
-        return run_paddle_ocr_preview(Path(temp_path), shape_type="rectangle")
+        result = run_paddle_ocr_preview(Path(temp_path), shape_type="rectangle")
+        _set_ocr_frame_cache(cache_key, result)
+        return result
     except OcrPreviewError as exc:
         raise RuntimeError(str(exc)) from exc
     finally:
+        if owner:
+            with _OCR_FRAME_CACHE_LOCK:
+                _OCR_FRAME_INFLIGHT.pop(cache_key, None)
+            inflight.set()
         if temp_path:
             try:
                 os.unlink(temp_path)
@@ -1584,6 +1789,7 @@ def _match_ocr_frame(
     min_confidence: float = 0.0,
     alpha_mask: Any = None,
 ) -> dict[str, Any]:
+    expected_text = str(text or "")
     frame = _ensure_bgr_frame(current_frame)
     frame_height, frame_width = frame.shape[:2]
     target_box = _normalize_match_box(current_search_box if scan else current_box, frame_width, frame_height)
@@ -1613,7 +1819,7 @@ def _match_ocr_frame(
         recognized = str(label.get("text") or "")
         all_texts.append(recognized)
         confidence = float(label.get("score") or 0.0)
-        if confidence < min_score or not _ocr_text_matches(recognized, text, match_mode):
+        if confidence < min_score or not _ocr_text_matches(recognized, expected_text, match_mode):
             continue
         absolute_box = _ocr_shape_box(shape, x, y, frame_width, frame_height) or current_box
         similarity = int(round(confidence * 100))
@@ -1628,7 +1834,7 @@ def _match_ocr_frame(
                 "ocr_confidence": confidence,
             }
         )
-    if not matches and _ocr_text_matches("".join(all_texts), text, match_mode):
+    if not matches and _ocr_text_matches("".join(all_texts), expected_text, match_mode):
         matches.append(
             {
                 "box": current_box,
@@ -1900,6 +2106,7 @@ def match_fanxiu_screenshot_box_frame(
     ocr_text: str | None = None,
     ocr_match_mode: str = "contains",
     ocr_min_confidence: float = 0.0,
+    save_match_frame: bool = True,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
     reference_frame = _read_image_bgr(source_path)
@@ -1926,7 +2133,12 @@ def match_fanxiu_screenshot_box_frame(
             fixed_height=fixed_height,
             prefer_cached=prefer_cached,
         )
-    current_frame, data, match_frame_suffix = _prepare_current_frame_for_reference(current_frame, source_path, quality)
+    current_frame, data, match_frame_suffix = _prepare_current_frame_for_reference(
+        current_frame,
+        source_path,
+        quality,
+        encode_frame=bool(save_match_frame),
+    )
     current_height, current_width = current_frame.shape[:2]
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
@@ -1950,21 +2162,24 @@ def match_fanxiu_screenshot_box_frame(
             min_confidence=ocr_min_confidence,
             alpha_mask=alpha_mask,
         )
+        index = 0
         output_dir = get_fanxiu_match_frame_dir()
-        with _MATCH_FRAME_LOCK:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
-            while output.exists():
-                index += 1
-                output = output_dir / f"{index:04d}{match_frame_suffix}"
-            output.write_bytes(data)
+        output: Path | None = None
+        if save_match_frame:
+            with _MATCH_FRAME_LOCK:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
+                while output.exists():
+                    index += 1
+                    output = output_dir / f"{index:04d}{match_frame_suffix}"
+                output.write_bytes(data)
 
         return {
             "ok": True,
             "index": index,
             "source_filename": source_path.name,
-            "match_filename": output.name,
-            "path": os.fspath(output),
+            "match_filename": output.name if output is not None else "",
+            "path": os.fspath(output) if output is not None else "",
             "directory": os.fspath(output_dir),
             "similarity": fixed_match["similarity"],
             "score": fixed_match["score"],
@@ -1995,14 +2210,14 @@ def match_fanxiu_screenshot_box_frame(
             "ocr_min_confidence": max(0.0, min(1.0, float(ocr_min_confidence or 0.0))),
         }
     if match_strategy == "anchor_pixel":
-        diff = ImageTools.img_distance(
+        similarity, score = _compare_frame_crops(
             reference_crop,
             current_crop,
-            grayscale=False,
-            color_tolerance=max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
         )
-        score = max(0.0, min(1.0, 1.0 - float(diff)))
-        similarity = int(round(score * 100))
         return {
             "ok": True,
             "index": 0,
@@ -2061,21 +2276,24 @@ def match_fanxiu_screenshot_box_frame(
             tolerance_max,
         )
 
+    index = 0
     output_dir = get_fanxiu_match_frame_dir()
-    with _MATCH_FRAME_LOCK:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
-        while output.exists():
-            index += 1
-            output = output_dir / f"{index:04d}{match_frame_suffix}"
-        output.write_bytes(data)
+    output: Path | None = None
+    if save_match_frame:
+        with _MATCH_FRAME_LOCK:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            index, output = _next_numbered_frame_path(output_dir, match_frame_suffix)
+            while output.exists():
+                index += 1
+                output = output_dir / f"{index:04d}{match_frame_suffix}"
+            output.write_bytes(data)
 
     return {
         "ok": True,
         "index": index,
         "source_filename": source_path.name,
-        "match_filename": output.name,
-        "path": os.fspath(output),
+        "match_filename": output.name if output is not None else "",
+        "path": os.fspath(output) if output is not None else "",
         "directory": os.fspath(output_dir),
         "similarity": fixed_match["similarity"],
         "score": fixed_match["score"],

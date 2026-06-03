@@ -232,6 +232,7 @@
                   :props="assetTreeProps"
                   node-key="id"
                   :default-expanded-keys="expandedAssetNodeIds"
+                  :auto-expand-parent="false"
                   highlight-current
                   draggable
                   :expand-on-click-node="false"
@@ -1027,9 +1028,8 @@ import {
   deleteFanxiuPseudoCodeCard,
   deleteFanxiuGameWindow2Screenshot,
   dragFanxiuGameWindow2,
-  ensureFanxiuCaptureRuntime,
   getFanxiuGameWindow2BurstFrameImage,
-  getFanxiuCaptureRuntimeStatus,
+  getFanxiuGameWindow2ServiceStatus,
   getFanxiuGameWindow3AssetTree,
   getFanxiuGameWindow3RuntimeStatus,
   getFanxiuGameWindow3RuntimeLogs,
@@ -1055,17 +1055,18 @@ import {
   runNowFanxiuGameWindow3SchedulerTask,
   screencapFanxiuGameWindow2,
   setFanxiuGameWindow3RuntimeGuard,
+  startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
   stopFanxiuGameWindow3RuntimeTask,
   tickFanxiuGameWindow3RuntimeTask,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
-  type FanxiuCaptureRuntimeStatus,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2BurstFrameItem,
   type FanxiuGameWindow2MatchPayload,
   type FanxiuGameWindow2MatchResponse,
+  type FanxiuGameWindow2ServiceStatus,
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
@@ -1078,12 +1079,6 @@ import {
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
 } from '@/api/fanxiu';
-import {
-  fetchRuntimeStatus,
-  triggerRuntimeItem,
-  type RuntimeItem,
-  type RuntimeStatusResponse,
-} from '@/api/runtime';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';
@@ -1347,7 +1342,6 @@ const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
 const SCREENSHOT_ZOOM_STEP = 10;
 const MIN_CONTENT_VISIBLE_AREA_RATIO = 0.2;
 const MIN_CONTENT_VISIBLE_AXIS_RATIO = Math.sqrt(MIN_CONTENT_VISIBLE_AREA_RATIO);
-const GAME_WINDOW_SERVICE_KEY = 'fanxiu-game-window';
 const VISUAL_ACTION_MARKER_START = '<!-- codeyun-visual-action-v1';
 const VISUAL_ACTION_MARKER_END = '-->';
 const RUNTIME_CHANNEL_POLICIES: Record<RuntimeChannelUse, RuntimeChannelPolicy> = {
@@ -1384,13 +1378,13 @@ const windowScenes: WindowScene[] = [
     key: 'mumu',
     label: 'MuMu模拟器',
     defaults: {
-      targetTitle: 'Powered by MuMu模拟器',
+      targetTitle: 'MuMu',
       titleMatch: 'contains',
       cropText: '0,60,0,0',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
       rotateDegrees: '0',
-      fps: 12,
+      fps: 2,
       quality: 82,
       autoDismissPopup: false,
       displayScale: 60,
@@ -1404,9 +1398,8 @@ const windowScenes: WindowScene[] = [
 const devices = computed(() => taskStore.devices);
 const selectedEntryId = ref('');
 const selectedWindowKey = ref<WindowSceneKey>('mumu');
-const runtimeStatus = ref<RuntimeStatusResponse | null>(null);
+const serviceStatus = ref<FanxiuGameWindow2ServiceStatus | null>(null);
 const runtimeLoading = ref(false);
-const captureRuntimeStatus = ref<FanxiuCaptureRuntimeStatus | null>(null);
 const connectionLoading = ref(false);
 
 const trimBorderText = ref('0,0,0,0');
@@ -1550,11 +1543,15 @@ const livePanState = ref<ScreenshotPanState | null>(null);
 
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
+let serviceStatusRequestInFlight = false;
+let serviceStatusLastLoadedAt = 0;
 let adbFrameTimer: number | null = null;
 let actualFpsResetTimer: number | null = null;
 let actualFpsSamplerTimer: number | null = null;
 const liveFrameTimestamps: number[] = [];
 let lastLiveFrameSample = '';
+let lastLiveFrameDataUrl = '';
+let lastLiveFrameCapturedAt = 0;
 let burstCaptureTimer: number | null = null;
 let burstCaptureToken = 0;
 let screenshotSaveTimer: number | null = null;
@@ -1568,6 +1565,7 @@ const codeCardSaveTimers = new Map<string, number>();
 const codeCardListRef = ref<HTMLElement | null>(null);
 const visualInstructionSetListRefs = new Map<string, HTMLElement>();
 const visualInstructionSetSortables = new Map<string, Sortable>();
+const SERVICE_STATUS_SILENT_POLL_INTERVAL_MS = 120_000;
 
 const selectedDevice = computed<Device | null>(() => (
   devices.value.find((device) => device.id === selectedEntryId.value) ?? null
@@ -1581,10 +1579,7 @@ const cropText = computed(() => selectedWindowScene.value.defaults.cropText);
 const captureArea = computed(() => selectedWindowScene.value.defaults.captureArea);
 const fixedFrameWidth = computed(() => selectedWindowScene.value.defaults.fixedWidth);
 const fixedFrameHeight = computed(() => selectedWindowScene.value.defaults.fixedHeight);
-const serviceItem = computed<RuntimeItem | null>(() => (
-  runtimeStatus.value?.items.find((item) => item.source === 'builtin' && item.key === GAME_WINDOW_SERVICE_KEY) ?? null
-));
-const serviceActive = computed(() => Boolean(serviceItem.value?.active));
+const serviceActive = computed(() => Boolean(serviceStatus.value?.running));
 const selectedScreenshotImage = computed(() => (
   screenshotImages.value.find((item) => item.filename === selectedScreenshotFilename.value) ?? null
 ));
@@ -3396,17 +3391,7 @@ const connectionButtonText = computed(() => {
   if (connectionButtonLoading.value || (streamEnabled.value && (streamToken.value || shouldCaptureWithAdb('frontend')) && !streamError.value)) return '连接中';
   return '连接';
 });
-const captureRuntimeText = computed(() => {
-  const status = captureRuntimeStatus.value;
-  if (!status) return '抓包未同步';
-  const stateLabel = ({
-    stopped: '抓包已停',
-    waiting_game: '等待游戏',
-    recovering: '抓包恢复中',
-    running: '抓包中',
-  } as Record<string, string>)[status.state] ?? status.state;
-  return status.last_error ? `${stateLabel} · ${status.last_error}` : stateLabel;
-});
+const captureRuntimeText = computed(() => '抓包状态');
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const isDefaultScreenshotBoxName = (name: string, index = 0) => {
@@ -3444,7 +3429,7 @@ const isMfDeviceEntry = (device: { id: string; device_id?: string; name?: string
 
 const chooseDefaultEntryId = () => {
   const queryEntryId = getQueryEntryId();
-  if (queryEntryId && devices.value.some((device) => device.id === queryEntryId)) return queryEntryId;
+  if (queryEntryId) return queryEntryId;
   const mf = devices.value.find(isMfDeviceEntry);
   if (mf) return mf.id;
   const savedEntryId = window.localStorage.getItem(DEVICE_STORAGE_KEY) || '';
@@ -3597,36 +3582,33 @@ const ensureStreamToken = async () => {
   await refreshStreamToken();
 };
 
-const loadRuntimeStatus = async (silent = false) => {
+const loadServiceStatus = async (silent = false, options: { force?: boolean } = {}) => {
   const entryId = selectedEntryId.value;
   if (!entryId || windowViewMode.value === 'off') {
-    runtimeStatus.value = null;
+    serviceStatus.value = null;
     runtimeLoading.value = false;
+    serviceStatusLastLoadedAt = 0;
     return;
   }
+  if (serviceStatusRequestInFlight) return;
+  if (
+    silent
+    && !options.force
+    && serviceStatus.value
+    && Date.now() - serviceStatusLastLoadedAt < SERVICE_STATUS_SILENT_POLL_INTERVAL_MS
+  ) {
+    return;
+  }
+  serviceStatusRequestInFlight = true;
   runtimeLoading.value = !silent;
   try {
-    runtimeStatus.value = await fetchRuntimeStatus(entryId);
+    serviceStatus.value = await getFanxiuGameWindow2ServiceStatus();
+    serviceStatusLastLoadedAt = Date.now();
   } catch (error) {
     if (!silent) ElMessage.error(getErrorMessage(error));
   } finally {
+    serviceStatusRequestInFlight = false;
     runtimeLoading.value = false;
-  }
-};
-
-const ensureCaptureRuntime = async () => {
-  try {
-    captureRuntimeStatus.value = await ensureFanxiuCaptureRuntime('game-window3');
-  } catch (error) {
-    ElMessage.warning(getErrorMessage(error));
-  }
-};
-
-const refreshCaptureRuntimeStatus = async () => {
-  try {
-    captureRuntimeStatus.value = await getFanxiuCaptureRuntimeStatus();
-  } catch {
-    // 抓包状态只是辅助状态，静默等待下一轮同步。
   }
 };
 
@@ -3638,6 +3620,8 @@ const handleEntryChange = async () => {
   streamError.value = '';
   streamToken.value = '';
   streamTokenExpiresAt.value = 0;
+  serviceStatusLastLoadedAt = 0;
+  clearLastLiveFrameCache();
   stopAdbFramePolling();
   revokeAdbFrameUrl();
   screenshotImages.value = [];
@@ -3649,7 +3633,8 @@ const handleEntryChange = async () => {
   if (selectedEntryId.value) await loadEntryAssetTree(selectedEntryId.value);
   void refreshRuntimeTaskStatus();
   if (windowViewMode.value !== 'off') {
-    await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+    await refreshStreamToken();
+    if (windowViewMode.value === 'control') void loadServiceStatus(true, { force: true });
   }
   if (screenshotPanelOpen.value) await loadScreenshotList();
   restartStream();
@@ -3661,12 +3646,13 @@ const handleWindowChange = async () => {
   naturalWidth.value = 0;
   naturalHeight.value = 0;
   streamError.value = '';
+  clearLastLiveFrameCache();
   stopAdbFramePolling();
   revokeAdbFrameUrl();
   clearMatchResults();
   persistWindowSelection();
   applyWindowConfig();
-  await connectWindow();
+  await connectWindow({ allowStartService: windowViewMode.value === 'control' });
 };
 
 const handleWindowViewModeChange = async () => {
@@ -3675,7 +3661,7 @@ const handleWindowViewModeChange = async () => {
     await restartStream();
     return;
   }
-  await connectWindow();
+  await connectWindow({ allowStartService: windowViewMode.value === 'control' });
 };
 
 const normalizeBox = (box: OverlayBox): OverlayBox => {
@@ -4300,6 +4286,23 @@ const resetActualFps = () => {
   }
 };
 
+const clearLastLiveFrameCache = () => {
+  lastLiveFrameDataUrl = '';
+  lastLiveFrameCapturedAt = 0;
+};
+
+const cacheLiveFrameDataUrl = (dataUrl: string) => {
+  if (!dataUrl) return;
+  lastLiveFrameDataUrl = dataUrl;
+  lastLiveFrameCapturedAt = Date.now();
+};
+
+const recentLiveFrameDataUrl = (maxAgeMs = 8000) => {
+  if (!lastLiveFrameDataUrl || !lastLiveFrameCapturedAt) return '';
+  if (Date.now() - lastLiveFrameCapturedAt > maxAgeMs) return '';
+  return lastLiveFrameDataUrl;
+};
+
 const recordLiveFrameArrival = () => {
   const now = performance.now();
   liveFrameTimestamps.push(now);
@@ -4385,6 +4388,8 @@ const handleImageLoad = () => {
   streamError.value = '';
   naturalWidth.value = image.naturalWidth;
   naturalHeight.value = image.naturalHeight;
+  const frame = captureCurrentLiveFrameDataUrl();
+  if (frame) cacheLiveFrameDataUrl(frame);
   void nextTick(syncCanvas);
 };
 
@@ -4398,8 +4403,26 @@ const captureCurrentLiveFrameDataUrl = () => {
   canvas.height = targetHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/png');
+  try {
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    cacheLiveFrameDataUrl(dataUrl);
+    return dataUrl;
+  } catch {
+    return '';
+  }
+};
+
+const waitForCurrentLiveFrameDataUrl = async (timeoutMs: number, signal?: AbortSignal) => {
+  const started = window.performance.now();
+  while (window.performance.now() - started < timeoutMs) {
+    if (signal?.aborted) return '';
+    const frame = captureCurrentLiveFrameDataUrl();
+    if (frame) return frame;
+    await new Promise(resolve => window.setTimeout(resolve, 80));
+  }
+  if (signal?.aborted) return '';
+  return captureCurrentLiveFrameDataUrl();
 };
 
 const resolveMumuChannelForUse = (use: RuntimeChannelUse = 'frontend'): MumuChannel => {
@@ -4415,17 +4438,58 @@ const shouldCaptureWithAdb = (use: RuntimeChannelUse = 'frontend') => (
   selectedWindowKey.value === 'mumu' && resolveMumuChannelForUse(use) === 'adb'
 );
 
-const captureCurrentFrameDataUrl = async (use: RuntimeChannelUse = 'frontend') => {
+const captureCurrentFrameDataUrl = async (
+  use: RuntimeChannelUse = 'frontend',
+  options: {
+    preferLiveFrame?: boolean;
+    liveFrameWaitMs?: number;
+    allowScreencapFallback?: boolean;
+    cachedScreencapOnly?: boolean;
+    screencapTimeoutMs?: number;
+    signal?: AbortSignal;
+  } = {},
+) => {
+  if (options.preferLiveFrame) {
+    const liveFrame = options.liveFrameWaitMs
+      ? await waitForCurrentLiveFrameDataUrl(options.liveFrameWaitMs, options.signal)
+      : captureCurrentLiveFrameDataUrl();
+    if (liveFrame) return liveFrame;
+    const recentLiveFrame = recentLiveFrameDataUrl();
+    if (recentLiveFrame) return recentLiveFrame;
+  }
   const useAdb = shouldCaptureWithAdb(use);
-  if (useAdb && selectedEntryId.value) {
+  if (useAdb && selectedEntryId.value && options.allowScreencapFallback !== false && !options.signal?.aborted) {
+    const readScreencap = async (cachedOnly: boolean, timeout: number) => {
+      const blob = await screencapFanxiuGameWindow2(selectedEntryId.value, {
+        signal: options.signal,
+        timeout,
+        preferCached: true,
+        cachedOnly,
+        title: targetTitle.value,
+        titleMatch: titleMatch.value,
+        mode: 'screen',
+        area: captureArea.value,
+        crop: cropText.value,
+        trimBorder: trimBorderText.value,
+        rotate: rotateDegrees.value,
+        fixedWidth: fixedFrameWidth.value,
+        fixedHeight: fixedFrameHeight.value,
+      });
+      return blobToDataUrl(blob);
+    };
     try {
-      const blob = await screencapFanxiuGameWindow2(selectedEntryId.value);
-      return await blobToDataUrl(blob);
+      return await readScreencap(true, Math.min(options.screencapTimeoutMs ?? 1000, 1000));
     } catch {
-      // Fall back to the visible live frame if ADB screencap is temporarily unavailable.
+      if (!options.cachedScreencapOnly && !options.signal?.aborted) {
+        try {
+          return await readScreencap(false, options.screencapTimeoutMs ?? (options.signal ? 8000 : 60000));
+        } catch {
+          // Fall back to the visible live frame if ADB screencap is temporarily unavailable.
+        }
+      }
     }
   }
-  return captureCurrentLiveFrameDataUrl();
+  return captureCurrentLiveFrameDataUrl() || recentLiveFrameDataUrl();
 };
 
 const compressFrameDataUrlForMatch = async (dataUrl: string) => {
@@ -4438,7 +4502,7 @@ const compressFrameDataUrlForMatch = async (dataUrl: string) => {
   });
   const sourceWidth = image.naturalWidth || image.width;
   const sourceHeight = image.naturalHeight || image.height;
-  const maxLongEdge = 960;
+  const maxLongEdge = 1280;
   const scale = Math.min(1, maxLongEdge / Math.max(sourceWidth, sourceHeight));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(sourceWidth * scale));
@@ -4446,7 +4510,7 @@ const compressFrameDataUrlForMatch = async (dataUrl: string) => {
   const ctx = canvas.getContext('2d');
   if (!ctx || !canvas.width || !canvas.height) return dataUrl;
   ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', 0.72);
+  return canvas.toDataURL('image/jpeg', 0.82);
 };
 
 const revokeAdbFrameUrl = () => {
@@ -4468,11 +4532,12 @@ const setWindowViewModeOff = async () => {
   stopBurstCapture();
   stopActualFpsSampler();
   resetActualFps();
+  clearLastLiveFrameCache();
   gameMacroRecording.value = false;
   gameMacroCapturePending.value = false;
   streamEnabled.value = false;
   controlEnabled.value = false;
-  runtimeStatus.value = null;
+  serviceStatus.value = null;
   streamToken.value = '';
   streamTokenExpiresAt.value = 0;
   revokeAdbFrameUrl();
@@ -4484,7 +4549,13 @@ const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
   streamError.value = message;
-  void setWindowViewModeOff();
+  streamEnabled.value = false;
+  stopAdbFramePolling();
+  stopActualFpsSampler();
+  resetActualFps();
+  revokeAdbFrameUrl();
+  if (streamImageRef.value) streamImageRef.value.src = '';
+  void nextTick(syncCanvas);
   ElMessage.error(message);
 };
 
@@ -4507,7 +4578,7 @@ const restartStream = async () => {
   void nextTick(syncCanvas);
 };
 
-const connectWindow = async () => {
+const connectWindow = async (options: { allowStartService?: boolean } = {}) => {
   if (!selectedEntryId.value) return;
   if (windowViewMode.value === 'off') {
     await setWindowViewModeOff();
@@ -4515,10 +4586,13 @@ const connectWindow = async () => {
   }
   connectionLoading.value = true;
   try {
-    if (!serviceActive.value) {
-      await triggerRuntimeItem(selectedEntryId.value, 'builtin', GAME_WINDOW_SERVICE_KEY);
+    if (!serviceStatus.value && options.allowStartService) {
+      await loadServiceStatus(true, { force: true });
     }
-    await loadRuntimeStatus(true);
+    if (!serviceActive.value && options.allowStartService) {
+      const result = await startFanxiuGameWindow2Service();
+      serviceStatus.value = result.service;
+    }
     await restartStream();
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -4950,7 +5024,7 @@ const toggleGameMacroRecording = async () => {
   windowViewMode.value = 'control';
   controlEnabled.value = true;
   if (!streamEnabled.value || !serviceActive.value) {
-    await connectWindow();
+    await connectWindow({ allowStartService: true });
   } else {
     await restartStream();
   }
@@ -6258,8 +6332,9 @@ const startPolling = () => {
   stopPolling();
   pollTimer = window.setInterval(() => {
     if (windowViewMode.value === 'off') return;
-    void loadRuntimeStatus(true);
-    void refreshCaptureRuntimeStatus();
+    if (shapeDetectingId.value) return;
+    if (windowViewMode.value !== 'control' && !serviceStatus.value) return;
+    void loadServiceStatus(true);
   }, 5000);
 };
 
@@ -6336,11 +6411,7 @@ onMounted(async () => {
       await connectWindow();
     }
   }
-  void ensureCaptureRuntime();
   startPolling();
-  void loadRuntimeLogs();
-  void loadRuntimeSchedulerTasks();
-  void refreshRuntimeTaskStatus();
   void ensureSelectedImagePreview();
   void nextTick(syncCanvas);
 });
@@ -6515,6 +6586,9 @@ const GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY = 'fanxiu.gameWindow3.deletedShape
 const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorGroups.v1';
 const GAME_WINDOW3_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow3.uiState.v1';
 const GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY = 'fanxiu.gameWindow3.occlusionMaskEnabled.v1';
+const getGameWindow3UiStateStorageKey = (entryId = selectedEntryId.value) => (
+  entryId ? `${GAME_WINDOW3_UI_STATE_STORAGE_KEY}.${entryId}` : GAME_WINDOW3_UI_STATE_STORAGE_KEY
+);
 const GAME_MACRO_FRAME_MATCH_THRESHOLD = 80;
 const RUNTIME_LOG_PAGE_SIZE = 20;
 const annotationCanvasRef = ref<HTMLElement | null>(null);
@@ -6692,6 +6766,7 @@ const shapeDetectLiveBoxes = ref<FanxiuGameWindow2MatchBox[]>([]);
 const shapeDetectSeq = ref(0);
 const shapeDetectStopRequestedRef = ref(false);
 let shapeDetectStopRequested = false;
+let shapeDetectAbortController: AbortController | null = null;
 const shapeMaskDialogVisible = ref(false);
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
@@ -7225,11 +7300,6 @@ const mergeEntryAssetTrees = (localTree: GameWindow3AssetNode[], backendTree: Ga
   return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
-const selectFirstAvailableAsset = () => {
-  if (selectedAssetId.value && findAssetNode(assetTree.value, selectedAssetId.value)) return;
-  selectedAssetId.value = findFirstImageNode(assetTree.value)?.id ?? null;
-};
-
 const flushAssetTreeToBackend = async (entryId: string, tree: GameWindow3AssetNode[]) => {
   try {
     const response = await saveFanxiuGameWindow3AssetTree(entryId, tree);
@@ -7258,17 +7328,14 @@ const loadEntryAssetTree = async (entryId: string) => {
     const response = await getFanxiuGameWindow3AssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
       const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
-      const mergedTree = mergeEntryAssetTrees(localTree, backendTree);
-      assetTree.value = mergedTree;
-      if (JSON.stringify(mergedTree) !== JSON.stringify(backendTree)) {
-        void flushAssetTreeToBackend(entryId, mergedTree);
-      }
+      assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
       assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
     } else {
       assetTree.value = localTree;
       void flushAssetTreeToBackend(entryId, localTree);
     }
-    selectFirstAvailableAsset();
+    restoreGameWindow3UiState();
+    await syncAssetTreeExpansionFromState();
     void nextTick(syncCanvas);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -7288,7 +7355,7 @@ const refreshEntryAssetTreeIfChanged = async () => {
     if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
     assetTreeBackendHydrating.value = true;
     const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
-    const mergedTree = mergeEntryAssetTrees(assetTree.value, backendTree);
+    const mergedTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
@@ -7354,7 +7421,9 @@ deletedShapeIds.value = loadDeletedShapeIds();
 
 const loadGameWindow3UiState = (): GameWindow3UiState => {
   if (typeof window === 'undefined') return {};
-  const raw = window.localStorage.getItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY);
+  const scopedKey = getGameWindow3UiStateStorageKey();
+  const raw = window.localStorage.getItem(scopedKey)
+    || (scopedKey === GAME_WINDOW3_UI_STATE_STORAGE_KEY ? '' : window.localStorage.getItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY));
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as GameWindow3UiState;
@@ -7365,8 +7434,8 @@ const loadGameWindow3UiState = (): GameWindow3UiState => {
 };
 
 const persistGameWindow3UiState = () => {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY, JSON.stringify({
+  if (typeof window === 'undefined' || !selectedEntryId.value) return;
+  window.localStorage.setItem(getGameWindow3UiStateStorageKey(), JSON.stringify({
     selectedAssetId: selectedAssetId.value,
     selectedShapeId: selectedShapeId.value,
     expandedAssetNodeIds: expandedAssetNodeIds.value,
@@ -7538,6 +7607,22 @@ const collectAssetFolderIds = (nodes: GameWindow3AssetNode[]): string[] => nodes
   ...(node.type === 'folder' ? [node.id] : []),
   ...collectAssetFolderIds(node.children ?? []),
 ]);
+
+const syncAssetTreeExpansionFromState = async () => {
+  await nextTick();
+  const tree = assetTreeRef.value;
+  if (!tree) return;
+  const expandedIds = new Set(expandedAssetNodeIds.value);
+  for (const id of collectAssetFolderIds(assetTree.value)) {
+    const treeNode = tree.getNode(id);
+    if (!treeNode) continue;
+    if (expandedIds.has(id)) {
+      treeNode.expand?.();
+    } else {
+      treeNode.collapse?.();
+    }
+  }
+};
 
 const collectExpandableShapeIds = (shapes: GameWindow3Shape[]): string[] => shapes.flatMap((shape) => [
   ...((shape.children ?? []).length ? [shape.id] : []),
@@ -7754,19 +7839,23 @@ const buildRuntimeShapeMatchPayload = (
   image: GameWindow3AssetNode,
   shape: GameWindow3Shape,
   currentFrameDataUrl?: string,
+  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr' } = {},
 ): FanxiuGameWindow2MatchPayload | null => {
   if (!selectedEntryId.value || !image.filename) return null;
   const box = shapeToMatchBox(shape, image);
   const ocrText = (shape.ocrText || '').trim();
-  const ocrEnabled = shapeOcrMatchRole(shape) !== 'off' && Boolean(ocrText);
+  const forceImage = options.condition === 'image';
+  const forceOcr = options.condition === 'ocr';
+  const ocrEnabled = !forceImage && shapeOcrMatchRole(shape) !== 'off' && Boolean(ocrText);
   const alphaMaskDataUrl = shape.maskEnabled ? shape.alphaMask?.dataUrl || '' : '';
   const toleranceMinDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl || '' : '';
   const toleranceMaxDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl || '' : '';
+  const scanEnabled = Boolean(shape.floating && !ocrEnabled);
   return {
     entry_id: selectedEntryId.value,
     filename: image.filename,
     box,
-    scan: Boolean(shape.floating),
+    scan: scanEnabled,
     pixel_tolerance: shapePixelTolerance(shape),
     alpha_mask_data_url: alphaMaskDataUrl || buildOcclusionAlphaMaskDataUrl(image, shape, box) || undefined,
     tolerance_min_data_url: toleranceMinDataUrl || undefined,
@@ -7783,10 +7872,12 @@ const buildRuntimeShapeMatchPayload = (
     quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     current_frame_data_url: currentFrameDataUrl || undefined,
     prefer_cached: false,
-    match_strategy: shape.floating ? 'auto' : 'anchor_pixel',
+    match_strategy: forceOcr ? 'auto' : (scanEnabled ? 'auto' : 'anchor_pixel'),
     ocr_enabled: ocrEnabled,
     ocr_text: ocrEnabled ? ocrText : undefined,
     ocr_match_mode: shape.ocrMatchMode || 'contains',
+    read_only_cache: options.readOnlyCache && ocrEnabled,
+    save_match_frame: options.saveMatchFrame ?? true,
   };
 };
 
@@ -7794,21 +7885,35 @@ const matchRuntimeShape = async (
   image: GameWindow3AssetNode,
   shape: GameWindow3Shape,
   currentFrameDataUrl?: string,
+  signal?: AbortSignal,
+  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr' } = {},
 ) => {
-  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl);
+  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, options);
   if (!payload) return null;
-  return matchFanxiuGameWindow2Screenshot(payload);
+  return matchFanxiuGameWindow2Screenshot(payload, { signal, timeout: 30000 });
+};
+
+const waitShapeDetectLoopInterval = async (seq: number, shapeId: string, delayMs = 1500) => {
+  const deadline = Date.now() + delayMs;
+  while (Date.now() < deadline) {
+    if (shapeDetectStopRequested || shapeDetectSeq.value !== seq || selectedShape.value?.id !== shapeId) {
+      return false;
+    }
+    await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
+  }
+  return !shapeDetectStopRequested && shapeDetectSeq.value === seq && selectedShape.value?.id === shapeId;
 };
 
 const bestRuntimeShapeMatchOf = (
   shape: GameWindow3Shape,
   response: FanxiuGameWindow2MatchResponse,
+  image?: GameWindow3AssetNode | null,
 ): { box: FanxiuGameWindow2MatchBox; score: number } => {
   const firstMatch = response.matches?.[0];
   const fixedBox = response.fixed_box;
   const box = shape.floating
     ? firstMatch?.box ?? fixedBox ?? response.current_box ?? response.box
-    : fixedBox ?? response.current_box ?? response.box;
+    : (image ? shapeToMatchBox(shape, image) : response.box);
   const score = Number(
     firstMatch?.similarity
       ?? response.fixed_similarity
@@ -7819,20 +7924,43 @@ const bestRuntimeShapeMatchOf = (
   return { box, score };
 };
 
-const formatShapeDetectResult = (
+const shapeImageThreshold = (shape: GameWindow3Shape) => (
+  thresholdRatioToPercent(visualMacroDefaultThreshold.value)
+);
+
+const shapeOcrMatched = (response: FanxiuGameWindow2MatchResponse | null | undefined) => (
+  Boolean(response?.matches?.length)
+);
+
+const shapeImageMatched = (shape: GameWindow3Shape, score: number) => (
+  score >= shapeImageThreshold(shape)
+);
+
+const formatShapeDetectCombinedResult = (
   shape: GameWindow3Shape,
-  response: FanxiuGameWindow2MatchResponse,
-  best: { box: FanxiuGameWindow2MatchBox; score: number },
+  results: Array<{
+    kind: 'image' | 'ocr';
+    response: FanxiuGameWindow2MatchResponse;
+    best: { box: FanxiuGameWindow2MatchBox; score: number };
+  }>,
 ) => {
-  const threshold = shapeImageMatchRole(shape) === 'off' && shapeOcrMatchRole(shape) !== 'off'
-    ? 0
-    : Math.max(0, Math.round((0.8 - shapePixelTolerance(shape) / 255) * 100));
-  const parts = [
-    `图像 ${Math.round(best.score)}%${threshold ? `/${threshold}%` : ''}`,
-    response.ocr_text ? `OCR「${response.ocr_text}」` : '',
-    `(${Math.round(best.box.x)},${Math.round(best.box.y)})`,
-  ].filter(Boolean);
-  return parts.join(' ');
+  const parts = results.map(result => {
+    if (result.kind === 'ocr') {
+      const text = result.response.ocr_text ? `「${result.response.ocr_text}」` : '';
+      return `OCR${shapeOcrMatched(result.response) ? '' : '未命中'} ${text}`.trim();
+    }
+    const score = Math.round(result.best.score);
+    return `图像 ${score}%${shapeImageMatched(shape, score) ? '' : ' 未达标'}`;
+  });
+  if (results.length > 1) {
+    const anyMatched = results.some(result => (
+      result.kind === 'ocr'
+        ? shapeOcrMatched(result.response)
+        : shapeImageMatched(shape, result.best.score)
+    ));
+    parts.push(anyMatched ? '条件满足' : '条件未满足');
+  }
+  return parts.join('；');
 };
 
 const detectSelectedShape = async () => {
@@ -7840,6 +7968,7 @@ const detectSelectedShape = async () => {
   if (shapeDetectingId.value) {
     shapeDetectStopRequested = true;
     shapeDetectStopRequestedRef.value = true;
+    shapeDetectAbortController?.abort();
     return;
   }
   const image = selectedImageNode.value;
@@ -7857,18 +7986,60 @@ const detectSelectedShape = async () => {
   };
   try {
     while (!shapeDetectStopRequested && shapeDetectSeq.value === seq && selectedShape.value?.id === currentId) {
-      const frameDataUrl = await captureCurrentFrameDataUrl();
+      const frameAbortController = new AbortController();
+      shapeDetectAbortController = frameAbortController;
+      const frameDataUrl = await captureCurrentFrameDataUrl('frontend', {
+        preferLiveFrame: true,
+        liveFrameWaitMs: 600,
+        allowScreencapFallback: true,
+        cachedScreencapOnly: true,
+        screencapTimeoutMs: 600,
+        signal: frameAbortController.signal,
+      });
+      if (shapeDetectAbortController === frameAbortController) shapeDetectAbortController = null;
       if (!frameDataUrl) throw new Error('当前没有可检测画面');
-      const response = await matchRuntimeShape(image, shape, frameDataUrl);
-      if (!response) throw new Error('检测参数不完整');
-      const best = bestRuntimeShapeMatchOf(shape, response);
+      if (shapeDetectStopRequested || shapeDetectSeq.value !== seq || selectedShape.value?.id !== currentId) break;
+      const matchFrameDataUrl = await compressFrameDataUrlForMatch(frameDataUrl);
+      const enabledConditions = shapeActiveMatchKinds(shape);
+      const conditionResults: Array<{
+        kind: 'image' | 'ocr';
+        response: FanxiuGameWindow2MatchResponse;
+        best: { box: FanxiuGameWindow2MatchBox; score: number };
+      }> = [];
+      for (const condition of enabledConditions) {
+        const abortController = new AbortController();
+        shapeDetectAbortController = abortController;
+        const response = await matchRuntimeShape(
+          image,
+          shape,
+          matchFrameDataUrl || frameDataUrl,
+          abortController.signal,
+          { readOnlyCache: true, saveMatchFrame: false, condition },
+        );
+        if (shapeDetectAbortController === abortController) shapeDetectAbortController = null;
+        if (!response) throw new Error('检测参数不完整');
+        if (shapeDetectStopRequested || shapeDetectSeq.value !== seq || selectedShape.value?.id !== currentId) break;
+        conditionResults.push({
+          kind: condition,
+          response,
+          best: bestRuntimeShapeMatchOf(shape, response, image),
+        });
+      }
+      if (shapeDetectStopRequested || shapeDetectSeq.value !== seq || selectedShape.value?.id !== currentId) break;
+      if (!conditionResults.length) throw new Error('没有启用可检测条件');
+      const best = conditionResults.find(result => (
+        result.kind === 'ocr'
+          ? shapeOcrMatched(result.response)
+          : shapeImageMatched(shape, result.best.score)
+      ))?.best ?? conditionResults[0].best;
       shapeDetectResults.value = {
         ...shapeDetectResults.value,
-        [shape.id]: formatShapeDetectResult(shape, response, best),
+        [shape.id]: formatShapeDetectCombinedResult(shape, conditionResults),
       };
       shapeDetectLiveBoxes.value = [best.box];
       drawOverlay();
-      await sleep(500);
+      const shouldContinue = await waitShapeDetectLoopInterval(seq, currentId);
+      if (!shouldContinue) break;
     }
   } catch (error) {
     if (shapeDetectStopRequested) {
@@ -7893,6 +8064,7 @@ const detectSelectedShape = async () => {
       shapeDetectingId.value = null;
       shapeDetectStopRequested = false;
       shapeDetectStopRequestedRef.value = false;
+      shapeDetectAbortController = null;
     }
   }
 };
@@ -7912,8 +8084,6 @@ const annotationContentStyle = computed(() => ({
   ...annotationCanvasStyle.value,
   transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
 }));
-
-restoreGameWindow3UiState();
 
 watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
@@ -7977,6 +8147,7 @@ watch(runtimeLogs, () => {
 }, { deep: true });
 
 watch(runtimeLogDialogVisible, (visible) => {
+  if (visible && !runtimeLogs.value.length) void loadRuntimeLogs();
   if (visible) goRuntimeLogLastPage();
 });
 
@@ -9056,6 +9227,11 @@ const loadRuntimeSchedulerTasks = async () => {
   }
 };
 
+const ensureRuntimeSchedulerTasks = async () => {
+  if (runtimeSchedulerTasks.value.length || runtimeSchedulerLoading.value) return;
+  await loadRuntimeSchedulerTasks();
+};
+
 const stopRuntimeTaskPolling = () => {
   if (runtimeTaskPollTimer !== null) {
     window.clearTimeout(runtimeTaskPollTimer);
@@ -9121,6 +9297,7 @@ const runRuntimeTaskDefinition = async (task: FanxiuGameWindow3SchedulerTaskItem
 
 const runRuntimeSelectedTask = async () => {
   if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
+  await ensureRuntimeSchedulerTasks();
   const taskDefinition = selectedRuntimeTaskDefinition.value;
   if (!taskDefinition) return;
   await runRuntimeTaskDefinition(taskDefinition);
@@ -9128,6 +9305,7 @@ const runRuntimeSelectedTask = async () => {
 
 const runRuntimeDueTasks = async () => {
   if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
+  await ensureRuntimeSchedulerTasks();
   runtimeRunning.value = true;
   runtimeStopRequested.value = false;
   runtimeLogs.value = [];
@@ -9147,6 +9325,7 @@ const runRuntimeDueTasks = async () => {
 
 const runRuntimeSingleTick = async () => {
   if (!selectedEntryId.value || runtimeRunning.value || runtimeStepping.value) return;
+  await ensureRuntimeSchedulerTasks();
   runtimeStepping.value = true;
   try {
     const status = await tickFanxiuGameWindow3RuntimeTask(selectedEntryId.value);
@@ -9318,7 +9497,7 @@ const captureLiveShapeImageData = async (width: number, height: number) => {
   if (shape.floating && selectedImage?.filename) {
     const response = await matchRuntimeShape(selectedImage, shape, currentFrameDataUrl);
     if (!response) return null;
-    const best = bestRuntimeShapeMatchOf(shape, response);
+    const best = bestRuntimeShapeMatchOf(shape, response, selectedImage);
     return cropImageDataUrlByBox(currentFrameDataUrl, best.box, width, height);
   }
   return cropImageDataUrlByShape(currentFrameDataUrl, shape, width, height);

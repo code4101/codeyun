@@ -49,7 +49,7 @@
                   size="small"
                   :loading="connectionButtonLoading"
                   :disabled="!selectedEntryId"
-                  @click="connectWindow"
+                  @click="connectWindow({ allowStartService: true })"
                 >
                   {{ connectionButtonText }}
                 </el-button>
@@ -1109,12 +1109,14 @@ import {
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
+  getFanxiuGameWindow2ServiceStatus,
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
   runFanxiuVisualScript,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
+  startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
   stopFanxiuVisualScript,
   updateFanxiuPseudoCodeCard,
@@ -1123,16 +1125,11 @@ import {
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
+  type FanxiuGameWindow2ServiceStatus,
   type FanxiuPseudoCodeCard,
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
 } from '@/api/fanxiu';
-import {
-  fetchRuntimeStatus,
-  triggerRuntimeItem,
-  type RuntimeItem,
-  type RuntimeStatusResponse,
-} from '@/api/runtime';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';
@@ -1357,7 +1354,7 @@ const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
 const SCREENSHOT_ZOOM_STEP = 10;
 const MIN_CONTENT_VISIBLE_AREA_RATIO = 0.2;
 const MIN_CONTENT_VISIBLE_AXIS_RATIO = Math.sqrt(MIN_CONTENT_VISIBLE_AREA_RATIO);
-const GAME_WINDOW_SERVICE_KEY = 'fanxiu-game-window';
+const SERVICE_STATUS_SILENT_POLL_INTERVAL_MS = 120_000;
 const VISUAL_ACTION_MARKER_START = '<!-- codeyun-visual-action-v1';
 const VISUAL_ACTION_MARKER_END = '-->';
 const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
@@ -1388,13 +1385,13 @@ const windowScenes: WindowScene[] = [
     key: 'mumu',
     label: 'MuMu模拟器',
     defaults: {
-      targetTitle: 'Powered by MuMu模拟器',
+      targetTitle: 'MuMu',
       titleMatch: 'contains',
       cropText: '0,60,0,0',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
       rotateDegrees: '0',
-      fps: 12,
+      fps: 2,
       quality: 82,
       autoDismissPopup: false,
       displayScale: 60,
@@ -1407,7 +1404,7 @@ const windowScenes: WindowScene[] = [
 const devices = computed(() => taskStore.devices);
 const selectedEntryId = ref('');
 const selectedWindowKey = ref<WindowSceneKey>('mumu');
-const runtimeStatus = ref<RuntimeStatusResponse | null>(null);
+const serviceStatus = ref<FanxiuGameWindow2ServiceStatus | null>(null);
 const runtimeLoading = ref(false);
 const connectionLoading = ref(false);
 
@@ -1530,6 +1527,8 @@ let tokenRequestSeq = 0;
 let lastInputErrorAt = 0;
 let isApplyingWindowConfig = false;
 let isApplyingVisualMacroUiState = false;
+let serviceStatusRequestInFlight = false;
+let serviceStatusLastLoadedAt = 0;
 const codeCardSaveTimers = new Map<string, number>();
 const codeCardListRef = ref<HTMLElement | null>(null);
 const visualInstructionSetListRefs = new Map<string, HTMLElement>();
@@ -1547,10 +1546,7 @@ const cropText = computed(() => selectedWindowScene.value.defaults.cropText);
 const captureArea = computed(() => selectedWindowScene.value.defaults.captureArea);
 const fixedFrameWidth = computed(() => selectedWindowScene.value.defaults.fixedWidth);
 const fixedFrameHeight = computed(() => selectedWindowScene.value.defaults.fixedHeight);
-const serviceItem = computed<RuntimeItem | null>(() => (
-  runtimeStatus.value?.items.find((item) => item.source === 'builtin' && item.key === GAME_WINDOW_SERVICE_KEY) ?? null
-));
-const serviceActive = computed(() => Boolean(serviceItem.value?.active));
+const serviceActive = computed(() => Boolean(serviceStatus.value?.running));
 const selectedScreenshotImage = computed(() => (
   screenshotImages.value.find((item) => item.filename === selectedScreenshotFilename.value) ?? null
 ));
@@ -3358,7 +3354,7 @@ const getQueryWindowKey = () => {
 
 const chooseDefaultEntryId = () => {
   const queryEntryId = getQueryEntryId();
-  if (queryEntryId && devices.value.some((device) => device.id === queryEntryId)) return queryEntryId;
+  if (queryEntryId) return queryEntryId;
   const savedEntryId = window.localStorage.getItem(DEVICE_STORAGE_KEY) || '';
   if (savedEntryId && devices.value.some((device) => device.id === savedEntryId)) return savedEntryId;
   const mi15 = devices.value.find((device) => {
@@ -3507,19 +3503,32 @@ const ensureStreamToken = async () => {
   await refreshStreamToken();
 };
 
-const loadRuntimeStatus = async (silent = false) => {
+const loadServiceStatus = async (silent = false, options: { force?: boolean } = {}) => {
   const entryId = selectedEntryId.value;
   if (!entryId || windowViewMode.value === 'off') {
-    runtimeStatus.value = null;
+    serviceStatus.value = null;
     runtimeLoading.value = false;
+    serviceStatusLastLoadedAt = 0;
     return;
   }
+  if (serviceStatusRequestInFlight) return;
+  if (
+    silent
+    && !options.force
+    && serviceStatus.value
+    && Date.now() - serviceStatusLastLoadedAt < SERVICE_STATUS_SILENT_POLL_INTERVAL_MS
+  ) {
+    return;
+  }
+  serviceStatusRequestInFlight = true;
   runtimeLoading.value = !silent;
   try {
-    runtimeStatus.value = await fetchRuntimeStatus(entryId);
+    serviceStatus.value = await getFanxiuGameWindow2ServiceStatus();
+    serviceStatusLastLoadedAt = Date.now();
   } catch (error) {
     if (!silent) ElMessage.error(getErrorMessage(error));
   } finally {
+    serviceStatusRequestInFlight = false;
     runtimeLoading.value = false;
   }
 };
@@ -3532,6 +3541,7 @@ const handleEntryChange = async () => {
   streamError.value = '';
   streamToken.value = '';
   streamTokenExpiresAt.value = 0;
+  serviceStatusLastLoadedAt = 0;
   screenshotImages.value = [];
   screenshotLoaded.value = false;
   clearScreenshotSelection();
@@ -3539,7 +3549,8 @@ const handleEntryChange = async () => {
   persistEntrySelection(selectedEntryId.value);
   applyWindowConfig();
   if (windowViewMode.value !== 'off') {
-    await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+    await refreshStreamToken();
+    if (windowViewMode.value === 'control') void loadServiceStatus(true, { force: true });
   }
   if (screenshotPanelOpen.value) await loadScreenshotList();
   restartStream();
@@ -3563,7 +3574,7 @@ const handleWindowViewModeChange = async () => {
     streamError.value = '';
     streamEnabled.value = false;
     controlEnabled.value = false;
-    runtimeStatus.value = null;
+    serviceStatus.value = null;
     streamToken.value = '';
     streamTokenExpiresAt.value = 0;
     if (streamImageRef.value) streamImageRef.value.src = '';
@@ -4197,7 +4208,7 @@ const restartStream = async () => {
   if (windowViewMode.value === 'off') {
     streamEnabled.value = false;
     controlEnabled.value = false;
-    runtimeStatus.value = null;
+    serviceStatus.value = null;
     streamToken.value = '';
     streamTokenExpiresAt.value = 0;
     if (streamImageRef.value) streamImageRef.value.src = '';
@@ -4211,12 +4222,12 @@ const restartStream = async () => {
   void nextTick(syncCanvas);
 };
 
-const connectWindow = async () => {
+const connectWindow = async (options: { allowStartService?: boolean } = {}) => {
   if (!selectedEntryId.value) return;
   if (windowViewMode.value === 'off') {
     streamEnabled.value = false;
     controlEnabled.value = false;
-    runtimeStatus.value = null;
+    serviceStatus.value = null;
     streamToken.value = '';
     streamTokenExpiresAt.value = 0;
     if (streamImageRef.value) streamImageRef.value.src = '';
@@ -4224,10 +4235,13 @@ const connectWindow = async () => {
   }
   connectionLoading.value = true;
   try {
-    if (!serviceActive.value) {
-      await triggerRuntimeItem(selectedEntryId.value, 'builtin', GAME_WINDOW_SERVICE_KEY);
+    if (!serviceStatus.value && options.allowStartService) {
+      await loadServiceStatus(true, { force: true });
     }
-    await loadRuntimeStatus(true);
+    if (!serviceActive.value && options.allowStartService) {
+      const result = await startFanxiuGameWindow2Service();
+      serviceStatus.value = result.service;
+    }
     await restartStream();
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -5698,7 +5712,8 @@ const startPolling = () => {
   stopPolling();
   pollTimer = window.setInterval(() => {
     if (windowViewMode.value === 'off') return;
-    void loadRuntimeStatus(true);
+    if (windowViewMode.value !== 'control' && !serviceStatus.value) return;
+    void loadServiceStatus(true);
   }, 5000);
 };
 
@@ -5768,7 +5783,8 @@ onMounted(async () => {
     persistEntrySelection(selectedEntryId.value);
     persistWindowSelection();
     if (windowViewMode.value !== 'off') {
-      await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+      await refreshStreamToken();
+      if (windowViewMode.value === 'control') void loadServiceStatus(true, { force: true });
     }
     if (screenshotPanelOpen.value) void loadScreenshotList();
   }

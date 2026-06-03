@@ -104,7 +104,6 @@ def _note(
 ) -> NoteNode:
     now = time.time()
     return NoteNode(
-        id=note_id,
         legacy_id=note_id,
         user_id=user_id,
         title=title,
@@ -292,7 +291,9 @@ def ensure_guest_star_notes_seed(session: Session, user: User) -> None:
     added_note_ids: set[str] = set()
     seed_note_map = dict(existing_note_map)
     for note in notes:
-        note_id = str(note.id)
+        note_id = str(note.legacy_id or note.id or "")
+        if not note_id:
+            continue
         if note_id in existing_note_ids:
             existing_note = existing_note_map[note_id]
             changed = False
@@ -305,7 +306,9 @@ def ensure_guest_star_notes_seed(session: Session, user: User) -> None:
             if changed:
                 session.add(existing_note)
             continue
-        note.numeric_id = allocate_resource_id(session, RESOURCE_TYPE_NOTE, note_id)
+        numeric_id = allocate_resource_id(session, RESOURCE_TYPE_NOTE, note_id)
+        note.id = str(numeric_id)
+        note.numeric_id = numeric_id
         session.add(note)
         added_note_ids.add(note_id)
         seed_note_map[note_id] = note

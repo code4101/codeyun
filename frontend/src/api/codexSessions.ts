@@ -199,3 +199,27 @@ export async function fetchCodexWorkloadForEntry(
   });
   return response.data;
 }
+
+export async function fetchLocalCodexWorkload(
+  options?: {
+    rootDir?: string;
+    startAt?: number;
+    endAt?: number;
+  },
+) {
+  const requestParams: Record<string, string | number> = {};
+  if (options?.rootDir?.trim()) {
+    requestParams.root_dir = options.rootDir.trim();
+  }
+  if (Number.isFinite(options?.startAt)) {
+    requestParams.start_at = Number(options?.startAt);
+  }
+  if (Number.isFinite(options?.endAt)) {
+    requestParams.end_at = Number(options?.endAt);
+  }
+  const response = await api.get<CodexWorkloadResponse>('/device-entries/local-codex/workload', {
+    params: Object.keys(requestParams).length ? requestParams : undefined,
+    timeout: CODEX_WORKLOAD_READ_TIMEOUT_MS,
+  });
+  return response.data;
+}

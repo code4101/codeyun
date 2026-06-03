@@ -97,7 +97,6 @@ const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH = requirePageMenuPath('Fanx
 const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH = requirePageMenuPath('FanxiuDivineResource');
 const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH = requirePageMenuPath('FanxiuQijiZhumo');
 const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH = requirePageMenuPath('FanxiuXianzhouMarathon');
-const FANXIU_REGION_DATA_PATH = requirePageMenuPath('FanxiuRegionData');
 const FANXIU_WARDROBE_HALL_PATH = requirePageMenuPath('FanxiuWardrobeHall');
 const FANXIU_SPIRIT_BEAST_HALL_PATH = requirePageMenuPath('FanxiuSpiritBeastHall');
 const FANXIU_MAGIC_TREASURE_HALL_PATH = requirePageMenuPath('FanxiuMagicTreasureHall');
@@ -171,7 +170,6 @@ const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE = requirePermissionTitleBy
 const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH);
 const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH);
 const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH);
-const FANXIU_REGION_DATA_TITLE = requirePermissionTitleByMenuPath(FANXIU_REGION_DATA_PATH);
 const FANXIU_INVENTORY_TITLE = requirePermissionTitle('fanxiu.inventory');
 const FANXIU_WARDROBE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_WARDROBE_HALL_PATH);
 const FANXIU_SPIRIT_BEAST_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH);
@@ -398,7 +396,6 @@ const fanxiuMenuVisible = computed(() =>
     FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
     FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
     FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
-    FANXIU_REGION_DATA_PATH,
     FANXIU_WARDROBE_HALL_PATH,
     FANXIU_SPIRIT_BEAST_HALL_PATH,
     FANXIU_MAGIC_TREASURE_HALL_PATH,
@@ -876,7 +873,6 @@ watch(
                   {{ FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE }}
                 </el-menu-item>
               </el-sub-menu>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_REGION_DATA_PATH)" :index="FANXIU_REGION_DATA_PATH">{{ FANXIU_REGION_DATA_TITLE }}</el-menu-item>
               <el-sub-menu v-if="fanxiuInventoryMenuVisible" index="fanxiu-inventory">
                 <template #title>
                   <span>{{ FANXIU_INVENTORY_TITLE }}</span>

@@ -560,6 +560,26 @@ export interface FanxiuGameWindow2StreamToken {
   expires_in_seconds: number;
 }
 
+export interface FanxiuGameWindow2ServiceStatus {
+  key: string;
+  title: string;
+  running: boolean;
+  state: string;
+  state_label: string;
+  target_title?: string;
+  url?: string;
+  host?: string;
+  port?: number;
+  process_count?: number;
+  pids?: number[];
+  last_error?: string;
+}
+
+export interface FanxiuGameWindow2ServiceStartResponse {
+  status: string;
+  service: FanxiuGameWindow2ServiceStatus;
+}
+
 export interface FanxiuGameWindow2ClickPayload {
   entry_id: string;
   x: number;
@@ -716,6 +736,8 @@ export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFram
   ocr_enabled?: boolean;
   ocr_text?: string;
   ocr_match_mode?: 'contains' | 'exact' | 'wildcard' | 'regex';
+  read_only_cache?: boolean;
+  save_match_frame?: boolean;
 }
 
 export interface FanxiuGameWindow2MatchResponse {
@@ -1231,64 +1253,6 @@ export interface FanxiuActivityListSnapshot {
   items: FanxiuActivityItem[];
 }
 
-export interface FanxiuRegionCharacterItem {
-  id: string;
-  region_name: string;
-  server_name: string;
-  guild_name: string;
-  role_name: string;
-  attack: string;
-  cultivation_level: string;
-  recorded_date: string;
-  disabled?: boolean;
-  created_at?: number;
-  updated_at?: number;
-  disabled_at?: number | null;
-}
-
-export interface FanxiuRegionCharacterSnapshot {
-  characters: FanxiuRegionCharacterItem[];
-}
-
-export interface FanxiuRegionCharacterUpdate {
-  guild_name?: string;
-  role_name?: string;
-  attack?: string;
-  cultivation_level?: string;
-  recorded_date?: string;
-  disabled?: boolean;
-}
-
-export interface FanxiuRegionServerItem {
-  id: string;
-  region_name: string;
-  order: number;
-  name: string;
-  open_date: string;
-  mark_type?: string;
-  mark_label?: string;
-  mark_title?: string;
-}
-
-export interface FanxiuRegionAreaItem {
-  id: string;
-  number: number;
-  name: string;
-  start_date: string;
-  end_date: string;
-  known_count: number;
-  servers: FanxiuRegionServerItem[];
-}
-
-export interface FanxiuRegionDataSnapshot {
-  regions: FanxiuRegionAreaItem[];
-}
-
-export interface FanxiuRegionServerCandidate {
-  region_name: string;
-  server_name: string;
-}
-
 export interface FanxiuModaoInvasionExchangeItem {
   id: string;
   name: string;
@@ -1375,13 +1339,6 @@ export interface FanxiuShouyuanExplorationPersonalRankingOcrImportResponse {
 export interface FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse {
   lines: string[];
   item: FanxiuShouyuanExplorationIncomeSpeedItem;
-}
-
-export interface FanxiuRegionCharacterOcrImportResponse {
-  lines: string[];
-  item: FanxiuRegionCharacterItem;
-  created?: boolean;
-  skipped_reason?: string;
 }
 
 export interface FanxiuWikiCatalog {
@@ -3111,6 +3068,12 @@ export interface FanxiuPacketRuntimeInsightResponse {
   snapshot_path: string;
   source_signature?: Record<string, unknown>;
   snapshot: Record<string, any>;
+}
+
+export interface FanxiuPlayerProfileRecordListResponse {
+  ok: boolean;
+  count: number;
+  records: Record<string, any>[];
 }
 
 export interface FanxiuPacketStorageBagResponse {
@@ -4877,6 +4840,12 @@ export const getFanxiuPacketRuntimeInsights = (params: { auto_sync?: boolean } =
     .then(res => res.data);
 };
 
+export const getFanxiuPlayerProfiles = (params: { limit?: number } = {}) => {
+  return api
+    .get<FanxiuPlayerProfileRecordListResponse>('/fanxiu/packet-capture/tcp/player-profiles', { params, timeout: 120000 })
+    .then(res => res.data);
+};
+
 export const getFanxiuPacketStorageBag = () => {
   return api
     .get<FanxiuPacketStorageBagResponse>('/fanxiu/packet-capture/tcp/storage-bag', { timeout: 120000 })
@@ -5035,6 +5004,14 @@ export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
     .then(res => res.data);
 };
 
+export const getFanxiuGameWindow2ServiceStatus = () => {
+  return api.get<FanxiuGameWindow2ServiceStatus>('/fanxiu/game-window2/service-status').then(res => res.data);
+};
+
+export const startFanxiuGameWindow2Service = () => {
+  return api.post<FanxiuGameWindow2ServiceStartResponse>('/fanxiu/game-window2/service-start').then(res => res.data);
+};
+
 export const clickFanxiuGameWindow2 = (payload: FanxiuGameWindow2ClickPayload) => {
   return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/click', payload, { timeout: 30000 }).then(res => res.data);
 };
@@ -5051,9 +5028,43 @@ export const textFanxiuGameWindow2 = (payload: FanxiuGameWindow2TextPayload) => 
   return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/text', payload, { timeout: 30000 }).then(res => res.data);
 };
 
-export const screencapFanxiuGameWindow2 = (entryId: string) => {
+export const screencapFanxiuGameWindow2 = (
+  entryId: string,
+  options?: {
+    signal?: AbortSignal;
+    timeout?: number;
+    preferCached?: boolean;
+    cachedOnly?: boolean;
+    title?: string;
+    titleMatch?: 'contains' | 'exact';
+    mode?: 'auto' | 'printwindow' | 'screen';
+    area?: 'outer' | 'client';
+    crop?: string;
+    trimBorder?: string;
+    rotate?: string;
+    fixedWidth?: number;
+    fixedHeight?: number;
+  },
+) => {
   return api
-    .post<Blob>('/fanxiu/game-window2/screencap', { entry_id: entryId }, { responseType: 'blob', timeout: 60000 })
+    .post<Blob>('/fanxiu/game-window2/screencap', {
+      entry_id: entryId,
+      prefer_cached: options?.preferCached ?? false,
+      cached_only: options?.cachedOnly ?? false,
+      title: options?.title,
+      title_match: options?.titleMatch,
+      mode: options?.mode,
+      area: options?.area,
+      crop: options?.crop,
+      trim_border: options?.trimBorder,
+      rotate: options?.rotate,
+      fixed_width: options?.fixedWidth,
+      fixed_height: options?.fixedHeight,
+    }, {
+      responseType: 'blob',
+      timeout: options?.timeout ?? 60000,
+      signal: options?.signal,
+    })
     .then(res => res.data);
 };
 
@@ -5096,8 +5107,14 @@ export const importFanxiuGameWindow2BurstFrames = (entryId: string, filenames: s
     .then(res => res.data);
 };
 
-export const matchFanxiuGameWindow2Screenshot = (payload: FanxiuGameWindow2MatchPayload) => {
-  return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload, { timeout: 60000 }).then(res => res.data);
+export const matchFanxiuGameWindow2Screenshot = (
+  payload: FanxiuGameWindow2MatchPayload,
+  options: { signal?: AbortSignal; timeout?: number } = {},
+) => {
+  return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload, {
+    timeout: options.timeout ?? 60000,
+    signal: options.signal,
+  }).then(res => res.data);
 };
 
 export const getFanxiuGameWindow3RuntimeStatus = () => {
@@ -5417,48 +5434,6 @@ export const getFanxiuActivityList = () => {
 
 export const saveFanxiuActivityList = (payload: FanxiuActivityListSnapshot) => {
   return api.put<FanxiuActivityListSnapshot>('/fanxiu/activity-list', payload).then(res => res.data);
-};
-
-export const getFanxiuRegionData = () => {
-  return api.get<FanxiuRegionDataSnapshot>('/fanxiu/region-data').then(res => res.data);
-};
-
-export const getFanxiuRegionCharacters = () => {
-  return api.get<FanxiuRegionCharacterSnapshot>('/fanxiu/region-data/characters').then(res => res.data);
-};
-
-export const getFanxiuRegionCharacterHistory = (params: Partial<Pick<FanxiuRegionCharacterItem, 'region_name' | 'server_name' | 'guild_name' | 'role_name'>> & { include_disabled?: boolean } = {}) => {
-  return api.get<FanxiuRegionCharacterSnapshot>('/fanxiu/region-data/characters/history', { params }).then(res => res.data);
-};
-
-export const updateFanxiuRegionCharacter = (characterId: string, payload: FanxiuRegionCharacterUpdate) => {
-  return api.patch<FanxiuRegionCharacterItem>(`/fanxiu/region-data/characters/${characterId}`, payload).then(res => res.data);
-};
-
-export const disableFanxiuRegionCharacter = (characterId: string) => {
-  return api.delete<FanxiuRegionCharacterItem>(`/fanxiu/region-data/characters/${characterId}`).then(res => res.data);
-};
-
-export const importFanxiuRegionCharacterFromOcr = (
-  image: File,
-  serverCandidates: FanxiuRegionServerCandidate[] = [],
-  targetServer: FanxiuRegionServerCandidate | null = null,
-) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  formData.append('server_candidates', JSON.stringify(serverCandidates));
-  if (targetServer) {
-    formData.append('target_region_name', targetServer.region_name);
-    formData.append('target_server_name', targetServer.server_name);
-  }
-  return api
-    .post<FanxiuRegionCharacterOcrImportResponse>('/fanxiu/region-data/characters/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
 };
 
 export const getFanxiuModaoInvasionExchangeList = () => {

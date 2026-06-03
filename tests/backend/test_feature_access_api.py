@@ -28,7 +28,6 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.activity-list.divine-resource",
     "fanxiu.activity-list.qiji-zhumo",
     "fanxiu.activity-list.xianzhou-marathon",
-    "fanxiu.region-data",
     "fanxiu.wiki",
     "fanxiu.inventory",
     "fanxiu.inventory.wardrobe-hall",

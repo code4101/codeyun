@@ -17,6 +17,9 @@ class PercentageRefundRule:
     refund_amount: float
 
 
+REFUND_PROGRESS_FULL_COLOR = "#80FF80"
+
+
 def sheet_text(value: Any) -> str:
     if value is None:
         return ""
@@ -127,7 +130,9 @@ def highlight_presence_progress(text: Any) -> str | None:
     progress_percent = parse_progress_percent(text)
     if progress_percent is None or progress_percent <= 0:
         return None
-    return refund_progress_color(1, positive_amounts=[1], progress_weight=progress_percent)
+    if progress_percent >= 100:
+        return REFUND_PROGRESS_FULL_COLOR
+    return partial_refund_progress_color(progress_percent / 100)
 
 
 def refund_progress_color(
@@ -141,16 +146,14 @@ def refund_progress_color(
         return None
 
     max_refund = amounts[0]
-    second_refund = amounts[1] if len(amounts) > 1 else max_refund
     if refund_amount >= max_refund:
-        base_color = [0.0, 255.0, 0.0]
-    else:
-        blue = (1 - refund_amount / second_refund) * 128 if second_refund > 0 else 0
-        base_color = [255.0, 255.0, blue]
+        return REFUND_PROGRESS_FULL_COLOR
+    return partial_refund_progress_color(refund_amount / max_refund)
 
-    weight = max(float(progress_weight), 0.0)
-    blended = [(component * weight + 255 * 100) / (weight + 100) for component in base_color]
-    return rgb_to_hex(blended)
+
+def partial_refund_progress_color(ratio: float) -> str:
+    normalized = max(0.0, min(float(ratio), 1.0))
+    return rgb_to_hex([255, 255, 255 * (1 - normalized)])
 
 
 def progress_weight_from_percent_text(text: Any) -> float:

@@ -414,17 +414,6 @@
       "default_anonymous_allow": true
     },
     {
-      "key": "fanxiu.region-data",
-      "title": "区服",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 7,
-      "route_paths": ["/fanxiu/region-data"],
-      "menu_paths": ["/fanxiu/region-data"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
       "key": "fanxiu.inventory",
       "title": "道具仓库",
       "node_type": "group",

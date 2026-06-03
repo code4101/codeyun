@@ -91,6 +91,7 @@ export function buildCodeyunUrlVariant(source: string | URL | null | undefined, 
 
   targetUrl.protocol = 'https:'
   targetUrl.host = CODEYUN_PUBLIC_HOST
+  targetUrl.port = ''
   return targetUrl.toString()
 }
 

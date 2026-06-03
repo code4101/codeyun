@@ -4628,6 +4628,236 @@ def run_startup_schema_repairs(engine):
         _ensure_resource_trash_columns(session)
 
 
+def v67_drop_fanxiu_region_data_tables(session: Session):
+    """
+    Migration V67: Remove retired Fanxiu region-data tables.
+    """
+    print("Running System Upgrade V67: Drop Fanxiu region-data tables...")
+    for table_name in (
+        "fanxiuregioncharacterrecord",
+        "fanxiuregionserver",
+        "fanxiuregionarea",
+    ):
+        session.exec(text(f"DROP TABLE IF EXISTS {table_name}"))
+    session.commit()
+    print("  Dropped Fanxiu region-data tables.")
+
+
+def v68_add_fanxiu_player_profile_records(session: Session):
+    """
+    Migration V68: Add Fanxiu player profile packet-derived records.
+    """
+    print("Running System Upgrade V68: Add Fanxiu player profile records...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiuplayerprofilerecord (
+                id VARCHAR PRIMARY KEY,
+                packet_id VARCHAR NOT NULL,
+                protocol VARCHAR NOT NULL DEFAULT '',
+                source_kind VARCHAR NOT NULL DEFAULT '',
+                role_id VARCHAR NOT NULL DEFAULT '',
+                role_id_text VARCHAR NOT NULL DEFAULT '',
+                name VARCHAR NOT NULL DEFAULT '',
+                server INTEGER,
+                region_number INTEGER,
+                region_name VARCHAR NOT NULL DEFAULT '',
+                server_order INTEGER,
+                server_name VARCHAR NOT NULL DEFAULT '',
+                attack_value FLOAT,
+                attack_text VARCHAR NOT NULL DEFAULT '',
+                captured_at VARCHAR NOT NULL DEFAULT '',
+                captured_date VARCHAR NOT NULL DEFAULT '',
+                battle_score FLOAT,
+                battle_score_text VARCHAR NOT NULL DEFAULT '',
+                special_attributes JSON DEFAULT '[]',
+                immortal_attributes JSON DEFAULT '[]',
+                combat_attributes JSON DEFAULT '[]',
+                attributes JSON DEFAULT '[]',
+                payload JSON DEFAULT '{}',
+                evidence JSON DEFAULT '{}',
+                created_at FLOAT NOT NULL DEFAULT 0,
+                updated_at FLOAT NOT NULL DEFAULT 0,
+                CONSTRAINT uq_fanxiuplayerprofilerecord_packet_id UNIQUE (packet_id)
+            )
+            """
+        )
+    )
+    indexes = (
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_packet_id ON fanxiuplayerprofilerecord (packet_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_role_id_text ON fanxiuplayerprofilerecord (role_id_text)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_name ON fanxiuplayerprofilerecord (name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_region_name ON fanxiuplayerprofilerecord (region_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_server_name ON fanxiuplayerprofilerecord (server_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_captured_at ON fanxiuplayerprofilerecord (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_captured_date ON fanxiuplayerprofilerecord (captured_date)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_attack_value ON fanxiuplayerprofilerecord (attack_value)",
+    )
+    for statement in indexes:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Fanxiu player profile record table.")
+
+
+def v69_add_fanxiu_packet_business_records(session: Session):
+    """
+    Migration V69: Add Fanxiu packet-derived business fact records.
+    """
+    print("Running System Upgrade V69: Add Fanxiu packet business records...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiupacketbusinessrecord (
+                id VARCHAR PRIMARY KEY,
+                domain VARCHAR NOT NULL,
+                record_key VARCHAR NOT NULL,
+                protocol VARCHAR NOT NULL DEFAULT '',
+                packet_id VARCHAR NOT NULL DEFAULT '',
+                source_kind VARCHAR NOT NULL DEFAULT '',
+                entity_id VARCHAR NOT NULL DEFAULT '',
+                entity_name VARCHAR NOT NULL DEFAULT '',
+                captured_at VARCHAR NOT NULL DEFAULT '',
+                captured_date VARCHAR NOT NULL DEFAULT '',
+                payload JSON DEFAULT '{}',
+                evidence JSON DEFAULT '{}',
+                created_at FLOAT NOT NULL DEFAULT 0,
+                updated_at FLOAT NOT NULL DEFAULT 0,
+                CONSTRAINT uq_fanxiupacketbusinessrecord_domain_key UNIQUE (domain, record_key)
+            )
+            """
+        )
+    )
+    indexes = (
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_domain ON fanxiupacketbusinessrecord (domain)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_record_key ON fanxiupacketbusinessrecord (record_key)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_protocol ON fanxiupacketbusinessrecord (protocol)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_packet_id ON fanxiupacketbusinessrecord (packet_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_source_kind ON fanxiupacketbusinessrecord (source_kind)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_entity_id ON fanxiupacketbusinessrecord (entity_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_entity_name ON fanxiupacketbusinessrecord (entity_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_captured_at ON fanxiupacketbusinessrecord (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketbusinessrecord_captured_date ON fanxiupacketbusinessrecord (captured_date)",
+    )
+    for statement in indexes:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Fanxiu packet business record table.")
+
+
+def v70_add_fanxiu_player_profile_cultivation_fields(session: Session):
+    """
+    Migration V70: Add packet-derived cultivation fields to Fanxiu player profile records.
+    """
+    print("Running System Upgrade V70: Add Fanxiu player profile cultivation fields...")
+    columns = _get_table_columns(session, "fanxiuplayerprofilerecord")
+    if "cultivation_level" not in columns:
+        session.exec(text("ALTER TABLE fanxiuplayerprofilerecord ADD COLUMN cultivation_level INTEGER"))
+    if "cultivation_level_text" not in columns:
+        session.exec(text("ALTER TABLE fanxiuplayerprofilerecord ADD COLUMN cultivation_level_text VARCHAR NOT NULL DEFAULT ''"))
+
+    indexes = (
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_cultivation_level ON fanxiuplayerprofilerecord (cultivation_level)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuplayerprofilerecord_cultivation_level_text ON fanxiuplayerprofilerecord (cultivation_level_text)",
+    )
+    for statement in indexes:
+        session.exec(text(statement))
+
+    realms = ("炼气", "筑基", "结丹", "元婴", "化神", "炼虚", "合体", "大乘", "真仙", "金仙")
+    stages = ("前期", "中期", "后期")
+    layers = ("壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖", "拾")
+    anchor_value = 201
+    anchor_realm_index = realms.index("大乘")
+    realm_span = len(stages) * 10
+
+    def format_level(value: Any) -> str:
+        try:
+            numeric = int(float(value))
+        except (TypeError, ValueError):
+            return ""
+        offset = numeric - anchor_value
+        realm_index = anchor_realm_index + (offset // realm_span)
+        if realm_index < 0 or realm_index >= len(realms):
+            return str(numeric)
+        within_realm = offset % realm_span
+        stage_index = within_realm // 10
+        layer_index = within_realm % 10
+        return f"{realms[realm_index]}{stages[stage_index]}{layers[layer_index]}层"
+
+    rows = session.exec(text("SELECT id, payload FROM fanxiuplayerprofilerecord")).all()
+    updated = 0
+    for row in rows:
+        row_id = row[0]
+        payload = _load_json_value(row[1], {})
+        if not isinstance(payload, dict):
+            continue
+        raw_level = payload.get("cultivation_level", payload.get("level"))
+        try:
+            level = int(float(raw_level))
+        except (TypeError, ValueError):
+            continue
+        level_text = str(payload.get("cultivation_level_text") or format_level(level))
+        payload["cultivation_level"] = level
+        payload["cultivation_level_text"] = level_text
+        session.execute(
+            text(
+                """
+                UPDATE fanxiuplayerprofilerecord
+                SET cultivation_level = :level,
+                    cultivation_level_text = :level_text,
+                    payload = :payload
+                WHERE id = :id
+                """
+            ),
+            {"level": level, "level_text": level_text, "payload": json.dumps(payload, ensure_ascii=False), "id": row_id},
+        )
+        updated += 1
+
+    session.commit()
+    print(f"  Added Fanxiu player profile cultivation fields. Backfilled {updated} rows.")
+
+
+def v71_add_notenode_calendar_time_indexes(session: Session):
+    """
+    Migration V71: Add note time indexes used by calendar/range scans.
+    """
+    print("Running System Upgrade V71: Add note calendar time indexes...")
+    if not _table_exists(session, "notenode"):
+        print("  notenode table not found, skipping.")
+        return
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_notenode_start_at ON notenode (start_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notenode_updated_at ON notenode (updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notenode_created_at ON notenode (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notenode_user_start_at ON notenode (user_id, start_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notenode_user_updated_at ON notenode (user_id, updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notenode_user_created_at ON notenode (user_id, created_at)",
+    )
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added notenode calendar time indexes.")
+
+
+def v72_add_noteedge_graph_lookup_indexes(session: Session):
+    """
+    Migration V72: Add composite edge indexes used by graph scan lookups.
+    """
+    print("Running System Upgrade V72: Add note edge graph lookup indexes...")
+    if not _table_exists(session, "noteedge"):
+        print("  noteedge table not found, skipping.")
+        return
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_noteedge_user_source_target ON noteedge (user_id, source_id, target_id)",
+        "CREATE INDEX IF NOT EXISTS ix_noteedge_user_target_source ON noteedge (user_id, target_id, source_id)",
+    )
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added noteedge graph lookup indexes.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -4697,6 +4927,12 @@ MIGRATIONS = [
     (64, "Add Fanxiu pseudo-code cards", v64_add_fanxiu_pseudocode_cards),
     (65, "Add resource trash columns", v65_add_resource_trash_columns),
     (66, "Migrate note sheet links to inline cells", v66_migrate_note_sheet_links_to_inline_cells),
+    (67, "Drop Fanxiu region-data tables", v67_drop_fanxiu_region_data_tables),
+    (68, "Add Fanxiu player profile records", v68_add_fanxiu_player_profile_records),
+    (69, "Add Fanxiu packet business records", v69_add_fanxiu_packet_business_records),
+    (70, "Add Fanxiu player profile cultivation fields", v70_add_fanxiu_player_profile_cultivation_fields),
+    (71, "Add notenode calendar time indexes", v71_add_notenode_calendar_time_indexes),
+    (72, "Add noteedge graph lookup indexes", v72_add_noteedge_graph_lookup_indexes),
 ]
 
 def get_current_version(session: Session) -> int:

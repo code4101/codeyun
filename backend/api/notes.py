@@ -11,6 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select, func, or_
+from sqlalchemy.orm import load_only
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
 from backend.models import (
@@ -39,6 +40,8 @@ from backend.schemas import (
     NoteQueryResponse,
     NoteProgramRequest,
     NoteProgramResponse,
+    NoteCalendarSummaryRequest,
+    NoteCalendarSummaryResponse,
     NoteBatchUpdateRequest,
     NoteBatchUpdateResponse,
     AiNoteCategorizeRequest,
@@ -66,7 +69,7 @@ from backend.core.codex_sessions import (
 from backend.core.codex_device_summary import collect_multi_codex_daily_summary_source
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.guest_notes import get_current_active_or_guest_notes_user
-from backend.core.note_access import note_to_list_response_dict, note_to_response_dict
+from backend.core.note_access import note_list_mapping_to_response_dict, note_to_list_response_dict, note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
     NOTE_CATEGORY_DEFAULT,
@@ -126,6 +129,44 @@ router = APIRouter(
 )
 
 ALLOWED_ORDER_FIELDS = {"updated_at", "created_at", "start_at", "weight", "title", "private_level"}
+NOTE_LIST_LOAD_COLUMNS = (
+    NoteNode.id,
+    NoteNode.numeric_id,
+    NoteNode.legacy_id,
+    NoteNode.user_id,
+    NoteNode.title,
+    NoteNode.weight,
+    NoteNode.node_type,
+    NoteNode.note_types,
+    NoteNode.note_categories,
+    NoteNode.primary_category,
+    NoteNode.note_form,
+    NoteNode.note_kind,
+    NoteNode.note_scene,
+    NoteNode.node_status,
+    NoteNode.lifecycle_stage,
+    NoteNode.color,
+    NoteNode.weight_mode,
+    NoteNode.private_level,
+    NoteNode.custom_fields,
+    NoteNode.created_at,
+    NoteNode.updated_at,
+    NoteNode.start_at,
+    NoteNode.deleted_at,
+    NoteNode.deleted_by_user_id,
+)
+NOTE_LIST_LOAD_FIELD_NAMES = {column.key for column in NOTE_LIST_LOAD_COLUMNS}
+NOTE_CALENDAR_SCORE_COLUMNS = (
+    NoteNode.id,
+    NoteNode.numeric_id,
+    NoteNode.user_id,
+    NoteNode.weight,
+    NoteNode.note_form,
+    NoteNode.node_status,
+    NoteNode.lifecycle_stage,
+    NoteNode.custom_fields,
+    NoteNode.start_at,
+)
 NOTE_AI_APP_ID = "note-taxonomy"
 NOTE_AI_CATEGORY_DESCRIPTIONS = {
     "general": "默认综合分类",
@@ -174,6 +215,7 @@ CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
 CODEX_DIARY_DRAFT_BATCH_SIZE = 12
 CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK = 24
 CODEX_DIARY_AI_EDGE_RECORD_COUNT_PER_BLOCK = CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK // 2
+CODEX_DIARY_HEARTBEAT_INTERVAL_SECONDS = 2.0
 CODEX_DIARY_RESULT_KEYWORDS = (
     "已",
     "完成",
@@ -2394,7 +2436,7 @@ def _draft_codex_diary_blocks_in_batches(
                     run,
                     status="running",
                     stage="drafting_fallback",
-                    stage_label=f"AI 草案失败，使用规则摘要 {batch_index}/{total_batches}",
+                    stage_label=f"AI 草案失败，停止写入 {batch_index}/{total_batches}",
                 )
                 fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
                 fallback_events.append(
@@ -2407,9 +2449,7 @@ def _draft_codex_diary_blocks_in_batches(
                 run.result_json = {**(run.result_json or {}), "draft_fallback_events": fallback_events}
                 session.add(run)
                 session.commit()
-            drafted_blocks.extend(
-                _draft_codex_diary_blocks_without_ai(batch)
-            )
+            raise ValueError(f"AI 日记草案失败，已停止写入：{getattr(exc, 'detail', None) or exc}") from exc
     return drafted_blocks
 
 
@@ -2456,17 +2496,17 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         for item in _iter_unique_codex_diary_palette_items(palette_lookup)
         if str(item.get("key") or "").strip()
     }
+    records: list[dict[str, Any]] = []
+    for raw_record in sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
+        record = dict(raw_record)
+        record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
+        records.append(record)
     title_hints = _build_codex_diary_note_title_hints(
         user_id,
         session,
         allowed_category_keys=allowed_category_keys,
         palette_lookup=palette_lookup,
     )
-    records: list[dict[str, Any]] = []
-    for raw_record in sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
-        record = dict(raw_record)
-        record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
-        records.append(record)
 
     message_segments = _build_codex_diary_message_segments(
         records,
@@ -2751,6 +2791,37 @@ def _run_codex_diary_import_worker(
     entry_specs: list[dict[str, Any]],
     root_identity: dict[str, str],
 ) -> None:
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+
+    def start_heartbeat() -> None:
+        nonlocal heartbeat_thread
+        if heartbeat_thread is not None and heartbeat_thread.is_alive():
+            return
+
+        def _heartbeat_loop() -> None:
+            while not heartbeat_stop.wait(CODEX_DIARY_HEARTBEAT_INTERVAL_SECONDS):
+                now = time.time()
+                try:
+                    with Session(db_bind) as heartbeat_session:
+                        heartbeat_run = heartbeat_session.get(CodexDiaryImportRun, run_id)
+                        if heartbeat_run is None or heartbeat_run.status != "running":
+                            return
+                        heartbeat_run.heartbeat_at = now
+                        heartbeat_run.updated_at = now
+                        heartbeat_session.add(heartbeat_run)
+                        heartbeat_session.commit()
+                except Exception:
+                    continue
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+
+    def stop_heartbeat() -> None:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
+
     with Session(db_bind) as session:
         run = session.get(CodexDiaryImportRun, run_id)
         user = session.get(User, user_id)
@@ -2788,6 +2859,7 @@ def _run_codex_diary_import_worker(
                 session.commit()
                 return
 
+            start_heartbeat()
             _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按主题和时长拆分节点")
             blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
 
@@ -2842,6 +2914,8 @@ def _run_codex_diary_import_worker(
                 error_message=str(getattr(exc, "detail", None) or exc),
                 session=session,
             )
+        finally:
+            stop_heartbeat()
 
 
 def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> dict[str, Any] | None:
@@ -3348,6 +3422,50 @@ def _serialize_note_edges_for_nodes(edges: list[NoteEdge], notes: list[NoteNode]
         for ref in note_ref_aliases(note):
             note_public_ids[ref] = public_id
     return [_serialize_note_edge(edge, note_public_ids=note_public_ids) for edge in edges]
+
+
+def _note_mapping_public_api_id(note: Any) -> int | str:
+    numeric_id = int(note.get("numeric_id") or 0)
+    if numeric_id > 0:
+        return numeric_id
+    return str(note.get("id") or "")
+
+
+def _note_mapping_ref_aliases(note: Any) -> set[str]:
+    refs = {
+        str(note.get("id") or "").strip(),
+        str(note.get("legacy_id") or "").strip(),
+        str(_note_mapping_public_api_id(note)).strip(),
+    }
+    return {ref for ref in refs if ref}
+
+
+def _note_mapping_edge_ref_set(notes: Iterable[Any]) -> set[str]:
+    refs: set[str] = set()
+    for note in notes:
+        refs.update(_note_mapping_ref_aliases(note))
+    return refs
+
+
+def _serialize_note_edges_for_note_mappings(edges: list[NoteEdge], notes: Iterable[Any]) -> list[dict[str, Any]]:
+    note_public_ids: dict[str, int | str] = {}
+    for note in notes:
+        public_id = _note_mapping_public_api_id(note)
+        for ref in _note_mapping_ref_aliases(note):
+            note_public_ids[ref] = public_id
+    return [_serialize_note_edge(edge, note_public_ids=note_public_ids) for edge in edges]
+
+
+def _load_edges_between_refs(session: Session, user_id: int, refs: set[str]) -> list[NoteEdge]:
+    if not refs:
+        return []
+    candidate_edges = session.exec(
+        select(NoteEdge).where(
+            NoteEdge.user_id == user_id,
+            NoteEdge.source_id.in_(refs),
+        )
+    ).all()
+    return [edge for edge in candidate_edges if edge.target_id in refs]
 
 
 def _html_to_plain_text(value: Any) -> str:
@@ -4295,7 +4413,7 @@ def _try_execute_note_program_sql_scan(
     user_id: int,
     session: Session,
 ) -> Optional[dict[str, Any]]:
-    if request.executor.kind != "scan" or request.result.include_edges:
+    if request.executor.kind != "scan":
         return None
     if request.program.expand.default or request.program.expand.rules:
         return None
@@ -4308,9 +4426,14 @@ def _try_execute_note_program_sql_scan(
 
     first_rule = select_rules[0]
     first_filter = _program_matcher_to_filter_rule(first_rule.matcher)
-    if first_rule.action != "include" or first_filter is None:
-        return None
-    if first_filter.field not in {"start_at", "updated_at"} or first_filter.op != "between":
+    first_is_include_all = first_rule.action == "include" and first_rule.matcher.kind == "all"
+    first_is_supported_range = (
+        first_rule.action == "include"
+        and first_filter is not None
+        and first_filter.field in {"start_at", "updated_at"}
+        and first_filter.op == "between"
+    )
+    if not first_is_include_all and not first_is_supported_range:
         return None
 
     tail_rules = select_rules[1:]
@@ -4318,11 +4441,11 @@ def _try_execute_note_program_sql_scan(
         return None
 
     query = select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
-    query, handled = _apply_sql_rule(query, first_filter)
-    if not handled:
-        return None
+    if first_filter is not None:
+        query, handled = _apply_sql_rule(query, first_filter)
+        if not handled:
+            return None
 
-    candidate_notes = session.exec(query).all()
     exclude_rules: list[NoteFilterRule] = []
     for rule in tail_rules:
         filter_rule = _program_matcher_to_filter_rule(rule.matcher)
@@ -4330,6 +4453,35 @@ def _try_execute_note_program_sql_scan(
             return None
         exclude_rules.append(filter_rule)
 
+    if not exclude_rules:
+        total_nodes = session.exec(select(func.count()).select_from(query.order_by(None).subquery())).one()
+        sort_field = request.result.order_by if request.result.order_by in ALLOWED_ORDER_FIELDS else "updated_at"
+        sort_column = getattr(NoteNode, sort_field)
+        order_expr = sort_column.desc() if request.result.order_desc else sort_column.asc()
+        visible_rows = session.execute(
+            query
+            .with_only_columns(*NOTE_LIST_LOAD_COLUMNS)
+            .order_by(order_expr)
+            .offset(request.result.skip)
+            .limit(request.result.limit)
+        ).all()
+        visible_mappings = [row._mapping for row in visible_rows]
+        if request.result.include_edges:
+            visible_refs = _note_mapping_edge_ref_set(visible_mappings)
+            visible_edges = _load_edges_between_refs(session, user_id, visible_refs)
+        else:
+            visible_edges = []
+        return {
+            "nodes": [note_list_mapping_to_response_dict(note, current_user) for note in visible_mappings],
+            "edges": _serialize_note_edges_for_note_mappings(visible_edges, visible_mappings),
+            "total_nodes": int(total_nodes or 0),
+            "total_edges": len(visible_edges),
+        }
+
+    if all(rule.field in NOTE_LIST_LOAD_FIELD_NAMES for rule in exclude_rules):
+        query = query.options(load_only(*NOTE_LIST_LOAD_COLUMNS))
+
+    candidate_notes = session.exec(query).all()
     filtered_notes = [
         note
         for note in candidate_notes
@@ -4338,12 +4490,303 @@ def _try_execute_note_program_sql_scan(
     sorted_notes = _sort_notes(filtered_notes, request.result.order_by, request.result.order_desc)
     total_nodes = len(sorted_notes)
     visible_nodes = sorted_notes[request.result.skip: request.result.skip + request.result.limit]
+    if request.result.include_edges:
+        visible_refs = _note_edge_ref_set(visible_nodes)
+        visible_edges = _load_edges_between_refs(session, user_id, visible_refs)
+    else:
+        visible_edges = []
 
     return {
         "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
-        "edges": [],
+        "edges": _serialize_note_edges_for_nodes(visible_edges, visible_nodes),
         "total_nodes": total_nodes,
-        "total_edges": 0,
+        "total_edges": len(visible_edges),
+    }
+
+
+def _get_note_mapping_custom_field(note: Any, key: str) -> Any:
+    fields = note.get("custom_fields") or []
+    if not isinstance(fields, list):
+        return None
+    for item in fields:
+        if isinstance(item, list) and len(item) >= 3 and item[0] == key:
+            return item[2]
+        if isinstance(item, dict) and item.get("key") == key:
+            return item.get("value")
+    return None
+
+
+def _get_note_mapping_rule_value(note: Any, field: str) -> Any:
+    if field.startswith("custom_fields."):
+        return _get_note_mapping_custom_field(note, field.split(".", 1)[1])
+    value = note.get(field)
+    if field in {"lifecycle_stage", "node_status"}:
+        return normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+    return value
+
+
+def _matches_mapping_rule(note: Any, rule: NoteFilterRule) -> bool:
+    field_value = _get_note_mapping_rule_value(note, rule.field)
+    op = rule.op
+    rule_value = rule.value
+    rule_values = list(rule.values or [])
+
+    if rule.field in {"lifecycle_stage", "node_status"}:
+        rule_value = normalize_lifecycle_stage(rule.value, default=NOTE_LIFECYCLE_STAGE_DEFAULT) if rule.value is not None else None
+        rule_values = [
+            normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+            for value in rule_values
+        ]
+
+    if op == "eq":
+        return field_value == rule_value
+    if op == "neq":
+        return field_value != rule_value
+    if op == "in":
+        return field_value in rule_values
+    if op == "not_in":
+        return field_value not in rule_values
+    if op == "contains":
+        return field_value is not None and str(rule_value or "").lower() in str(field_value).lower()
+    if op == "not_contains":
+        return field_value is None or str(rule_value or "").lower() not in str(field_value).lower()
+    if op == "regex_search":
+        if field_value is None:
+            return False
+        try:
+            return re.search(str(rule_value or ""), str(field_value)) is not None
+        except re.error:
+            return False
+    if op == "gte":
+        return field_value is not None and field_value >= rule_value
+    if op == "lte":
+        return field_value is not None and field_value <= rule_value
+    if op == "between":
+        if len(rule_values) < 2 or field_value is None:
+            return False
+        return rule_values[0] <= field_value <= rule_values[1]
+
+    return True
+
+
+def _score_note_calendar_mapping(note: Any, *, volume: bool) -> float:
+    weight = float(note.get("weight") or 0)
+    stage = str(note.get("lifecycle_stage") or note.get("node_status") or "").lower()
+    stage_score = 1.0 if stage in {"done", "predone"} else 0.8 if stage == "doing" else 0.4 if stage == "todo" else 0.0
+    year_score = weight * 10 + stage_score
+    if not volume:
+        return year_score
+
+    source_kind = str(_get_note_mapping_custom_field(note, "source_kind") or "")
+    source_boost = 0
+    if "chapter" in source_kind or "section" in source_kind:
+        source_boost = 80
+    elif "week" in source_kind:
+        source_boost = 50
+    elif "child" in source_kind:
+        source_boost = 35
+    elif "day_group" in source_kind:
+        source_boost = 16
+    form_boost = 8 if note.get("note_form") == "document" else 0
+    return year_score + weight * 12 + source_boost + form_boost
+
+
+def _is_preferred_calendar_mapping(note: Any) -> bool:
+    return float(note.get("weight") or 0) > 0 or bool(_get_note_mapping_custom_field(note, "source_kind"))
+
+
+def _insert_calendar_summary_candidate(
+    candidates: list[tuple[float, float, Any]],
+    item: tuple[float, float, Any],
+    *,
+    limit: int,
+) -> None:
+    score, start_at, _note = item
+    insert_at = next(
+        (
+            index for index, (existing_score, existing_start_at, _existing_note) in enumerate(candidates)
+            if score > existing_score or (score == existing_score and start_at < existing_start_at)
+        ),
+        -1,
+    )
+    if insert_at >= 0:
+        candidates.insert(insert_at, item)
+        if len(candidates) > limit:
+            candidates.pop()
+    elif len(candidates) < limit:
+        candidates.append(item)
+
+
+def _try_execute_note_calendar_summary_sql_scan(
+    request: NoteCalendarSummaryRequest,
+    *,
+    current_user: User,
+    user_id: int,
+    session: Session,
+) -> Optional[dict[str, Any]]:
+    query_request = request.query
+    if query_request.executor.kind != "scan" or query_request.result.include_edges:
+        return None
+    if query_request.program.expand.default or query_request.program.expand.rules:
+        return None
+    if query_request.program.select.default:
+        return None
+
+    select_rules = query_request.program.select.rules
+    if not select_rules:
+        return None
+    first_rule = select_rules[0]
+    first_filter = _program_matcher_to_filter_rule(first_rule.matcher)
+    if first_rule.action != "include" or first_filter is None:
+        return None
+    if first_filter.field != "start_at" or first_filter.op != "between":
+        return None
+    tail_rules = select_rules[1:]
+    tail_filters: list[NoteFilterRule] = []
+    python_exclude_filters: list[NoteFilterRule] = []
+    for rule in tail_rules:
+        filter_rule = _program_matcher_to_filter_rule(rule.matcher)
+        if filter_rule is None:
+            return None
+        if rule.action == "filter":
+            tail_filters.append(filter_rule)
+        elif (
+            rule.action == "exclude"
+            and filter_rule.field.startswith("custom_fields.")
+            and filter_rule.op in {"eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search"}
+        ):
+            python_exclude_filters.append(filter_rule)
+        else:
+            return None
+
+    buckets = [
+        bucket for bucket in request.buckets
+        if bucket.key and bucket.end_at > bucket.start_at
+    ]
+    if not buckets:
+        return {"buckets": [], "nodes": [], "total_nodes": 0}
+    sorted_buckets = sorted(buckets, key=lambda bucket: (bucket.start_at, bucket.end_at))
+
+    query = select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
+    query, handled = _apply_sql_rule(query, first_filter)
+    if not handled:
+        return None
+    for filter_rule in tail_filters:
+        query, handled = _apply_sql_rule(query, filter_rule)
+        if not handled:
+            return None
+
+    rows = session.execute(
+        query
+        .with_only_columns(*NOTE_CALENDAR_SCORE_COLUMNS)
+        .order_by(NoteNode.start_at.asc())
+    ).all()
+
+    bucket_states: dict[str, dict[str, Any]] = {
+        bucket.key: {
+            "request": bucket,
+            "total_nodes": 0,
+            "ranked": [],
+            "preferred": [],
+            "documents": [],
+        }
+        for bucket in buckets
+    }
+    total_nodes = 0
+    bucket_index = 0
+
+    for row in rows:
+        note = row._mapping
+        if any(_matches_mapping_rule(note, rule) for rule in python_exclude_filters):
+            continue
+        ts = float(note.get("start_at") or 0)
+        while bucket_index < len(sorted_buckets) and sorted_buckets[bucket_index].end_at < ts:
+            bucket_index += 1
+        if bucket_index >= len(sorted_buckets):
+            break
+        current_bucket = sorted_buckets[bucket_index]
+        matched_bucket = current_bucket if current_bucket.start_at <= ts <= current_bucket.end_at else None
+        if matched_bucket is None:
+            continue
+        state = bucket_states[matched_bucket.key]
+        state["total_nodes"] += 1
+        total_nodes += 1
+        limit = max(1, min(200, int(matched_bucket.limit or 100)))
+        score = _score_note_calendar_mapping(note, volume=matched_bucket.mode in {"volume", "era"})
+        item = (score, ts, note)
+        _insert_calendar_summary_candidate(state["ranked"], item, limit=limit)
+        if _is_preferred_calendar_mapping(note):
+            _insert_calendar_summary_candidate(state["preferred"], item, limit=limit)
+        if note.get("note_form") == "document":
+            _insert_calendar_summary_candidate(state["documents"], item, limit=limit)
+
+    candidate_numeric_ids: list[int] = []
+    candidate_legacy_ids: list[str] = []
+    candidate_seen: set[tuple[str, Any]] = set()
+    for state in bucket_states.values():
+        for source in (state["ranked"], state["preferred"], state["documents"]):
+            for _score, _ts, note in source:
+                numeric_id = int(note.get("numeric_id") or 0)
+                candidate_key: tuple[str, Any]
+                if numeric_id > 0:
+                    candidate_key = ("numeric", numeric_id)
+                    if candidate_key not in candidate_seen:
+                        candidate_numeric_ids.append(numeric_id)
+                else:
+                    legacy_id = str(note.get("id") or "")
+                    candidate_key = ("id", legacy_id)
+                    if legacy_id and candidate_key not in candidate_seen:
+                        candidate_legacy_ids.append(legacy_id)
+                candidate_seen.add(candidate_key)
+
+    full_note_by_key: dict[tuple[str, Any], Any] = {}
+    if candidate_numeric_ids or candidate_legacy_ids:
+        candidate_query = select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
+        lookup_conditions = []
+        if candidate_numeric_ids:
+            lookup_conditions.append(NoteNode.numeric_id.in_(candidate_numeric_ids))
+        if candidate_legacy_ids:
+            lookup_conditions.append(NoteNode.id.in_(candidate_legacy_ids))
+        candidate_query = candidate_query.where(or_(*lookup_conditions))
+        full_rows = session.execute(candidate_query.with_only_columns(*NOTE_LIST_LOAD_COLUMNS)).all()
+        for row in full_rows:
+            note = row._mapping
+            numeric_id = int(note.get("numeric_id") or 0)
+            if numeric_id > 0:
+                full_note_by_key[("numeric", numeric_id)] = note
+            full_note_by_key[("id", str(note.get("id") or ""))] = note
+
+    response_buckets: list[dict[str, Any]] = []
+    nodes_by_id: dict[Any, dict[str, Any]] = {}
+    for bucket in buckets:
+        state = bucket_states[bucket.key]
+        source = state["ranked"]
+        if bucket.mode == "volume" and state["preferred"]:
+            source = state["preferred"]
+        elif bucket.mode == "era" and state["documents"]:
+            source = state["documents"]
+        sorted_items = sorted(source, key=lambda item: item[1])
+        full_notes = []
+        for _score, _ts, note in sorted_items:
+            numeric_id = int(note.get("numeric_id") or 0)
+            full_note = full_note_by_key.get(("numeric", numeric_id)) if numeric_id > 0 else None
+            if full_note is None:
+                full_note = full_note_by_key.get(("id", str(note.get("id") or "")))
+            if full_note is not None:
+                full_notes.append(full_note)
+        nodes = [note_list_mapping_to_response_dict(note, current_user) for note in full_notes]
+        for node in nodes:
+            nodes_by_id[node["id"]] = node
+        response_buckets.append({
+            "key": bucket.key,
+            "total_nodes": int(state["total_nodes"]),
+            "nodes": nodes,
+        })
+
+    return {
+        "buckets": response_buckets,
+        "nodes": list(nodes_by_id.values()),
+        "total_nodes": int(total_nodes),
     }
 
 
@@ -4580,6 +5023,28 @@ def query_note_program(
     Execute a walker-style filtering program over the current user's note graph.
     """
     return _execute_note_program(request, current_user=current_user, user_id=current_user.id, session=session)
+
+
+@router.post("/query-program/calendar-summary", response_model=NoteCalendarSummaryResponse)
+def query_note_calendar_summary(
+    request: NoteCalendarSummaryRequest,
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Execute the calendar scan as bucket summaries so large year/volume/era views
+    do not need every matching node serialized and sent to the browser.
+    """
+    _normalize_note_program_public_ids(request.query, current_user, session)
+    result = _try_execute_note_calendar_summary_sql_scan(
+        request,
+        current_user=current_user,
+        user_id=current_user.id,
+        session=session,
+    )
+    if result is None:
+        raise HTTPException(status_code=400, detail="Unsupported calendar summary query")
+    return result
 
 
 @router.post("/batch-update", response_model=NoteBatchUpdateResponse)

@@ -157,7 +157,7 @@ for code in codes:
 - `GET /api/fanxiu/game-window3/scheduler/plan` 只读暴露 Scheduler 规划结果。
 - Scheduler 可从 `WorldFacts.discoveries.task` 回写动态任务 `next_time` 和任务 `retry_after`。
 - 前端“任务调试台”替代正式步进器入口。
-- 当前框架验收入口只包含 `gift_code_redeem`、`go_scene` 到 #49、`hide_floating_window`。
+- 当前框架验收入口包含 `gift_code_redeem`、通用 `go_scene` 场景移动、`hide_floating_window`。
 - 旧版动态任务和每日任务目录接入 Scheduler。
 - 旧版任务当前使用 `legacy_daily_task` / `legacy_dynamic_task` 占位，不进入 Runtime 执行入口。
 - 未验收任务即使被外部状态写成 `enabled=true`，读取任务清单时也会强制改回 `enabled=false` 并标记 `last_result=unsupported`。
@@ -170,6 +170,17 @@ for code in codes:
 - 旧版动态任务还没有从游戏状态识别真实 `next_time`；但 Scheduler 已支持从 `WorldFacts` 回写时间事实。
 - `WorldFacts` 已有基础事实模型，但 Scheduler 还没有根据它自动规划新任务。
 - 真实设备的全量“执行全部到期任务”还没有覆盖完整旧版行为树效果。
+
+## 真实运行验收约定
+
+- 凡修 Runtime/Scheduler 的验收必须走后端公开入口，让行为树在真实 MuMu 画面上实际运行；单元测试、私有函数直调、构造截图和静态场景识别只能作为辅助证据。
+- 如果任务启动时已经满足目标，例如当前已经在目标场景，Runtime 可以短路成功，但这只验证“已满足目标”的识别路径，不验证真实点击链路。汇报时必须把短路命中和真实动作分开。
+- 验证 `go_scene` 时，优先设计可回退的复现路径。例如从 `#34 世界` 跳到 `#66 日程`，再运行 `go_scene #34` 返回世界；前一段复现也是对行为树场景移动的测试。
+- 运行报告至少记录：起点场景、目标场景、action 日志、跳转日志、最终 `success/error`、耗时和当前游戏可见状态。没有 action 日志或场景变化时，不得说“真实操作已验证”。
+- 当前游戏可见状态必须由真实 MuMu/ADB 当前帧或用户可见画面确认；如果截图观察脚本抓到桌面、旧帧或非游戏内容，这张图不能算验收证据。
+- Runtime 内嵌守护不能因弹窗误命中长期抢占主作业。守护 service 处理一次弹窗后应允许主作业继续 tick，否则 `go_scene` 会停在“守护处理”日志但游戏不移动。
+- 场景身份识别不能用全屏 scan 兜底，且候选场景必须取最高分而不是顺序优先。像“日程”这种也会出现在世界页入口上的元素不能单独作为日程页身份锚点。
+- 不要手动点游戏、直接改状态文件或只调用底层函数来冒充行为树验收；只有用户明确要求底层探针时，才把结论限定为底层探针结果。
 
 已加测试：
 

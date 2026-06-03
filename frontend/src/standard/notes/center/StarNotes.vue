@@ -101,6 +101,7 @@ import {
   cloneNoteProgramChannel,
   createDefaultRecentMonthProgram,
   createIncludeAllProgram,
+  areNoteRequestsEquivalent,
   noteKey,
   normalizeNoteProgramChannel
 } from '@/api/notes';
@@ -126,6 +127,7 @@ import '@vue-flow/controls/dist/style.css';
 
 const props = defineProps<{
     tabId: string;
+    active?: boolean;
     targetNoteId?: string;
     graphMode?: 'global' | 'planetary' | 'satellite';
 }>();
@@ -141,6 +143,9 @@ const sourceNotes = computed(() => {
 const sourceEdges = computed(() => {
     return noteStore.getTabEdges(props.tabId);
 });
+
+const sourceNotesVersion = computed(() => `${session.value?.noteDataVersion ?? 0}:${noteStore.noteRevision}`);
+const sourceEdgesVersion = computed(() => `${session.value?.edgeDataVersion ?? 0}:${noteStore.edgeRevision}`);
 
 const calculateGraphBounds = () => {
     const vh = window.innerHeight;
@@ -204,8 +209,10 @@ const isRefreshing = ref(false);
 const isGraphUpdating = ref(false);
 let graphFilterQueued = false;
 let graphRelayoutQueued = false;
+let inactiveGraphRefreshPending = false;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
+const isActive = computed(() => props.active !== false);
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
   session.value?.viewState.dataProgram ?? createDefaultRecentMonthProgram('start_at')
 );
@@ -214,6 +221,11 @@ const getViewProgram = () => normalizeNoteProgramChannel(
 );
 const dataProgram = ref(normalizeNoteProgramChannel(getAppliedDataProgram()));
 const viewProgram = ref(normalizeNoteProgramChannel(getViewProgram()));
+const AUTO_LAYOUT_NODE_LIMIT = 300;
+const AUTO_LAYOUT_EDGE_LIMIT = 600;
+const DETAILED_EDGE_ROUTING_NODE_LIMIT = 600;
+const DETAILED_EDGE_ROUTING_EDGE_LIMIT = 1000;
+const GLOBAL_GRAPH_CACHE_TTL_MS = 60_000;
 const VERTICAL_HANDLE_THRESHOLD = 60;
 const HORIZONTAL_HANDLE_THRESHOLD = 60;
 
@@ -335,6 +347,25 @@ const applyViewProgram = () => {
 
 const resetViewProgram = () => {
   viewProgram.value = createIncludeAllProgram();
+};
+
+const buildGlobalGraphRequest = (program = getAppliedDataProgram()) => (
+  buildScanNoteProgramRequest(normalizeNoteProgramChannel(program), {
+    limit: 5000,
+    include_edges: true
+  })
+);
+
+const canUseCachedGlobalGraph = (program = getAppliedDataProgram()) => {
+  if (!isGlobalGraph.value) return false;
+  const currentSession = session.value;
+  if (!currentSession || currentSession.noteIds.length === 0) return false;
+  return areNoteRequestsEquivalent(currentSession.lastQuery, buildGlobalGraphRequest(program));
+};
+
+const isCachedGlobalGraphFresh = () => {
+  const loadedAt = session.value?.lastLoadedAt || 0;
+  return loadedAt > 0 && Date.now() - loadedAt <= GLOBAL_GRAPH_CACHE_TTL_MS;
 };
 
 const scheduleGraphFilterApply = (delay: number = 120) => {
@@ -675,6 +706,11 @@ const routeGraphEdges = (
   return routedEdges;
 };
 
+const shouldUseDetailedEdgeRouting = (graphNodes: any[], graphEdges: any[]) => (
+  graphNodes.length <= DETAILED_EDGE_ROUTING_NODE_LIMIT
+  && graphEdges.length <= DETAILED_EDGE_ROUTING_EDGE_LIMIT
+);
+
 const rerouteVisibleEdgeSubset = (
   rerouteEdgeIds: Set<string>
 ) => {
@@ -760,12 +796,12 @@ const rebuildVisibleEdges = (rerouteEdgeIds?: Set<string>) => {
       preferDynamicHandles: true
     }));
 
-  const routedEdges = routeGraphEdges(nodes.value, graphEdges, {
-    rerouteEdgeIds
-  });
-  edges.value = routedEdges;
-  cacheEdgeHandles(routedEdges);
-  cacheLocalEdgeRoutes(routedEdges);
+  const nextEdges = shouldUseDetailedEdgeRouting(nodes.value, graphEdges)
+    ? routeGraphEdges(nodes.value, graphEdges, { rerouteEdgeIds })
+    : graphEdges;
+  edges.value = nextEdges;
+  cacheEdgeHandles(nextEdges);
+  cacheLocalEdgeRoutes(nextEdges);
 };
 
 const rebuildVisibleEdgesWithOptions = (options: {
@@ -781,10 +817,12 @@ const rebuildVisibleEdgesWithOptions = (options: {
       preferDynamicHandles: true
     }));
 
-  const routedEdges = routeGraphEdges(nodes.value, graphEdges, options);
-  edges.value = routedEdges;
-  cacheEdgeHandles(routedEdges);
-  cacheLocalEdgeRoutes(routedEdges);
+  const nextEdges = shouldUseDetailedEdgeRouting(nodes.value, graphEdges)
+    ? routeGraphEdges(nodes.value, graphEdges, options)
+    : graphEdges;
+  edges.value = nextEdges;
+  cacheEdgeHandles(nextEdges);
+  cacheLocalEdgeRoutes(nextEdges);
 };
 
 const getAffectedEdgeIdsForNodes = (nodeIds: Iterable<string>) => {
@@ -845,6 +883,12 @@ const getGraphDataForRender = () => {
     filteredEdges,
     visibleNodeIds
   };
+};
+
+const shouldAutoRelayoutGraph = () => {
+  const noteCount = sourceNotes.value.length;
+  const edgeCount = sourceEdges.value.length;
+  return noteCount <= AUTO_LAYOUT_NODE_LIMIT && edgeCount <= AUTO_LAYOUT_EDGE_LIMIT;
 };
 
 const getFallbackNodePosition = (index: number) => {
@@ -936,17 +980,23 @@ const applyGraphFilters = async (force: boolean = false, relayout: boolean = fal
         preferDynamicHandles: true
       }));
       const finalNodeIds = new Set(nextNodes.map(node => String(node.id)));
-      nextEdges = routeGraphEdges(nextNodes, graphEdges.filter(edge =>
+      const visibleGraphEdges = graphEdges.filter(edge =>
         finalNodeIds.has(String(edge.source)) && finalNodeIds.has(String(edge.target))
-      ));
+      );
+      nextEdges = shouldUseDetailedEdgeRouting(nextNodes, visibleGraphEdges)
+        ? routeGraphEdges(nextNodes, visibleGraphEdges)
+        : visibleGraphEdges;
     }
 
+    const detailedRenderRefresh = relayout || shouldUseDetailedEdgeRouting(nextNodes, nextEdges);
     edges.value = [];
     nodes.value = nextNodes;
     await refreshNodeInternals(nextNodes.map(node => String(node.id)));
     edges.value = nextEdges;
-    await refreshNodeInternals(nextNodes.map(node => String(node.id)));
-    refreshRenderedEdges(nextEdges);
+    if (detailedRenderRefresh) {
+      await refreshNodeInternals(nextNodes.map(node => String(node.id)));
+      refreshRenderedEdges(nextEdges);
+    }
     cacheNodePositions(nextNodes);
     cacheEdgeHandles(nextEdges);
     cacheEdgeRoutes(nextEdges);
@@ -1039,27 +1089,58 @@ const handleNoteDelete = (noteId: string) => {
     }
 };
 
-watch(sourceEdges, async () => {
+watch(sourceEdgesVersion, async () => {
+    if (!isActive.value) {
+        inactiveGraphRefreshPending = true;
+        return;
+    }
     await syncEdgesFromStore();
-}, { deep: true });
+});
 
-watch(sourceNotes, async () => {
+watch(sourceNotesVersion, async () => {
+    if (!isActive.value) {
+        inactiveGraphRefreshPending = true;
+        return;
+    }
     if (!isRefreshing.value) {
         await applyGraphFilters(true, false);
     }
-}, { deep: true });
+});
 
 watch(viewProgram, async (value) => {
     noteStore.updateTabViewState(props.tabId, {
         viewProgram: normalizeNoteProgramChannel(value)
     });
 
-    if (isGlobalGraph.value && !isRefreshing.value) {
+    if (isGlobalGraph.value && isActive.value && !isRefreshing.value) {
         scheduleGraphFilterApply();
+    } else if (isGlobalGraph.value) {
+        inactiveGraphRefreshPending = true;
     }
 }, { deep: true });
 
 onMounted(async () => {
+    if (canUseCachedGlobalGraph()) {
+        await applyGraphFilters(true, shouldAutoRelayoutGraph());
+        if (!isCachedGlobalGraphFresh()) {
+          void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
+        }
+        return;
+    }
+    await refreshGraph();
+});
+
+watch(isActive, async (active) => {
+    if (!active) return;
+    if (canUseCachedGlobalGraph()) {
+        await applyGraphFilters(true, inactiveGraphRefreshPending && shouldAutoRelayoutGraph());
+        inactiveGraphRefreshPending = false;
+        if (!isCachedGlobalGraphFresh()) {
+            void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
+        }
+        return;
+    }
+    inactiveGraphRefreshPending = false;
     await refreshGraph();
 });
 
@@ -1074,16 +1155,24 @@ onUnmounted(() => {
     }
 });
 
-const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean = false) => {
+const refreshGraph = async (
+  program = getAppliedDataProgram(),
+  persist: boolean = false,
+  options: { background?: boolean } = {}
+) => {
   if (isRefreshing.value) return;
   isRefreshing.value = true;
   try {
+    let deferredStoreRefresh = false;
     if (isGlobalGraph.value) {
       const normalizedProgram = normalizeNoteProgramChannel(program);
-      await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
-          limit: 5000,
-          include_edges: true
-      }));
+      const request = buildGlobalGraphRequest(normalizedProgram);
+      if (options.background && canUseCachedGlobalGraph(normalizedProgram)) {
+        void noteStore.queryNoteProgramForTab(props.tabId, request);
+        deferredStoreRefresh = true;
+      } else {
+        await noteStore.queryNoteProgramForTab(props.tabId, request);
+      }
       if (persist) {
         noteStore.updateTabViewState(props.tabId, {
           dataProgram: normalizedProgram
@@ -1097,7 +1186,9 @@ const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean 
       );
     }
 
-    await applyGraphFilters(true, true);
+    if (!deferredStoreRefresh) {
+      await applyGraphFilters(true, shouldAutoRelayoutGraph());
+    }
   } finally {
       isRefreshing.value = false;
   }
@@ -1296,6 +1387,7 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 watch(
   () => nodes.value.map(node => `${node.id}:${Math.round(node.position?.x ?? 0)}:${Math.round(node.position?.y ?? 0)}`).join('|'),
   () => {
+    if (suppressNodePositionWatch) return;
     cacheNodePositions();
   },
   { flush: 'post' }

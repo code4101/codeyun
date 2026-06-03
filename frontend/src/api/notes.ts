@@ -222,6 +222,33 @@ export interface NoteProgramResponse {
   total_edges: number;
 }
 
+export type NoteCalendarSummaryBucketMode = 'year' | 'volume' | 'era';
+
+export interface NoteCalendarSummaryBucketRequest {
+  key: string;
+  start_at: number;
+  end_at: number;
+  mode?: NoteCalendarSummaryBucketMode;
+  limit?: number;
+}
+
+export interface NoteCalendarSummaryRequest {
+  query: NoteProgramRequest;
+  buckets: NoteCalendarSummaryBucketRequest[];
+}
+
+export interface NoteCalendarSummaryBucketResponse {
+  key: string;
+  total_nodes: number;
+  nodes: NoteNode[];
+}
+
+export interface NoteCalendarSummaryResponse {
+  buckets: NoteCalendarSummaryBucketResponse[];
+  nodes: NoteNode[];
+  total_nodes: number;
+}
+
 export interface NoteBatchUpdateRequest {
   ids: NoteRef[];
   patch: {
@@ -307,6 +334,9 @@ export interface TabSession {
   edgeIds: string[];
   loading: boolean;
   requestVersion: number;
+  dataVersion: number;
+  noteDataVersion: number;
+  edgeDataVersion: number;
   lastLoadedAt?: number;
   lastQuery?: NoteQueryRequest | NoteProgramRequest | null;
   viewState: Record<string, any>;
@@ -333,8 +363,25 @@ interface NoteSyncMessage {
 }
 
 const dedupeIds = (ids: string[]) => Array.from(new Set(ids));
+const areStringArraysEqual = (left: string[], right: string[]) => (
+  left.length === right.length && left.every((item, index) => item === right[index])
+);
 
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const API_TIMESTAMP_MS_THRESHOLD = 1_000_000_000_000;
+
+const normalizeApiTimestamp = (value: unknown): number => {
+  const numeric = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (!isFiniteNumber(numeric)) return 0;
+  return Math.abs(numeric) < API_TIMESTAMP_MS_THRESHOLD ? numeric * 1000 : numeric;
+};
+
+const normalizeNullableApiTimestamp = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  const normalized = normalizeApiTimestamp(value);
+  return normalized || null;
+};
+
 const normalizeInteger = (value: unknown, fallback: number = 0) => {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
   if (typeof value === 'string' && value.trim()) {
@@ -380,10 +427,10 @@ export const normalizeNote = (raw: any): NoteNode => ({
     return {
       id: normalizeNoteId(raw.id),
       numeric_id: raw.numeric_id == null ? null : normalizeInteger(raw.numeric_id, 0) || null,
-      created_at: raw.created_at * 1000,
-      updated_at: raw.updated_at * 1000,
-      start_at: raw.start_at * 1000,
-      deleted_at: raw.deleted_at ? raw.deleted_at * 1000 : null,
+      created_at: normalizeApiTimestamp(raw.created_at),
+      updated_at: normalizeApiTimestamp(raw.updated_at),
+      start_at: normalizeApiTimestamp(raw.start_at),
+      deleted_at: normalizeNullableApiTimestamp(raw.deleted_at),
       deleted_by_user_id: raw.deleted_by_user_id ?? null,
       note_types: createEffectiveNoteTypes(taxonomy.note_types ?? raw.note_types, taxonomy.node_type ?? raw.node_type ?? 'note', raw.color ?? null),
       note_categories: taxonomy.note_categories,
@@ -482,7 +529,7 @@ const normalizeEdge = (raw: any): NoteEdge => ({
   id: String(raw.id),
   source_id: normalizeNoteId(raw.source_id),
   target_id: normalizeNoteId(raw.target_id),
-  created_at: raw.created_at * 1000
+  created_at: normalizeApiTimestamp(raw.created_at)
 });
 
 const normalizeCodexDiaryImportRun = (raw: any): CodexDiaryImportRunResponse => ({
@@ -493,10 +540,10 @@ const normalizeCodexDiaryImportRun = (raw: any): CodexDiaryImportRunResponse => 
   created_note_ids: Array.isArray(raw.created_note_ids) ? raw.created_note_ids.map((id: any) => normalizeNoteId(id)).filter(Boolean) : [],
   duplicate_note_ids: Array.isArray(raw.duplicate_note_ids) ? raw.duplicate_note_ids.map((id: any) => normalizeNoteId(id)).filter(Boolean) : [],
   created_notes: Array.isArray(raw.created_notes) ? raw.created_notes.map((note: any) => normalizeNote(note)) : [],
-  created_at: raw.created_at * 1000,
-  updated_at: raw.updated_at * 1000,
-  finished_at: raw.finished_at ? raw.finished_at * 1000 : null,
-  heartbeat_at: raw.heartbeat_at ? raw.heartbeat_at * 1000 : null
+  created_at: normalizeApiTimestamp(raw.created_at),
+  updated_at: normalizeApiTimestamp(raw.updated_at),
+  finished_at: normalizeNullableApiTimestamp(raw.finished_at),
+  heartbeat_at: normalizeNullableApiTimestamp(raw.heartbeat_at)
 });
 
 const CODEX_DIARY_IMPORT_REQUEST_TIMEOUT_MS = 60_000;
@@ -548,7 +595,7 @@ const normalizeCalendarYearTitles = (value: unknown): Record<string, string> => 
 const normalizeCalendarYearMonthMemosResponse = (raw: any): CalendarYearMonthMemosResponse => ({
   memos: normalizeCalendarYearMonthMemos(raw?.memos),
   year_titles: normalizeCalendarYearTitles(raw?.year_titles),
-  updated_at: typeof raw?.updated_at === 'number' ? raw.updated_at * 1000 : null
+  updated_at: normalizeNullableApiTimestamp(raw?.updated_at)
 });
 
 export const fetchCalendarYearMonthMemos = async (): Promise<CalendarYearMonthMemosResponse> => {
@@ -598,6 +645,17 @@ const areNoteSummariesEqual = (left: NoteNode | undefined, right: NoteNode): boo
   return Object.entries(right).every(([key, value]) => (
     areNoteSummaryValuesEqual((left as Record<string, unknown>)[key], value)
   ));
+};
+
+const areNoteEdgesEqual = (left: NoteEdge | undefined, right: NoteEdge): boolean => {
+  if (!left) return false;
+  return left.id === right.id
+    && left.source_id === right.source_id
+    && left.target_id === right.target_id
+    && left.source_handle === right.source_handle
+    && left.target_handle === right.target_handle
+    && left.label === right.label
+    && left.created_at === right.created_at;
 };
 
 const cloneViewState = (value: Record<string, any>) => JSON.parse(JSON.stringify(value));
@@ -1178,6 +1236,14 @@ export const buildScanNoteProgramRequest = (
   }
 });
 
+export const areNoteRequestsEquivalent = (
+  left: NoteQueryRequest | NoteProgramRequest | null | undefined,
+  right: NoteQueryRequest | NoteProgramRequest | null | undefined
+) => {
+  if (!left || !right) return false;
+  return JSON.stringify(left) === JSON.stringify(right);
+};
+
 export const createEmptyNoteScopeState = (): NoteScopeState => ({
   titleKeyword: '',
   primaryCategory: '',
@@ -1301,9 +1367,13 @@ export const useNoteStore = defineStore('notes', () => {
   const noteTouchedAt = ref<Record<string, number>>({});
   const noteDetailTouchedAt = ref<Record<string, number>>({});
   const edgeTouchedAt = ref<Record<string, number>>({});
+  const tabNoteListCache = new Map<string, { version: string; notes: NoteNode[] }>();
+  const tabEdgeListCache = new Map<string, { version: string; edges: NoteEdge[] }>();
 
   const pendingRequests = ref(0);
   const loading = computed(() => pendingRequests.value > 0);
+  const noteRevision = ref(0);
+  const edgeRevision = ref(0);
   let noteSyncChannel: BroadcastChannel | null = null;
 
   const tabs = ref<TabState[]>([
@@ -1420,6 +1490,9 @@ export const useNoteStore = defineStore('notes', () => {
       edgeIds: [],
       loading: false,
       requestVersion: 0,
+      dataVersion: 0,
+      noteDataVersion: 0,
+      edgeDataVersion: 0,
       lastQuery: null,
       viewState
     };
@@ -1521,15 +1594,20 @@ export const useNoteStore = defineStore('notes', () => {
 
   const mergeNoteSummaries = (incomingNotes: NoteNode[]) => {
     const ids: string[] = [];
+    let changed = false;
     incomingNotes.forEach(note => {
       const key = normalizeNoteKey(note.id);
       const summary = stripNoteDetail(note);
-      noteMap.value[key] = {
-        ...noteMap.value[key],
-        ...summary
-      };
+      if (!areNoteSummariesEqual(noteMap.value[key], summary)) {
+        noteMap.value[key] = {
+          ...noteMap.value[key],
+          ...summary
+        };
+        changed = true;
+      }
       ids.push(key);
     });
+    if (changed) noteRevision.value += 1;
     touchNotes(ids);
     return ids;
   };
@@ -1552,10 +1630,15 @@ export const useNoteStore = defineStore('notes', () => {
 
   const mergeEdges = (incomingEdges: NoteEdge[]) => {
     const ids: string[] = [];
+    let changed = false;
     incomingEdges.forEach(edge => {
-      edgeMap.value[edge.id] = edge;
+      if (!areNoteEdgesEqual(edgeMap.value[edge.id], edge)) {
+        edgeMap.value[edge.id] = edge;
+        changed = true;
+      }
       ids.push(edge.id);
     });
+    if (changed) edgeRevision.value += 1;
     touchEdges(ids);
     return ids;
   };
@@ -1646,10 +1729,20 @@ export const useNoteStore = defineStore('notes', () => {
     const session = ensureTabSession(tabId);
     if (!session) return;
 
-    session.noteIds = dedupeIds(noteIds);
-    session.edgeIds = dedupeIds(edgeIds);
+    const nextNoteIds = dedupeIds(noteIds);
+    const nextEdgeIds = dedupeIds(edgeIds);
+    const noteIdsChanged = !areStringArraysEqual(session.noteIds, nextNoteIds);
+    const edgeIdsChanged = !areStringArraysEqual(session.edgeIds, nextEdgeIds);
+
+    session.noteIds = nextNoteIds;
+    session.edgeIds = nextEdgeIds;
     session.lastQuery = lastQuery;
     session.lastLoadedAt = Date.now();
+    if (noteIdsChanged || edgeIdsChanged) session.dataVersion += 1;
+    if (noteIdsChanged) session.noteDataVersion += 1;
+    if (edgeIdsChanged) session.edgeDataVersion += 1;
+    if (noteIdsChanged) tabNoteListCache.delete(tabId);
+    if (edgeIdsChanged) tabEdgeListCache.delete(tabId);
 
     touchNotes(session.noteIds);
     touchEdges(session.edgeIds);
@@ -1682,6 +1775,11 @@ export const useNoteStore = defineStore('notes', () => {
     session.edgeIds = [];
     session.lastQuery = null;
     session.lastLoadedAt = Date.now();
+    session.dataVersion += 1;
+    session.noteDataVersion += 1;
+    session.edgeDataVersion += 1;
+    tabNoteListCache.delete(tabId);
+    tabEdgeListCache.delete(tabId);
   };
 
   const updateTabViewState = (tabId: string, patch: Record<string, any>) => {
@@ -1703,6 +1801,9 @@ export const useNoteStore = defineStore('notes', () => {
     if (!session.noteIds.includes(key)) {
       session.noteIds = [key, ...session.noteIds];
       session.lastLoadedAt = Date.now();
+      session.dataVersion += 1;
+      session.noteDataVersion += 1;
+      tabNoteListCache.delete(tabId);
       touchNotes([key]);
     }
 
@@ -1714,6 +1815,9 @@ export const useNoteStore = defineStore('notes', () => {
 
     if (missingEdgeIds.length > 0) {
       session.edgeIds = [...missingEdgeIds, ...session.edgeIds];
+      session.dataVersion += 1;
+      session.edgeDataVersion += 1;
+      tabEdgeListCache.delete(tabId);
     }
 
     pruneCaches();
@@ -1738,18 +1842,30 @@ export const useNoteStore = defineStore('notes', () => {
     const session = ensureTabSession(tabId);
     if (!session) return [] as NoteNode[];
 
-    return session.noteIds
+    const version = `${session.noteDataVersion}:${noteRevision.value}`;
+    const cached = tabNoteListCache.get(tabId);
+    if (cached?.version === version) return cached.notes;
+
+    const notes = session.noteIds
       .map(id => getNoteSummaryById(id))
       .filter((note): note is NoteNode => Boolean(note));
+    tabNoteListCache.set(tabId, { version, notes });
+    return notes;
   };
 
   const getTabEdges = (tabId: string) => {
     const session = ensureTabSession(tabId);
     if (!session) return [] as NoteEdge[];
 
-    return session.edgeIds
+    const version = `${session.edgeDataVersion}:${edgeRevision.value}`;
+    const cached = tabEdgeListCache.get(tabId);
+    if (cached?.version === version) return cached.edges;
+
+    const edges = session.edgeIds
       .map(id => getEdgeById(id))
       .filter((edge): edge is NoteEdge => Boolean(edge));
+    tabEdgeListCache.set(tabId, { version, edges });
+    return edges;
   };
 
   const addTab = (tab: TabState) => {
@@ -1788,6 +1904,8 @@ export const useNoteStore = defineStore('notes', () => {
 
     tabs.value.splice(index, 1);
     delete tabSessions.value[tabId];
+    tabNoteListCache.delete(tabId);
+    tabEdgeListCache.delete(tabId);
     removePersistedTabViewState(tabId);
 
     if (activeTabId.value === tabId) {
@@ -1845,11 +1963,49 @@ export const useNoteStore = defineStore('notes', () => {
       const response = await api.post('/notes/query-program', request);
       const data = response.data as NoteProgramResponse;
       if (session.requestVersion !== requestVersion) return null;
-      return applyQueryResponseToTab(tabId, request, data);
+      const applied = applyQueryResponseToTab(tabId, request, data);
+      return {
+        ...applied,
+        data
+      };
     } catch (error) {
       if (session.requestVersion !== requestVersion) return null;
       console.error('Failed to run note program:', error);
       ElMessage.error('执行筛选程序失败');
+      return null;
+    } finally {
+      if (session.requestVersion === requestVersion) {
+        session.loading = false;
+      }
+      bumpPending(-1);
+    }
+  };
+
+  const queryNoteCalendarSummaryForTab = async (tabId: string, request: NoteCalendarSummaryRequest) => {
+    const session = ensureTabSession(tabId);
+    if (!session) return null;
+
+    const requestVersion = session.requestVersion + 1;
+    session.requestVersion = requestVersion;
+    session.loading = true;
+    bumpPending(1);
+    try {
+      const response = await api.post('/notes/query-program/calendar-summary', request);
+      const data = response.data as NoteCalendarSummaryResponse;
+      if (session.requestVersion !== requestVersion) return null;
+      const applied = applyQueryResponseToTab(tabId, request.query, {
+        nodes: data.nodes,
+        edges: [],
+        total_nodes: data.total_nodes,
+        total_edges: 0,
+      });
+      return {
+        ...applied,
+        data,
+      };
+    } catch (error) {
+      if (session.requestVersion !== requestVersion) return null;
+      console.error('Failed to run note calendar summary:', error);
       return null;
     } finally {
       if (session.requestVersion === requestVersion) {
@@ -2310,6 +2466,8 @@ export const useNoteStore = defineStore('notes', () => {
 
   return {
     loading,
+    noteRevision,
+    edgeRevision,
     tabs,
     activeTabId,
     tabSessions,
@@ -2324,6 +2482,8 @@ export const useNoteStore = defineStore('notes', () => {
     getNoteById,
     queryNotesForTab,
     queryNoteProgramForTab,
+    queryNoteCalendarSummaryForTab,
+    applyQueryResponseToTab,
     fetchNotesForTab,
     fetchNoteDetail,
     fetchNoteDocDetail,

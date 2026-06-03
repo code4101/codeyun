@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from backend.core.fanxiu_item_catalog import load_fanxiu_item_runtime_index
-from backend.core.fanxiu_region_data import KNOWN_REGION_SERVER_NAMES, REGION_NAMES, SERVER_MARKS, _add_days, _region_start_date
 from backend.core.fanxiu_resources import FanxiuResourceError, resolve_fanxiu_export_root
+from backend.core.fanxiu_server_mapping import KNOWN_REGION_SERVER_NAMES, REGION_NAMES, SERVER_MARKS, _add_days, _region_start_date
 from backend.core.fanxiu_timeline import (
     _activity_indexes,
     _base_activity_hint,

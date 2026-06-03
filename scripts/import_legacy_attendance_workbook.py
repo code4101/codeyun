@@ -271,6 +271,9 @@ def _registration_column_configs(columns: list[str], action_row: list[str]) -> d
             config["font_family"] = "monospace"
         if index <= 15:
             config["header_background_color"] = "#9DC3E6"
+        if header in {"用户ID", "关联用户ID"}:
+            config["header_background_color"] = "#9DC3E6"
+            config.setdefault("font_family", "monospace")
         if action_row[index]:
             config["note"] = action_row[index]
         if header in {"分组", "用户ID", "关联用户ID"}:

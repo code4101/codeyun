@@ -16,6 +16,7 @@ from backend.migrations.manager import (
     v29_migrate_attendance_course_sheets_to_notes_workbook,
     v30_add_numeric_sheet_and_workbook_ids,
 )
+from backend.core.sheet_identity import allocate_new_sheet_identity
 from backend.models import AttendanceWjxDataEntry, ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 
@@ -51,6 +52,15 @@ def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -
         subject_user_id=user_id,
         overrides={feature_key: "allow"},
     )
+
+
+def test_normalize_attendance_refund_note_removes_duplicate_period_label() -> None:
+    assert note_sheets_api._normalize_attendance_current_refund_note(
+        "第3天返款\n最近运行更新时间：\n2026/06/03 07:18:34,6"
+    ) == "最近运行更新时间：\n2026/06/03 07:18:34,6"
+    assert note_sheets_api._normalize_attendance_current_refund_note(
+        "念住闯关每日返款\n最近运行更新时间：\n2026/06/03 07:11:38,6"
+    ) == "最近运行更新时间：\n2026/06/03 07:11:38,6"
 
 
 def test_note_sheet_access_user_options_searches_username_and_nickname(client, session):
@@ -1399,8 +1409,79 @@ def test_note_sheet_excel_import_append_skips_duplicate_registration_order_id(cl
         assert response.status_code == 200
         payload = response.json()
         assert payload["imported_count"] == 0
+        assert payload["skipped_duplicate_count"] == 1
         assert payload["sheet"]["document_json"]["rows"] == [
             ["5月4日", "123", "2026/5/14 09:15", "已有学员", "4200000000000000000000000000"],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_excel_import_append_skips_duplicate_payment_order_id_on_plain_sheet(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-excel-import-plain-duplicate-order-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "订单源表"
+    worksheet.append(["姓名", "微信支付订单号"])
+    worksheet.append(["重复学员", "4200000000000000000000000000"])
+    worksheet.append(["新学员", "4200000000000000000000000001"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    def fake_chat_with_provider(**_kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "rows": [
+                        {"姓名": "重复学员", "微信支付订单号": "4200000000000000000000000000"},
+                        {"姓名": "新学员", "微信支付订单号": "4200000000000000000000000001"},
+                    ],
+                    "warnings": [],
+                    "mapping_notes": [],
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    monkeypatch.setattr(note_sheets_api, "chat_with_provider", fake_chat_with_provider)
+
+    try:
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "普通订单表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["姓名", "微信支付订单号"],
+                    "rows": [["已有学员", "4200000000000000000000000000"]],
+                },
+            },
+        )
+        assert sheet_response.status_code == 200
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
+            data={"instruction": "普通增量导入", "mode": "append"},
+            files={
+                "file": (
+                    "plain-duplicate.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["imported_count"] == 1
+        assert payload["skipped_duplicate_count"] == 1
+        assert payload["sheet"]["document_json"]["rows"] == [
+            ["已有学员", "4200000000000000000000000000"],
+            ["新学员", "4200000000000000000000000001"],
         ]
     finally:
         _clear_user_override()
@@ -1420,6 +1501,162 @@ def test_note_sheet_excel_import_extracts_sparse_rows_without_cell_row_attribute
     assert payload["sheets"][0]["rows"] == [
         {"row_number": 2, "values": ["", "1组", "", "阿丹"]},
     ]
+
+
+def test_note_sheet_attendance_progress_backgrounds_are_derived_from_cell_text_and_clockin_rules():
+    columns = ["姓名", "打卡数", "05:20~06:43 第01课", "05:20~06:52 第02课", "追踪状态", "冻结时间"]
+    document, changed_count = note_sheets_api._apply_attendance_progress_backgrounds({
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [
+            ["学习者", 10, "学习中/21%", "1遍/100%", "追踪中", ""],
+            ["空进度", "", "", "", "追踪中", ""],
+            ["冻结者", 15, "1遍/100%", "学习中/33%", "已冻结", "2026-05-01 08:00:00"],
+            ["觉观学员", 5, "当堂完成/98%", "暂不识别", "追踪中", ""],
+            ["禅宗学员", 8, "准时完成", "延1周完成", "追踪中", ""],
+            ["未返款", 4, "", "", "追踪中", ""],
+        ],
+        "grid_rows": [
+            ["", "打卡", "6月1日~6月5日", "6月2日~6月6日", "", ""],
+            columns,
+            ["", '打卡达到"5/10/15"次，累计返回"30/60/100"元', "", "", "", ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "source_meta": {
+            "timed_video_rules": {"当堂": 19, "第1天": 14, "第2天": 9, "第3天": 4, "回放": 0},
+        },
+        "cell_meta": {
+            "4:2": {"style": {"background_color": "#80FF80"}},
+            "5:2": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}},
+            "6:3": {"style": {"background_color": "#ABCDEF"}},
+            "7:1": {"style": {"background_color": "#80FF80"}},
+        },
+    })
+
+    assert changed_count == 8
+    assert document["cell_meta"]["3:1"]["style"]["background_color"] == "#FFFF66"
+    assert "3:2" not in document["cell_meta"]
+    assert document["cell_meta"]["3:3"]["style"]["background_color"] == "#80FF80"
+    assert "4:2" not in document["cell_meta"]
+    assert document["cell_meta"]["5:2"]["style"]["background_color"] == "#F2F2F2"
+    assert document["cell_meta"]["6:1"]["style"]["background_color"] == "#FFFFB2"
+    assert document["cell_meta"]["6:2"]["style"]["background_color"] == "#80FF80"
+    assert document["cell_meta"]["6:3"]["style"]["background_color"] == "#ABCDEF"
+    assert document["cell_meta"]["7:2"]["style"]["background_color"] == "#80FF80"
+    assert document["cell_meta"]["7:3"]["style"]["background_color"] == "#D9D9D9"
+    assert "8:1" not in document["cell_meta"]
+
+
+def test_note_sheet_attendance_video_backgrounds_parse_refund_rules_from_existing_sheet_note():
+    columns = ["姓名", "视频应返款", "05:20~06:18 第01课", "05:20~06:02 第02课", "05:20~06:10 第03课", "05:20~06:07 第04课"]
+    document, _changed_count = note_sheets_api._apply_attendance_progress_backgrounds({
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [
+            [
+                "觉观学员",
+                '=COUNTIF(C4:D4,"*当堂*")*19+COUNTIF(C4:D4,"*第1天*")*14+COUNTIF(C4:D4,"*第2天*")*9+COUNTIF(C4:D4,"*第3天*")*4',
+                "当堂完成/98%",
+                "第1天回放/99%",
+                "学习中/39%",
+                "第4天回放/99%",
+            ],
+        ],
+        "grid_rows": [
+            ["", "", "6月1日~6月5日", "6月2日~6月6日", "6月3日~6月7日", "6月4日~6月8日"],
+            columns,
+            [
+                "",
+                '21课*19元=399元。视频在"当堂(直播)/第1天(当天)/第2天/第3天/第4~5天"看完，对应返回"19/14/9/4/0"元',
+                "",
+                "",
+                "",
+                "",
+            ],
+            [
+                "觉观学员",
+                '=COUNTIF(C4:D4,"*当堂*")*19+COUNTIF(C4:D4,"*第1天*")*14+COUNTIF(C4:D4,"*第2天*")*9+COUNTIF(C4:D4,"*第3天*")*4',
+                "当堂完成/98%",
+                "第1天回放/99%",
+                "学习中/39%",
+                "第4天回放/99%",
+            ],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    })
+
+    assert document["cell_meta"]["3:2"]["style"]["background_color"] == "#80FF80"
+    assert document["cell_meta"]["3:3"]["style"]["background_color"] == "#FFFF43"
+    assert "3:4" not in document["cell_meta"]
+    assert document["cell_meta"]["3:5"]["style"]["background_color"] == "#D9D9D9"
+
+
+def test_note_sheet_attendance_challenge_progress_uses_completion_state_not_percent_depth():
+    columns = ["姓名", "05:20~06:43 第01课", "05:20~06:52 第02课"]
+    document, _changed_count = note_sheets_api._apply_attendance_progress_backgrounds({
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [
+            ["念住学员", "1遍/89%", "学习中/88%"],
+        ],
+        "grid_rows": [
+            columns,
+            ["念住学员", "1遍/89%", "学习中/88%"],
+        ],
+        "data_start_row": 1,
+    })
+
+    assert document["cell_meta"]["1:1"]["style"]["background_color"] == "#80FF80"
+    assert "1:2" not in document["cell_meta"]
+
+
+def test_registration_standard_user_id_column_styles_include_linked_user_id():
+    document, changed = note_sheets_api._apply_registration_standard_user_id_column_styles({
+        "schema_version": 1,
+        "columns": ["用户ID", "参考信息", "关联用户ID"],
+        "rows": [],
+        "grid_rows": [["用户ID", "参考信息", "关联用户ID"], ["", "", ""]],
+        "data_start_row": 2,
+        "field_row_index": 0,
+        "column_configs": {
+            "用户ID": {"width_mode": "fixed"},
+            "关联用户ID": {"width_mode": "fixed"},
+        },
+        "cell_meta": {
+            "0:2": {"style": {"background_color": "#F4B183"}},
+        },
+    })
+
+    assert changed is True
+    assert document["column_configs"]["用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["column_configs"]["关联用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["column_configs"]["关联用户ID"]["font_family"] == "monospace"
+    assert (
+        document["column_configs"]["关联用户ID"]["note"]
+        == "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
+    )
+    assert document["cell_meta"]["0:0"]["style"]["background_color"] == "#9DC3E6"
+    assert document["cell_meta"]["0:2"]["style"]["background_color"] == "#9DC3E6"
+
+
+def test_ensure_registration_linked_user_id_column_uses_standard_header_style():
+    document, linked_index = note_sheets_api._ensure_registration_linked_user_id_column({
+        "schema_version": 1,
+        "columns": ["姓名", "用户ID", "参考信息"],
+        "rows": [["学员", "u1", ""]],
+        "grid_rows": [["姓名", "用户ID", "参考信息"], ["学员", "u1", ""]],
+        "data_start_row": 1,
+        "field_row_index": 0,
+        "column_configs": {},
+        "cell_meta": {},
+    })
+
+    assert document["columns"][linked_index] == "关联用户ID"
+    assert document["column_configs"]["用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["column_configs"]["关联用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["cell_meta"][f"0:{linked_index}"]["style"]["background_color"] == "#9DC3E6"
 
 
 def test_note_sheet_excel_import_unknown_row_keys_become_extra_columns():
@@ -2320,11 +2557,11 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
                     "cell_meta": {
                         "1:16": {"style": {"background_color": "#FFFFBB"}},
                         "1:17": {"style": {"background_color": "#80FF80"}},
-                        "1:18": {"style": {"background_color": "#6CFF6C"}},
+                        "1:18": {"style": {"background_color": "#80FF80"}},
                         "2:0": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}},
                         "2:1": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}},
                         "2:17": {"style": {"background_color": "#80FF80"}},
-                        "2:18": {"style": {"background_color": "#6CFF6C"}},
+                        "2:18": {"style": {"background_color": "#80FF80"}},
                     },
                 },
             },
@@ -2536,6 +2773,215 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert "style" not in next_doc["entity_cells"]["row_new"]["col_1"]
     assert "col_17" not in next_doc["entity_cells"]["row_new"]
     assert next_doc["entity_cells"]["row_archived"]["col_0"]["style"]["background_color"] == "#F2F2F2"
+
+
+def test_note_sheet_registration_user_id_detection_replaces_stale_primary_id(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-detect-replace-stale-user-id")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+    rebuild_calls: list[str] = []
+
+    monkeypatch.setattr(note_sheets_api, "_query_registration_detection_user_ids_by_phone", lambda phone: ["u_real"])
+
+    def fake_rebuild(_session, *, attendance, course_name):
+        rebuild_calls.append(course_name)
+        return {"ok": True, "attendance_sheet_id": int(attendance.numeric_id or attendance.id)}
+
+    monkeypatch.setattr(note_sheets_api, "_rebuild_registration_attendance_after_user_id_detection", fake_rebuild)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "第47届觉观"})
+        workbook_id = workbook_response.json()["id"]
+        registration_columns = ["姓名", "微信昵称", "手机号", "用户ID", "参考信息", "关联用户ID"]
+        registration_row = ["学员", "学员昵称", "18800000000", "u_stale", "", ""]
+        registration_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": registration_columns,
+                    "rows": [registration_row],
+                    "grid_rows": [registration_columns, registration_row],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        assert registration_response.status_code == 200
+        registration_sheet_id = registration_response.json()["id"]
+        for title, document_json in [
+            ("考勤表", {"columns": ["姓名", "用户ID"], "rows": [], "grid_rows": [["姓名", "用户ID"]], "data_start_row": 1}),
+            ("视频数据", {"columns": ["user_id2", "nickname"], "rows": [["u_real", "学员昵称"]], "grid_rows": [["user_id2", "nickname"], ["u_real", "学员昵称"]], "data_start_row": 1}),
+        ]:
+            response = client.post(
+                "/api/note-sheets/sheets",
+                json={
+                    "title": title,
+                    "workbook_id": workbook_id,
+                    "document_json": {"schema_version": 1, **document_json},
+                },
+            )
+            assert response.status_code == 200
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{registration_sheet_id}/registration/detect-user-id",
+            params={"workbook_id": workbook_id},
+            json={"row_index": 0},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "applied"
+        assert payload["applied_to"] == "用户ID"
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[registration_columns.index("用户ID")] == "u_real"
+        assert updated_row[registration_columns.index("关联用户ID")] == ""
+        assert "原用户ID：u_stale" in updated_row[registration_columns.index("参考信息")]
+        assert rebuild_calls == ["第47届觉观"]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_id_detection_adds_alias_when_primary_has_progress(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-detect-add-linked-user-id")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+    rebuild_calls: list[str] = []
+
+    monkeypatch.setattr(note_sheets_api, "_query_registration_detection_user_ids_by_phone", lambda phone: ["u_alias"])
+
+    def fake_rebuild(_session, *, attendance, course_name):
+        rebuild_calls.append(course_name)
+        return {"ok": True}
+
+    monkeypatch.setattr(note_sheets_api, "_rebuild_registration_attendance_after_user_id_detection", fake_rebuild)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "第47届觉观"})
+        workbook_id = workbook_response.json()["id"]
+        registration_columns = ["姓名", "微信昵称", "手机号", "用户ID", "参考信息", "关联用户ID"]
+        registration_row = ["闫子翼", "阿紫", "18800000000", "u_primary", "", ""]
+        registration_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": registration_columns,
+                    "rows": [registration_row],
+                    "grid_rows": [registration_columns, registration_row],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        assert registration_response.status_code == 200
+        registration_sheet_id = registration_response.json()["id"]
+        for title, document_json in [
+            ("考勤表", {"columns": ["姓名", "用户ID"], "rows": [], "grid_rows": [["姓名", "用户ID"]], "data_start_row": 1}),
+            (
+                "视频数据",
+                {
+                    "columns": ["user_id2", "nickname", "lesson_id"],
+                    "rows": [["u_primary", "阿紫", 1], ["u_alias", "阿紫", 3]],
+                    "grid_rows": [["user_id2", "nickname", "lesson_id"], ["u_primary", "阿紫", 1], ["u_alias", "阿紫", 3]],
+                    "data_start_row": 1,
+                },
+            ),
+        ]:
+            response = client.post(
+                "/api/note-sheets/sheets",
+                json={
+                    "title": title,
+                    "workbook_id": workbook_id,
+                    "document_json": {"schema_version": 1, **document_json},
+                },
+            )
+            assert response.status_code == 200
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{registration_sheet_id}/registration/detect-user-id",
+            params={"workbook_id": workbook_id},
+            json={"row_index": 0},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "applied"
+        assert payload["applied_to"] == "关联用户ID"
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[registration_columns.index("用户ID")] == "u_primary"
+        assert updated_row[registration_columns.index("关联用户ID")] == "u_alias"
+        assert "原用户ID：u_primary" in updated_row[registration_columns.index("参考信息")]
+        assert rebuild_calls == ["第47届觉观"]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_id_detection_promotes_existing_linked_progress_id(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-detect-promote-linked-user-id")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+    monkeypatch.setattr(
+        note_sheets_api,
+        "_rebuild_registration_attendance_after_user_id_detection",
+        lambda _session, *, attendance, course_name: {"ok": True},
+    )
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "第47届觉观"})
+        workbook_id = workbook_response.json()["id"]
+        registration_columns = ["姓名", "手机号", "用户ID", "参考信息", "关联用户ID"]
+        registration_row = ["学员", "18800000000", "u_stale", "", "u_real"]
+        registration_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": registration_columns,
+                    "rows": [registration_row],
+                    "grid_rows": [registration_columns, registration_row],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        assert registration_response.status_code == 200
+        registration_sheet_id = registration_response.json()["id"]
+        for title, document_json in [
+            ("考勤表", {"columns": ["姓名", "用户ID"], "rows": [], "grid_rows": [["姓名", "用户ID"]], "data_start_row": 1}),
+            ("视频数据", {"columns": ["user_id2"], "rows": [["u_real"]], "grid_rows": [["user_id2"], ["u_real"]], "data_start_row": 1}),
+        ]:
+            response = client.post(
+                "/api/note-sheets/sheets",
+                json={
+                    "title": title,
+                    "workbook_id": workbook_id,
+                    "document_json": {"schema_version": 1, **document_json},
+                },
+            )
+            assert response.status_code == 200
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{registration_sheet_id}/registration/detect-user-id",
+            params={"workbook_id": workbook_id},
+            json={"row_index": 0},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "applied"
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[registration_columns.index("用户ID")] == "u_real"
+        assert updated_row[registration_columns.index("关联用户ID")] == ""
+        assert "关联用户ID已有唯一课程数据" in updated_row[registration_columns.index("参考信息")]
+    finally:
+        _clear_user_override()
 
 
 def test_note_sheet_registration_attendance_sync_refreshes_expired_tracking_rows():
@@ -3184,6 +3630,9 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     assert detail["access"]["role"] == "viewer"
     assert detail["access"]["capabilities"]["can_edit_data"] is False
     assert detail["access"]["capabilities"]["editable_data_columns"] == [9]
+    session.refresh(entry)
+    assert entry.process_status == ""
+    assert entry.process_note == ""
 
     rows = detail["document_json"]["rows"]
     rows[0][9] = "用户d问题，已修正"
@@ -4634,6 +5083,93 @@ def test_workbook_save_as_template_and_duplicate(client, session):
         _clear_user_override()
 
 
+def test_workbook_save_as_template_preserves_linked_user_id_as_standard_field(client, session):
+    user = _create_user(session, username="note-sheet-save-as-registration-template-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "报名模板源"})
+        assert workbook_response.status_code == 200
+        workbook_id = workbook_response.json()["id"]
+
+        columns = [
+            "分组",
+            "序号",
+            "提交时间",
+            "姓名",
+            "用户ID",
+            "匹配得分",
+            "参考信息",
+            "关联用户ID",
+            "追踪状态",
+            "冻结时间",
+            "规则版本",
+        ]
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": columns,
+                    "rows": [["5月4日", "1", "06/01 08:00", "阿紫", "u_old", "90", "", "u_new", "追踪中", "", "当前规则"]],
+                    "data_start_row": 2,
+                    "grid_rows": [
+                        columns,
+                        ["", "", "", "", "", "综合更新", "其他备注", "", "", "", ""],
+                        ["5月4日", "1", "06/01 08:00", "阿紫", "u_old", "90", "", "u_new", "追踪中", "", "当前规则"],
+                    ],
+                    "column_configs": {
+                        "用户ID": {"header_background_color": "#9DC3E6"},
+                        "关联用户ID": {"header_background_color": "#F4B183", "width_mode": "fixed"},
+                        "追踪状态": {"hidden": True},
+                        "规则版本": {"hidden": True},
+                    },
+                    "cell_meta": {
+                        "0:7": {"style": {"background_color": "#F4B183"}},
+                        "2:0": {"style": {"background_color": "#FFFF00"}},
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+
+        template_response = client.post(
+            f"/api/note-sheets/workbooks/{workbook_id}/save-as",
+            json={"mode": "template", "title": "报名模板"},
+        )
+        assert template_response.status_code == 200
+        template_sheet_id = template_response.json()["sheets"][0]["id"]
+
+        template_sheet_detail = client.get(
+            f"/api/note-sheets/sheets/{template_sheet_id}",
+            params={"paginate": False},
+        )
+        assert template_sheet_detail.status_code == 200
+        document = template_sheet_detail.json()["document_json"]
+        assert document["rows"] == []
+        assert len(document["grid_rows"]) == 2
+        assert "关联用户ID" in document["columns"]
+        assert "追踪状态" not in document["columns"]
+        assert "冻结时间" not in document["columns"]
+        assert "规则版本" not in document["columns"]
+        assert document["column_configs"]["关联用户ID"]["header_background_color"] == "#9DC3E6"
+        assert document["column_configs"]["关联用户ID"]["font_family"] == "monospace"
+        assert (
+            document["column_configs"]["关联用户ID"]["note"]
+            == "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
+        )
+        assert "追踪状态" not in document["column_configs"]
+        assert "规则版本" not in document["column_configs"]
+        assert "2:0" not in document["cell_meta"]
+        linked_index = document["columns"].index("关联用户ID")
+        assert document["cell_meta"][f"0:{linked_index}"]["style"]["background_color"] == "#9DC3E6"
+    finally:
+        _clear_user_override()
+
+
 def test_workbook_save_as_generated_attendance_sheet_defaults_to_anonymous_viewer(client, session):
     user = _create_user(session, username="note-sheet-save-as-attendance-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
@@ -5933,6 +6469,105 @@ def test_attendance_summary_link_lookup_prefers_entity_and_document_row_meta():
         "entity_cells": {},
     }
     assert note_sheets_api._get_document_cell_link_url(document_without_inline_or_entity, 0, 2) == ""
+
+
+def test_course_attendance_header_links_are_derived_from_config_sheets(client, session):
+    user = _create_user(session, username="course-header-link-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+    owner_key = "test-course-header-links"
+
+    def add_sheet(sheet_key: str, title: str, document_json: dict) -> SheetDocument:
+        identity = allocate_new_sheet_identity(session)
+        sheet = SheetDocument(
+            id=identity.primary_id,
+            numeric_id=identity.numeric_id,
+            legacy_id=identity.legacy_id,
+            scope="notes",
+            owner_type="course_workbook",
+            owner_key=owner_key,
+            sheet_key=sheet_key,
+            title=title,
+            engine="handsontable",
+            document_json=document_json,
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            created_at=time.time(),
+            updated_at=time.time(),
+        )
+        session.add(sheet)
+        session.flush()
+        return sheet
+
+    try:
+        attendance = add_sheet(
+            "attendance",
+            "考勤表",
+            {
+                "schema_version": 1,
+                "columns": ["姓名", "打卡数", "05:20~06:18 第01课", "05:20~06:02 第02课"],
+                "rows": [],
+                "grid_rows": [
+                    ["", "打卡", "6月1日~6月5日", "6月2日~6月6日"],
+                    ["姓名", "打卡数", "05:20~06:18 第01课", "05:20~06:02 第02课"],
+                    ["", "只统计正课的打卡次数", "", ""],
+                ],
+                "data_start_row": 3,
+                "field_row_index": 1,
+                "cell_meta": {},
+            },
+        )
+        add_sheet(
+            "video_config",
+            "视频配置",
+            {
+                "columns": ["lesson_id", "lesson_id2", "lesson_name", "video_duration"],
+                "rows": [
+                    [1, "l_testLesson01", "第01课", 3510],
+                    [2, "https://example.com/video-02", "第02课", 2538],
+                ],
+                "grid_rows": [
+                    ["lesson_id", "lesson_id2", "lesson_name", "video_duration"],
+                    [1, "l_testLesson01", "第01课", 3510],
+                    [2, "https://example.com/video-02", "第02课", 2538],
+                ],
+                "data_start_row": 1,
+            },
+        )
+        add_sheet(
+            "video_data",
+            "视频数据",
+            {"columns": ["lesson_id"], "rows": [], "grid_rows": [["lesson_id"]], "data_start_row": 1},
+        )
+        add_sheet(
+            "clockin_config",
+            "打卡配置",
+            {
+                "columns": ["clockin_id", "name", "url"],
+                "rows": [[1, "打卡数", "https://example.com/clockin"]],
+                "grid_rows": [["clockin_id", "name", "url"], [1, "打卡数", "https://example.com/clockin"]],
+                "data_start_row": 1,
+            },
+        )
+        add_sheet(
+            "clockin_data",
+            "打卡数据",
+            {"columns": ["clockin_id"], "rows": [], "grid_rows": [["clockin_id"]], "data_start_row": 1},
+        )
+        session.commit()
+
+        response = client.get(f"/api/note-sheets/sheets/{attendance.numeric_id}", params={"paginate": False})
+        assert response.status_code == 200
+        field_row = response.json()["document_json"]["grid_rows"][1]
+        assert field_row[1]["link"]["url"] == "https://example.com/clockin"
+        assert (
+            field_row[2]["link"]["url"]
+            == "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=l_testLesson01&tabName=UserManage"
+        )
+        assert field_row[3]["link"]["url"] == "https://example.com/video-02"
+    finally:
+        _clear_user_override()
 
 
 def test_note_sheet_unified_grid_sort_remaps_sheet_meta_and_rejects_rowspan_merge(client, session):

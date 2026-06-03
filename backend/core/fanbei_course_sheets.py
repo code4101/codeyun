@@ -54,6 +54,7 @@ VIDEO_CONFIG_COLUMNS = [
 VIDEO_DATA_COLUMNS = [
     "lesson_data_id",
     "user_id2",
+    "nickname",
     "remark_nm",
     "state",
     "stay_seconds",

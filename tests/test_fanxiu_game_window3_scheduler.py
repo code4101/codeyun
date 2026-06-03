@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -1026,6 +1027,10 @@ class _DispatchRunner(fanxiu._GameWindow3RuntimeRunner):
     def _align_settings(self, ctx, stop_event):
         self.calls.append(("align_settings",))
 
+    def _go_scene_task(self, ctx, asset_tree_path, target_scene_id, stop_event):
+        self.calls.append(("go_scene", target_scene_id))
+        return "success"
+
     def _execute_hide_floating_window(self, ctx, stop_event):
         self.calls.append(("hide_floating_window",))
 
@@ -1035,24 +1040,100 @@ class _DispatchRunner(fanxiu._GameWindow3RuntimeRunner):
 
 def test_game_window3_runtime_task_dispatch_uses_backend_tasks():
     runner = _DispatchRunner()
-    ctx = {"images": {}, "entry": object()}
+    ctx = {"images": {}, "entry": object(), "asset_tree_path": Path("entry.json")}
     stop_event = fanxiu.threading.Event()
 
     assert runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 49}, stop_event) == "success"
+    assert runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 69}, stop_event) == "success"
     assert runner._execute_runtime_task(ctx, "hide_floating_window", {}, stop_event) == "success"
     assert runner._execute_runtime_task(ctx, "gift_code_redeem", {"codes": [" a ", "", "b"]}, stop_event) == "success"
     assert runner._execute_runtime_task(ctx, "legacy_daily_task", {"legacy_name": "日常_魔祖"}, stop_event) == "unsupported"
     assert runner._execute_runtime_task(ctx, "legacy_dynamic_task", {"legacy_name": "日常_首领"}, stop_event) == "unsupported"
-    with pytest.raises(RuntimeError, match="#49"):
-        runner._execute_runtime_task(ctx, "go_scene", {"target_scene_id": 69}, stop_event)
     with pytest.raises(RuntimeError, match="暂不支持"):
         runner._execute_runtime_task(ctx, "daily_locate", {}, stop_event)
 
     assert ("align_settings",) in runner.calls
+    assert ("go_scene", 69) in runner.calls
     assert ("hide_floating_window",) in runner.calls
     assert ("gift_code_redeem", ("a", "b")) in runner.calls
     assert any(call == ("log", "skip", "旧版任务「日常_魔祖」尚未迁移，已跳过") for call in runner.calls)
     assert any(call == ("log", "skip", "旧版任务「日常_首领」尚未迁移，已跳过") for call in runner.calls)
+
+
+def test_game_window3_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp_path):
+    runner = fanxiu._GameWindow3RuntimeRunner()
+    runner._guard_enabled = True
+    ctx = {"entry": object()}
+    calls = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+
+    def fake_guard_step(runtime_ctx, asset_tree_path, frame):
+        calls.append((runtime_ctx, asset_tree_path, frame))
+        return True
+
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", fake_guard_step)
+    monkeypatch.setattr(runner, "_persist_status", lambda: calls.append("persist"))
+    monkeypatch.setattr(runner, "_clear_tick_frame", lambda runtime_ctx: calls.append(("clear", runtime_ctx)))
+
+    status = runner._runtime_guard_service_tick(
+        "close_popups",
+        ctx,
+        tmp_path / "entry.json",
+        fanxiu.threading.Event(),
+    )
+
+    assert status == fanxiu.BehaviorTreeStatus.SKIP
+    assert calls[0] == (ctx, tmp_path / "entry.json", "frame")
+    assert "persist" in calls
+    assert ("clear", ctx) in calls
+
+
+def test_game_window3_scene_jump_wait_does_not_accept_expected_match_when_global_scene_is_source(monkeypatch, tmp_path):
+    runner = fanxiu._GameWindow3RuntimeRunner()
+    ctx = {"entry": object(), "images": {}}
+    shape = {"title": "日程入口", "sceneJumpTarget": "66"}
+    edge = {"shape": shape, "target_ids": [66]}
+    calls = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_clear_tick_frame", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_index_images", lambda tree: {})
+    monkeypatch.setattr(runner, "_write_asset_tree", lambda *args: calls.append("write"))
+    monkeypatch.setattr(runner, "_increment_scene_jump_target", lambda *args: calls.append("increment") or True)
+    monkeypatch.setattr(runner, "_log", lambda *args, **kwargs: calls.append(("log", args)))
+
+    def fake_identify(_ctx, _frame, preferred_scene_ids=None):
+        if preferred_scene_ids:
+            return 66, 80.0
+        return 34, 90.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
+    iterator = runner._wait_scene_jump_result(
+        ctx,
+        tmp_path / "entry.json",
+        [],
+        source_scene_id=34,
+        target_scene_id=66,
+        edge=edge,
+        stop_event=fanxiu.threading.Event(),
+    )
+
+    assert next(iterator) == fanxiu.BehaviorTreeStatus.RUNNING
+    assert next(iterator) == fanxiu.BehaviorTreeStatus.RUNNING
+    assert "increment" not in calls
+
+
+def test_game_window3_identify_scene_number_uses_best_preferred_candidate(monkeypatch):
+    runner = fanxiu._GameWindow3RuntimeRunner()
+    ctx = {"images": {34: {"title": "#34"}, 66: {"title": "#66"}}}
+
+    def fake_scene_score(_ctx, image, _frame):
+        return {"#34": 90.0, "#66": 80.0}[image["title"]]
+
+    monkeypatch.setattr(runner, "_scene_score", fake_scene_score)
+
+    assert runner._identify_scene_number(ctx, "frame", [66, 34]) == (34, 90.0)
 
 
 def test_game_window3_runtime_start_accepts_first_batch_task_types(monkeypatch):
@@ -1083,6 +1164,15 @@ def test_game_window3_runtime_start_accepts_first_batch_task_types(monkeypatch):
         "hide_floating_window",
     ]
 
+    status = runner.start_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task_type="go_scene",
+        payload={"target_scene_id": 69},
+        asset_tree_path=object(),
+    )
+    assert status["task_type"] == "go_scene"
+
 
 def test_game_window3_runtime_start_rejects_unverified_task_types(monkeypatch):
     runner = fanxiu._GameWindow3RuntimeRunner()
@@ -1097,17 +1187,6 @@ def test_game_window3_runtime_start_rejects_unverified_task_types(monkeypatch):
             asset_tree_path=object(),
         )
     assert daily_exc.value.status_code == 400
-
-    with pytest.raises(fanxiu.HTTPException) as scene_exc:
-        runner.start_runtime_task(
-            entry=object(),
-            entry_id="entry",
-            task_type="go_scene",
-            payload={"target_scene_id": 69},
-            asset_tree_path=object(),
-        )
-    assert scene_exc.value.status_code == 400
-    assert "#49" in str(scene_exc.value.detail)
 
 
 def test_game_window3_mark_scheduler_task_advances_daily_and_sets_retry(tmp_path, monkeypatch):

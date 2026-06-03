@@ -52,6 +52,7 @@ const statusByPath = ref<Record<string, MediaSyncStatus>>({});
 const startingActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
 const runningActionByPath = ref<Record<string, MediaSyncAction | ''>>({});
 const pollTimers = new Map<string, number>();
+let isUnmounted = false;
 
 function isLocalTaskRunning(path: string) {
   const key = normalizePath(path);
@@ -104,9 +105,11 @@ async function startPlatformAction(
           root_dir: MN_ROOT_DIR,
           path: selectedPath,
         });
+    if (isUnmounted) return;
     statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
     pollStatus(selectedPath, reloadDirectory);
   } catch (error) {
+    if (isUnmounted) return;
     console.error('Failed to start local media sync action', error);
     if (isAlreadyRunningError(error)) {
       ElMessage.info('已有后台任务正在运行');
@@ -116,6 +119,7 @@ async function startPlatformAction(
     ElMessage.error(action === 'download' ? '启动下载失败' : '启动清理失败');
     runningActionByPath.value = { ...runningActionByPath.value, [key]: '' };
   } finally {
+    if (isUnmounted) return;
     startingActionByPath.value = { ...startingActionByPath.value, [key]: '' };
   }
 }
@@ -123,7 +127,8 @@ async function startPlatformAction(
 async function syncRunningStatus(selectedPath: string, reloadDirectory?: () => Promise<void>) {
   const key = normalizePath(selectedPath);
   try {
-    const nextStatus = await fetchMediaSyncStatus({ path: selectedPath });
+    const nextStatus = await fetchMediaSyncStatus({ path: selectedPath, include_sources: false });
+    if (isUnmounted) return;
     statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
     if (nextStatus.running) {
       pollStatus(selectedPath, reloadDirectory);
@@ -142,7 +147,8 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
   clearPollTimer(key);
   const timer = window.setInterval(async () => {
     try {
-      const nextStatus = await fetchMediaSyncStatus({ path: selectedPath });
+      const nextStatus = await fetchMediaSyncStatus({ path: selectedPath, include_sources: false });
+      if (isUnmounted) return;
       statusByPath.value = { ...statusByPath.value, [key]: nextStatus };
       if (!nextStatus.running) {
         clearPollTimer(key);
@@ -163,6 +169,7 @@ function pollStatus(selectedPath: string, reloadDirectory?: () => Promise<void>)
         void reloadDirectory?.();
       }
     } catch (error) {
+      if (isUnmounted) return;
       console.error('Failed to poll local media sync status', error);
       clearPollTimer(key);
       runningActionByPath.value = { ...runningActionByPath.value, [key]: '' };
@@ -192,6 +199,7 @@ function clearPollTimer(key: string) {
 }
 
 onBeforeUnmount(() => {
+  isUnmounted = true;
   for (const key of pollTimers.keys()) {
     clearPollTimer(key);
   }

@@ -2020,8 +2020,12 @@ def _build_fanxiu_tcp_entries(data_dir: str, export_root: str | Path | None = No
                 continue
             parsed = frame.get("parsed")
             name = str(frame.get("name") or frame.get("pro_id") or "")
-            if not parsed or name in skip_names:
+            if name in skip_names:
                 continue
+            if not isinstance(parsed, dict):
+                if not name:
+                    continue
+                parsed = {"_class": name, "_parse_error": frame.get("parse_error") or frame.get("decode_error") or ""}
             protocol_category = describe_fanxiu_tcp_protocol_category(name)
             protocol_meaning = describe_fanxiu_tcp_protocol_meaning(
                 name,
