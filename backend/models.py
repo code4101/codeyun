@@ -171,58 +171,62 @@ class FanxiuPseudoCodeCard(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
-class FanxiuRegionArea(SQLModel, table=True):
-    __tablename__ = "fanxiuregionarea"
+class FanxiuPlayerProfileRecord(SQLModel, table=True):
+    __tablename__ = "fanxiuplayerprofilerecord"
     __table_args__ = (
-        UniqueConstraint("number", name="uq_fanxiuregionarea_number"),
-        UniqueConstraint("name", name="uq_fanxiuregionarea_name"),
+        UniqueConstraint("packet_id", name="uq_fanxiuplayerprofilerecord_packet_id"),
         {"extend_existing": True},
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    number: int = Field(index=True)
-    name: str = Field(index=True)
-    start_date: str = Field(default="", index=True)
-    end_date: str = Field(default="")
+    packet_id: str = Field(index=True)
+    protocol: str = Field(default="", index=True)
+    source_kind: str = Field(default="", index=True)
+    role_id: str = Field(default="", index=True)
+    role_id_text: str = Field(default="", index=True)
+    name: str = Field(default="", index=True)
+    server: Optional[int] = Field(default=None, index=True)
+    region_number: Optional[int] = Field(default=None, index=True)
+    region_name: str = Field(default="", index=True)
+    server_order: Optional[int] = Field(default=None, index=True)
+    server_name: str = Field(default="", index=True)
+    cultivation_level: Optional[int] = Field(default=None, index=True)
+    cultivation_level_text: str = Field(default="", index=True)
+    attack_value: Optional[float] = Field(default=None, index=True)
+    attack_text: str = Field(default="")
+    captured_at: str = Field(default="", index=True)
+    captured_date: str = Field(default="", index=True)
+    battle_score: Optional[float] = Field(default=None)
+    battle_score_text: str = Field(default="")
+    special_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    immortal_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    combat_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
 
-class FanxiuRegionServer(SQLModel, table=True):
-    __tablename__ = "fanxiuregionserver"
+class FanxiuPacketBusinessRecord(SQLModel, table=True):
+    __tablename__ = "fanxiupacketbusinessrecord"
     __table_args__ = (
-        UniqueConstraint("region_name", "server_order", name="uq_fanxiuregionserver_region_order"),
-        UniqueConstraint("region_name", "name", name="uq_fanxiuregionserver_region_name"),
+        UniqueConstraint("domain", "record_key", name="uq_fanxiupacketbusinessrecord_domain_key"),
         {"extend_existing": True},
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    region_id: str = Field(default="", index=True)
-    region_name: str = Field(index=True)
-    server_order: int = Field(index=True)
-    name: str = Field(index=True)
-    open_date: str = Field(default="", index=True)
-    mark_type: str = Field(default="")
-    mark_label: str = Field(default="")
-    mark_title: str = Field(default="")
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-
-class FanxiuRegionCharacterRecord(SQLModel, table=True):
-    __tablename__ = "fanxiuregioncharacterrecord"
-    __table_args__ = {'extend_existing': True}
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    region_name: str = Field(index=True)
-    server_name: str = Field(index=True)
-    guild_name: str = Field(default="", index=True)
-    role_name: str = Field(default="", index=True)
-    attack: str = Field(default="")
-    cultivation_level: str = Field(default="", index=True)
-    recorded_date: str = Field(default="", index=True)
-    disabled: bool = Field(default=False, index=True)
-    disabled_at: Optional[float] = Field(default=None, index=True)
+    domain: str = Field(index=True)
+    record_key: str = Field(index=True)
+    protocol: str = Field(default="", index=True)
+    packet_id: str = Field(default="", index=True)
+    source_kind: str = Field(default="", index=True)
+    entity_id: str = Field(default="", index=True)
+    entity_name: str = Field(default="", index=True)
+    captured_at: str = Field(default="", index=True)
+    captured_date: str = Field(default="", index=True)
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

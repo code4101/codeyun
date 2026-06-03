@@ -26,6 +26,7 @@ from backend.core.nianzhu_course_sheets import (  # noqa: E402
     VIDEO_CONFIG_SHEET_KEY,
     VIDEO_DATA_COLUMNS,
     VIDEO_DATA_SHEET_KEY,
+    video_config_url_from_lesson_id2,
 )
 from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer  # noqa: E402
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity  # noqa: E402
@@ -65,6 +66,7 @@ STANDARD_REGISTRATION_COLUMNS = [
     "用户ID",
     "匹配得分",
     "参考信息",
+    "关联用户ID",
     "报名项目（必填）",
     "性别（必填）",
     "微信昵称（必填）",
@@ -112,6 +114,7 @@ COURSE_LESSON_CONFIG = [
     {"lesson_id2": "l_695368bbe4b0694c5b6c10a3", "shop_id": 1, "start_date": "2026-06-20 05:20:00", "next_update": "2026-06-20 06:25:20", "video_duration": 3920},
     {"lesson_id2": "l_695368bce4b0694ca162ea11", "shop_id": 1, "start_date": "2026-06-21 05:20:00", "next_update": "2026-06-21 06:48:21", "video_duration": 5301},
 ]
+CLOCKIN_CONFIG_URL = "https://admin.xiaoe-tech.com/t/clock_admin/index#/punchDetail/diaryList?activity_id=ac_695377129416a_ltbHq1FH&markType=&miniMiddleUrl=https%3A%2F%2Fapporrfwkpb5562.h5.xet.citv.cn%2Fxiaoe_clock%2Fmini_middle%3Factivity_id%3Dac_695377129416a_ltbHq1FH%26app_id%3Dapporrfwkpb5562"
 
 
 def _text(value: Any) -> str:
@@ -318,6 +321,9 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
         for key, value in dict(doc.get("cell_meta") or {}).items()
         if int(str(key).split(":", 1)[0]) < data_start
     }
+    for index, config in enumerate(COURSE_LESSON_CONFIG, start=1):
+        _set_cell_link(doc, 1, first_lesson_index + index - 1, video_config_url_from_lesson_id2(config["lesson_id2"]))
+    _set_cell_link(doc, 1, clockin_index, CLOCKIN_CONFIG_URL)
 
     _normalize_refund_layout(doc)
     _set_cell_style(doc, 2, 1, {"font_size": 16, "text_color": "#FF0000", "text_align": "center", "vertical_align": "middle", "background_color": "#D9D9D9"})
@@ -428,7 +434,7 @@ def _storage_documents() -> dict[str, dict[str, Any]]:
     return {
         VIDEO_CONFIG_SHEET_KEY: _simple_document(VIDEO_CONFIG_COLUMNS, video_config_rows, {**source_meta, "lesson_count": OFFICIAL_LESSON_COUNT}),
         VIDEO_DATA_SHEET_KEY: _simple_document(VIDEO_DATA_COLUMNS, [], source_meta),
-        CLOCKIN_CONFIG_SHEET_KEY: _simple_document(CLOCKIN_CONFIG_COLUMNS, [[1, "打卡数", "", "", "", "", "", ""]], source_meta),
+        CLOCKIN_CONFIG_SHEET_KEY: _simple_document(CLOCKIN_CONFIG_COLUMNS, [[1, "打卡数", CLOCKIN_CONFIG_URL, "", "", "", "", ""]], source_meta),
         CLOCKIN_DATA_SHEET_KEY: _simple_document(CLOCKIN_DATA_COLUMNS, [], source_meta),
     }
 

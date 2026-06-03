@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import asyncio
 import json
 import mimetypes
 import os
@@ -37,7 +39,9 @@ from backend.core.auth import (
 from backend.core.feature_access_guard import ensure_feature_access, require_feature_access_dependency
 from backend.core.game_window_service_runtime import (
     GameWindowServiceError,
+    get_game_window_service_status,
     open_game_window_service_stream,
+    start_game_window_service,
 )
 from backend.core.settings import get_settings
 from backend.core.note_identity import allocate_new_note_identity
@@ -65,6 +69,7 @@ from backend.core.fanxiu_sunlogin_rotate import (
     read_fanxiu_screenshot_pre_label,
     save_fanxiu_burst_frame,
     save_fanxiu_screenshot_frame,
+    screencap_mumu_adb_cached_png,
     screencap_mumu_adb_png,
     start_sunlogin_rotate_preview,
     stop_sunlogin_rotate_preview,
@@ -112,6 +117,7 @@ from backend.core.fanxiu_packet_insights import (
     get_fanxiu_packet_storage_bag_snapshot,
     sync_fanxiu_packet_runtime_insights,
 )
+from backend.core.fanxiu_player_profile_store import list_fanxiu_player_profile_records
 from backend.core.fanxiu_tcp_flow import (
     decode_fanxiu_tcp_pcap,
     list_fanxiu_tcp_business_entries,
@@ -122,15 +128,6 @@ from backend.core.fanxiu_behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
     stop_behavior_tree_service,
-)
-from backend.core.fanxiu_region_data import (
-    build_region_character_history_snapshot,
-    build_region_character_snapshot,
-    build_region_data_snapshot,
-    create_region_character_record_if_stronger,
-    disable_region_character_record,
-    serialize_region_character_record,
-    update_region_character_record,
 )
 from backend.core.local_script_processes import list_local_script_processes
 from backend.core.note_access import note_to_response_dict
@@ -177,65 +174,6 @@ FANXIU_MAGIC_TREASURE_KIND = NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM
 FANXIU_ACTIVITY_TYPE = "doc"
 FANXIU_ACTIVITY_KIND = NOTE_KIND_FANXIU_ACTIVITY_ITEM
 CODE4101_USERNAME = "code4101"
-DEFAULT_REGION_CHARACTER_GUILD = "凌霄阁"
-FANXIU_CULTIVATION_REALMS = (
-    "炼气",
-    "筑基",
-    "结丹",
-    "元婴",
-    "化神",
-    "炼虚",
-    "合体",
-    "大乘",
-    "真仙",
-    "金仙",
-)
-FANXIU_CULTIVATION_STAGES = ("前期", "中期", "后期")
-FANXIU_CULTIVATION_REALM_ALIASES = {
-    "炼气": "炼气",
-    "筑基": "筑基",
-    "结丹": "结丹",
-    "元婴": "元婴",
-    "原因": "元婴",
-    "化神": "化神",
-    "炼虚": "炼虚",
-    "合体": "合体",
-    "大乘": "大乘",
-    "真仙": "真仙",
-    "金仙": "金仙",
-}
-FANXIU_CULTIVATION_LAYER_ALIASES = {
-    "1": 1,
-    "2": 2,
-    "3": 3,
-    "4": 4,
-    "5": 5,
-    "6": 6,
-    "7": 7,
-    "8": 8,
-    "9": 9,
-    "10": 10,
-    "一": 1,
-    "二": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-    "十": 10,
-    "壹": 1,
-    "贰": 2,
-    "叁": 3,
-    "肆": 4,
-    "伍": 5,
-    "陆": 6,
-    "柒": 7,
-    "捌": 8,
-    "玖": 9,
-    "拾": 10,
-}
 MAGIC_TREASURE_SECTION_KEYS = {"fabao", "xiantiangubao", "houtiangubao"}
 XIANZHOU_RACE_CHAR_NAMES = (
     "凌玉灵",
@@ -642,6 +580,12 @@ class FanxiuPacketInsightResponse(BaseModel):
     snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
+class FanxiuPlayerProfileRecordListResponse(BaseModel):
+    ok: bool = True
+    count: int = 0
+    records: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class FanxiuPacketStorageBagResponse(BaseModel):
     ok: bool = True
     changed: bool = False
@@ -1017,6 +961,17 @@ class FanxiuGameWindow2ServiceTextRequest(BaseModel):
 
 class FanxiuGameWindow2ScreencapRequest(BaseModel):
     entry_id: str
+    prefer_cached: bool = False
+    cached_only: bool = False
+    title: Optional[str] = None
+    title_match: str = Field("contains", pattern="^(contains|exact)$")
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
 
 
 class FanxiuGameWindow2SaveFrameRequest(BaseModel):
@@ -1126,6 +1081,8 @@ class FanxiuGameWindow2MatchRequest(BaseModel):
     ocr_text: str = Field("", max_length=200)
     ocr_match_mode: str = Field("contains", pattern="^(contains|exact|wildcard|regex)$")
     ocr_min_confidence: float = Field(0.0, ge=0.0, le=1.0)
+    read_only_cache: bool = False
+    save_match_frame: bool = True
 
 
 class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
@@ -1154,6 +1111,8 @@ class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
     ocr_text: str = Field("", max_length=200)
     ocr_match_mode: str = Field("contains", pattern="^(contains|exact|wildcard|regex)$")
     ocr_min_confidence: float = Field(0.0, ge=0.0, le=1.0)
+    read_only_cache: bool = False
+    save_match_frame: bool = True
 
 
 class FanxiuPseudoCodeCardRead(BaseModel):
@@ -1768,63 +1727,6 @@ class FanxiuActivityListSnapshot(BaseModel):
     items: List[FanxiuActivityItem] = Field(default_factory=list)
 
 
-class FanxiuRegionServerItem(BaseModel):
-    id: str
-    region_name: str = ""
-    order: int = 0
-    name: str = ""
-    open_date: str = ""
-    mark_type: str = ""
-    mark_label: str = ""
-    mark_title: str = ""
-
-
-class FanxiuRegionAreaItem(BaseModel):
-    id: str
-    number: int = 0
-    name: str = ""
-    start_date: str = ""
-    end_date: str = ""
-    known_count: int = 0
-    servers: List[FanxiuRegionServerItem] = Field(default_factory=list)
-
-
-class FanxiuRegionDataSnapshot(BaseModel):
-    regions: List[FanxiuRegionAreaItem] = Field(default_factory=list)
-
-
-class FanxiuRegionCharacterItem(BaseModel):
-    id: str
-    region_name: str = ""
-    server_name: str = ""
-    guild_name: str = ""
-    role_name: str = ""
-    attack: str = ""
-    cultivation_level: str = ""
-    recorded_date: str = ""
-    disabled: bool = False
-    created_at: float = 0
-    updated_at: float = 0
-    disabled_at: Optional[float] = None
-
-
-class FanxiuRegionCharacterSnapshot(BaseModel):
-    characters: List[FanxiuRegionCharacterItem] = Field(default_factory=list)
-
-
-class FanxiuRegionCharacterUpdate(BaseModel):
-    guild_name: Optional[str] = None
-    role_name: Optional[str] = None
-    attack: Optional[str] = None
-    cultivation_level: Optional[str] = None
-    recorded_date: Optional[str] = None
-    disabled: Optional[bool] = None
-
-
-class FanxiuRegionCharacterHistorySnapshot(BaseModel):
-    characters: List[FanxiuRegionCharacterItem] = Field(default_factory=list)
-
-
 class FanxiuModaoInvasionExchangeItem(BaseModel):
     id: str
     name: str = ""
@@ -1958,13 +1860,6 @@ class FanxiuSpiritArtifactStorageBagRecognitionResponse(BaseModel):
     reason: str = ""
     lines: List[str] = Field(default_factory=list)
     items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
-
-
-class FanxiuRegionCharacterOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    item: FanxiuRegionCharacterItem
-    created: bool = True
-    skipped_reason: str = ""
 
 
 class FanxiuModaoInvasionOcrImportResponse(BaseModel):
@@ -2722,295 +2617,6 @@ def _build_shouyuan_exploration_income_speed_from_ocr_document(
         "score": score,
         "merit": merit,
         "remark": "",
-    }, [line for line in lines if line]
-
-
-_OCR_NUMBER_TRANSLATION = str.maketrans({
-    "０": "0",
-    "１": "1",
-    "２": "2",
-    "３": "3",
-    "４": "4",
-    "５": "5",
-    "６": "6",
-    "７": "7",
-    "８": "8",
-    "９": "9",
-    "．": ".",
-    "萬": "万",
-    "億": "亿",
-})
-
-
-def _normalize_region_character_text(value: Any) -> str:
-    return _sanitize_ocr_text(value).translate(_OCR_NUMBER_TRANSLATION)
-
-
-def _normalize_region_server_candidates(raw_value: Any) -> list[dict[str, str]]:
-    payload = raw_value
-    if isinstance(raw_value, str):
-        raw_text = raw_value.strip()
-        if not raw_text:
-            payload = []
-        else:
-            try:
-                payload = json.loads(raw_text)
-            except json.JSONDecodeError:
-                payload = []
-
-    if not isinstance(payload, list):
-        return []
-
-    result: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        region_name = _normalize_region_character_text(item.get("region_name") or item.get("regionName"))
-        server_name = _normalize_region_character_text(item.get("server_name") or item.get("serverName"))
-        if not region_name or not server_name:
-            continue
-        key = (region_name, server_name)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append({"region_name": region_name, "server_name": server_name})
-    return result
-
-
-def _normalize_region_server_target(region_name: Any, server_name: Any) -> dict[str, str]:
-    normalized_region_name = _normalize_region_character_text(region_name)
-    normalized_server_name = _normalize_region_character_text(server_name)
-    if not normalized_region_name or not normalized_server_name:
-        return {"region_name": "", "server_name": ""}
-    return {
-        "region_name": normalized_region_name,
-        "server_name": normalized_server_name,
-    }
-
-
-def _line_matches_region_server_name(line: str, server_name: str) -> bool:
-    if line == server_name:
-        return True
-
-    escaped_server_name = re.escape(server_name)
-    return bool(
-        re.search(rf"(?:区服|服务器|所在服|所在区服)[:：]?{escaped_server_name}", line)
-    )
-
-
-def _extract_region_character_server(
-    lines: list[str],
-    server_candidates: list[dict[str, str]],
-) -> dict[str, str]:
-    normalized_lines = [_normalize_region_character_text(line) for line in lines if _normalize_region_character_text(line)]
-    matches: dict[tuple[str, str], dict[str, str]] = {}
-
-    for candidate in sorted(server_candidates, key=lambda item: len(item.get("server_name", "")), reverse=True):
-        region_name = candidate.get("region_name", "")
-        server_name = candidate.get("server_name", "")
-        if not region_name or not server_name:
-            continue
-        if any(_line_matches_region_server_name(line, server_name) for line in normalized_lines):
-            matches[(region_name, server_name)] = {
-                "region_name": region_name,
-                "server_name": server_name,
-            }
-
-    if not matches:
-        return {"region_name": "", "server_name": ""}
-
-    ranked_matches = sorted(matches.values(), key=lambda item: len(item["server_name"]), reverse=True)
-    longest_length = len(ranked_matches[0]["server_name"])
-    top_matches = [item for item in ranked_matches if len(item["server_name"]) == longest_length]
-    if len(top_matches) == 1:
-        return top_matches[0]
-    return {"region_name": "", "server_name": ""}
-
-
-def _extract_region_character_guild(lines: list[str]) -> str:
-    for line in lines:
-        normalized = _normalize_region_character_text(line)
-        match = re.search(r"[\[【［〔](?P<guild>[^\]】］〕]+)[\]】］〕]", normalized)
-        if match:
-            return match.group("guild").strip()
-    return ""
-
-
-def _parse_region_character_cultivation_layer(value: str) -> int | None:
-    normalized = _normalize_region_character_text(value)
-    if not normalized:
-        return None
-    if normalized.isdigit():
-        layer = int(normalized)
-        return layer if 1 <= layer <= 10 else None
-    return FANXIU_CULTIVATION_LAYER_ALIASES.get(normalized)
-
-
-def _extract_region_character_cultivation_level(lines: list[str]) -> str:
-    realm_pattern = "|".join(
-        re.escape(alias)
-        for alias in sorted(FANXIU_CULTIVATION_REALM_ALIASES, key=len, reverse=True)
-    )
-    stage_pattern = "|".join(re.escape(stage) for stage in FANXIU_CULTIVATION_STAGES)
-    layer_pattern = "|".join(
-        re.escape(alias)
-        for alias in sorted(FANXIU_CULTIVATION_LAYER_ALIASES, key=len, reverse=True)
-    )
-
-    for line in lines:
-        normalized = _normalize_region_character_text(line)
-        match = re.search(
-            rf"(?P<realm>{realm_pattern})(?P<stage>{stage_pattern})(?P<layer>{layer_pattern})层?",
-            normalized,
-        )
-        if not match:
-            continue
-
-        realm = FANXIU_CULTIVATION_REALM_ALIASES.get(match.group("realm"), "")
-        stage = match.group("stage")
-        layer = _parse_region_character_cultivation_layer(match.group("layer"))
-        if realm in FANXIU_CULTIVATION_REALMS and stage in FANXIU_CULTIVATION_STAGES and layer:
-            return f"{realm}{stage}{layer}层"
-    return ""
-
-
-def _looks_like_region_character_role(value: str) -> bool:
-    normalized = _normalize_region_character_text(value)
-    if not normalized:
-        return False
-    noise_tokens = (
-        "IP归属",
-        "归属",
-        "基础属性",
-        "战斗属性",
-        "天资",
-        "体魄",
-        "气劲",
-        "筋骨",
-        "聪慧",
-        "气血",
-        "攻击",
-        "灵力",
-        "守御",
-        "大供奉",
-        "精英",
-        "中期",
-        "初期",
-        "后期",
-        "壹层",
-        "贰层",
-        "叁层",
-        "四层",
-        "五层",
-    )
-    if any(token in normalized for token in noise_tokens):
-        return False
-    if re.search(r"[\[\]【】［］〔〕:：]", normalized):
-        return False
-    if re.fullmatch(r"\d+(?:\.\d+)?(?:[万亿兆京垓秭穰沟涧正载极])?", normalized):
-        return False
-    if not re.search(r"[\u4e00-\u9fffA-Za-zღ]", normalized):
-        return False
-    return len(normalized) <= 18
-
-
-def _extract_region_character_role(lines: list[str]) -> str:
-    for line in lines:
-        normalized = _normalize_region_character_text(line)
-        if "IP归属" in normalized:
-            break
-        if _looks_like_region_character_role(normalized):
-            return normalized
-
-    for line in lines:
-        normalized = _normalize_region_character_text(line)
-        if _looks_like_region_character_role(normalized):
-            return normalized
-    return ""
-
-
-def _extract_region_character_role_by_position(line_entries: list[list[dict[str, Any]]]) -> str:
-    lines = [_join_ocr_line_entries(group) for group in line_entries]
-    for index, line in enumerate(lines):
-        normalized = _normalize_region_character_text(line)
-        if "IP归属" not in normalized:
-            continue
-
-        for previous_group in reversed(line_entries[:index]):
-            if not previous_group:
-                continue
-            max_y = max(float(entry.get("y", 0)) for entry in previous_group)
-            y_tolerance = max(
-                8.0,
-                max(float(entry.get("height", 0)) for entry in previous_group) * 0.4,
-            )
-            closest_entries = [
-                entry
-                for entry in previous_group
-                if abs(float(entry.get("y", 0)) - max_y) <= y_tolerance
-            ]
-            previous_normalized = _normalize_region_character_text(_join_ocr_line_entries(closest_entries))
-            if _looks_like_region_character_role(previous_normalized):
-                return previous_normalized
-        return ""
-    return ""
-
-
-def _normalize_region_character_role(role_name: str, guild_name: str) -> str:
-    normalized = role_name[:-1] if role_name.endswith("自") else role_name
-    if guild_name == "三清道宗":
-        normalized = normalized.translate(str.maketrans({"m": "ღ", "M": "ღ", "ｍ": "ღ", "Ｍ": "ღ"}))
-    return normalized
-
-
-def _extract_region_character_attack(lines: list[str]) -> str:
-    for line in lines:
-        normalized = _normalize_region_character_text(line)
-        if "攻击" not in normalized and "攻擊" not in normalized:
-            continue
-        match = re.search(r"(?:攻击|攻擊)[^0-9]*(?P<attack>\d+(?:\.\d+)?(?:[万亿兆京垓秭穰沟涧正载极])*)", normalized)
-        if match:
-            return match.group("attack")
-    return ""
-
-
-def _build_region_character_from_ocr_document(
-    preview_document: dict[str, Any],
-    server_candidates: list[dict[str, str]] | None = None,
-    server_target: dict[str, str] | None = None,
-) -> tuple[dict[str, Any], list[str]]:
-    line_entries = _extract_ocr_line_entries(preview_document)
-    lines = [_join_ocr_line_entries(group) for group in line_entries]
-
-    role_name = _extract_region_character_role_by_position(line_entries) or _extract_region_character_role(lines)
-    guild_name = _extract_region_character_guild(lines) or DEFAULT_REGION_CHARACTER_GUILD
-    role_name = _normalize_region_character_role(role_name, guild_name)
-    attack = _extract_region_character_attack(lines)
-    cultivation_level = _extract_region_character_cultivation_level(lines)
-    server_match = server_target or _extract_region_character_server(lines, server_candidates or [])
-
-    missing_fields = [
-        label
-        for label, value in (
-            ("区服", server_match.get("server_name")),
-            ("角色", role_name),
-            ("攻击", attack),
-        )
-        if not value
-    ]
-    if missing_fields:
-        raise ValueError(f"未能从截图中识别人物数据：{'、'.join(missing_fields)}")
-
-    return {
-        "id": str(uuid.uuid4()),
-        "region_name": server_match.get("region_name", ""),
-        "server_name": server_match.get("server_name", ""),
-        "guild_name": guild_name,
-        "role_name": role_name,
-        "attack": attack,
-        "cultivation_level": cultivation_level,
-        "recorded_date": date.today().isoformat(),
     }, [line for line in lines if line]
 
 
@@ -4824,7 +4430,7 @@ def sync_fanxiu_activity_packet_history(
 
 @status_router.get("/packet-capture/tcp/insights", response_model=FanxiuPacketInsightResponse)
 def get_fanxiu_packet_insights(
-    auto_sync: bool = Query(True),
+    auto_sync: bool = Query(False),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -4832,6 +4438,17 @@ def get_fanxiu_packet_insights(
     return FanxiuPacketInsightResponse.model_validate(
         get_fanxiu_packet_runtime_insights(sync=auto_sync)
     )
+
+
+@status_router.get("/packet-capture/tcp/player-profiles", response_model=FanxiuPlayerProfileRecordListResponse)
+def list_fanxiu_packet_player_profiles(
+    limit: int = Query(1000, ge=1, le=5000),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    records = list_fanxiu_player_profile_records(session, limit=limit)
+    return FanxiuPlayerProfileRecordListResponse(ok=True, count=len(records), records=records)
 
 
 @status_router.get("/packet-capture/tcp/storage-bag")
@@ -5453,6 +5070,15 @@ def _remote_entry_headers(entry: UserDevice) -> dict[str, str]:
     }
 
 
+def _normalize_game_window2_title(title: Optional[str]) -> Optional[str]:
+    value = (title or "").strip()
+    if not value:
+        return title
+    if "mumu" in value.lower():
+        return "MuMu"
+    return title
+
+
 def _game_window2_stream_params(
     *,
     title: Optional[str],
@@ -5469,8 +5095,9 @@ def _game_window2_stream_params(
     auto_dismiss_popup: bool,
     popup_check_interval: float,
 ) -> dict[str, Any]:
+    normalized_title = _normalize_game_window2_title(title)
     return {
-        "title": title or "",
+        "title": normalized_title or "",
         "title_match": title_match,
         "fps": fps,
         "quality": quality,
@@ -5586,6 +5213,95 @@ def _game_window2_match_payload(
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
 
+_GAME_WINDOW2_MATCH_CACHE_TTL = 8.0
+_GAME_WINDOW2_MATCH_CACHE_MAX_SIZE = 64
+_game_window2_match_cache_lock = threading.Lock()
+_game_window2_match_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_game_window2_match_inflight: dict[str, threading.Event] = {}
+
+
+def _clone_json_dict(data: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def _game_window2_match_cache_key(payload: dict[str, Any]) -> str:
+    frame_data_url = str(payload.get("current_frame_data_url") or "")
+    cache_payload = dict(payload)
+    if frame_data_url:
+        cache_payload["current_frame_data_url"] = hashlib.sha256(frame_data_url.encode("utf-8")).hexdigest()
+    else:
+        return ""
+    raw = json.dumps(cache_payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _get_game_window2_match_cache(cache_key: str) -> dict[str, Any] | None:
+    if not cache_key:
+        return None
+    now = time.monotonic()
+    with _game_window2_match_cache_lock:
+        cached = _game_window2_match_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_at, result = cached
+        if now - cached_at > _GAME_WINDOW2_MATCH_CACHE_TTL:
+            _game_window2_match_cache.pop(cache_key, None)
+            return None
+        return _clone_json_dict(result)
+
+
+def _set_game_window2_match_cache(cache_key: str, result: dict[str, Any]) -> None:
+    if not cache_key:
+        return
+    now = time.monotonic()
+    cloned = _clone_json_dict(result)
+    with _game_window2_match_cache_lock:
+        expired_keys = [
+            key for key, (cached_at, _) in _game_window2_match_cache.items()
+            if now - cached_at > _GAME_WINDOW2_MATCH_CACHE_TTL
+        ]
+        for key in expired_keys:
+            _game_window2_match_cache.pop(key, None)
+        while len(_game_window2_match_cache) >= _GAME_WINDOW2_MATCH_CACHE_MAX_SIZE:
+            oldest_key = min(_game_window2_match_cache, key=lambda key: _game_window2_match_cache[key][0])
+            _game_window2_match_cache.pop(oldest_key, None)
+        _game_window2_match_cache[cache_key] = (now, cloned)
+
+
+def _run_game_window2_match_with_cache(payload: dict[str, Any], producer: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    cache_key = _game_window2_match_cache_key(payload)
+    cached = _get_game_window2_match_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    owner = False
+    inflight: threading.Event | None = None
+    if cache_key:
+        with _game_window2_match_cache_lock:
+            inflight = _game_window2_match_inflight.get(cache_key)
+            if inflight is None:
+                inflight = threading.Event()
+                _game_window2_match_inflight[cache_key] = inflight
+                owner = True
+
+    if cache_key and not owner and inflight is not None:
+        wait_timeout = 2.0 if payload.get("read_only_cache") else 8.0
+        if inflight.wait(timeout=wait_timeout):
+            cached = _get_game_window2_match_cache(cache_key)
+            if cached is not None:
+                return cached
+
+    try:
+        result = producer()
+        _set_game_window2_match_cache(cache_key, result)
+        return result
+    finally:
+        if cache_key and owner and inflight is not None:
+            with _game_window2_match_cache_lock:
+                _game_window2_match_inflight.pop(cache_key, None)
+            inflight.set()
+
+
 def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         return click_sunlogin_rotate_processed_point(
@@ -5661,27 +5377,102 @@ def _text_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _screencap_game_window2_service() -> Response:
+def _encode_bgr_png_response(frame: Any, headers: dict[str, str]) -> Response:
+    import cv2
+
+    ok, data = cv2.imencode(".png", frame)
+    if not ok:
+        raise HTTPException(status_code=500, detail="编码游戏窗口截图失败")
+    safe_headers = {key: str(value).encode("ascii", "ignore").decode("ascii") for key, value in headers.items()}
+    return Response(content=data.tobytes(), media_type="image/png", headers=safe_headers)
+
+
+def _screencap_game_window2_service(
+    *,
+    prefer_cached: bool = False,
+    cached_only: bool = False,
+    title: str | None = None,
+    title_match: str = "contains",
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+) -> Response:
+    title = _normalize_game_window2_title(title)
+    adb_error = ""
+    if prefer_cached or cached_only:
+        try:
+            data, meta = screencap_mumu_adb_cached_png(cached_only=True)
+        except Exception as exc:
+            adb_error = str(exc)
+            if cached_only:
+                raise HTTPException(status_code=400, detail=adb_error) from exc
+        else:
+            return Response(
+                content=data,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-CodeYun-Input": str(meta.get("input") or ""),
+                    "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
+                    "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
+                },
+            )
+    elif not cached_only:
+        try:
+            data, meta = screencap_mumu_adb_png()
+        except Exception as exc:
+            adb_error = str(exc)
+        else:
+            return Response(
+                content=data,
+                media_type="image/png",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-CodeYun-Input": str(meta.get("input") or ""),
+                    "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
+                    "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
+                },
+            )
+
     try:
-        data, meta = screencap_mumu_adb_png()
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            title_match=title_match,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            prefer_cached=True,
+        )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return Response(
-        content=data,
-        media_type="image/png",
-        headers={
+        detail = str(exc)
+        if adb_error:
+            detail = f"{detail}；ADB截图失败：{adb_error}"
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return _encode_bgr_png_response(
+        frame,
+        {
             "Cache-Control": "no-store",
-            "X-CodeYun-Input": str(meta.get("input") or ""),
-            "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
-            "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
+            "X-CodeYun-Input": "window_capture",
+            "X-CodeYun-Adb-Port": "",
+            "X-CodeYun-Adb-Size": "",
+            "X-CodeYun-Adb-Error": adb_error[:200],
         },
     )
 
 
 def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    title = _normalize_game_window2_title(payload.get("title"))
     try:
         return save_fanxiu_screenshot_frame(
-            title=payload.get("title"),
+            title=title,
             title_match=payload.get("title_match") or "contains",
             mode=payload.get("mode"),
             area=payload.get("area"),
@@ -5699,33 +5490,38 @@ def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    title = _normalize_game_window2_title(payload.get("title"))
     try:
-        return match_fanxiu_screenshot_box_frame(
-            filename=payload["filename"],
-            box=payload["box"],
-            scan=bool(payload.get("scan")),
-            scan_box=payload.get("scan_box"),
-            pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
-            alpha_mask_data_url=payload.get("alpha_mask_data_url"),
-            tolerance_min_data_url=payload.get("tolerance_min_data_url"),
-            tolerance_max_data_url=payload.get("tolerance_max_data_url"),
-            title=payload.get("title"),
-            title_match=payload.get("title_match") or "contains",
-            mode=payload.get("mode"),
-            area=payload.get("area"),
-            crop=payload.get("crop"),
-            trim_border=payload.get("trim_border"),
-            rotate=payload.get("rotate"),
-            fixed_width=int(payload.get("fixed_width") or 0),
-            fixed_height=int(payload.get("fixed_height") or 0),
-            quality=int(payload.get("quality") or 82),
-            current_frame_data_url=payload.get("current_frame_data_url"),
-            prefer_cached=bool(payload.get("prefer_cached", True)),
-            match_strategy=payload.get("match_strategy") or "auto",
-            ocr_enabled=bool(payload.get("ocr_enabled")),
-            ocr_text=payload.get("ocr_text"),
-            ocr_match_mode=payload.get("ocr_match_mode") or "contains",
-            ocr_min_confidence=float(payload.get("ocr_min_confidence") or 0.0),
+        return _run_game_window2_match_with_cache(
+            payload,
+            lambda: match_fanxiu_screenshot_box_frame(
+                filename=payload["filename"],
+                box=payload["box"],
+                scan=bool(payload.get("scan")),
+                scan_box=payload.get("scan_box"),
+                pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
+                alpha_mask_data_url=payload.get("alpha_mask_data_url"),
+                tolerance_min_data_url=payload.get("tolerance_min_data_url"),
+                tolerance_max_data_url=payload.get("tolerance_max_data_url"),
+                title=title,
+                title_match=payload.get("title_match") or "contains",
+                mode=payload.get("mode"),
+                area=payload.get("area"),
+                crop=payload.get("crop"),
+                trim_border=payload.get("trim_border"),
+                rotate=payload.get("rotate"),
+                fixed_width=int(payload.get("fixed_width") or 0),
+                fixed_height=int(payload.get("fixed_height") or 0),
+                quality=int(payload.get("quality") or 82),
+                current_frame_data_url=payload.get("current_frame_data_url"),
+                prefer_cached=bool(payload.get("prefer_cached", True)),
+                match_strategy=payload.get("match_strategy") or "auto",
+                ocr_enabled=bool(payload.get("ocr_enabled")),
+                ocr_text=payload.get("ocr_text"),
+                ocr_match_mode=payload.get("ocr_match_mode") or "contains",
+                ocr_min_confidence=float(payload.get("ocr_min_confidence") or 0.0),
+                save_match_frame=bool(payload.get("save_match_frame", True)),
+            ),
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6507,8 +6303,6 @@ class _GameWindow3RuntimeRunner:
             )
         if task_type == "go_scene":
             target_scene_id = int(payload.get("target_scene_id") or payload.get("target") or 49)
-            if target_scene_id != 49:
-                raise HTTPException(status_code=400, detail="Runtime v1 当前只验收到场景 #49")
             return self.start_generic_runtime_task(
                 entry=entry,
                 entry_id=entry_id,
@@ -6640,8 +6434,6 @@ class _GameWindow3RuntimeRunner:
         target_scene_id: int,
         asset_tree_path: Path,
     ) -> dict[str, Any]:
-        if target_scene_id != 49:
-            raise HTTPException(status_code=400, detail="Runtime v1 当前只验收到场景 #49")
         return self.start_generic_runtime_task(
             entry=entry,
             entry_id=entry_id,
@@ -6807,7 +6599,7 @@ class _GameWindow3RuntimeRunner:
                 return BehaviorTreeStatus.SKIP
             self._persist_status()
             self._clear_tick_frame(runtime_ctx)
-            return BehaviorTreeStatus.RUNNING
+            return BehaviorTreeStatus.SKIP
         finally:
             self._restore_log_context(previous_log_context)
 
@@ -7128,9 +6920,12 @@ class _GameWindow3RuntimeRunner:
             target_scene_id = int(payload.get("target_scene_id") or payload.get("target") or 49)
             with self._lock:
                 self._set_status_locked("running", f"场景移动到 #{target_scene_id}", phase="go_scene")
+            if target_scene_id == 49:
+                self._align_settings(ctx, stop_event)
+                return "success"
             asset_tree_path = ctx.get("asset_tree_path")
             if not isinstance(asset_tree_path, Path):
-                raise RuntimeError("缺少场景移动资产树路径")
+                raise RuntimeError("缺少场景移动资产树路径，当前只支持直接对齐 #49")
             return self._go_scene_task(ctx, asset_tree_path, target_scene_id, stop_event)
         if task_type == "hide_floating_window":
             self._execute_hide_floating_window(ctx, stop_event)
@@ -7414,17 +7209,20 @@ class _GameWindow3RuntimeRunner:
         preferred_scene_ids: list[int] | None = None,
     ) -> tuple[int | None, float]:
         images: dict[int, dict[str, Any]] = ctx.get("images") or {}
+        candidates: list[tuple[int, float]] = []
         if preferred_scene_ids:
             for scene_id in preferred_scene_ids:
                 image = images.get(scene_id)
                 if not image:
                     continue
                 score = self._scene_score(ctx, image, frame_data_url)
-                if self._scene_matches_id(scene_id, score):
-                    return scene_id, score
-            return None, 0.0
+                candidates.append((scene_id, score))
+            candidates.sort(key=lambda item: (item[1], -item[0]), reverse=True)
+            if not candidates:
+                return None, 0.0
+            scene_id, score = candidates[0]
+            return (scene_id, score) if self._scene_matches_id(scene_id, score) else (None, score)
 
-        candidates: list[tuple[int, float]] = []
         for scene_id, image in images.items():
             score = self._scene_score(ctx, image, frame_data_url)
             candidates.append((scene_id, score))
@@ -7483,6 +7281,16 @@ class _GameWindow3RuntimeRunner:
                     visited.add(next_scene_id)
                     queue.append((next_scene_id, next_route))
         return None
+
+    def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
+        edges = self._scene_jump_edges(tree)
+        result: list[int] = [target_scene_id]
+        for source_scene_id in sorted(edges):
+            if source_scene_id == target_scene_id:
+                continue
+            if self._find_scene_route(tree, source_scene_id, target_scene_id) is not None:
+                result.append(source_scene_id)
+        return result
 
     def _write_asset_tree(self, asset_tree_path: Path, tree: list[dict[str, Any]]) -> None:
         _write_game_window3_json(asset_tree_path, tree)
@@ -7575,6 +7383,31 @@ class _GameWindow3RuntimeRunner:
                 if self._is_independent_exit_shape(shape):
                     return shape
         return None
+
+    def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+
+        def visit(items: list[dict[str, Any]], path: list[str]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                node_type = str(item.get("type") or "")
+                title = str(item.get("title") or "").strip()
+                current_path = [*path, title] if title else path
+                if node_type == "image":
+                    action_shape = self._auto_close_guard_action_shape(item)
+                    if action_shape is not None:
+                        candidates.append({
+                            "image": item,
+                            "folder_path": "/".join(path),
+                            "action_shape": action_shape,
+                        })
+                children = item.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)], current_path)
+
+        visit(nodes, [])
+        return candidates
 
     def _handle_auto_close_popup_47_child_84(
         self,
@@ -7684,24 +7517,7 @@ class _GameWindow3RuntimeRunner:
         return True
 
     def _auto_close_guard_images(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
-        for folder in nodes:
-            if not isinstance(folder, dict) or folder.get("type") != "folder":
-                continue
-            folder_title = str(folder.get("title") or "").strip()
-            if folder_title != "弹窗":
-                continue
-            children = folder.get("children")
-            if not isinstance(children, list):
-                continue
-            for child in children:
-                if isinstance(child, dict) and child.get("type") == "image":
-                    candidates.append({
-                        "image": child,
-                        "folder_path": folder_title,
-                        "action_shape": self._auto_close_guard_action_shape(child),
-                    })
-        return candidates
+        return self._index_guard_candidates(nodes)
 
     def _auto_close_guard_candidates_for_path(self, asset_tree_path: Path) -> list[dict[str, Any]]:
         try:
@@ -7933,7 +7749,7 @@ class _GameWindow3RuntimeRunner:
             return 0
 
     def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
-        return self._match_image_score(ctx, image, frame_data_url, self._scene_identity_shapes(image), log_label="场景标识")
+        return self._match_image_score(ctx, image, frame_data_url, self._scene_identity_shapes(image), log_label="场景标识", scan_fallback=False)
 
     def _popup_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
         return self._match_image_score(ctx, image, frame_data_url, self._popup_match_shapes(image), log_label="弹窗标识")
@@ -7946,11 +7762,12 @@ class _GameWindow3RuntimeRunner:
         shapes: list[dict[str, Any]],
         *,
         log_label: str,
+        scan_fallback: bool = True,
     ) -> float:
         scores: list[float] = []
         for shape in shapes:
             score = self._shape_score(ctx, image, shape, frame_data_url)
-            if score < 50:
+            if scan_fallback and score < 50:
                 try:
                     scan_score = float(self._run_match(ctx, image, shape, frame_data_url, scan=True, match_strategy="auto").get("similarity") or 0)
                     score = max(score, scan_score)
@@ -8226,20 +8043,19 @@ class _GameWindow3RuntimeRunner:
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
 
-            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
-            if matched_expected is not None:
-                self._increment_scene_jump_target(shape, matched_expected)
-                self._write_asset_tree(asset_tree_path, tree)
-                ctx["images"] = self._index_images(tree)
-                self._log("info", f"场景跳转：#{source_scene_id} -> #{matched_expected}，{elapsed:.1f}s")
-                return matched_expected
-
             scene_id, score = self._identify_scene_number(ctx, frame)
             last_scene_id, last_score, last_frame = scene_id, score, frame
             if scene_id is not None and scene_id != source_scene_id:
                 left_source = True
+            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
             history.append(f"{elapsed:.1f}s {scene_text} {score:.0f}% expected={expected_score:.0f}% left={left_source}")
+            if scene_id is not None and scene_id in expected_ids:
+                self._increment_scene_jump_target(shape, scene_id)
+                self._write_asset_tree(asset_tree_path, tree)
+                ctx["images"] = self._index_images(tree)
+                self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s")
+                return scene_id
             with self._lock:
                 self._status.update({
                     "phase": "go_scene_wait",
@@ -8272,6 +8088,20 @@ class _GameWindow3RuntimeRunner:
                 )
                 raise RuntimeError("场景跳转后无法识别当前场景，已保存未知帧，等待人工标注后重试")
 
+            if not left_source and last_scene_id == source_scene_id and not allows_self:
+                self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    last_frame or frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=source_scene_id,
+                    action_shape=shape,
+                    elapsed_seconds=elapsed,
+                    history=history,
+                )
+                raise RuntimeError(f"点击后仍停留在起点场景 #{source_scene_id}，未确认跳转，已保存当前帧等待检查点击目标或遮挡")
+
             self._increment_scene_jump_target(shape, last_scene_id)
             self._write_asset_tree(asset_tree_path, tree)
             ctx["images"] = self._index_images(tree)
@@ -8290,11 +8120,12 @@ class _GameWindow3RuntimeRunner:
             tree = self._load_asset_tree(asset_tree_path)
             ctx["asset_tree"] = tree
             ctx["images"] = self._index_images(tree)
+        route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
 
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
-            current_scene_id, score = self._identify_scene_number(ctx, frame)
+            current_scene_id, score = self._identify_scene_number(ctx, frame, route_candidate_ids)
             if current_scene_id is None:
                 self._save_unknown_scene_frame(
                     ctx,
@@ -8309,6 +8140,11 @@ class _GameWindow3RuntimeRunner:
                 )
                 raise RuntimeError("无法识别当前场景，已保存未知帧，等待人工标注后重试")
             if current_scene_id == target_scene_id:
+                with self._lock:
+                    self._status.update({
+                        "current_scene": target_scene_id,
+                        "updated_at": time.time(),
+                    })
                 self._log("success", f"已在目标场景 #{target_scene_id}")
                 return "success"
 
@@ -8338,6 +8174,11 @@ class _GameWindow3RuntimeRunner:
                 stop_event=stop_event,
             )
             if actual_scene_id == target_scene_id:
+                with self._lock:
+                    self._status.update({
+                        "current_scene": target_scene_id,
+                        "updated_at": time.time(),
+                    })
                 self._log("success", f"到达目标场景 #{target_scene_id}")
                 return "success"
             self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
@@ -9905,6 +9746,69 @@ def create_fanxiu_game_window2_stream_token(
     }
 
 
+_GAME_WINDOW2_SERVICE_STATUS_CACHE_TTL = 10.0
+_game_window2_service_status_cache_lock = threading.Lock()
+_game_window2_service_status_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _clone_game_window2_service_status(data: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+
+
+def _get_game_window2_service_status_cache() -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _game_window2_service_status_cache_lock:
+        if _game_window2_service_status_cache is None:
+            return None
+        cached_at, status = _game_window2_service_status_cache
+        if now - cached_at > _GAME_WINDOW2_SERVICE_STATUS_CACHE_TTL:
+            return None
+        return _clone_game_window2_service_status(status)
+
+
+def _set_game_window2_service_status_cache(status: dict[str, Any]) -> None:
+    global _game_window2_service_status_cache
+    with _game_window2_service_status_cache_lock:
+        _game_window2_service_status_cache = (time.monotonic(), _clone_game_window2_service_status(status))
+
+
+def _clear_game_window2_service_status_cache() -> None:
+    global _game_window2_service_status_cache
+    with _game_window2_service_status_cache_lock:
+        _game_window2_service_status_cache = None
+
+
+@status_router.get("/game-window2/service-status")
+async def get_fanxiu_game_window2_service_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    cached = _get_game_window2_service_status_cache()
+    if cached is not None:
+        return cached
+    status = await asyncio.to_thread(get_game_window_service_status)
+    _set_game_window2_service_status_cache(status)
+    return status
+
+
+@status_router.post("/game-window2/service-start")
+def start_fanxiu_game_window2_service(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _clear_game_window2_service_status_cache()
+    try:
+        result = start_game_window_service()
+        service = result.get("service") if isinstance(result, dict) else None
+        if isinstance(service, dict):
+            _set_game_window2_service_status_cache(service)
+        return result
+    except GameWindowServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @status_router.get("/game-window2/stream")
 def stream_fanxiu_game_window2(
     token: str = Query(...),
@@ -10105,7 +10009,19 @@ def screencap_fanxiu_game_window2(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     if entry.mode == "local":
-        return _screencap_game_window2_service()
+        return _screencap_game_window2_service(
+            prefer_cached=req.prefer_cached,
+            cached_only=req.cached_only,
+            title=req.title,
+            title_match=req.title_match,
+            mode=req.mode,
+            area=req.area,
+            crop=req.crop,
+            trim_border=req.trim_border,
+            rotate=req.rotate,
+            fixed_width=req.fixed_width,
+            fixed_height=req.fixed_height,
+        )
     return _remote_game_window2_screencap(entry)
 
 
@@ -11258,111 +11174,6 @@ def update_fanxiu_activity_list(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"保存凡修活动列表失败：{exc}") from exc
     return FanxiuActivityListSnapshot(items=saved_payload)
-
-
-@inventory_router.get("/region-data", response_model=FanxiuRegionDataSnapshot)
-def get_fanxiu_region_data(session: Session = Depends(get_session)):
-    return FanxiuRegionDataSnapshot.model_validate(build_region_data_snapshot(session))
-
-
-@inventory_router.get("/region-data/characters", response_model=FanxiuRegionCharacterSnapshot)
-def get_fanxiu_region_characters(session: Session = Depends(get_session)):
-    return FanxiuRegionCharacterSnapshot.model_validate(build_region_character_snapshot(session))
-
-
-@inventory_router.get("/region-data/characters/history", response_model=FanxiuRegionCharacterHistorySnapshot)
-def get_fanxiu_region_character_history(
-    region_name: str = Query(""),
-    server_name: str = Query(""),
-    guild_name: str = Query(""),
-    role_name: str = Query(""),
-    include_disabled: bool = Query(True),
-    session: Session = Depends(get_session),
-):
-    return FanxiuRegionCharacterHistorySnapshot.model_validate(
-        build_region_character_history_snapshot(
-            session,
-            region_name=region_name.strip(),
-            server_name=server_name.strip(),
-            guild_name=guild_name.strip(),
-            role_name=role_name.strip(),
-            include_disabled=include_disabled,
-        )
-    )
-
-
-@inventory_router.patch("/region-data/characters/{character_id}", response_model=FanxiuRegionCharacterItem)
-def patch_fanxiu_region_character(
-    character_id: str,
-    payload: FanxiuRegionCharacterUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    update_payload = payload.model_dump(exclude_unset=True)
-    record = update_region_character_record(session, character_id, update_payload)
-    return FanxiuRegionCharacterItem.model_validate(serialize_region_character_record(record))
-
-
-@inventory_router.delete("/region-data/characters/{character_id}", response_model=FanxiuRegionCharacterItem)
-def delete_fanxiu_region_character(
-    character_id: str,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    record = disable_region_character_record(session, character_id)
-    return FanxiuRegionCharacterItem.model_validate(serialize_region_character_record(record))
-
-
-@inventory_router.post(
-    "/region-data/characters/import/ocr",
-    response_model=FanxiuRegionCharacterOcrImportResponse,
-)
-async def import_fanxiu_region_character_from_ocr(
-    image: UploadFile = File(...),
-    server_candidates: str = Form("[]"),
-    target_region_name: str = Form(""),
-    target_server_name: str = Form(""),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
-
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        normalized_server_candidates = _normalize_region_server_candidates(server_candidates)
-        normalized_server_target = _normalize_region_server_target(target_region_name, target_server_name)
-        item, lines = _build_region_character_from_ocr_document(
-            preview.get("document") or {},
-            normalized_server_candidates,
-            normalized_server_target if normalized_server_target.get("server_name") else None,
-        )
-        record, created = create_region_character_record_if_stronger(session, item)
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-
-    return FanxiuRegionCharacterOcrImportResponse(
-        lines=lines,
-        item=FanxiuRegionCharacterItem.model_validate(serialize_region_character_record(record)),
-        created=created,
-        skipped_reason="" if created else "攻击未高于旧记录，保留旧数据",
-    )
 
 
 @inventory_router.get("/activity-list/modao-invasion", response_model=FanxiuModaoInvasionSnapshot)

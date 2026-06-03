@@ -117,7 +117,7 @@ def iter_windows(title_substring: str = "", title_match: str = "contains") -> li
         class_name = win32gui.GetClassName(hwnd)
         if class_name == "Main HighGUI class":
             return True
-        if class_name == "Qt5156QWindowToolSaveBits":
+        if class_name == "Qt5156QWindowToolSaveBits" and "mumu" not in title_lower:
             return True
 
         items.append(WindowCandidate(hwnd, title, class_name, rect))
@@ -133,6 +133,10 @@ def find_window(title_substring: str, title_match: str = "contains") -> WindowCa
         if title_match == "exact":
             raise RuntimeError(f"未找到标题等于 {title_substring!r} 的可见窗口")
         raise RuntimeError(f"未找到标题包含 {title_substring!r} 的可见窗口")
+    if title_match != "exact" and title_substring.lower() == "mumu":
+        primary_candidates = [item for item in candidates if "nxdevice" not in item.title.lower()]
+        if primary_candidates:
+            return max(primary_candidates, key=lambda item: item.area)
     return max(candidates, key=lambda item: item.area)
 
 

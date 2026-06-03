@@ -361,6 +361,31 @@ class NoteProgramResponse(BaseModel):
     total_edges: int
 
 
+class NoteCalendarSummaryBucketRequest(BaseModel):
+    key: str
+    start_at: float
+    end_at: float
+    mode: Literal["year", "volume", "era"] = "year"
+    limit: int = 100
+
+
+class NoteCalendarSummaryRequest(BaseModel):
+    query: NoteProgramRequest
+    buckets: List[NoteCalendarSummaryBucketRequest] = Field(default_factory=list)
+
+
+class NoteCalendarSummaryBucketResponse(BaseModel):
+    key: str
+    total_nodes: int
+    nodes: List[NoteListRead]
+
+
+class NoteCalendarSummaryResponse(BaseModel):
+    buckets: List[NoteCalendarSummaryBucketResponse]
+    nodes: List[NoteListRead]
+    total_nodes: int
+
+
 class NoteBatchPatch(BaseModel):
     private_level: Optional[int] = None
     weight: Optional[int] = None

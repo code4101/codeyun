@@ -19,7 +19,6 @@ _MAGIC_TREASURE_HALL_KEY = "magic_treasure_hall"
 _MAGIC_TREASURE_SECTION_KEYS = ("fabao", "xiantiangubao", "houtiangubao")
 _SPIRIT_ARTIFACT_HALL_KEY = "spirit_artifact_hall"
 _ACTIVITY_LIST_KEY = "activity_list"
-_REGION_CHARACTER_LIST_KEY = "region_character_list"
 _MODAO_INVASION_EXCHANGE_LIST_KEY = "modao_invasion_exchange_list"
 _SHOUYUAN_EXPLORATION_EXCHANGE_LIST_KEY = "shouyuan_exploration_exchange_list"
 _DEFAULT_MODAO_INVASION_LABEL = "32跨"
@@ -97,15 +96,6 @@ def load_activity_list() -> list[dict[str, Any]]:
         collections = {}
     activity_list = collections.get(_ACTIVITY_LIST_KEY, [])
     return _normalize_activity_list(activity_list)
-
-
-def load_region_character_list() -> dict[str, Any]:
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-    character_list = collections.get(_REGION_CHARACTER_LIST_KEY, {})
-    return _normalize_region_character_snapshot(character_list)
 
 
 def load_modao_invasion_exchange_list() -> dict[str, Any]:
@@ -188,27 +178,6 @@ def save_activity_list(payload: list[dict[str, Any]] | dict[str, Any]) -> list[d
 
     normalized = _normalize_activity_list(payload)
     collections[_ACTIVITY_LIST_KEY] = normalized
-    storage["version"] = _storage_version(storage)
-    storage["collections"] = collections
-
-    storage_path.write_text(
-        json.dumps(storage, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return normalized
-
-
-def save_region_character_list(payload: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
-    storage_path = get_inventory_storage_path()
-    storage_path.parent.mkdir(parents=True, exist_ok=True)
-
-    storage = _read_inventory_storage()
-    collections = storage.get("collections", {})
-    if not isinstance(collections, dict):
-        collections = {}
-
-    normalized = _normalize_region_character_snapshot(payload)
-    collections[_REGION_CHARACTER_LIST_KEY] = normalized
     storage["version"] = _storage_version(storage)
     storage["collections"] = collections
 
@@ -685,19 +654,6 @@ def _normalize_activity_list(raw_payload: Any) -> list[dict[str, Any]]:
     return sorted(normalized_items, key=_activity_sort_key)
 
 
-def _normalize_region_character_snapshot(raw_payload: Any) -> dict[str, Any]:
-    raw_items = raw_payload.get("characters", raw_payload.get("items", [])) if isinstance(raw_payload, dict) else raw_payload
-    if not isinstance(raw_items, list):
-        raw_items = []
-
-    characters = [
-        normalized_item
-        for item in raw_items
-        if (normalized_item := _normalize_region_character_item(item)) is not None
-    ]
-    return {"characters": characters}
-
-
 def _default_modao_invasion_record(
     *,
     label: str = _DEFAULT_MODAO_INVASION_LABEL,
@@ -902,39 +858,6 @@ def _normalize_activity_item(raw_item: Any) -> dict[str, Any] | None:
     if note_id:
         normalized_item["note_id"] = note_id
     return normalized_item
-
-
-def _normalize_region_character_item(raw_item: Any) -> dict[str, Any] | None:
-    if not isinstance(raw_item, dict):
-        return None
-
-    item_id = str(raw_item.get("id") or "").strip() or str(uuid.uuid4())
-    region_name = str(raw_item.get("region_name") or raw_item.get("regionName") or raw_item.get("region") or "").strip()
-    server_name = str(raw_item.get("server_name") or raw_item.get("serverName") or raw_item.get("server") or "").strip()
-    guild_name = str(
-        raw_item.get("guild_name")
-        or raw_item.get("guildName")
-        or raw_item.get("guild")
-        or raw_item.get("society")
-        or raw_item.get("club")
-        or "",
-    ).strip()
-    role_name = str(raw_item.get("role_name") or raw_item.get("roleName") or raw_item.get("role") or raw_item.get("name") or "").strip()
-    attack = str(raw_item.get("attack") or raw_item.get("attack_text") or raw_item.get("attackText") or "").strip()
-    recorded_date = _normalize_date(raw_item.get("recorded_date", raw_item.get("recordedDate", raw_item.get("captured_date"))))
-
-    if not any([region_name, server_name, guild_name, role_name, attack]):
-        return None
-
-    return {
-        "id": item_id,
-        "region_name": region_name,
-        "server_name": server_name,
-        "guild_name": guild_name,
-        "role_name": role_name,
-        "attack": attack,
-        "recorded_date": recorded_date.isoformat(),
-    }
 
 
 def _split_activity_name_cross_count(value: Any) -> tuple[str, int | None]:

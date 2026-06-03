@@ -82,7 +82,8 @@ const excludeWechatDailyRules: NoteProgramRule[] = [
 
 const getTabProps = (tab: TabState) => {
   const baseProps = {
-    tabId: tab.id
+    tabId: tab.id,
+    active: activeTabId.value === tab.id
   };
 
   if (tab.type === 'calendar') {

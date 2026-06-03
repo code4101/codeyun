@@ -17,7 +17,6 @@ import magicTreasureFormationsPage from './magic-treasure-formations'
 import fanxiuModaoInvasionPage from './modao-invasion'
 import fanxiuPacketCapturePage from './packet-capture'
 import fanxiuQijiZhumoPage from './qiji-zhumo'
-import fanxiuRegionDataPage from './region-data'
 import fanxiuRechargePage from './recharge'
 import fanxiuShouyuanExplorationPage from './shouyuan-exploration'
 import spiritArtifactHallPage from './spirit-artifact-hall'
@@ -38,7 +37,6 @@ const pages: AppPageDefinition[] = [
   fanxiuShouyuanExplorationPage,
   fanxiuDivineResourcePage,
   fanxiuQijiZhumoPage,
-  fanxiuRegionDataPage,
   fanxiuLabelmePage,
   wardrobeHallPage,
   spiritBeastHallPage,

@@ -24,6 +24,7 @@ import {
   fetchSheetDefinedNames,
   exportAttendanceSheet,
   applyAttendanceVideoRevision,
+  detectNoteSheetRegistrationUserId,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
   getNoteSheetApiErrorStatus,
@@ -214,6 +215,8 @@ const SHEET_CELL_ACTION_BUTTON_TRIGGER_GUARD_MS = 700
 const REGISTRATION_MATCH_RUN_POLL_MS = 2000
 const REGISTRATION_ORDER_MATCH_HEADERS = ['订单日期', '商户订单号', '订单金额', '已返款']
 const REGISTRATION_USER_MATCH_HEADERS = ['用户ID', '匹配得分']
+const REGISTRATION_STANDARD_USER_ID_HEADERS = new Set(['用户ID', '关联用户ID'])
+const REGISTRATION_STANDARD_USER_ID_HEADER_BACKGROUND = '#9DC3E6'
 const ATTENDANCE_FIELD_BINDINGS = {
   courseType: { header: '课程类型', fallbackIndex: 0 },
   onlineSheet: { header: '在线考勤表', fallbackIndex: 2 },
@@ -1017,6 +1020,8 @@ type SheetRowDetail = {
   rowIndex: number
   rowLabel: string
   items: SheetRowDetailItem[]
+  mode?: 'existing' | 'new_registration_student'
+  insertIndex?: number
 }
 
 type StudentLookupColumnIndexes = {
@@ -1224,6 +1229,7 @@ type RestoreInitialDocumentOptions = {
   preserveContent?: boolean
   clearOnError?: boolean
   initialDetail?: NoteSheetDetail | null
+  applyInitialWorkspaceView?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -1413,7 +1419,9 @@ const userMatchRunSummary = computed(() => {
   return `${actionLabel}中：${progress}，已更新 ${run.updated_count} 行${fallbackSuffix}`
 })
 const rowDetailDialogTitle = computed(() => (
-  rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显示此条'
+  rowDetail.value?.mode === 'new_registration_student'
+    ? '新增学员'
+    : (rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显示此条')
 ))
 const rowDetailDialogWidth = computed(() => (
   rowDetailDialogSize.value?.width
@@ -1647,6 +1655,7 @@ let sheetRenderEnhancementFrame: number | null = null
 let sheetHiddenFrameSize: SheetFrameSize | null = null
 let sheetOverlayAlignmentFrame: number | null = null
 let sheetOverlayAlignmentPending = false
+let sheetOverlayScrollSyncFrame: number | null = null
 
 function readSheetPerfLoggingEnabledPreference() {
   if (typeof window === 'undefined') {
@@ -2838,8 +2847,10 @@ function getDefaultSheetWorkspaceView(): SheetWorkspaceView {
   return shouldDefaultToStudentLookupView() ? 'lookup' : 'sheet'
 }
 
-function restoreSheetWorkspaceViewFromLocalStorage() {
-  const requestedView = normalizeSheetWorkspaceView(props.initialWorkspaceView)
+function restoreSheetWorkspaceViewFromLocalStorage(options?: { applyInitialWorkspaceView?: boolean }) {
+  const requestedView = options?.applyInitialWorkspaceView === true
+    ? normalizeSheetWorkspaceView(props.initialWorkspaceView)
+    : null
   const nextView = shouldShowStudentLookup.value
     ? requestedView ?? readPersistedSheetWorkspaceView() ?? getDefaultSheetWorkspaceView()
     : 'sheet'
@@ -3591,8 +3602,8 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   if (rowMarkerColumnCount.value <= 0) {
     return sheetGridRows.value
   }
-  return sheetGridRows.value.map((row, rowIndex) => [
-    getSheetRowHeaderLabel(rowIndex),
+  return sheetGridRows.value.map((row) => [
+    '',
     ...row,
   ])
 })
@@ -3655,7 +3666,9 @@ const sheetWorkspaceStyle = computed(() => (
 ))
 
 const fixedHotColumnsStart = computed(() => (
-  rowMarkerColumnCount.value + fixedColumnsStart.value
+  fixedColumnsStart.value > 0
+    ? rowMarkerColumnCount.value + fixedColumnsStart.value
+    : 0
 ))
 
 function getDocumentColumnNote(header: string, sourceConfigs: Record<string, SheetColumnConfig>) {
@@ -4190,13 +4203,14 @@ const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => 
     ))
   })
 
-  rows.push(resolveHeaderStyleRow(
+  const fieldHeaderStyleRow = resolveHeaderStyleRow(
     columnHeaders.value.map((header) => getColumnHeaderStyle(columnConfigs.value[header])),
     themeCells,
     normalizedHeaderGroups.value.length,
     depth,
     useAutoTheme,
-  ))
+  )
+  rows.push(resolveFieldHeaderStyleRow(fieldHeaderStyleRow, rows))
   return rows
 })
 
@@ -4213,6 +4227,18 @@ function findColumnIndexByBinding(binding: { header: string, fallbackIndex: numb
   return binding.fallbackIndex >= 0 && binding.fallbackIndex < columnHeaders.value.length
     ? binding.fallbackIndex
     : -1
+}
+
+function isRegistrationStandardUserIdHeaderColumn(column: number, headerLevel: number) {
+  if (headerLevel !== normalizedHeaderGroups.value.length) {
+    return false
+  }
+  const header = normalizeCellValue(columnHeaders.value[column] ?? '').trim()
+  if (!REGISTRATION_STANDARD_USER_ID_HEADERS.has(header)) {
+    return false
+  }
+  const headers = new Set(columnHeaders.value.map((item) => normalizeCellValue(item).trim()))
+  return headers.has('匹配得分') && headers.has('参考信息')
 }
 
 const attendanceCompletedColumnIndex = computed(() => findColumnIndexByBinding(ATTENDANCE_FIELD_BINDINGS.completedDate))
@@ -4695,6 +4721,18 @@ const contextMenu = {
       hidden: () => !shouldShowRemoveRowAction() || !canEditData.value,
       callback: () => {
         removeSelectedRows()
+      },
+    },
+    hsep_registration_user_id_detection: {
+      name: '---------',
+      hidden: () => !canDetectRegistrationUserIdFromSelection() || !canRunSheetActions.value || !canEditData.value,
+    },
+    detect_registration_user_id: {
+      name: '检测用户ID',
+      hidden: () => !canDetectRegistrationUserIdFromSelection() || !canRunSheetActions.value || !canEditData.value,
+      disabled: () => workspaceLoading.value,
+      callback: () => {
+        void handleDetectRegistrationUserIdFromSelection()
       },
     },
     hsep_sheet_advanced: {
@@ -5545,11 +5583,14 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
     const extraColumnSuffix = result.extra_columns.length
       ? `，追加 ${result.extra_columns.length} 列`
       : ''
+    const skippedDuplicateSuffix = result.skipped_duplicate_count
+      ? `，跳过重复订单 ${result.skipped_duplicate_count} 行`
+      : ''
     const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
     const modeText = mode === 'append'
       ? `已添加 ${result.imported_count} 行新表数据`
       : `已清空原表数据并导入 ${result.imported_count} 行新表数据`
-    ElMessage.success(`${modeText}${extraColumnSuffix}${warningSuffix}`)
+    ElMessage.success(`${modeText}${extraColumnSuffix}${skippedDuplicateSuffix}${warningSuffix}`)
     closeExcelImportDialog(true)
   } catch (error) {
     console.warn('Failed to import note sheet from Excel', error)
@@ -6775,6 +6816,40 @@ function mergeGridNoteRowIntoColumnConfigs(
   return changed ? nextConfigs : sourceConfigs
 }
 
+function mergeRemoteStandardColumnConfigsIntoLocalDraft(
+  localConfigs: Record<string, SheetColumnConfig>,
+  remoteConfigs: Record<string, SheetColumnConfig>,
+  headers: string[],
+) {
+  let changed = false
+  const nextConfigs: Record<string, SheetColumnConfig> = { ...localConfigs }
+  for (const header of headers) {
+    if (!REGISTRATION_STANDARD_USER_ID_HEADERS.has(header)) {
+      continue
+    }
+    const remoteConfig = remoteConfigs[header]
+    if (!remoteConfig) {
+      continue
+    }
+    const currentConfig = nextConfigs[header] ?? {}
+    const nextConfig: SheetColumnConfig = { ...currentConfig }
+    let headerChanged = false
+    for (const key of ['header_background_color', 'header_text_color', 'font_family', 'width_mode', 'duplicate_value_highlight'] as const) {
+      const value = remoteConfig[key]
+      if (value === undefined || nextConfig[key] === value) {
+        continue
+      }
+      nextConfig[key] = value as never
+      headerChanged = true
+    }
+    if (headerChanged) {
+      nextConfigs[header] = nextConfig
+      changed = true
+    }
+  }
+  return changed ? nextConfigs : localConfigs
+}
+
 function normalizeMergedCells(source: unknown, rowCount: number, columnCount: number) {
   if (!Array.isArray(source) || rowCount <= 0 || columnCount <= 0) {
     return []
@@ -7764,6 +7839,90 @@ function resolveHeaderStyleRow(
   })
 }
 
+function getLightHeaderBackgroundColor(value: unknown) {
+  const color = normalizeCssColor(value)
+  return color ? `color-mix(in srgb, ${color} 38%, white)` : ''
+}
+
+function getNearestGroupHeaderStyle(
+  groupStyleRows: (SheetHeaderCellStyle | null)[][],
+  column: number,
+) {
+  for (let rowIndex = groupStyleRows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+    const style = groupStyleRows[rowIndex]?.[column]
+    if (style?.background_color || style?.text_color) {
+      return style
+    }
+  }
+  return null
+}
+
+function resolveFieldHeaderStyleRow(
+  fieldStyles: (SheetHeaderCellStyle | null)[],
+  groupStyleRows: (SheetHeaderCellStyle | null)[][],
+) {
+  if (!groupStyleRows.length) {
+    return fieldStyles
+  }
+  return fieldStyles.map((fieldStyle, column) => {
+    const groupStyle = getNearestGroupHeaderStyle(groupStyleRows, column)
+    const backgroundColor = getLightHeaderBackgroundColor(groupStyle?.background_color)
+    if (!backgroundColor) {
+      return fieldStyle
+    }
+    return {
+      background_color: backgroundColor,
+      text_color: fieldStyle?.text_color || groupStyle?.text_color,
+    }
+  })
+}
+
+function getNearestGridGroupHeaderStyle(column: number) {
+  for (let row = columnHeaderLevel.value - 1; row >= 0; row -= 1) {
+    const documentRow = getDocumentGridRowIndex(row)
+    const merge = findStoredMergedCellAtDocumentCell(documentRow, column)
+    const anchorDocumentRow = merge?.row ?? documentRow
+    const anchorColumn = merge?.col ?? column
+    const cellStyle = getCellStyleAt(anchorDocumentRow, anchorColumn)
+    if (cellStyle?.background_color || cellStyle?.text_color) {
+      return {
+        background_color: cellStyle.background_color,
+        text_color: cellStyle.text_color,
+      }
+    }
+    const computedStyle = nestedHeaderStyleRows.value[row]?.[column]
+    if (computedStyle?.background_color || computedStyle?.text_color) {
+      return computedStyle
+    }
+  }
+  return null
+}
+
+function findStoredMergedCellAtDocumentCell(documentRow: number, columnIndex: number) {
+  return normalizeMergedCells(
+    mergedCells.value,
+    Math.max(sheetHeaderRowCount.value + totalRowCount.value, sheetGridRows.value.length),
+    columnHeaders.value.length,
+  ).find((cell) => (
+    documentRow >= cell.row
+    && documentRow < cell.row + cell.rowspan
+    && columnIndex >= cell.col
+    && columnIndex < cell.col + cell.colspan
+  )) ?? null
+}
+
+function resolveGridFieldHeaderStyle(column: number, fieldStyle: SheetHeaderCellStyle | null) {
+  const groupStyle = getNearestGridGroupHeaderStyle(column)
+  const backgroundColor = getLightHeaderBackgroundColor(groupStyle?.background_color)
+  if (!backgroundColor) {
+    return fieldStyle
+  }
+  return {
+    background_color: backgroundColor,
+    text_color: fieldStyle?.text_color || groupStyle?.text_color,
+  }
+}
+
 function normalizeColumnDisplayMode(value: unknown): ColumnDisplayMode {
   return value === 'wrap' ? 'wrap' : DEFAULT_COLUMN_DISPLAY_MODE
 }
@@ -8605,6 +8764,12 @@ function mergeSourceDocumentInlineLinksIntoCellMeta(
     const sourceDataStartRow = normalizeNonNegativeInt(record.data_start_row, dataStartRow)
     nextMeta = mergeInlineCellMetaIntoCellMeta(
       nextMeta,
+      record.grid_rows.slice(0, sourceDataStartRow),
+      0,
+      headers,
+    )
+    nextMeta = mergeInlineCellMetaIntoCellMeta(
+      nextMeta,
       record.grid_rows.slice(sourceDataStartRow),
       dataStartRow,
       headers,
@@ -8814,8 +8979,17 @@ function normalizeSheetDocument(
           : normalizeCellMetaMap(record.cell_meta, headers.length)
       )
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
+  const sourceCellMetaWithStoredLinks = sourceCellMeta
+  const sourceCellMetaWithInlineHeaderLinks = hasUnifiedGridRows
+    ? mergeInlineCellMetaIntoCellMeta(
+      sourceCellMetaWithStoredLinks,
+      sourceUnifiedGridRows.slice(0, previousDataStartRow),
+      0,
+      headers,
+    )
+    : sourceCellMetaWithStoredLinks
   const sourceCellMetaWithInlineRowLinks = mergeInlineCellMetaIntoCellMeta(
-    stripCellLinksFromMetaMap(sourceCellMeta),
+    sourceCellMetaWithInlineHeaderLinks,
     sourceRows,
     dataStartRow,
     headers,
@@ -8977,8 +9151,14 @@ function mergeRemoteHeaderPrefixIntoLocalDraft(localDocument: SheetDocument, rem
   ]
 
   const normalizedLocalConfigs = normalizeColumnConfigs(localDocument.column_configs, headers)
-  const mergedConfigs = mergeGridNoteRowIntoColumnConfigs(
+  const normalizedRemoteConfigs = normalizeColumnConfigs(remoteDocument.column_configs, headers)
+  const mergedStandardConfigs = mergeRemoteStandardColumnConfigsIntoLocalDraft(
     normalizedLocalConfigs,
+    normalizedRemoteConfigs,
+    headers,
+  )
+  const mergedConfigs = mergeGridNoteRowIntoColumnConfigs(
+    mergedStandardConfigs,
     remoteGridRows,
     headers,
     normalizeNonNegativeInt(remoteDocument.field_row_index, Math.max(0, dataStartRow - 1)),
@@ -13221,6 +13401,10 @@ function clearSheetOverlayAlignmentFrame() {
   }
   sheetOverlayAlignmentFrame = null
   sheetOverlayAlignmentPending = false
+  if (sheetOverlayScrollSyncFrame != null && typeof window !== 'undefined') {
+    window.cancelAnimationFrame(sheetOverlayScrollSyncFrame)
+  }
+  sheetOverlayScrollSyncFrame = null
 }
 
 function syncSheetOverlayScrollFromMaster() {
@@ -13231,6 +13415,7 @@ function syncSheetOverlayScrollFromMaster() {
   }
 
   const { scrollLeft, scrollTop } = masterHolder
+  const masterClientHeight = masterHolder.clientHeight
   sheetFrame.querySelectorAll<HTMLElement>('.ht_clone_top .wtHolder, .ht_clone_bottom .wtHolder')
     .forEach((holder) => {
       if (holder.scrollLeft !== scrollLeft) {
@@ -13239,10 +13424,28 @@ function syncSheetOverlayScrollFromMaster() {
     })
   sheetFrame.querySelectorAll<HTMLElement>('.ht_clone_inline_start .wtHolder, .ht_clone_left .wtHolder')
     .forEach((holder) => {
+      if (masterClientHeight > 0 && holder.clientHeight !== masterClientHeight) {
+        holder.style.height = `${masterClientHeight}px`
+        holder.style.maxHeight = `${masterClientHeight}px`
+      }
       if (holder.scrollTop !== scrollTop) {
         holder.scrollTop = scrollTop
       }
     })
+}
+
+function scheduleSheetOverlayScrollSyncFromMaster() {
+  if (typeof window === 'undefined') {
+    syncSheetOverlayScrollFromMaster()
+    return
+  }
+  if (sheetOverlayScrollSyncFrame != null) {
+    window.cancelAnimationFrame(sheetOverlayScrollSyncFrame)
+  }
+  sheetOverlayScrollSyncFrame = window.requestAnimationFrame(() => {
+    sheetOverlayScrollSyncFrame = null
+    syncSheetOverlayScrollFromMaster()
+  })
 }
 
 function refreshSheetOverlayAlignment() {
@@ -13265,6 +13468,7 @@ function refreshSheetOverlayAlignment() {
     walkontable?.draw?.(true)
     walkontable?.selectionManager?.refreshAllBorderHandleStyles?.()
     syncSheetOverlayScrollFromMaster()
+    scheduleSheetOverlayScrollSyncFromMaster()
   } catch (error) {
     console.warn('Failed to align note sheet overlays:', error)
   }
@@ -14796,7 +15000,16 @@ function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, he
     return
   }
 
-  const style = nestedHeaderStyleRows.value[headerLevel]?.[column]
+  if (isRegistrationStandardUserIdHeaderColumn(column, headerLevel)) {
+    th.style.setProperty('background-color', REGISTRATION_STANDARD_USER_ID_HEADER_BACKGROUND, 'important')
+    th.style.setProperty('font-weight', '600')
+    return
+  }
+
+  const baseStyle = nestedHeaderStyleRows.value[headerLevel]?.[column] ?? null
+  const style = headerLevel === columnHeaderLevel.value
+    ? resolveGridFieldHeaderStyle(column, baseStyle)
+    : baseStyle
   if (!style) {
     return
   }
@@ -14897,6 +15110,8 @@ function renderFieldHeaderCell(TD: HTMLTableCellElement, column: number) {
     const note = getColumnNote(column)
     const headerLink = getCellLinkAt(getDocumentGridRowIndex(columnHeaderLevel.value), column) ?? getColumnHeaderLink(column)
     if (headerLink) {
+      TD.classList.add('sheet-cell-has-link')
+      TD.dataset.hyperlinkUrl = headerLink.url
       titleEl.classList.add('has-link')
       titleEl.dataset.hyperlinkUrl = headerLink.url
     }
@@ -15062,8 +15277,8 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   if (row === columnHeaderLevel.value) {
     TD.classList.add('sheet-grid-field-header-cell')
     TD.classList.toggle('sheet-grid-field-header-cell-filtered', isColumnFilterActive(column))
-    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
     applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
     renderFieldHeaderCell(TD, column)
     return
   }
@@ -15576,25 +15791,25 @@ function loadSheetDocument(document: SheetDocument, sourceDocument?: unknown) {
   const hot = getHotInstance()
   if (hot) {
     const nextHotGridRows = sheetHotGridRows.value
-    hot.updateSettings({
-      data: nextHotGridRows,
-      colHeaders: sheetColumnHeaders.value,
-      colWidths: [...sheetHotColumnWidths.value],
-      rowHeaders: false,
-      fixedRowsTop: sheetHeaderRowCount.value,
-      fixedColumnsStart: fixedHotColumnsStart.value,
-      hiddenColumns: {
-        columns: [...hotHiddenColumnIndexes.value],
-        indicators: false,
-      },
-      hiddenRows: {
-        rows: [...sheetFilterHiddenRows.value],
-        indicators: false,
-      },
-      ...getCurrentSheetHotRenderSettings(),
+    hot.batchRender(() => {
+      hot.updateSettings({
+        colHeaders: sheetColumnHeaders.value,
+        colWidths: [...sheetHotColumnWidths.value],
+        rowHeaders: false,
+        fixedRowsTop: sheetHeaderRowCount.value,
+        fixedColumnsStart: fixedHotColumnsStart.value,
+        hiddenColumns: {
+          columns: [...hotHiddenColumnIndexes.value],
+          indicators: false,
+        },
+        hiddenRows: {
+          rows: [...sheetFilterHiddenRows.value],
+          indicators: false,
+        },
+        ...getCurrentSheetHotRenderSettings(),
+      })
+      hot.loadData(nextHotGridRows)
     })
-    hot.loadData(nextHotGridRows)
-    hot.render()
     void refreshComputedRowHeights()
   }
 }
@@ -15776,7 +15991,10 @@ function buildClientPagedSheetDetail(detail: NoteSheetDetail): NoteSheetDetail {
   }
 }
 
-function applyRemoteSheetDetail(detail: NoteSheetDetail) {
+function applyRemoteSheetDetail(
+  detail: NoteSheetDetail,
+  options?: { applyInitialWorkspaceView?: boolean },
+) {
   const effectiveDetail = buildClientPagedSheetDetail(detail)
   suppressPersistence = true
   try {
@@ -15795,7 +16013,9 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
-    restoreSheetWorkspaceViewFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage({
+      applyInitialWorkspaceView: options?.applyInitialWorkspaceView === true,
+    })
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -16168,6 +16388,78 @@ async function handleSelectedColumnSort(direction: SortDirection) {
   }
 
   await sortColumn(columnIndex, direction)
+}
+
+function getRegistrationUserIdColumnIndex() {
+  return columnHeaders.value.findIndex((header) => normalizeCellValue(header).trim() === '用户ID')
+}
+
+function isLikelyRegistrationSheetForUserIdDetection() {
+  const headers = new Set(columnHeaders.value.map((header) => normalizeCellValue(header).trim()).filter(Boolean))
+  return (
+    headers.has('用户ID')
+    && headers.has('参考信息')
+    && headers.has('姓名')
+    && (headers.has('手机号') || headers.has('错误手机号'))
+  )
+}
+
+function getSelectedRegistrationUserIdDetectionCell() {
+  if (!isLikelyRegistrationSheetForUserIdDetection()) {
+    return null
+  }
+  const cell = getSingleSelectedDataCell()
+  const userIdColumnIndex = getRegistrationUserIdColumnIndex()
+  if (!cell || userIdColumnIndex < 0 || cell.column !== userIdColumnIndex) {
+    return null
+  }
+  return cell
+}
+
+function canDetectRegistrationUserIdFromSelection() {
+  return !!getSelectedRegistrationUserIdDetectionCell()
+}
+
+async function handleDetectRegistrationUserIdFromSelection() {
+  if (props.sheetId == null || workspaceLoading.value) {
+    return
+  }
+  if (!ensureCanRunSheetActions()) {
+    return
+  }
+  if (!ensureCanEditData()) {
+    return
+  }
+  const cell = getSelectedRegistrationUserIdDetectionCell()
+  if (!cell) {
+    return
+  }
+
+  workspaceLoading.value = true
+  try {
+    const scrollPosition = captureSheetScrollPosition()
+    await flushRemoteSave()
+    const result = await detectNoteSheetRegistrationUserId(props.sheetId, {
+      row_index: cell.documentRow,
+    }, {
+      workbookId: props.workbookId,
+    })
+    applyRemoteSheetDetail(result.sheet)
+    await updateSheetViewportHeight()
+    restoreSheetScrollPosition(scrollPosition)
+    if (result.applied) {
+      ElMessage.success(result.message || '已检测并更新用户ID')
+    } else if (result.status === 'review') {
+      ElMessage.warning(result.message || '已写入参考信息，请人工确认')
+    } else {
+      ElMessage.info(result.message || '未自动更新用户ID')
+    }
+  } catch (error) {
+    console.warn('Failed to detect registration user id', error)
+    ElMessage.error('检测用户ID失败')
+  } finally {
+    workspaceLoading.value = false
+  }
 }
 
 function getAttendanceCourseTypeColumnIndex() {
@@ -16999,6 +17291,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       ? Number(remote.parent_workbook_id)
       : requestWorkbookId
     await syncDefinedNamesForRestoreRequest(requestSeq, requestSheetId, requestWorkbookId, definedNamesWorkbookId)
+    trace?.mark('defined-names')
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
@@ -17009,7 +17302,9 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     sheetLoadErrorText.value = ''
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
-    restoreSheetWorkspaceViewFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage({
+      applyInitialWorkspaceView: options?.applyInitialWorkspaceView === true,
+    })
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -20553,6 +20848,13 @@ function getCellMetaAt(documentRow: number, columnIndex: number) {
 }
 
 function getCellLinkAt(documentRow: number, columnIndex: number) {
+  if (documentRow >= 0 && documentRow < sheetHeaderRowCount.value) {
+    const headerRow = sheetGridRows.value[documentRow]
+    const inlineLink = Array.isArray(headerRow) ? normalizeCellLink(headerRow[columnIndex]) : null
+    if (inlineLink) {
+      return inlineLink
+    }
+  }
   return getCellMetaAt(documentRow, columnIndex)?.link ?? null
 }
 
@@ -22964,6 +23266,10 @@ function updateRowDetailItemValue(item: SheetRowDetailItem, value: unknown) {
   item.value = nextValue
   item.empty = !nextValue.trim()
 
+  if (detail.mode === 'new_registration_student') {
+    return
+  }
+
   const hot = getHotInstance()
   const gridRow = getGridRowIndex(rowIndex)
   if (hot && gridRow >= sheetHeaderRowCount.value) {
@@ -23002,6 +23308,113 @@ function openRowDetailDialog(rowIndex: number) {
   }
   rowDetail.value = detail
   rowDetailDialogVisible.value = true
+}
+
+function buildNewRegistrationStudentRowDetail(targetDataIndex: number): SheetRowDetail {
+  const row = createEmptyRow(columnHeaders.value.length)
+  const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
+  const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
+  const submittedAtColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+  const now = new Date()
+  const groupValue = getRegistrationStudentGroupDefaultValue(targetDataIndex)
+  if (groupColumn >= 0 && groupValue) {
+    row[groupColumn] = groupValue
+  }
+  if (submittedAtColumn >= 0) {
+    row[submittedAtColumn] = createDefaultRegistrationSubmittedAtValue(now)
+    applyRegistrationTrackingValuesToRow(row, row[submittedAtColumn], now)
+  }
+  if (sequenceColumn >= 0) {
+    row[sequenceColumn] = normalizeCellInputValueForColumn(
+      getNextRegistrationSequenceValue(-1, groupValue),
+      sequenceColumn,
+    )
+  }
+
+  const items = columnHeaders.value
+    .map((header, columnIndex): SheetRowDetailItem | null => {
+      if (columnConfigs.value[header]?.hidden === true) {
+        return null
+      }
+
+      const rawValue = row[columnIndex] ?? ''
+      const value = normalizeCellValue(rawValue)
+      return {
+        columnIndex,
+        marker: getColumnMarkerLabel(columnIndex),
+        label: header || createFallbackHeader(columnIndex),
+        rawValue,
+        value,
+        empty: !value.trim(),
+        editable: canEditDataColumn(columnIndex),
+        valueStyle: null,
+        link: null,
+      }
+    })
+    .filter((item): item is SheetRowDetailItem => !!item)
+
+  return {
+    rowIndex: -1,
+    rowLabel: '',
+    items,
+    mode: 'new_registration_student',
+    insertIndex: targetDataIndex,
+  }
+}
+
+function openNewRegistrationStudentDialog(targetDataIndex: number) {
+  rowDetail.value = buildNewRegistrationStudentRowDetail(targetDataIndex)
+  rowDetailDialogVisible.value = true
+}
+
+function confirmNewRegistrationStudentRow() {
+  const detail = rowDetail.value
+  if (detail?.mode !== 'new_registration_student') {
+    return
+  }
+  if (!ensureCanEditData()) {
+    return
+  }
+
+  const hot = getHotInstance()
+  const targetDataIndex = Math.max(0, Math.min(detail.insertIndex ?? rows.value.length, rows.value.length))
+  const nextRow = createEmptyRow(columnHeaders.value.length)
+  for (const item of detail.items) {
+    if (item.columnIndex < 0 || item.columnIndex >= nextRow.length) {
+      continue
+    }
+    nextRow[item.columnIndex] = normalizeCellInputValueForColumn(normalizeCellValue(item.rawValue), item.columnIndex)
+  }
+
+  const templateDataIndex = targetDataIndex > 0
+    ? targetDataIndex - 1
+    : (rows.value.length > 0 ? 0 : -1)
+  pushLocalUndoSnapshot('registration-add-student')
+
+  if (hot) {
+    pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
+    try {
+      hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
+    } finally {
+      pendingRowInsertionTemplate = null
+    }
+
+    const gridRow = getGridRowIndex(targetDataIndex)
+    nextRow.forEach((value, columnIndex) => {
+      hot.setDataAtCell(gridRow, toHotColumnIndex(columnIndex), value, 'registration-add-student')
+    })
+  } else {
+    const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+    nextRows.splice(targetDataIndex, 0, nextRow)
+    rows.value = nextRows
+    scheduleRemoteSave()
+  }
+
+  rowDetailDialogVisible.value = false
+  rowDetail.value = null
+  void nextTick(() => {
+    selectRowFromMarker(getGridRowIndex(targetDataIndex))
+  })
 }
 
 function openSelectedRowDetailDialog() {
@@ -23340,14 +23753,18 @@ function isArchivedRegistrationRowForInsert(row: SheetRow, now = new Date()) {
 }
 
 function getRegistrationStudentInsertDataIndex() {
+  if (!isNianzhuChuangguanWorkbook.value) {
+    return rows.value.length
+  }
+
   const now = new Date()
   const archivedIndex = rows.value.findIndex((row) => isArchivedRegistrationRowForInsert(row, now))
   return archivedIndex >= 0 ? archivedIndex : rows.value.length
 }
 
-function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
+function getRegistrationStudentGroupDefaultValue(targetDataIndex: number) {
   const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
-  if (groupColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
+  if (groupColumn < 0 || targetDataIndex < 0) {
     return ''
   }
 
@@ -23367,7 +23784,20 @@ function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
     return ''
   }
 
-  const nextValue = normalizeCellInputValueForColumn(groupValue, groupColumn)
+  return normalizeCellInputValueForColumn(groupValue, groupColumn)
+}
+
+function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
+  const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
+  if (groupColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
+    return ''
+  }
+
+  const nextValue = getRegistrationStudentGroupDefaultValue(targetDataIndex)
+  if (!nextValue) {
+    return ''
+  }
+
   const hot = getHotInstance()
   const gridRow = getGridRowIndex(targetDataIndex)
   if (hot && gridRow >= sheetHeaderRowCount.value) {
@@ -23568,29 +23998,8 @@ function addRegistrationStudentRow() {
     return
   }
 
-  const hot = getHotInstance()
-  if (!hot) {
-    return
-  }
-
   const targetDataIndex = getRegistrationStudentInsertDataIndex()
-  const templateDataIndex = targetDataIndex > 0
-    ? targetDataIndex - 1
-    : (rows.value.length > 0 ? 0 : -1)
-  pushLocalUndoSnapshot('row-insert')
-  pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
-  try {
-    hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
-  } finally {
-    pendingRowInsertionTemplate = null
-  }
-
-  const groupValue = applyRegistrationStudentGroupDefault(targetDataIndex)
-  applyRegistrationStudentSequenceDefault(targetDataIndex, groupValue)
-  void nextTick(() => {
-    selectRowFromMarker(getGridRowIndex(targetDataIndex))
-    openRowDetailDialog(targetDataIndex)
-  })
+  openNewRegistrationStudentDialog(targetDataIndex)
 }
 
 function removeSelectedColumns() {
@@ -24185,6 +24594,7 @@ function handleAfterScrollHorizontally() {
   })
   scheduleRichTextInlineToolbarSync()
   scheduleInlineEditorCellStyleSync()
+  scheduleSheetOverlayAlignment()
   updateRichTextContentEditorPosition()
 }
 
@@ -24197,6 +24607,7 @@ function handleAfterScrollVertically() {
   })
   scheduleRichTextInlineToolbarSync()
   scheduleInlineEditorCellStyleSync()
+  scheduleSheetOverlayAlignment()
   updateRichTextContentEditorPosition()
 }
 
@@ -24577,6 +24988,7 @@ watch(
       preserveContent: sheetContentReady.value,
       clearOnError: true,
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+      applyInitialWorkspaceView: true,
     }).finally(() => {
       void updateSheetViewportHeight()
     })
@@ -24614,6 +25026,7 @@ watch(
       preserveContent: sheetContentReady.value,
       clearOnError: true,
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+      applyInitialWorkspaceView: true,
     }).finally(() => {
       void updateSheetViewportHeight()
     })
@@ -24626,7 +25039,9 @@ watch(
     if (nextView === previousView || !sheetContentReady.value) {
       return
     }
-    restoreSheetWorkspaceViewFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage({
+      applyInitialWorkspaceView: true,
+    })
   },
 )
 
@@ -24790,6 +25205,7 @@ onMounted(() => {
   if (props.sheetId != null) {
     void restoreInitialDocument({
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+      applyInitialWorkspaceView: true,
     }).finally(() => {
       void updateSheetViewportHeight()
     })
@@ -25153,6 +25569,7 @@ defineExpose({
         :auto-row-size="false"
         :auto-wrap-row="false"
         :auto-wrap-col="false"
+        :render-all-columns="rowMarkerColumnCount > 0"
         :min-spare-rows="0"
         :render-all-rows="false"
         :height="sheetGridHeight"
@@ -25409,6 +25826,10 @@ defineExpose({
           </div>
         </div>
       </div>
+      <template v-if="rowDetail?.mode === 'new_registration_student'" #footer>
+        <el-button @click="rowDetailDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmNewRegistrationStudentRow">确认新增</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog

@@ -40,6 +40,13 @@ from backend.core.attendance_service import (
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
 )
+from backend.core.attendance_progress_style import (
+    highlight_presence_progress,
+    highlight_text_refund_progress,
+    highlight_threshold_refund_progress,
+    parse_compact_refund_rules,
+    parse_threshold_refund_rules,
+)
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import ensure_feature_access
 from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
@@ -107,10 +114,21 @@ NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
 NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
 NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN = "提交时间"
 NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN = "关联用户ID"
+NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND = "#9DC3E6"
+NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE = (
+    "有的用户账号数据源不统一，这里可以逗号隔开填写其他相关id，会合并到主id数据中汇总进度"
+)
 NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN = "追踪分组"
 NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN = "追踪状态"
 NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN = "追踪截止日"
 NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN = "冻结时间"
+NOTE_SHEET_TEMPLATE_RUNTIME_DERIVED_COLUMNS = {
+    "规则版本",
+    NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
+    NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN,
+}
 NOTE_SHEET_REGISTRATION_FROZEN_GROUP = "A组"
 NOTE_SHEET_REGISTRATION_FROZEN_STATUS = "已冻结"
 NOTE_SHEET_REGISTRATION_ACTIVE_GROUP = "B组"
@@ -190,6 +208,9 @@ NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_BACKGROUND_COLORS = [
     "#F4CCCC",
     "#EADCF8",
 ]
+NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_STUDYING_BACKGROUND = "#FFFFBB"
+NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND = "#80FF80"
+NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND = "#D9D9D9"
 NOTE_SHEET_ATTENDANCE_GROUP_IDENTITY_END_COLUMNS = (
     "禅客",
     "优秀学员评分",
@@ -526,6 +547,7 @@ class NoteSheetExcelImportResponse(BaseModel):
     sheet: NoteSheetDetailResponse
     imported_count: int = 0
     preserved_row_count: int = 0
+    skipped_duplicate_count: int = 0
     extra_columns: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     mapping_notes: list[str] = Field(default_factory=list)
@@ -569,6 +591,31 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
     message: str = ""
     error_message: str | None = None
     sheet: NoteSheetDetailResponse | None = None
+
+
+class NoteSheetRegistrationUserIdDetectionRequest(BaseModel):
+    row_index: int = Field(ge=0)
+
+
+class NoteSheetRegistrationUserIdDetectionCandidate(BaseModel):
+    user_id: str
+    video_count: int = 0
+    clockin_count: int = 0
+    evidence: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "low"
+
+
+class NoteSheetRegistrationUserIdDetectionResponse(BaseModel):
+    sheet: NoteSheetDetailResponse
+    attendance_sheet: NoteSheetDetailResponse | None = None
+    status: Literal["applied", "review", "skipped", "error"]
+    applied: bool = False
+    message: str = ""
+    target_user_id: str = ""
+    applied_to: Literal["用户ID", "关联用户ID", ""] = ""
+    candidates: list[NoteSheetRegistrationUserIdDetectionCandidate] = Field(default_factory=list)
+    rebuild_summary: dict[str, Any] | None = None
+    error_message: str | None = None
 
 
 class NoteSheetClockinLinkDetectionRunRequest(BaseModel):
@@ -868,6 +915,62 @@ def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return _create_default_sheet_document()
     return _canonicalize_sheet_document_links(dict(value), migrate_legacy_links=True)
+
+
+def _apply_registration_standard_user_id_column_styles(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    target_indexes = [
+        index
+        for index, header in enumerate(columns)
+        if header in {"用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN}
+    ]
+    if not target_indexes:
+        return normalized, False
+
+    next_document = dict(normalized)
+    changed = False
+
+    column_configs = dict(next_document.get("column_configs")) if isinstance(next_document.get("column_configs"), dict) else {}
+    for header in ("用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN):
+        if header not in columns:
+            continue
+        config = dict(column_configs.get(header)) if isinstance(column_configs.get(header), dict) else {}
+        previous_config = dict(config)
+        config["header_background_color"] = NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND
+        config.setdefault("font_family", "monospace")
+        config.setdefault("width_mode", "fixed")
+        if header == "用户ID":
+            config.setdefault("duplicate_value_highlight", True)
+        if header == NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN:
+            config.setdefault("note", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_NOTE)
+        if config != previous_config:
+            changed = True
+        column_configs[header] = config
+    next_document["column_configs"] = column_configs
+
+    field_row_index = normalized.get("field_row_index")
+    header_rows = [0] if not isinstance(field_row_index, int) else [field_row_index]
+    if isinstance(field_row_index, int) and field_row_index > 0:
+        header_rows.insert(0, 0)
+
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    for row_index in header_rows:
+        if row_index < 0:
+            continue
+        for column_index in target_indexes:
+            key = f"{row_index}:{column_index}"
+            meta = dict(cell_meta.get(key)) if isinstance(cell_meta.get(key), dict) else {}
+            style = dict(meta.get("style")) if isinstance(meta.get("style"), dict) else {}
+            previous_style = dict(style)
+            style["background_color"] = NOTE_SHEET_REGISTRATION_STANDARD_HEADER_BACKGROUND
+            meta["style"] = style
+            if not cell_meta.get(key) or style != previous_style:
+                changed = True
+            cell_meta[key] = meta
+    next_document["cell_meta"] = cell_meta
+
+    return next_document, changed
 
 
 def _canonicalize_sheet_document_links(
@@ -1234,6 +1337,10 @@ def _extract_document_rows(document_json: dict[str, Any]) -> list[Any]:
 
 def _get_document_pagination_settings(document_json: dict[str, Any]) -> tuple[bool, int]:
     normalized = _normalize_document_json(document_json)
+    return _get_normalized_document_pagination_settings(normalized)
+
+
+def _get_normalized_document_pagination_settings(normalized: dict[str, Any]) -> tuple[bool, int]:
     view_settings = normalized.get("view_settings")
     if not isinstance(view_settings, dict):
         return False, DEFAULT_NOTE_SHEET_PAGE_SIZE
@@ -1273,7 +1380,12 @@ def _sync_attendance_questionnaire_entry_statuses(
     return _sync_attendance_wjx_entries_from_sheet_document(session, document_json)
 
 
-def _sync_attendance_questionnaire_sheet_document(session: Session, document: SheetDocument) -> None:
+def _sync_attendance_questionnaire_sheet_document(
+    session: Session,
+    document: SheetDocument,
+    *,
+    sync_entry_statuses: bool = False,
+) -> None:
     if not _is_attendance_questionnaire_data_sheet(document):
         return
 
@@ -1290,7 +1402,8 @@ def _sync_attendance_questionnaire_sheet_document(session: Session, document: Sh
         session.refresh(document)
         next_document = dict(document.document_json or {})
 
-    _sync_attendance_questionnaire_entry_statuses(session, next_document)
+    if sync_entry_statuses:
+        _sync_attendance_questionnaire_entry_statuses(session, next_document)
 
 
 def _build_paged_document(
@@ -1298,8 +1411,9 @@ def _build_paged_document(
     *,
     page: int,
     page_size: int,
+    assume_normalized: bool = False,
 ) -> tuple[dict[str, Any], NoteSheetPaginationResponse]:
-    normalized = _normalize_document_json(document_json)
+    normalized = document_json if assume_normalized else _normalize_document_json(document_json)
     all_rows = _extract_document_rows(normalized)
     safe_page_size = _normalize_page_size(page_size)
     actual_page_count = max(1, ceil(len(all_rows) / safe_page_size) if all_rows else 1)
@@ -1774,8 +1888,9 @@ def _build_filtered_paged_document(
     page_size: int,
     column_filters: dict[str, Any],
     row_filter_programs: list[dict[str, Any]],
+    assume_normalized: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    normalized = _normalize_document_json(document_json)
+    normalized = document_json if assume_normalized else _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     column_configs = normalized.get("column_configs")
     column_configs = column_configs if isinstance(column_configs, dict) else {}
@@ -3800,6 +3915,39 @@ def _coerce_registration_import_rows(
     )
 
 
+def _filter_duplicate_excel_import_payment_order_rows(
+    document_json: dict[str, Any],
+    import_rows: list[list[Any]],
+    columns: list[str],
+) -> tuple[list[list[Any]], int]:
+    order_index = _get_column_index(columns, "微信支付订单号")
+    if order_index < 0 or not import_rows:
+        return import_rows, 0
+
+    existing_order_ids = {
+        order_id
+        for row in (
+            _normalize_sheet_row(raw_row, len(columns))
+            for raw_row in _extract_document_rows(_normalize_document_json(document_json))
+        )
+        if (order_id := _strip_legacy_text_prefix(row[order_index])) and order_id != "/"
+    }
+
+    filtered_rows: list[list[Any]] = []
+    skipped_count = 0
+    for raw_row in import_rows:
+        row = _normalize_sheet_row(raw_row, len(columns))
+        order_id = _strip_legacy_text_prefix(row[order_index])
+        if order_id and order_id != "/":
+            if order_id in existing_order_ids:
+                skipped_count += 1
+                continue
+            existing_order_ids.add(order_id)
+        filtered_rows.append(row)
+
+    return filtered_rows, skipped_count
+
+
 def _repair_group_scoped_sequence_column_config(document_json: dict[str, Any], column_name: str) -> dict[str, Any]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -4963,6 +5111,290 @@ def _update_registration_user_match_document(
     )
 
 
+def _document_dict_rows_for_detection(document_json: dict[str, Any]) -> list[dict[str, Any]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def _ensure_registration_linked_user_id_column(document_json: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN in columns:
+        return normalized, columns.index(NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN)
+
+    if "参考信息" in columns:
+        insert_index = columns.index("参考信息") + 1
+    elif "匹配得分" in columns:
+        insert_index = columns.index("匹配得分") + 1
+    else:
+        insert_index = len(columns)
+    next_document = _insert_document_column(
+        normalized,
+        insert_index=insert_index,
+        header=NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN,
+        width=220,
+    )
+    next_document, _style_changed = _apply_registration_standard_user_id_column_styles(next_document)
+    next_columns = _normalize_document_columns(next_document)
+    return next_document, next_columns.index(NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN)
+
+
+def _candidate_progress_total(candidate: NoteSheetRegistrationUserIdDetectionCandidate) -> int:
+    return int(candidate.video_count or 0) + int(candidate.clockin_count or 0)
+
+
+def _normalize_detection_phone(value: Any) -> str:
+    text = re.sub(r"\D+", "", _strip_legacy_text_prefix(value))
+    return text if len(text) >= 7 else ""
+
+
+def _normalize_detection_label(value: Any) -> str:
+    return re.sub(r"[\s_\-—－]+", "", _normalize_sheet_text(value)).lower()
+
+
+def _registration_detection_student_label_variants(value: Any) -> set[str]:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return set()
+    variants = {text, text.replace("_", "-"), text.replace("-", "_"), text.replace("_", ""), text.replace("-", "")}
+    compact = _normalize_detection_label(text)
+    if compact:
+        variants.add(compact)
+    return {item for item in variants if item}
+
+
+def _append_registration_detection_note(row: list[Any], indexes: dict[str, int], message: str) -> None:
+    index = indexes.get("参考信息")
+    if index is None:
+        return
+    current = _normalize_sheet_text(row[index])
+    lines = [line for line in current.splitlines() if not line.startswith("检测用户ID：")]
+    lines.append(f"检测用户ID：{message}")
+    row[index] = "\n".join(line for line in lines if line).strip()
+
+
+def _collect_registration_course_user_progress(
+    video_document: dict[str, Any] | None,
+    clockin_document: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    progress: dict[str, dict[str, Any]] = {}
+
+    def ensure(user_id: str) -> dict[str, Any]:
+        item = progress.setdefault(user_id, {"video_count": 0, "clockin_count": 0, "labels": set()})
+        return item
+
+    for row in _document_dict_rows_for_detection(video_document or {}):
+        user_id = _normalize_sheet_text(row.get("user_id2") or row.get("用户ID") or row.get("user_id"))
+        if not user_id:
+            continue
+        item = ensure(user_id)
+        item["video_count"] = int(item.get("video_count") or 0) + 1
+        for key in ("remark_nm", "nickname", "用户昵称", "姓名", "微信昵称"):
+            label = _normalize_sheet_text(row.get(key))
+            if label:
+                item["labels"].add(label)
+
+    for row in _document_dict_rows_for_detection(clockin_document or {}):
+        user_id = _normalize_sheet_text(row.get("user_id2") or row.get("用户ID") or row.get("user_id"))
+        if not user_id:
+            continue
+        item = ensure(user_id)
+        item["clockin_count"] = int(item.get("clockin_count") or 0) + 1
+        for key in ("nickname", "remark_nm", "groupname", "extra_姓名", "extra_打卡昵称", "姓名", "微信昵称"):
+            label = _normalize_sheet_text(row.get(key))
+            if label:
+                item["labels"].add(label)
+    return progress
+
+
+def _query_registration_detection_user_ids_by_phone(phone: str) -> list[str]:
+    if not phone:
+        return []
+    try:
+        kqdb = _load_attendance_kqdb_provider()()
+    except HTTPException:
+        raise
+    except Exception:
+        return []
+
+    sql = (
+        "SELECT user_id2, user_id, bind_phone, collect_phone "
+        "FROM user_table WHERE bind_phone = %s OR collect_phone = %s LIMIT 50"
+    )
+    records: list[dict[str, Any]]
+    try:
+        records = kqdb.exec2dict(sql, [phone, phone])
+    except Exception:
+        safe_phone = phone.replace("'", "''")
+        try:
+            records = kqdb.exec2dict(sql.replace("%s", f"'{safe_phone}'"))
+        except Exception:
+            return []
+    user_ids: list[str] = []
+    seen: set[str] = set()
+    for record in records or []:
+        user_id = _normalize_sheet_text(record.get("user_id2") or record.get("user_id"))
+        if user_id and user_id not in seen:
+            seen.add(user_id)
+            user_ids.append(user_id)
+    return user_ids
+
+
+def _make_registration_detection_candidate(
+    user_id: str,
+    progress: dict[str, dict[str, Any]],
+    *,
+    evidence: list[str],
+    confidence: Literal["high", "medium", "low"],
+) -> NoteSheetRegistrationUserIdDetectionCandidate | None:
+    user_progress = progress.get(user_id)
+    if not user_progress:
+        return None
+    video_count = int(user_progress.get("video_count") or 0)
+    clockin_count = int(user_progress.get("clockin_count") or 0)
+    if video_count + clockin_count <= 0:
+        return None
+    return NoteSheetRegistrationUserIdDetectionCandidate(
+        user_id=user_id,
+        video_count=video_count,
+        clockin_count=clockin_count,
+        evidence=evidence,
+        confidence=confidence,
+    )
+
+
+def _merge_registration_detection_candidates(
+    candidates: list[NoteSheetRegistrationUserIdDetectionCandidate],
+) -> list[NoteSheetRegistrationUserIdDetectionCandidate]:
+    by_user_id: dict[str, NoteSheetRegistrationUserIdDetectionCandidate] = {}
+    rank = {"low": 0, "medium": 1, "high": 2}
+    for candidate in candidates:
+        existing = by_user_id.get(candidate.user_id)
+        if existing is None:
+            by_user_id[candidate.user_id] = candidate
+            continue
+        existing.video_count = max(existing.video_count, candidate.video_count)
+        existing.clockin_count = max(existing.clockin_count, candidate.clockin_count)
+        for evidence in candidate.evidence:
+            if evidence not in existing.evidence:
+                existing.evidence.append(evidence)
+        if rank[candidate.confidence] > rank[existing.confidence]:
+            existing.confidence = candidate.confidence
+    return sorted(
+        by_user_id.values(),
+        key=lambda item: (rank[item.confidence], _candidate_progress_total(item)),
+        reverse=True,
+    )
+
+
+def _build_registration_user_id_detection_candidates(
+    row_map: dict[str, Any],
+    progress: dict[str, dict[str, Any]],
+) -> list[NoteSheetRegistrationUserIdDetectionCandidate]:
+    candidates: list[NoteSheetRegistrationUserIdDetectionCandidate] = []
+    phones = [
+        ("手机号", _normalize_detection_phone(row_map.get("手机号"))),
+        ("错误手机号", _normalize_detection_phone(row_map.get("错误手机号"))),
+    ]
+    for field, phone in phones:
+        if not phone:
+            continue
+        for user_id in _query_registration_detection_user_ids_by_phone(phone):
+            candidate = _make_registration_detection_candidate(
+                user_id,
+                progress,
+                evidence=[f"{field}命中 {phone}"],
+                confidence="high",
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+
+    student_variants = _registration_detection_student_label_variants(
+        row_map.get(NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN) or row_map.get("学号")
+    )
+    if student_variants:
+        normalized_variants = {_normalize_detection_label(variant) for variant in student_variants}
+        for user_id, item in progress.items():
+            labels = {_normalize_detection_label(label) for label in item.get("labels") or []}
+            if labels and any(
+                variant and any(variant in label for label in labels)
+                for variant in normalized_variants
+            ):
+                candidate = _make_registration_detection_candidate(
+                    user_id,
+                    progress,
+                    evidence=["课程数据昵称/备注命中学号"],
+                    confidence="high",
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+
+    identity_labels = {
+        _normalize_detection_label(row_map.get("姓名")),
+        _normalize_detection_label(row_map.get("微信昵称")),
+        _normalize_detection_label(row_map.get("昵称")),
+    }
+    identity_labels.discard("")
+    if identity_labels:
+        for user_id, item in progress.items():
+            labels = {_normalize_detection_label(label) for label in item.get("labels") or []}
+            if labels.intersection(identity_labels):
+                candidate = _make_registration_detection_candidate(
+                    user_id,
+                    progress,
+                    evidence=["课程数据姓名/昵称命中"],
+                    confidence="medium",
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+    return _merge_registration_detection_candidates(candidates)
+
+
+def _format_registration_detection_candidate_summary(
+    candidates: list[NoteSheetRegistrationUserIdDetectionCandidate],
+    *,
+    limit: int = 3,
+) -> str:
+    parts: list[str] = []
+    for candidate in candidates[:limit]:
+        evidence = "、".join(candidate.evidence[:2])
+        parts.append(
+            f"{candidate.user_id}(视频{candidate.video_count}/打卡{candidate.clockin_count}"
+            f"/{candidate.confidence}{('，' + evidence) if evidence else ''})"
+        )
+    if len(candidates) > limit:
+        parts.append(f"另有{len(candidates) - limit}个")
+    return "；".join(parts)
+
+
+def _rebuild_registration_attendance_after_user_id_detection(
+    session: Session,
+    *,
+    attendance: SheetDocument,
+    course_name: str,
+) -> dict[str, Any]:
+    attendance_sheet_id = int(attendance.numeric_id or attendance.id)
+    course_text = _normalize_sheet_text(course_name)
+    if "梵呗" in course_text:
+        from backend.core.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
+
+        return rebuild_fanbei_attendance_from_course_sheets(
+            session,
+            attendance_sheet_id=attendance_sheet_id,
+        )
+
+    from backend.core.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
+
+    return rebuild_nianzhu_attendance_from_course_sheets(
+        session,
+        attendance_sheet_id=attendance_sheet_id,
+        active_only=True,
+        course_name=course_name,
+    )
+
+
 def _format_registration_attendance_submitted_at(value: Any) -> str:
     parsed = _parse_registration_submitted_at_datetime(value)
     if parsed is None:
@@ -5430,15 +5862,88 @@ def _set_document_entity_cell_value(
     return next_document
 
 
+def _normalize_attendance_current_refund_note(value: Any) -> str:
+    text = _normalize_sheet_text(value)
+    if not text or "返款" not in text:
+        return text
+    normalized = re.sub(
+        r"^\s*[^\r\n]*返款\s*[\r\n]+(?=\s*最近运行更新时间)",
+        "",
+        text,
+        count=1,
+    ).strip()
+    if normalized != text:
+        return normalized
+    if re.fullmatch(r"\s*[^\r\n]*返款\s*", text):
+        return ""
+    return text
+
+
+def _normalize_attendance_refund_config_row(
+    document_json: dict[str, Any],
+    columns: list[str],
+) -> tuple[dict[str, Any], int]:
+    grid_rows = _extract_document_grid_rows(document_json)
+    config_row_index = _normalize_document_data_start_row(document_json) - 1
+    period_display_index = _get_column_index(columns, "已返款")
+    order_amount_index = _get_column_index(columns, "订单金额")
+    current_refund_index = _get_column_index(columns, "当前应返款")
+    if not grid_rows or config_row_index < 0 or config_row_index >= len(grid_rows):
+        return document_json, 0
+
+    next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+    config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
+    config_changed_cells: list[int] = []
+    if period_display_index >= 0:
+        period_label_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"周"'
+        if not _normalize_sheet_text(config_row[period_display_index]):
+            config_row[period_display_index] = period_label_formula
+            config_changed_cells.append(period_display_index)
+    standard_amount = _find_attendance_standard_order_amount(
+        [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(document_json)],
+        columns,
+    )
+    if (
+        order_amount_index >= 0
+        and standard_amount
+        and (
+            not _normalize_sheet_text(config_row[order_amount_index])
+            or _is_formula_expression(config_row[order_amount_index])
+        )
+    ):
+        config_row[order_amount_index] = standard_amount
+        config_changed_cells.append(order_amount_index)
+    if current_refund_index >= 0:
+        current_refund_note = _normalize_attendance_current_refund_note(config_row[current_refund_index])
+        if current_refund_note != _normalize_sheet_text(config_row[current_refund_index]):
+            config_row[current_refund_index] = current_refund_note
+            config_changed_cells.append(current_refund_index)
+    if not config_changed_cells:
+        return document_json, 0
+
+    next_grid_rows[config_row_index] = config_row
+    next_document = dict(document_json)
+    next_document["grid_rows"] = next_grid_rows
+    for column_index in config_changed_cells:
+        next_document = _set_document_entity_cell_value(
+            next_document,
+            document_row=config_row_index,
+            column_index=column_index,
+            value=config_row[column_index],
+        )
+    return next_document, len(config_changed_cells)
+
+
 def _normalize_attendance_dual_clockin_refund_formulas(
     document_json: dict[str, Any],
 ) -> tuple[dict[str, Any], int]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
+    normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
     refund_index = _get_column_index(columns, "打卡应返款")
     total_index = _get_column_index(columns, "总应返款")
     if refund_index < 0 or _get_column_index(columns, "共学打卡") < 0 or _get_column_index(columns, "共修打卡") < 0:
-        return document_json, 0
+        return normalized, config_row_changed_count
 
     rows = [
         _normalize_sheet_row(row, len(columns))
@@ -5470,7 +5975,7 @@ def _normalize_attendance_dual_clockin_refund_formulas(
                 row[total_index] = next_total_formula
                 changed_formula_cells.append((row_index, total_index))
 
-    changed_count = 0
+    changed_count = config_row_changed_count
     next_document = normalized
     if changed_formula_cells:
         next_document = _replace_document_data_rows(next_document, rows)
@@ -5484,42 +5989,8 @@ def _normalize_attendance_dual_clockin_refund_formulas(
             )
         changed_count += len(changed_formula_cells)
 
-    grid_rows = _extract_document_grid_rows(next_document)
-    config_row_index = _normalize_document_data_start_row(next_document) - 1
-    period_display_index = _get_column_index(columns, "已返款")
-    order_amount_index = _get_column_index(columns, "订单金额")
-    if grid_rows and 0 <= config_row_index < len(grid_rows):
-        next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
-        config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
-        config_changed_cells: list[int] = []
-        if period_display_index >= 0:
-            period_label_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"周"'
-            if not _normalize_sheet_text(config_row[period_display_index]):
-                config_row[period_display_index] = period_label_formula
-                config_changed_cells.append(period_display_index)
-        standard_amount = _find_attendance_standard_order_amount(rows, columns)
-        if (
-            order_amount_index >= 0
-            and standard_amount
-            and (
-                not _normalize_sheet_text(config_row[order_amount_index])
-                or _is_formula_expression(config_row[order_amount_index])
-            )
-        ):
-            config_row[order_amount_index] = standard_amount
-            config_changed_cells.append(order_amount_index)
-        if config_changed_cells:
-            next_grid_rows[config_row_index] = config_row
-            next_document = dict(next_document)
-            next_document["grid_rows"] = next_grid_rows
-            for column_index in config_changed_cells:
-                next_document = _set_document_entity_cell_value(
-                    next_document,
-                    document_row=config_row_index,
-                    column_index=column_index,
-                    value=config_row[column_index],
-                )
-            changed_count += len(config_changed_cells)
+    next_document, next_config_row_changed_count = _normalize_attendance_refund_config_row(next_document, columns)
+    changed_count += next_config_row_changed_count
 
     if changed_count <= 0:
         return document_json, 0
@@ -5696,6 +6167,83 @@ def _set_entity_cell_style(
     return previous_style != next_cell["style"]
 
 
+def _set_entity_cell_background_optional(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    color: str | None,
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows) or column_index < 0 or column_index >= len(entity_columns):
+        return False
+
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return False
+
+    entity_cells = _extract_document_entity_cells(document_json)
+    row_cells = dict(entity_cells.get(row_id)) if isinstance(entity_cells.get(row_id), dict) else {}
+    previous_cell = row_cells.get(column_id)
+    next_cell = dict(previous_cell) if isinstance(previous_cell, dict) else {}
+    style = dict(next_cell.get("style")) if isinstance(next_cell.get("style"), dict) else {}
+    previous_color = style.get("background_color")
+
+    if color:
+        style["background_color"] = color
+    else:
+        style.pop("background_color", None)
+
+    if style:
+        next_cell["style"] = style
+    else:
+        next_cell.pop("style", None)
+
+    if next_cell:
+        row_cells[column_id] = next_cell
+    else:
+        row_cells.pop(column_id, None)
+
+    if row_cells:
+        entity_cells[row_id] = row_cells
+    else:
+        entity_cells.pop(row_id, None)
+    document_json["entity_cells"] = entity_cells
+    return previous_color != color
+
+
+def _set_cell_meta_background_optional(
+    cell_meta: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    color: str | None,
+) -> bool:
+    key = f"{document_row}:{column_index}"
+    previous_meta = cell_meta.get(key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    style = dict(next_meta.get("style")) if isinstance(next_meta.get("style"), dict) else {}
+    previous_color = style.get("background_color")
+
+    if color:
+        style["background_color"] = color
+    else:
+        style.pop("background_color", None)
+
+    if style:
+        next_meta["style"] = style
+    else:
+        next_meta.pop("style", None)
+
+    if next_meta:
+        cell_meta[key] = next_meta
+    else:
+        cell_meta.pop(key, None)
+    return previous_color != color
+
+
 def _remove_entity_cell_archived_style(
     document_json: dict[str, Any],
     *,
@@ -5849,6 +6397,225 @@ def _attendance_progress_style_column_range(columns: list[str]) -> tuple[int, in
             end_index = column_index
             break
     return start_index, end_index
+
+
+def _is_attendance_video_progress_column(header: str) -> bool:
+    return re.search(r"第\s*0*\d+\s*课", _normalize_sheet_text(header)) is not None
+
+
+def _attendance_video_refund_rules(document_json: dict[str, Any]) -> dict[str, int]:
+    def normalize_rules(raw_rules: Any) -> dict[str, int]:
+        if not isinstance(raw_rules, dict):
+            return {}
+        rules: dict[str, int] = {}
+        for key, value in raw_rules.items():
+            text_key = _normalize_sheet_text(key)
+            if not text_key:
+                continue
+            try:
+                amount = int(float(value))
+            except (TypeError, ValueError):
+                continue
+            rules[text_key] = amount
+        return rules
+
+    source_meta = document_json.get("source_meta") if isinstance(document_json.get("source_meta"), dict) else {}
+    raw_rules = source_meta.get("timed_video_rules") if isinstance(source_meta, dict) else None
+    rules = normalize_rules(raw_rules)
+    if rules:
+        return rules
+
+    columns = _normalize_document_columns(document_json)
+    video_refund_index = _get_column_index(columns, "视频应返款")
+    if video_refund_index < 0:
+        return {}
+
+    grid_rows = _extract_document_grid_rows(document_json)
+    data_start_row = _normalize_document_data_start_row(document_json)
+    candidates: list[Any] = []
+    if grid_rows:
+        for row in grid_rows[:data_start_row]:
+            if video_refund_index < len(row):
+                candidates.append(row[video_refund_index])
+
+    for row in _extract_document_rows(document_json):
+        if video_refund_index < len(row):
+            candidates.append(row[video_refund_index])
+
+    for candidate in candidates:
+        parsed_rules = parse_compact_refund_rules(candidate)
+        if parsed_rules:
+            return parsed_rules
+
+        text = _normalize_sheet_text(candidate)
+        formula_rules: dict[str, int] = {}
+        for key, amount in re.findall(r'"\*([^"*]+)\*"\)\s*\*\s*(\d+(?:\.\d+)?)', text):
+            text_key = _normalize_sheet_text(key)
+            if not text_key:
+                continue
+            formula_rules[text_key] = int(float(amount))
+        if formula_rules:
+            formula_rules.setdefault("回放", 0)
+            return formula_rules
+
+    return {}
+
+
+def _attendance_video_progress_background(value: Any, refund_rules: dict[str, int] | None = None) -> tuple[bool, str | None]:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return True, None
+    if re.search(r"学习中|^进度\s*\d+(?:\.\d+)?\s*%|^观看\s*\d+", text):
+        return True, None
+    if refund_rules and re.search(r"当堂完成|第\s*\d+\s*天回放|回放|已完成", text):
+        refund_amount, color = highlight_text_refund_progress(refund_rules, text)
+        if refund_amount <= 0 and color is None:
+            has_zero_refund_match = any(
+                key and amount <= 0 and key in text
+                for key, amount in refund_rules.items()
+            )
+            return True, NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND if has_zero_refund_match else None
+        return True, color
+    if re.search(r"\d+\s*遍", text):
+        return True, NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
+    if re.search(r"准时完成|当周完成", text):
+        return True, NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
+    if re.search(r"延\s*\d+\s*周完成|延迟完成", text):
+        return True, NOTE_SHEET_ATTENDANCE_VIDEO_ZERO_REFUND_BACKGROUND
+    if re.search(r"当堂完成|第\s*\d+\s*天回放|回放|已完成", text):
+        return True, highlight_presence_progress(text) or NOTE_SHEET_ATTENDANCE_VIDEO_PROGRESS_COMPLETED_BACKGROUND
+    return False, None
+
+
+def _is_attendance_clockin_count_column(header: str) -> bool:
+    return _normalize_sheet_text(header) in {"打卡数", "共学打卡", "共修打卡"}
+
+
+def _attendance_clockin_rules_by_column(document_json: dict[str, Any], columns: list[str]) -> dict[int, Any]:
+    grid_rows = _extract_document_grid_rows(document_json)
+    if not grid_rows:
+        return {}
+
+    data_start_row = _normalize_document_data_start_row(document_json)
+    header_rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in grid_rows[:data_start_row]
+    ]
+    if not header_rows:
+        return {}
+
+    rules_by_column: dict[int, Any] = {}
+    for column_index, header in enumerate(columns):
+        if not _is_attendance_clockin_count_column(header):
+            continue
+        candidates = [
+            row[column_index]
+            for row in header_rows
+            if column_index < len(row)
+        ]
+        for candidate in reversed(candidates):
+            rules = parse_threshold_refund_rules(candidate)
+            if rules:
+                rules_by_column[column_index] = rules
+                break
+    return rules_by_column
+
+
+def _attendance_clockin_count_background(value: Any, rules: Any) -> tuple[bool, str | None]:
+    text = _normalize_sheet_text(value)
+    if not text:
+        return True, None
+    if not rules:
+        return False, None
+    _refund_amount, color = highlight_threshold_refund_progress(rules, value)
+    return True, color
+
+
+def _apply_attendance_progress_backgrounds(
+    document_json: dict[str, Any],
+    *,
+    assume_normalized: bool = False,
+) -> tuple[dict[str, Any], int]:
+    normalized = document_json if assume_normalized else _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    video_column_indexes = [
+        index
+        for index, header in enumerate(columns)
+        if _is_attendance_video_progress_column(header)
+    ]
+    video_refund_rules = _attendance_video_refund_rules(normalized)
+    clockin_rules_by_column = _attendance_clockin_rules_by_column(normalized, columns)
+    if not video_column_indexes and not clockin_rules_by_column:
+        return document_json, 0
+
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    if not rows:
+        return document_json, 0
+
+    next_document = dict(normalized)
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    row_offset = _normalize_document_data_start_row(next_document) if _extract_document_grid_rows(next_document) else 0
+    changed_cells = 0
+
+    for row_index, row in enumerate(rows):
+        if _is_archived_attendance_row(row, columns):
+            continue
+        document_row = row_offset + row_index
+        for column_index, rules in clockin_rules_by_column.items():
+            recognized, color = _attendance_clockin_count_background(row[column_index], rules)
+            if not recognized:
+                continue
+            legacy_changed = _set_cell_meta_background_optional(
+                cell_meta,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            entity_changed = _set_entity_cell_background_optional(
+                next_document,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            if legacy_changed or entity_changed:
+                changed_cells += 1
+        for column_index in video_column_indexes:
+            recognized, color = _attendance_video_progress_background(row[column_index], video_refund_rules)
+            if not recognized:
+                continue
+            legacy_changed = _set_cell_meta_background_optional(
+                cell_meta,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            entity_changed = _set_entity_cell_background_optional(
+                next_document,
+                document_row=document_row,
+                column_index=column_index,
+                color=color,
+            )
+            if legacy_changed or entity_changed:
+                changed_cells += 1
+
+    next_document["cell_meta"] = cell_meta
+    return next_document, changed_cells
+
+
+def _apply_course_attendance_header_links_for_response(
+    session: Session,
+    document: SheetDocument,
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    try:
+        from backend.core.nianzhu_course_sheets import apply_course_attendance_header_links_for_response
+    except Exception:
+        return document_json, 0
+    return apply_course_attendance_header_links_for_response(
+        session,
+        attendance=document,
+        document_json=document_json,
+    )
 
 
 def _cell_meta_has_style(meta: Any) -> bool:
@@ -8362,7 +9129,11 @@ def _delete_document_column(
             normalized.get("header_groups"),
             delete_index,
         )
-    if isinstance(normalized.get("column_configs"), list):
+    if isinstance(normalized.get("column_configs"), dict):
+        configs = dict(normalized.get("column_configs") or {})
+        configs.pop(str(deleted_header), None)
+        next_document["column_configs"] = configs
+    elif isinstance(normalized.get("column_configs"), list):
         configs = list(normalized.get("column_configs") or [])
         next_document["column_configs"] = [*configs[:delete_index], *configs[delete_index + 1:]]
     entity_columns = normalized.get("entity_columns")
@@ -12455,6 +13226,62 @@ def _build_resource_access_response(
     )
 
 
+def _clear_template_document_data_area(document_json: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    next_document = dict(normalized)
+    next_document["rows"] = []
+
+    data_start_row = _normalize_document_data_start_row(normalized)
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        next_document["grid_rows"] = [*grid_rows[: min(data_start_row, len(grid_rows))]]
+
+    cell_meta = normalized.get("cell_meta")
+    if isinstance(cell_meta, dict):
+        next_cell_meta: dict[str, Any] = {}
+        for key, value in cell_meta.items():
+            position = _parse_cell_meta_key(key)
+            if position is None:
+                next_cell_meta[str(key)] = value
+                continue
+            row_index, _column_index = position
+            if row_index < data_start_row:
+                next_cell_meta[str(key)] = value
+        next_document["cell_meta"] = next_cell_meta
+
+    return next_document
+
+
+def _is_template_runtime_derived_column_context(columns: list[str]) -> bool:
+    if _is_registration_append_sheet(columns):
+        return True
+    column_set = set(columns)
+    if "用户ID" in column_set and (
+        "匹配得分" in column_set
+        or "参考信息" in column_set
+        or "报名日期" in column_set
+        or "订单金额" in column_set
+    ):
+        return True
+    return False
+
+
+def _clean_template_runtime_derived_columns(document_json: dict[str, Any]) -> dict[str, Any]:
+    next_document = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(next_document)
+    if not _is_template_runtime_derived_column_context(columns):
+        return next_document
+
+    for index in range(len(columns) - 1, -1, -1):
+        if columns[index] not in NOTE_SHEET_TEMPLATE_RUNTIME_DERIVED_COLUMNS:
+            continue
+        next_document = _delete_document_column(next_document, delete_index=index)
+        columns = _normalize_document_columns(next_document)
+
+    next_document, _changed = _apply_registration_standard_user_id_column_styles(next_document)
+    return next_document
+
+
 def _clone_sheet_document_json(
     document_json: dict[str, Any],
     *,
@@ -12462,7 +13289,8 @@ def _clone_sheet_document_json(
 ) -> dict[str, Any]:
     cloned = deepcopy(_normalize_document_json(document_json))
     if mode == "template":
-        cloned["rows"] = []
+        cloned = _clear_template_document_data_area(cloned)
+        cloned = _clean_template_runtime_derived_columns(cloned)
     return cloned
 
 
@@ -12722,7 +13550,10 @@ def get_note_sheet(
         include_workbook_context=include_workbook_context,
     )
     full_document = dict(document.document_json or {})
-    document_paginate_enabled, document_page_size = _get_document_pagination_settings(full_document)
+    full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
+    full_document = _normalize_document_json(full_document)
+    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
+    document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if paginate is None else paginate
 
     if effective_paginate:
@@ -12730,9 +13561,10 @@ def get_note_sheet(
             full_document,
             page=page,
             page_size=page_size if page_size is not None else document_page_size,
+            assume_normalized=True,
         )
     else:
-        page_document = _normalize_document_json(full_document)
+        page_document = full_document
         pagination = None
 
     return NoteSheetDetailResponse.model_validate(
@@ -12771,7 +13603,10 @@ def query_note_sheet(
         include_workbook_context=payload.include_workbook_context,
     )
     full_document = dict(document.document_json or {})
-    document_paginate_enabled, document_page_size = _get_document_pagination_settings(full_document)
+    full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
+    full_document = _normalize_document_json(full_document)
+    full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
+    document_paginate_enabled, document_page_size = _get_normalized_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
 
     if effective_paginate:
@@ -12781,9 +13616,10 @@ def query_note_sheet(
             page_size=payload.page_size if payload.page_size is not None else document_page_size,
             column_filters=payload.column_filters,
             row_filter_programs=payload.row_filter_programs,
+            assume_normalized=True,
         )
     else:
-        page_document = _normalize_document_json(full_document)
+        page_document = full_document
         pagination = None
 
     return _serialize_sheet_detail(
@@ -13249,13 +14085,25 @@ async def import_note_sheet_excel_reset(
             *mapping_notes,
             f"已按源 Excel 补正提交时间、商户订单号、订单金额等字段 {source_field_count} 行",
         ]
+    skipped_duplicate_count = 0
     if mode == "append":
-        next_document, preserved_row_count = _append_document_rows_for_excel_import(
-            current_document,
+        import_rows, skipped_duplicate_count = _filter_duplicate_excel_import_payment_order_rows(
+            effective_document,
             import_rows,
-            extra_columns=extra_columns,
+            effective_columns,
         )
-        imported_count = max(0, len(_extract_document_rows(next_document)) - len(_extract_document_rows(current_document)))
+        if import_rows:
+            next_document, preserved_row_count = _append_document_rows_for_excel_import(
+                current_document,
+                import_rows,
+                extra_columns=extra_columns,
+            )
+            imported_count = max(0, len(_extract_document_rows(next_document)) - len(_extract_document_rows(current_document)))
+        else:
+            next_document = current_document
+            preserved_row_count = len(_extract_document_rows(current_document))
+            imported_count = 0
+            extra_columns = []
     else:
         next_document, preserved_row_count = _replace_document_rows_for_excel_import(
             current_document,
@@ -13295,6 +14143,7 @@ async def import_note_sheet_excel_reset(
         sheet=detail,
         imported_count=imported_count,
         preserved_row_count=preserved_row_count,
+        skipped_duplicate_count=skipped_duplicate_count,
         extra_columns=extra_columns,
         warnings=warnings,
         mapping_notes=mapping_notes,
@@ -13521,6 +14370,291 @@ def update_note_sheet_registration_user_match(
         session=session,
         current_user=current_user,
         use_browser_fallback=use_browser_fallback,
+    )
+
+
+@router.post(
+    "/sheets/{sheet_id}/registration/detect-user-id",
+    response_model=NoteSheetRegistrationUserIdDetectionResponse,
+)
+def detect_note_sheet_registration_user_id(
+    sheet_id: int,
+    payload: NoteSheetRegistrationUserIdDetectionRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+    if workbook is None:
+        raise HTTPException(status_code=400, detail="检测用户ID需要在工作簿内执行")
+
+    attendance = _get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="attendance",
+        title="考勤表",
+    )
+    video_data = _get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="video_data",
+        title="视频数据",
+    )
+    clockin_data = _get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="clockin_data",
+        title="打卡数据",
+    )
+    if attendance is None or (video_data is None and clockin_data is None):
+        raise HTTPException(status_code=404, detail="当前工作簿缺少考勤表或课程数据表")
+
+    current_document = _normalize_document_json(dict(document.document_json or {}))
+    next_document, _linked_index = _ensure_registration_linked_user_id_column(current_document)
+    columns = _normalize_document_columns(next_document)
+    required_columns = ["用户ID", NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN]
+    missing_columns = [column for column in required_columns if column not in columns]
+    if missing_columns:
+        raise HTTPException(status_code=400, detail=f"报名表缺少字段：{', '.join(missing_columns)}")
+    indexes = {column: columns.index(column) for column in columns}
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(next_document)]
+    if payload.row_index >= len(rows):
+        raise HTTPException(status_code=400, detail="报名表行不存在")
+
+    target_row = list(rows[payload.row_index])
+    row_map = dict(zip(columns, target_row))
+    progress = _collect_registration_course_user_progress(
+        dict(video_data.document_json or {}) if video_data is not None else None,
+        dict(clockin_data.document_json or {}) if clockin_data is not None else None,
+    )
+
+    primary_user_id = _normalize_sheet_text(row_map.get("用户ID"))
+    linked_user_ids: list[str] = []
+    seen_linked_user_ids: set[str] = set()
+    for user_id in re.split(
+        r"[,，;；\s]+",
+        _normalize_sheet_text(row_map.get(NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN)),
+    ):
+        normalized_user_id = _normalize_sheet_text(user_id)
+        if normalized_user_id and normalized_user_id not in seen_linked_user_ids:
+            seen_linked_user_ids.add(normalized_user_id)
+            linked_user_ids.append(normalized_user_id)
+
+    primary_has_progress = bool(
+        primary_user_id
+        and int(progress.get(primary_user_id, {}).get("video_count") or 0)
+        + int(progress.get(primary_user_id, {}).get("clockin_count") or 0)
+        > 0
+    )
+    linked_progress_user_ids = [
+        user_id
+        for user_id in linked_user_ids
+        if int(progress.get(user_id, {}).get("video_count") or 0) + int(progress.get(user_id, {}).get("clockin_count") or 0) > 0
+    ]
+    if primary_has_progress and linked_progress_user_ids:
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"当前用户ID和关联用户ID均有课程数据，未改ID，已重建考勤表："
+            f"{primary_user_id};{';'.join(linked_progress_user_ids)}",
+        )
+        rows[payload.row_index] = target_row
+        next_document = _replace_document_data_rows(next_document, rows)
+        if next_document != current_document:
+            document.document_json = next_document
+            document.version = max(int(document.version or 1), 1) + 1
+            document.updated_by_user_id = current_user.id
+            document.updated_at = time.time()
+            session.add(document)
+        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
+            session,
+            attendance=attendance,
+            course_name=_get_registration_course_name(document, workbook),
+        )
+        attendance.updated_by_user_id = current_user.id
+        attendance.updated_at = time.time()
+        session.add(attendance)
+        session.commit()
+        session.refresh(document)
+        session.refresh(attendance)
+        return NoteSheetRegistrationUserIdDetectionResponse(
+            sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
+            attendance_sheet=None,
+            status="skipped",
+            message="当前用户ID和关联用户ID均有课程数据，未改ID，已重建考勤表",
+            rebuild_summary=rebuild_summary,
+        )
+
+    if len(linked_progress_user_ids) == 1:
+        target_user_id = linked_progress_user_ids[0]
+        user_id_index = indexes["用户ID"]
+        linked_index = indexes[NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN]
+        previous_user_id = _normalize_sheet_text(target_row[user_id_index])
+        target_row[user_id_index] = target_user_id
+        target_row[linked_index] = ";".join(user_id for user_id in linked_user_ids if user_id != target_user_id)
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"关联用户ID已有唯一课程数据，已提升为用户ID：{target_user_id}"
+            f"{f'；原用户ID：{previous_user_id}' if previous_user_id else ''}",
+        )
+        rows[payload.row_index] = target_row
+        next_document = _replace_document_data_rows(next_document, rows)
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
+            session,
+            attendance=attendance,
+            course_name=_get_registration_course_name(document, workbook),
+        )
+        attendance.updated_by_user_id = current_user.id
+        attendance.updated_at = time.time()
+        session.add(attendance)
+        session.commit()
+        session.refresh(document)
+        session.refresh(attendance)
+        return NoteSheetRegistrationUserIdDetectionResponse(
+            sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
+            attendance_sheet=None,
+            status="applied",
+            applied=True,
+            message="已将关联用户ID提升为用户ID并重建考勤表",
+            target_user_id=target_user_id,
+            applied_to="用户ID",
+            rebuild_summary=rebuild_summary,
+        )
+
+    candidates = _build_registration_user_id_detection_candidates(row_map, progress)
+    high_candidates = [candidate for candidate in candidates if candidate.confidence == "high"]
+    applied = False
+    applied_to: Literal["用户ID", "关联用户ID", ""] = ""
+    target_user_id = ""
+    status: Literal["applied", "review", "skipped", "error"] = "review"
+    message = ""
+    rebuild_summary: dict[str, Any] | None = None
+
+    if len(high_candidates) == 1:
+        candidate = high_candidates[0]
+        target_user_id = candidate.user_id
+        user_id_index = indexes["用户ID"]
+        linked_index = indexes[NOTE_SHEET_REGISTRATION_LINKED_USER_ID_COLUMN]
+        previous_user_id = _normalize_sheet_text(target_row[user_id_index])
+        if previous_user_id != target_user_id:
+            if primary_has_progress:
+                next_linked_user_ids = [
+                    user_id
+                    for user_id in linked_user_ids
+                    if user_id and user_id != previous_user_id and user_id != target_user_id
+                ]
+                next_linked_user_ids.append(target_user_id)
+                target_row[linked_index] = ";".join(dict.fromkeys(next_linked_user_ids))
+                applied_to = "关联用户ID"
+            else:
+                target_row[user_id_index] = target_user_id
+                target_row[linked_index] = ";".join(user_id for user_id in linked_user_ids if user_id != target_user_id)
+                applied_to = "用户ID"
+        else:
+            applied_to = ""
+
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"已按唯一高置信候选写入{applied_to or '现有ID'}：{target_user_id}；"
+            f"依据：{_format_registration_detection_candidate_summary([candidate])}"
+            f"{f'；原用户ID：{previous_user_id}' if applied_to and previous_user_id else ''}",
+        )
+        applied = bool(applied_to)
+        status = "applied"
+        message = f"已写入{applied_to or '现有ID'}并重建考勤表"
+    elif high_candidates:
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"发现多个高置信候选，未自动写入；请人工确认："
+            f"{_format_registration_detection_candidate_summary(high_candidates)}",
+        )
+        message = "发现多个高置信候选，已写入参考信息"
+    elif candidates:
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            f"仅找到姓名/昵称等中低置信候选，未自动写入；请人工确认："
+            f"{_format_registration_detection_candidate_summary(candidates)}",
+        )
+        message = "候选证据不够明确，已写入参考信息"
+    else:
+        _append_registration_detection_note(
+            target_row,
+            indexes,
+            "当前ID无课程数据，且未找到有课程数据的明确候选",
+        )
+        status = "skipped"
+        message = "未找到可用候选，已写入参考信息"
+
+    rows[payload.row_index] = target_row
+    next_document = _replace_document_data_rows(next_document, rows)
+    if next_document != current_document:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+
+    if applied:
+        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
+            session,
+            attendance=attendance,
+            course_name=_get_registration_course_name(document, workbook),
+        )
+        attendance.updated_by_user_id = current_user.id
+        attendance.updated_at = time.time()
+        session.add(attendance)
+
+    session.commit()
+    session.refresh(document)
+    if applied:
+        session.refresh(attendance)
+
+    attendance_sheet: NoteSheetDetailResponse | None = None
+    if applied:
+        try:
+            attendance_document, attendance_access, _ = _get_note_sheet_or_404(
+                session,
+                current_user,
+                int(attendance.numeric_id or attendance.id),
+                required_role="viewer",
+                workbook_id=workbook_id,
+            )
+            attendance_sheet = _serialize_note_sheet_action_detail(
+                session,
+                attendance_document,
+                attendance_access,
+                current_user,
+            )
+        except HTTPException:
+            attendance_sheet = None
+
+    return NoteSheetRegistrationUserIdDetectionResponse(
+        sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
+        attendance_sheet=attendance_sheet,
+        status=status,
+        applied=applied,
+        message=message,
+        target_user_id=target_user_id,
+        applied_to=applied_to,
+        candidates=candidates,
+        rebuild_summary=rebuild_summary,
     )
 
 

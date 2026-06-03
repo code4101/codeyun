@@ -202,6 +202,7 @@ export interface NoteSheetExcelImportResponse {
   sheet: NoteSheetDetail
   imported_count: number
   preserved_row_count: number
+  skipped_duplicate_count: number
   extra_columns: string[]
   warnings: string[]
   mapping_notes: string[]
@@ -220,6 +221,29 @@ export interface NoteSheetRegistrationMatchResponse {
   error_count: number
   warning_count?: number
   message: string
+}
+
+export type NoteSheetRegistrationUserIdDetectionStatus = 'applied' | 'review' | 'skipped' | 'error'
+
+export interface NoteSheetRegistrationUserIdDetectionCandidate {
+  user_id: string
+  video_count: number
+  clockin_count: number
+  evidence: string[]
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export interface NoteSheetRegistrationUserIdDetectionResponse {
+  sheet: NoteSheetDetail
+  attendance_sheet?: NoteSheetDetail | null
+  status: NoteSheetRegistrationUserIdDetectionStatus
+  applied: boolean
+  message: string
+  target_user_id: string
+  applied_to: '用户ID' | '关联用户ID' | ''
+  candidates: NoteSheetRegistrationUserIdDetectionCandidate[]
+  rebuild_summary?: Record<string, unknown> | null
+  error_message?: string | null
 }
 
 export type NoteSheetRegistrationMatchRunStatus =
@@ -634,6 +658,24 @@ export async function updateNoteSheetRegistrationUserMatch(
       params: {
         workbook_id: options?.workbookId ?? undefined,
         use_browser_fallback: options?.useBrowserFallback ?? false,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function detectNoteSheetRegistrationUserId(
+  sheetId: number,
+  payload: { row_index: number },
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetRegistrationUserIdDetectionResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/detect-user-id`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
       },
       timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
     },

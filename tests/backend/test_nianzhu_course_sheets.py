@@ -137,8 +137,8 @@ def _row_from_dict(columns: list[str], row: dict[str, object]) -> list[object]:
 def test_parse_lesson_data_export_rows_converts_duration_text(tmp_path) -> None:
     export_file = tmp_path / "lesson.csv"
     export_file.write_text(
-        "用户ID,累计观看时长,播放进度,上次播放时间,完成时间\n"
-        "u1,1小时2分钟3秒,104%,--,--\n",
+        "用户ID,用户昵称,备注名,状态,累计观看时长,播放进度,上次播放时间,完成时间\n"
+        "u1,昵称甲,备注乙,已参与,1小时2分钟3秒,104%,--,--\n",
         encoding="utf-8",
     )
 
@@ -153,6 +153,9 @@ def test_parse_lesson_data_export_rows_converts_duration_text(tmp_path) -> None:
             "lesson_id": 3,
             "update_time": "2026-05-20 08:00:00",
             "user_id2": "u1",
+            "nickname": "昵称甲",
+            "remark_nm": "备注乙",
+            "state": "已参与",
             "progress": 104,
             "cum_seconds": 3723,
             "last_play_time": "",
@@ -1423,6 +1426,76 @@ def test_rebuild_nianzhu_attendance_repairs_missing_refund_tracking_columns(sess
     assert first_row[repaired_columns.index("规则版本")] == "当前规则"
 
 
+def test_nianzhu_attendance_schema_removes_tracking_columns_for_jueguan() -> None:
+    columns = ["分组", "姓名", "规则版本", "追踪分组", "追踪状态", "冻结时间", "第01课"]
+    rows = [["一组", "甲", "当前规则", "一组", "追踪中", "", "当堂完成/98%"]]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, [""] * len(columns), *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    repaired, summary = nianzhu_course_sheets._ensure_nianzhu_attendance_schema(
+        document,
+        course_name="d260601第47届觉观",
+    )
+
+    assert summary["schema_removed_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
+        assert column not in repaired["columns"]
+        assert column not in repaired["grid_rows"][1]
+    assert repaired["rows"][0] == ["一组", "甲", "当堂完成/98%"]
+
+
+def test_nianzhu_attendance_schema_removes_tracking_columns_for_plain_nianzhu() -> None:
+    columns = ["分组", "姓名", "规则版本", "追踪分组", "追踪状态", "冻结时间", "第01课"]
+    rows = [["一组", "甲", "当前规则", "一组", "追踪中", "", "当堂完成/98%"]]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, [""] * len(columns), *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    repaired, summary = nianzhu_course_sheets._ensure_nianzhu_attendance_schema(
+        document,
+        course_name="d260601第41届念住",
+    )
+
+    assert summary["schema_removed_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
+        assert column not in repaired["columns"]
+        assert column not in repaired["grid_rows"][1]
+    assert repaired["rows"][0] == ["一组", "甲", "当堂完成/98%"]
+
+
+def test_nianzhu_attendance_schema_keeps_tracking_columns_for_chuangguan() -> None:
+    columns = ["分组", "姓名", "第01课"]
+    rows = [["一组", "甲", "1遍/98%"]]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, [""] * len(columns), *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    repaired, summary = nianzhu_course_sheets._ensure_nianzhu_attendance_schema(
+        document,
+        course_name="d250106念住闯关",
+    )
+
+    assert summary["schema_inserted_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
+        assert column in repaired["columns"]
+
+
 def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: Session) -> None:
     _create_nianzhu_workbook(session)
     materialize_nianzhu_course_sheets(session, replace=False)
@@ -1630,6 +1703,7 @@ def test_materialize_imports_legacy_video_and_clockin_pg_table_shapes(
         {
             "lesson_data_id": 1,
             "user_id2": "u1",
+            "nickname": "",
             "remark_nm": "甲",
             "state": "ok",
             "stay_seconds": 100,

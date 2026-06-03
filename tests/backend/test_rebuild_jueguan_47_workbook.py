@@ -27,3 +27,7 @@ def test_jueguan_47_registration_document_uses_standard_registration_shape():
     assert actions["1:8"] == {"type": "registration_order_match", "label": "更新订单匹配"}
     assert actions["1:12"] == {"type": "registration_user_match", "label": "更新用户匹配"}
     assert actions["1:13"] == {"type": "registration_composite_update", "label": "综合更新"}
+    assert "关联用户ID" in document["columns"]
+    assert document["column_configs"]["用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["column_configs"]["关联用户ID"]["header_background_color"] == "#9DC3E6"
+    assert document["column_configs"]["关联用户ID"]["font_family"] == "monospace"

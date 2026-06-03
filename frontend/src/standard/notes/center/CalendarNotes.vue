@@ -86,6 +86,22 @@
 
           <div class="backend-filter-tags">
             <el-tag type="success">加载: {{ formatDateShort(periodStartTs) }} - {{ formatDateShort(periodEndTs - 1) }}</el-tag>
+            <el-tag
+              v-if="codexWorkloadStatusText"
+              :type="codexWorkloadStatusType"
+              :title="codexWorkloadError || undefined"
+            >
+              {{ codexWorkloadStatusText }}
+            </el-tag>
+            <el-button
+              v-if="codexWorkloadError"
+              size="small"
+              text
+              :icon="Refresh"
+              @click="refreshCodexWorkloadStats"
+            >
+              重试
+            </el-button>
           </div>
         </div>
       </div>
@@ -512,7 +528,12 @@ import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
   type NoteNode,
+  type NoteProgramChannel,
   type NoteProgramRule,
+  type NoteProgramRequest,
+  type NoteProgramResponse,
+  type NoteCalendarSummaryBucketResponse,
+  type NoteCalendarSummaryRequest,
   type CodexDiaryImportRunResponse,
   applyNoteProgramChannelLocally,
   buildScanNoteProgramRequest,
@@ -528,9 +549,9 @@ import {
   saveCalendarYearMonthMemos
 } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
-import { fetchCodexWorkloadForEntry, type CodexWorkloadResponse, type CodexWorkloadTurn } from '@/api/codexSessions';
+import { fetchCodexWorkloadForEntry, fetchLocalCodexWorkload, type CodexWorkloadResponse, type CodexWorkloadTurn } from '@/api/codexSessions';
 import { taskStore, type Device } from '@/store/taskStore';
-import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, DArrowLeft, DArrowRight, Refresh } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeDisplayStyle } from '@/utils/nodeConfig';
@@ -547,6 +568,7 @@ const userStore = useUserStore();
 const NoteDetailPanel = defineAsyncComponent(() => import('@/components/NoteDetailPanel.vue'));
 const props = withDefaults(defineProps<{
   tabId: string;
+  active?: boolean;
   dataFilterRules?: NoteProgramRule[];
   fixedViewFilterRules?: NoteProgramRule[];
   showFrontFilter?: boolean;
@@ -556,18 +578,48 @@ const props = withDefaults(defineProps<{
 }>(), {
   allowCreate: true,
   showFrontFilter: true,
+  showCodexWorkload: true,
 });
 
 const showFrontFilter = computed(() => props.showFrontFilter !== false);
 const allowCreate = computed(() => props.allowCreate !== false);
 const showCodexWorkload = computed(() => props.showCodexWorkload !== false);
+const isActive = computed(() => props.active !== false);
 
 const session = computed(() => noteStore.getTabSession(props.tabId));
+const calendarQueryCache = new Map<string, CalendarQueryCacheEntry>();
+const calendarSummaryCache = new Map<string, CalendarSummaryCacheEntry>();
+const calendarBackgroundRefreshKeys = new Set<string>();
+const calendarSummaryKey = ref('');
+const calendarSummaryBuckets = ref<Record<string, CalendarSummaryBucketState>>({});
 
 type CalendarScale = 'month' | 'year' | 'volume' | 'era';
 type YearMonthMemoMap = Record<string, string>;
 type YearTitleMap = Record<string, string>;
 type CodexWorkloadDaySeconds = Record<string, number>;
+type CalendarQueryCacheEntry = {
+  request: NoteProgramRequest;
+  response: NoteProgramResponse;
+  cachedAt: number;
+};
+type CalendarSummaryCacheEntry = {
+  request: NoteCalendarSummaryRequest;
+  response: {
+    buckets: NoteCalendarSummaryBucketResponse[];
+    nodes: NoteNode[];
+    total_nodes: number;
+  };
+  cachedAt: number;
+};
+type CalendarSummaryBucketState = {
+  total_nodes: number;
+  nodes: NoteNode[];
+};
+type CalendarRefreshOptions = {
+  silent?: boolean;
+  skipCache?: boolean;
+  background?: boolean;
+};
 type CodexWorkloadDeviceStatsCache = {
   cachedThrough: string;
   days: CodexWorkloadDaySeconds;
@@ -584,6 +636,10 @@ type CalendarVolumeDefinition = {
   start: [number, number, number];
   endExclusive: [number, number, number];
 };
+type CalendarVolumeRange = CalendarVolumeDefinition & {
+  startTs: number;
+  endTs: number;
+};
 
 const YEAR_VIEW_MIN_PANE_HEIGHT = 900;
 const YEAR_MONTH_VISIBLE_LIMIT_DEFAULT = 15;
@@ -595,6 +651,11 @@ const YEAR_MONTH_SPARSE_TOTAL_LIMIT = 4;
 const CALENDAR_QUERY_LIMIT_DEFAULT = 5000;
 const CALENDAR_VOLUME_QUERY_LIMIT = 10000;
 const CALENDAR_ERA_QUERY_LIMIT = 30000;
+const CALENDAR_QUERY_CACHE_LIMIT = 8;
+const CALENDAR_QUERY_CACHE_TTL_MS = 120_000;
+const NOTE_RENDER_META_CACHE_LIMIT = 40000;
+const NOTE_SCORE_META_CACHE_LIMIT = 40000;
+const CALENDAR_REFRESH_DEBOUNCE_MS = 120;
 const MONTH_WEEK_ROW_MIN_HEIGHT = 108;
 const MONTH_WEEK_ROW_UNIT_HEIGHT = 18;
 const MONTH_WEEK_ROW_MAX_HEIGHT = 240;
@@ -602,6 +663,7 @@ const CODEX_WORKLOAD_DEVICE_CACHE_MS = 60_000;
 const CODEX_WORKLOAD_HOUR_SECONDS = 3600;
 const CODEX_WORKLOAD_STATS_CACHE_KEY = 'codeyun:notes:calendar:codex-workload-days:v2';
 const CODEX_WORKLOAD_STATS_CACHE_VERSION = 2;
+const CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID = '__local_codex__';
 
 const calendarPerfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
 const calendarPerfStart = calendarPerfEnabled ? performance.now() : 0;
@@ -767,13 +829,17 @@ const toDateStr = (d: Date) => {
 
 const dateFromTuple = ([year, month, day]: CalendarVolumeDefinition['start']) => new Date(year, month - 1, day);
 
+const calendarVolumeRanges = computed<CalendarVolumeRange[]>(() => (
+  CALENDAR_VOLUME_DEFINITIONS.map(volume => ({
+    ...volume,
+    startTs: dateFromTuple(volume.start).getTime(),
+    endTs: dateFromTuple(volume.endExclusive).getTime(),
+  }))
+));
+
 const getVolumeForDate = (date: Date) => {
   const ts = date.getTime();
-  const matched = CALENDAR_VOLUME_DEFINITIONS.find(volume => {
-    const start = dateFromTuple(volume.start).getTime();
-    const end = dateFromTuple(volume.endExclusive).getTime();
-    return ts >= start && ts < end;
-  });
+  const matched = calendarVolumeRanges.value.find(volume => ts >= volume.startTs && ts < volume.endTs);
   if (matched) return matched;
 
   const fallbackStartYear = Math.floor(date.getFullYear() / 4) * 4;
@@ -1003,6 +1069,7 @@ const importCodexDiaryForDay = async (date: Date) => {
       await showCodexDiaryImportError(completedRun.error_message || `Codex 总结日记状态异常：${completedRun.status}`);
       return;
     }
+    clearCalendarQueryCache();
     await refreshData({ silent: true });
     completedRun.created_note_ids.forEach(noteId => noteStore.addNoteToTab(props.tabId, noteId));
     if (completedRun.created_note_ids.length > 0) {
@@ -1043,22 +1110,36 @@ const refreshCodexWorkloadStats = async () => {
   const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
   const requestId = ++latestCodexWorkloadRequestId;
   codexWorkloadError.value = '';
+  const cache = loadCodexWorkloadStatsCache();
+  applyCachedCodexWorkloadSnapshot(cache);
   try {
     if (!taskStore.devices.length || Date.now() - taskStore.lastDeviceFetch > CODEX_WORKLOAD_DEVICE_CACHE_MS) {
       await taskStore.fetchDevices();
     }
+    const todayStartMs = getCodexTodayStartMs();
+    if (requestId !== latestCodexWorkloadRequestId) return;
+
+    if (taskStore.lastDeviceFetchError) {
+      try {
+        await refreshStandaloneCodexWorkloadStats(cache, todayStartMs);
+        return;
+      } catch (error) {
+        if (requestId !== latestCodexWorkloadRequestId) return;
+        codexWorkloadTurns.value = [];
+        codexWorkloadLoaded.value = true;
+        codexWorkloadError.value = taskStore.lastDeviceFetchError
+          || extractCodexWorkloadErrorMessage(error, '读取 Codex workload 失败');
+        return;
+      }
+    }
     const devices = taskStore.devices.slice();
     if (requestId !== latestCodexWorkloadRequestId) return;
     if (!devices.length) {
-      codexWorkloadTurns.value = [];
-      codexHistoricalSecondsByDay.value = {};
-      codexWorkloadLoaded.value = true;
+      await refreshStandaloneCodexWorkloadStats(cache, todayStartMs);
       return;
     }
 
-    const cache = loadCodexWorkloadStatsCache();
-    codexHistoricalSecondsByDay.value = collectCachedCodexDaySeconds(cache, devices);
-    const todayStartMs = getCodexTodayStartMs();
+    codexHistoricalSecondsByDay.value = collectCachedCodexDaySecondsWithLocal(cache, devices);
     const yesterdayKey = toDateStr(new Date(todayStartMs - 1));
 
     const results = await Promise.allSettled(
@@ -1074,6 +1155,9 @@ const refreshCodexWorkloadStats = async () => {
         };
       })
     );
+    const localResult = await Promise.allSettled([
+      refreshStandaloneCodexWorkloadSource(cache, todayStartMs)
+    ]);
     if (requestId !== latestCodexWorkloadRequestId) return;
 
     const fulfilled = results
@@ -1096,25 +1180,40 @@ const refreshCodexWorkloadStats = async () => {
       mergeCodexHistoricalDeviceDays(deviceCache, historicalDays, requestStartMs, todayStartMs, yesterdayKey);
     }
     saveCodexWorkloadStatsCache(cache);
-    codexHistoricalSecondsByDay.value = collectCachedCodexDaySeconds(cache, devices);
-    codexWorkloadTurns.value = fulfilled.flatMap(({ device, workload }) => (
+    codexHistoricalSecondsByDay.value = collectCachedCodexDaySecondsWithLocal(cache, devices);
+    const localFulfilled = localResult[0]?.status === 'fulfilled' ? localResult[0].value : null;
+    const localActiveTurns = localFulfilled
+      ? (localFulfilled.workload.turns || [])
+        .filter(turn => isCodexTurnActiveAfter(turn, todayStartMs))
+        .map(turn => ({
+          ...turn,
+          id: `${CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID}:${turn.id}`,
+        }))
+      : [];
+    codexWorkloadTurns.value = [
+      ...fulfilled.flatMap(({ device, workload }) => (
       (workload.turns || [])
         .filter(turn => isCodexTurnActiveAfter(turn, todayStartMs))
         .map(turn => ({
           ...turn,
           id: `${device.id}:${turn.id}`,
         }))
-    ));
+      )),
+      ...localActiveTurns,
+    ];
     codexWorkloadLoaded.value = true;
 
-    if (!fulfilled.length) {
+    if (!fulfilled.length && !localFulfilled) {
       const firstRejected = results.find((item): item is PromiseRejectedResult => item.status === 'rejected');
-      codexWorkloadError.value = extractCodexWorkloadErrorMessage(firstRejected?.reason, '读取 Codex workload 失败');
+      const localRejected = localResult[0]?.status === 'rejected' ? localResult[0] : null;
+      codexWorkloadError.value = extractCodexWorkloadErrorMessage(
+        firstRejected?.reason || localRejected?.reason,
+        '读取 Codex workload 失败'
+      );
     }
   } catch (error) {
     if (requestId !== latestCodexWorkloadRequestId) return;
     codexWorkloadTurns.value = [];
-    codexHistoricalSecondsByDay.value = {};
     codexWorkloadLoaded.value = true;
     codexWorkloadError.value = extractCodexWorkloadErrorMessage(error, '读取 Codex workload 失败');
   } finally {
@@ -1123,13 +1222,23 @@ const refreshCodexWorkloadStats = async () => {
 };
 
 let scheduledCalendarRefreshToken = 0;
+let scheduledCalendarRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let inactiveCalendarRefreshPending = false;
 
 const scheduleCalendarRefresh = () => {
+  if (!isActive.value) {
+    inactiveCalendarRefreshPending = true;
+    return;
+  }
   const token = ++scheduledCalendarRefreshToken;
-  void nextTick(() => {
+  if (scheduledCalendarRefreshTimer !== null) {
+    clearTimeout(scheduledCalendarRefreshTimer);
+  }
+  scheduledCalendarRefreshTimer = setTimeout(() => {
+    scheduledCalendarRefreshTimer = null;
     if (token !== scheduledCalendarRefreshToken) return;
     void refreshData({ silent: true });
-  });
+  }, CALENDAR_REFRESH_DEBOUNCE_MS);
 };
 
 const onPeriodChange = (value: Date | string | number | undefined) => {
@@ -1393,9 +1502,55 @@ const fixedViewProgram = computed(() => ({
   default: true,
   rules: (props.fixedViewFilterRules || []).map(rule => normalizeNoteProgramRule(rule))
 }));
+
+const isIncludeAllMatcher = (matcher: NoteProgramRule['matcher']) => normalizeNoteProgramRule({
+  action: 'include',
+  matcher
+}).matcher.kind === 'all';
+
+const isAllVisibleProgram = (program: NoteProgramChannel) => {
+  if (program.default && program.rules.length === 0) return true;
+  if (!program.default && program.rules.length === 1) {
+    const [rule] = program.rules;
+    return rule?.action === 'include' && isIncludeAllMatcher(rule.matcher);
+  }
+  return false;
+};
+
+const isSummaryPushdownRule = (rule: NoteProgramRule) => {
+  const normalized = normalizeNoteProgramRule(rule);
+  const matcher = normalized.matcher;
+  if (matcher.kind !== 'field' || !matcher.field) return false;
+
+  const field = String(matcher.field);
+  if (normalized.action === 'exclude' && field.startsWith('custom_fields.')) {
+    return matcher.op !== 'regex_search';
+  }
+
+  return normalized.action === 'filter'
+    && field !== 'id'
+    && field !== 'start_at'
+    && field !== 'updated_at'
+    && !field.startsWith('custom_fields.')
+    && matcher.op !== 'regex_search'
+    && matcher.op !== 'not_contains';
+};
+
+const getSummaryPushdownRules = (program: NoteProgramChannel) => {
+  if (isAllVisibleProgram(program)) return [];
+  if (!program.default) return null;
+  const normalizedRules = program.rules.map(rule => normalizeNoteProgramRule(rule));
+  return normalizedRules.every(isSummaryPushdownRule) ? normalizedRules : null;
+};
+
+const applyCalendarViewProgram = (notes: NoteNode[], program: NoteProgramChannel) => (
+  isAllVisibleProgram(program) ? notes : applyNoteProgramChannelLocally(notes, program)
+);
+
 const visibleNotes = computed(() => {
-  const fixedNotes = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), fixedViewProgram.value);
-  return applyNoteProgramChannelLocally(fixedNotes, viewProgram.value);
+  const tabNotes = noteStore.getTabNotes(props.tabId);
+  const fixedNotes = applyCalendarViewProgram(tabNotes, fixedViewProgram.value);
+  return applyCalendarViewProgram(fixedNotes, viewProgram.value);
 });
 
 const notesByDay = computed(() => {
@@ -1431,44 +1586,115 @@ const openNote = (note: NoteNode) => {
   currentNoteId.value = noteKey(note.id);
 };
 
-const getNoteDisplayTheme = (note: NoteNode) => getNodeDisplayStyle(
-  note.primary_category ?? note.node_type,
-  note.lifecycle_stage ?? note.node_status,
-  note.color,
-  note.note_categories ?? note.note_types,
-  resolveCompletionProgressFillRatio({
-    lifecycleStage: note.lifecycle_stage ?? note.node_status,
-    completionProgress: note.completion_progress,
-    completionProgressExpr: note.completion_progress_expr,
-    customFields: note.custom_fields,
-  })
-);
+type NoteRenderMeta = {
+  signature: string;
+  displayStyle: ReturnType<typeof getNodeDisplayStyle>;
+  progressRatio: number | null;
+  progressPercent: number | null;
+  scale: number;
+  height: number;
+  fontSize: number;
+  maxLines: number;
+};
+
+type NoteScoreMeta = {
+  signature: string;
+  sourceKind: string;
+  yearScore: number;
+  volumeScore: number;
+};
+
+const noteRenderMetaCache = new Map<string, NoteRenderMeta>();
+const noteScoreMetaCache = new Map<string, NoteScoreMeta>();
+
+const buildNoteRenderSignature = (note: NoteNode) => {
+  const rawNote = toRaw(note);
+  return JSON.stringify([
+    rawNote.primary_category ?? rawNote.node_type,
+    rawNote.lifecycle_stage ?? rawNote.node_status,
+    rawNote.color ?? '',
+    rawNote.note_categories ?? rawNote.note_types ?? null,
+    rawNote.completion_progress ?? null,
+    rawNote.completion_progress_expr ?? null,
+    rawNote.custom_fields ?? null,
+    rawNote.weight ?? 0,
+    rawNote.weight_mode ?? '',
+  ]);
+};
+
+const pruneNoteRenderMetaCache = () => {
+  while (noteRenderMetaCache.size > NOTE_RENDER_META_CACHE_LIMIT) {
+    const firstKey = noteRenderMetaCache.keys().next().value;
+    if (!firstKey) break;
+    noteRenderMetaCache.delete(firstKey);
+  }
+};
+
+const pruneNoteScoreMetaCache = () => {
+  while (noteScoreMetaCache.size > NOTE_SCORE_META_CACHE_LIMIT) {
+    const firstKey = noteScoreMetaCache.keys().next().value;
+    if (!firstKey) break;
+    noteScoreMetaCache.delete(firstKey);
+  }
+};
+
+const getNoteRenderMeta = (note: NoteNode): NoteRenderMeta => {
+  const rawNote = toRaw(note);
+  const key = noteKey(rawNote.id);
+  const signature = buildNoteRenderSignature(rawNote);
+  const cached = noteRenderMetaCache.get(key);
+  if (cached?.signature === signature) return cached;
+
+  const progressRatio = resolveCompletionProgressFillRatio({
+    lifecycleStage: rawNote.lifecycle_stage ?? rawNote.node_status,
+    completionProgress: rawNote.completion_progress,
+    completionProgressExpr: rawNote.completion_progress_expr,
+    customFields: rawNote.custom_fields,
+  });
+  const scale = getNoteWeightScaleFactor(rawNote.weight, rawNote.node_type, rawNote.weight_mode);
+  const height = Math.round(26 * scale);
+  const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
+  const maxLines = Math.max(1, Math.floor(height / (fontSize * 1.25)));
+  const meta: NoteRenderMeta = {
+    signature,
+    displayStyle: getNodeDisplayStyle(
+      rawNote.primary_category ?? rawNote.node_type,
+      rawNote.lifecycle_stage ?? rawNote.node_status,
+      rawNote.color,
+      rawNote.note_categories ?? rawNote.note_types,
+      progressRatio
+    ),
+    progressRatio,
+    progressPercent: typeof progressRatio === 'number'
+      ? Math.round(Math.min(1, Math.max(0, progressRatio)) * 100)
+      : null,
+    scale,
+    height,
+    fontSize,
+    maxLines,
+  };
+  noteRenderMetaCache.set(key, meta);
+  pruneNoteRenderMetaCache();
+  return meta;
+};
+
+const clearCalendarRenderCaches = () => {
+  noteRenderMetaCache.clear();
+  noteScoreMetaCache.clear();
+};
+
+const getNoteDisplayTheme = (note: NoteNode) => getNoteRenderMeta(note).displayStyle;
 
 const getNoteTime = (note: NoteNode) => note.start_at || note.created_at || 0;
 
-const getNoteProgressRatio = (note: NoteNode) => resolveCompletionProgressFillRatio({
-  lifecycleStage: note.lifecycle_stage ?? note.node_status,
-  completionProgress: note.completion_progress,
-  completionProgressExpr: note.completion_progress_expr,
-  customFields: toRaw(note).custom_fields,
-});
+const getNoteProgressRatio = (note: NoteNode) => getNoteRenderMeta(note).progressRatio;
 
 const getNoteProgressPercent = (note: NoteNode) => {
-  const ratio = getNoteProgressRatio(note);
-  if (typeof ratio !== 'number') return null;
-  return Math.round(Math.min(1, Math.max(0, ratio)) * 100);
+  return getNoteRenderMeta(note).progressPercent;
 };
 
 const getYearNoteScore = (note: NoteNode) => {
-  const rawNote = toRaw(note);
-  const weight = Number.isFinite(Number(rawNote.weight)) ? Number(rawNote.weight) : 0;
-  const relationCount = Number(rawNote.edge_count || 0) + Number(rawNote.out_degree || 0);
-  const relationScore = Math.min(4, Math.log2(relationCount + 1));
-  const progress = getNoteProgressRatio(rawNote);
-  const progressScore = typeof progress === 'number' ? Math.min(1, Math.max(0, progress)) * 2 : 0;
-  const stage = String(rawNote.lifecycle_stage ?? rawNote.node_status ?? '').toLowerCase();
-  const stageScore = stage === 'done' || stage === 'predone' ? 1 : stage === 'doing' ? 0.8 : stage === 'todo' ? 0.4 : 0;
-  return weight * 10 + relationScore + progressScore + stageScore;
+  return getNoteScoreMeta(note).yearScore;
 };
 
 const getNoteCustomFieldRawValue = (note: NoteNode, key: string) => {
@@ -1484,6 +1710,54 @@ const getNoteCustomFieldRawValue = (note: NoteNode, key: string) => {
 const getNoteCustomFieldValue = (note: NoteNode, key: string) => {
   const value = getNoteCustomFieldRawValue(note, key);
   return value == null ? '' : String(value).trim();
+};
+
+const buildNoteScoreSignature = (note: NoteNode) => {
+  const rawNote = toRaw(note);
+  return JSON.stringify([
+    rawNote.weight ?? 0,
+    rawNote.edge_count ?? 0,
+    rawNote.out_degree ?? 0,
+    rawNote.lifecycle_stage ?? rawNote.node_status ?? '',
+    rawNote.completion_progress ?? null,
+    rawNote.completion_progress_expr ?? null,
+    rawNote.custom_fields ?? null,
+    rawNote.note_form ?? '',
+  ]);
+};
+
+const getNoteScoreMeta = (note: NoteNode): NoteScoreMeta => {
+  const rawNote = toRaw(note);
+  const key = noteKey(rawNote.id);
+  const signature = buildNoteScoreSignature(rawNote);
+  const cached = noteScoreMetaCache.get(key);
+  if (cached?.signature === signature) return cached;
+
+  const weight = Number.isFinite(Number(rawNote.weight)) ? Number(rawNote.weight) : 0;
+  const relationCount = Number(rawNote.edge_count || 0) + Number(rawNote.out_degree || 0);
+  const relationScore = Math.min(4, Math.log2(relationCount + 1));
+  const progress = getNoteRenderMeta(rawNote).progressRatio;
+  const progressScore = typeof progress === 'number' ? Math.min(1, Math.max(0, progress)) * 2 : 0;
+  const stage = String(rawNote.lifecycle_stage ?? rawNote.node_status ?? '').toLowerCase();
+  const stageScore = stage === 'done' || stage === 'predone' ? 1 : stage === 'doing' ? 0.8 : stage === 'todo' ? 0.4 : 0;
+  const sourceKind = getNoteCustomFieldValue(rawNote, 'source_kind');
+  let sourceBoost = 0;
+  if (sourceKind.includes('chapter') || sourceKind.includes('section')) sourceBoost = 80;
+  else if (sourceKind.includes('week')) sourceBoost = 50;
+  else if (sourceKind.includes('child')) sourceBoost = 35;
+  else if (sourceKind.includes('day_group')) sourceBoost = 16;
+
+  const formBoost = rawNote.note_form === 'document' ? 8 : 0;
+  const yearScore = weight * 10 + relationScore + progressScore + stageScore;
+  const meta: NoteScoreMeta = {
+    signature,
+    sourceKind,
+    yearScore,
+    volumeScore: yearScore + weight * 12 + sourceBoost + formBoost,
+  };
+  noteScoreMetaCache.set(key, meta);
+  pruneNoteScoreMetaCache();
+  return meta;
 };
 
 const toEpochMs = (value?: number | string | null) => {
@@ -1582,6 +1856,34 @@ const collectCachedCodexDaySeconds = (
   return days;
 };
 
+const collectAllCachedCodexDaySeconds = (cache: CodexWorkloadStatsCache): CodexWorkloadDaySeconds => {
+  const days: CodexWorkloadDaySeconds = {};
+  for (const deviceCache of Object.values(cache.devices)) {
+    for (const [dateKey, seconds] of Object.entries(deviceCache.days)) {
+      days[dateKey] = (days[dateKey] || 0) + seconds;
+    }
+  }
+  return days;
+};
+
+const collectStandaloneCachedCodexDaySeconds = (cache: CodexWorkloadStatsCache): CodexWorkloadDaySeconds => {
+  const deviceCache = cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID];
+  return deviceCache ? { ...deviceCache.days } : collectAllCachedCodexDaySeconds(cache);
+};
+
+const collectCachedCodexDaySecondsWithLocal = (
+  cache: CodexWorkloadStatsCache,
+  devices: Device[],
+): CodexWorkloadDaySeconds => {
+  const days = collectCachedCodexDaySeconds(cache, devices);
+  const localCache = cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID];
+  if (!localCache) return days;
+  for (const [dateKey, seconds] of Object.entries(localCache.days)) {
+    days[dateKey] = (days[dateKey] || 0) + seconds;
+  }
+  return days;
+};
+
 const aggregateCodexTurnsByDay = (
   turns: CodexWorkloadTurn[],
   rangeStartMs = Number.NEGATIVE_INFINITY,
@@ -1659,6 +1961,54 @@ const mergeCodexHistoricalDeviceDays = (
   deviceCache.updatedAt = Date.now();
 };
 
+const applyCachedCodexWorkloadSnapshot = (cache: CodexWorkloadStatsCache) => {
+  codexHistoricalSecondsByDay.value = taskStore.devices.length
+    ? collectCachedCodexDaySecondsWithLocal(cache, taskStore.devices)
+    : collectStandaloneCachedCodexDaySeconds(cache);
+  codexWorkloadLoaded.value = true;
+};
+
+const refreshStandaloneCodexWorkloadStats = async (
+  cache: CodexWorkloadStatsCache,
+  todayStartMs: number,
+) => {
+  const { deviceCache, workload } = await refreshStandaloneCodexWorkloadSource(cache, todayStartMs);
+  saveCodexWorkloadStatsCache(cache);
+  codexHistoricalSecondsByDay.value = { ...deviceCache.days };
+  codexWorkloadTurns.value = (workload.turns || []).filter(turn => isCodexTurnActiveAfter(turn, todayStartMs));
+  codexWorkloadLoaded.value = true;
+};
+
+const refreshStandaloneCodexWorkloadSource = async (
+  cache: CodexWorkloadStatsCache,
+  todayStartMs: number,
+) => {
+  const deviceCache = cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID] ?? {
+    cachedThrough: '',
+    days: {},
+    updatedAt: 0,
+  };
+  cache.devices[CODEX_LOCAL_WORKLOAD_CACHE_DEVICE_ID] = deviceCache;
+  const requestStartMs = resolveCodexCacheRequestStartAt(deviceCache, todayStartMs);
+  const workload = await fetchLocalCodexWorkload(
+    requestStartMs === undefined ? undefined : { startAt: requestStartMs / 1000 }
+  );
+  const historicalDays = mapToCodexWorkloadDaySeconds(
+    aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)
+  );
+  mergeCodexHistoricalDeviceDays(
+    deviceCache,
+    historicalDays,
+    requestStartMs,
+    todayStartMs,
+    toDateStr(new Date(todayStartMs - 1))
+  );
+  return {
+    deviceCache,
+    workload,
+  };
+};
+
 const codexDynamicSecondsByDay = computed(() => (
   aggregateCodexTurnsByDay(codexWorkloadTurns.value, getCodexTodayStartMs())
 ));
@@ -1694,19 +2044,19 @@ const getCodexHoursTitle = (seconds: number) => {
   const sourceText = codexWorkloadLoaded.value ? '来自 Codex workload' : '正在读取 Codex workload';
   return `Codex 工作约 ${formatCodexHours(seconds)}（${minutes} 分钟，${sourceText}）`;
 };
+const codexWorkloadStatusText = computed(() => {
+  if (!showCodexWorkload.value) return '';
+  if (codexWorkloadError.value) {
+    return userStore.isAuthenticated ? 'Codex统计读取失败' : '登录后显示Codex统计';
+  }
+  return '';
+});
+const codexWorkloadStatusType = computed(() => (
+  codexWorkloadError.value && userStore.isAuthenticated ? 'warning' : 'info'
+));
 
 const getVolumeNoteScore = (note: NoteNode) => {
-  const rawNote = toRaw(note);
-  const sourceKind = getNoteCustomFieldValue(rawNote, 'source_kind');
-  const weight = Number.isFinite(Number(rawNote.weight)) ? Number(rawNote.weight) : NOTE_WEIGHT_DEFAULT;
-  let sourceBoost = 0;
-  if (sourceKind.includes('chapter') || sourceKind.includes('section')) sourceBoost = 80;
-  else if (sourceKind.includes('week')) sourceBoost = 50;
-  else if (sourceKind.includes('child')) sourceBoost = 35;
-  else if (sourceKind.includes('day_group')) sourceBoost = 16;
-
-  const formBoost = rawNote.note_form === 'document' ? 8 : 0;
-  return getYearNoteScore(rawNote) + weight * 12 + sourceBoost + formBoost;
+  return getNoteScoreMeta(note).volumeScore;
 };
 
 const REPRESENTATIVE_POOL_LIMIT = 100;
@@ -1744,7 +2094,7 @@ const compareVolumeRepresentativePriority = (a: NoteNode, b: NoteNode) => {
 };
 
 const isPreferredVolumeNote = (note: NoteNode) => (
-  Number(toRaw(note).weight || 0) > 0 || Boolean(getNoteCustomFieldValue(note, 'source_kind'))
+  Number(toRaw(note).weight || 0) > 0 || Boolean(getNoteScoreMeta(note).sourceKind)
 );
 
 const insertRepresentativeCandidate = (
@@ -1924,19 +2274,40 @@ const yearMonthRepresentativeBuckets = computed(() => {
 
 const yearMonthSummaries = computed<YearMonthSummary[]>(() => {
   const now = new Date();
+  const hasSummary = calendarScale.value === 'year'
+    && hasCalendarSummaryBucket(getYearSummaryBucketKey(currentYear.value, 0));
+  if (hasSummary) {
+    return Array.from({ length: 12 }, (_, monthIndex) => {
+      const summaryBucket = getCalendarSummaryBucket(getYearSummaryBucketKey(currentYear.value, monthIndex));
+      const totalCount = summaryBucket?.total_nodes ?? 0;
+      const visible = (summaryBucket?.nodes || []).slice(0, yearMonthVisibleLimit.value);
+      return {
+        monthIndex,
+        monthLabel: monthLabels[monthIndex] || `${monthIndex + 1}月`,
+        memoKey: getYearMonthMemoKey(currentYear.value, monthIndex),
+        totalCount,
+        visibleNotes: visible,
+        hiddenCount: Math.max(0, totalCount - visible.length),
+        codexSeconds: getCodexSecondsForYearMonth(currentYear.value, monthIndex),
+        isCurrentMonth: currentYear.value === now.getFullYear() && monthIndex === now.getMonth(),
+        isSparse: totalCount > 0 && totalCount <= YEAR_MONTH_SPARSE_TOTAL_LIMIT
+      };
+    });
+  }
   return yearMonthRepresentativeBuckets.value.map((bucket, monthIndex) => {
+    const totalCount = bucket.totalCount;
     const visible = takeRepresentativeNotes(bucket.rankedNotes, yearMonthVisibleLimit.value);
 
     return {
       monthIndex,
       monthLabel: monthLabels[monthIndex] || `${monthIndex + 1}月`,
       memoKey: getYearMonthMemoKey(currentYear.value, monthIndex),
-      totalCount: bucket.totalCount,
+      totalCount,
       visibleNotes: visible,
-      hiddenCount: Math.max(0, bucket.totalCount - visible.length),
+      hiddenCount: Math.max(0, totalCount - visible.length),
       codexSeconds: getCodexSecondsForYearMonth(currentYear.value, monthIndex),
       isCurrentMonth: currentYear.value === now.getFullYear() && monthIndex === now.getMonth(),
-      isSparse: bucket.totalCount > 0 && bucket.totalCount <= YEAR_MONTH_SPARSE_TOTAL_LIMIT
+      isSparse: totalCount > 0 && totalCount <= YEAR_MONTH_SPARSE_TOTAL_LIMIT
     };
   });
 });
@@ -1970,26 +2341,39 @@ type CalendarYearSegment = {
   endTs: number;
 };
 
-const getYearSegments = (year: number): CalendarYearSegment[] => {
-  const yearStartTs = new Date(year, 0, 1).getTime();
-  const yearEndTs = new Date(year + 1, 0, 1).getTime();
-  const segments = CALENDAR_VOLUME_DEFINITIONS.flatMap(volume => {
-    const startTs = Math.max(dateFromTuple(volume.start).getTime(), yearStartTs);
-    const endTs = Math.min(dateFromTuple(volume.endExclusive).getTime(), yearEndTs);
-    return startTs < endTs
-      ? [{ volumeId: volume.id, year, startTs, endTs }]
-      : [];
-  }).sort((a, b) => a.startTs - b.startTs);
+const volumeYearSegmentMap = computed(() => {
+  const map = new Map<string, CalendarYearSegment>();
+  const yearSegments = new Map<number, Omit<CalendarYearSegment, 'index' | 'count'>[]>();
+  for (const volume of calendarVolumeRanges.value) {
+    const start = new Date(volume.startTs);
+    const end = new Date(volume.endTs - 1);
+    for (let year = start.getFullYear(); year <= end.getFullYear(); year += 1) {
+      const yearStartTs = new Date(year, 0, 1).getTime();
+      const yearEndTs = new Date(year + 1, 0, 1).getTime();
+      const startTs = Math.max(volume.startTs, yearStartTs);
+      const endTs = Math.min(volume.endTs, yearEndTs);
+      if (startTs >= endTs) continue;
+      const segments = yearSegments.get(year) || [];
+      segments.push({ volumeId: volume.id, year, startTs, endTs });
+      yearSegments.set(year, segments);
+    }
+  }
 
-  return segments.map((segment, index) => ({
-    ...segment,
-    index,
-    count: segments.length
-  }));
-};
+  for (const segments of yearSegments.values()) {
+    segments.sort((a, b) => a.startTs - b.startTs);
+    segments.forEach((segment, index) => {
+      map.set(`${segment.volumeId}:${segment.year}`, {
+        ...segment,
+        index,
+        count: segments.length,
+      });
+    });
+  }
+  return map;
+});
 
 const getYearSegment = (volumeId: string, year: number) => (
-  getYearSegments(year).find(segment => segment.volumeId === volumeId)
+  volumeYearSegmentMap.value.get(`${volumeId}:${year}`)
 );
 
 const getYearSegmentSuffix = (segment?: CalendarYearSegment) => {
@@ -2076,16 +2460,32 @@ const buildVolumeMonthSummaries = (monthBuckets: RepresentativeBucket[]) => (
 
 const volumeYearSummaries = computed<VolumeYearSummary[]>(() => {
   const now = new Date();
+  const hasSummary = calendarScale.value === 'volume'
+    && Object.keys(calendarSummaryBuckets.value).some(key => key.startsWith(`volume:${currentVolume.value.id}:`));
   return volumeYears.value.map(year => {
-    const monthBuckets = volumeYearMonthRepresentativeBuckets.value.get(year)
-      || Array.from({ length: 12 }, () => createRepresentativeBucket());
+    const monthBuckets = hasSummary
+      ? null
+      : volumeYearMonthRepresentativeBuckets.value.get(year)
+        || Array.from({ length: 12 }, () => createRepresentativeBucket());
     return {
       year,
       yearLabel: getYearSegmentLabel(currentVolume.value.id, year),
       periodLabel: getYearSegmentPeriodLabel(currentVolume.value.id, year),
       titleKey: String(year),
       title: getYearSegmentTitle(currentVolume.value.id, year),
-      months: buildVolumeMonthSummaries(monthBuckets),
+      months: hasSummary
+        ? Array.from({ length: 12 }, (_, monthIndex) => {
+          const summaryBucket = getCalendarSummaryBucket(getVolumeSummaryBucketKey(currentVolume.value.id, year, monthIndex));
+          if (!summaryBucket?.total_nodes) return null;
+          const visibleNotes = summaryBucket.nodes.slice(0, volumeMonthVisibleLimit.value);
+          if (visibleNotes.length === 0) return null;
+          return {
+            monthIndex,
+            monthLabel: `${pad2(monthIndex + 1)}月`,
+            visibleNotes,
+          };
+        }).filter((month): month is VolumeMonthSummary => Boolean(month))
+        : buildVolumeMonthSummaries(monthBuckets || []),
       isCurrentYear: year === now.getFullYear()
     };
   });
@@ -2107,11 +2507,7 @@ type EraVolumeSummary = {
 };
 
 const findVolumeDefinitionByTime = (ts: number) => (
-  CALENDAR_VOLUME_DEFINITIONS.find(item => {
-    const start = dateFromTuple(item.start).getTime();
-    const end = dateFromTuple(item.endExclusive).getTime();
-    return ts >= start && ts < end;
-  })
+  calendarVolumeRanges.value.find(item => ts >= item.startTs && ts < item.endTs)
 );
 
 const eraVolumeYearRepresentativeBuckets = computed(() => {
@@ -2143,20 +2539,28 @@ const eraVolumeYearRepresentativeBuckets = computed(() => {
 });
 
 const eraVolumeSummaries = computed<EraVolumeSummary[]>(() => {
-  return CALENDAR_VOLUME_DEFINITIONS.flatMap(volume => {
-    const start = dateFromTuple(volume.start);
-    const end = new Date(dateFromTuple(volume.endExclusive).getTime() - 1);
-    const yearMap = eraVolumeYearRepresentativeBuckets.value.get(volume.id) || new Map<number, RepresentativeBucket>();
+  const hasSummary = calendarScale.value === 'era'
+    && Object.keys(calendarSummaryBuckets.value).some(key => key.startsWith('era:'));
+  return calendarVolumeRanges.value.flatMap(volume => {
+    const start = new Date(volume.startTs);
+    const end = new Date(volume.endTs - 1);
+    const yearMap = hasSummary
+      ? new Map<number, RepresentativeBucket>()
+      : eraVolumeYearRepresentativeBuckets.value.get(volume.id) || new Map<number, RepresentativeBucket>();
     const years: EraYearSummary[] = [];
 
     for (let year = start.getFullYear(); year <= end.getFullYear(); year += 1) {
       const title = getYearTitle(String(year));
       const bucket = yearMap.get(year);
-      if (!title && !bucket?.totalCount) continue;
+      const summaryBucket = hasSummary ? getCalendarSummaryBucket(getEraSummaryBucketKey(volume.id, year)) : undefined;
+      const totalCount = summaryBucket?.total_nodes ?? bucket?.totalCount ?? 0;
+      if (!title && !totalCount) continue;
 
       const source = bucket && bucket.documentCount > 0 ? bucket.documentRankedNotes : (bucket?.rankedNotes || []);
-      const candidateCount = bucket && bucket.documentCount > 0 ? bucket.documentCount : (bucket?.totalCount || 0);
-      const visibleYearNotes = takeRepresentativeNotes(source, eraYearVisibleLimit.value);
+      const candidateCount = summaryBucket?.total_nodes ?? (bucket && bucket.documentCount > 0 ? bucket.documentCount : (bucket?.totalCount || 0));
+      const visibleYearNotes = summaryBucket
+        ? summaryBucket.nodes.slice(0, eraYearVisibleLimit.value)
+        : takeRepresentativeNotes(source, eraYearVisibleLimit.value);
 
       years.push({
         year,
@@ -2205,7 +2609,7 @@ const getYearEventTitle = (note: NoteNode) => {
 };
 
 const getYearEventStyle = (note: NoteNode) => {
-  const style = getNoteDisplayTheme(note);
+  const style = getNoteRenderMeta(note).displayStyle;
   const weight = Math.max(0, Number(note.weight || 0));
   return {
     color: style.color,
@@ -2221,8 +2625,9 @@ const getYearEventStyle = (note: NoteNode) => {
 };
 
 const getYearEventProgressStyle = (note: NoteNode) => {
-  const percent = getNoteProgressPercent(note) ?? 0;
-  const style = getNoteDisplayTheme(note);
+  const meta = getNoteRenderMeta(note);
+  const percent = meta.progressPercent ?? 0;
+  const style = meta.displayStyle;
   return {
     width: `${percent}%`,
     backgroundColor: style.borderColor
@@ -2230,11 +2635,8 @@ const getYearEventProgressStyle = (note: NoteNode) => {
 };
 
 const getNoteStyle = (note: NoteNode) => {
-  const style = getNoteDisplayTheme(note);
-
-  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
-  const baseHeight = 26;
-  const height = Math.round(baseHeight * scale);
+  const meta = getNoteRenderMeta(note);
+  const style = meta.displayStyle;
 
     return {
       marginBottom: '4px',
@@ -2248,22 +2650,21 @@ const getNoteStyle = (note: NoteNode) => {
       opacity: style.opacity,
       cursor: 'pointer',
       overflow: 'hidden',
-    height: `${height}px`,
+    height: `${meta.height}px`,
     display: 'flex',
     alignItems: 'center'
   } as any;
 };
 
 const getNoteTitleStyle = (note: NoteNode) => {
-  const style = getNoteDisplayTheme(note);
-  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
-  const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
+  const meta = getNoteRenderMeta(note);
+  const style = meta.displayStyle;
 
   return {
     color: style.color,
     fontWeight: style.fontWeight,
     textDecoration: style.textDecoration,
-    fontSize: `${fontSize}px`,
+    fontSize: `${meta.fontSize}px`,
     width: '100%',
     display: 'flex',
     alignItems: 'center',
@@ -2273,25 +2674,15 @@ const getNoteTitleStyle = (note: NoteNode) => {
 };
 
 const getNoteTitleTextStyle = (note: NoteNode, singleLine: boolean = false, inheritColor: boolean = false) => {
-  const style = getNoteDisplayTheme(note);
-  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
-  // Font size: Base 12px, grow slower to allow more text
-  const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
-
-  const baseHeight = 26;
-  const height = Math.round(baseHeight * scale);
-
-  const lineHeight = 1.25;
-  const lineHeightPx = fontSize * lineHeight;
-  // Calculate max lines based on height
-  const maxLines = Math.max(1, Math.floor(height / lineHeightPx));
+  const meta = getNoteRenderMeta(note);
+  const style = meta.displayStyle;
 
   return {
     ...(inheritColor ? {} : { color: style.color }),
     fontWeight: style.fontWeight,
     textDecoration: style.textDecoration,
-    fontSize: `${fontSize}px`,
-    lineHeight: lineHeight,
+    fontSize: `${meta.fontSize}px`,
+    lineHeight: 1.25,
     minWidth: 0,
     flex: 1,
     ...(singleLine ? {
@@ -2303,7 +2694,7 @@ const getNoteTitleTextStyle = (note: NoteNode, singleLine: boolean = false, inhe
     } : {
       display: '-webkit-box',
       WebkitBoxOrient: 'vertical',
-      WebkitLineClamp: maxLines,
+      WebkitLineClamp: meta.maxLines,
       overflow: 'hidden',
       wordBreak: 'break-all'
     })
@@ -2311,12 +2702,12 @@ const getNoteTitleTextStyle = (note: NoteNode, singleLine: boolean = false, inhe
 };
 
 const useSplitNoteTitle = (note: NoteNode) => {
-  const ratio = getNoteDisplayTheme(note).partialFillRatio;
+  const ratio = getNoteRenderMeta(note).displayStyle.partialFillRatio;
   return typeof ratio === 'number' && ratio > 0 && ratio < 1;
 };
 
 const getNoteSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
-  const style = getNoteDisplayTheme(note);
+  const style = getNoteRenderMeta(note).displayStyle;
   const ratio = style.partialFillRatio ?? 0;
   return {
     color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
@@ -2324,6 +2715,39 @@ const getNoteSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
       ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
       : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
   } as any;
+};
+
+const toApiSeconds = (value: number) => value / 1000;
+
+const getYearSummaryBucketKey = (year: number, monthIndex: number) => `year:${year}:${pad2(monthIndex + 1)}`;
+const getVolumeSummaryBucketKey = (volumeId: string, year: number, monthIndex: number) => (
+  `volume:${volumeId}:${year}:${pad2(monthIndex + 1)}`
+);
+const getEraSummaryBucketKey = (volumeId: string, year: number) => `era:${volumeId}:${year}`;
+
+const getCalendarSummaryBucket = (key: string): CalendarSummaryBucketState | undefined => (
+  calendarSummaryBuckets.value[key]
+);
+
+const hasCalendarSummaryBucket = (key: string) => (
+  Object.prototype.hasOwnProperty.call(calendarSummaryBuckets.value, key)
+);
+
+const applyCalendarSummaryBuckets = (key: string, buckets: NoteCalendarSummaryBucketResponse[]) => {
+  const next: Record<string, CalendarSummaryBucketState> = {};
+  for (const bucket of buckets) {
+    next[bucket.key] = {
+      total_nodes: Number(bucket.total_nodes || 0),
+      nodes: bucket.nodes || [],
+    };
+  }
+  calendarSummaryKey.value = key;
+  calendarSummaryBuckets.value = next;
+};
+
+const clearCalendarSummary = () => {
+  calendarSummaryKey.value = '';
+  calendarSummaryBuckets.value = {};
 };
 
 const buildCalendarProgram = () => {
@@ -2343,22 +2767,229 @@ const getCalendarQueryLimit = () => {
   return CALENDAR_QUERY_LIMIT_DEFAULT;
 };
 
-const refreshData = async (options: { silent?: boolean } = {}) => {
+const buildCalendarQueryRequest = () => buildScanNoteProgramRequest(buildCalendarProgram(), {
+  limit: getCalendarQueryLimit(),
+  include_edges: false,
+  order_by: 'start_at',
+  order_desc: false
+});
+
+const canUseCalendarSummaryQuery = () => (
+  calendarScale.value !== 'month'
+  && getSummaryPushdownRules({
+    default: true,
+    rules: (props.dataFilterRules || []).map(rule => normalizeNoteProgramRule(rule)),
+  }) !== null
+  && getSummaryPushdownRules(fixedViewProgram.value) !== null
+  && getSummaryPushdownRules(viewProgram.value) !== null
+);
+
+const buildCalendarSummaryRequest = (query: NoteProgramRequest): NoteCalendarSummaryRequest | null => {
+  if (!canUseCalendarSummaryQuery()) return null;
+  const fixedPushdownRules = getSummaryPushdownRules(fixedViewProgram.value) || [];
+  const viewPushdownRules = getSummaryPushdownRules(viewProgram.value) || [];
+  const summaryQuery: NoteProgramRequest = {
+    ...query,
+    program: {
+      ...query.program,
+      select: {
+        ...query.program.select,
+        rules: [
+          ...query.program.select.rules,
+          ...fixedPushdownRules,
+          ...viewPushdownRules,
+        ],
+      },
+    },
+  };
+  const limit = REPRESENTATIVE_POOL_LIMIT;
+  if (calendarScale.value === 'year') {
+    return {
+      query: summaryQuery,
+      buckets: Array.from({ length: 12 }, (_, monthIndex) => {
+        const start = new Date(currentYear.value, monthIndex, 1).getTime();
+        const end = new Date(currentYear.value, monthIndex + 1, 1).getTime() - 1;
+        return {
+          key: getYearSummaryBucketKey(currentYear.value, monthIndex),
+          start_at: toApiSeconds(start),
+          end_at: toApiSeconds(end),
+          mode: 'year',
+          limit,
+        };
+      }),
+    };
+  }
+  if (calendarScale.value === 'volume') {
+    return {
+      query: summaryQuery,
+      buckets: volumeYears.value.flatMap(year => (
+        Array.from({ length: 12 }, (_, monthIndex) => {
+          const monthStart = new Date(year, monthIndex, 1).getTime();
+          const monthEnd = new Date(year, monthIndex + 1, 1).getTime() - 1;
+          const start = Math.max(monthStart, volumeStartTs.value);
+          const end = Math.min(monthEnd, volumeEndTs.value - 1);
+          if (start > end) return null;
+          return {
+            key: getVolumeSummaryBucketKey(currentVolume.value.id, year, monthIndex),
+            start_at: toApiSeconds(start),
+            end_at: toApiSeconds(end),
+            mode: 'volume' as const,
+            limit,
+          };
+        }).filter((bucket): bucket is NonNullable<typeof bucket> => Boolean(bucket))
+      )),
+    };
+  }
+  return {
+    query: summaryQuery,
+    buckets: calendarVolumeRanges.value.flatMap(volume => {
+      const start = new Date(volume.startTs);
+      const end = new Date(volume.endTs - 1);
+      const buckets = [];
+      for (let year = start.getFullYear(); year <= end.getFullYear(); year += 1) {
+        const yearStart = new Date(year, 0, 1).getTime();
+        const yearEnd = new Date(year + 1, 0, 1).getTime() - 1;
+        const bucketStart = Math.max(yearStart, volume.startTs);
+        const bucketEnd = Math.min(yearEnd, volume.endTs - 1);
+        if (bucketStart > bucketEnd) continue;
+        buckets.push({
+          key: getEraSummaryBucketKey(volume.id, year),
+          start_at: toApiSeconds(bucketStart),
+          end_at: toApiSeconds(bucketEnd),
+          mode: 'era' as const,
+          limit,
+        });
+      }
+      return buckets;
+    }),
+  };
+};
+
+const getCalendarQueryCacheKey = (request: NoteProgramRequest) => JSON.stringify({
+  scale: calendarScale.value,
+  request,
+});
+
+const getCalendarSummaryCacheKey = (request: NoteCalendarSummaryRequest) => JSON.stringify({
+  scale: calendarScale.value,
+  request,
+});
+
+const rememberCalendarQuery = (
+  key: string,
+  request: NoteProgramRequest,
+  response: NoteProgramResponse,
+) => {
+  if (calendarQueryCache.has(key)) calendarQueryCache.delete(key);
+  calendarQueryCache.set(key, { request, response, cachedAt: Date.now() });
+  while (calendarQueryCache.size > CALENDAR_QUERY_CACHE_LIMIT) {
+    const firstKey = calendarQueryCache.keys().next().value;
+    if (!firstKey) break;
+    calendarQueryCache.delete(firstKey);
+  }
+};
+
+const rememberCalendarSummary = (
+  key: string,
+  request: NoteCalendarSummaryRequest,
+  response: CalendarSummaryCacheEntry['response'],
+) => {
+  if (calendarSummaryCache.has(key)) calendarSummaryCache.delete(key);
+  calendarSummaryCache.set(key, { request, response, cachedAt: Date.now() });
+  while (calendarSummaryCache.size > CALENDAR_QUERY_CACHE_LIMIT) {
+    const firstKey = calendarSummaryCache.keys().next().value;
+    if (!firstKey) break;
+    calendarSummaryCache.delete(firstKey);
+  }
+};
+
+const clearCalendarQueryCache = () => {
+  calendarQueryCache.clear();
+  calendarSummaryCache.clear();
+  calendarBackgroundRefreshKeys.clear();
+};
+
+const queueCalendarBackgroundRefresh = (key: string) => {
+  if (!isActive.value) {
+    inactiveCalendarRefreshPending = true;
+    return;
+  }
+  if (calendarBackgroundRefreshKeys.has(key)) return;
+  calendarBackgroundRefreshKeys.add(key);
+  void nextTick(async () => {
+    try {
+      await refreshData({ silent: true, skipCache: true, background: true });
+    } finally {
+      calendarBackgroundRefreshKeys.delete(key);
+    }
+  });
+};
+
+const refreshData = async (options: CalendarRefreshOptions = {}) => {
   const perfStartedAt = calendarPerfEnabled ? performance.now() : 0;
-  loading.value = true;
+  const request = buildCalendarQueryRequest();
+  const cacheKey = getCalendarQueryCacheKey(request);
+  const summaryRequest = buildCalendarSummaryRequest(request);
+  let usedCache = false;
+  if (!options.background) {
+    loading.value = true;
+  }
   try {
-    await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(buildCalendarProgram(), {
-      limit: getCalendarQueryLimit(),
-      include_edges: false,
-      order_by: 'start_at',
-      order_desc: false
-    }));
+    if (summaryRequest) {
+      const summaryCacheKey = getCalendarSummaryCacheKey(summaryRequest);
+      const cachedSummary = calendarSummaryCache.get(summaryCacheKey);
+      if (!options.skipCache && cachedSummary) {
+        if (Date.now() - cachedSummary.cachedAt <= CALENDAR_QUERY_CACHE_TTL_MS) {
+          noteStore.applyQueryResponseToTab(props.tabId, cachedSummary.request.query, {
+            nodes: cachedSummary.response.nodes,
+            edges: [],
+            total_nodes: cachedSummary.response.total_nodes,
+            total_edges: 0,
+          });
+          applyCalendarSummaryBuckets(summaryCacheKey, cachedSummary.response.buckets);
+          usedCache = true;
+          queueCalendarBackgroundRefresh(summaryCacheKey);
+          return;
+        }
+        calendarSummaryCache.delete(summaryCacheKey);
+      }
+
+      const summaryResult = await noteStore.queryNoteCalendarSummaryForTab(props.tabId, summaryRequest);
+      if (summaryResult?.data) {
+        rememberCalendarSummary(summaryCacheKey, summaryRequest, summaryResult.data);
+        applyCalendarSummaryBuckets(summaryCacheKey, summaryResult.data.buckets);
+        if (!options.silent) {
+          ElMessage.success('已刷新');
+        }
+        return;
+      }
+    }
+
+    const cached = calendarQueryCache.get(cacheKey);
+    if (!options.skipCache && cached) {
+      if (Date.now() - cached.cachedAt <= CALENDAR_QUERY_CACHE_TTL_MS) {
+        noteStore.applyQueryResponseToTab(props.tabId, cached.request, cached.response);
+        clearCalendarSummary();
+        usedCache = true;
+        queueCalendarBackgroundRefresh(cacheKey);
+        return;
+      }
+      calendarQueryCache.delete(cacheKey);
+    }
+
+    const result = await noteStore.queryNoteProgramForTab(props.tabId, request);
+    if (result?.data) {
+      clearCalendarSummary();
+      rememberCalendarQuery(cacheKey, request, result.data);
+    }
     if (!options.silent) {
       ElMessage.success('已刷新');
     }
   } finally {
-    loading.value = false;
-    logCalendarPerf('refreshData(query-program)', perfStartedAt);
+    if (!options.background) {
+      loading.value = false;
+    }
+    logCalendarPerf(usedCache ? 'refreshData(cache-hit)' : 'refreshData(query-program)', perfStartedAt);
   }
 };
 
@@ -2370,13 +3001,20 @@ const resetViewProgram = () => {
   viewProgram.value = createIncludeAllProgram();
 };
 
-const handleNoteUpdate = () => {};
+const handleNoteUpdate = () => {
+  clearCalendarQueryCache();
+  clearCalendarRenderCaches();
+};
 
 const handleNoteDelete = (noteId: string) => {
+  clearCalendarQueryCache();
+  clearCalendarRenderCaches();
   if (currentNoteId.value === noteId) currentNoteId.value = '';
 };
 
 const handleNoteCreate = (note: NoteNode) => {
+  clearCalendarQueryCache();
+  clearCalendarRenderCaches();
   noteStore.addNoteToTab(props.tabId, note.id);
   currentNoteId.value = noteKey(note.id);
 };
@@ -2407,14 +3045,27 @@ onMounted(() => {
   void measureCalendarPerf('nextTick after mounted', () => nextTick());
   void loadYearMonthMemos();
   if (showCodexWorkload.value) {
-    void refreshCodexWorkloadStats();
+    applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
+    if (isActive.value) {
+      void refreshCodexWorkloadStats();
+    } else {
+      inactiveCalendarRefreshPending = true;
+    }
   }
-  refreshData({ silent: true });
+  if (isActive.value) {
+    refreshData({ silent: true });
+  } else {
+    inactiveCalendarRefreshPending = true;
+  }
   window.addEventListener('click', closeContextMenus);
   window.addEventListener('scroll', closeContextMenus, true);
 });
 
 onBeforeUnmount(() => {
+  if (scheduledCalendarRefreshTimer !== null) {
+    clearTimeout(scheduledCalendarRefreshTimer);
+    scheduledCalendarRefreshTimer = null;
+  }
   window.removeEventListener('click', closeContextMenus);
   window.removeEventListener('scroll', closeContextMenus, true);
 });
@@ -2461,13 +3112,29 @@ watch(viewProgram, (value) => {
 
 watch(() => userStore.isAuthenticated, (isAuthenticated) => {
   if (!showCodexWorkload.value) return;
+  if (!isActive.value) {
+    inactiveCalendarRefreshPending = true;
+    return;
+  }
   if (isAuthenticated) {
     void refreshCodexWorkloadStats();
   } else {
     codexWorkloadTurns.value = [];
-    codexHistoricalSecondsByDay.value = {};
-    codexWorkloadLoaded.value = false;
+    applyCachedCodexWorkloadSnapshot(loadCodexWorkloadStatsCache());
     codexWorkloadError.value = '';
+  }
+});
+
+watch(isActive, (active) => {
+  if (!active) return;
+  if (inactiveCalendarRefreshPending) {
+    inactiveCalendarRefreshPending = false;
+    void refreshData({ silent: true });
+  } else if (noteStore.getTabNotes(props.tabId).length === 0) {
+    void refreshData({ silent: true });
+  }
+  if (showCodexWorkload.value && !codexWorkloadLoaded.value) {
+    void refreshCodexWorkloadStats();
   }
 });
 

@@ -246,12 +246,11 @@ def test_attendance_threshold_refund_style_parses_clockin_rule():
     assert no_refund == 0
     assert no_color is None
     assert partial_refund == 150
-    assert partial_color is not None
+    assert partial_color == "#FFFF40"
     assert full_refund == 200
-    assert full_color is not None
+    assert full_color == "#80FF80"
     assert extra_refund == 200
-    assert extra_color is not None
-    assert extra_color != full_color
+    assert extra_color == "#80FF80"
 
 
 def test_attendance_percentage_refund_style_supports_nianzhu_rule_versions():
@@ -283,19 +282,18 @@ def test_attendance_percentage_refund_style_supports_nianzhu_rule_versions():
     assert blank_refund == 0
     assert blank_color is None
     assert current_refund == 20
-    assert current_color is not None
+    assert current_color == "#80FF80"
     assert old_partial_refund == 10
-    assert old_partial_color is not None
-    assert old_partial_color != current_color
+    assert old_partial_color == "#FFFF80"
     assert old_full_refund == 20
-    assert old_full_color is not None
+    assert old_full_color == "#80FF80"
 
 
 def test_attendance_presence_progress_style_colors_non_refund_progress():
     assert highlight_presence_progress("") is None
     assert highlight_presence_progress("学习中/0%") is None
-    assert highlight_presence_progress("学习中/63%") is not None
-    assert highlight_presence_progress("3遍/228%") is not None
+    assert highlight_presence_progress("学习中/63%") == "#FFFF5E"
+    assert highlight_presence_progress("3遍/228%") == "#80FF80"
     assert highlight_presence_progress("3遍/228%") != highlight_presence_progress("学习中/63%")
 
 

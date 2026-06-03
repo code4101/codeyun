@@ -22,11 +22,23 @@ export function formatChineseCompactNumber(value: unknown) {
   if (!numeric) {
     return '0'
   }
-  if (numeric >= 100000000) {
-    return `${formatCompactSignificant(numeric / 100000000)}亿`
-  }
-  if (numeric >= 10000) {
-    return `${formatCompactSignificant(numeric / 10000)}万`
+  const units = [
+    ['载', 1e44],
+    ['正', 1e40],
+    ['涧', 1e36],
+    ['沟', 1e32],
+    ['穰', 1e28],
+    ['秭', 1e24],
+    ['垓', 1e20],
+    ['京', 1e16],
+    ['兆', 1e12],
+    ['亿', 1e8],
+    ['万', 1e4],
+  ] as const
+  for (const [unit, divisor] of units) {
+    if (numeric >= divisor) {
+      return `${formatCompactSignificant(numeric / divisor)}${unit}`
+    }
   }
   return formatCompactSignificant(numeric)
 }

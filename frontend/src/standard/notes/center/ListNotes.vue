@@ -31,7 +31,7 @@
     <div class="toolbar-section">
       <div v-if="selectedCount > 0" class="bulk-actions">
         <el-tag type="info">已选 {{ selectedCount }} 项</el-tag>
-        <el-button size="small" @click="selectAllVisible" :disabled="filteredNotes.length === 0 || allVisibleSelected">全选当前可见</el-button>
+        <el-button size="small" @click="selectAllVisible" :disabled="visiblePageNotes.length === 0 || allVisibleSelected">全选当前页</el-button>
         <el-button size="small" @click="clearSelection">清空选择</el-button>
         <el-button size="small" type="primary" plain @click="batchEditVisible = true">批量编辑</el-button>
       </div>
@@ -51,10 +51,16 @@
     >
       <template #main>
         <div class="list-container">
+          <div class="list-summary-bar">
+            <span>共 {{ filteredNotes.length }} 条</span>
+            <span v-if="filteredNotes.length > visiblePageNotes.length">
+              当前显示 {{ visiblePageNotes.length }} 条
+            </span>
+          </div>
           <el-table
             ref="tableRef"
             v-loading="loading"
-            :data="filteredNotes"
+            :data="visiblePageNotes"
             class="notes-table"
             highlight-current-row
             @current-change="handleCurrentChange"
@@ -135,6 +141,17 @@
               </template>
             </el-table-column>
           </el-table>
+          <div class="list-pagination-bar">
+            <el-pagination
+              v-model:current-page="currentPage"
+              v-model:page-size="pageSize"
+              :page-sizes="PAGE_SIZE_OPTIONS"
+              :total="filteredNotes.length"
+              layout="total, sizes, prev, pager, next"
+              small
+              background
+            />
+          </div>
         </div>
       </template>
 
@@ -186,6 +203,7 @@ import { getStableBadgeStyle } from '@/utils/stableVisualColor';
 const noteStore = useNoteStore();
 const props = defineProps<{
   tabId: string;
+  active?: boolean;
 }>();
 
 const session = computed(() => noteStore.getTabSession(props.tabId));
@@ -208,18 +226,30 @@ const loading = ref(false);
 const tableRef = ref<any>(null);
 const selectedNoteIds = ref<string[]>([]);
 const batchEditVisible = ref(false);
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
+const currentPage = ref(1);
+const pageSize = ref(100);
+const isActive = computed(() => props.active !== false);
 
 // Computed
 const filteredNotes = computed(() => {
   const result = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
   return [...result].sort((a, b) => b.updated_at - a.updated_at);
 });
-const visibleNoteIds = computed(() => new Set(filteredNotes.value.map(note => noteKey(note.id))));
+const visiblePageNotes = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return filteredNotes.value.slice(start, start + pageSize.value);
+});
 const selectedCount = computed(() => selectedNoteIds.value.length);
 const allVisibleSelected = computed(() => (
-  filteredNotes.value.length > 0
-  && filteredNotes.value.every(note => selectedNoteIds.value.includes(noteKey(note.id)))
+  visiblePageNotes.value.length > 0
+  && visiblePageNotes.value.every(note => selectedNoteIds.value.includes(noteKey(note.id)))
 ));
+const filteredNotesVersion = computed(() => JSON.stringify([
+  session.value?.noteDataVersion ?? 0,
+  noteStore.noteRevision,
+  normalizeNoteProgramChannel(viewProgram.value),
+]));
 
 // Actions
 const runDataProgram = async (program = getAppliedDataProgram(), persist: boolean = false) => {
@@ -288,7 +318,7 @@ const handleSelectionChange = (rows: NoteNode[]) => {
 
 const selectAllVisible = async () => {
   await nextTick();
-  filteredNotes.value.forEach(note => {
+  visiblePageNotes.value.forEach(note => {
     tableRef.value?.toggleRowSelection(note, true);
   });
 };
@@ -460,15 +490,40 @@ watch(viewProgram, (value) => {
   });
 }, { deep: true });
 
-watch(filteredNotes, async () => {
-  const nextSelectedIds = selectedNoteIds.value.filter(id => visibleNoteIds.value.has(id));
+const clampCurrentPage = () => {
+  const maxPage = Math.max(1, Math.ceil(filteredNotes.value.length / pageSize.value));
+  if (currentPage.value > maxPage) {
+    currentPage.value = maxPage;
+  }
+};
+
+const pruneSelectionToVisibleNotes = async () => {
+  if (!isActive.value) return;
+  if (selectedNoteIds.value.length === 0) return;
+  const visibleNoteIds = new Set(filteredNotes.value.map(note => noteKey(note.id)));
+  const nextSelectedIds = selectedNoteIds.value.filter(id => visibleNoteIds.has(id));
   if (nextSelectedIds.length === selectedNoteIds.value.length) return;
   selectedNoteIds.value = nextSelectedIds;
   await nextTick();
   if (nextSelectedIds.length === 0) {
     tableRef.value?.clearSelection();
   }
-}, { deep: true });
+};
+
+watch([filteredNotesVersion, pageSize], () => {
+  if (!isActive.value) return;
+  clampCurrentPage();
+});
+
+watch(filteredNotesVersion, async () => {
+  await pruneSelectionToVisibleNotes();
+});
+
+watch(isActive, async (active) => {
+  if (!active) return;
+  clampCurrentPage();
+  await pruneSelectionToVisibleNotes();
+});
 
 </script>
 
@@ -530,9 +585,29 @@ watch(filteredNotes, async () => {
   min-height: 0;
 }
 
+.list-summary-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  color: #606266;
+  font-size: 12px;
+  border-bottom: 1px solid #ebeef5;
+  flex-shrink: 0;
+}
+
 .notes-table {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.list-pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid #ebeef5;
+  flex-shrink: 0;
 }
 
 .note-title {

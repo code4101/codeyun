@@ -15,6 +15,7 @@ from backend.core.fanxiu_tcp_flow import (
     list_tcp_streams_with_tshark,
     resolve_fanxiu_tcp_store_root,
 )
+from backend.core.fanxiu_packet_business_store import upsert_fanxiu_packet_business_records
 from backend.core.settings import get_settings
 
 WORLDLINE_ACTIVITY_PROTOCOL = "SM_WorldLineActivitySync"
@@ -42,6 +43,63 @@ def _records_path(data_dir: str | Path | None = None) -> Path:
 
 def _rank_records_path(data_dir: str | Path | None = None) -> Path:
     return _sync_root(data_dir) / "activity_rank_records.json"
+
+
+def _activity_business_record_rows(records: list[dict[str, Any]], rank_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        item = record.get("item") if isinstance(record.get("item"), dict) else {}
+        evidence_rows = record.get("evidence") if isinstance(record.get("evidence"), list) else []
+        evidence = evidence_rows[-1] if evidence_rows and isinstance(evidence_rows[-1], dict) else {}
+        key = str(record.get("key") or _activity_identity_key(item) or "")
+        rows.append(
+            {
+                "domain": "worldline_activity",
+                "record_key": key,
+                "protocol": WORLDLINE_ACTIVITY_PROTOCOL,
+                "packet_id": str(evidence.get("packet_id") or ""),
+                "source_kind": str(evidence.get("source_kind") or ""),
+                "entity_id": str(item.get("activityId") or item.get("id") or ""),
+                "entity_name": str(item.get("name") or ""),
+                "captured_at": str(record.get("last_seen_at") or evidence.get("captured_at") or ""),
+                "payload": record,
+                "evidence": evidence,
+            }
+        )
+    for record in rank_records:
+        if not isinstance(record, dict):
+            continue
+        snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), dict) else {}
+        evidence_rows = record.get("evidence") if isinstance(record.get("evidence"), list) else []
+        evidence = evidence_rows[-1] if evidence_rows and isinstance(evidence_rows[-1], dict) else {}
+        rows.append(
+            {
+                "domain": "activity_rank",
+                "record_key": str(record.get("key") or ""),
+                "protocol": ACTIVITY_RANK_PROTOCOL,
+                "packet_id": str(evidence.get("packet_id") or ""),
+                "source_kind": str(evidence.get("source_kind") or ""),
+                "entity_id": str(snapshot.get("activity_id") or ""),
+                "entity_name": str(snapshot.get("activity_name") or snapshot.get("name") or ""),
+                "captured_at": str(record.get("last_seen_at") or snapshot.get("captured_at") or evidence.get("captured_at") or ""),
+                "payload": record,
+                "evidence": evidence,
+            }
+        )
+    return rows
+
+
+def _persist_activity_business_records(records: list[dict[str, Any]], rank_records: list[dict[str, Any]]) -> dict[str, int]:
+    rows = _activity_business_record_rows(records, rank_records)
+    if not rows:
+        return {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+    from backend.db import engine
+    from sqlmodel import Session
+
+    with Session(engine) as session:
+        return upsert_fanxiu_packet_business_records(session, rows)
 
 
 def _load_json(path: Path, fallback: Any) -> Any:
@@ -541,6 +599,7 @@ def sync_fanxiu_activity_packets(
             "records": rank_records,
         },
     )
+    business_db_sync = _persist_activity_business_records(records, rank_records)
     if last_entry:
         state["worldline_activity"] = {
             "last_packet_scan_at": last_entry.get("decoded_at") or "",
@@ -572,6 +631,7 @@ def sync_fanxiu_activity_packets(
         "rank_updated": rank_updated,
         "skipped_duplicates": skipped_duplicates,
         "rank_skipped_duplicates": rank_skipped_duplicates,
+        "business_db_sync": business_db_sync,
         "record_count": len(records),
         "rank_record_count": len(rank_records),
     }

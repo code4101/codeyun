@@ -2440,6 +2440,20 @@ def get_codex_workload_for_entry(
     return payload
 
 
+@router.get("/local-codex/workload")
+def get_local_codex_workload_for_user(
+    root_dir: str | None = Query(default=None),
+    start_at: float | None = Query(default=None),
+    end_at: float | None = Query(default=None),
+    session: Session = Depends(get_session),
+    _current_user: User = Depends(get_current_user_from_token),
+):
+    try:
+        return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
+    except Exception as exc:  # pragma: no cover - translated for HTTP callers
+        _raise_codex_http_error(exc)
+
+
 def _parse_daily_summary_entry_ids(entry_ids: str | None) -> list[str]:
     ids: list[str] = []
     seen: set[str] = set()

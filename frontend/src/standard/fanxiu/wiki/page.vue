@@ -12,7 +12,7 @@ import type { ComposeOption, ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowRight, Close, Refresh, Search, TopRight } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Close, Search, TopRight } from '@element-plus/icons-vue'
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue'
 import { noteKey, type NoteNode, useNoteStore } from '@/api/notes'
 import type { EditableNotePatch } from '@/utils/noteAutoSave'
@@ -38,6 +38,7 @@ import {
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
 import { formatChineseCompactNumber } from '../numberFormat'
+import { stableHash32 } from '@/utils/stableVisualColor'
 import {
   getHiddenFanxiuPacketProtocols,
   isFanxiuPacketProtocolVisible,
@@ -58,6 +59,7 @@ import {
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
+  getFanxiuPlayerProfiles,
   getFanxiuPacketRuntimeInsights,
   getFanxiuPacketStorageBag,
   getFanxiuProtocolSemantics,
@@ -69,8 +71,6 @@ import {
   getFanxiuWwiseMp3Manifest,
   listFanxiuTcpBusinessEntries,
   searchFanxiuStaticVisualByImage,
-  syncFanxiuActivityPackets,
-  syncFanxiuPacketRuntimeInsights,
   searchFanxiuActivityCards,
   searchFanxiuDigitDoorCharacterCards,
   searchFanxiuDigitDoorEnhanceGroups,
@@ -197,6 +197,7 @@ const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
 const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
 const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
 const STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY = 'fanxiu:wiki:storage-bag-worship-chart-planes'
+const PLAYER_PROFILE_PREF_STORAGE_KEY = 'fanxiu:wiki:player-profile-preferences'
 const ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY = 'fanxiu:wiki:activity-period-pane-height'
 const ACTIVITY_NOTE_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-binding'
 const ACTIVITY_NOTE_INDEX_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-index'
@@ -234,6 +235,7 @@ const NON_LIST_ACTIVITY_PAGE_SIZE = 5000
 const ACTIVITY_CALENDAR_WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
+  { key: 'player_profile', label: '面板' },
   { key: 'item', label: '道具' },
   { key: 'visual', label: '图片' },
   { key: 'asset', label: '素材' },
@@ -267,6 +269,7 @@ const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
 const AUXILIARY_WIKI_TAB_KEYS = new Set<WikiTab>(AUXILIARY_WIKI_TABS.map(tab => tab.key))
 const TOP_WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
+  { key: 'player_profile', label: '面板' },
   { key: 'item', label: '道具' },
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
@@ -493,6 +496,8 @@ const activeTopTab = computed<TopWikiTab>({
 const showAuxiliaryTabs = computed(() => isAuxiliaryWikiTab(activeTab.value))
 const query = ref('')
 const searchHistory = ref<Record<WikiTab, string[]>>({
+  storage_bag: [],
+  player_profile: [],
   item: [],
   visual: [],
   asset: [],
@@ -523,7 +528,6 @@ const activityViewMode = ref<ActivityViewMode>('list')
 const activityHideOver30Days = ref(true)
 const activityWorldlineSchedule = ref<FanxiuWorldlineActivityScheduleResponse | null>(null)
 const loadingActivityWorldlineSchedule = ref(false)
-const activityPacketSyncing = ref(false)
 const activityPeriodScrollRef = ref<HTMLElement | null>(null)
 const activityWorkspaceRef = ref<HTMLElement | null>(null)
 const activityPeriodListRef = ref<HTMLElement | null>(null)
@@ -570,8 +574,12 @@ const packetRuntimeInsights = ref<Record<string, any> | null>(null)
 const packetRuntimeInsightsLoading = ref(false)
 const storageBagMainGroup = ref('all')
 const storageBagSubGroup = ref('')
+const storageBagSubGroupMemory = ref<Record<string, string>>({})
+const storageBagSubGroupAllSelected = ref(false)
 const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'total_friendship'>('default')
 const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
+const playerProfileSortKey = ref<'default' | 'attack_desc' | 'attack_asc'>('default')
+const selectedPlayerProfileAttackUnits = ref<string[]>([])
 const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
 const storageBagWorshipTableVisible = ref(false)
 const selectedPacketCategory = ref('')
@@ -914,10 +922,29 @@ function loadStorageBagFilterConfig() {
   try {
     const raw = window.localStorage.getItem(STORAGE_BAG_FILTER_STORAGE_KEY)
     if (!raw) return
-    const config = JSON.parse(raw) as { mainGroup?: unknown; subGroup?: unknown }
+    const config = JSON.parse(raw) as {
+      mainGroup?: unknown;
+      subGroup?: unknown;
+      subGroups?: Record<string, unknown>;
+    }
     const mainGroup = normalizeStorageBagMainGroup(config.mainGroup)
+    const subGroups: Record<string, string> = {}
+    if (config.subGroups && typeof config.subGroups === 'object') {
+      for (const [key, value] of Object.entries(config.subGroups)) {
+        const normalizedMainGroup = normalizeStorageBagMainGroup(key)
+        const normalizedSubGroup = normalizeStorageBagSubGroup(normalizedMainGroup, value)
+        if (normalizedMainGroup !== 'all' && normalizedSubGroup) {
+          subGroups[normalizedMainGroup] = normalizedSubGroup
+        }
+      }
+    }
+    const legacySubGroup = normalizeStorageBagSubGroup(mainGroup, config.subGroup)
+    if (mainGroup !== 'all' && legacySubGroup && !subGroups[mainGroup]) {
+      subGroups[mainGroup] = legacySubGroup
+    }
+    storageBagSubGroupMemory.value = subGroups
     storageBagMainGroup.value = mainGroup
-    storageBagSubGroup.value = normalizeStorageBagSubGroup(mainGroup, config.subGroup)
+    storageBagSubGroup.value = resolveStorageBagSubGroup(mainGroup, subGroups[mainGroup] || legacySubGroup)
   } catch (error) {
     console.warn('Failed to load Fanxiu storage bag filter config:', error)
     window.localStorage.removeItem(STORAGE_BAG_FILTER_STORAGE_KEY)
@@ -942,6 +969,7 @@ function persistStorageBagFilterConfig() {
     window.localStorage.setItem(STORAGE_BAG_FILTER_STORAGE_KEY, JSON.stringify({
       mainGroup: storageBagMainGroup.value,
       subGroup: storageBagSubGroup.value,
+      subGroups: storageBagSubGroupMemory.value,
     }))
   } catch (error) {
     console.warn('Failed to persist Fanxiu storage bag filter config:', error)
@@ -957,6 +985,49 @@ function persistStorageBagWorshipChartPlaneConfig() {
     )
   } catch (error) {
     console.warn('Failed to persist Fanxiu storage bag worship chart plane config:', error)
+  }
+}
+
+function normalizePlayerProfileSortKey(value: unknown): typeof playerProfileSortKey.value {
+  return value === 'attack_desc' || value === 'attack_asc' ? value : 'default'
+}
+
+function normalizePlayerProfileAttackUnits(value: unknown) {
+  const allowed = new Set(PLAYER_PROFILE_ATTACK_UNIT_ORDER)
+  return Array.from(new Set((Array.isArray(value) ? value : [])
+    .map(item => String(item))
+    .filter(item => allowed.has(item))))
+}
+
+function loadPlayerProfilePreferences() {
+  if (!canUseLocalStorage()) return
+  try {
+    const raw = window.localStorage.getItem(PLAYER_PROFILE_PREF_STORAGE_KEY)
+    if (!raw) return
+    const config = JSON.parse(raw) as {
+      sortKey?: unknown;
+      attackUnits?: unknown;
+    }
+    playerProfileSortKey.value = normalizePlayerProfileSortKey(config.sortKey)
+    selectedPlayerProfileAttackUnits.value = normalizePlayerProfileAttackUnits(config.attackUnits)
+    playerProfileAttackUnitSelectionInitialized = true
+    playerProfileAttackUnitPreferenceLoaded = true
+    previousPlayerProfileAttackUnits = []
+  } catch (error) {
+    console.warn('Failed to load Fanxiu player profile preferences:', error)
+    window.localStorage.removeItem(PLAYER_PROFILE_PREF_STORAGE_KEY)
+  }
+}
+
+function persistPlayerProfilePreferences() {
+  if (!canUseLocalStorage()) return
+  try {
+    window.localStorage.setItem(PLAYER_PROFILE_PREF_STORAGE_KEY, JSON.stringify({
+      sortKey: playerProfileSortKey.value,
+      attackUnits: selectedPlayerProfileAttackUnits.value,
+    }))
+  } catch (error) {
+    console.warn('Failed to persist Fanxiu player profile preferences:', error)
   }
 }
 
@@ -1382,6 +1453,7 @@ const activityDisplayItems = computed(() => {
 
 const displayTotal = computed(() => {
   if (activeTab.value === 'storage_bag') return filteredStorageBagItems.value.length
+  if (activeTab.value === 'player_profile') return filteredPlayerProfileRows.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'document') return activityDocumentItems.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'period') return activityDisplayItems.value.length
   return total.value
@@ -1389,6 +1461,7 @@ const displayTotal = computed(() => {
 
 const resultCountUnit = computed(() => {
   if (activeTab.value === 'storage_bag') return '种物品'
+  if (activeTab.value === 'player_profile') return '条面板'
   return '个对象'
 })
 
@@ -2404,6 +2477,7 @@ const selectedTerms = computed(() => {
 const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
   if (activeTab.value === 'storage_bag') return '搜索储物袋物品 / 类型 / 品质 / ID'
+  if (activeTab.value === 'player_profile') return '搜索玩家 / 角色ID / 区服 / 日期'
   if (activeTab.value === 'visual') return '搜索图片 / 图标 / 背景 / atlas / sprite / 文件名'
   if (activeTab.value === 'asset') return '搜索语义素材 / 小绿瓶 / 道具 / 活动 / 技能 / 模型'
   if (activeTab.value === 'audio') return '搜索音乐 / BGM / WEM / bank / 文件名'
@@ -2423,6 +2497,7 @@ const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() 
   if (
     activeTab.value === 'lingjie'
     || activeTab.value === 'storage_bag'
+    || activeTab.value === 'player_profile'
     || activeTab.value === 'visual'
     || activeTab.value === 'asset'
     || activeTab.value === 'audio'
@@ -2450,6 +2525,7 @@ const nextSortModeLabel = computed(() => {
 const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
   if (activeTab.value === 'storage_bag') return '储物袋'
+  if (activeTab.value === 'player_profile') return '面板'
   if (activeTab.value === 'visual') return '图片'
   if (activeTab.value === 'asset') return '素材'
   if (activeTab.value === 'audio') return '音乐'
@@ -2469,6 +2545,7 @@ const selectedProgressionSource = computed(() => {
   if (
     activeTab.value === 'lingjie'
     || activeTab.value === 'storage_bag'
+    || activeTab.value === 'player_profile'
     || activeTab.value === 'asset'
     || activeTab.value === 'digitdoor'
     || activeTab.value === 'digitdoor_level'
@@ -4908,7 +4985,329 @@ const packetInsightBagItems = computed(() => Array.isArray(packetInsightSnapshot
 const packetInsightBagSections = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.section_summary) ? packetInsightSnapshot.value.bag.section_summary : [])
 const packetInsightPersonalRanks = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.personal_records) ? packetInsightSnapshot.value.activity_ranks.personal_records : [])
 const packetInsightRankRecords = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.records) ? packetInsightSnapshot.value.activity_ranks.records : [])
-const storageBagSnapshot = computed<Record<string, any> | null>(() => packetInsightSnapshot.value.bag ?? null)
+const playerProfileSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.player_profiles ?? {})
+const playerProfileRawRows = computed<Record<string, any>[]>(() => {
+  const rows = playerProfileSnapshot.value.records
+  return Array.isArray(rows) ? rows : []
+})
+const playerProfileSnapshotDailyRows = computed<Record<string, any>[]>(() => {
+  const rows = playerProfileSnapshot.value.daily_records
+  return Array.isArray(rows) ? rows : []
+})
+function playerProfileDateKey(row: Record<string, any>) {
+  return String(row?.captured_at || '').slice(0, 10)
+}
+
+function playerProfileUserKey(row: Record<string, any>) {
+  const roleId = String(row?.role_id_text || row?.role_id || '').trim()
+  return roleId ? `id:${roleId}` : `name:${String(row?.name || '').trim()}`
+}
+
+function playerProfileMergeKey(row: Record<string, any>) {
+  return `${playerProfileUserKey(row)}::${playerProfileDateKey(row)}`
+}
+
+function playerProfileTimestamp(row: Record<string, any>) {
+  const parsed = Date.parse(String(row?.captured_at || '').replace(' ', 'T'))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function playerProfileAttackAttr(row: Record<string, any>) {
+  const attrs = Array.isArray(row?.combat_attributes) ? row.combat_attributes : []
+  return attrs.find((item: Record<string, any>) => Number(item?.key) === 2001 && item?.value !== undefined && item?.value !== null && item?.value !== '')
+}
+
+function playerProfileAttackValue(row: Record<string, any>) {
+  const attack = playerProfileAttackAttr(row)
+  const value = Number(attack?.value)
+  return Number.isFinite(value) ? value : 0
+}
+
+const PLAYER_PROFILE_ATTACK_UNIT_ORDER = ['载', '正', '涧', '沟', '穰', '秭', '垓', '京', '兆', '亿', '万', '无单位']
+const PLAYER_PROFILE_ATTACK_UNIT_COLORS: Record<string, string> = {
+  '载': '#7f1d1d',
+  '正': '#075985',
+  '涧': '#166534',
+  '沟': '#6b21a8',
+  '穰': '#9a3412',
+  '秭': '#0f766e',
+  '垓': '#be123c',
+  '京': '#1d4ed8',
+  '兆': '#c2410c',
+  '亿': '#047857',
+  '万': '#7e22ce',
+  '无单位': '#475467',
+}
+const PLAYER_PROFILE_HASH_TEXT_COLORS = [
+  '#b42318',
+  '#b54708',
+  '#027a48',
+  '#047481',
+  '#175cd3',
+  '#5925dc',
+  '#c11574',
+  '#7a2e0e',
+  '#2663a6',
+  '#6a1b9a',
+  '#0f766e',
+  '#9f1239',
+]
+
+function playerProfileAttackUnit(row: Record<string, any>) {
+  const attack = playerProfileAttackAttr(row)
+  const text = String(formatChineseCompactNumber(attack?.value) || attack?.text || '').trim()
+  const unit = PLAYER_PROFILE_ATTACK_UNIT_ORDER.find(item => item !== '无单位' && text.endsWith(item))
+  return unit || '无单位'
+}
+
+function playerProfileHashTextStyle(seed: string, offset = 0) {
+  const normalized = String(seed || '').trim()
+  if (!normalized || normalized === '-') return {}
+  const index = (stableHash32(normalized) + offset) % PLAYER_PROFILE_HASH_TEXT_COLORS.length
+  return { color: PLAYER_PROFILE_HASH_TEXT_COLORS[index] }
+}
+
+function playerProfileServerTextStyle(row: Record<string, any>) {
+  return playerProfileHashTextStyle(`server:${playerProfileServerText(row) || row?.server || ''}`, 0)
+}
+
+function playerProfileAttackTextStyle(row: Record<string, any>) {
+  return { color: PLAYER_PROFILE_ATTACK_UNIT_COLORS[playerProfileAttackUnit(row)] || PLAYER_PROFILE_ATTACK_UNIT_COLORS['无单位'] }
+}
+
+function playerProfileAttackUnitOptionStyle(unit: string) {
+  return { '--player-profile-unit-color': PLAYER_PROFILE_ATTACK_UNIT_COLORS[unit] || PLAYER_PROFILE_ATTACK_UNIT_COLORS['无单位'] }
+}
+
+function playerProfileCultivationRealm(row: Record<string, any>) {
+  const text = playerProfileCultivationText(row)
+  return ['炼气', '筑基', '结丹', '元婴', '化神', '炼虚', '合体', '大乘', '真仙', '金仙']
+    .find(realm => text.startsWith(realm)) || text
+}
+
+function playerProfileCultivationTextStyle(row: Record<string, any>) {
+  return playerProfileHashTextStyle(`cultivation:${playerProfileCultivationRealm(row)}`, 8)
+}
+
+function playerProfileServerOrderValue(row: Record<string, any>) {
+  const order = Number(row?.server_order)
+  return Number.isFinite(order) && order > 0 ? order : Number.MAX_SAFE_INTEGER
+}
+
+function playerProfileRegionOrderValue(row: Record<string, any>) {
+  const region = Number(row?.region_number)
+  return Number.isFinite(region) && region > 0 ? region : Number.MAX_SAFE_INTEGER
+}
+
+function comparePlayerProfileDefaultOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
+    || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
+    || playerProfileAttackValue(right) - playerProfileAttackValue(left)
+    || playerProfileTimestamp(right) - playerProfileTimestamp(left)
+    || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
+  )
+}
+
+function comparePlayerProfileAttackDescOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileAttackValue(right) - playerProfileAttackValue(left)
+    || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
+    || playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
+    || playerProfileTimestamp(right) - playerProfileTimestamp(left)
+    || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
+  )
+}
+
+function comparePlayerProfileAttackAscOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileAttackValue(left) - playerProfileAttackValue(right)
+    || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
+    || playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
+    || playerProfileTimestamp(right) - playerProfileTimestamp(left)
+    || String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
+  )
+}
+
+function playerProfileHasAttack(row: Record<string, any>) {
+  return Boolean(playerProfileAttackAttr(row))
+}
+
+const playerProfileDailyRows = computed<Record<string, any>[]>(() => {
+  if (playerProfileSnapshotDailyRows.value.length) return playerProfileSnapshotDailyRows.value.filter(playerProfileHasAttack)
+  const byKey = new Map<string, Record<string, any>>()
+  for (const row of playerProfileRawRows.value) {
+    if (!playerProfileHasAttack(row)) continue
+    const userKey = playerProfileUserKey(row)
+    const dateKey = playerProfileDateKey(row)
+    if (!userKey || !dateKey) continue
+    const key = playerProfileMergeKey(row)
+    const current = byKey.get(key)
+    if (!current || playerProfileTimestamp(row) >= playerProfileTimestamp(current)) {
+      byKey.set(key, row)
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => (
+    playerProfileTimestamp(b) - playerProfileTimestamp(a)
+    || String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN')
+  ))
+})
+
+const playerProfileLatestRows = computed<Record<string, any>[]>(() => {
+  const byUser = new Map<string, Record<string, any>>()
+  for (const row of playerProfileDailyRows.value) {
+    const userKey = playerProfileUserKey(row)
+    if (!userKey) continue
+    const current = byUser.get(userKey)
+    if (!current || playerProfileTimestamp(row) >= playerProfileTimestamp(current)) {
+      byUser.set(userKey, row)
+    }
+  }
+  return Array.from(byUser.values()).sort(comparePlayerProfileDefaultOrder)
+})
+
+const playerProfileRowsWithDefaultIndex = computed<Record<string, any>[]>(() => (
+  playerProfileLatestRows.value.map((row, index) => ({
+    ...row,
+    default_index: index + 1,
+  }))
+))
+
+function playerProfileSearchText(row: Record<string, any>) {
+  return [
+    row?.name,
+    row?.role_id_text,
+    row?.role_id,
+    row?.server,
+    row?.region_name,
+    row?.server_order,
+    row?.server_name,
+    row?.location,
+    row?.level,
+    row?.vip_level,
+    row?.captured_at,
+    ...(Array.isArray(row?.attributes) ? row.attributes.map((item: Record<string, any>) => `${item.name} ${item.text} ${item.value}`) : []),
+  ].join(' ').toLowerCase()
+}
+
+const searchFilteredPlayerProfileRows = computed(() => {
+  const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
+  const rows = playerProfileRowsWithDefaultIndex.value
+  if (!tokens.length) return rows
+  return rows.filter(row => {
+    const haystack = playerProfileSearchText(row)
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const playerProfileAttackUnitOptions = computed(() => {
+  const counts = new Map<string, number>()
+  for (const row of searchFilteredPlayerProfileRows.value) {
+    const unit = playerProfileAttackUnit(row)
+    counts.set(unit, (counts.get(unit) || 0) + 1)
+  }
+  return PLAYER_PROFILE_ATTACK_UNIT_ORDER
+    .filter(unit => counts.has(unit))
+    .map(unit => ({ unit, count: counts.get(unit) || 0 }))
+})
+
+let playerProfileAttackUnitSelectionInitialized = false
+let previousPlayerProfileAttackUnits: string[] = []
+let playerProfileAttackUnitPreferenceLoaded = false
+
+watch(playerProfileAttackUnitOptions, (options) => {
+  const units = options.map(option => option.unit)
+  if (!units.length) {
+    selectedPlayerProfileAttackUnits.value = []
+    previousPlayerProfileAttackUnits = []
+    return
+  }
+  if (!playerProfileAttackUnitSelectionInitialized) {
+    selectedPlayerProfileAttackUnits.value = units
+    previousPlayerProfileAttackUnits = units
+    playerProfileAttackUnitSelectionInitialized = true
+    return
+  }
+  const previousUnits = new Set(previousPlayerProfileAttackUnits)
+  const selectedUnits = new Set(selectedPlayerProfileAttackUnits.value.filter(unit => units.includes(unit)))
+  if (!playerProfileAttackUnitPreferenceLoaded) {
+    for (const unit of units) {
+      if (!previousUnits.has(unit)) selectedUnits.add(unit)
+    }
+  }
+  selectedPlayerProfileAttackUnits.value = units.filter(unit => selectedUnits.has(unit))
+  previousPlayerProfileAttackUnits = units
+}, { immediate: true })
+
+const filteredPlayerProfileRows = computed(() => {
+  const selectedUnits = new Set(selectedPlayerProfileAttackUnits.value)
+  return searchFilteredPlayerProfileRows.value.filter(row => selectedUnits.has(playerProfileAttackUnit(row)))
+})
+
+const sortedPlayerProfileRows = computed(() => {
+  if (playerProfileSortKey.value === 'attack_desc') {
+    return [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackDescOrder)
+  }
+  if (playerProfileSortKey.value === 'attack_asc') {
+    return [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackAscOrder)
+  }
+  return filteredPlayerProfileRows.value
+})
+
+const visiblePlayerProfileRows = computed(() => sortedPlayerProfileRows.value.slice(0, 80))
+const visiblePlayerProfileRegionGroups = computed(() => {
+  const groups = new Map<string, { key: string; regionName: string; rows: Record<string, any>[] }>()
+  for (const row of visiblePlayerProfileRows.value) {
+    const attackSorted = playerProfileSortKey.value !== 'default'
+    const regionName = attackSorted ? '全部区服' : (String(row?.region_name || '').trim() || '未知大区')
+    const regionNumber = attackSorted ? '' : String(row?.region_number || '').trim()
+    const key = attackSorted ? 'all' : (regionNumber ? `${regionNumber}:${regionName}` : regionName)
+    let group = groups.get(key)
+    if (!group) {
+      group = { key, regionName, rows: [] }
+      groups.set(key, group)
+    }
+    group.rows.push(row)
+  }
+  return Array.from(groups.values())
+})
+const latestPlayerProfile = computed(() => (
+  playerProfileLatestRows.value.reduce<Record<string, any> | null>((latest, row) => (
+    !latest || playerProfileTimestamp(row) > playerProfileTimestamp(latest) ? row : latest
+  ), null)
+))
+function playerProfileAttackText(row: Record<string, any>) {
+  const attack = playerProfileAttackAttr(row)
+  return attack ? (formatChineseCompactNumber(attack.value) || attack.text || '') : ''
+}
+
+function playerProfileServerText(row: Record<string, any>) {
+  const serverName = String(row?.server_name || '').trim()
+  const serverOrder = Number(row?.server_order)
+  if (Number.isFinite(serverOrder) && serverOrder > 0 && serverName) return `${serverOrder}${serverName}`
+  if (Number.isFinite(serverOrder) && serverOrder > 0) return String(serverOrder)
+  return serverName
+}
+
+function playerProfileCultivationText(row: Record<string, any>) {
+  return String(row?.cultivation_level_text || '').trim()
+}
+
+function formatPlayerProfileTime(value: string) {
+  return formatTcpBusinessTime(value).replace(/:(\d{2})(?=$)/, '')
+}
+
+function isStorageBagOwnerSnapshot(row: Record<string, any> | null | undefined) {
+  if (!row) return false
+  const roleId = String(row.owner_role_id_text || row.owner_role_id || '').trim()
+  const name = String(row.owner_name || '').trim()
+  return roleId === '24082878061086206' || name.includes('羊驼')
+}
+
+const storageBagSnapshot = computed<Record<string, any> | null>(() => {
+  const row = packetInsightSnapshot.value.bag
+  return isStorageBagOwnerSnapshot(row) ? row : null
+})
 const storageBagWorshipSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.worship ?? {})
 const storageBagAllWorshipRecords = computed(() => {
   const rows = storageBagWorshipSnapshot.value.records
@@ -5088,7 +5487,7 @@ function classifyStorageBagItem(row: Record<string, any>) {
 
   if (storageBagFriendshipValue(row) > 0) return { main: 'resource', sub: '仙花' }
   if (/自选匣|宝匣|礼包|[^仙]匣|残页|残篇|碎片|悟境|心悟石|悟道石|悟仙石|悟技符|升阶心得|仙玉|铸形元魄/.test(text)) return { main: 'other', sub: storageBagOtherSubGroup(row) }
-  if (/可用于炼制|炼制丹药|炼丹|灵草|天雷竹|火树|堕天松|灵眼神树|蟠桃|玄玉葫芦|冥焰果|木铃花|墨玉鳞|碧灵枝|涅槃净莲|净莲/.test(text)) return { main: 'resource', sub: '炼丹' }
+  if (/可用于炼制|炼制丹药|炼丹|灵草|天雷竹|火树|堕天松|灵眼神树|蟠桃|玄玉葫芦|冥焰果|木铃花|墨玉鳞|碧灵枝|涅槃净莲|净莲|九焰果|坤元土灵碎片|玉髓芝|青罗枝|赤凰花|金阳芝|青冥鹤唳果/.test(text)) return { main: 'resource', sub: '炼丹' }
   if (/灵兽|饲灵|兽神|天凰/.test(text)) return { main: 'resource', sub: '灵兽' }
   if (/洗灵/.test(text)) return { main: 'resource', sub: '洗灵' }
   if (['剑纹', '魂晶', '神兵部件'].includes(typeName) || /剑纹|魂晶|神兵部件/.test(text)) return { main: 'other', sub: storageBagOtherSubGroup(row) }
@@ -5109,10 +5508,10 @@ const storageBagGroupCounts = computed(() => {
   return { main, sub }
 })
 
-const storageBagSubGroupOptions = computed(() => {
-  if (storageBagMainGroup.value === 'resource') return STORAGE_BAG_RESOURCE_GROUPS
-  if (storageBagMainGroup.value === 'activity') return STORAGE_BAG_ACTIVITY_GROUPS
-  if (storageBagMainGroup.value === 'other') {
+function getStorageBagSubGroupOptions(mainGroup: string) {
+  if (mainGroup === 'resource') return [...STORAGE_BAG_RESOURCE_GROUPS]
+  if (mainGroup === 'activity') return [...STORAGE_BAG_ACTIVITY_GROUPS]
+  if (mainGroup === 'other') {
     return Object.entries(storageBagGroupCounts.value.sub)
       .filter(([key]) => key.startsWith('other:'))
       .map(([key, count]) => ({ label: key.slice('other:'.length), count }))
@@ -5120,6 +5519,18 @@ const storageBagSubGroupOptions = computed(() => {
       .map(item => item.label)
   }
   return []
+}
+
+function resolveStorageBagSubGroup(mainGroup: string, preferredSubGroup = '') {
+  const options = getStorageBagSubGroupOptions(mainGroup)
+  if (!options.length) return ''
+  const normalizedPreferred = normalizeStorageBagSubGroup(mainGroup, preferredSubGroup)
+  if (normalizedPreferred && options.includes(normalizedPreferred)) return normalizedPreferred
+  return options[0] || ''
+}
+
+const storageBagSubGroupOptions = computed(() => {
+  return getStorageBagSubGroupOptions(storageBagMainGroup.value)
 })
 
 const filteredStorageBagItems = computed(() => {
@@ -5552,16 +5963,57 @@ function packetInsightBagSectionName(row: Record<string, any>) {
 }
 
 function selectStorageBagMainGroup(group: string) {
-  storageBagMainGroup.value = group
+  const normalizedGroup = normalizeStorageBagMainGroup(group)
+  storageBagSubGroupAllSelected.value = false
+  storageBagMainGroup.value = normalizedGroup
+  storageBagSubGroup.value = resolveStorageBagSubGroup(
+    normalizedGroup,
+    storageBagSubGroupMemory.value[normalizedGroup] || '',
+  )
+}
+
+function selectStorageBagAllMainGroups() {
+  storageBagSubGroupAllSelected.value = false
+  storageBagMainGroup.value = 'all'
   storageBagSubGroup.value = ''
 }
 
 function selectStorageBagSubGroup(group: string) {
-  storageBagSubGroup.value = storageBagSubGroup.value === group ? '' : group
+  storageBagSubGroupAllSelected.value = false
+  storageBagSubGroup.value = group
+}
+
+function selectStorageBagAllSubGroups() {
+  storageBagSubGroupAllSelected.value = true
+  storageBagSubGroup.value = ''
 }
 
 function sortStorageBagBy(key: 'num' | 'friendship' | 'total_friendship') {
   storageBagSortKey.value = key
+}
+
+function sortPlayerProfileByAttack() {
+  if (playerProfileSortKey.value === 'default') {
+    playerProfileSortKey.value = 'attack_desc'
+  } else if (playerProfileSortKey.value === 'attack_desc') {
+    playerProfileSortKey.value = 'attack_asc'
+  } else {
+    playerProfileSortKey.value = 'default'
+  }
+}
+
+function sortPlayerProfileByDefault() {
+  playerProfileSortKey.value = 'default'
+}
+
+function togglePlayerProfileAttackUnit(unit: string) {
+  const current = new Set(selectedPlayerProfileAttackUnits.value)
+  if (current.has(unit)) {
+    current.delete(unit)
+  } else {
+    current.add(unit)
+  }
+  selectedPlayerProfileAttackUnits.value = PLAYER_PROFILE_ATTACK_UNIT_ORDER.filter(item => current.has(item))
 }
 
 function packetInsightRankTitle(row: Record<string, any>) {
@@ -5572,16 +6024,45 @@ function packetInsightRankTitle(row: Record<string, any>) {
   return [activityId, name, rank].filter(Boolean).join(' · ')
 }
 
-async function loadPacketRuntimeInsights(autoSync = false) {
+async function loadPacketRuntimeInsights() {
   if (activeTab.value !== 'packet') return
   packetRuntimeInsightsLoading.value = true
   try {
-    const response = await getFanxiuPacketRuntimeInsights({ auto_sync: autoSync })
+    const response = await getFanxiuPacketRuntimeInsights({ auto_sync: false })
     packetRuntimeInsights.value = response.snapshot ?? {}
   } catch (error: any) {
     console.warn('Failed to load Fanxiu packet runtime insights:', error)
   } finally {
     packetRuntimeInsightsLoading.value = false
+  }
+}
+
+async function loadPlayerProfileSnapshots() {
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const response = await getFanxiuPlayerProfiles()
+    packetRuntimeInsights.value = {
+      ...(packetRuntimeInsights.value ?? {}),
+      player_profiles: {
+        count: response.count || 0,
+        records: response.records || [],
+        daily_records: response.records || [],
+      },
+    }
+    total.value = playerProfileLatestRows.value.length
+    selectedId.value = ''
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取玩家面板快照失败')
+  } finally {
+    loadingList.value = false
   }
 }
 
@@ -5631,20 +6112,6 @@ function startStorageBagAutoRefresh() {
       void loadStorageBagSnapshot({ silent: true })
     }
   }, 15000)
-}
-
-async function refreshPacketRuntimeInsights(force = false) {
-  if (activeTab.value !== 'packet') return
-  packetRuntimeInsightsLoading.value = true
-  try {
-    const response = await syncFanxiuPacketRuntimeInsights({ force })
-    packetRuntimeInsights.value = response.snapshot ?? {}
-    ElMessage.success(response.changed ? '已更新抓包洞察' : '抓包洞察已是最新')
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '更新抓包洞察失败')
-  } finally {
-    packetRuntimeInsightsLoading.value = false
-  }
 }
 
 function formatTcpBusinessTime(value: string) {
@@ -8506,24 +8973,6 @@ async function loadActivityWorldlineSchedule() {
   }
 }
 
-async function syncActivityPacketHistory(options: { reloadSchedule?: boolean } = {}) {
-  if (activityPacketSyncing.value) return
-  activityPacketSyncing.value = true
-  try {
-    const result = await syncFanxiuActivityPackets()
-    if (options.reloadSchedule !== false && result.matched_packets > 0) {
-      await loadActivityWorldlineSchedule()
-      if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
-        scheduleActivityPeriodInitialScroll(true)
-      }
-    }
-  } catch (error) {
-    console.warn('Failed to sync Fanxiu activity packets:', error)
-  } finally {
-    activityPacketSyncing.value = false
-  }
-}
-
 async function loadItemCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
@@ -9236,7 +9685,7 @@ async function loadPacketProtocolWiki() {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
   loadingDetail.value = false
-  void loadPacketRuntimeInsights(false)
+  void loadPacketRuntimeInsights()
   try {
     const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 1 })
     if (requestSeq !== listRequestSeq) return
@@ -9323,6 +9772,9 @@ async function loadWikiLinkIndex() {
 function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   if (activeTab.value === 'storage_bag') {
     return loadStorageBagSnapshot()
+  }
+  if (activeTab.value === 'player_profile') {
+    return loadPlayerProfileSnapshots()
   }
   if (activeTab.value === 'item') {
     return loadItemCards(options)
@@ -10186,7 +10638,7 @@ function handleTabChange() {
   }
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'player_profile' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
@@ -10344,8 +10796,29 @@ watch([
   pageSize,
   selectedId,
 ], persistPageConfig)
-watch([storageBagMainGroup, storageBagSubGroup], persistStorageBagFilterConfig)
+watch(storageBagSubGroupOptions, options => {
+  if (!options.length) {
+    if (storageBagSubGroup.value) storageBagSubGroup.value = ''
+    return
+  }
+  if (storageBagSubGroupAllSelected.value) return
+  if (storageBagSubGroup.value && options.includes(storageBagSubGroup.value)) return
+  storageBagSubGroup.value = resolveStorageBagSubGroup(
+    storageBagMainGroup.value,
+    storageBagSubGroupMemory.value[storageBagMainGroup.value] || storageBagSubGroup.value,
+  )
+})
+watch([storageBagMainGroup, storageBagSubGroup], () => {
+  if (storageBagMainGroup.value !== 'all' && storageBagSubGroup.value) {
+    storageBagSubGroupMemory.value = {
+      ...storageBagSubGroupMemory.value,
+      [storageBagMainGroup.value]: storageBagSubGroup.value,
+    }
+  }
+  persistStorageBagFilterConfig()
+})
 watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
+watch([playerProfileSortKey, selectedPlayerProfileAttackUnits], persistPlayerProfilePreferences, { deep: true })
 watch(activeTab, tab => {
   if (isAuxiliaryWikiTab(tab)) {
     selectedAuxiliaryTab.value = tab
@@ -10432,6 +10905,7 @@ onMounted(() => {
   loadSearchHistory()
   loadStorageBagFilterConfig()
   loadStorageBagWorshipChartPlaneConfig()
+  loadPlayerProfilePreferences()
   applyRouteState()
   if (!restoreActivityPeriodPaneHeight()) {
     updateActivityPeriodPaneHeight()
@@ -10466,7 +10940,6 @@ onBeforeUnmount(() => {
       <div>
         <h2>凡修图鉴</h2>
       </div>
-      <el-button :icon="Refresh" :loading="loadingList || loadingHomeMakeBuffOverview" @click="refreshCurrentCards">刷新</el-button>
     </header>
 
     <div @click.capture="handleWikiTabHeaderClick" @contextmenu.capture="handleWikiTabHeaderContextMenu">
@@ -10540,7 +11013,7 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-button
-        v-if="activeTab !== 'storage_bag' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
+        v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -10627,7 +11100,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
+    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div v-if="activityViewMode === 'period'" class="facet-row">
           <span class="facet-label">品阶</span>
@@ -10759,7 +11232,7 @@ onBeforeUnmount(() => {
           <span class="facet-label">范围</span>
           <span class="facet-options">
             <span v-if="activityViewMode === 'period'" class="facet-option read-only">
-              <span class="facet-option-label">{{ activityPacketSyncing ? '同步抓包' : '服务端日程' }}</span>
+              <span class="facet-option-label">服务端日程</span>
               <small>{{ activityWorldlineSchedule?.available ? activityWorldlineSchedule.count : 0 }}</small>
             </span>
             <button
@@ -11088,6 +11561,7 @@ onBeforeUnmount(() => {
           <h3>储物袋</h3>
           <span v-if="storageBagSnapshot">
             {{ storageBagSnapshot.stack_count || 0 }} 个物品格 · 已解码 {{ storageBagSnapshot.decoded_stack_count || 0 }} 个
+            {{ storageBagSnapshot.owner_name ? ` · ${storageBagSnapshot.owner_name}` : '' }}
             {{ storageBagSnapshot.captured_at ? ` · ${formatTcpBusinessTime(storageBagSnapshot.captured_at)}` : '' }}
             {{ storageBagSnapshot.decoded_from_pcap ? ' · pcap全量复原' : '' }}
           </span>
@@ -11109,7 +11583,12 @@ onBeforeUnmount(() => {
       </section>
       <section v-if="storageBagSnapshot" class="storage-bag-groups">
         <div class="storage-bag-group-row">
-          <span class="facet-label">大类</span>
+          <button
+            class="facet-label storage-bag-group-label"
+            type="button"
+            :class="{ active: storageBagMainGroup === 'all' }"
+            @click="selectStorageBagAllMainGroups"
+          >大类</button>
           <button
             v-for="group in STORAGE_BAG_MAIN_GROUPS.filter(group => group.key !== 'all')"
             :key="group.key"
@@ -11123,7 +11602,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div v-if="storageBagSubGroupOptions.length" class="storage-bag-group-row">
-          <span class="facet-label">子类</span>
+          <button
+            class="facet-label storage-bag-group-label"
+            type="button"
+            :class="{ active: !storageBagSubGroup }"
+            @click="selectStorageBagAllSubGroups"
+          >子类</button>
           <button
             v-for="group in storageBagSubGroupOptions"
             :key="group"
@@ -11317,6 +11801,88 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <div v-if="activeTab === 'player_profile'" class="player-profile-workspace" v-loading="loadingList || packetRuntimeInsightsLoading">
+      <section class="storage-bag-summary">
+        <div>
+          <h3>玩家面板</h3>
+          <span v-if="playerProfileSnapshot.count">
+            {{ latestPlayerProfile?.captured_at ? `最新更新 ${formatTcpBusinessTime(latestPlayerProfile.captured_at)}` : '还没有解析到有效玩家面板' }}
+          </span>
+          <span v-else>还没有解析到玩家面板快照</span>
+        </div>
+      </section>
+      <section v-if="playerProfileAttackUnitOptions.length" class="storage-bag-groups player-profile-unit-groups">
+        <div class="storage-bag-group-row">
+          <span class="facet-label">攻击单位</span>
+          <button
+            v-for="option in playerProfileAttackUnitOptions"
+            :key="option.unit"
+            class="facet-option"
+            :class="{ active: selectedPlayerProfileAttackUnits.includes(option.unit) }"
+            :style="playerProfileAttackUnitOptionStyle(option.unit)"
+            type="button"
+            @click="togglePlayerProfileAttackUnit(option.unit)"
+          >
+            <span class="facet-option-label">{{ option.unit }}</span>
+            <small>{{ option.count }}</small>
+          </button>
+        </div>
+      </section>
+      <section v-if="playerProfileLatestRows.length" class="player-profile-region-list">
+        <section v-for="group in visiblePlayerProfileRegionGroups" :key="group.key" class="player-profile-region-group">
+          <header>
+            <h4>{{ group.regionName }}</h4>
+            <span>{{ group.rows.length }} 条</span>
+          </header>
+          <div class="player-profile-table-wrap">
+            <table class="player-profile-table">
+              <thead>
+                <tr>
+                  <th class="numeric-head">
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey === 'default' }"
+                      type="button"
+                      @click="sortPlayerProfileByDefault"
+                    >#</button>
+                  </th>
+                  <th>区服</th>
+                  <th>玩家</th>
+                  <th>境界</th>
+                  <th class="numeric-head">
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey !== 'default' }"
+                      type="button"
+                      @click="sortPlayerProfileByAttack"
+                    >攻击{{ playerProfileSortKey === 'attack_desc' ? ' ↓' : (playerProfileSortKey === 'attack_asc' ? ' ↑' : '') }}</button>
+                  </th>
+                  <th>更新时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, index) in group.rows" :key="`${row.role_id || row.name}-${row.captured_at}`">
+                  <td class="storage-bag-index-cell">{{ row.default_index || index + 1 }}</td>
+                  <td :style="playerProfileServerTextStyle(row)">{{ playerProfileServerText(row) || '-' }}</td>
+                  <td>
+                    <span class="player-profile-name" :style="playerProfileServerTextStyle(row)">{{ row.name || '-' }}</span>
+                  </td>
+                  <td :style="playerProfileCultivationTextStyle(row)">{{ playerProfileCultivationText(row) || '-' }}</td>
+                  <td class="numeric-cell" :style="playerProfileAttackTextStyle(row)">{{ playerProfileAttackText(row) || '-' }}</td>
+                  <td>{{ formatPlayerProfileTime(row.captured_at || '') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <div v-if="filteredPlayerProfileRows.length > visiblePlayerProfileRows.length" class="storage-bag-limit">
+          已显示前 {{ visiblePlayerProfileRows.length }} 条，继续搜索可缩小结果
+        </div>
+        <div v-if="!filteredPlayerProfileRows.length" class="empty-state">没有匹配的玩家面板</div>
+      </section>
+      <div v-else class="empty-state">历史抓包里还没有解析出玩家面板；打开他人面板并保持抓包运行后会自动进入这里。</div>
+    </div>
+
     <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
       <aside class="object-list" :style="activityPeriodListPaneStyle" v-loading="loadingList">
         <div class="object-list-scroll">
@@ -11344,7 +11910,6 @@ onBeforeUnmount(() => {
               <h3>运行态洞察</h3>
               <span>{{ packetInsightSnapshot.source_summary?.entry_count || 0 }} 条历史业务包 · {{ packetInsightSnapshot.source_signature?.decoded_file_count || 0 }} 个解码文件</span>
             </div>
-            <button class="packet-count-link" type="button" @click="refreshPacketRuntimeInsights(false)">同步</button>
           </header>
           <div class="packet-insight-metrics">
             <span v-for="item in packetInsightObservations" :key="item.key">
@@ -11536,7 +12101,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="activeTab !== 'storage_bag' && activeTab !== 'packet'"
+      v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'packet'"
       ref="activityWorkspaceRef"
       class="object-workspace"
       :class="{
@@ -11986,7 +12551,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
+        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
           <el-select
             v-model="pageSize"
             class="page-size-select"
@@ -15424,6 +15989,12 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.player-profile-workspace {
+  max-width: 1280px;
+  display: grid;
+  gap: 12px;
+}
+
 .storage-bag-summary {
   display: flex;
   align-items: flex-start;
@@ -15488,6 +16059,36 @@ onBeforeUnmount(() => {
   line-height: 28px;
 }
 
+.storage-bag-group-label {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.storage-bag-group-label:hover {
+  color: #8a5a00;
+}
+
+.storage-bag-group-label.active {
+  color: #8a5a00;
+}
+
+.player-profile-unit-groups .facet-option {
+  color: #667085;
+}
+
+.player-profile-unit-groups .facet-option .facet-option-label,
+.player-profile-unit-groups .facet-option small {
+  color: #667085;
+}
+
+.player-profile-unit-groups .facet-option.active .facet-option-label,
+.player-profile-unit-groups .facet-option.active small {
+  color: var(--player-profile-unit-color);
+}
+
 .storage-bag-table-wrap {
   justify-self: start;
   width: max-content;
@@ -15517,21 +16118,24 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-table th.numeric-head,
-.storage-bag-reference-table th.numeric-head {
+.storage-bag-reference-table th.numeric-head,
+.player-profile-table th.numeric-head {
   width: 1%;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .storage-bag-table th.numeric-head .storage-bag-sort-button,
-.storage-bag-reference-table th.numeric-head .storage-bag-sort-button {
+.storage-bag-reference-table th.numeric-head .storage-bag-sort-button,
+.player-profile-table th.numeric-head .storage-bag-sort-button {
   display: inline-flex;
   justify-content: flex-end;
   width: 100%;
 }
 
 .storage-bag-table td.storage-bag-index-cell,
-.storage-bag-reference-table td.storage-bag-index-cell {
+.storage-bag-reference-table td.storage-bag-index-cell,
+.player-profile-table td.storage-bag-index-cell {
   width: 1%;
   color: #667085;
   text-align: right;
@@ -15562,6 +16166,11 @@ onBeforeUnmount(() => {
 
 .storage-bag-sort-button.active::after {
   color: currentColor;
+}
+
+.player-profile-sort-button::after {
+  content: "";
+  margin-left: 0;
 }
 
 .storage-bag-extension {
@@ -15645,6 +16254,79 @@ onBeforeUnmount(() => {
   color: #475467;
   background: #f8fafc;
   font-weight: 650;
+}
+
+.player-profile-table-wrap {
+  justify-self: start;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.player-profile-region-list {
+  display: grid;
+  gap: 16px;
+  justify-self: start;
+  max-width: 100%;
+}
+
+.player-profile-region-group {
+  display: grid;
+  gap: 6px;
+  justify-self: start;
+  max-width: 100%;
+}
+
+.player-profile-region-group > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.player-profile-region-group h4 {
+  margin: 0;
+  color: #101828;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.player-profile-region-group header span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.player-profile-table {
+  width: max-content;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 13px;
+}
+
+.player-profile-table th,
+.player-profile-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.player-profile-table th {
+  color: #475467;
+  background: #f8fafc;
+  font-weight: 650;
+}
+
+.player-profile-name {
+  display: block;
+  color: #101828;
+  font-weight: 650;
+}
+
+.player-profile-table small {
+  display: block;
+  margin-top: 2px;
+  color: #667085;
+  font-size: 12px;
 }
 
 .storage-bag-reference-empty {
@@ -15774,7 +16456,8 @@ onBeforeUnmount(() => {
 }
 
 .storage-bag-table td.numeric-cell,
-.storage-bag-reference-table td.numeric-cell {
+.storage-bag-reference-table td.numeric-cell,
+.player-profile-table td.numeric-cell {
   width: 1%;
   text-align: right;
   color: #9a3412;
