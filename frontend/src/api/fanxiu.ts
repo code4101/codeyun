@@ -24,96 +24,6 @@ export interface FanxiuProcessListResponse {
   items: FanxiuProcessItem[];
 }
 
-export interface FanxiuPacketCaptureAddress {
-  ip: string;
-  port: number;
-  label: string;
-}
-
-export interface FanxiuPacketCaptureDnsMapping {
-  host: string;
-  ips: string[];
-  error: string | null;
-}
-
-export interface FanxiuPacketCaptureProcess {
-  pid: number;
-  name: string;
-  exe: string | null;
-  command_line: string;
-  group: string;
-}
-
-export interface FanxiuPacketCaptureConnection {
-  pid: number;
-  process_name: string;
-  process_group: string;
-  protocol: string;
-  status: string;
-  local: FanxiuPacketCaptureAddress | null;
-  remote: FanxiuPacketCaptureAddress | null;
-  mapped_hosts: string[];
-  is_fake_ip: boolean;
-  remote_scope: string;
-  signal_score: number;
-  signal_label: string;
-  signal_reason: string;
-}
-
-export interface FanxiuPacketCaptureSnapshot {
-  captured_at: string;
-  dns_server: string;
-  dns_mappings: FanxiuPacketCaptureDnsMapping[];
-  processes: FanxiuPacketCaptureProcess[];
-  connections: FanxiuPacketCaptureConnection[];
-  listeners: FanxiuPacketCaptureConnection[];
-  warnings: string[];
-  summary: Record<string, number>;
-}
-
-export interface FanxiuTcpCaptureFile {
-  name: string;
-  path: string;
-  relative_path: string;
-  size: number;
-  modified_at: string;
-  decoded_path: string;
-  decoded: boolean;
-  capture_sha256: string;
-  record_id: string;
-  record_dir: string;
-  stored_pcap: string;
-  stored_decoded_path: string;
-  stored: boolean;
-}
-
-export interface FanxiuTcpCaptureListResponse {
-  export_root: string;
-  capture_dir: string;
-  store_capture_dir: string;
-  items: FanxiuTcpCaptureFile[];
-}
-
-export interface FanxiuTcpRecordItem {
-  record_id: string;
-  record_dir: string;
-  pcap_name: string;
-  source_pcap: string;
-  stored_pcap: string;
-  decoded_path: string;
-  decoded: boolean;
-  stream: number;
-  server_host: string;
-  capture_sha256: string;
-  created_at: string;
-  summary: Record<string, unknown>;
-}
-
-export interface FanxiuTcpRecordListResponse {
-  store_root: string;
-  items: FanxiuTcpRecordItem[];
-}
-
 export interface FanxiuTcpBusinessEntry {
   id: string;
   decoded_at: string;
@@ -165,220 +75,6 @@ export interface FanxiuTcpBusinessEntryListResponse {
   category_summary: FanxiuTcpBusinessCategorySummary[];
   protocol_summary: FanxiuTcpBusinessProtocolSummary[];
   items: FanxiuTcpBusinessEntry[];
-}
-
-export interface FanxiuTcpProtocolCount {
-  pro_id: number;
-  name: string;
-  count: number;
-}
-
-export interface FanxiuTcpDecodedFrame {
-  direction: 'c2s' | 's2c';
-  offset: number;
-  frame_len: number;
-  sn: number;
-  pro_id: number;
-  name?: string;
-  payload_len: number;
-  zlib?: boolean;
-  parsed?: Record<string, unknown>;
-  parsed_bytes?: number;
-  remain?: number;
-  parse_error?: string;
-  payload_hex?: string;
-  remain_hex?: string;
-}
-
-export interface FanxiuTcpDecodeResponse {
-  export_root: string;
-  pcap: string;
-  stream: number;
-  server_host: string;
-  text_assets: string;
-  output_path: string;
-  capture_sha256: string;
-  stream_candidates: Array<{ stream: number; packets: number; payload_bytes: number }>;
-  record_id: string;
-  record_dir: string;
-  stored_pcap: string;
-  stored_decoded_path: string;
-  meta_path: string;
-  summary: {
-    c2s_bytes: number;
-    s2c_bytes: number;
-    c2s_frames: number;
-    s2c_frames: number;
-    c2s_protocols: FanxiuTcpProtocolCount[];
-    s2c_protocols: FanxiuTcpProtocolCount[];
-  };
-  frames: FanxiuTcpDecodedFrame[];
-}
-
-export interface FanxiuPacketProxyStatus {
-  running: boolean;
-  host: string;
-  port: number;
-  addresses: string[];
-  event_count: number;
-  last_error: string;
-}
-
-export interface FanxiuAndroidProxyStatus {
-  available: boolean;
-  adb_path: string;
-  device_id: string;
-  devices: string[];
-  http_proxy: string;
-  enabled: boolean;
-  target_proxy: string;
-  matches_target: boolean;
-  last_error: string;
-}
-
-export interface FanxiuPacketCaptureSessionStatus {
-  active: boolean;
-  target_proxy: string;
-  proxy: FanxiuPacketProxyStatus;
-  android: FanxiuAndroidProxyStatus;
-  last_error: string;
-}
-
-export interface FanxiuPacketPayloadDirection {
-  length: number;
-  hex: string;
-  ascii: string;
-  text: string;
-  printable_ratio: number;
-  guess: string;
-}
-
-export interface FanxiuPacketPayloadPreview {
-  up: FanxiuPacketPayloadDirection;
-  down: FanxiuPacketPayloadDirection;
-}
-
-export interface FanxiuPacketActivityFlow {
-  key: string;
-  protocol: string;
-  remote: FanxiuPacketCaptureAddress;
-  packets_up: number;
-  packets_down: number;
-  bytes_up: number;
-  bytes_down: number;
-  payload_bytes_up: number;
-  payload_bytes_down: number;
-  payload_preview: FanxiuPacketPayloadPreview;
-  first_seen: string;
-  last_seen: string;
-}
-
-export interface FanxiuPacketActivityStatus {
-  running: boolean;
-  bind_ip: string;
-  interfaces: string[];
-  started_at: string;
-  last_error: string;
-  total_packets: number;
-  total_bytes: number;
-  history_total: number;
-  history_capacity: number;
-  pcap_path: string;
-  pcap_size: number;
-  items: FanxiuPacketActivityFlow[];
-}
-
-export interface FanxiuCaptureRuntimeStatus {
-  state: string;
-  running: boolean;
-  game_running: boolean;
-  adb_connected: boolean;
-  root_ready: boolean;
-  tcpdump_ready: boolean;
-  active_reasons: string[];
-  current_pcap_path: string;
-  current_pcap_size: number;
-  current_remote_pcap_path: string;
-  started_at: string;
-  last_error: string;
-  last_recover_at: string;
-  tcpdump_started_at: string;
-  device_id: string;
-  package_name: string;
-  watchdog_running: boolean;
-  watchdog_started_at: string;
-  watchdog_interval_seconds: number;
-  watchdog_last_check_at: string;
-  watchdog_last_action: string;
-  watchdog_last_error: string;
-}
-
-export interface FanxiuPacketActivityPayloadEvent {
-  id: number;
-  captured_at: string;
-  key: string;
-  protocol: string;
-  remote: FanxiuPacketCaptureAddress;
-  direction: string;
-  packet_bytes: number;
-  payload_bytes: number;
-  payload_preview: FanxiuPacketPayloadDirection;
-}
-
-export interface FanxiuPacketActivityHistoryResponse {
-  items: FanxiuPacketActivityPayloadEvent[];
-  total: number;
-  offset: number;
-  limit: number;
-  history_capacity: number;
-}
-
-export interface FanxiuPacketActivityStreamDirection {
-  packet_count: number;
-  payload_bytes: number;
-  sampled_bytes: number;
-  dropped_bytes: number;
-  truncated_packets: number;
-  first_seen: string;
-  last_seen: string;
-  preview: FanxiuPacketPayloadDirection;
-}
-
-export interface FanxiuPacketActivityStreamResponse {
-  key: string;
-  max_bytes: number;
-  up: FanxiuPacketActivityStreamDirection;
-  down: FanxiuPacketActivityStreamDirection;
-}
-
-export interface FanxiuPacketProxyEvent {
-  id: number;
-  timeline_id: string;
-  source: string;
-  source_label: string;
-  started_at: string;
-  finished_at: string | null;
-  active: boolean;
-  error: string;
-  client: string;
-  event_type: string;
-  method: string;
-  target: string;
-  url: string;
-  request_headers: string;
-  request_body_text: string;
-  request_body_hex: string;
-  response_status: string;
-  response_headers: string;
-  response_body_text: string;
-  response_body_hex: string;
-  bytes_up: number;
-  bytes_down: number;
-  plaintext_state: string;
-  semantic_role: string;
-  signal_score: number;
-  signal_label: string;
-  signal_reason: string;
 }
 
 export interface FanxiuProtocolSemanticFeature {
@@ -441,46 +137,6 @@ export interface FanxiuProtocolSemanticResponse {
   edges: FanxiuProtocolSemanticEdge[];
   roles: string[];
   operations: string[];
-}
-
-export interface FanxiuPacketProxyEventListResponse {
-  items: FanxiuPacketProxyEvent[];
-  status: FanxiuPacketProxyStatus;
-}
-
-export interface FanxiuPacketProxyTimelineResponse {
-  items: FanxiuPacketProxyEvent[];
-  status: FanxiuPacketProxyStatus;
-  total: number;
-  offset: number;
-  limit: number;
-  summary: Record<string, number>;
-  log_directory: string;
-}
-
-export interface FanxiuPacketProxySaveResponse {
-  saved_at: string;
-  path: string;
-  event_count: number;
-  status: FanxiuPacketProxyStatus;
-}
-
-export interface FanxiuPacketProxyLogFile {
-  name: string;
-  path: string;
-  size: number;
-  modified_at: string;
-  event_count: number;
-}
-
-export interface FanxiuPacketProxyLogListResponse {
-  items: FanxiuPacketProxyLogFile[];
-  directory: string;
-}
-
-export interface FanxiuPacketProxyLogLoadResponse {
-  log: FanxiuPacketProxyLogFile;
-  items: FanxiuPacketProxyEvent[];
 }
 
 export interface LocalScriptProcessItem {
@@ -815,6 +471,7 @@ export interface FanxiuGameWindow3WorldFactsResponse {
 
 export interface FanxiuGameWindow3RuntimeStatus {
   ok: boolean;
+  service_running?: boolean;
   running: boolean;
   guard_enabled?: boolean;
   guard_running?: boolean;
@@ -4429,147 +4086,9 @@ export const getFanxiuProcesses = () => {
   return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
 };
 
-export const getFanxiuPacketCaptureSnapshot = (dnsHosts: string[], resolveDns = true) => {
-  return api
-    .post<FanxiuPacketCaptureSnapshot>('/fanxiu/packet-capture/snapshot', { dns_hosts: dnsHosts, resolve_dns: resolveDns })
-    .then(res => res.data);
-};
-
-export const listFanxiuTcpCaptures = (limit = 50) => {
-  return api
-    .get<FanxiuTcpCaptureListResponse>('/fanxiu/packet-capture/tcp/captures', { params: { limit } })
-    .then(res => res.data);
-};
-
-export const listFanxiuTcpRecords = (limit = 50) => {
-  return api
-    .get<FanxiuTcpRecordListResponse>('/fanxiu/packet-capture/tcp/records', { params: { limit } })
-    .then(res => res.data);
-};
-
 export const listFanxiuTcpBusinessEntries = (params: { page?: number; page_size?: number; category?: string; protocol?: string; hidden_protocols?: string } = {}) => {
   return api
     .get<FanxiuTcpBusinessEntryListResponse>('/fanxiu/packet-capture/tcp/business-entries', { params })
-    .then(res => res.data);
-};
-
-export const decodeFanxiuTcpCapture = (payload: { pcap: string; stream?: number; server_host?: string; persist?: boolean }) => {
-  return api
-    .post<FanxiuTcpDecodeResponse>('/fanxiu/packet-capture/tcp/decode', payload, { timeout: 120000 })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketProxyStatus = () => {
-  return api.get<FanxiuPacketProxyStatus>('/fanxiu/packet-capture/proxy/status').then(res => res.data);
-};
-
-export const getFanxiuPacketCaptureSessionStatus = () => {
-  return api.get<FanxiuPacketCaptureSessionStatus>('/fanxiu/packet-capture/session/status').then(res => res.data);
-};
-
-export const getFanxiuPacketActivityStatus = () => {
-  return api.get<FanxiuPacketActivityStatus>('/fanxiu/packet-capture/activity/status').then(res => res.data);
-};
-
-export const getFanxiuCaptureRuntimeStatus = () => {
-  return api.get<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/status').then(res => res.data);
-};
-
-export const ensureFanxiuCaptureRuntime = (reason = 'manual') => {
-  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/ensure', { reason }).then(res => res.data);
-};
-
-export const releaseFanxiuCaptureRuntime = (reason = 'manual') => {
-  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/release', { reason }).then(res => res.data);
-};
-
-export const stopFanxiuCaptureRuntime = () => {
-  return api.post<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/stop', {}).then(res => res.data);
-};
-
-export const getFanxiuPacketActivityHistory = (params: { offset?: number; limit?: number; key?: string } = {}) => {
-  return api
-    .get<FanxiuPacketActivityHistoryResponse>('/fanxiu/packet-capture/activity/history', { params })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketActivityStream = (params: { key?: string; max_bytes?: number } = {}) => {
-  return api
-    .get<FanxiuPacketActivityStreamResponse>('/fanxiu/packet-capture/activity/stream', { params })
-    .then(res => res.data);
-};
-
-export const startFanxiuPacketActivity = (bindIp = '') => {
-  return api
-    .post<FanxiuPacketActivityStatus>('/fanxiu/packet-capture/activity/start', { bind_ip: bindIp })
-    .then(res => res.data);
-};
-
-export const stopFanxiuPacketActivity = () => {
-  return api.post<FanxiuPacketActivityStatus>('/fanxiu/packet-capture/activity/stop', {}).then(res => res.data);
-};
-
-export const clearFanxiuPacketActivity = () => {
-  return api.delete<FanxiuPacketActivityStatus>('/fanxiu/packet-capture/activity').then(res => res.data);
-};
-
-export const startFanxiuPacketCaptureSession = (host: string, port: number) => {
-  return api
-    .post<FanxiuPacketCaptureSessionStatus>('/fanxiu/packet-capture/session/start', { host, port })
-    .then(res => res.data);
-};
-
-export const stopFanxiuPacketCaptureSession = () => {
-  return api
-    .post<FanxiuPacketCaptureSessionStatus>('/fanxiu/packet-capture/session/stop', {})
-    .then(res => res.data);
-};
-
-export const startFanxiuPacketProxy = (host: string, port: number) => {
-  return api
-    .post<FanxiuPacketProxyStatus>('/fanxiu/packet-capture/proxy/start', { host, port })
-    .then(res => res.data);
-};
-
-export const stopFanxiuPacketProxy = () => {
-  return api.post<FanxiuPacketProxyStatus>('/fanxiu/packet-capture/proxy/stop').then(res => res.data);
-};
-
-export const getFanxiuPacketProxyEvents = (limit = 200) => {
-  return api
-    .get<FanxiuPacketProxyEventListResponse>('/fanxiu/packet-capture/proxy/events', { params: { limit } })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketProxyTimeline = (params: {
-  offset?: number;
-  limit?: number;
-  event_filter?: 'candidate' | 'readable' | 'encrypted_or_resource' | 'all';
-} = {}) => {
-  return api
-    .get<FanxiuPacketProxyTimelineResponse>('/fanxiu/packet-capture/proxy/timeline', { params })
-    .then(res => res.data);
-};
-
-export const clearFanxiuPacketProxyEvents = () => {
-  return api.delete<FanxiuPacketProxyEventListResponse>('/fanxiu/packet-capture/proxy/events').then(res => res.data);
-};
-
-export const saveFanxiuPacketProxyEvents = (label = '') => {
-  return api
-    .post<FanxiuPacketProxySaveResponse>('/fanxiu/packet-capture/proxy/events/save', { label })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketProxyLogs = (limit = 50) => {
-  return api
-    .get<FanxiuPacketProxyLogListResponse>('/fanxiu/packet-capture/proxy/logs', { params: { limit } })
-    .then(res => res.data);
-};
-
-export const loadFanxiuPacketProxyLog = (name: string, limit = 500) => {
-  return api
-    .get<FanxiuPacketProxyLogLoadResponse>('/fanxiu/packet-capture/proxy/logs/load', { params: { name, limit } })
     .then(res => res.data);
 };
 
@@ -4852,12 +4371,6 @@ export const getFanxiuPacketStorageBag = () => {
     .then(res => res.data);
 };
 
-export const syncFanxiuPacketRuntimeInsights = (payload: { force?: boolean } = {}) => {
-  return api
-    .post<FanxiuPacketRuntimeInsightResponse>('/fanxiu/packet-capture/tcp/insights/sync', payload, { timeout: 120000 })
-    .then(res => res.data);
-};
-
 export const getFanxiuActivityCard = (activityId: string | number, params: { server_scope?: string } = {}) => {
   return api
     .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId, ...params } })
@@ -5117,8 +4630,10 @@ export const matchFanxiuGameWindow2Screenshot = (
   }).then(res => res.data);
 };
 
-export const getFanxiuGameWindow3RuntimeStatus = () => {
-  return api.get<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/status').then(res => res.data);
+export const getFanxiuGameWindow3RuntimeStatus = (entryId = '') => {
+  return api
+    .get<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/status', { params: entryId ? { entry_id: entryId } : {} })
+    .then(res => res.data);
 };
 
 const FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT = 60000;
@@ -5129,7 +4644,7 @@ export const startFanxiuGameWindow3RuntimeTask = (entryId: string, taskType: str
     .then(res => res.data);
 };
 
-export const stopFanxiuGameWindow3RuntimeTask = (entryId?: string) => {
+export const stopFanxiuGameWindow3RuntimeCurrentTask = (entryId?: string) => {
   return api
     .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
     .then(res => res.data);

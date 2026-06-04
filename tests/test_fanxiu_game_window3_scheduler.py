@@ -12,9 +12,11 @@ def _scheduler_state_path(tmp_path):
 
 
 def _patch_game_window3_api_common(monkeypatch, tmp_path):
+    monkeypatch.setattr(fanxiu, "_GAME_WINDOW3_RUNTIME_RUNNER", fanxiu._GameWindow3RuntimeRunner())
     monkeypatch.setattr(fanxiu, "_game_window3_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_game_window3_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(fanxiu, "_game_window3_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(fanxiu, "_game_window3_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu, "_game_window3_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(fanxiu, "ensure_feature_access", lambda *args, **kwargs: None)
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda *args, **kwargs: object())
@@ -247,7 +249,7 @@ class _FakeRuntimeRunner:
     def can_preempt(self, priority):
         return self._can_preempt
 
-    def stop(self, entry_id):
+    def stop_current_task(self, entry_id):
         self.stopped_entry_id = entry_id
 
     def wait_until_idle(self, timeout_seconds):
@@ -666,23 +668,15 @@ def test_game_window3_run_now_endpoint_uses_payload_override_without_persisting_
             "checkpoint": None,
         }
     ])
-    started: dict[str, object] = {}
+    runner = fanxiu._GAME_WINDOW3_RUNTIME_RUNNER
 
-    def fake_start_scheduler_tasks(**kwargs):
-        started.update(kwargs)
-        return {
-            "ok": True,
-            "running": True,
-            "status": "running",
-            "entry_id": kwargs["entry_id"],
-            "task_type": "gift_code_redeem",
-            "current_task": "兑换礼包码",
-            "current_task_id": "gift-code-weekly",
-            "message": "started",
-            "logs": [],
-        }
+    def fake_ensure_service(**kwargs):
+        with runner._lock:
+            runner._status["service_running"] = True
+            runner._status["entry_id"] = kwargs["entry_id"]
+        return runner.status()
 
-    monkeypatch.setattr(fanxiu._GAME_WINDOW3_RUNTIME_RUNNER, "start_scheduler_tasks", fake_start_scheduler_tasks)
+    monkeypatch.setattr(runner, "ensure_service", fake_ensure_service)
 
     response = fanxiu.run_now_fanxiu_game_window3_scheduler_task(
         fanxiu.FanxiuGameWindow3SchedulerRunNowRequest(
@@ -695,13 +689,71 @@ def test_game_window3_run_now_endpoint_uses_payload_override_without_persisting_
     )
     persisted = fanxiu._read_game_window3_scheduler_tasks()
     persisted_task = persisted[0]
-    run_task = started["tasks"][0]
+    queued_jobs = fanxiu._read_game_window3_manual_jobs()
+    run_job = queued_jobs[0]
 
-    assert response.running is True
-    assert run_task["payload"]["codes"] == ["煮梅消夏"]
+    assert response.running is False
+    assert run_job["task_type"] == "gift_code_redeem"
+    assert run_job["payload"]["codes"] == ["煮梅消夏"]
+    assert run_job["payload"]["__scheduler_task_id"] == "gift-code-weekly"
     assert persisted_task["payload"]["codes"] == []
-    assert persisted_task["last_result"] == "running"
+    assert persisted_task["last_result"] == "queued"
     assert persisted_task["last_run_at"]
+
+
+def test_game_window3_run_now_does_not_directly_drain_pending_manual_job(tmp_path, monkeypatch):
+    _patch_game_window3_api_common(monkeypatch, tmp_path)
+    fanxiu._write_game_window3_scheduler_tasks([
+        {
+            "id": "gift-code-weekly",
+            "task_type": "gift_code_redeem",
+            "label": "每周礼包码",
+            "source": "manual",
+            "schedule_kind": "manual",
+            "legacy_name": "",
+            "enabled": False,
+            "priority": 40,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": {"codes": []},
+            "checkpoint": None,
+        }
+    ])
+    runner = fanxiu._GAME_WINDOW3_RUNTIME_RUNNER
+    first_job = fanxiu._enqueue_game_window3_manual_job("detect_scene", {}, label="旧手动作业")
+
+    def fake_ensure_service(**kwargs):
+        with runner._lock:
+            runner._status["service_running"] = True
+            runner._status["entry_id"] = kwargs["entry_id"]
+        return runner.status()
+
+    def fail_start_manual_runtime_task(**_kwargs):
+        raise AssertionError("run-now must not directly consume pending manual jobs")
+
+    monkeypatch.setattr(runner, "ensure_service", fake_ensure_service)
+    monkeypatch.setattr(runner, "start_manual_runtime_task", fail_start_manual_runtime_task)
+
+    response = fanxiu.run_now_fanxiu_game_window3_scheduler_task(
+        fanxiu.FanxiuGameWindow3SchedulerRunNowRequest(
+            entry_id="entry",
+            task_id="gift-code-weekly",
+            payload={"codes": ["煮梅消夏"]},
+        ),
+        current_user=object(),
+        session=object(),
+    )
+
+    queued_jobs = fanxiu._read_game_window3_manual_jobs()
+    assert response.running is False
+    assert [job["id"] for job in queued_jobs][0] == first_job["id"]
+    assert [job["task_type"] for job in queued_jobs] == ["detect_scene", "gift_code_redeem"]
 
 
 def test_game_window3_run_now_gift_code_executes_through_runtime_thread(tmp_path, monkeypatch):
@@ -756,7 +808,9 @@ def test_game_window3_run_now_gift_code_executes_through_runtime_thread(tmp_path
         session=object(),
     )
 
-    assert response.running is True
+    deadline = fanxiu.time.time() + 2.0
+    while fanxiu.time.time() < deadline and not executed:
+        fanxiu.time.sleep(0.05)
     assert runner.wait_until_idle(2.0) is True
     status = runner.status()
     persisted_status = json.loads((tmp_path / "runtime_state.json").read_text(encoding="utf-8"))
@@ -766,7 +820,7 @@ def test_game_window3_run_now_gift_code_executes_through_runtime_thread(tmp_path
     assert executed == [["煮梅消夏"]]
     assert status["running"] is False
     assert status["status"] == "success"
-    assert status["task_type"] == "scheduler_run_now"
+    assert status["task_type"] == "gift_code_redeem"
     assert persisted_status["status"] == "success"
     assert persisted_task["last_result"] == "success"
     assert persisted_task["payload"]["codes"] == []
@@ -856,34 +910,15 @@ def test_game_window3_run_due_endpoint_skips_legacy_placeholders(tmp_path, monke
             "checkpoint": None,
         },
     ])
-    started: dict[str, object] = {}
-
-    def fake_start_scheduler_tasks(**kwargs):
-        started.update(kwargs)
-        return {
-            "ok": True,
-            "running": True,
-            "status": "running",
-            "entry_id": kwargs["entry_id"],
-            "task_type": "scheduler_run_due",
-            "current_task": "执行全部到期任务",
-            "current_task_id": "scheduler_run_due",
-            "message": "started",
-            "logs": [],
-        }
-
-    monkeypatch.setattr(fanxiu._GAME_WINDOW3_RUNTIME_RUNNER, "start_scheduler_tasks", fake_start_scheduler_tasks)
-
     response = fanxiu.run_due_fanxiu_game_window3_scheduler_tasks(
         fanxiu.FanxiuGameWindow3SchedulerRunDueRequest(entry_id="entry"),
         current_user=object(),
         session=object(),
     )
-    run_tasks = started["tasks"]
 
-    assert response.running is True
-    assert [item["id"] for item in run_tasks] == ["gift-code-weekly"]
-    assert all(item["task_type"] != "legacy_daily_task" for item in run_tasks)
+    assert response.service_running is True
+    assert response.running is False
+    assert response.message == "没有可执行的到期任务"
 
 
 def test_game_window3_run_due_endpoint_reports_no_executable_due_tasks(tmp_path, monkeypatch):
@@ -979,16 +1014,51 @@ def test_game_window3_runtime_status_corrects_stale_running_after_backend_reload
     persisted = json.loads((tmp_path / "runtime_state.json").read_text(encoding="utf-8"))
 
     assert status["running"] is False
-    assert status["guard_enabled"] is False
+    assert status["guard_enabled"] is True
     assert status["guard_running"] is False
+    assert status["service_running"] is False
     assert status["status"] == "stopped"
-    assert status["message"] == "后端已重载，运行线程已结束"
+    assert status["message"] == "后端已重载，运行状态已结束"
     assert any(item["message"] == "旧日志" for item in status["logs"])
     assert persisted["running"] is False
-    assert persisted["guard_enabled"] is False
+    assert persisted["guard_enabled"] is True
 
 
-def test_game_window3_runtime_thread_finish_persists_status(tmp_path, monkeypatch):
+def test_game_window3_runtime_stop_only_targets_current_task_not_resident_service(tmp_path, monkeypatch):
+    _patch_game_window3_api_common(monkeypatch, tmp_path)
+    runner = fanxiu._GameWindow3RuntimeRunner()
+    stop_event = fanxiu.threading.Event()
+    fake_thread = type("AliveThread", (), {"is_alive": lambda self: True})()
+    runner._service_thread = fake_thread
+    runner._stop_event = stop_event
+    with runner._lock:
+        runner._status.update({
+            "entry_id": "entry",
+            "running": True,
+            "status": "running",
+            "message": "任务执行中",
+        })
+
+    status = runner.stop_current_task("entry")
+
+    assert stop_event.is_set()
+    assert status["running"] is True
+    assert status["status"] == "stopping"
+    assert status["service_running"] is True
+    assert status["message"] == "当前任务停止请求已发送"
+
+    with runner._lock:
+        runner._status.update({"running": False, "status": "success"})
+
+    idle_status = runner.stop_current_task("entry")
+
+    assert idle_status["running"] is False
+    assert idle_status["status"] == "idle"
+    assert idle_status["service_running"] is True
+    assert idle_status["message"] == "当前没有正在运行的任务"
+
+
+def test_game_window3_direct_runtime_task_runs_inline_and_persists_status(tmp_path, monkeypatch):
     _patch_game_window3_api_common(monkeypatch, tmp_path)
     runner = fanxiu._GameWindow3RuntimeRunner()
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
@@ -996,24 +1066,58 @@ def test_game_window3_runtime_thread_finish_persists_status(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda *_args, **_kwargs: "success")
 
-    runner.start_generic_runtime_task(
+    status = runner.start_runtime_task(
         entry=object(),
         entry_id="entry",
         task_type="hide_floating_window",
         payload={},
         asset_tree_path=tmp_path / "entry.json",
     )
-    assert runner._thread is not None
-    runner._thread.join(timeout=2)
 
     persisted = json.loads((tmp_path / "runtime_state.json").read_text(encoding="utf-8"))
     facts = json.loads((tmp_path / "world_facts.json").read_text(encoding="utf-8"))
 
+    assert status["running"] is False
+    assert not hasattr(runner, "_thread")
     assert persisted["running"] is False
     assert persisted["status"] == "success"
     assert persisted["task_type"] == "hide_floating_window"
     assert facts["runtime"]["running"] is False
     assert facts["runtime"]["task_type"] == "hide_floating_window"
+
+
+def test_game_window3_scheduler_tasks_run_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
+    _patch_game_window3_api_common(monkeypatch, tmp_path)
+    runner = fanxiu._GameWindow3RuntimeRunner()
+    task = {
+        "id": "hide-floating",
+        "task_type": "hide_floating_window",
+        "label": "隐藏浮窗",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "priority": 30,
+        "interruptible": True,
+        "payload": {},
+        "schedule_times": ["00:00"],
+        "last_result": "",
+    }
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_execute_runtime_task", lambda *_args, **_kwargs: "success")
+
+    status = runner.start_scheduler_tasks(
+        entry=object(),
+        entry_id="entry",
+        tasks=[task],
+        all_tasks=[task],
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert status["running"] is False
+    assert status["status"] == "success"
+    assert status["task_type"] == "scheduler_run_due"
+    assert not hasattr(runner, "_thread")
 
 
 class _DispatchRunner(fanxiu._GameWindow3RuntimeRunner):
@@ -1065,12 +1169,13 @@ def test_game_window3_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp_pa
     runner._guard_enabled = True
     ctx = {"entry": object()}
     calls = []
+    guard_results = [True, False]
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
 
     def fake_guard_step(runtime_ctx, asset_tree_path, frame):
         calls.append((runtime_ctx, asset_tree_path, frame))
-        return True
+        return guard_results.pop(0) if guard_results else False
 
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", fake_guard_step)
     monkeypatch.setattr(runner, "_persist_status", lambda: calls.append("persist"))
@@ -1083,10 +1188,26 @@ def test_game_window3_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp_pa
         fanxiu.threading.Event(),
     )
 
-    assert status == fanxiu.BehaviorTreeStatus.SKIP
+    assert status == fanxiu.BehaviorTreeStatus.RUNNING
     assert calls[0] == (ctx, tmp_path / "entry.json", "frame")
     assert "persist" in calls
     assert ("clear", ctx) in calls
+
+    calls.clear()
+    guard_results[:] = [True, False]
+    job_calls = []
+    result = runner._run_runtime_behavior_tree(
+        runtime_ctx=ctx,
+        asset_tree_path=tmp_path / "entry.json",
+        stop_event=fanxiu.threading.Event(),
+        action=lambda: job_calls.append("job") or "done",
+        label="测试作业",
+        tick_seconds=0.1,
+    )
+
+    assert result == "done"
+    assert job_calls == ["job"]
+    assert calls.count("persist") == 1
 
 
 def test_game_window3_scene_jump_wait_does_not_accept_expected_match_when_global_scene_is_source(monkeypatch, tmp_path):
@@ -1140,11 +1261,11 @@ def test_game_window3_runtime_start_accepts_first_batch_task_types(monkeypatch):
     runner = fanxiu._GameWindow3RuntimeRunner()
     accepted = []
 
-    def fake_start_generic_runtime_task(**kwargs):
+    def fake_run_inline_runtime_task(**kwargs):
         accepted.append(kwargs["task_type"])
         return {"ok": True, "task_type": kwargs["task_type"]}
 
-    monkeypatch.setattr(runner, "start_generic_runtime_task", fake_start_generic_runtime_task)
+    monkeypatch.setattr(runner, "_run_inline_runtime_task", fake_run_inline_runtime_task)
 
     for task_type in [
         "go_scene",
@@ -1176,7 +1297,6 @@ def test_game_window3_runtime_start_accepts_first_batch_task_types(monkeypatch):
 
 def test_game_window3_runtime_start_rejects_unverified_task_types(monkeypatch):
     runner = fanxiu._GameWindow3RuntimeRunner()
-    monkeypatch.setattr(runner, "start_generic_runtime_task", lambda **kwargs: {"ok": True})
 
     with pytest.raises(fanxiu.HTTPException) as daily_exc:
         runner.start_runtime_task(

@@ -47,8 +47,12 @@ backend/data/
 *.log
 .DS_Store
 /.codex/
+/.codex_tmp/
 /.codex-run/
+/.codex-run-logs/
+/.codex-runlogs/
 /.codex-logs/
+/.codex-dev-logs/
 /凡修/
 /.trae
 /tools/
@@ -68,14 +72,23 @@ backend/data/
 /frontend/src/plugins/modules/*
 !/frontend/src/plugins/modules/.gitkeep
 /.tmp/
+/.tmp*/
+/.tmp_*
+/.tmp-*
 /.tmp-logs/
 /.tmp-dev-observe
 /.tmp_*/
 /.tmp_git_reduce_debug/
 
 # Auto Git ignored local artifacts
-tmp/
-tmp_mask_debug/
-
-# Auto Git ignored local artifacts
-.tmp-dev-logs/
+/tmp/
+/tmp_mask_debug/
+/tmp_*/
+/tmp-*/
+/tmp_*.png
+/tmp_*.jpg
+/tmp_*.jpeg
+/tmp_*.json
+/tmp_*.txt
+/bc_*.db
+/@AutomationLog.txt

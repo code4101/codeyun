@@ -149,6 +149,12 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 def read_root():
     return {"message": "CodeYun Backend is running"}
 
+
+@app.get("/api/health")
+def read_health():
+    return {"status": "ok", "service": "codeyun-backend"}
+
+
 if __name__ == "__main__":
     print(
         f"Starting backend in {settings.environment} mode on "

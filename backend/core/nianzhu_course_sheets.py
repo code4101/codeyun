@@ -775,13 +775,17 @@ def _fill_nianzhu_attendance_schema_defaults(
 
 
 def _requires_attendance_tracking_meta_columns(document: dict[str, Any], *, course_name: str = "") -> bool:
+    columns = _normalize_document_columns(document)
+    if any(_find_column_index(columns, header) is not None for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS):
+        return True
+
     resolved_course_name = _normalize_text(course_name)
     if not resolved_course_name:
         source_meta = dict(document.get("source_meta") or {})
         resolved_course_name = _normalize_text(source_meta.get("course_name"))
     if not resolved_course_name:
         return True
-    return "闯关" in resolved_course_name
+    return any(keyword in resolved_course_name for keyword in ["闯关", "念住", "觉观", "修道班"])
 
 
 def _ensure_nianzhu_attendance_schema(

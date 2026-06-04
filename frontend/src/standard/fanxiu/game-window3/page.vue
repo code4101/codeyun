@@ -44,7 +44,6 @@
                 <div v-if="selectedWindowKey === 'mumu'" class="control-field">
                   <span class="control-label">通道</span>
                   <el-select v-model="mumuChannel" class="channel-select" size="small" @change="restartStream">
-                    <el-option label="桌面" value="desktop" />
                     <el-option label="ADB" value="adb" />
                   </el-select>
                 </div>
@@ -1057,7 +1056,7 @@ import {
   setFanxiuGameWindow3RuntimeGuard,
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
-  stopFanxiuGameWindow3RuntimeTask,
+  stopFanxiuGameWindow3RuntimeCurrentTask,
   tickFanxiuGameWindow3RuntimeTask,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
@@ -1407,7 +1406,7 @@ const rotateDegrees = ref<RotateDegrees>('0');
 const displayScale = ref(100);
 const fps = ref(12);
 const quality = ref(82);
-const mumuChannel = ref<MumuChannel>('desktop');
+const mumuChannel = ref<MumuChannel>('adb');
 const autoDismissPopup = ref(false);
 const streamEnabled = ref(true);
 const streamNonce = ref(Date.now());
@@ -3363,7 +3362,7 @@ const streamUrl = computed(() => {
     fixed_width: String(fixedFrameWidth.value),
     fixed_height: String(fixedFrameHeight.value),
     auto_dismiss_popup: selectedWindowKey.value === 'sunlogin' && autoDismissPopup.value ? 'true' : 'false',
-    adb_screencap: shouldCaptureWithAdb('frontend') ? 'true' : 'false',
+    adb_screencap: selectedWindowKey.value === 'mumu' ? 'true' : 'false',
     popup_check_interval: '3',
     nonce: String(streamNonce.value),
   });
@@ -3445,13 +3444,18 @@ const chooseDefaultWindowKey = (): WindowSceneKey => {
   return 'mumu';
 };
 
-const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: WindowSceneDefaults): WindowSceneConfig => {
+const normalizeWindowConfig = (
+  raw: Partial<WindowSceneConfig>,
+  fallback: WindowSceneDefaults,
+  windowKey?: WindowSceneKey,
+): WindowSceneConfig => {
   const rotate = raw.rotateDegrees;
   const nextFps = Number(raw.fps ?? fallback.fps);
   const nextQuality = Number(raw.quality ?? fallback.quality);
-  const nextMumuChannel = raw.mumuChannel === 'desktop' || raw.mumuChannel === 'adb'
+  const rawMumuChannel = raw.mumuChannel === 'desktop' || raw.mumuChannel === 'adb'
     ? raw.mumuChannel
     : (fallback.mumuChannel ?? 'desktop');
+  const nextMumuChannel = windowKey === 'mumu' ? 'adb' : rawMumuChannel;
   return {
     trimBorderText: raw.trimBorderText || fallback.trimBorderText,
     rotateDegrees: rotate === '0' || rotate === '90' || rotate === '180' || rotate === '270'
@@ -3489,12 +3493,12 @@ const persistSelectedScreenshotFilename = (filename: string, entryId = selectedE
 const readWindowConfig = (entryId: string, windowKey: WindowSceneKey): WindowSceneConfig => {
   const scene = windowScenes.find((item) => item.key === windowKey) ?? windowScenes[0];
   const rawText = window.localStorage.getItem(getWindowConfigStorageKey(entryId, windowKey));
-  if (!rawText) return normalizeWindowConfig({}, scene.defaults);
+  if (!rawText) return normalizeWindowConfig({}, scene.defaults, windowKey);
   try {
     const raw = JSON.parse(rawText) as Partial<WindowSceneConfig>;
-    return normalizeWindowConfig(raw, scene.defaults);
+    return normalizeWindowConfig(raw, scene.defaults, windowKey);
   } catch {
-    return normalizeWindowConfig({}, scene.defaults);
+    return normalizeWindowConfig({}, scene.defaults, windowKey);
   }
 };
 
@@ -3504,7 +3508,7 @@ const currentWindowConfig = (): WindowSceneConfig => ({
   fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
   quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
   autoDismissPopup: autoDismissPopup.value,
-  mumuChannel: mumuChannel.value,
+  mumuChannel: selectedWindowKey.value === 'mumu' ? 'adb' : mumuChannel.value,
 });
 
 const persistWindowConfig = () => {
@@ -4560,6 +4564,9 @@ const handleStreamError = () => {
 };
 
 const restartStream = async () => {
+  if (selectedWindowKey.value === 'mumu' && mumuChannel.value !== 'adb') {
+    mumuChannel.value = 'adb';
+  }
   streamError.value = '';
   shapeDetectLiveBoxes.value = [];
   stopAdbFramePolling();
@@ -9340,9 +9347,9 @@ const runRuntimeSingleTick = async () => {
 
 const stopRuntimeTask = async () => {
   runtimeStopRequested.value = true;
-  setRuntimeRunStatus('正在停止', 'stop');
+  setRuntimeRunStatus('正在停止当前任务', 'stop');
   try {
-    const status = await stopFanxiuGameWindow3RuntimeTask(selectedEntryId.value);
+    const status = await stopFanxiuGameWindow3RuntimeCurrentTask(selectedEntryId.value);
     applyRuntimeTaskStatus(status);
   } catch {
     // 停止失败时保留本地停止标记，下一轮轮询会同步真实状态。
@@ -10628,8 +10635,8 @@ const showRuntimeHelp = () => {
     {
       title: '3. 守护',
       lines: [
-        '守护开关控制后端空转检测。',
-        '没有任务时可以持续识别弹窗和特殊事件；关闭后停止空转以节省 CPU。',
+        '守护开关只控制对应高优先级节点是否参与 tick。',
+        '行为树服务保持常驻；关闭守护不会关闭 Runtime，也不会影响手动作业入队。',
       ],
     },
     {

@@ -315,17 +315,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "fanxiu.packet-capture",
-      "title": "凡修抓包",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 6,
-      "route_paths": ["/fanxiu/packet-capture"],
-      "menu_paths": ["/fanxiu/packet-capture"],
-      "api_scopes": ["fanxiu.packet-capture"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "fanxiu.wiki",
       "title": "凡修图鉴",
       "node_type": "feature",

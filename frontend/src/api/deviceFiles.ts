@@ -123,12 +123,26 @@ export interface DeviceMediaListing {
 }
 
 const DEVICE_MEDIA_LIST_IDLE_TIMEOUT_MS = 30_000;
+const DEVICE_MEDIA_LIST_FAST_PATH_TIMEOUT_MS = 2_500;
 const DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS = 10_000;
 const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
+const DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT = 2_000;
+const DEVICE_MEDIA_LIST_FAST_PATH_LIMIT = 100;
 
 const usesDuplicateClusterSort = (payload: DeviceMediaListRequest) =>
   Array.isArray(payload.sort_program?.rules)
   && payload.sort_program.rules.some((rule) => rule?.field === 'duplicate_cluster');
+
+const canUseFastMediaList = (payload: DeviceMediaListRequest) =>
+  !usesDuplicateClusterSort(payload)
+  && payload.recursive !== true
+  && Number(payload.scan_limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT
+  && Number(payload.limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_LIMIT
+  && !payload.snapshot_id;
+
+const isTimeoutError = (error: any) =>
+  error?.code === 'ECONNABORTED'
+  || String(error?.message || '').toLowerCase().includes('timeout');
 
 export interface DeviceThumbnailOptions {
   max_edge?: number;
@@ -427,6 +441,18 @@ export const fetchDeviceMedia = async (
   entryId: string,
   payload: DeviceMediaListRequest
 ): Promise<DeviceMediaListing> => {
+  if (canUseFastMediaList(payload)) {
+    try {
+      return await fetchDeviceMediaSync(entryId, payload, {
+        timeoutMs: DEVICE_MEDIA_LIST_FAST_PATH_TIMEOUT_MS,
+      });
+    } catch (error: any) {
+      if (!isTimeoutError(error)) {
+        throw error;
+      }
+    }
+  }
+
   return runLongTask<DeviceMediaListing>({
     start: () => startDeviceMediaListTask(entryId, payload),
     poll: (taskId) => fetchDeviceMediaListTask(entryId, taskId),
@@ -456,12 +482,13 @@ const normalizeDeviceMediaListing = (raw: any): DeviceMediaListing => ({
 
 export const fetchDeviceMediaSync = async (
   entryId: string,
-  payload: DeviceMediaListRequest
+  payload: DeviceMediaListRequest,
+  options?: { timeoutMs?: number }
 ): Promise<DeviceMediaListing> => {
   const response = await api.post(getDeviceEntryPath(entryId, '/files/media/list'), payload, {
-    timeout: usesDuplicateClusterSort(payload)
+    timeout: options?.timeoutMs ?? (usesDuplicateClusterSort(payload)
       ? DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS
-      : DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS,
+      : DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS),
   });
   return normalizeDeviceMediaListing(response.data);
 };

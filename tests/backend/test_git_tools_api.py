@@ -6,6 +6,7 @@ import pytest
 
 from backend.api.git_tools import GitToolContextResponse
 from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
+from backend.core.git_tools import GitToolError, create_git_commit
 from backend.core.ollama_access_keys import create_ollama_access_key
 from backend.models import UserDevice
 
@@ -262,6 +263,30 @@ def test_git_tools_inspect_blocks_dot_tmp_directory(client, test_device, tmp_pat
     assert issue["blocking"] is True
     assert issue["severity"] == "error"
     assert issue["suggestion"] == ".tmp_pdf_check/"
+
+
+def test_git_tools_inspect_blocks_codex_tmp_artifacts(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-codex-tmp-repo"
+    _init_git_repo(repo_path)
+    tmp_dir = repo_path / ".codex_tmp"
+    tmp_dir.mkdir()
+    (tmp_dir / "frame.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    issue = next(
+        item for item in payload["precheck"]["issues"]
+        if item["path"] == ".codex_tmp/frame.png"
+    )
+    assert issue["issue_type"] == "local_artifact"
+    assert issue["blocking"] is True
+    assert issue["severity"] == "error"
 
 
 def test_git_tools_precheck_allows_nested_source_logs_route(client, test_device, tmp_path):
@@ -637,6 +662,47 @@ def test_local_entry_git_commit_creates_commit(client, auth_user, test_device, t
     assert payload["clean"] is True
     assert payload["commit_hash"]
     assert _run_git(repo_path, "log", "-1", "--pretty=%s") == "新增 Git 提交工具测试"
+
+
+def test_create_git_commit_does_not_commit_ignored_codex_tmp_artifacts(tmp_path):
+    repo_path = tmp_path / "git-commit-ignore-codex-tmp-repo"
+    _init_git_repo(repo_path)
+    (repo_path / ".gitignore").write_text("/.codex_tmp/\n", encoding="utf-8")
+    _run_git(repo_path, "add", ".gitignore")
+    _run_git(repo_path, "commit", "-m", "ignore local artifacts")
+    (repo_path / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    tmp_dir = repo_path / ".codex_tmp"
+    tmp_dir.mkdir()
+    (tmp_dir / "frame.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    payload = create_git_commit(
+        str(repo_path),
+        subject="提交源码改动",
+        body=["不提交 Codex 本地产物"],
+        add_all=True,
+    )
+
+    assert payload["clean"] is True
+    committed_paths = _run_git(repo_path, "show", "--name-only", "--pretty=", "HEAD")
+    assert "feature.txt" in committed_paths
+    assert ".codex_tmp/frame.png" not in committed_paths
+
+
+def test_create_git_commit_blocks_staged_codex_tmp_artifacts(tmp_path):
+    repo_path = tmp_path / "git-commit-block-codex-tmp-repo"
+    _init_git_repo(repo_path)
+    tmp_dir = repo_path / ".codex_tmp"
+    tmp_dir.mkdir()
+    (tmp_dir / "frame.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    _run_git(repo_path, "add", "-f", ".codex_tmp/frame.png")
+
+    with pytest.raises(GitToolError, match="Codex/调试/运行时本地产物"):
+        create_git_commit(
+            str(repo_path),
+            subject="误提交本地产物",
+            body=[],
+            add_all=True,
+        )
 
 
 def test_local_entry_git_commit_allows_sensitive_precheck_warnings_when_add_all_enabled(client, auth_user, test_device, tmp_path):

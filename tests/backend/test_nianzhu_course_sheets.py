@@ -1426,7 +1426,7 @@ def test_rebuild_nianzhu_attendance_repairs_missing_refund_tracking_columns(sess
     assert first_row[repaired_columns.index("规则版本")] == "当前规则"
 
 
-def test_nianzhu_attendance_schema_removes_tracking_columns_for_jueguan() -> None:
+def test_nianzhu_attendance_schema_keeps_existing_tracking_columns_for_jueguan() -> None:
     columns = ["分组", "姓名", "规则版本", "追踪分组", "追踪状态", "冻结时间", "第01课"]
     rows = [["一组", "甲", "当前规则", "一组", "追踪中", "", "当堂完成/98%"]]
     document = {
@@ -1443,16 +1443,16 @@ def test_nianzhu_attendance_schema_removes_tracking_columns_for_jueguan() -> Non
         course_name="d260601第47届觉观",
     )
 
-    assert summary["schema_removed_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    assert summary["schema_removed_columns"] == []
     for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
-        assert column not in repaired["columns"]
-        assert column not in repaired["grid_rows"][1]
-    assert repaired["rows"][0] == ["一组", "甲", "当堂完成/98%"]
+        assert column in repaired["columns"]
+        assert column in repaired["grid_rows"][1]
+    assert repaired["rows"][0] == rows[0]
 
 
-def test_nianzhu_attendance_schema_removes_tracking_columns_for_plain_nianzhu() -> None:
-    columns = ["分组", "姓名", "规则版本", "追踪分组", "追踪状态", "冻结时间", "第01课"]
-    rows = [["一组", "甲", "当前规则", "一组", "追踪中", "", "当堂完成/98%"]]
+def test_nianzhu_attendance_schema_inserts_tracking_columns_for_plain_nianzhu() -> None:
+    columns = ["分组", "姓名", "第01课"]
+    rows = [["一组", "甲", "当堂完成/98%"]]
     document = {
         "schema_version": 1,
         "columns": columns,
@@ -1467,11 +1467,16 @@ def test_nianzhu_attendance_schema_removes_tracking_columns_for_plain_nianzhu() 
         course_name="d260601第41届念住",
     )
 
-    assert summary["schema_removed_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
+    assert summary["schema_inserted_columns"] == ["规则版本", "追踪分组", "追踪状态", "冻结时间"]
     for column in ["规则版本", "追踪分组", "追踪状态", "冻结时间"]:
-        assert column not in repaired["columns"]
-        assert column not in repaired["grid_rows"][1]
-    assert repaired["rows"][0] == ["一组", "甲", "当堂完成/98%"]
+        assert column in repaired["columns"]
+        assert column in repaired["grid_rows"][1]
+    repaired_columns = repaired["columns"]
+    repaired_row = repaired["rows"][0]
+    assert repaired_row[repaired_columns.index("规则版本")] == "当前规则"
+    assert repaired_row[repaired_columns.index("追踪分组")] == "一组"
+    assert repaired_row[repaired_columns.index("追踪状态")] == "追踪中"
+    assert repaired_row[repaired_columns.index("冻结时间")] == ""
 
 
 def test_nianzhu_attendance_schema_keeps_tracking_columns_for_chuangguan() -> None:

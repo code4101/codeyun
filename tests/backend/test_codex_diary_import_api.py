@@ -14,6 +14,7 @@ from backend.api.notes import (
     _build_codex_diary_body_html,
     _build_codex_diary_blocks,
     _build_codex_diary_completion_progress_expr,
+    _build_codex_diary_title,
     _create_codex_diary_note,
     _create_codex_diary_import_run_record,
     _draft_codex_diary_blocks_in_batches,
@@ -317,6 +318,45 @@ def test_codex_diary_ai_draft_runs_in_batches(session: Session, auth_user, monke
     assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(26)]
 
 
+def test_codex_diary_ai_draft_retries_failed_batch_by_splitting(session: Session, auth_user, monkeypatch):
+    captured_batches: list[list[str]] = []
+
+    def flaky_draft(source, blocks, *, current_user, session):
+        keys = [block["block_key"] for block in blocks]
+        captured_batches.append(keys)
+        if len(blocks) == 4:
+            raise ValueError("AI 日记草案缺少 block：block-3")
+        for block in blocks:
+            block["title"] = f"草案 {block['block_key']}"
+            block["summary_items"] = ["拆分重试成功。"]
+            block["lifecycle_stage"] = "done"
+        return blocks
+
+    monkeypatch.setattr("backend.api.notes.CODEX_DIARY_DRAFT_BATCH_SIZE", 4)
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", flaky_draft)
+    blocks = [
+        {
+            "block_key": f"block-{index}",
+            "records": [{"assistant_result": "done"}],
+        }
+        for index in range(4)
+    ]
+
+    drafted = _draft_codex_diary_blocks_in_batches(
+        {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
+        blocks,
+        current_user=auth_user,
+        session=session,
+    )
+
+    assert captured_batches == [
+        ["block-0", "block-1", "block-2", "block-3"],
+        ["block-0", "block-1"],
+        ["block-2", "block-3"],
+    ]
+    assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(4)]
+
+
 def test_codex_diary_ai_draft_failure_stops_without_rule_fallback(session: Session, auth_user, monkeypatch):
     def failing_draft(source, blocks, *, current_user, session):
         raise ValueError("bad draft")
@@ -547,7 +587,7 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert "把 codepc_mi15 的 Codex 数据合并进日记来源。" not in first_plain_content
     assert "远端数据已经合并" in first_plain_content
     assert "codepc_mi15" in first_plain_content
-    assert any(item[0] == "__completion_progress_expr" and item[2] == "75/120" for item in first_note.custom_fields)
+    assert any(item[0] == "__completion_progress_expr" and item[2] == "75/600" for item in first_note.custom_fields)
 
 
 def test_codex_diary_import_empty_source_creates_no_notes(
@@ -947,7 +987,7 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
     assert [note.start_at for note in notes] == [_ts(2026, 5, 2, 9, 0)]
 
 
-def test_codex_diary_blocks_use_two_hour_target(
+def test_codex_diary_blocks_use_ten_hour_target(
     session: Session,
     auth_user,
 ):
@@ -961,35 +1001,46 @@ def test_codex_diary_blocks_use_two_hour_target(
                 "thread_id": "codeyun:thread-a",
                 "thread_title": "Codex 日记拆块",
                 "project_label": "codeyun",
-                "time_range": "2026-05-03 09:00 ~ 2026-05-03 10:10",
+                "time_range": "2026-05-03 09:00 ~ 2026-05-03 13:00",
                 "user_request": "调整日记拆块基准。",
                 "assistant_result": "日记拆块基准已调整。",
                 "assistant_process": "",
                 "start_at": start_at,
-                "end_at": start_at + 70 * 60,
+                "end_at": start_at + 4 * 60 * 60,
             },
             {
-                "thread_id": "codeyun:thread-a",
+                "thread_id": "codeyun:thread-b",
                 "thread_title": "Codex 日记进度",
                 "project_label": "codeyun",
-                "time_range": "2026-05-03 10:15 ~ 2026-05-03 11:05",
+                "time_range": "2026-05-03 13:10 ~ 2026-05-03 17:10",
                 "user_request": "按耗时计算日记进度。",
                 "assistant_result": "日记进度已改为耗时比例。",
                 "assistant_process": "",
-                "start_at": start_at + 75 * 60,
-                "end_at": start_at + 125 * 60,
+                "start_at": start_at + 4 * 60 * 60 + 10 * 60,
+                "end_at": start_at + 8 * 60 * 60 + 10 * 60,
+            },
+            {
+                "thread_id": "codeyun:thread-c",
+                "thread_title": "Codex 日记提示词",
+                "project_label": "codeyun",
+                "time_range": "2026-05-03 17:20 ~ 2026-05-03 21:20",
+                "user_request": "标题突出核心突破。",
+                "assistant_result": "日记提示词已调整为突出核心工作。",
+                "assistant_process": "",
+                "start_at": start_at + 8 * 60 * 60 + 20 * 60,
+                "end_at": start_at + 12 * 60 * 60 + 20 * 60,
             },
         ],
     }
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 1
-    assert round(blocks[0]["duration_seconds"] / 60) == 120
+    assert len(blocks) == 2
+    assert [round(block["duration_seconds"] / 60) for block in blocks] == [480, 240]
 
 
-def test_codex_diary_completion_progress_uses_two_hour_duration_ratio():
-    assert _build_codex_diary_completion_progress_expr({"duration_seconds": 37 * 60}) == "37/120"
+def test_codex_diary_completion_progress_uses_ten_hour_duration_ratio():
+    assert _build_codex_diary_completion_progress_expr({"duration_seconds": 37 * 60}) == "37/600"
 
 
 def test_codex_diary_blocks_prefer_content_category_over_thread_context(
@@ -1062,6 +1113,58 @@ def test_codex_diary_blocks_prefer_content_category_over_thread_context(
     assert blocks[1]["note_categories"] == [{"key": "custom_fanxiu", "weight": 100}]
     assert "课程脚本" in blocks[0]["records"][0]["user_request"]
     assert "prayer_cycle" in blocks[1]["records"][0]["user_request"]
+
+
+def test_codex_diary_blocks_prefer_value_category_over_general_codeyun_context(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#606266", "order": 10},
+                    {"key": "custom_programming", "label": "编程/技术", "color": "#409eff", "order": 20},
+                    {"key": "custom_work", "label": "工作/项目", "color": "#67c23a", "order": 30},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 4, 9, 0)
+    source = {
+        "date": "2026-06-04",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codeyun:value-engineering",
+                "thread_title": "接口稳定性修复",
+                "project_label": "CodeYun",
+                "user_request": "修复页面接口和缓存问题。",
+                "assistant_result": "已完成后端接口、前端页面、缓存配置和回归测试。",
+                "start_at": start_at,
+                "end_at": start_at + 45 * 60,
+            },
+            {
+                "thread_id": "codeyun:value-project",
+                "thread_title": "交付边界设计",
+                "project_label": "CodeYun",
+                "user_request": "梳理项目交付流程和规则边界。",
+                "assistant_result": "已明确交付策略、流程边界和复盘口径。",
+                "start_at": start_at + 60 * 60,
+                "end_at": start_at + 90 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert [block["category_key"] for block in blocks] == ["custom_programming", "custom_work"]
+    assert all(block["category_key"] not in {"general", "custom_codeyun_general"} for block in blocks)
+    assert "接口" in blocks[0]["records"][0]["assistant_result"]
+    assert "交付" in blocks[1]["records"][0]["thread_title"]
 
 
 def test_codex_diary_blocks_split_rime_input_method_from_fanxiu(
@@ -1620,6 +1723,35 @@ def test_codex_diary_ai_title_rejects_low_information_prefixes():
     assert _normalize_codex_diary_ai_title("已改完") == ""
     assert _normalize_codex_diary_ai_title("是的，会话列表全量时间线分页加载") == "会话列表全量时间线分页加载"
     assert _normalize_codex_diary_ai_title("综合修复事项") == "修复事项"
+
+
+def test_codex_diary_ai_title_keeps_single_primary_topic():
+    assert _normalize_codex_diary_ai_title("考勤表与问卷链路修复") == "考勤表"
+    assert _normalize_codex_diary_ai_title("权限策略和课程数据兜底") == "权限策略"
+    assert _normalize_codex_diary_ai_title("game-window3卡顿、抓包协议与表格序号修复") == "game-window3卡顿"
+
+
+def test_codex_diary_fallback_title_does_not_join_two_topics():
+    block = {
+        "records": [
+            {
+                "thread_title": "考勤表与问卷链路修复",
+                "user_request": "修复考勤表。",
+                "assistant_result": "考勤表链路已修复。",
+                "start_at": _ts(2026, 5, 1, 9, 0),
+                "end_at": _ts(2026, 5, 1, 9, 20),
+            },
+            {
+                "thread_title": "权限策略和课程数据兜底",
+                "user_request": "补权限策略。",
+                "assistant_result": "权限策略已补齐。",
+                "start_at": _ts(2026, 5, 1, 9, 30),
+                "end_at": _ts(2026, 5, 1, 9, 50),
+            },
+        ]
+    }
+
+    assert _build_codex_diary_title(block) == "考勤表链路已修复"
 
 
 def test_codex_diary_ai_summary_items_strip_number_prefixes():

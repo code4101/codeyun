@@ -3279,6 +3279,94 @@ def _attach_cached_media_metadata(
     )
 
 
+def _media_sort_rules_need_full_metadata(rules: list[GallerySortRule]) -> bool:
+    full_metadata_fields = {
+        "duplicate_cluster",
+        "duration",
+        "width",
+        "height",
+        "resolution_area",
+    }
+    return any(rule.field in full_metadata_fields for rule in rules)
+
+
+def _attach_lightweight_cached_media_metadata(
+    entries: list[dict],
+    session: Session | None = None,
+) -> dict:
+    if not entries:
+        return _build_visual_hash_status(include_visual_hash=False, total_image_count=0, indexed_count=0)
+
+    try:
+        from backend.core.device import get_device_id
+    except Exception:
+        return _build_visual_hash_status(
+            include_visual_hash=False,
+            total_image_count=sum(1 for entry in entries if entry.get("kind") == "image"),
+            indexed_count=0,
+        )
+
+    try:
+        device_id = get_device_id()
+    except Exception:
+        device_id = ""
+
+    absolute_paths = [
+        str(entry["_absolute_identity_path"])
+        for entry in entries
+        if entry.get("_absolute_identity_path")
+    ]
+    cached_records = _load_cached_device_records_by_path(session, device_id, absolute_paths)
+    total_image_count = 0
+    indexed_count = 0
+    for entry in entries:
+        absolute_identity_path = str(entry.get("_absolute_identity_path", "") or "")
+        cached_record = cached_records.get(absolute_identity_path) if absolute_identity_path else None
+        matches_cached_file = (
+            cached_record is not None
+            and cached_record.file_size == entry.get("size")
+            and cached_record.modified_at_ms == entry.get("modified_at")
+        )
+        cached_public_id = get_device_file_public_id(cached_record) if cached_record is not None else None
+        if cached_public_id is not None:
+            entry["id"] = cached_public_id
+
+        if entry.get("kind") == "image":
+            total_image_count += 1
+            if matches_cached_file and _normalize_optional_hash(cached_record.visual_hash):
+                indexed_count += 1
+
+        entry["weight"] = cached_record.weight if cached_record else 0
+        if matches_cached_file and cached_record is not None:
+            entry["duration_ms"] = cached_record.duration_ms
+            entry["width"] = cached_record.width_px
+            entry["height"] = cached_record.height_px
+            entry["aspect_ratio"] = (
+                cached_record.width_px / cached_record.height_px
+                if cached_record.width_px and cached_record.height_px
+                else None
+            )
+            entry["content_hash"] = _normalize_optional_hash(cached_record.content_hash)
+            entry["hash_algorithm"] = cached_record.hash_algorithm or "sha256"
+            entry["visual_hash"] = None
+            entry["visual_hash_algorithm"] = None
+        else:
+            entry.setdefault("duration_ms", None)
+            entry.setdefault("width", None)
+            entry.setdefault("height", None)
+            entry.setdefault("aspect_ratio", None)
+            entry.setdefault("content_hash", None)
+            entry.setdefault("hash_algorithm", "sha256")
+            entry.setdefault("visual_hash", None)
+            entry.setdefault("visual_hash_algorithm", None)
+
+    return _build_visual_hash_status(
+        include_visual_hash=False,
+        total_image_count=total_image_count,
+        indexed_count=indexed_count,
+    )
+
+
 def _create_media_sort_program_from_mode(sort_mode: MediaSortMode) -> GallerySortProgram:
     if sort_mode == "modified-desc":
         return GallerySortProgram(rules=[GallerySortRule(field="modified_at", direction="desc", nulls="last")])
@@ -3808,6 +3896,12 @@ def _build_media_listing_response(
             include_visual_hash=True,
         )
         _apply_duplicate_cluster_sort_to_entries(response_entries, normalized_rules)
+    elif response_entries:
+        _attach_cached_media_metadata(
+            response_entries,
+            session,
+            include_visual_hash=False,
+        )
     normalized_offset = max(0, int(offset or 0))
     normalized_limit = max(0, int(limit or 0))
     has_more = next_offset is not None
@@ -4008,12 +4102,15 @@ def _list_supported_entries(
                 "progress_total": normalized_scan_limit,
             }
         )
-    visual_hash_status = _attach_cached_media_metadata(
-        entries,
-        session,
-        include_visual_hash=False,
-        prewarm_visual_hash_key=query_signature if include_visual_hash else None,
-    )
+    if _media_sort_rules_need_full_metadata(normalized_rules):
+        visual_hash_status = _attach_cached_media_metadata(
+            entries,
+            session,
+            include_visual_hash=False,
+            prewarm_visual_hash_key=query_signature if include_visual_hash else None,
+        )
+    else:
+        visual_hash_status = _attach_lightweight_cached_media_metadata(entries, session)
     normalized_rules = _prepare_media_listing_snapshot_entries(entries, sort_mode, sort_program)
     sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
     total_bytes = sum(int(entry.get("size") or 0) for entry in entries)

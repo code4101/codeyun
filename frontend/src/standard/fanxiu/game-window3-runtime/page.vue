@@ -28,7 +28,6 @@ const schedulerPlan = ref<FanxiuGameWindow3SchedulerPlanResponse | null>(null);
 const logs = ref<FanxiuGameWindow3RuntimeLogEntry[]>([]);
 const loading = ref(false);
 const actionLoading = ref('');
-const autoGuardStarted = ref(false);
 const contextMenu = ref({
   visible: false,
   x: 0,
@@ -51,6 +50,7 @@ const runtimeStateText = computed(() => {
   if (!runtimeStatus.value) return '未连接';
   if (runtimeStatus.value.running) return '运行中';
   if (runtimeStatus.value.status === 'stopping') return '停止中';
+  if (runtimeStatus.value.service_running) return '空转';
   return '空转';
 });
 const runtimeMessage = computed(() => runtimeStatus.value?.message || '-');
@@ -124,7 +124,7 @@ const applyStatus = (status: FanxiuGameWindow3RuntimeStatus) => {
 };
 
 const refreshStatus = async () => {
-  const status = await getFanxiuGameWindow3RuntimeStatus();
+  const status = await getFanxiuGameWindow3RuntimeStatus(entryId.value);
   applyStatus(status);
 };
 
@@ -178,18 +178,6 @@ const toggleGuardItem = (itemId: string) => {
   void runAction(`guard:${itemId}`, () => setFanxiuGameWindow3RuntimeGuard(entryId.value, !guardItemEnabled(itemId), 2, itemId));
 };
 
-const autoStartClosePopupGuard = async () => {
-  if (!entryId.value || autoGuardStarted.value || guardEnabled.value) return;
-  autoGuardStarted.value = true;
-  try {
-    const status = await setFanxiuGameWindow3RuntimeGuard(entryId.value, true, 2, 'close_popups');
-    applyStatus(status);
-    await refreshLogs();
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '启动关闭弹窗失败');
-  }
-};
-
 const toggleTaskEnabled = async (task: FanxiuGameWindow3SchedulerTaskItem) => {
   actionLoading.value = `enable:${task.id}`;
   try {
@@ -226,7 +214,6 @@ onMounted(async () => {
     entryId.value = mfDevice?.id || devices.value[0]?.id || '';
   }
   await refreshAll();
-  await autoStartClosePopupGuard();
   startPolling();
   window.addEventListener('click', closeLogMenu);
 });

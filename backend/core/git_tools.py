@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from collections import defaultdict
 from datetime import date, timedelta
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 
@@ -88,6 +89,13 @@ BINARY_LIKE_SUFFIXES = {
 }
 
 CLEAR_IGNORE_DIR_PARTS = {
+    ".codex",
+    ".codex_tmp",
+    ".codex-dev-logs",
+    ".codex-logs",
+    ".codex-run",
+    ".codex-run-logs",
+    ".codex-runlogs",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -120,6 +128,7 @@ CLEAR_IGNORE_DIR_PREFIXES = (
 
 CLEAR_IGNORE_FILENAMES = {
     ".ds_store",
+    "@automationlog.txt",
     "thumbs.db",
 }
 
@@ -181,6 +190,30 @@ ALL_HISTORY_WINDOW_DAYS = 0
 GIT_HISTORY_LOG_TIMEOUT = 60
 GIT_HISTORY_MARKER = "__CODEYUN_HISTORY__"
 LARGE_FILE_WARNING_BYTES = 1_000_000
+LOCAL_ARTIFACT_ROOT_DIRS = {
+    ".codex",
+    ".codex_tmp",
+    ".codex-dev-logs",
+    ".codex-logs",
+    ".codex-run",
+    ".codex-run-logs",
+    ".codex-runlogs",
+    "tmp",
+    "tmp_mask_debug",
+}
+LOCAL_ARTIFACT_ROOT_PREFIXES = (
+    "tmp-",
+    "tmp_",
+)
+LOCAL_ARTIFACT_ROOT_FILE_PATTERNS = (
+    "tmp_*.png",
+    "tmp_*.jpg",
+    "tmp_*.jpeg",
+    "tmp_*.json",
+    "tmp_*.txt",
+    "bc_*.db",
+    "@automationlog.txt",
+)
 COMMIT_BODY_BULLET_PREFIX_RE = re.compile(r"^[-*•]\s*")
 COMMIT_BODY_NUMBER_PREFIX_RE = re.compile(r"^(?:\d{1,2}[、）)]\s*|\d{1,2}[.．](?!\d)\s*)")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----")
@@ -369,6 +402,11 @@ def _is_new_changed_file(item: dict[str, object]) -> bool:
     return bool(item.get("untracked")) or "A" in status
 
 
+def _is_deleted_changed_file(item: dict[str, object]) -> bool:
+    status = str(item.get("status") or "").upper()
+    return not bool(item.get("untracked")) and "D" in status and "A" not in status
+
+
 def _format_file_size(size: int) -> str:
     if size < 1024:
         return f"{size} B"
@@ -418,6 +456,44 @@ def _match_clear_ignore_dir_part(path: Path) -> Optional[str]:
         if any(part.startswith(prefix) for prefix in CLEAR_IGNORE_DIR_PREFIXES):
             return part
     return None
+
+
+def _is_local_artifact_path(path: str) -> bool:
+    pure_path = Path((path or "").replace("\\", "/"))
+    parts = [part.lower() for part in pure_path.parts if part and part != "."]
+    if not parts:
+        return False
+
+    first_part = parts[0]
+    if first_part in LOCAL_ARTIFACT_ROOT_DIRS:
+        return True
+    if any(first_part.startswith(prefix) for prefix in LOCAL_ARTIFACT_ROOT_PREFIXES):
+        return True
+
+    if len(parts) == 1:
+        name = pure_path.name.lower()
+        return any(fnmatch(name, pattern) for pattern in LOCAL_ARTIFACT_ROOT_FILE_PATTERNS)
+
+    return False
+
+
+def _build_local_artifact_issue(item: dict[str, object]) -> Optional[dict[str, object]]:
+    if _is_deleted_changed_file(item):
+        return None
+
+    path = str(item.get("path") or "").strip()
+    if not path or not _is_local_artifact_path(path):
+        return None
+
+    return {
+        "issue_type": "local_artifact",
+        "severity": "error",
+        "blocking": True,
+        "path": path,
+        "line": None,
+        "message": "疑似 Codex/调试/运行时本地产物，不应进入提交。",
+        "suggestion": _build_ignore_suggestion(path),
+    }
 
 
 def _build_ignore_candidate_issue(repo_root: Path, item: dict[str, object]) -> Optional[dict[str, object]]:
@@ -815,6 +891,18 @@ def _build_precheck_report(
     issues: list[dict[str, object]] = []
     seen_issue_keys: set[tuple[str, str, int, str]] = set()
     for item in checked_items:
+        local_artifact_issue = _build_local_artifact_issue(item)
+        if local_artifact_issue is not None:
+            key = (
+                str(local_artifact_issue.get("issue_type") or ""),
+                str(local_artifact_issue.get("path") or ""),
+                int(local_artifact_issue.get("line") or 0),
+                str(local_artifact_issue.get("message") or ""),
+            )
+            if key not in seen_issue_keys:
+                issues.append(local_artifact_issue)
+                seen_issue_keys.add(key)
+
         ignore_issue = _build_ignore_candidate_issue(repo_root, item)
         if ignore_issue is not None:
             key = (
