@@ -3,6 +3,7 @@ import threading
 import time
 
 from backend.api.fanxiu import (
+    BehaviorTreeStatus,
     _GameWindow3RuntimeContainer,
     _GameWindow3RuntimeRunner,
     _enqueue_game_window3_manual_job,
@@ -64,6 +65,121 @@ def test_popup_score_can_fallback_to_plain_shapes(monkeypatch):
     monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame: 80)
 
     assert runner._popup_score({"entry": object()}, image, "frame") == 80
+
+
+def test_scene_jump_edges_infer_nested_leave_returns_to_parent_scene():
+    runner = _GameWindow3RuntimeRunner()
+    leave_shape = {"id": "leave", "kind": "rect", "title": "离开", "x": 0.8, "y": 0.5, "w": 0.1, "h": 0.1}
+    tree = [
+        _image("世界", "0034.jpg", []),
+        {
+            "id": "folder-world",
+            "type": "folder",
+            "title": "世界",
+            "children": [
+                _image("某区域内部", "0085.png", [leave_shape]),
+            ],
+        },
+    ]
+
+    edges = runner._scene_jump_edges(tree)
+    assert 85 in edges
+    assert edges[85][0]["shape"] is leave_shape
+    assert edges[85][0]["target_ids"] == [34]
+    assert runner._find_scene_route(tree, 85, 34) == [edges[85][0]]
+
+
+def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold(monkeypatch):
+    runner = _GameWindow3RuntimeRunner()
+    shape = {
+        "id": "leave",
+        "kind": "rect",
+        "title": "离开",
+        "ocrText": "离开",
+        "ocrMatchRole": "optional",
+        "x": 0.8,
+        "y": 0.5,
+        "w": 0.1,
+        "h": 0.1,
+    }
+    image = _image("某区域内部", "0085.png", [shape])
+    calls: list[bool] = []
+
+    def fake_run_match(_ctx, _image, _shape, _frame, **kwargs):
+        ocr_enabled = bool(kwargs.get("ocr_enabled"))
+        calls.append(ocr_enabled)
+        return {"similarity": 100 if ocr_enabled else 57}
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    assert runner._shape_score({"entry": object()}, image, shape, "frame") == 100
+    assert calls == [False, True]
+
+
+def test_scene_score_uses_best_scene_identity_shape(monkeypatch):
+    runner = _GameWindow3RuntimeRunner()
+    first_shape = {"id": "closed-menu", "kind": "rect", "title": "打开下方菜单", "isSceneIdentity": True}
+    second_shape = {"id": "map", "kind": "rect", "title": "大地图", "isSceneIdentity": True}
+    image = _image("世界", "0034.jpg", [first_shape, second_shape])
+
+    def fake_shape_score(_ctx, _image, shape, _frame, **_kwargs):
+        return 1 if shape["id"] == "closed-menu" else 100
+
+    monkeypatch.setattr(runner, "_shape_score", fake_shape_score)
+
+    assert runner._scene_score({"entry": object()}, image, "frame") == 100
+
+
+def test_scene_score_enforces_required_ocr_role(monkeypatch):
+    runner = _GameWindow3RuntimeRunner()
+    shape = {
+        "id": "leave",
+        "kind": "rect",
+        "title": "离开",
+        "isSceneIdentity": True,
+        "imageMatchRole": "optional",
+        "ocrEnabled": True,
+        "ocrText": "离开",
+        "ocrMatchRole": "required",
+    }
+    image = _image("某区域内部", "0085.png", [shape])
+    calls: list[bool] = []
+
+    def fake_run_match(_ctx, _image, _shape, _frame, **kwargs):
+        ocr_enabled = bool(kwargs.get("ocr_enabled"))
+        calls.append(ocr_enabled)
+        return {"similarity": 0 if ocr_enabled else 99}
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    assert runner._scene_score({"entry": object()}, image, "frame") == 0
+    assert calls == [False, True]
+
+
+def test_scene_jump_intermediate_confirm_shape_is_limited_to_leave_popup():
+    runner = _GameWindow3RuntimeRunner()
+    confirm = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
+    leave_popup = _image("离开场景", "0086.png", [confirm])
+
+    assert runner._scene_jump_intermediate_confirm_shape(leave_popup, {"title": "离开"}) is confirm
+    assert runner._scene_jump_intermediate_confirm_shape(leave_popup, {"title": "领取"}) is None
+    assert runner._scene_jump_intermediate_confirm_shape(_image("奖励提示", "0099.png", [confirm]), {"title": "离开"}) is None
+
+
+def test_scene_route_candidates_include_leave_confirmation_popup():
+    runner = _GameWindow3RuntimeRunner()
+    confirm = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
+    tree = [
+        _image("世界", "0034.jpg", []),
+        {
+            "id": "popup",
+            "type": "folder",
+            "title": "弹窗",
+            "children": [_image("离开场景", "0086.png", [confirm])],
+        },
+    ]
+
+    assert 86 in runner._scene_route_candidate_ids(tree, 34)
 
 
 def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monkeypatch):
@@ -295,6 +411,27 @@ def test_runtime_behavior_tree_reuses_guard_frame_for_job_when_guard_skips(tmp_p
     assert result == "done"
     assert job_frames == ["data:image/png;base64,frame0"]
     assert captured == ["data:image/png;base64,frame0"]
+
+
+def test_runtime_guard_service_skips_manual_jobs(monkeypatch, tmp_path):
+    runner = _GameWindow3RuntimeRunner()
+    with runner._lock:
+        runner._guard_enabled = True
+        runner._status["phase"] = "manual_job"
+    calls: list[str] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: calls.append("screencap") or "frame")
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda *_args: calls.append("guard") or True)
+
+    status = runner._runtime_guard_service_tick(
+        "close_popups",
+        {"entry": object()},
+        tmp_path / "entry.json",
+        threading.Event(),
+    )
+
+    assert status == BehaviorTreeStatus.SKIP
+    assert calls == []
 
 
 def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(tmp_path, monkeypatch):
@@ -720,7 +857,29 @@ def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
     assert log["message"].startswith("[manual-1] ")
 
 
-def test_noop_guard_records_enabled_state_without_starting_popup_thread(tmp_path):
+def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
+    runner = _GameWindow3RuntimeRunner()
+    executed: list[str] = []
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, task_type, _payload, _stop_event: executed.append(task_type) or "success")
+
+    status = runner.start_manual_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task={"id": "manual-1", "task_type": "detect_scene", "label": "单步识别", "payload": {}},
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert executed == ["detect_scene"]
+    assert status["running"] is False
+    assert status["status"] == "success"
+    assert status["current_task_id"] == "manual-1"
+    assert not hasattr(runner, "_thread")
+
+
+def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path):
     runner = _GameWindow3RuntimeRunner()
 
     status = runner.set_guard(
@@ -735,8 +894,8 @@ def test_noop_guard_records_enabled_state_without_starting_popup_thread(tmp_path
     assert status["guard_items"]["wanling_invite"]["enabled"] is True
     assert status["guard_enabled"] is False
     assert status["guard_running"] is False
-    assert status["logs"][-1]["scope"] == "guard"
-    assert status["logs"][-1]["item_id"] == "wanling_invite"
+    assert status["service_running"] is True
+    assert any(item["scope"] == "guard" and item["item_id"] == "wanling_invite" for item in status["logs"])
 
 
 def test_runtime_status_normalizes_guard_items_from_backend_definitions():

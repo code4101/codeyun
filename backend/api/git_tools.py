@@ -41,7 +41,7 @@ class GitPrecheckContextLine(BaseModel):
 
 
 class GitPrecheckIssue(BaseModel):
-    issue_type: Literal["ignore_candidate", "sensitive_content"]
+    issue_type: Literal["ignore_candidate", "sensitive_content", "local_artifact"]
     severity: Literal["warning", "error"]
     blocking: bool = False
     path: str

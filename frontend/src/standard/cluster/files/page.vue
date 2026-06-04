@@ -509,7 +509,6 @@ const MIN_DEVICE_MEDIA_SCAN_LIMIT = 100;
 const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;
 const STREAMABLE_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm']);
 const STREAMABLE_VIDEO_EXTENSIONS = ['.mp4', '.webm'];
-const THUMBNAIL_WARM_CONCURRENCY = 4;
 
 const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
   { value: 'name', label: '目录名' },
@@ -1810,20 +1809,6 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
   }
 };
 
-const warmCurrentDirectoryThumbnails = async () => {
-  if (!orderedMediaItems.value.length) {
-    return;
-  }
-
-  const queue = orderedMediaItems.value.filter(
-    (item) => !item.url && !item.thumbnailFailed && !item.isFetchingUrl
-  );
-  for (let index = 0; index < queue.length; index += THUMBNAIL_WARM_CONCURRENCY) {
-    const batch = queue.slice(index, index + THUMBNAIL_WARM_CONCURRENCY);
-    await Promise.allSettled(batch.map((item) => ensureMediaReady(item)));
-  }
-};
-
 const handleOpenPreview = async (imageId: string) => {
   const image = orderedMediaItems.value.find((item) => item.id === imageId);
   if (!image) {
@@ -2011,13 +1996,6 @@ watch(
     }
   },
   { deep: true }
-);
-
-watch(
-  () => orderedMediaItems.value.length,
-  () => {
-    void warmCurrentDirectoryThumbnails();
-  }
 );
 
 watch(previewVisible, (visible) => {

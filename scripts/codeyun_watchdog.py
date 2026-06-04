@@ -1,0 +1,376 @@
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - CodeYun runtime includes psutil.
+    psutil = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BACKEND_URL = "http://127.0.0.1:8000/api/health"
+DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
+DEFAULT_INTERVAL_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 3.0
+PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    name: str
+    cmdline: str
+    started_at: float | None = None
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _default_log_path() -> Path:
+    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-watchdog.log"
+
+
+def _default_dev_stdout_path() -> Path:
+    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-dev.out.log"
+
+
+def _default_dev_stderr_path() -> Path:
+    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-dev.err.log"
+
+
+def _default_lock_path() -> Path:
+    return PROJECT_ROOT / ".codex-run" / "codeyun-watchdog.pid"
+
+
+def _log(path: Path, message: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = f"[{_now()}] {message}\n"
+    with path.open("a", encoding="utf-8") as file:
+        file.write(line)
+    print(line, end="", flush=True)
+
+
+def _request_ok(url: str, timeout: float) -> tuple[bool, str]:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "codeyun-watchdog"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            return 200 <= status < 500, f"HTTP {status}"
+    except urllib.error.HTTPError as exc:
+        return 200 <= int(exc.code) < 500, f"HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return False, str(exc)
+
+
+def check_health(backend_url: str, frontend_url: str, timeout: float) -> dict[str, Any]:
+    backend_ok, backend_message = _request_ok(backend_url, timeout)
+    frontend_ok, frontend_message = _request_ok(frontend_url, timeout)
+    return {
+        "healthy": backend_ok and frontend_ok,
+        "backend": {"url": backend_url, "ok": backend_ok, "message": backend_message},
+        "frontend": {"url": frontend_url, "ok": frontend_ok, "message": frontend_message},
+    }
+
+
+def _safe_name(proc: Any) -> str:
+    try:
+        return str(proc.name() or "")
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return ""
+
+
+def _safe_cmdline(proc: Any) -> list[str]:
+    try:
+        return [str(part) for part in proc.cmdline()]
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return []
+
+
+def _safe_started_at(proc: Any) -> float | None:
+    try:
+        return float(proc.create_time())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return None
+
+
+def _cmdline_text(proc: Any) -> str:
+    return " ".join(_safe_cmdline(proc))
+
+
+def _path_in_project(text: str) -> bool:
+    normalized_text = text.lower().replace("/", "\\")
+    root_text = str(PROJECT_ROOT).lower().replace("/", "\\")
+    return root_text in normalized_text
+
+
+def _matches_watchdog(proc: Any) -> bool:
+    cmdline = _cmdline_text(proc).lower()
+    return "scripts" in cmdline and "codeyun_watchdog.py" in cmdline and "--loop" in cmdline and _path_in_project(cmdline)
+
+
+def _matches_codeyun_dev(proc: Any) -> bool:
+    name = _safe_name(proc).lower()
+    cmdline = _cmdline_text(proc).lower()
+    if not _path_in_project(cmdline):
+        return False
+    if "codeyun_watchdog.py" in cmdline:
+        return False
+    if "dev.py" in cmdline:
+        return True
+    if "uvicorn" in cmdline and "backend.app:app" in cmdline:
+        return True
+    if name in {"node.exe", "node"} and "vite" in cmdline:
+        return True
+    if name in {"cmd.exe", "cmd"} and "npm" in cmdline and "dev" in cmdline:
+        return True
+    return False
+
+
+def _iter_processes():
+    if psutil is None:
+        return []
+    return psutil.process_iter(["pid", "name", "cmdline", "create_time"])
+
+
+def list_watchdog_processes() -> list[dict[str, Any]]:
+    current_pid = os.getpid()
+    items: list[ProcessInfo] = []
+    for proc in _iter_processes():
+        if int(proc.pid) == current_pid:
+            continue
+        if not _matches_watchdog(proc):
+            continue
+        items.append(
+            ProcessInfo(
+                pid=int(proc.pid),
+                name=_safe_name(proc),
+                cmdline=_cmdline_text(proc),
+                started_at=_safe_started_at(proc),
+            )
+        )
+    return [asdict(item) for item in sorted(items, key=lambda item: (item.started_at or 0, item.pid))]
+
+
+def list_dev_processes() -> list[dict[str, Any]]:
+    current_pid = os.getpid()
+    items: list[ProcessInfo] = []
+    for proc in _iter_processes():
+        if int(proc.pid) == current_pid:
+            continue
+        if not _matches_codeyun_dev(proc):
+            continue
+        items.append(
+            ProcessInfo(
+                pid=int(proc.pid),
+                name=_safe_name(proc),
+                cmdline=_cmdline_text(proc),
+                started_at=_safe_started_at(proc),
+            )
+        )
+    return [asdict(item) for item in sorted(items, key=lambda item: (item.started_at or 0, item.pid))]
+
+
+def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
+    if psutil is None:
+        _log(log_path, "psutil is unavailable; cannot clean stale dev processes.")
+        return []
+    targets = [psutil.Process(item["pid"]) for item in list_dev_processes()]
+    if not targets:
+        return []
+
+    stopped: list[int] = []
+    for proc in targets:
+        try:
+            stopped.append(int(proc.pid))
+            for child in proc.children(recursive=True):
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    pass
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            pass
+
+    _, alive = psutil.wait_procs(targets, timeout=max(0.1, float(timeout)))
+    for proc in alive:
+        try:
+            for child in proc.children(recursive=True):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    pass
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=2)
+    _log(log_path, f"Stopped stale CodeYun dev processes: {', '.join(str(pid) for pid in stopped)}")
+    return stopped
+
+
+def _background_popen_kwargs() -> dict[str, Any]:
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+        return {"creationflags": creationflags}
+    return {"start_new_session": True}
+
+
+def _resolve_uv_command() -> list[str]:
+    configured = os.getenv("CODEYUN_WATCHDOG_DEV_COMMAND")
+    if configured and configured.strip():
+        if os.name == "nt":
+            return ["powershell", "-NoProfile", "-Command", configured]
+        return ["/bin/sh", "-lc", configured]
+    uv_path = shutil.which("uv") or "uv"
+    return [uv_path, "run", "dev.py"]
+
+
+def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> int:
+    command = _resolve_uv_command()
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    with stdout_path.open("ab") as stdout_file, stderr_path.open("ab") as stderr_file:
+        stdout_file.write(f"\n[{_now()}] CodeYun watchdog detached start: {' '.join(command)}\n".encode("utf-8"))
+        proc = subprocess.Popen(
+            command,
+            cwd=os.fspath(PROJECT_ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            shell=False,
+            **_background_popen_kwargs(),
+        )
+    _log(log_path, f"Started detached CodeYun dev runner PID {proc.pid}.")
+    return int(proc.pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if psutil is not None:
+        return psutil.pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def acquire_lock(lock_path: Path, log_path: Path) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if lock_path.exists():
+        try:
+            old_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            old_pid = 0
+        if old_pid and _pid_alive(old_pid):
+            _log(log_path, f"Another watchdog is already running: PID {old_pid}.")
+            return False
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+    try:
+        fd = os.open(os.fspath(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(str(os.getpid()))
+    return True
+
+
+def release_lock(lock_path: Path) -> None:
+    try:
+        if lock_path.exists() and lock_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            lock_path.unlink()
+    except OSError:
+        pass
+
+
+def run_once(args: argparse.Namespace) -> dict[str, Any]:
+    log_path = Path(args.log_path).resolve(strict=False)
+    health = check_health(args.backend_url, args.frontend_url, args.timeout)
+    if health["healthy"]:
+        _log(log_path, "Health check ok; no restart needed.")
+        return {"status": "healthy", "health": health, "started_pid": None}
+
+    _log(
+        log_path,
+        "Health check failed; restarting dev runner. "
+        f"backend={health['backend']['message']} frontend={health['frontend']['message']}",
+    )
+    stopped_pids = terminate_dev_processes(args.stop_timeout, log_path)
+    started_pid = start_detached_dev(log_path, Path(args.dev_stdout), Path(args.dev_stderr))
+    return {
+        "status": "restarted",
+        "health": health,
+        "stopped_pids": stopped_pids,
+        "started_pid": started_pid,
+    }
+
+
+def run_loop(args: argparse.Namespace) -> int:
+    lock_path = Path(args.lock_path).resolve(strict=False)
+    log_path = Path(args.log_path).resolve(strict=False)
+    if not acquire_lock(lock_path, log_path):
+        return 0
+    _log(log_path, f"CodeYun watchdog loop started. interval={args.interval}s")
+    try:
+        while True:
+            run_once(args)
+            time.sleep(max(1, int(args.interval)))
+    finally:
+        release_lock(lock_path)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="CodeYun detached local dev watchdog")
+    parser.add_argument("--backend-url", default=os.getenv("CODEYUN_WATCHDOG_BACKEND_URL", DEFAULT_BACKEND_URL))
+    parser.add_argument("--frontend-url", default=os.getenv("CODEYUN_WATCHDOG_FRONTEND_URL", DEFAULT_FRONTEND_URL))
+    parser.add_argument("--interval", type=int, default=int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)))
+    parser.add_argument("--timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_REQUEST_TIMEOUT", DEFAULT_TIMEOUT_SECONDS)))
+    parser.add_argument("--stop-timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_STOP_TIMEOUT", "8")))
+    parser.add_argument("--log-path", default=os.getenv("CODEYUN_WATCHDOG_LOG", os.fspath(_default_log_path())))
+    parser.add_argument("--dev-stdout", default=os.getenv("CODEYUN_DEV_STDOUT_LOG", os.fspath(_default_dev_stdout_path())))
+    parser.add_argument("--dev-stderr", default=os.getenv("CODEYUN_DEV_STDERR_LOG", os.fspath(_default_dev_stderr_path())))
+    parser.add_argument("--lock-path", default=os.getenv("CODEYUN_WATCHDOG_LOCK", os.fspath(_default_lock_path())))
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--once", action="store_true", help="Run one health check and exit.")
+    group.add_argument("--loop", action="store_true", help="Run forever.")
+    group.add_argument("--status", action="store_true", help="Print detected watchdog/dev processes.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.status:
+        print({"watchdog_processes": list_watchdog_processes(), "dev_processes": list_dev_processes()})
+        return 0
+    if args.loop:
+        return run_loop(args)
+    result = run_once(args)
+    print(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

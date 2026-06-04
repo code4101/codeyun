@@ -15,7 +15,6 @@ import fanxiuLotteryModelPage from './lottery-model'
 import magicTreasureHallPage from './magic-treasure-hall'
 import magicTreasureFormationsPage from './magic-treasure-formations'
 import fanxiuModaoInvasionPage from './modao-invasion'
-import fanxiuPacketCapturePage from './packet-capture'
 import fanxiuQijiZhumoPage from './qiji-zhumo'
 import fanxiuRechargePage from './recharge'
 import fanxiuShouyuanExplorationPage from './shouyuan-exploration'
@@ -26,7 +25,6 @@ import fanxiuWikiPage from './wiki'
 import xianzhouRacePage from './xianzhou-race'
 
 const pages: AppPageDefinition[] = [
-  fanxiuPacketCapturePage,
   fanxiuWikiPage,
   fanxiuGameWindow3Page,
   fanxiuGameWindow3RuntimePage,

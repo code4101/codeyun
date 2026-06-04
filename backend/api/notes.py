@@ -199,7 +199,7 @@ CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 300.0
 CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
-CODEX_DIARY_PROMPT_VERSION = "2026-05-24.deepseek-diary-draft-v3"
+CODEX_DIARY_PROMPT_VERSION = "2026-06-04.value-first-diary-v4"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
 CODEX_DIARY_AUTO_IMPORT_CRON = "0 1 * * *"
 CODEX_DIARY_AUTO_IMPORT_TASK_NAME = "codex_diary_yesterday_import"
@@ -209,7 +209,7 @@ CODEX_DIARY_SCOPE_FIELD = "__codex_diary_scope_key"
 CODEX_DIARY_BLOCK_FIELD = "__codex_diary_block_key"
 CODEX_DIARY_SOURCE_THREADS_FIELD = "__codex_source_thread_ids"
 CODEX_DIARY_WORKLOG_FIELD = "__codex_diary_worklog"
-CODEX_DIARY_TARGET_SECONDS = 2 * 60 * 60
+CODEX_DIARY_TARGET_SECONDS = 10 * 60 * 60
 CODEX_DIARY_PROGRESS_BASE_MINUTES = CODEX_DIARY_TARGET_SECONDS // 60
 CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
 CODEX_DIARY_DRAFT_BATCH_SIZE = 12
@@ -315,6 +315,7 @@ NOTE_DOC_RESOURCE_TYPE = RESOURCE_TYPE_NOTE
 CODEX_DIARY_ITEM_NUMBER_PREFIX_RE = re.compile(
     r"^\s*(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*"
 )
+CODEX_DIARY_TITLE_PARALLEL_RE = re.compile(r"\s*(?:以及|并且|同时|和|与|及|、|/)\s*")
 CODEX_DIARY_HTML_LI_NUMBER_PREFIX_RE = re.compile(
     r"(<li\b[^>]*>\s*(?:<(?:span|p|strong|b|code)\b[^>]*>\s*)*)"
     r"(?:(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*)+",
@@ -599,6 +600,53 @@ CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS = (
     "OCR 集中",
     "OCR集中",
     "PaddleOCR",
+)
+CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
+    "修复",
+    "实现",
+    "新增",
+    "重构",
+    "优化",
+    "接入",
+    "迁移",
+    "补齐",
+    "改造",
+    "验证",
+    "测试",
+    "回归",
+    "接口",
+    "API",
+    "页面",
+    "组件",
+    "前端",
+    "后端",
+    "脚本",
+    "数据库",
+    "SQL",
+    "缓存",
+    "队列",
+    "任务",
+    "服务",
+    "配置",
+    "部署",
+    "权限",
+    "路由",
+    "日志",
+)
+CODEX_DIARY_PROJECT_VALUE_FORCE_TERMS = (
+    "方案",
+    "设计",
+    "规划",
+    "项目",
+    "交付",
+    "流程",
+    "规则",
+    "策略",
+    "边界",
+    "排期",
+    "复盘",
+    "审计",
+    "治理",
 )
 CODEX_DIARY_FANXIU_FORCE_TERMS = (
     "凡修",
@@ -1293,6 +1341,21 @@ def _build_codex_diary_category_scores(
     codeyun_cluster_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS)
     if codeyun_cluster_key and codeyun_cluster_hits:
         _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 130 + codeyun_cluster_hits * 24)
+
+    engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
+    if engineering_hits:
+        engineering_key = (
+            _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("编程", "技术", "programming", "develop", "代码"))
+            or _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("工作", "项目", "work", "project"))
+        )
+        if engineering_key:
+            _add_codex_diary_category_score(combined_scores, engineering_key, 90 + min(engineering_hits, 6) * 10)
+
+    project_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_PROJECT_VALUE_FORCE_TERMS)
+    if project_hits and not engineering_hits:
+        project_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("工作", "项目", "work", "project"))
+        if project_key:
+            _add_codex_diary_category_score(combined_scores, project_key, 80 + min(project_hits, 5) * 10)
     return combined_scores
 
 
@@ -1918,7 +1981,7 @@ def _build_codex_diary_block_key(block: dict[str, Any]) -> str:
     ).hexdigest()[:16]
 
 
-def _merge_codex_diary_blocks_for_two_hour_target(
+def _merge_codex_diary_blocks_for_target_duration(
     blocks: list[dict[str, Any]],
     *,
     palette_lookup: dict[str, dict[str, Any]],
@@ -1976,7 +2039,7 @@ def _merge_codex_diary_blocks_for_two_hour_target(
         category_key = str(block.get("category_key") or NOTE_CATEGORY_DEFAULT)
         current = current_by_category.setdefault(category_key, [])
         current_duration = float(duration_by_category.get(category_key) or 0)
-        if current and current_duration >= CODEX_DIARY_TARGET_SECONDS:
+        if current and current_duration + duration > CODEX_DIARY_TARGET_SECONDS:
             close_current(category_key)
             current = current_by_category.setdefault(category_key, [])
             current_duration = 0.0
@@ -2150,17 +2213,13 @@ def _build_codex_diary_summary_entries(records: list[dict[str, Any]]) -> list[di
 
 def _build_codex_diary_title(block: dict[str, Any]) -> str:
     records = block["records"]
-    title_parts: list[str] = []
     seen: set[str] = set()
     for entry in _build_codex_diary_summary_entries(records):
-        candidate = _truncate_codex_diary_text(entry.get("title"), 16, suffix="")
+        candidate = _normalize_codex_diary_ai_title(entry.get("title"))
         if candidate and candidate not in seen and candidate != "Codex 事项":
-            seen.add(candidate)
-            title_parts.append(candidate)
-        if len(title_parts) >= 2:
-            break
-    title = "、".join(title_parts) or "Codex 日记"
-    return _truncate_codex_diary_text(title, 32, suffix="") or "Codex 日记"
+            return _truncate_codex_diary_text(candidate, 32, suffix="") or "Codex 日记"
+        seen.add(candidate)
+    return "Codex 日记"
 
 
 def _extract_codex_diary_ai_json(raw_content: Any) -> dict[str, Any]:
@@ -2206,9 +2265,25 @@ def _strip_codex_diary_title_noise(value: Any) -> str:
     return text
 
 
+def _choose_primary_codex_diary_title_clause(value: str) -> str:
+    text = str(value or "").strip(" ：:，,；;。")
+    parts = [
+        part.strip(" ：:，,；;。")
+        for part in CODEX_DIARY_TITLE_PARALLEL_RE.split(text)
+        if part.strip(" ：:，,；;。")
+    ]
+    if len(parts) <= 1:
+        return text
+    for part in parts:
+        if part and part not in CODEX_DIARY_TITLE_BAD_VALUES:
+            return part
+    return parts[0] if parts else text
+
+
 def _normalize_codex_diary_ai_title(value: Any) -> str:
     text = _strip_codex_diary_title_noise(value)
     text = re.sub(r"^(综合|杂项|多项整合|多项处理|多项事项|general|CodeYun/笔记|codeyun|Codex)[：:\s]*", "", text, flags=re.IGNORECASE)
+    text = _choose_primary_codex_diary_title_clause(text)
     text = text.rstrip(".…")
     if not text or text in CODEX_DIARY_TITLE_BAD_VALUES:
         return ""
@@ -2248,14 +2323,20 @@ def _repair_codex_diary_body_number_prefixes(content: Any) -> str:
 def _build_codex_diary_ai_system_prompt() -> str:
     return "\n".join(
         [
-            "你在为“星图笔记”生成 Codex 总结日记节点草案。",
-            "输入已经先拆成候选事项，再按当天任务语义和累计约 2 小时工作量聚合成 block；你必须逐块输出，不要新增、删除、合并或拆分 block。",
+            "你在为“星图笔记”生成 Codex 价值日记节点草案。",
+            "目标不是复述流水账，也不是全面解释所有细节，而是捕捉今天真正最重要的价值：核心做成了什么、突破了什么、留下了什么可复用成果。",
+            "输入已经先拆成候选事项，再按当天任务语义和累计不超过约 10 小时工作量聚合成 block；你必须逐块输出，不要新增、删除、合并或拆分 block。",
             "只根据每条记录的 user_request、assistant_result、thread_title 做语义归纳；assistant_result 优先。",
             "不要照搬聊天原文，不要输出工具日志、JSON、堆栈、操作记录、文件大段内容。",
-            "标题必须是信息密度高的短名词短语，保留关键对象/动作/接口/页面/字段/路径名；不要带分类前缀。",
-            "标题不要使用“综合”“杂项”“多项整合”这类笼统词；多个事项并列时保留前两个具体对象。",
+            "先判断这个 block 的主价值是什么，再围绕主价值生成标题和正文；琐碎过程只在能支撑主价值时保留。",
+            "标题必须优先体现这一块的核心工作突破、关键结果或主要事宜；不要为了全面覆盖所有琐碎细节而堆叠标题。",
+            "一个标题只能表达一件事；不要用“与”“和”“及”“以及”“、”把两个事项并列写进标题。",
+            "如果一个 block 里确实包含多件事，标题只选择最重要的主线事项，其余事项放到正文条目里。",
+            "标题必须是信息密度高的短名词短语，保留最关键对象/动作/接口/页面/字段/路径名；不要带分类前缀。",
+            "标题不要使用“综合”“杂项”“多项整合”这类笼统词；多个事项并列时只保留最能代表主线的一个或两个具体对象。",
             "标题禁止使用“是的”“可以”“好的”“已改完”“已经删了”这类低信息开头或低信息标题。",
-            "正文条目写成总结性工作记录，每条只讲做了什么、达成什么结果、关键风险或后续点。",
+            "正文条目写成总结性价值记录，每条只讲主成果、关键决策、实证结果、风险或后续点；把零散操作合并成少量主线条目。",
+            "避免把节点写成“做了 A、看了 B、顺手改了 C”的流水账；低价值细节可以省略。",
             "summary_items 返回纯文本数组，每个数组元素不要自带 1.、2.、一、这类编号；编号由星图笔记编辑器自动生成。",
             "阶段通常为 done；不要输出进度，进度由后端按块累计时长自动计算。",
             "最终只输出 JSON 对象，不要 Markdown，不要解释。",
@@ -2408,6 +2489,59 @@ def _draft_codex_diary_blocks_in_batches(
     if not blocks:
         return blocks
 
+    def draft_batch_with_split_retry(
+        batch: list[dict[str, Any]],
+        *,
+        batch_index: int,
+        total_batches: int,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        try:
+            return _draft_codex_diary_blocks_with_ai(
+                source,
+                batch,
+                current_user=current_user,
+                session=session,
+            )
+        except Exception as exc:
+            if len(batch) <= 1:
+                raise
+            mid = max(1, len(batch) // 2)
+            if run is not None:
+                retry_events = list((run.result_json or {}).get("draft_retry_events") or [])
+                retry_events.append(
+                    {
+                        "batch_index": batch_index,
+                        "total_batches": total_batches,
+                        "depth": depth,
+                        "block_count": len(batch),
+                        "split_sizes": [mid, len(batch) - mid],
+                        "error": str(getattr(exc, "detail", None) or exc),
+                    }
+                )
+                run.result_json = {**(run.result_json or {}), "draft_retry_events": retry_events}
+                _touch_codex_diary_run(
+                    session,
+                    run,
+                    status="running",
+                    stage="drafting_retry",
+                    stage_label=f"AI 草案缺块，拆分重试 {batch_index}/{total_batches}",
+                )
+            return [
+                *draft_batch_with_split_retry(
+                    batch[:mid],
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    depth=depth + 1,
+                ),
+                *draft_batch_with_split_retry(
+                    batch[mid:],
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    depth=depth + 1,
+                ),
+            ]
+
     drafted_blocks: list[dict[str, Any]] = []
     total_batches = (len(blocks) + CODEX_DIARY_DRAFT_BATCH_SIZE - 1) // CODEX_DIARY_DRAFT_BATCH_SIZE
     for batch_index, offset in enumerate(range(0, len(blocks), CODEX_DIARY_DRAFT_BATCH_SIZE), start=1):
@@ -2421,14 +2555,7 @@ def _draft_codex_diary_blocks_in_batches(
             )
         batch = blocks[offset : offset + CODEX_DIARY_DRAFT_BATCH_SIZE]
         try:
-            drafted_blocks.extend(
-                _draft_codex_diary_blocks_with_ai(
-                    source,
-                    batch,
-                    current_user=current_user,
-                    session=session,
-                )
-            )
+            drafted_blocks.extend(draft_batch_with_split_retry(batch, batch_index=batch_index, total_batches=total_batches))
         except Exception as exc:
             if run is not None:
                 _touch_codex_diary_run(
@@ -2594,6 +2721,7 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
     current_duration = 0.0
     for segment in message_segments:
         category_key = str(segment.get("category_key") or NOTE_CATEGORY_DEFAULT)
+        segment_duration = float(segment.get("duration_seconds") or 0)
         can_merge = (
             current_segments
             and category_key == current_category_key
@@ -2602,17 +2730,19 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         )
         if current_segments and not can_merge:
             close_current()
+        elif current_segments and current_duration + segment_duration > CODEX_DIARY_TARGET_SECONDS:
+            close_current()
         if not current_segments:
             current_merge_key = f"{category_key}:{segment.get('group_key') or ''}"
             current_category_key = category_key
         current_segments.append(segment)
-        current_duration += float(segment.get("duration_seconds") or 0)
+        current_duration += segment_duration
         if current_duration >= CODEX_DIARY_TARGET_SECONDS:
             close_current()
     close_current()
 
     blocks = sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
-    return _merge_codex_diary_blocks_for_two_hour_target(
+    return _merge_codex_diary_blocks_for_target_duration(
         blocks,
         palette_lookup=palette_lookup,
         title_hints=title_hints,
