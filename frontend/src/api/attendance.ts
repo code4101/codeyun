@@ -280,6 +280,45 @@ export interface AttendanceWjxDataItem {
   updated_at: number
 }
 
+export type AttendanceCourseUpdateDataCourseType = 'fanbei' | 'nianzhu'
+
+export interface AttendanceCourseUpdateDataRequest {
+  course_type: AttendanceCourseUpdateDataCourseType
+  attendance_sheet_id: number
+  course_name: string
+  include_frozen?: boolean
+  workbook_id?: number | null
+}
+
+export interface AttendanceCourseUpdateDataResponse {
+  step2: unknown
+  step3: {
+    message?: string
+    updated_rows?: number
+    updated_cells?: number
+    styled_cells?: number
+    rows?: number
+  }
+}
+
+export async function runAttendanceCourseUpdateData(payload: AttendanceCourseUpdateDataRequest) {
+  const response = await api.post(
+    `/note-sheets/sheets/${payload.attendance_sheet_id}/attendance/course-update-data`,
+    {
+      course_type: payload.course_type,
+      course_name: payload.course_name,
+      include_frozen: payload.include_frozen === true,
+    },
+    {
+      params: {
+        workbook_id: payload.workbook_id ?? undefined,
+      },
+      timeout: ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS,
+    },
+  )
+  return response.data as AttendanceCourseUpdateDataResponse
+}
+
 export interface AttendanceWjxDataPage {
   items: AttendanceWjxDataItem[]
   total: number

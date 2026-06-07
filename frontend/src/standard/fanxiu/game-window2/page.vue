@@ -107,14 +107,6 @@
               </div>
             </div>
             <div class="control-row switch-row">
-              <div v-if="selectedWindowKey === 'sunlogin'" class="switch-field">
-                <span class="control-label">自动关向日葵广告弹窗</span>
-                <el-switch
-                  v-model="autoDismissPopup"
-                  size="small"
-                  @change="restartStream"
-                />
-              </div>
               <div class="switch-field">
                 <span class="control-label">模式</span>
                 <el-select
@@ -1178,7 +1170,7 @@ interface ControlClickState {
   startedAt: number;
 }
 
-type WindowSceneKey = 'sunlogin' | 'mumu';
+type WindowSceneKey = 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
@@ -1349,6 +1341,7 @@ const VISUAL_MACRO_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow2.visualMacro.uiStat
 const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defaultThreshold';
 const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
 const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPixelTolerance';
+const DEFAULT_VISUAL_MACRO_THRESHOLD = 0.8;
 const SCREENSHOT_MIN_ZOOM_PERCENT = 20;
 const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
 const SCREENSHOT_ZOOM_STEP = 10;
@@ -1363,24 +1356,6 @@ const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'off', label: '关闭' },
 ];
 const windowScenes: WindowScene[] = [
-  {
-    key: 'sunlogin',
-    label: '向日葵',
-    defaults: {
-      targetTitle: '1249152866',
-      titleMatch: 'contains',
-      cropText: '0,49,4,4',
-      trimBorderText: '0,0,0,0',
-      captureArea: 'outer',
-      rotateDegrees: '90',
-      fps: 10,
-      quality: 80,
-      autoDismissPopup: true,
-      displayScale: 100,
-      fixedWidth: 0,
-      fixedHeight: 0,
-    },
-  },
   {
     key: 'mumu',
     label: 'MuMu模拟器',
@@ -1475,7 +1450,7 @@ const codeCardsLoading = ref(false);
 const expandedCodeCardIds = ref<string[]>([]);
 const activeVisualMacroCardId = ref<string | null>(null);
 const visualMacroCapturePending = ref(false);
-const visualMacroDefaultThreshold = ref(0.88);
+const visualMacroDefaultThreshold = ref(DEFAULT_VISUAL_MACRO_THRESHOLD);
 const visualMacroDefaultPointRadius = ref(10);
 const visualMacroDefaultPixelTolerance = ref(5);
 const selectedVisualInstructionKey = ref('');
@@ -1878,12 +1853,12 @@ const normalizeVisualAction = (raw: unknown): VisualMacroAction => {
 
 const setVisualMacroDefaultThreshold = (value: unknown, persist = true) => {
   if (value === null || value === undefined || value === '') {
-    visualMacroDefaultThreshold.value = 0.88;
+    visualMacroDefaultThreshold.value = DEFAULT_VISUAL_MACRO_THRESHOLD;
     if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
     return;
   }
   const nextValue = Number(value);
-  visualMacroDefaultThreshold.value = Number.isFinite(nextValue) ? clamp(nextValue, 0.5, 1) : 0.88;
+  visualMacroDefaultThreshold.value = Number.isFinite(nextValue) ? clamp(nextValue, 0.5, 1) : DEFAULT_VISUAL_MACRO_THRESHOLD;
   if (persist) {
     window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
   }
@@ -1945,7 +1920,13 @@ const migrateVisualMacroDefaultPixelTolerance = (value: unknown) => {
 };
 
 const loadVisualMacroDefaults = () => {
-  setVisualMacroDefaultThreshold(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY), false);
+  const storedThreshold = window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY);
+  const thresholdValue = Number(storedThreshold);
+  if (storedThreshold !== null && Number.isFinite(thresholdValue) && Math.abs(thresholdValue - 0.88) < 0.0001) {
+    setVisualMacroDefaultThreshold(DEFAULT_VISUAL_MACRO_THRESHOLD);
+  } else {
+    setVisualMacroDefaultThreshold(storedThreshold, false);
+  }
   setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
   setVisualMacroDefaultPixelTolerance(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY), false);
 };
@@ -3299,7 +3280,7 @@ const streamUrl = computed(() => {
     rotate: rotateDegrees.value,
     fixed_width: String(fixedFrameWidth.value),
     fixed_height: String(fixedFrameHeight.value),
-    auto_dismiss_popup: selectedWindowKey.value === 'sunlogin' && autoDismissPopup.value ? 'true' : 'false',
+    auto_dismiss_popup: 'false',
     popup_check_interval: '3',
     nonce: String(streamNonce.value),
   });

@@ -196,21 +196,6 @@ export interface FanxiuBehaviorTreeServiceResponse {
   stop_result?: FanxiuProcessTerminateResponse | Record<string, unknown>;
 }
 
-export interface FanxiuSunloginRotateStatus {
-  running: boolean;
-  pids: number[];
-  primary_pid: number | null;
-  started_at: string | null;
-  runtime_seconds: number | null;
-  command_line: string;
-  target_title: string;
-  preview_title: string;
-  stdout_log: string;
-  stderr_log: string;
-  last_error: string;
-  errors?: Array<{ pid: number; error: string }>;
-}
-
 export interface FanxiuGameWindow2StreamToken {
   token: string;
   expires_in_seconds: number;
@@ -389,11 +374,28 @@ export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFram
   current_frame_data_url?: string;
   prefer_cached?: boolean;
   match_strategy?: 'auto' | 'anchor_pixel';
+  match_search_radius?: number;
   ocr_enabled?: boolean;
   ocr_text?: string;
   ocr_match_mode?: 'contains' | 'exact' | 'wildcard' | 'regex';
   read_only_cache?: boolean;
   save_match_frame?: boolean;
+  debug_match?: boolean;
+}
+
+export interface FanxiuGameWindow2MatchDebug {
+  width: number;
+  height: number;
+  pixel_tolerance: number;
+  effective_pixel_count: number;
+  matched_pixel_count: number;
+  unmatched_pixel_count: number;
+  score: number;
+  similarity: number;
+  mask_coverage: number;
+  reference_masked_data_url?: string;
+  current_masked_data_url?: string;
+  mismatch_heatmap_data_url?: string;
 }
 
 export interface FanxiuGameWindow2MatchResponse {
@@ -436,9 +438,10 @@ export interface FanxiuGameWindow2MatchResponse {
   source_height: number;
   width: number;
   height: number;
+  match_debug?: FanxiuGameWindow2MatchDebug;
 }
 
-export interface FanxiuGameWindow3RuntimeLogEntry {
+export interface FanxiuDataAnnotationRuntimeLogEntry {
   id: string;
   time: string;
   kind: string;
@@ -448,12 +451,12 @@ export interface FanxiuGameWindow3RuntimeLogEntry {
   ts?: string;
 }
 
-export interface FanxiuGameWindow3RuntimeLogResponse {
-  entries: FanxiuGameWindow3RuntimeLogEntry[];
+export interface FanxiuDataAnnotationRuntimeLogResponse {
+  entries: FanxiuDataAnnotationRuntimeLogEntry[];
   path: string;
 }
 
-export interface FanxiuGameWindow3RuntimeGuardItem {
+export interface FanxiuDataAnnotationRuntimeGuardItem {
   id: string;
   label: string;
   message?: string;
@@ -463,13 +466,13 @@ export interface FanxiuGameWindow3RuntimeGuardItem {
   updated_at?: number;
 }
 
-export interface FanxiuGameWindow3WorldFactsResponse {
+export interface FanxiuDataAnnotationWorldFactsResponse {
   ok: boolean;
   facts: Record<string, unknown>;
   path: string;
 }
 
-export interface FanxiuGameWindow3RuntimeStatus {
+export interface FanxiuDataAnnotationRuntimeStatus {
   ok: boolean;
   service_running?: boolean;
   running: boolean;
@@ -477,7 +480,7 @@ export interface FanxiuGameWindow3RuntimeStatus {
   guard_running?: boolean;
   guard_entry_id?: string;
   guard_interval_seconds?: number;
-  guard_items?: Record<string, FanxiuGameWindow3RuntimeGuardItem>;
+  guard_items?: Record<string, FanxiuDataAnnotationRuntimeGuardItem>;
   last_guard_event?: Record<string, unknown>;
   status: 'idle' | 'running' | 'stopping' | 'stopped' | 'success' | 'error' | string;
   entry_id: string;
@@ -490,7 +493,6 @@ export interface FanxiuGameWindow3RuntimeStatus {
   total: number;
   current_code: string;
   current_task_id?: string;
-  priority?: number;
   interruptible?: boolean;
   started_at: number;
   updated_at: number;
@@ -499,13 +501,13 @@ export interface FanxiuGameWindow3RuntimeStatus {
   logs: Array<{ time: string; kind: string; message: string }>;
 }
 
-export interface FanxiuGameWindow3RuntimeTaskRequest {
+export interface FanxiuDataAnnotationRuntimeTaskRequest {
   entry_id: string;
   task_type: string;
   payload: Record<string, unknown>;
 }
 
-export interface FanxiuGameWindow3SchedulerTaskItem {
+export interface FanxiuDataAnnotationSchedulerTaskItem {
   id: string;
   task_type: string;
   label: string;
@@ -514,7 +516,6 @@ export interface FanxiuGameWindow3SchedulerTaskItem {
   schedule_kind: string;
   legacy_name: string;
   enabled: boolean;
-  priority: number;
   interruptible: boolean;
   next_time?: string | null;
   schedule_times: string[];
@@ -526,13 +527,13 @@ export interface FanxiuGameWindow3SchedulerTaskItem {
   checkpoint?: Record<string, unknown> | null;
 }
 
-export interface FanxiuGameWindow3SchedulerTasksResponse {
+export interface FanxiuDataAnnotationSchedulerTasksResponse {
   ok: boolean;
-  tasks: FanxiuGameWindow3SchedulerTaskItem[];
+  tasks: FanxiuDataAnnotationSchedulerTaskItem[];
   path: string;
 }
 
-export interface FanxiuGameWindow3SchedulerPlanItem {
+export interface FanxiuDataAnnotationSchedulerPlanItem {
   id: string;
   task_type: string;
   label: string;
@@ -540,25 +541,24 @@ export interface FanxiuGameWindow3SchedulerPlanItem {
   enabled: boolean;
   due: boolean;
   runnable: boolean;
-  priority: number;
   reason: string;
   next_time?: string | null;
   retry_after?: string | null;
   fact: Record<string, unknown>;
 }
 
-export interface FanxiuGameWindow3SchedulerPlanResponse {
+export interface FanxiuDataAnnotationSchedulerPlanResponse {
   ok: boolean;
   next_action: string;
   message: string;
   runtime: Record<string, unknown>;
   facts_summary: Record<string, unknown>;
-  due_tasks: FanxiuGameWindow3SchedulerPlanItem[];
-  tasks: FanxiuGameWindow3SchedulerPlanItem[];
+  due_tasks: FanxiuDataAnnotationSchedulerPlanItem[];
+  tasks: FanxiuDataAnnotationSchedulerPlanItem[];
   path: string;
 }
 
-export interface FanxiuGameWindow3AssetTreeResponse {
+export interface FanxiuDataAnnotationAssetTreeResponse {
   ok: boolean;
   entry_id: string;
   exists: boolean;
@@ -566,7 +566,7 @@ export interface FanxiuGameWindow3AssetTreeResponse {
   updated_at: number;
 }
 
-export interface FanxiuGameWindow3OcrFrameLine {
+export interface FanxiuDataAnnotationOcrFrameLine {
   text: string;
   x: number;
   y: number;
@@ -574,20 +574,20 @@ export interface FanxiuGameWindow3OcrFrameLine {
   h: number;
 }
 
-export interface FanxiuGameWindow3OcrFrameResponse {
-  lines: FanxiuGameWindow3OcrFrameLine[];
+export interface FanxiuDataAnnotationOcrFrameResponse {
+  lines: FanxiuDataAnnotationOcrFrameLine[];
 }
 
-export interface FanxiuGameWindow3MacroPoint {
+export interface FanxiuDataAnnotationMacroPoint {
   x: number;
   y: number;
 }
 
-export interface FanxiuGameWindow3MacroAnnotatePayload {
+export interface FanxiuDataAnnotationMacroAnnotatePayload {
   image_data_url: string;
   action: 'click' | 'drag';
-  start: FanxiuGameWindow3MacroPoint;
-  end?: FanxiuGameWindow3MacroPoint | null;
+  start: FanxiuDataAnnotationMacroPoint;
+  end?: FanxiuDataAnnotationMacroPoint | null;
   fallback_box: FanxiuGameWindow2MatchBox;
   frame_width: number;
   frame_height: number;
@@ -595,7 +595,7 @@ export interface FanxiuGameWindow3MacroAnnotatePayload {
   direction?: 'up' | 'down' | 'left' | 'right' | 'none' | null;
 }
 
-export interface FanxiuGameWindow3MacroAnnotateResponse {
+export interface FanxiuDataAnnotationMacroAnnotateResponse {
   ok: boolean;
   used_ai: boolean;
   box: FanxiuGameWindow2MatchBox;
@@ -2733,6 +2733,39 @@ export interface FanxiuPlayerProfileRecordListResponse {
   records: Record<string, any>[];
 }
 
+export interface FanxiuMailRecord {
+  id: string;
+  mail_key: string;
+  mail_id?: string;
+  title: string;
+  normalized_title?: string;
+  mail_type?: string;
+  create_time_text?: string;
+  create_time_ms?: number | null;
+  source?: string;
+  status?: string;
+  locked?: boolean;
+  action_policy?: string;
+  last_action_error?: string;
+  seen_count?: number;
+  first_seen_at?: number;
+  last_seen_at?: number;
+  last_seen_capture_at?: string;
+  payload?: Record<string, any>;
+  evidence?: Record<string, any>;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface FanxiuMailRecordListResponse {
+  ok: boolean;
+  count: number;
+  total?: number;
+  offset?: number;
+  limit?: number;
+  records: FanxiuMailRecord[];
+}
+
 export interface FanxiuPacketStorageBagResponse {
   ok: boolean;
   changed: boolean;
@@ -4100,6 +4133,10 @@ export const getFanxiuWikiLinkIndex = () => {
   return api.get<FanxiuWikiLinkIndexResponse>('/fanxiu/resources/wiki/link-index').then(res => res.data);
 };
 
+export const getFanxiuWikiLinkTargets = (payload: { texts: string[]; limit?: number }) => {
+  return api.post<FanxiuWikiLinkIndexResponse>('/fanxiu/resources/wiki/link-targets', payload).then(res => res.data);
+};
+
 export const searchFanxiuWikiTexts = (params: {
   query?: string;
   asset?: string;
@@ -4315,6 +4352,7 @@ export const searchFanxiuItemCards = (params: {
   sort_order?: string;
   limit?: number;
   offset?: number;
+  include_facets?: boolean;
 } = {}) => {
   return api.get<FanxiuItemSearchResponse>('/fanxiu/resources/items/cards', { params }).then(res => res.data);
 };
@@ -4362,6 +4400,14 @@ export const getFanxiuPacketRuntimeInsights = (params: { auto_sync?: boolean } =
 export const getFanxiuPlayerProfiles = (params: { limit?: number } = {}) => {
   return api
     .get<FanxiuPlayerProfileRecordListResponse>('/fanxiu/packet-capture/tcp/player-profiles', { params, timeout: 120000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuMailRecords = (
+  params: { limit?: number; offset?: number; status?: string; action_policy?: string; source?: 'all' | 'packet' } = {},
+) => {
+  return api
+    .get<FanxiuMailRecordListResponse>('/fanxiu/mail-records', { params, timeout: 120000 })
     .then(res => res.data);
 };
 
@@ -4499,18 +4545,6 @@ export const terminateFanxiuProcesses = () => {
   return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
 };
 
-export const getFanxiuSunloginRotateStatus = () => {
-  return api.get<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate').then(res => res.data);
-};
-
-export const startFanxiuSunloginRotate = () => {
-  return api.post<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate/start').then(res => res.data);
-};
-
-export const stopFanxiuSunloginRotate = () => {
-  return api.post<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate/stop').then(res => res.data);
-};
-
 export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
   return api
     .post<FanxiuGameWindow2StreamToken>('/fanxiu/game-window2/stream-token', { entry_id: entryId })
@@ -4630,105 +4664,105 @@ export const matchFanxiuGameWindow2Screenshot = (
   }).then(res => res.data);
 };
 
-export const getFanxiuGameWindow3RuntimeStatus = (entryId = '') => {
+export const getFanxiuDataAnnotationRuntimeStatus = (entryId = '') => {
   return api
-    .get<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/status', { params: entryId ? { entry_id: entryId } : {} })
+    .get<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params: entryId ? { entry_id: entryId } : {} })
     .then(res => res.data);
 };
 
-const FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT = 60000;
+const FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT = 60000;
 
-export const startFanxiuGameWindow3RuntimeTask = (entryId: string, taskType: string, payload: Record<string, unknown> = {}) => {
+export const startFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType: string, payload: Record<string, unknown> = {}) => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/start', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/task/start', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const stopFanxiuGameWindow3RuntimeCurrentTask = (entryId?: string) => {
+export const stopFanxiuDataAnnotationRuntimeCurrentTask = (entryId?: string) => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const setFanxiuGameWindow3RuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
+export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>(
-      '/fanxiu/game-window3/runtime/guard/set',
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/guard/set',
       { entry_id: entryId, guard_id: guardId, enabled, interval_seconds: intervalSeconds },
-      { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);
 };
 
-export const tickFanxiuGameWindow3RuntimeTask = (entryId: string, taskType = 'manual_tick', payload: Record<string, unknown> = {}) => {
+export const tickFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType = 'manual_tick', payload: Record<string, unknown> = {}) => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/runtime/task/tick', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/task/tick', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const getFanxiuGameWindow3RuntimeLogs = (limit = 500, scope = '', itemId = '') => {
+export const getFanxiuDataAnnotationRuntimeLogs = (limit = 500, scope = '', itemId = '') => {
   return api
-    .get<FanxiuGameWindow3RuntimeLogResponse>('/fanxiu/game-window3/runtime/logs', { params: { limit, scope, item_id: itemId } })
+    .get<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
     .then(res => res.data);
 };
 
-export const getFanxiuGameWindow3WorldFacts = () => {
+export const getFanxiuDataAnnotationWorldFacts = () => {
   return api
-    .get<FanxiuGameWindow3WorldFactsResponse>('/fanxiu/game-window3/runtime/world-facts')
+    .get<FanxiuDataAnnotationWorldFactsResponse>('/fanxiu/data-annotation/runtime/world-facts')
     .then(res => res.data);
 };
 
-export const clearFanxiuGameWindow3RuntimeLogs = () => {
-  return api.delete<FanxiuGameWindow3RuntimeLogResponse>('/fanxiu/game-window3/runtime/logs').then(res => res.data);
+export const clearFanxiuDataAnnotationRuntimeLogs = () => {
+  return api.delete<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs').then(res => res.data);
 };
 
-export const getFanxiuGameWindow3SchedulerTasks = () => {
-  return api.get<FanxiuGameWindow3SchedulerTasksResponse>('/fanxiu/game-window3/scheduler/tasks').then(res => res.data);
+export const getFanxiuDataAnnotationSchedulerTasks = () => {
+  return api.get<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks').then(res => res.data);
 };
 
-export const getFanxiuGameWindow3SchedulerPlan = () => {
-  return api.get<FanxiuGameWindow3SchedulerPlanResponse>('/fanxiu/game-window3/scheduler/plan').then(res => res.data);
+export const getFanxiuDataAnnotationSchedulerPlan = () => {
+  return api.get<FanxiuDataAnnotationSchedulerPlanResponse>('/fanxiu/data-annotation/scheduler/plan').then(res => res.data);
 };
 
-export const saveFanxiuGameWindow3SchedulerTasks = (tasks: FanxiuGameWindow3SchedulerTaskItem[]) => {
-  return api.put<FanxiuGameWindow3SchedulerTasksResponse>('/fanxiu/game-window3/scheduler/tasks', tasks).then(res => res.data);
+export const saveFanxiuDataAnnotationSchedulerTasks = (tasks: FanxiuDataAnnotationSchedulerTaskItem[]) => {
+  return api.put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks', tasks).then(res => res.data);
 };
 
-export const runNowFanxiuGameWindow3SchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}) => {
+export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}) => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/scheduler/task/run-now', { entry_id: entryId, task_id: taskId, payload }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/scheduler/task/run-now', { entry_id: entryId, task_id: taskId, payload }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const runDueFanxiuGameWindow3SchedulerTasks = (entryId: string) => {
+export const runDueFanxiuDataAnnotationSchedulerTasks = (entryId: string) => {
   return api
-    .post<FanxiuGameWindow3RuntimeStatus>('/fanxiu/game-window3/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_GAME_WINDOW3_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const getFanxiuGameWindow3AssetTree = (entryId: string) => {
+export const getFanxiuDataAnnotationAssetTree = (entryId: string) => {
   return api
-    .get<FanxiuGameWindow3AssetTreeResponse>('/fanxiu/game-window3/asset-tree', { params: { entry_id: entryId } })
+    .get<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { params: { entry_id: entryId } })
     .then(res => res.data);
 };
 
-export const saveFanxiuGameWindow3AssetTree = (entryId: string, tree: unknown[]) => {
+export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[]) => {
   return api
-    .put<FanxiuGameWindow3AssetTreeResponse>('/fanxiu/game-window3/asset-tree', { entry_id: entryId, tree })
+    .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree })
     .then(res => res.data);
 };
 
-export const recognizeFanxiuGameWindow3OcrFrame = (imageDataUrl: string) => {
+export const recognizeFanxiuDataAnnotationOcrFrame = (imageDataUrl: string) => {
   return api
-    .post<FanxiuGameWindow3OcrFrameResponse>('/fanxiu/game-window3/ocr-frame', { image_data_url: imageDataUrl }, {
+    .post<FanxiuDataAnnotationOcrFrameResponse>('/fanxiu/data-annotation/ocr-frame', { image_data_url: imageDataUrl }, {
       timeout: 180000,
     })
     .then(res => res.data);
 };
 
-export const annotateFanxiuGameWindow3MacroShape = (payload: FanxiuGameWindow3MacroAnnotatePayload) => {
+export const annotateFanxiuDataAnnotationMacroShape = (payload: FanxiuDataAnnotationMacroAnnotatePayload) => {
   return api
-    .post<FanxiuGameWindow3MacroAnnotateResponse>('/fanxiu/game-window3/macro/annotate', payload, {
+    .post<FanxiuDataAnnotationMacroAnnotateResponse>('/fanxiu/data-annotation/macro/annotate', payload, {
       timeout: 180000,
     })
     .then(res => res.data);

@@ -5,11 +5,19 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 
 import {
+  getFanxiuActivityCard,
+  getFanxiuDigitDoorCharacterCard,
+  getFanxiuDoupoTDPartnerCard,
   getFanxiuGongfaCard,
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuResourceIconUrl,
-  getFanxiuWikiLinkIndex,
+  getFanxiuWikiLinkTargets,
+  searchFanxiuActivityCards,
+  type FanxiuActivityCard,
+  type FanxiuActivitySearchItem,
+  type FanxiuDigitDoorCharacterCard,
+  type FanxiuDoupoTDPartnerCard,
   type FanxiuGongfaLinkedItem,
   type FanxiuGongfaCard,
   type FanxiuItemCard,
@@ -25,8 +33,15 @@ import {
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuRenderedText from '../FanxiuRenderedText.vue'
 
-type FanxiuResourceType = 'gongfa' | 'item' | 'lingjie'
-type FanxiuResourceCard = FanxiuGongfaCard | FanxiuItemCard | FanxiuLingjieFeatureCard
+type FanxiuResourceType = 'gongfa' | 'item' | 'lingjie' | 'activity' | 'digitdoor' | 'doupotd'
+type FanxiuResourceCard =
+  | FanxiuGongfaCard
+  | FanxiuItemCard
+  | FanxiuLingjieFeatureCard
+  | FanxiuActivityCard
+  | FanxiuActivitySearchItem
+  | FanxiuDigitDoorCharacterCard
+  | FanxiuDoupoTDPartnerCard
 
 const route = useRoute()
 const loading = ref(false)
@@ -37,7 +52,14 @@ let loadSeq = 0
 
 const resourceType = computed<FanxiuResourceType | null>(() => {
   const value = String(route.params.resourceType ?? '').trim()
-  return value === 'gongfa' || value === 'item' || value === 'lingjie' ? value : null
+  return value === 'gongfa'
+    || value === 'item'
+    || value === 'lingjie'
+    || value === 'activity'
+    || value === 'digitdoor'
+    || value === 'doupotd'
+    ? value
+    : null
 })
 
 const resourceId = computed(() => String(route.params.resourceId ?? '').trim())
@@ -46,11 +68,14 @@ const resourceTypeLabel = computed(() => {
   if (resourceType.value === 'gongfa') return '功法'
   if (resourceType.value === 'item') return '道具'
   if (resourceType.value === 'lingjie') return '灵界词条'
+  if (resourceType.value === 'activity') return '活动'
+  if (resourceType.value === 'digitdoor') return '数字门角色'
+  if (resourceType.value === 'doupotd') return '斗破角色'
   return '凡修资源'
 })
 
 const resourceName = computed(() => String(card.value?.name || resourceId.value || '凡修资源'))
-const resourceIconUrl = computed(() => getFanxiuResourceIconUrl((card.value as FanxiuGongfaCard | FanxiuItemCard | null)?.icon))
+const resourceIconUrl = computed(() => getFanxiuResourceIconUrl((card.value as { icon?: string } | null)?.icon))
 const wikiBackHref = computed(() => {
   const tab = resourceType.value || 'item'
   const query = new URLSearchParams()
@@ -63,6 +88,11 @@ const resourceDescription = computed(() => {
   const current = card.value
   if (!current) return ''
   if ('description' in current && current.description) return current.description
+  if ('description_preview' in current && current.description_preview) return current.description_preview
+  if ('skill_description_rich' in current && current.skill_description_rich) return current.skill_description_rich
+  if ('skill_description' in current && current.skill_description) return current.skill_description
+  if ('skill_description_plain' in current && current.skill_description_plain) return current.skill_description_plain
+  if ('positioning' in current && current.positioning) return current.positioning
   if ('skills' in current) {
     const skill = current.skills?.find(item => item.describe || item.effect_describe || item.additional_describe)
     return String(skill?.describe || skill?.effect_describe || skill?.additional_describe || '')
@@ -92,6 +122,21 @@ const itemRewardRows = computed<FanxiuGongfaLinkedItem[]>(() => {
 
 const sourceJson = computed(() => JSON.stringify(card.value ?? {}, null, 2))
 const linkTargetGroups = computed(() => buildFanxiuLinkTargetGroups(linkTargets.value))
+const resourceMetaRows = computed(() => {
+  const current = card.value as Record<string, unknown> | null
+  if (!current) return []
+  const rows = [
+    ['品质', current.quality_label || current.quality_name || current.quality],
+    ['定位', current.positioning],
+    ['技能', current.skill_name],
+    ['时间', current.time_kind_name],
+    ['来源', current.source_table],
+    ['状态', current.presence_status],
+  ]
+  return rows
+    .map(([label, value]) => ({ label: String(label), value: String(value ?? '').trim() }))
+    .filter(row => row.value && row.value !== 'null' && row.value !== 'undefined')
+})
 
 function parseItemShowEffect(value: unknown) {
   return parseFanxiuEffectRows(value)
@@ -112,6 +157,26 @@ function getLinkedItemText(item: FanxiuGongfaLinkedItem) {
   return count ? `${name} x${count}` : name
 }
 
+function resourceLinkTextsForCard(current: FanxiuResourceCard | null) {
+  if (!current) return []
+  const texts = [
+    resourceDescription.value,
+    resourceEffectDescription.value,
+  ]
+  if ('show_effect' in current) texts.push(String(current.show_effect || ''))
+  if ('optional_gift_rewards' in current) {
+    for (const item of current.optional_gift_rewards ?? []) {
+      texts.push(String(item.name || ''), String(item.description || ''))
+    }
+  }
+  if ('skills' in current) {
+    for (const skill of current.skills ?? []) {
+      texts.push(String(skill?.describe || ''), String(skill?.effect_describe || ''), String(skill?.additional_describe || ''))
+    }
+  }
+  return texts.map(text => text.trim()).filter(Boolean)
+}
+
 async function loadResource() {
   const type = resourceType.value
   const id = resourceId.value
@@ -123,13 +188,26 @@ async function loadResource() {
   }
   loading.value = true
   errorText.value = ''
+  linkTargets.value = []
   try {
     if (type === 'gongfa') {
       card.value = (await getFanxiuGongfaCard(id)).card
     } else if (type === 'item') {
       card.value = (await getFanxiuItemCard(id)).card
-    } else {
+    } else if (type === 'lingjie') {
       card.value = await getFanxiuLingjieFeatureCard(id)
+    } else if (type === 'activity') {
+      const response = await searchFanxiuActivityCards({ query: id, limit: 1, include_facets: false })
+      const matched = response.items.find(item => String(item.id) === id) ?? response.items[0]
+      if (!matched) throw new Error(`没有找到活动：${id}`)
+      card.value = matched
+    } else if (type === 'digitdoor') {
+      card.value = (await getFanxiuDigitDoorCharacterCard(id)).card
+    } else {
+      card.value = (await getFanxiuDoupoTDPartnerCard(id)).card
+    }
+    if (seq === loadSeq) {
+      void loadResourceLinkTargets(seq)
     }
   } catch (error: any) {
     if (seq !== loadSeq) return
@@ -141,11 +219,21 @@ async function loadResource() {
   }
 }
 
-async function loadResourceLinkTargets() {
+async function loadResourceLinkTargets(seq = loadSeq) {
+  const texts = resourceLinkTextsForCard(card.value)
+  if (!texts.length) {
+    if (seq === loadSeq) linkTargets.value = []
+    return
+  }
   try {
-    linkTargets.value = (await getFanxiuWikiLinkIndex()).items
+    const response = await getFanxiuWikiLinkTargets({ texts, limit: 120 })
+    if (seq === loadSeq) {
+      linkTargets.value = response.items
+    }
   } catch {
-    linkTargets.value = []
+    if (seq === loadSeq) {
+      linkTargets.value = []
+    }
   }
 }
 
@@ -158,7 +246,6 @@ watch(() => card.value?.name, (name) => {
 })
 
 onMounted(() => {
-  void loadResourceLinkTargets()
   void loadResource()
 })
 </script>
@@ -191,6 +278,16 @@ onMounted(() => {
           :link-target-groups="linkTargetGroups"
           tone="light"
         />
+      </section>
+
+      <section v-if="resourceMetaRows.length" class="object-section meta-section">
+        <h4>字段</h4>
+        <ul class="effect-list">
+          <li v-for="row in resourceMetaRows" :key="row.label">
+            <span>{{ row.label }}</span>
+            <strong>{{ row.value }}</strong>
+          </li>
+        </ul>
       </section>
 
       <section v-if="resourceEffectDescription || itemShowEffects.length || itemRewardRows.length" class="object-section">

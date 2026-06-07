@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { getFanxiuGameWindow3RuntimeLogs, type FanxiuGameWindow3RuntimeLogEntry } from '@/api/fanxiu';
+import { getFanxiuDataAnnotationRuntimeLogs, type FanxiuDataAnnotationRuntimeLogEntry } from '@/api/fanxiu';
 
 const route = useRoute();
 const router = useRouter();
@@ -10,7 +10,7 @@ const entryId = computed(() => String(route.query.entry_id || ''));
 const scope = computed(() => String(route.query.scope || ''));
 const itemId = computed(() => String(route.query.item_id || ''));
 const title = computed(() => String(route.query.title || itemId.value || '日志'));
-const logs = ref<FanxiuGameWindow3RuntimeLogEntry[]>([]);
+const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
 let pollTimer: number | null = null;
 
@@ -24,7 +24,7 @@ const scopeText = computed(() => {
 const refreshLogs = async () => {
   loading.value = true;
   try {
-    const response = await getFanxiuGameWindow3RuntimeLogs(1000, scope.value, itemId.value);
+    const response = await getFanxiuDataAnnotationRuntimeLogs(1000, scope.value, itemId.value);
     logs.value = response.entries || [];
   } finally {
     loading.value = false;

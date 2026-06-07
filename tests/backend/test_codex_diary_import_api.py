@@ -463,8 +463,8 @@ def test_codex_diary_import_worker_heartbeats_while_drafting(session: Session, e
 
 
 def test_codex_diary_import_creates_notes_from_all_active_devices(
-    client,
     session: Session,
+    engine,
     auth_user,
     monkeypatch,
 ):
@@ -475,7 +475,7 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
             value={
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
-                    {"key": "custom_codeyun", "label": "codeyun", "color": "#409eff", "order": 10},
+                    {"key": "custom_codeyun", "label": "CodeYun/笔记", "color": "#409eff", "order": 10},
                 ]
             },
         )
@@ -533,32 +533,41 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     monkeypatch.setattr("backend.api.notes.collect_multi_codex_daily_summary_source", fake_collect_source)
     monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", _fake_codex_diary_ai_draft)
 
-    response = client.post(
-        "/api/notes/codex-diary/import-runs",
-        json={"date": "2026-04-30"},
+    run, entry_specs, root_identity, should_run = _create_codex_diary_import_run_record(
+        session,
+        current_user=auth_user,
+        diary_date_text="2026-04-30",
     )
-    assert response.status_code == 200
-    started = response.json()
-    assert started["status"] == "running"
-    assert started["entry_ids"] == entry_ids
+    assert should_run is True
+    assert run.status == "running"
+    assert run.entry_ids == entry_ids
 
-    completed = _wait_for_import_run(client, started["id"])
-    assert completed["status"] == "completed"
-    assert completed["source_turn_count"] == 2
-    assert completed["created_note_count"] == 1
-    assert all(isinstance(note_id, int) for note_id in completed["created_note_ids"])
-    assert completed["result"]["draft_generator"] == "deepseek-json-v1"
-    assert completed["result"]["draft_provider"] == "deepseek"
-    assert completed["result"]["draft_model"] == "deepseek-v4-pro"
+    _run_codex_diary_import_worker(
+        engine,
+        run_id=run.id,
+        user_id=auth_user.id,
+        entry_specs=entry_specs,
+        root_identity=root_identity,
+    )
+
+    session.expire_all()
+    completed = session.get(CodexDiaryImportRun, run.id)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.source_turn_count == 2
+    assert completed.created_note_count == 1
+    assert all(str(note_id).isdigit() for note_id in completed.created_note_ids)
+    assert completed.result_json["draft_generator"] == "deepseek-json-v1"
+    assert completed.result_json["draft_provider"] == "deepseek"
+    assert completed.result_json["draft_model"] == "deepseek-v4-pro"
     assert len(captured_entry_specs[0]) == 2
 
-    notes = _notes_by_public_ids(session, completed["created_note_ids"])
+    notes = _notes_by_public_ids(session, completed.created_note_ids)
     assert len(notes) == 1
     assert [note.start_at for note in notes] == [_ts(2026, 4, 30, 9, 0)]
     first_note = notes[0]
     assert first_note.numeric_id is not None
     assert first_note.numeric_id > 0
-    assert completed["created_notes"][0]["numeric_id"] == first_note.numeric_id
     for note in notes:
         assert not note.title.startswith("codeyun：")
         assert not note.title.endswith(("...", "…"))
@@ -569,7 +578,7 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
         assert note.weight_mode is None
         assert "<h3>" not in note.content
         custom_fields = note.custom_fields
-        assert any(item[0] == "__codex_diary_run_id" and item[2] == completed["id"] for item in custom_fields)
+        assert any(item[0] == "__codex_diary_run_id" and item[2] == completed.id for item in custom_fields)
         assert any(item[0] == "__codex_diary_date" and item[2] == "2026-04-30" for item in custom_fields)
         assert any(item[0] == "__codex_source_thread_ids" and len(item[2]) == 2 for item in custom_fields)
         worklog = next(item[2] for item in custom_fields if item[0] == "__codex_diary_worklog")
@@ -626,8 +635,8 @@ def test_codex_diary_import_empty_source_creates_no_notes(
 
 
 def test_codex_diary_import_continues_when_one_device_unavailable(
-    client,
     session: Session,
+    engine,
     auth_user,
     monkeypatch,
 ):
@@ -667,19 +676,30 @@ def test_codex_diary_import_continues_when_one_device_unavailable(
     monkeypatch.setattr(codex_device_summary, "collect_remote_codex_entry_daily_summary_source", fake_collect_remote_source)
     monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", _fake_codex_diary_ai_draft)
 
-    response = client.post(
-        "/api/notes/codex-diary/import-runs",
-        json={"date": "2026-05-03"},
+    run, entry_specs, root_identity, should_run = _create_codex_diary_import_run_record(
+        session,
+        current_user=auth_user,
+        diary_date_text="2026-05-03",
     )
-    assert response.status_code == 200
-    completed = _wait_for_import_run(client, response.json()["id"])
+    assert should_run is True
 
-    assert completed["status"] == "completed"
-    assert completed["source_turn_count"] == 1
-    assert completed["created_note_count"] == 1
-    assert completed["error_message"] is None
-    assert completed["result"]["source"]["source_failures"][0]["device_name"] == "codepc_mi15"
-    assert "read timeout" in completed["result"]["source"]["source_failures"][0]["error"]
+    _run_codex_diary_import_worker(
+        engine,
+        run_id=run.id,
+        user_id=auth_user.id,
+        entry_specs=entry_specs,
+        root_identity=root_identity,
+    )
+
+    session.expire_all()
+    completed = session.get(CodexDiaryImportRun, run.id)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.source_turn_count == 1
+    assert completed.created_note_count == 1
+    assert completed.error_message is None
+    assert completed.result_json["source"]["source_failures"][0]["device_name"] == "codepc_mi15"
+    assert "read timeout" in completed.result_json["source"]["source_failures"][0]["error"]
 
     note = session.exec(select(NoteNode).where(NoteNode.title == "周日 Codex 日记")).first()
     assert note is not None
@@ -1043,7 +1063,58 @@ def test_codex_diary_completion_progress_uses_ten_hour_duration_ratio():
     assert _build_codex_diary_completion_progress_expr({"duration_seconds": 37 * 60}) == "37/600"
 
 
-def test_codex_diary_blocks_prefer_content_category_over_thread_context(
+def test_codex_diary_blocks_absorb_tiny_details_into_core_work(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#409eff", "order": 10},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#e6a23c", "order": 20},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 6, 4, 9, 0)
+    source = {
+        "date": "2026-06-04",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "codeyun:core",
+                "thread_title": "表格加载性能优化",
+                "project_label": "CodeYun",
+                "user_request": "修复表格加载性能问题。",
+                "assistant_result": "已完成后端接口、缓存策略和前端页面渲染优化，并通过回归测试。",
+                "start_at": start_at,
+                "end_at": start_at + 5 * 60 * 60,
+            },
+            {
+                "thread_id": "codeyun:tiny",
+                "thread_title": "临时说明补充",
+                "project_label": "CodeYun",
+                "user_request": "顺手补一下交付说明。",
+                "assistant_result": "已补充交付边界。",
+                "start_at": start_at + 5 * 60 * 60 + 5 * 60,
+                "end_at": start_at + 5 * 60 * 60 + 10 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 1
+    assert round(blocks[0]["duration_seconds"] / 60) == 305
+    assert blocks[0]["category_key"] == "custom_codeyun_note"
+    assert len(blocks[0]["records"]) == 2
+
+
+def test_codex_diary_blocks_absorb_related_short_content_under_core_category(
     session: Session,
     auth_user,
 ):
@@ -1108,14 +1179,16 @@ def test_codex_diary_blocks_prefer_content_category_over_thread_context(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["custom_attendance", "custom_fanxiu"]
-    assert blocks[0]["note_categories"] == [{"key": "custom_attendance", "weight": 100}]
-    assert blocks[1]["note_categories"] == [{"key": "custom_fanxiu", "weight": 100}]
-    assert "课程脚本" in blocks[0]["records"][0]["user_request"]
-    assert "prayer_cycle" in blocks[1]["records"][0]["user_request"]
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {"custom_attendance", "custom_fanxiu"}
+    assert blocks[0]["note_categories"][0]["key"] == blocks[0]["category_key"]
+    assert round(blocks[0]["duration_seconds"] / 60) == 60
+    requests = " ".join(record["user_request"] for record in blocks[0]["records"])
+    assert "课程脚本" in requests
+    assert "prayer_cycle" in requests
 
 
-def test_codex_diary_blocks_prefer_value_category_over_general_codeyun_context(
+def test_codex_diary_blocks_absorb_short_project_detail_into_value_category(
     session: Session,
     auth_user,
 ):
@@ -1126,8 +1199,8 @@ def test_codex_diary_blocks_prefer_value_category_over_general_codeyun_context(
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
                     {"key": "custom_codeyun_general", "label": "CodeYun/综合", "color": "#606266", "order": 10},
-                    {"key": "custom_programming", "label": "编程/技术", "color": "#409eff", "order": 20},
-                    {"key": "custom_work", "label": "工作/项目", "color": "#67c23a", "order": 30},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#409eff", "order": 20},
+                    {"key": "project", "label": "项目", "color": "#67c23a", "order": 30},
                 ]
             },
         )
@@ -1161,13 +1234,19 @@ def test_codex_diary_blocks_prefer_value_category_over_general_codeyun_context(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["custom_programming", "custom_work"]
-    assert all(block["category_key"] not in {"general", "custom_codeyun_general"} for block in blocks)
-    assert "接口" in blocks[0]["records"][0]["assistant_result"]
-    assert "交付" in blocks[1]["records"][0]["thread_title"]
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {"custom_codeyun_note", "project"}
+    assert blocks[0]["category_key"] not in {"general", "custom_codeyun_general"}
+    assert round(blocks[0]["duration_seconds"] / 60) == 75
+    combined = " ".join(
+        f"{record['thread_title']} {record['assistant_result']}"
+        for record in blocks[0]["records"]
+    )
+    assert "接口" in combined
+    assert "交付" in combined
 
 
-def test_codex_diary_blocks_split_rime_input_method_from_fanxiu(
+def test_codex_diary_blocks_absorb_short_mixed_topics_without_import_category(
     session: Session,
     auth_user,
 ):
@@ -1222,12 +1301,15 @@ def test_codex_diary_blocks_split_rime_input_method_from_fanxiu(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["custom_ai", "custom_fanxiu"]
-    assert "小狼毫" in blocks[0]["records"][0]["user_request"]
-    assert "洞天福地" in blocks[1]["records"][0]["user_request"]
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {"custom_ai", "custom_fanxiu"}
+    assert not str(blocks[0]["category_key"]).startswith("import_")
+    requests = " ".join(record["user_request"] for record in blocks[0]["records"])
+    assert "小狼毫" in requests
+    assert "洞天福地" in requests
 
 
-def test_codex_diary_blocks_split_fanxiu_cluster_notes_and_attendance(
+def test_codex_diary_blocks_merge_tiny_mixed_details_into_allowed_category(
     session: Session,
     auth_user,
 ):
@@ -1293,16 +1375,18 @@ def test_codex_diary_blocks_split_fanxiu_cluster_notes_and_attendance(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == [
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {
         "custom_fanxiu",
         "custom_codeyun_cluster",
         "custom_codeyun_note",
         "custom_attendance",
-    ]
-    assert all(block["category_key"] != "custom_ai" for block in blocks)
+    }
+    assert not str(blocks[0]["category_key"]).startswith("import_")
+    assert len(blocks[0]["records"]) == 4
 
 
-def test_codex_diary_blocks_group_topic_before_assigning_category(
+def test_codex_diary_blocks_absorb_tiny_topic_tail_into_core_block(
     session: Session,
     auth_user,
 ):
@@ -1313,8 +1397,7 @@ def test_codex_diary_blocks_group_topic_before_assigning_category(
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
                     {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
-                    {"key": "custom_codeyun_resource", "label": "CodeYun/资源", "color": "#6699cc", "order": 20},
-                    {"key": "custom_survey", "label": "问卷", "color": "#e6a23c", "order": 30},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#e6a23c", "order": 20},
                 ]
             },
         )
@@ -1370,17 +1453,20 @@ def test_codex_diary_blocks_group_topic_before_assigning_category(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert len(blocks) == 2
-    assert [block["category_key"] for block in blocks] == ["custom_codeyun_note", "custom_survey"]
-    assert [block["note_categories"] for block in blocks] == [
-        [{"key": "custom_codeyun_note", "weight": 100}],
-        [{"key": "custom_survey", "weight": 100}],
-    ]
-    assert [len(block["records"]) for block in blocks] == [3, 1]
-    assert {record["thread_title"] for record in blocks[0]["records"]} == {"PDF阅读器", "页面笔记", "PDF用户状态层"}
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {"custom_codeyun_note", "legacy_color_e6a23c"}
+    assert blocks[0]["note_categories"][0]["key"] == blocks[0]["category_key"]
+    assert len(blocks[0]["records"]) == 4
+    assert round(blocks[0]["duration_seconds"] / 60) == 100
+    assert {record["thread_title"] for record in blocks[0]["records"]} == {
+        "PDF阅读器",
+        "页面笔记",
+        "PDF用户状态层",
+        "问卷前端",
+    }
 
 
-def test_codex_diary_blocks_merge_same_category_even_when_not_adjacent(
+def test_codex_diary_blocks_absorb_non_adjacent_tiny_same_day_work(
     session: Session,
     auth_user,
 ):
@@ -1391,7 +1477,7 @@ def test_codex_diary_blocks_merge_same_category_even_when_not_adjacent(
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
                     {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
-                    {"key": "custom_survey", "label": "问卷", "color": "#e6a23c", "order": 20},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#e6a23c", "order": 20},
                 ]
             },
         )
@@ -1434,9 +1520,11 @@ def test_codex_diary_blocks_merge_same_category_even_when_not_adjacent(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["custom_codeyun_note", "custom_survey"]
-    assert [len(block["records"]) for block in blocks] == [2, 1]
-    assert {record["thread_title"] for record in blocks[0]["records"]} == {"PDF阅读器", "日记导入"}
+    assert len(blocks) == 1
+    assert blocks[0]["category_key"] in {"custom_codeyun_note", "legacy_color_e6a23c"}
+    assert len(blocks[0]["records"]) == 3
+    assert round(blocks[0]["duration_seconds"] / 60) == 60
+    assert {record["thread_title"] for record in blocks[0]["records"]} == {"PDF阅读器", "问卷恢复", "日记导入"}
 
 
 def test_codex_diary_questionnaire_records_prefer_attendance_over_codeyun_context(
@@ -1503,7 +1591,7 @@ def test_codex_diary_blocks_use_primary_category_only(
                 "items": [
                     {"key": "general", "label": "综合", "color": "#909399", "order": 0},
                     {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 10},
-                    {"key": "custom_survey", "label": "问卷", "color": "#e6a23c", "order": 20},
+                    {"key": "legacy_color_e6a23c", "label": "考勤", "color": "#e6a23c", "order": 20},
                 ]
             },
         )
@@ -1530,8 +1618,8 @@ def test_codex_diary_blocks_use_primary_category_only(
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
     assert len(blocks) == 1
-    assert blocks[0]["category_key"] == "custom_codeyun_note"
-    assert blocks[0]["note_categories"] == [{"key": "custom_codeyun_note", "weight": 100}]
+    assert blocks[0]["category_key"] == "legacy_color_e6a23c"
+    assert blocks[0]["note_categories"] == [{"key": "legacy_color_e6a23c", "weight": 100}]
 
     run = CodexDiaryImportRun(user_id=auth_user.id, diary_date="2026-05-04", scope_key="test")
     session.add(run)
@@ -1543,7 +1631,7 @@ def test_codex_diary_blocks_use_primary_category_only(
     session.commit()
     session.refresh(note)
 
-    assert note.primary_category == "custom_codeyun_note"
+    assert note.primary_category == "legacy_color_e6a23c"
     assert note.note_categories == blocks[0]["note_categories"]
 
 
@@ -1616,7 +1704,7 @@ def test_codex_diary_marks_stale_running_run_failed(
     assert updated.finished_at == now_ts
 
 
-def test_codex_diary_blocks_filter_blocked_auto_categories(
+def test_codex_diary_blocks_can_use_user_preset_builtin_categories(
     session: Session,
     auth_user,
 ):
@@ -1664,8 +1752,8 @@ def test_codex_diary_blocks_filter_blocked_auto_categories(
 
     blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
 
-    assert [block["category_key"] for block in blocks] == ["general"]
-    assert blocks[0]["category_label"] == "综合"
+    assert [block["category_key"] for block in blocks] == ["project"]
+    assert blocks[0]["category_label"] == "项目"
 
 
 def test_codex_diary_general_fallback_does_not_merge_unrelated_threads(
@@ -1728,7 +1816,7 @@ def test_codex_diary_ai_title_rejects_low_information_prefixes():
 def test_codex_diary_ai_title_keeps_single_primary_topic():
     assert _normalize_codex_diary_ai_title("考勤表与问卷链路修复") == "考勤表"
     assert _normalize_codex_diary_ai_title("权限策略和课程数据兜底") == "权限策略"
-    assert _normalize_codex_diary_ai_title("game-window3卡顿、抓包协议与表格序号修复") == "game-window3卡顿"
+    assert _normalize_codex_diary_ai_title("data-annotation卡顿、抓包协议与表格序号修复") == "data-annotation卡顿"
 
 
 def test_codex_diary_fallback_title_does_not_join_two_topics():

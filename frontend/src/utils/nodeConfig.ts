@@ -10,7 +10,7 @@ export interface NodeTypeItem {
   lightColor: string;
   order?: number;
   builtin?: boolean;
-  source?: 'builtin' | 'custom' | 'legacy';
+  source?: 'builtin' | 'custom' | 'legacy' | 'import';
   generatedFromColor?: string | null;
 }
 
@@ -37,7 +37,7 @@ export interface NoteTypePaletteItem {
   color: string;
   order: number;
   builtin: boolean;
-  source: 'builtin' | 'custom' | 'legacy';
+  source: 'builtin' | 'custom' | 'legacy' | 'import';
   generatedFromColor?: string | null;
   usageCount?: number;
 }

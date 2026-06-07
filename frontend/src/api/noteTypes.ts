@@ -6,7 +6,7 @@ export interface NoteCategoryPaletteItem {
   color: string;
   order: number;
   builtin: boolean;
-  source: 'builtin' | 'custom' | 'legacy';
+  source: 'builtin' | 'custom' | 'legacy' | 'import';
   generated_from_color?: string | null;
   usage_count?: number;
 }

@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.device import build_background_popen_kwargs
-from backend.core.fanxiu_sunlogin_rotate import get_fanxiu_mainwin_root
+from backend.core.fanxiu_mumu_control import get_fanxiu_mainwin_root
 
 
 PSEUDOCODE_DIRNAME = "伪代码"
@@ -487,3 +487,4 @@ def start_fanxiu_pseudocode_script(*, timeout: int = 120) -> dict[str, Any]:
         "result": result_text,
         "updated_at": time.time(),
     }
+

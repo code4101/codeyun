@@ -46,6 +46,13 @@ IGNORED_DIRS = {
     "node_modules",
 }
 WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+WINDOWS_CREATE_NO_WINDOW = 0x08000000
+
+
+def hidden_subprocess_kwargs():
+    if os.name == "nt":
+        return {"creationflags": WINDOWS_CREATE_NO_WINDOW}
+    return {}
 
 
 def log(message):
@@ -234,6 +241,7 @@ def find_tcp_listener_pids(port):
             encoding="utf-8",
             errors="replace",
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except OSError:
         return []
@@ -264,6 +272,7 @@ def _run_text_command(cmd):
             encoding="utf-8",
             errors="replace",
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except OSError:
         return ""
@@ -406,6 +415,7 @@ def terminate_pids(pids, reason):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
+                **hidden_subprocess_kwargs(),
             )
         return
 
@@ -523,7 +533,9 @@ def popen_kwargs():
     }
     if os.name == "nt":
         kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
+            | WINDOWS_CREATE_NO_WINDOW
         )
     else:
         kwargs["start_new_session"] = True
@@ -730,13 +742,27 @@ def ensure_frontend_deps(frontend_dir, env, npm_exec):
         return
 
     log("Installing frontend dependencies ...")
-    subprocess.check_call([npm_exec, "install"], cwd=frontend_dir, env=env, shell=False)
+    subprocess.check_call(
+        [npm_exec, "install"],
+        cwd=frontend_dir,
+        env=env,
+        shell=False,
+        **hidden_subprocess_kwargs(),
+    )
+
+
+def resolve_vite_command(frontend_dir, npm_exec):
+    vite_entry = os.path.join(frontend_dir, "node_modules", "vite", "bin", "vite.js")
+    node_exec = shutil.which("node.exe" if os.name == "nt" else "node") or shutil.which("node")
+    if node_exec and os.path.isfile(vite_entry):
+        return [node_exec, vite_entry]
+    return [npm_exec, "run", "dev"]
 
 
 def start_frontend(frontend_dir, env, npm_exec):
     log("Launching frontend with Vite ...")
     return subprocess.Popen(
-        [npm_exec, "run", "dev"],
+        resolve_vite_command(frontend_dir, npm_exec),
         cwd=frontend_dir,
         env=env,
         **popen_kwargs(),

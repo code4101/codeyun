@@ -134,6 +134,7 @@ class NoteCreate(BaseModel):
     completion_progress_expr: Optional[str] = None
 
 class NoteUpdate(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     title: Optional[str] = None
     content: Optional[str] = None
     weight: Optional[int] = None
@@ -160,6 +161,7 @@ class NoteRead(BaseModel):
     user_id: int
     title: str
     content: str
+    version: int = 1
     weight: int = 0
     start_at: float
     created_at: float
@@ -194,6 +196,7 @@ class NoteListRead(BaseModel):
     numeric_id: Optional[int] = None
     user_id: int
     title: str
+    version: int = 1
     weight: int = 0
     node_type: Optional[str] = None
     note_types: List[Dict[str, Any]] = Field(default_factory=list)
@@ -225,7 +228,7 @@ class NoteCategoryPaletteItem(BaseModel):
     color: str
     order: int = 0
     builtin: bool = False
-    source: Literal["builtin", "custom", "legacy"] = "custom"
+    source: Literal["builtin", "custom", "legacy", "import"] = "custom"
     generated_from_color: Optional[str] = None
     usage_count: float = 0
 

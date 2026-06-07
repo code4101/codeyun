@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
+import anyio
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlmodel import Session, func, or_, select
 
@@ -20,6 +21,7 @@ from backend.db import get_session
 from backend.models import NoteEdge, NoteNode, ResourceAccessGrant, User
 from backend.schemas import NoteRead
 from backend.core.resource_identity import RESOURCE_TYPE_NOTE
+from backend.api.websocket_manager import manager as ws_manager
 
 
 router = APIRouter()
@@ -29,6 +31,26 @@ RESOURCE_ACCESS_ROLES = ("deny", "viewer", "editor", "manager")
 RESOURCE_ACCESS_ROLE_RANK = {"deny": 0, "viewer": 1, "editor": 2, "manager": 3}
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
 RESOURCE_ACCESS_SUBJECT_USER = "user"
+
+
+def _note_resource_update_room(note_ref: str) -> str:
+    return f"resource:note:{note_ref}"
+
+
+def _broadcast_note_resource_update(note: NoteNode) -> None:
+    public_ref = _public_note_ref(note)
+    message = {
+        "type": "resource-updated",
+        "resource_type": "note",
+        "resource_id": public_ref,
+        "version": int(note.version or 1),
+        "updated_at": float(note.updated_at or time.time()),
+        "updated_by_user_id": None,
+    }
+    try:
+        anyio.from_thread.run(ws_manager.broadcast, _note_resource_update_room(public_ref), message)
+    except RuntimeError:
+        pass
 
 
 class NoteDocAccessCapabilities(BaseModel):
@@ -47,6 +69,7 @@ class NoteDocDetail(NoteRead):
 
 
 class NoteDocUpdateRequest(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     title: Optional[str] = None
     content: Optional[str] = None
     weight: Optional[int] = None
@@ -480,8 +503,10 @@ def update_note_doc(
     note = _get_note_by_ref_or_404(session, note_ref)
     access = _resolve_doc_resource_access(session, note, current_user)
     _require_resource_access(access, "editor")
+    if note_in.base_version is not None and int(note.version or 1) != int(note_in.base_version):
+        raise HTTPException(status_code=409, detail="文档版本已变化，请重新读取后再写入")
 
-    note_data = _prepare_note_update_data(note, note_in.model_dump(exclude_unset=True))
+    note_data = _prepare_note_update_data(note, note_in.model_dump(exclude_unset=True, exclude={"base_version"}))
     _append_note_history(note, note_data, int(time.time()))
     _record_note_metadata_feedback_safely(
         session,
@@ -491,13 +516,29 @@ def update_note_doc(
     )
     for key, value in note_data.items():
         setattr(note, key, value)
+    if note_data:
+        note.version = max(int(note.version or 1), 1) + 1
     note.updated_at = time.time()
     session.add(note)
     session.commit()
     session.refresh(note)
+    _broadcast_note_resource_update(note)
 
     next_access = _resolve_doc_resource_access(session, note, current_user)
     return _serialize_doc_note_detail(session, note, current_user=current_user, access=next_access)
+
+
+@router.websocket("/ws/resources/note/{note_ref}")
+async def websocket_note_resource_updates(websocket: WebSocket, note_ref: str):
+    room = _note_resource_update_room(str(note_ref or "").strip())
+    await ws_manager.connect(websocket, room)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, room)
+    except Exception:
+        ws_manager.disconnect(websocket, room)
 
 
 @router.get("/{note_ref}/access", response_model=NoteDocResourceAccessResponse)

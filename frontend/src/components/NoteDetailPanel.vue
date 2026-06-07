@@ -255,7 +255,10 @@ onBeforeUnmount(() => {
 });
 
 const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
-  const payload = Object.keys(patch).length ? patch : note;
+  const payload = {
+    ...(Object.keys(patch).length ? patch : note),
+    base_version: Number(note.version || currentNote.value?.version || 1),
+  };
   const updatedNote = await noteStore.updateNote(note.id, payload);
   if (!updatedNote) throw new Error('保存失败');
   emit('update', noteStore.getNoteById(note.id) || updatedNote);
@@ -263,7 +266,10 @@ const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
 };
 
 const handleSaveKeepalive = (note: NoteNode, patch: EditableNotePatch = {}) => {
-  const payload = Object.keys(patch).length ? patch : note;
+  const payload = {
+    ...(Object.keys(patch).length ? patch : note),
+    base_version: Number(note.version || currentNote.value?.version || 1),
+  };
   putJsonKeepalive(`/api/notes/${encodeURIComponent(noteKey(note.id))}`, toApiPatch(payload));
 };
 

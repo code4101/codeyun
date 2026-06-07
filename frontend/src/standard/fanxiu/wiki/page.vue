@@ -37,7 +37,7 @@ import {
 } from '../resourceRenderer'
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
-import { formatChineseCompactNumber } from '../numberFormat'
+import { formatChineseCompactNumber, formatFanxiuGameNumber } from '../numberFormat'
 import { stableHash32 } from '@/utils/stableVisualColor'
 import {
   getHiddenFanxiuPacketProtocols,
@@ -59,6 +59,7 @@ import {
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
+  getFanxiuMailRecords,
   getFanxiuPlayerProfiles,
   getFanxiuPacketRuntimeInsights,
   getFanxiuPacketStorageBag,
@@ -168,6 +169,7 @@ import {
   type FanxiuLingjieRuntimeDamageFamily,
   type FanxiuLingjieRuntimeSummary,
   type FanxiuLingjieRuntimeTimelineSample,
+  type FanxiuMailRecord,
   type FanxiuProtocolSemanticEdge,
   type FanxiuProtocolSemanticFeature,
   type FanxiuProtocolSemanticResponse,
@@ -198,6 +200,7 @@ const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
 const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
 const STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY = 'fanxiu:wiki:storage-bag-worship-chart-planes'
 const PLAYER_PROFILE_PREF_STORAGE_KEY = 'fanxiu:wiki:player-profile-preferences'
+const MAIL_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-status-filter'
 const ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY = 'fanxiu:wiki:activity-period-pane-height'
 const ACTIVITY_NOTE_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-binding'
 const ACTIVITY_NOTE_INDEX_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-index'
@@ -207,6 +210,8 @@ const ACTIVITY_NOTE_FIELD_ACTIVITY_NAME = '__fanxiu_activity_name'
 const FACET_OPTION_DISPLAY_LIMIT = 100
 const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
+const MAIL_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const DEFAULT_MAIL_PAGE_SIZE = 20
 const STORAGE_BAG_PREVIEW_LIMIT = 100
 const STORAGE_BAG_WORSHIP_CHART_WIDTH = 640
 const STORAGE_BAG_WORSHIP_CHART_HEIGHT = 260
@@ -235,6 +240,7 @@ const NON_LIST_ACTIVITY_PAGE_SIZE = 5000
 const ACTIVITY_CALENDAR_WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
+  { key: 'mail', label: '邮件' },
   { key: 'player_profile', label: '面板' },
   { key: 'item', label: '道具' },
   { key: 'visual', label: '图片' },
@@ -269,6 +275,7 @@ const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
 const AUXILIARY_WIKI_TAB_KEYS = new Set<WikiTab>(AUXILIARY_WIKI_TABS.map(tab => tab.key))
 const TOP_WIKI_TABS = [
   { key: 'storage_bag', label: '储物袋' },
+  { key: 'mail', label: '邮件' },
   { key: 'player_profile', label: '面板' },
   { key: 'item', label: '道具' },
   { key: 'activity', label: '活动' },
@@ -288,6 +295,9 @@ const DEFAULT_PROTOCOL_FEATURES: FanxiuProtocolSemanticFeature[] = [
 type SortMode = 'default' | 'time_asc' | 'time_desc'
 type ActivityViewMode = 'list' | 'document' | 'period'
 type StaticAssetCatalogView = 'semantic'
+type MailSortKey = 'index' | 'title' | 'time' | 'status'
+type MailStatusFilter = typeof MAIL_STATUS_OPTIONS[number]['key']
+type SortOrder = 'asc' | 'desc'
 const ACTIVITY_VIEW_MODE_OPTIONS: Array<{ value: ActivityViewMode, label: string }> = [
   { value: 'list', label: '列表' },
   { value: 'period', label: '日程' },
@@ -298,6 +308,11 @@ const ACTIVITY_PERIOD_INITIAL_LEAD_DAYS = 3
 const ACTIVITY_PERIOD_LABEL_MIN_DAYS = 2.4
 const ACTIVITY_PERIOD_LABEL_MAX_DAYS = 4.8
 const ACTIVITY_PERIOD_LANE_HEIGHT = 42
+const MAIL_STATUS_OPTIONS = [
+  { key: 'locked', label: '锁定' },
+  { key: 'seen', label: '留存' },
+  { key: 'deleted', label: '已删' },
+] as const
 const SORT_MODE_ORDER: SortMode[] = ['default', 'time_asc', 'time_desc']
 const SORT_MODE_LABELS: Record<SortMode, string> = {
   default: '默认',
@@ -410,6 +425,8 @@ type PageConfig = {
   sortMode?: SortMode
   page?: number
   pageSize?: number
+  mailPage?: number
+  mailPageSize?: number
   selectedId?: string
   expandedFacetRows?: Record<string, boolean>
 }
@@ -497,6 +514,7 @@ const showAuxiliaryTabs = computed(() => isAuxiliaryWikiTab(activeTab.value))
 const query = ref('')
 const searchHistory = ref<Record<WikiTab, string[]>>({
   storage_bag: [],
+  mail: [],
   player_profile: [],
   item: [],
   visual: [],
@@ -572,6 +590,17 @@ const packetProtocolSamples = ref<FanxiuTcpBusinessEntry[]>([])
 const packetProtocolSamplesLoading = ref(false)
 const packetRuntimeInsights = ref<Record<string, any> | null>(null)
 const packetRuntimeInsightsLoading = ref(false)
+const mailRecords = ref<FanxiuMailRecord[]>([])
+const mailRewardItemCardCache = ref<Record<string, FanxiuItemCard | null>>({})
+const mailRewardItemCardLoading = new Set<string>()
+const selectedMailStatuses = ref<MailStatusFilter[]>(MAIL_STATUS_OPTIONS.map(option => option.key))
+const mailSortKey = ref<MailSortKey>('time')
+const mailSortOrder = ref<SortOrder>('desc')
+const mailPage = ref(1)
+const mailPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
+const mailContentDialogVisible = ref(false)
+const selectedMailContentTitle = ref('')
+const selectedMailContentText = ref('')
 const storageBagMainGroup = ref('all')
 const storageBagSubGroup = ref('')
 const storageBagSubGroupMemory = ref<Record<string, string>>({})
@@ -695,6 +724,15 @@ function queryValue(value: unknown) {
   return String(value ?? '').trim()
 }
 
+function setRouteQueryValue(query: Record<string, unknown>, key: string, value: string) {
+  const text = value.trim()
+  if (text) {
+    query[key] = text
+  } else {
+    delete query[key]
+  }
+}
+
 function normalizeRouteObjectId(tab: WikiTab | null, value: unknown) {
   const text = queryValue(value)
   if (tab === 'activity' && text && !/^\d+$/.test(text)) return ''
@@ -706,6 +744,9 @@ function applyRouteState() {
   const hasRouteId = Object.prototype.hasOwnProperty.call(route.query, 'id')
   const routeId = normalizeRouteObjectId(routeTab, route.query.id)
   const routeSearch = queryValue(route.query.q)
+  const routeItemQualityFilter = queryValue(route.query.quality_name)
+  const routeItemTypeFilter = queryValue(route.query.type_key)
+  const routeItemSubTypeFilter = queryValue(route.query.sub_type_key)
   let changed = false
   applyingRouteState = true
   try {
@@ -716,9 +757,23 @@ function applyRouteState() {
       activeTab.value = routeTab
       changed = true
     }
-    if (routeSearch && query.value !== routeSearch) {
+    if (routeTab && query.value !== routeSearch) {
       query.value = routeSearch
       changed = true
+    }
+    if (routeTab === 'item') {
+      if (itemQualityFilter.value !== routeItemQualityFilter) {
+        itemQualityFilter.value = routeItemQualityFilter
+        changed = true
+      }
+      if (itemTypeFilter.value !== routeItemTypeFilter) {
+        itemTypeFilter.value = routeItemTypeFilter
+        changed = true
+      }
+      if (itemSubTypeFilter.value !== routeItemSubTypeFilter) {
+        itemSubTypeFilter.value = routeItemSubTypeFilter
+        changed = true
+      }
     }
     if (hasRouteId && selectedId.value !== routeId) {
       selectedId.value = routeId
@@ -747,7 +802,21 @@ function syncRouteState() {
   } else {
     delete nextQuery.q
   }
-  if (queryValue(route.query.tab) === activeTab.value && queryValue(route.query.id) === selectedId.value) return
+  if (activeTab.value === 'item') {
+    setRouteQueryValue(nextQuery, 'quality_name', itemQualityFilter.value)
+    setRouteQueryValue(nextQuery, 'type_key', itemTypeFilter.value)
+    setRouteQueryValue(nextQuery, 'sub_type_key', itemSubTypeFilter.value)
+  } else {
+    delete nextQuery.quality_name
+    delete nextQuery.type_key
+    delete nextQuery.sub_type_key
+  }
+  const routeMatches = queryValue(route.query.tab) === activeTab.value
+    && queryValue(route.query.id) === selectedId.value
+    && queryValue(route.query.quality_name) === queryValue(nextQuery.quality_name)
+    && queryValue(route.query.type_key) === queryValue(nextQuery.type_key)
+    && queryValue(route.query.sub_type_key) === queryValue(nextQuery.sub_type_key)
+  if (routeMatches) return
   void router.replace({ query: nextQuery }).catch(() => {})
 }
 
@@ -763,6 +832,11 @@ function normalizePage(value: unknown, fallback = 1) {
 function normalizePageSize(value: unknown, fallback = 50) {
   const numeric = Math.floor(Number(value))
   return PAGE_SIZE_OPTIONS.includes(numeric) ? numeric : fallback
+}
+
+function normalizeMailPageSize(value: unknown, fallback = DEFAULT_MAIL_PAGE_SIZE) {
+  const numeric = Math.floor(Number(value))
+  return MAIL_PAGE_SIZE_OPTIONS.includes(numeric) ? numeric : fallback
 }
 
 function normalizeSortMode(value: unknown): SortMode {
@@ -1031,6 +1105,51 @@ function persistPlayerProfilePreferences() {
   }
 }
 
+function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
+  const valid = MAIL_STATUS_OPTIONS.map(option => option.key)
+  if (Array.isArray(value)) {
+    const expanded = value.flatMap((item) => {
+      if (item === 'seen') return ['seen']
+      if (item === 'deleted') return ['deleted']
+      if (item === 'claimed' || item === 'missing' || item === 'pending') return ['deleted']
+      return [item]
+    })
+    const selected = expanded.filter((item): item is MailStatusFilter => valid.includes(item as MailStatusFilter))
+    return selected.length ? Array.from(new Set(selected)) : valid
+  }
+  const text = String(value ?? '').trim()
+  if (!text || text === 'all') return valid
+  if (text === 'seen') return ['seen']
+  if (text === 'deleted' || text === 'claimed' || text === 'missing' || text === 'pending') return ['deleted']
+  if (valid.includes(text as MailStatusFilter)) return [text as MailStatusFilter]
+  try {
+    const parsed = JSON.parse(text)
+    if (Array.isArray(parsed)) return normalizeMailStatusFilters(parsed)
+  } catch {
+    // ignore legacy malformed preference
+  }
+  return valid
+}
+
+function loadMailStatusFilterPreference() {
+  if (!canUseLocalStorage()) return
+  try {
+    selectedMailStatuses.value = normalizeMailStatusFilters(window.localStorage.getItem(MAIL_STATUS_FILTER_STORAGE_KEY))
+  } catch (error) {
+    console.warn('Failed to load Fanxiu mail status filter preference:', error)
+    window.localStorage.removeItem(MAIL_STATUS_FILTER_STORAGE_KEY)
+  }
+}
+
+function persistMailStatusFilterPreference() {
+  if (!canUseLocalStorage()) return
+  try {
+    window.localStorage.setItem(MAIL_STATUS_FILTER_STORAGE_KEY, JSON.stringify(selectedMailStatuses.value))
+  } catch (error) {
+    console.warn('Failed to persist Fanxiu mail status filter preference:', error)
+  }
+}
+
 function loadPageConfig() {
   if (!canUseLocalStorage()) return
   try {
@@ -1066,6 +1185,8 @@ function loadPageConfig() {
     sortMode.value = normalizeSortMode(config.sortMode)
     page.value = normalizePage(config.page, 1)
     pageSize.value = normalizePageSize(config.pageSize, 50)
+    mailPage.value = normalizePage(config.mailPage, 1)
+    mailPageSize.value = normalizeMailPageSize(config.mailPageSize)
     selectedId.value = String(config.selectedId ?? '')
     expandedFacetRows.value = config.expandedFacetRows && typeof config.expandedFacetRows === 'object'
       ? { ...config.expandedFacetRows }
@@ -1105,6 +1226,8 @@ function persistPageConfig() {
       sortMode: sortMode.value,
       page: page.value,
       pageSize: pageSize.value,
+      mailPage: mailPage.value,
+      mailPageSize: mailPageSize.value,
       selectedId: selectedId.value,
       expandedFacetRows: expandedFacetRows.value,
     }))
@@ -1224,6 +1347,23 @@ const activityFacetFilters = computed<FacetFilterMap>(() => ({
   time_kind: activityTimeFilter.value,
   activity_type: activityTypeFilter.value,
 }))
+
+const shouldLoadItemFacetIndex = computed(() => Boolean(
+  activeTab.value === 'gongfa'
+  || activeTab.value === 'item'
+  || normalizeSearchQuery(query.value)
+  || itemQualityFilter.value
+  || itemTypeFilter.value
+  || itemSubTypeFilter.value,
+))
+
+const shouldLoadActivityFacetIndex = computed(() => Boolean(
+  normalizeSearchQuery(query.value)
+  || activityKindFilter.value
+  || activityTimeFilter.value
+  || activityTypeFilter.value
+  || activityServerScope.value,
+))
 
 const selectedListItem = computed(() => {
   if (activeTab.value === 'item') {
@@ -1453,6 +1593,7 @@ const activityDisplayItems = computed(() => {
 
 const displayTotal = computed(() => {
   if (activeTab.value === 'storage_bag') return filteredStorageBagItems.value.length
+  if (activeTab.value === 'mail') return filteredMailRecords.value.length
   if (activeTab.value === 'player_profile') return filteredPlayerProfileRows.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'document') return activityDocumentItems.value.length
   if (activeTab.value === 'activity' && activityViewMode.value === 'period') return activityDisplayItems.value.length
@@ -1461,6 +1602,7 @@ const displayTotal = computed(() => {
 
 const resultCountUnit = computed(() => {
   if (activeTab.value === 'storage_bag') return '种物品'
+  if (activeTab.value === 'mail') return '封邮件'
   if (activeTab.value === 'player_profile') return '条面板'
   return '个对象'
 })
@@ -2477,6 +2619,7 @@ const selectedTerms = computed(() => {
 const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
   if (activeTab.value === 'storage_bag') return '搜索储物袋物品 / 类型 / 品质 / ID'
+  if (activeTab.value === 'mail') return '搜索邮件名 / 时间 / 状态'
   if (activeTab.value === 'player_profile') return '搜索玩家 / 角色ID / 区服 / 日期'
   if (activeTab.value === 'visual') return '搜索图片 / 图标 / 背景 / atlas / sprite / 文件名'
   if (activeTab.value === 'asset') return '搜索语义素材 / 小绿瓶 / 道具 / 活动 / 技能 / 模型'
@@ -2497,6 +2640,7 @@ const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() 
   if (
     activeTab.value === 'lingjie'
     || activeTab.value === 'storage_bag'
+    || activeTab.value === 'mail'
     || activeTab.value === 'player_profile'
     || activeTab.value === 'visual'
     || activeTab.value === 'asset'
@@ -2525,6 +2669,7 @@ const nextSortModeLabel = computed(() => {
 const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
   if (activeTab.value === 'storage_bag') return '储物袋'
+  if (activeTab.value === 'mail') return '邮件'
   if (activeTab.value === 'player_profile') return '面板'
   if (activeTab.value === 'visual') return '图片'
   if (activeTab.value === 'asset') return '素材'
@@ -2545,6 +2690,7 @@ const selectedProgressionSource = computed(() => {
   if (
     activeTab.value === 'lingjie'
     || activeTab.value === 'storage_bag'
+    || activeTab.value === 'mail'
     || activeTab.value === 'player_profile'
     || activeTab.value === 'asset'
     || activeTab.value === 'digitdoor'
@@ -2930,7 +3076,7 @@ function getObjectIconText(item: WikiObjectItem | null) {
 }
 
 function getObjectIconUrl(item: WikiObjectItem | null) {
-  return getFanxiuResourceIconUrl(item?.icon)
+  return getFanxiuResourceIconUrl(item?.icon || item?.small_icon)
 }
 
 function getVisualAssetKey(item: FanxiuStaticVisualManifestRow | null | undefined) {
@@ -3528,7 +3674,16 @@ function getDisplayLinkedItems(items: FanxiuGongfaLinkedItem[] | null | undefine
 function hideBrokenIcon(event: Event) {
   const target = event.currentTarget
   if (target instanceof HTMLImageElement) {
+    target.parentElement?.classList.remove('icon-loaded')
     target.style.display = 'none'
+  }
+}
+
+function showLoadedIcon(event: Event) {
+  const target = event.currentTarget
+  if (target instanceof HTMLImageElement) {
+    target.style.display = ''
+    target.parentElement?.classList.add('icon-loaded')
   }
 }
 
@@ -4985,6 +5140,346 @@ const packetInsightBagItems = computed(() => Array.isArray(packetInsightSnapshot
 const packetInsightBagSections = computed(() => Array.isArray(packetInsightSnapshot.value.bag?.section_summary) ? packetInsightSnapshot.value.bag.section_summary : [])
 const packetInsightPersonalRanks = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.personal_records) ? packetInsightSnapshot.value.activity_ranks.personal_records : [])
 const packetInsightRankRecords = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.records) ? packetInsightSnapshot.value.activity_ranks.records : [])
+function mailStatusKey(row: FanxiuMailRecord) {
+  const status = String(row.status || '').trim()
+  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list' || status === 'claim_requested' || status === 'delete_requested') return 'deleted'
+  if (row.locked) return 'locked'
+  return 'seen'
+}
+
+function mailStatusLabel(value: string) {
+  return MAIL_STATUS_OPTIONS.find(option => option.key === value)?.label || value || '-'
+}
+
+function toggleMailStatusFilter(value: MailStatusFilter) {
+  const selected = new Set(selectedMailStatuses.value)
+  if (selected.has(value)) {
+    selected.delete(value)
+  } else {
+    selected.add(value)
+  }
+  selectedMailStatuses.value = MAIL_STATUS_OPTIONS.map(option => option.key).filter(key => selected.has(key))
+  persistMailStatusFilterPreference()
+}
+
+function formatMailTimestamp(value?: number) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return '-'
+  return formatMailDateTime(new Date(numeric * 1000))
+}
+
+function mailTimeText(row: FanxiuMailRecord) {
+  return formatMailDateTimeText(row.create_time_text) || '-'
+}
+
+function mailTimeValue(row: FanxiuMailRecord) {
+  return parseMailDateTimeText(row.create_time_text) || 0
+}
+
+function formatMailDateTime(date: Date) {
+  if (!Number.isFinite(date.getTime())) return ''
+  const now = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const time = `${hour}:${minute}`
+  if (year === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()) return time
+  if (year === now.getFullYear()) return `${month}/${day} ${time}`
+  return `${year}/${month}/${day} ${time}`
+}
+
+function formatMailDateTimeText(value?: string) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const parsed = parseMailDateTimeText(text)
+  if (parsed) return formatMailDateTime(new Date(parsed))
+  const timeOnly = text.match(/^(\d{1,2}):(\d{1,2})(?::\d{1,2})?$/)
+  if (timeOnly) return `${timeOnly[1].padStart(2, '0')}:${timeOnly[2].padStart(2, '0')}`
+  return text
+}
+
+function parseMailDateTimeText(value?: string) {
+  const text = String(value || '').trim()
+  if (!text) return 0
+  const chinese = text.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{1,2})(?::\d{1,2})?/)
+  if (chinese) {
+    return new Date(
+      Number(chinese[1]),
+      Number(chinese[2]) - 1,
+      Number(chinese[3]),
+      Number(chinese[4]),
+      Number(chinese[5]),
+    ).getTime()
+  }
+  const isoLike = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{1,2})(?::\d{1,2})?/)
+  if (isoLike) {
+    return new Date(
+      Number(isoLike[1]),
+      Number(isoLike[2]) - 1,
+      Number(isoLike[3]),
+      Number(isoLike[4]),
+      Number(isoLike[5]),
+    ).getTime()
+  }
+  return 0
+}
+
+function mailOriginalIndex(row: FanxiuMailRecord) {
+  const index = mailRecords.value.indexOf(row)
+  return index >= 0 ? index + 1 : 0
+}
+
+function mailSortText(row: FanxiuMailRecord, key: MailSortKey) {
+  if (key === 'title') return String(row.title || row.normalized_title || '')
+  if (key === 'status') return mailStatusLabel(mailStatusKey(row))
+  return ''
+}
+
+function compareMailRecords(left: FanxiuMailRecord, right: FanxiuMailRecord) {
+  let result = 0
+  if (mailSortKey.value === 'index') {
+    result = mailOriginalIndex(left) - mailOriginalIndex(right)
+  } else if (mailSortKey.value === 'time') {
+    result = mailTimeValue(left) - mailTimeValue(right)
+  } else {
+    result = mailSortText(left, mailSortKey.value).localeCompare(mailSortText(right, mailSortKey.value), 'zh-Hans-CN')
+  }
+  if (!result) result = mailOriginalIndex(left) - mailOriginalIndex(right)
+  return mailSortOrder.value === 'asc' ? result : -result
+}
+
+function toggleMailSort(key: MailSortKey) {
+  if (mailSortKey.value === key) {
+    mailSortOrder.value = mailSortOrder.value === 'asc' ? 'desc' : 'asc'
+    return
+  }
+  mailSortKey.value = key
+  mailSortOrder.value = key === 'time' ? 'desc' : 'asc'
+}
+
+function mailSortLabel(key: MailSortKey, label: string) {
+  if (mailSortKey.value !== key) return label
+  return `${label} ${mailSortOrder.value === 'asc' ? '↑' : '↓'}`
+}
+
+function mailRewardItems(row: FanxiuMailRecord): Record<string, any>[] {
+  const payload = row.payload || {}
+  const direct = Array.isArray(payload.mail_rewards) ? payload.mail_rewards : []
+  const packet = payload.packet && typeof payload.packet === 'object' && Array.isArray(payload.packet.mail_rewards)
+    ? payload.packet.mail_rewards
+    : []
+  return dedupeMailRewardItems([...direct, ...packet].filter(item => item && typeof item === 'object'))
+}
+
+function mailRewardDedupKey(item: Record<string, any>) {
+  const itemId = String(item.item_id ?? item.id ?? '').trim()
+  const amount = item.amount ?? item.num ?? item.count ?? ''
+  const text = String(item.text ?? '').trim()
+  return `${itemId}|${amount}|${text}`
+}
+
+function dedupeMailRewardItems(items: Record<string, any>[]) {
+  const seen = new Set<string>()
+  const deduped: Record<string, any>[] = []
+  for (const item of items) {
+    const key = mailRewardDedupKey(item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(item)
+  }
+  return deduped
+}
+
+function mailRewardText(row: FanxiuMailRecord) {
+  return mailRewardItems(row).map(mailRewardLabel).filter(Boolean).join('，')
+}
+
+function mailRewardLabel(item: Record<string, any>) {
+  const itemId = String(item.item_id || '').trim()
+  const card = mailRewardItemCard(item)
+  const rawName = String(card?.name || item.item_name || '').trim()
+  const fallbackName = itemId ? `未知道具 #${itemId}` : ''
+  const name = rawName && rawName !== `道具${itemId}` ? rawName : fallbackName
+  const amount = item.amount ?? item.num ?? item.count
+  const amountText = amount !== undefined && amount !== null && amount !== '' ? ` x${formatFanxiuGameNumber(amount) || amount}` : ''
+  return `${name || String(item.text || '').trim()}${amountText}`.trim()
+}
+
+function mailRewardItemCard(item: Record<string, any>) {
+  const itemId = String(item.item_id || '').trim()
+  return itemId ? mailRewardItemCardCache.value[itemId] || null : null
+}
+
+function mailRewardLinkedItem(item: Record<string, any>) {
+  const itemId = String(item.item_id || '').trim()
+  const card = mailRewardItemCard(item)
+  const rawName = String(card?.name || item.item_name || '').trim()
+  const name = rawName && rawName !== `道具${itemId}` ? rawName : (itemId ? `未知道具 #${itemId}` : '道具')
+  const amount = item.amount ?? item.num ?? item.count
+  return {
+    id: itemId || null,
+    name,
+    count: amount !== undefined && amount !== null && amount !== '' ? (formatFanxiuGameNumber(amount) || amount) : '',
+    icon: card?.icon || item.icon || '',
+    small_icon: card?.small_icon || item.small_icon || '',
+    description: [
+      card?.description || item.description,
+      card?.quality_name || card?.quality_tab || item.quality ? `品质：${card?.quality_name || card?.quality_tab || item.quality}` : '',
+      card?.type_name || item.item_type ? `类型：${card?.type_name || item.item_type}` : '',
+      item.name_source ? `来源：${item.name_source}` : '',
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+function mailRewardItemHref(item: Record<string, any>) {
+  const itemId = String(item.item_id || '').trim()
+  return itemId ? buildFanxiuResourceHref('item', itemId) : undefined
+}
+
+function mailRewardIconUrl(item: Record<string, any>) {
+  const linkedItem = mailRewardLinkedItem(item)
+  return getFanxiuResourceIconUrl(linkedItem.icon || linkedItem.small_icon)
+}
+
+function mailRewardAmountText(item: Record<string, any>) {
+  const amount = item.amount ?? item.num ?? item.count
+  return amount !== undefined && amount !== null && amount !== '' ? (formatFanxiuGameNumber(amount) || amount) : ''
+}
+
+function mailRewardName(item: Record<string, any>) {
+  return mailRewardLinkedItem(item).name
+}
+
+function hideBrokenMailRewardIcon(event: Event) {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLImageElement)) return
+  const retryCount = Number(target.dataset.retryCount || '0')
+  target.style.display = 'none'
+  if (retryCount >= 5) return
+  const src = target.currentSrc || target.src || target.getAttribute('src') || ''
+  if (!src) return
+  target.dataset.retryCount = String(retryCount + 1)
+  const retryDelays = [300, 700, 1500, 3000, 5000]
+  window.setTimeout(() => {
+    const retryUrl = new URL(src, window.location.href)
+    retryUrl.searchParams.set('_retry', `${Date.now()}`)
+    target.src = retryUrl.toString()
+  }, retryDelays[retryCount] ?? 5000)
+}
+
+function showLoadedMailRewardIcon(event: Event) {
+  const target = event.currentTarget
+  if (!(target instanceof HTMLImageElement)) return
+  target.dataset.retryCount = '0'
+  target.style.display = ''
+}
+
+function visibleMailRewardItems(row: FanxiuMailRecord) {
+  return mailRewardItems(row)
+}
+
+async function loadMailRewardItemCards(itemIds: string[]) {
+  const missing = [...new Set(itemIds.map(itemId => String(itemId || '').trim()).filter(Boolean))]
+    .filter(itemId => !(itemId in mailRewardItemCardCache.value) && !mailRewardItemCardLoading.has(itemId))
+    .slice(0, 120)
+  if (!missing.length) return
+  missing.forEach(itemId => mailRewardItemCardLoading.add(itemId))
+  const results = await Promise.allSettled(missing.map(async itemId => {
+    const response = await getFanxiuItemCard(itemId)
+    return { itemId, card: response.card || null }
+  }))
+  const next = { ...mailRewardItemCardCache.value }
+  for (let index = 0; index < results.length; index += 1) {
+    const itemId = missing[index]
+    const result = results[index]
+    next[itemId] = result.status === 'fulfilled' ? result.value.card : null
+  }
+  mailRewardItemCardCache.value = next
+  missing.forEach(itemId => mailRewardItemCardLoading.delete(itemId))
+}
+
+function mailContentText(row: FanxiuMailRecord) {
+  const payload = row.payload || {}
+  const direct = typeof payload.mail_content_text === 'string' ? payload.mail_content_text.trim() : ''
+  const packet = payload.packet && typeof payload.packet === 'object' && typeof payload.packet.mail_content_text === 'string'
+    ? payload.packet.mail_content_text.trim()
+    : ''
+  return direct || packet
+}
+
+function openMailContentDialog(row: FanxiuMailRecord) {
+  selectedMailContentTitle.value = String(row.title || row.normalized_title || '邮件正文')
+  selectedMailContentText.value = mailContentText(row)
+  mailContentDialogVisible.value = true
+}
+
+function mailSearchText(row: FanxiuMailRecord) {
+  return [
+    row.title,
+    row.normalized_title,
+    row.mail_type,
+    row.create_time_text,
+    mailRewardText(row),
+    mailContentText(row),
+    mailStatusLabel(mailStatusKey(row)),
+    row.last_action_error,
+    row.mail_key,
+    row.mail_id,
+  ].join(' ').toLowerCase()
+}
+
+const filteredMailRecords = computed(() => {
+  const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
+  const selectedStatuses = new Set(selectedMailStatuses.value)
+  return mailRecords.value.filter(row => {
+    if (!selectedStatuses.has(mailStatusKey(row))) return false
+    if (!tokens.length) return true
+    const haystack = mailSearchText(row)
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const sortedMailRecords = computed(() => [...filteredMailRecords.value].sort(compareMailRecords))
+const mailPageCount = computed(() => Math.max(1, Math.ceil(sortedMailRecords.value.length / Math.max(mailPageSize.value, 1))))
+const mailPageStart = computed(() => (mailPage.value - 1) * mailPageSize.value)
+const visibleMailRecords = computed(() => sortedMailRecords.value.slice(mailPageStart.value, mailPageStart.value + mailPageSize.value))
+const visibleMailRewardItemIds = computed(() => {
+  const itemIds = new Set<string>()
+  for (const row of visibleMailRecords.value) {
+    for (const item of mailRewardItems(row)) {
+      const itemId = String(item.item_id || '').trim()
+      if (itemId) itemIds.add(itemId)
+    }
+  }
+  return [...itemIds]
+})
+const mailStatusCounts = computed(() => {
+  const counts: Record<string, number> = { all: mailRecords.value.length }
+  for (const row of mailRecords.value) {
+    const key = mailStatusKey(row)
+    counts[key] = (counts[key] || 0) + 1
+  }
+  return counts
+})
+
+function mailRowNumber(index: number) {
+  return mailPageStart.value + index + 1
+}
+
+function handleMailPageChange(nextPage: number) {
+  mailPage.value = Math.min(mailPageCount.value, Math.max(1, normalizePage(nextPage, 1)))
+}
+
+function handleMailPageStep(delta: number) {
+  handleMailPageChange(mailPage.value + delta)
+}
+
+function handleMailPageSizeChange(nextPageSize: number) {
+  mailPageSize.value = normalizeMailPageSize(nextPageSize)
+  mailPage.value = 1
+}
 const playerProfileSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.player_profiles ?? {})
 const playerProfileRawRows = computed<Record<string, any>[]>(() => {
   const rows = playerProfileSnapshot.value.records
@@ -5023,19 +5518,20 @@ function playerProfileAttackValue(row: Record<string, any>) {
   return Number.isFinite(value) ? value : 0
 }
 
-const PLAYER_PROFILE_ATTACK_UNIT_ORDER = ['载', '正', '涧', '沟', '穰', '秭', '垓', '京', '兆', '亿', '万', '无单位']
+const PLAYER_PROFILE_ATTACK_UNIT_ORDER = ['秭秭', '垓秭', '垓垓', '京垓', '京京', '兆京', '亿京', '万京', '京', '兆', '亿', '万', '无单位']
 const PLAYER_PROFILE_ATTACK_UNIT_COLORS: Record<string, string> = {
-  '载': '#7f1d1d',
-  '正': '#075985',
-  '涧': '#166534',
-  '沟': '#6b21a8',
-  '穰': '#9a3412',
-  '秭': '#0f766e',
-  '垓': '#be123c',
-  '京': '#1d4ed8',
-  '兆': '#c2410c',
-  '亿': '#047857',
-  '万': '#7e22ce',
+  '秭秭': '#7f1d1d',
+  '垓秭': '#075985',
+  '垓垓': '#166534',
+  '京垓': '#6b21a8',
+  '京京': '#9a3412',
+  '兆京': '#0f766e',
+  '亿京': '#be123c',
+  '万京': '#1d4ed8',
+  '京': '#c2410c',
+  '兆': '#047857',
+  '亿': '#7e22ce',
+  '万': '#6a1b9a',
   '无单位': '#475467',
 }
 const PLAYER_PROFILE_HASH_TEXT_COLORS = [
@@ -5055,7 +5551,7 @@ const PLAYER_PROFILE_HASH_TEXT_COLORS = [
 
 function playerProfileAttackUnit(row: Record<string, any>) {
   const attack = playerProfileAttackAttr(row)
-  const text = String(formatChineseCompactNumber(attack?.value) || attack?.text || '').trim()
+  const text = String(formatFanxiuGameNumber(attack?.value) || attack?.text || '').trim()
   const unit = PLAYER_PROFILE_ATTACK_UNIT_ORDER.find(item => item !== '无单位' && text.endsWith(item))
   return unit || '无单位'
 }
@@ -5179,6 +5675,7 @@ function playerProfileSearchText(row: Record<string, any>) {
     row?.role_id_text,
     row?.role_id,
     row?.server,
+    playerProfileServerText(row),
     row?.region_name,
     row?.server_order,
     row?.server_name,
@@ -5230,6 +5727,11 @@ watch(playerProfileAttackUnitOptions, (options) => {
   }
   const previousUnits = new Set(previousPlayerProfileAttackUnits)
   const selectedUnits = new Set(selectedPlayerProfileAttackUnits.value.filter(unit => units.includes(unit)))
+  if (!selectedUnits.size) {
+    selectedPlayerProfileAttackUnits.value = units
+    previousPlayerProfileAttackUnits = units
+    return
+  }
   if (!playerProfileAttackUnitPreferenceLoaded) {
     for (const unit of units) {
       if (!previousUnits.has(unit)) selectedUnits.add(unit)
@@ -5278,14 +5780,15 @@ const latestPlayerProfile = computed(() => (
 ))
 function playerProfileAttackText(row: Record<string, any>) {
   const attack = playerProfileAttackAttr(row)
-  return attack ? (formatChineseCompactNumber(attack.value) || attack.text || '') : ''
+  return attack ? (formatFanxiuGameNumber(attack.value) || attack.text || '') : ''
 }
 
 function playerProfileServerText(row: Record<string, any>) {
   const serverName = String(row?.server_name || '').trim()
   const serverOrder = Number(row?.server_order)
-  if (Number.isFinite(serverOrder) && serverOrder > 0 && serverName) return `${serverOrder}${serverName}`
-  if (Number.isFinite(serverOrder) && serverOrder > 0) return String(serverOrder)
+  const serverOrderText = Number.isFinite(serverOrder) && serverOrder > 0 ? String(serverOrder).padStart(2, '0') : ''
+  if (serverOrderText && serverName) return `${serverOrderText}${serverName}`
+  if (serverOrderText) return serverOrderText
   return serverName
 }
 
@@ -5294,7 +5797,17 @@ function playerProfileCultivationText(row: Record<string, any>) {
 }
 
 function formatPlayerProfileTime(value: string) {
-  return formatTcpBusinessTime(value).replace(/:(\d{2})(?=$)/, '')
+  const text = String(value || '').trim()
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?/)
+  if (!match) return text || '-'
+  const now = new Date()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const time = `${match[4]}:${match[5]}`
+  if (year === now.getFullYear() && month === now.getMonth() + 1 && day === now.getDate()) return time
+  if (year === now.getFullYear()) return `${match[2]}-${match[3]}`
+  return `${match[1]}-${match[2]}-${match[3]}`
 }
 
 function isStorageBagOwnerSnapshot(row: Record<string, any> | null | undefined) {
@@ -6061,6 +6574,28 @@ async function loadPlayerProfileSnapshots() {
     clearHomeMakeStaticDetail()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '读取玩家面板快照失败')
+  } finally {
+    loadingList.value = false
+  }
+}
+
+async function loadMailRecords() {
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet' })
+    mailRecords.value = response.records || []
+    total.value = mailRecords.value.length
+    selectedId.value = ''
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取邮件记录失败')
   } finally {
     loadingList.value = false
   }
@@ -8898,6 +9433,7 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
       ...objectSortParams.value,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
+      include_facets: shouldLoadItemFacetIndex.value,
     })
     if (requestSeq !== listRequestSeq) return
     stats.value = response.stats
@@ -8985,6 +9521,7 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
       ...objectSortParams.value,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
+      include_facets: shouldLoadItemFacetIndex.value,
     })
     if (requestSeq !== listRequestSeq) return
     itemStats.value = response.stats
@@ -9092,6 +9629,12 @@ async function loadVisualManifest(options: { keepSelection?: boolean } = {}) {
     selectedId.value = response.rows[0] ? getVisualAssetKey(response.rows[0]) : ''
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
+      visualManifest.value = null
+      visualItems.value = []
+      selectedId.value = ''
+      catalogPath.value = ''
+      total.value = 0
+      clearHomeMakeStaticDetail()
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取图标图鉴失败')
     }
   } finally {
@@ -9144,6 +9687,13 @@ async function loadStaticAssetManifest(options: { keepSelection?: boolean } = {}
     selectedId.value = response.rows[0] ? getStaticAssetKey(response.rows[0]) : ''
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
+      staticAssetManifest.value = null
+      staticAssetItems.value = []
+      staticAssetPreviewManifest.value = null
+      selectedId.value = ''
+      catalogPath.value = ''
+      total.value = 0
+      clearHomeMakeStaticDetail()
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取素材图鉴失败')
     }
   } finally {
@@ -9217,6 +9767,12 @@ async function loadAudioManifest(options: { keepSelection?: boolean } = {}) {
     selectedId.value = response.rows[0] ? getAudioAssetKey(response.rows[0]) : ''
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
+      audioManifest.value = null
+      audioItems.value = []
+      selectedId.value = ''
+      catalogPath.value = ''
+      total.value = 0
+      clearHomeMakeStaticDetail()
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取音乐图鉴失败')
     }
   } finally {
@@ -9246,7 +9802,7 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
       limit: isNonListMode ? NON_LIST_ACTIVITY_PAGE_SIZE : pageSize.value,
       offset: isNonListMode ? 0 : (page.value - 1) * pageSize.value,
       item_view: isPeriodMode ? 'schedule' : 'default',
-      include_facets: !isNonListMode,
+      include_facets: !isNonListMode && shouldLoadActivityFacetIndex.value,
     })
     const documentPromise = isDocumentMode ? loadActivityDocumentNotes() : Promise.resolve()
     const worldlinePromise = isPeriodMode
@@ -9772,6 +10328,9 @@ async function loadWikiLinkIndex() {
 function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   if (activeTab.value === 'storage_bag') {
     return loadStorageBagSnapshot()
+  }
+  if (activeTab.value === 'mail') {
+    return loadMailRecords()
   }
   if (activeTab.value === 'player_profile') {
     return loadPlayerProfileSnapshots()
@@ -10638,7 +11197,7 @@ function handleTabChange() {
   }
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'player_profile' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'storage_bag' || activeTab.value === 'mail' || activeTab.value === 'player_profile' || activeTab.value === 'visual' || activeTab.value === 'asset' || activeTab.value === 'audio' || activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
@@ -10794,6 +11353,8 @@ watch([
   sortMode,
   page,
   pageSize,
+  mailPage,
+  mailPageSize,
   selectedId,
 ], persistPageConfig)
 watch(storageBagSubGroupOptions, options => {
@@ -10819,6 +11380,17 @@ watch([storageBagMainGroup, storageBagSubGroup], () => {
 })
 watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
 watch([playerProfileSortKey, selectedPlayerProfileAttackUnits], persistPlayerProfilePreferences, { deep: true })
+watch([query, selectedMailStatuses, mailSortKey, mailSortOrder], () => {
+  if (activeTab.value === 'mail') mailPage.value = 1
+}, { deep: true })
+watch([mailPageCount, mailPageSize], () => {
+  if (mailPage.value > mailPageCount.value) mailPage.value = mailPageCount.value
+})
+watch([activeTab, visibleMailRewardItemIds], ([tab, itemIds]) => {
+  if (tab === 'mail') {
+    void loadMailRewardItemCards(itemIds)
+  }
+}, { immediate: true })
 watch(activeTab, tab => {
   if (isAuxiliaryWikiTab(tab)) {
     selectedAuxiliaryTab.value = tab
@@ -10833,7 +11405,7 @@ watch(activeTab, tab => {
     loadingStaticAssetPreview.value = false
   }
 })
-watch([activeTab, selectedId], syncRouteState)
+watch([activeTab, selectedId, itemQualityFilter, itemTypeFilter, itemSubTypeFilter], syncRouteState)
 watch([activeTab, activityViewMode], () => {
   if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
     void nextTick(() => {
@@ -10877,7 +11449,14 @@ watch(selectedStaticAsset, item => {
 })
 watch(storageBagWorshipChart, scheduleStorageBagWorshipChartRender, { flush: 'post' })
 watch(
-  () => [route.query.tab, route.query.id, route.query.q],
+  () => [
+    route.query.tab,
+    route.query.id,
+    route.query.q,
+    route.query.quality_name,
+    route.query.type_key,
+    route.query.sub_type_key,
+  ],
   () => {
     if (applyRouteState()) {
       void loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
@@ -10906,6 +11485,7 @@ onMounted(() => {
   loadStorageBagFilterConfig()
   loadStorageBagWorshipChartPlaneConfig()
   loadPlayerProfilePreferences()
+  loadMailStatusFilterPreference()
   applyRouteState()
   if (!restoreActivityPeriodPaneHeight()) {
     updateActivityPeriodPaneHeight()
@@ -11013,7 +11593,7 @@ onBeforeUnmount(() => {
         />
       </el-select>
       <el-button
-        v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
+        v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -11100,7 +11680,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
+    <div v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'visual' && activeTab !== 'asset' && activeTab !== 'audio' && activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div v-if="activityViewMode === 'period'" class="facet-row">
           <span class="facet-label">品阶</span>
@@ -11801,12 +12381,216 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <div v-if="activeTab === 'mail'" class="mail-workspace" v-loading="loadingList">
+      <section class="storage-bag-summary">
+        <div>
+          <h3>邮件</h3>
+        </div>
+      </section>
+      <section class="mail-policy-panel">
+        <div class="mail-policy-head">
+          <h4>领取检查策略</h4>
+          <span>packet 附件事实优先，旧邮件名白名单已废弃</span>
+        </div>
+        <div class="mail-policy-grid">
+          <div>
+            <b>1. 法则保护</b>
+            <p>附件名称或类别带“法则”时，永远不能自动领取，后续按锁定流程人工处理。</p>
+          </div>
+          <div>
+            <b>2. 四刻例外</b>
+            <p>附件带“潜修心得·四刻”时可以自动领取；该规则优先于保护资源判断，但仍低于法则保护。</p>
+          </div>
+          <div>
+            <b>3. 保护资源</b>
+            <p>附件含保护资源时不能自动领取：炼丹：炼丹灵草匣、神品灵草匣、炼丹灵草宝匣；淬体：淬体精魄；灵兽：珍品饲灵丸；洗灵：洗灵奇石；仙花：瑶池玉莲、造化青莲。</p>
+          </div>
+          <div>
+            <b>4. 其余领取</b>
+            <p>packet 附件事实已解析，且不命中以上规则时，单封自动领取；无附件邮件直接删除。</p>
+          </div>
+        </div>
+      </section>
+      <section v-if="mailRecords.length" class="storage-bag-groups mail-groups">
+        <div class="storage-bag-group-row">
+          <span class="facet-label">状态</span>
+          <button
+            v-for="option in MAIL_STATUS_OPTIONS"
+            :key="option.key"
+            class="facet-option"
+            :class="[`mail-status-filter-${option.key}`, { active: selectedMailStatuses.includes(option.key) }]"
+            type="button"
+            @click="toggleMailStatusFilter(option.key)"
+          >
+            <span class="facet-option-label">{{ option.label }}</span>
+            <small>{{ mailStatusCounts[option.key] || 0 }}</small>
+          </button>
+        </div>
+      </section>
+      <section v-if="mailRecords.length" class="storage-bag-table-wrap mail-table-wrap">
+        <table class="storage-bag-table mail-table">
+          <thead>
+            <tr>
+              <th class="numeric-head">
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: mailSortKey === 'index' }"
+                  type="button"
+                  @click="toggleMailSort('index')"
+                >{{ mailSortLabel('index', '#') }}</button>
+              </th>
+              <th>
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: mailSortKey === 'title' }"
+                  type="button"
+                  @click="toggleMailSort('title')"
+                >{{ mailSortLabel('title', '邮件名') }}</button>
+              </th>
+              <th>
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: mailSortKey === 'time' }"
+                  type="button"
+                  @click="toggleMailSort('time')"
+                >{{ mailSortLabel('time', '时间') }}</button>
+              </th>
+              <th>附件</th>
+              <th>正文</th>
+              <th>
+                <button
+                  class="storage-bag-sort-button"
+                  :class="{ active: mailSortKey === 'status' }"
+                  type="button"
+                  @click="toggleMailSort('status')"
+                >{{ mailSortLabel('status', '状态') }}</button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, index) in visibleMailRecords" :key="row.mail_key || row.id">
+              <td class="storage-bag-index-cell">{{ mailRowNumber(index) }}</td>
+              <td class="mail-title-cell">{{ row.title || row.normalized_title || '-' }}</td>
+              <td>{{ mailTimeText(row) }}</td>
+              <td class="mail-rewards-cell">
+                <div v-if="mailRewardItems(row).length" class="mail-reward-list">
+                  <span
+                    v-for="(item, rewardIndex) in visibleMailRewardItems(row)"
+                    :key="`${row.mail_key || row.id}-reward-${rewardIndex}`"
+                    class="mail-reward-slot-wrap"
+                    >
+                    <a
+                      v-if="mailRewardItemHref(item)"
+                      class="mail-reward-slot"
+                      :href="mailRewardItemHref(item)"
+                      :aria-label="mailRewardLabel(item)"
+                    >
+                      <span class="mail-reward-icon-frame">
+                        <img
+                          v-if="mailRewardIconUrl(item)"
+                          :src="mailRewardIconUrl(item)"
+                          :alt="mailRewardName(item)"
+                          loading="eager"
+                          decoding="async"
+                          @load="showLoadedMailRewardIcon"
+                          @error="hideBrokenMailRewardIcon"
+                        >
+                        <span v-else class="mail-reward-icon-missing">?</span>
+                      </span>
+                      <span v-if="mailRewardAmountText(item)" class="mail-reward-count">{{ mailRewardAmountText(item) }}</span>
+                    </a>
+                    <span v-else class="mail-reward-slot" :aria-label="mailRewardLabel(item)">
+                      <span class="mail-reward-icon-frame">
+                        <img
+                          v-if="mailRewardIconUrl(item)"
+                          :src="mailRewardIconUrl(item)"
+                          :alt="mailRewardName(item)"
+                          loading="eager"
+                          decoding="async"
+                          @load="showLoadedMailRewardIcon"
+                          @error="hideBrokenMailRewardIcon"
+                        >
+                        <span v-else class="mail-reward-icon-missing">?</span>
+                      </span>
+                      <span v-if="mailRewardAmountText(item)" class="mail-reward-count">{{ mailRewardAmountText(item) }}</span>
+                    </span>
+                  </span>
+                </div>
+                <span v-else>-</span>
+              </td>
+              <td class="mail-content-cell">
+                <el-button
+                  v-if="mailContentText(row)"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="openMailContentDialog(row)"
+                >查看</el-button>
+                <span v-else>-</span>
+              </td>
+              <td>
+                <span class="mail-status-pill" :class="`status-${mailStatusKey(row)}`">{{ mailStatusLabel(mailStatusKey(row)) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="filteredMailRecords.length > mailPageSize" class="object-pagination mail-pagination">
+          <el-select
+            v-model="mailPageSize"
+            class="page-size-select"
+            size="small"
+            @change="value => handleMailPageSizeChange(Number(value))"
+          >
+            <el-option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size" :label="`${size}条/页`" />
+          </el-select>
+          <div class="pager-nav">
+            <button
+              class="pager-arrow"
+              type="button"
+              :disabled="mailPage <= 1"
+              title="上一页"
+              aria-label="上一页"
+              @click="handleMailPageStep(-1)"
+            >
+              <ArrowLeft />
+            </button>
+            <span class="pager-status">
+              <b>{{ mailPage }}</b>
+              <span>/</span>
+              {{ mailPageCount }}
+            </span>
+            <button
+              class="pager-arrow"
+              type="button"
+              :disabled="mailPage >= mailPageCount"
+              title="下一页"
+              aria-label="下一页"
+              @click="handleMailPageStep(1)"
+            >
+              <ArrowRight />
+            </button>
+          </div>
+        </div>
+        <div v-if="!filteredMailRecords.length" class="empty-state">没有匹配的邮件记录</div>
+      </section>
+      <div v-else class="empty-state">还没有邮件记录；执行邮件检查后会写入这里。</div>
+    </div>
+
+    <el-dialog
+      v-model="mailContentDialogVisible"
+      class="mail-content-dialog"
+      :title="selectedMailContentTitle"
+      width="720px"
+    >
+      <pre class="mail-content-body">{{ selectedMailContentText }}</pre>
+    </el-dialog>
+
     <div v-if="activeTab === 'player_profile'" class="player-profile-workspace" v-loading="loadingList || packetRuntimeInsightsLoading">
       <section class="storage-bag-summary">
         <div>
           <h3>玩家面板</h3>
           <span v-if="playerProfileSnapshot.count">
-            {{ latestPlayerProfile?.captured_at ? `最新更新 ${formatTcpBusinessTime(latestPlayerProfile.captured_at)}` : '还没有解析到有效玩家面板' }}
+            {{ latestPlayerProfile?.captured_at ? `最新更新 ${formatPlayerProfileTime(latestPlayerProfile.captured_at)}` : '还没有解析到有效玩家面板' }}
           </span>
           <span v-else>还没有解析到玩家面板快照</span>
         </div>
@@ -12101,7 +12885,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'packet'"
+      v-if="activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'packet'"
       ref="activityWorkspaceRef"
       class="object-workspace"
       :class="{
@@ -12129,6 +12913,7 @@ onBeforeUnmount(() => {
                   :src="getObjectIconUrl(item)"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12163,6 +12948,7 @@ onBeforeUnmount(() => {
                   :src="item.media_url"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12192,6 +12978,7 @@ onBeforeUnmount(() => {
                   :src="item.preview_url"
                   :alt="item.name || item.stem"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
                 <span v-else>{{ getStaticAssetGroupLabel(item.asset_group) }}</span>
@@ -12239,6 +13026,7 @@ onBeforeUnmount(() => {
                     :src="getObjectIconUrl(item)"
                     :alt="item.name"
                     loading="lazy"
+                    @load="showLoadedIcon"
                     @error="hideBrokenIcon"
                   >
                 </span>
@@ -12273,6 +13061,7 @@ onBeforeUnmount(() => {
                     :src="getObjectIconUrl(item)"
                     :alt="item.name"
                     loading="lazy"
+                    @load="showLoadedIcon"
                     @error="hideBrokenIcon"
                   >
                 </span>
@@ -12382,6 +13171,7 @@ onBeforeUnmount(() => {
                   :src="getObjectIconUrl(item)"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12411,6 +13201,7 @@ onBeforeUnmount(() => {
                   :src="getObjectIconUrl(item)"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12474,6 +13265,7 @@ onBeforeUnmount(() => {
                   :src="getObjectIconUrl(item)"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12509,6 +13301,8 @@ onBeforeUnmount(() => {
               :key="item.id"
               class="object-row"
               :class="{ selected: String(item.id) === selectedId }"
+              :data-item-id="item.id"
+              :data-item-icon="item.icon || item.small_icon || ''"
               type="button"
               @click="selectObject(item.id)"
               @contextmenu="handleObjectContextMenu($event, item.id)"
@@ -12520,6 +13314,7 @@ onBeforeUnmount(() => {
                   :src="getObjectIconUrl(item)"
                   :alt="item.name"
                   loading="lazy"
+                  @load="showLoadedIcon"
                   @error="hideBrokenIcon"
                 >
               </span>
@@ -12551,7 +13346,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'player_profile' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
+        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
           <el-select
             v-model="pageSize"
             class="page-size-select"
@@ -12681,6 +13476,7 @@ onBeforeUnmount(() => {
                 :src="selectedStaticAsset.preview_url"
                 :alt="selectedStaticAsset.name || selectedStaticAsset.stem"
                 loading="lazy"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
               <span v-else>{{ getStaticAssetGroupLabel(selectedStaticAsset.asset_group) }}</span>
@@ -12721,6 +13517,7 @@ onBeforeUnmount(() => {
                     :src="item.media_url"
                     :alt="getStaticAssetPreviewItemTitle(item)"
                     loading="lazy"
+                    @load="showLoadedIcon"
                     @error="hideBrokenIcon"
                   >
                 </a>
@@ -12748,6 +13545,7 @@ onBeforeUnmount(() => {
                     :src="item.media_url"
                     :alt="getStaticAssetPreviewItemTitle(item)"
                     loading="lazy"
+                    @load="showLoadedIcon"
                     @error="hideBrokenIcon"
                   >
                 </a>
@@ -13373,6 +14171,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedDigitDoorCharacter)"
                 :src="getObjectIconUrl(selectedDigitDoorCharacter)"
                 :alt="selectedDigitDoorCharacter.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -13411,6 +14210,7 @@ onBeforeUnmount(() => {
                       :src="getFanxiuResourceIconUrl(skill.skill_icon)"
                       :alt="skill.skill_name || selectedDigitDoorCharacter.name"
                       loading="lazy"
+                      @load="showLoadedIcon"
                       @error="hideBrokenIcon"
                     >
                   </span>
@@ -13574,6 +14374,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedDoupoTDPartner)"
                 :src="getObjectIconUrl(selectedDoupoTDPartner)"
                 :alt="selectedDoupoTDPartner.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -13690,6 +14491,7 @@ onBeforeUnmount(() => {
                       :src="getFanxiuResourceIconUrl(source.item?.icon)"
                       :alt="getDoupoTDDrawSourceTitle(source)"
                       loading="lazy"
+                      @load="showLoadedIcon"
                       @error="hideBrokenIcon"
                     >
                   </span>
@@ -13754,6 +14556,7 @@ onBeforeUnmount(() => {
                       :src="getDoupoTDComposeIconUrl(card)"
                       :alt="card.title"
                       loading="lazy"
+                      @load="showLoadedIcon"
                       @error="hideBrokenIcon"
                     >
                   </span>
@@ -13818,6 +14621,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedCard)"
                 :src="getObjectIconUrl(selectedCard)"
                 :alt="selectedCard.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -14250,6 +15054,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedActivity)"
                 :src="getObjectIconUrl(selectedActivity)"
                 :alt="selectedActivity.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -14400,6 +15205,7 @@ onBeforeUnmount(() => {
                     :src="getActivityChallengeRarityIconUrl(item)"
                     :alt="getActivityChallengeRarityItemName(item)"
                     loading="lazy"
+                    @load="showLoadedIcon"
                     @error="hideBrokenIcon"
                   >
                 </span>
@@ -14582,6 +15388,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedLingjieCard)"
                 :src="getObjectIconUrl(selectedLingjieCard)"
                 :alt="selectedLingjieCard.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -14934,6 +15741,7 @@ onBeforeUnmount(() => {
                 v-if="getObjectIconUrl(selectedItem)"
                 :src="getObjectIconUrl(selectedItem)"
                 :alt="selectedItem.name"
+                @load="showLoadedIcon"
                 @error="hideBrokenIcon"
               >
             </div>
@@ -15777,12 +16585,18 @@ onBeforeUnmount(() => {
   z-index: 1;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  padding: 2px;
+  box-sizing: border-box;
 }
 
 .icon-fallback {
   position: relative;
   z-index: 0;
+}
+
+.icon-loaded .icon-fallback {
+  visibility: hidden;
 }
 
 .object-row-icon {
@@ -15989,7 +16803,8 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.player-profile-workspace {
+.player-profile-workspace,
+.mail-workspace {
   max-width: 1280px;
   display: grid;
   gap: 12px;
@@ -16089,6 +16904,100 @@ onBeforeUnmount(() => {
   color: var(--player-profile-unit-color);
 }
 
+.mail-groups .facet-option {
+  min-width: 0;
+}
+
+.mail-policy-panel {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 1040px);
+  padding: 12px 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.mail-policy-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mail-policy-head h4 {
+  margin: 0;
+  color: #101828;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mail-policy-head span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.mail-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mail-policy-grid div {
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 2px solid #d0d5dd;
+}
+
+.mail-policy-grid b {
+  display: block;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mail-policy-grid p {
+  margin: 3px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.mail-groups .facet-option .facet-option-label,
+.mail-groups .facet-option small {
+  color: var(--mail-status-color, #475467);
+}
+
+.mail-groups .facet-option.active {
+  border-color: color-mix(in srgb, var(--mail-status-color, #475467) 34%, #f3d58b);
+  background: color-mix(in srgb, var(--mail-status-bg, #fff7e6) 76%, #fff);
+}
+
+.mail-groups .facet-option.active .facet-option-label,
+.mail-groups .facet-option.active small {
+  color: var(--mail-status-color, #475467);
+}
+
+.mail-status-filter-locked {
+  --mail-status-bg: #fff1f3;
+  --mail-status-color: #c01048;
+}
+
+.mail-status-filter-seen {
+  --mail-status-bg: #ecfdf3;
+  --mail-status-color: #027a48;
+}
+
+.mail-status-filter-pending {
+  --mail-status-bg: #fff7e6;
+  --mail-status-color: #b54708;
+}
+
+.mail-status-filter-deleted {
+  --mail-status-bg: #f2f4f7;
+  --mail-status-color: #667085;
+}
+
 .storage-bag-table-wrap {
   justify-self: start;
   width: max-content;
@@ -16140,6 +17049,218 @@ onBeforeUnmount(() => {
   color: #667085;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.mail-table-wrap {
+  width: 100%;
+}
+
+.mail-table {
+  width: 100%;
+  min-width: 920px;
+  table-layout: fixed;
+}
+
+.mail-table th,
+.mail-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.mail-table th:nth-child(1),
+.mail-table td:nth-child(1) {
+  width: 44px;
+}
+
+.mail-table th:nth-child(2),
+.mail-table td:nth-child(2) {
+  width: 240px;
+}
+
+.mail-table th:nth-child(3),
+.mail-table td:nth-child(3) {
+  width: 96px;
+}
+
+.mail-table th:nth-child(5),
+.mail-table td:nth-child(5) {
+  width: 72px;
+}
+
+.mail-table th:nth-child(6),
+.mail-table td:nth-child(6) {
+  width: 84px;
+}
+
+.mail-title-cell {
+  color: #101828;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.mail-rewards-cell {
+  color: #344054;
+}
+
+.mail-reward-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.mail-reward-slot-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.mail-reward-slot {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  text-decoration: none;
+}
+
+.mail-reward-slot:hover .mail-reward-icon-frame {
+  border-color: rgba(183, 128, 31, 0.86);
+  box-shadow: 0 0 0 2px rgba(241, 196, 97, 0.28);
+}
+
+.mail-reward-icon-frame {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(239, 251, 255, 0.92), rgba(145, 191, 221, 0.86)),
+    #d9edf8;
+  border: 1px solid rgba(150, 181, 199, 0.84);
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.56);
+}
+
+.mail-reward-icon-frame::before,
+.mail-reward-icon-frame::after {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: rgba(255, 255, 255, 0.62);
+  content: "";
+  pointer-events: none;
+}
+
+.mail-reward-icon-frame::before {
+  top: 2px;
+  right: 2px;
+  border-top: 1px solid;
+  border-right: 1px solid;
+}
+
+.mail-reward-icon-frame::after {
+  bottom: 2px;
+  left: 2px;
+  border-bottom: 1px solid;
+  border-left: 1px solid;
+}
+
+.mail-reward-icon-frame img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  padding: 2px;
+  box-sizing: border-box;
+}
+
+.mail-reward-icon-missing {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: rgba(93, 111, 124, 0.8);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.mail-reward-count {
+  position: absolute;
+  right: 2px;
+  bottom: 0;
+  min-width: 18px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: right;
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.78),
+    1px 0 1px rgba(0, 0, 0, 0.72),
+    -1px 0 1px rgba(0, 0, 0, 0.72);
+  pointer-events: none;
+}
+
+.mail-content-cell {
+  width: 72px;
+  color: #667085;
+}
+
+.mail-content-body {
+  max-height: 60vh;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #e4e7ec;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #101828;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mail-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mail-status-pill.status-seen {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.mail-status-pill.status-pending {
+  background: #fff7e6;
+  color: #b54708;
+}
+
+.mail-status-pill.status-deleted {
+  background: #f2f4f7;
+  color: #667085;
+}
+
+.mail-status-pill.status-locked {
+  background: #fff1f3;
+  color: #c01048;
+}
+
+.mail-table .storage-bag-sort-button::after {
+  content: "";
+  margin-left: 0;
 }
 
 .storage-bag-sort-button {
@@ -19611,6 +20732,10 @@ onBeforeUnmount(() => {
     grid-template-columns: clamp(300px, 32%, 380px) minmax(0, 1fr);
   }
 
+  .mail-policy-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .object-detail {
     padding: 22px 24px 34px;
   }
@@ -19656,6 +20781,10 @@ onBeforeUnmount(() => {
   }
 
   .homemake-overview-list {
+    grid-template-columns: 1fr;
+  }
+
+  .mail-policy-grid {
     grid-template-columns: 1fr;
   }
 

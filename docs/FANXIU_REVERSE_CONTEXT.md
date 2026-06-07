@@ -1,9 +1,44 @@
 # Fanxiu Reverse Context
 
-> Last Updated: 2026-05-28
+> Last Updated: 2026-06-07
 > Audience: future Codex/agent sessions working on 凡人修仙传手游 static/resource/protocol analysis in this CodeYun workspace.
 
 This document is the handoff map for the current Fanxiu reverse-analysis work. Keep it high-density and practical: paths, tools, proven chains, current boundaries, and where to update things next.
+
+## 2026-06-06 Stable Storage Boundary
+
+All new Fanxiu reverse resources, generated analysis outputs, and reverse-analysis notes should live under `D:\home\chenkunze\data\m2606凡修逆向`.
+
+The TapTap/MuMu emulator VM paths under `D:\TapTap\Support\android_emulator\engine\vms\...` are volatile runtime storage. Treat them only as temporary extraction or copy-from locations; do not use them as the default CodeYun resource root, export root, or long-term reverse-analysis archive.
+
+Current canonical layout:
+
+| Purpose | Path |
+| --- | --- |
+| Stable reverse root | `D:\home\chenkunze\data\m2606凡修逆向` |
+| Downloaded game resource root | `D:\home\chenkunze\data\m2606凡修逆向\frxx_game_files` |
+| Unified analysis/export root | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports` |
+| Derived icon/image cache | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports\icons` |
+| Static visual catalog | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports\parsed_configs\visual_catalog` |
+| Long-running reverse notes | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports\parsed_configs\gongfa_catalog\gongfa_runtime_notes.md` |
+
+For frontend rendering, keep image binaries on disk under the stable reverse root/export root and serve them through backend resource endpoints. Do not put image blobs into the CodeYun database by default. The database should store searchable/indexable metadata only: item ids, names, icon keys, local relative paths, content hashes, dimensions, source version, packet facts, and curation fields. Local `FileResponse` plus the OS filesystem cache is sufficient for normal icon/wiki rendering; add HTTP cache headers or prebuilt thumbnails if profiling later proves image serving is hot.
+
+Boundary validation is now executable: run `uv run python scripts/verify_fanxiu_reverse_boundary.py` before trusting a local reverse-resource setup. Run `uv run python scripts/verify_fanxiu_reverse_manifest.py` when you need a machine-readable fingerprint of key reverse inputs and generated catalogs; it writes `parsed_configs/reverse_manifest_audit/reverse_manifest_latest.{json,tsv}` under the export root. The full wiki quality gate runs both checks first. Old `D:\TapTap\Support\android_emulator\engine\vms\...` paths later in this document are historical report locations unless explicitly copied into the stable root; do not treat them as current authoritative roots.
+
+## 2026-06-06 Mail Reward Item Recovery Addendum
+
+Mail attachment rewards use the already-proven shared reward rule: `RewardItem/RewardResult(type=0, code, amount)` resolves as `RewardType.ITEM(0) -> ConfigName.Item_Item[code]`. A batch of mail wiki `未知道具` rows was caused by missing local static exports, not by unknown reward semantics: `frxx_analysis_exports` / `frxx_game_files` were absent, so mail sync had silently fallen back to one `all_bag_full_items.analysis.json` bag snapshot. Bag snapshots are account runtime observations, not a complete item dictionary.
+
+Minimal recovery path verified on 2026-06-06: download `lscripts/generate/cfg/item.bytes` and `lscripts/generate/localization/chinese/lang.bytes` from `https://cdn-frxxz.akbing.com/client/android_prod/v20260522204211/`, export Unity TextAssets to `by_source/lscripts/.../text_assets`, then run `build_fanxiu_lua_config_report` on `Item.lua` with `lang.lua`. This recreates `parsed_configs/Item/rows.json` with `10030` rows. The current mail fact set then resolves all previously unknown attachment ids: `64/64` IDs matched `Item`, including `147 -> 灵祖魂息`; after resync, `95` mail records / `441` reward items have `unknown_ids=0` and `name_source=item_rows`.
+
+## 2026-06-08 Mail Wiki Quality Addendum
+
+Mail packet sync now renders `SystemMessage` templates instead of falling back to opaque parameter dumps when the packet carries a `contentId` plus i18n params. The mail record verifier treats missing content, weak `参数：...` content, malformed/control-character content, missing reward names/item ids/icons, and icon endpoint failures as hard failures.
+
+The latest full quality gate command is `uv run python scripts/verify_fanxiu_wiki_quality.py --local-auth-user code4101`; it passed with `step_count=14`, `failed_steps=[]`, `consistency_failures=[]`, and `summary_failures=[]`. Current key counts are `mail_records.records=163`, `reward_items=649`, `with_content=163`, `wiki_icons.unique_icons=3403`, `item_icons.unique_icon_count=3295`, `resource_links.resource_count=30`, `mail_browser.mail_reward_image_count=649`, `item_browser.item_row_icon_count=765`, and `core_browser.core_tab_with_rows_count=5`. Browser artifacts are under `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports\parsed_configs\wiki_browser_audit`.
+
+Independent resource pages should not pull the full `/api/fanxiu/resources/wiki/link-index` for every item. `/fanxiu-resource/item/3080008` proved the target item exists as `3080008 / 潜修心得·四刻 / icon_item_0285`, and now uses `/api/fanxiu/resources/wiki/link-targets` to request only links that appear in the current resource text, such as `功法经验` and `掌天瓶`. Keep the full link-index for complete wiki pages or index construction, not per-resource detail loads.
 
 ## Scope
 
@@ -26,12 +61,12 @@ Primary local artifacts:
 | IL2CPP binary | `D:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked\lib\arm64-v8a\libil2cpp.so` |
 | IL2CPP metadata | `D:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked\assets\bin\Data\Managed\Metadata\global-metadata.dat` |
 | Embedded SQwan plugin APK | `D:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked\assets\sq_plugin_3.7.9.6.1_2025_11_28_10_43_37.apk` |
-| Downloaded game resource root | `D:\TapTap\Support\android_emulator\engine\vms\EGTapTap-12.0-1\frxx_game_files` |
+| Downloaded game resource root | `D:\home\chenkunze\data\m2606凡修逆向\frxx_game_files` |
 | TapTap emulator/update download package | `D:\TapTap\Support\android_emulator\download\101000000.dat` |
-| Unified analysis/export root | `D:\TapTap\Support\android_emulator\engine\vms\EGTapTap-12.0-1\frxx_analysis_exports` |
-| Long-running reverse notes | `D:\TapTap\Support\android_emulator\engine\vms\EGTapTap-12.0-1\frxx_analysis_exports\parsed_configs\gongfa_catalog\gongfa_runtime_notes.md` |
+| Unified analysis/export root | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports` |
+| Long-running reverse notes | `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports\parsed_configs\gongfa_catalog\gongfa_runtime_notes.md` |
 
-Keep new generated files inside `frxx_analysis_exports` unless the user explicitly asks otherwise.
+Keep new generated files inside `D:\home\chenkunze\data\m2606凡修逆向\frxx_analysis_exports` unless the user explicitly asks otherwise.
 
 ## Installed Tools
 

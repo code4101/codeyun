@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
+    def manual_task(
+        task_id: str,
+        task_type: str,
+        label: str,
+        *,
+        interruptible: bool = True,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": label,
+            "source": "manual",
+            "schedule_kind": "manual",
+            "legacy_name": "",
+            "enabled": False,
+            "interruptible": interruptible,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": payload or {},
+            "checkpoint": None,
+        }
+
+    def legacy_dynamic_task(task_id: str, legacy_name: str, *, fallback_minutes: int | None = None) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": "legacy_dynamic_task",
+            "label": legacy_name.replace("_", " "),
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "dynamic",
+            "legacy_name": legacy_name,
+            "enabled": False,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": (fallback_minutes or 0) * 60,
+            "payload": {"legacy_name": legacy_name, **({"fallback_minutes": fallback_minutes} if fallback_minutes else {})},
+            "checkpoint": None,
+        }
+
+    def legacy_daily_task(
+        task_id: str,
+        legacy_name: str,
+        *schedule_times: str,
+        window: tuple[str, str] | None = None,
+        args: tuple[Any, ...] = (),
+    ) -> dict[str, Any]:
+        task_type = "legacy_daily_task"
+        payload: dict[str, Any] = {"legacy_name": legacy_name, "args": list(args)}
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": legacy_name.replace("_", " "),
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": legacy_name,
+            "enabled": False,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": list(schedule_times),
+            "window": list(window) if window else None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": payload,
+            "checkpoint": None,
+        }
+
+    def runtime_daily_task(
+        task_id: str,
+        task_type: str,
+        label: str,
+        *schedule_times: str,
+        interruptible: bool = True,
+        cooldown_seconds: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": label,
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "legacy_name": label,
+            "enabled": True,
+            "interruptible": interruptible,
+            "next_time": None,
+            "schedule_times": list(schedule_times),
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": cooldown_seconds,
+            "payload": payload or {},
+            "checkpoint": None,
+        }
+
+    return [
+        {
+            "id": "gift-code-weekly",
+            "task_type": "gift_code_redeem",
+            "label": "每周礼包码",
+            "source": "manual",
+            "schedule_kind": "manual",
+            "legacy_name": "",
+            "enabled": False,
+            "interruptible": True,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": 0,
+            "payload": {"codes": []},
+            "checkpoint": None,
+        },
+        manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
+        manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗"),
+        manual_task("mail-claim-check", "mail_claim_check", "邮件_领取检查"),
+        legacy_dynamic_task("legacy-dynamic-daily-boss", "日常_首领"),
+        legacy_dynamic_task("legacy-dynamic-xianfu-visit", "仙府_寻访仙侣"),
+        legacy_dynamic_task("legacy-dynamic-xianfu-skill", "仙府_领悟绝技"),
+        legacy_dynamic_task("legacy-dynamic-xianlv-lilian", "日常_仙侣历练", fallback_minutes=60),
+        legacy_daily_task("legacy-daily-mozu", "日常_魔祖", "12:29", window=("12:29", "12:35")),
+        legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
+        legacy_daily_task("legacy-daily-zhenxie", "日常_镇邪", "20:59", window=("20:59", "21:05")),
+        legacy_daily_task("legacy-daily-youli", "日常_游历", "05:00", "00:00", args=("00:00", 3)),
+        legacy_daily_task("legacy-daily-assistant", "日常_助手", "05:00", "12:00", "18:00", "00:00"),
+        runtime_daily_task("legacy-daily-signup", "daily_signup", "日常_报名", "05:00", cooldown_seconds=600),
+        legacy_daily_task("legacy-daily-vip", "日常_每日vip", "00:00"),
+        legacy_daily_task("legacy-daily-zongmen-redpacket", "日常_宗门红包", "05:00", "12:00", "06:00", "00:00"),
+        legacy_daily_task("legacy-daily-dongtian", "日常_洞天福地", "14:00", window=("10:00", "22:00")),
+        legacy_daily_task("legacy-daily-dongtian-clear", "日常_洞天福地_清行动力", "21:30", window=("21:30", "22:00")),
+        legacy_daily_task("legacy-daily-lingmai-clear", "日常_灵脉_清体力", "21:30", window=("21:30", "22:00")),
+        legacy_daily_task("legacy-daily-baiye", "日常_拜谒", "05:00", args=("魔道",)),
+        legacy_daily_task("legacy-daily-lingta", "日常_灵塔", "05:00"),
+        legacy_daily_task("legacy-daily-shuangxiu", "日常_双修", "05:00"),
+        legacy_daily_task("legacy-daily-xianyuan", "日常_挑战仙缘", "05:00"),
+        legacy_daily_task("legacy-daily-lingzu", "日常_灵祖", "05:00"),
+        legacy_daily_task("legacy-daily-jianling", "日常_剑灵", "05:00"),
+        legacy_daily_task("legacy-daily-yaowang", "日常_妖王来袭", "05:00"),
+        legacy_daily_task("legacy-daily-yaozu", "日常_妖族袭城", "05:00", args=(2, 0)),
+        legacy_daily_task("legacy-daily-dungeon", "日常_每日副本", "05:00", args=(6, 3)),
+        legacy_daily_task("legacy-daily-activity", "日常_活跃度", "05:00"),
+    ]
+
+

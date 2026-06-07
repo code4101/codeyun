@@ -1,43 +1,67 @@
 <template>
   <div ref="editorContainerRef" class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
-    <div v-if="isEditorReady && ((showToolbar && !readOnly) || showWrapToggle)" class="editor-toolbar-row">
-      <Toolbar
-        v-if="showToolbar && !readOnly"
-        class="editor-toolbar"
-        :editor="editorRef"
-        :defaultConfig="toolbarConfig"
-        :mode="mode"
-      />
-      <div v-else class="editor-toolbar-spacer"></div>
-      <template v-if="showToolbar && !readOnly">
-        <el-tooltip content="上传附件并插入链接" placement="bottom">
-          <el-button
-            size="small"
-            class="attachment-upload-button"
-            :icon="Upload"
-            :loading="attachmentUploading"
-            @click.stop="openAttachmentPicker"
-          >
-            附件
-          </el-button>
-        </el-tooltip>
-        <input
-          ref="attachmentInputRef"
-          class="attachment-input"
-          type="file"
-          multiple
-          @change="handleAttachmentInputChange"
-          @click.stop
-        />
+    <div v-if="isEditorReady && toolbarAvailable" class="editor-toolbar-row" :class="{ 'is-collapsed': toolbarCollapsed && richToolbarAvailable }">
+      <template v-if="toolbarCollapsed && richToolbarAvailable">
+        <button
+          class="toolbar-expand-button"
+          type="button"
+          title="展开工具栏"
+          aria-label="展开工具栏"
+          @click.stop="toggleToolbarCollapsed"
+        >
+          <span class="toolbar-toggle-caret">▸</span>
+          <span>工具栏</span>
+        </button>
       </template>
-      <el-tooltip v-if="showWrapToggle" :content="autoWrapTooltip" placement="bottom">
-        <el-checkbox v-model="autoWrapEnabled" size="small" class="auto-wrap-toggle" @click.stop>
-          自动换行
-        </el-checkbox>
-      </el-tooltip>
+      <template v-else>
+        <Toolbar
+          v-if="showToolbar && !readOnly"
+          class="editor-toolbar"
+          :editor="editorRef"
+          :defaultConfig="toolbarConfig"
+          :mode="mode"
+        />
+        <div v-else class="editor-toolbar-spacer"></div>
+        <template v-if="showToolbar && !readOnly">
+          <el-tooltip content="上传附件并插入链接" placement="bottom">
+            <el-button
+              size="small"
+              class="attachment-upload-button"
+              :icon="Upload"
+              :loading="attachmentUploading"
+              @click.stop="openAttachmentPicker"
+            >
+              附件
+            </el-button>
+          </el-tooltip>
+          <input
+            ref="attachmentInputRef"
+            class="attachment-input"
+            type="file"
+            multiple
+            @change="handleAttachmentInputChange"
+            @click.stop
+          />
+        </template>
+        <el-tooltip v-if="showWrapToggle" :content="autoWrapTooltip" placement="bottom">
+          <el-checkbox v-model="autoWrapEnabled" size="small" class="auto-wrap-toggle" @click.stop>
+            自动换行
+          </el-checkbox>
+        </el-tooltip>
+        <button
+          v-if="richToolbarAvailable"
+          class="toolbar-collapse-button"
+          type="button"
+          title="收起工具栏"
+          aria-label="收起工具栏"
+          @click.stop="toggleToolbarCollapsed"
+        >
+          ▾
+        </button>
+      </template>
     </div>
     <!-- Extra Toolbar Items Slot -->
-    <div v-if="showToolbar && !readOnly && $slots.extra" class="editor-toolbar-extra">
+    <div v-if="showToolbar && !readOnly && !toolbarCollapsed && $slots.extra" class="editor-toolbar-extra">
       <slot name="extra"></slot>
     </div>
     <Editor
@@ -268,6 +292,8 @@ const valueHtml = ref(normalizeEditorInputHtml(props.modelValue))
 
 const readOnly = toRef(props, 'readOnly')
 const showToolbar = toRef(props, 'showToolbar')
+const richToolbarAvailable = computed(() => showToolbar.value && !readOnly.value)
+const toolbarAvailable = computed(() => richToolbarAvailable.value || props.showWrapToggle)
 const imageMergeVisible = ref(false)
 const mergeGap = ref(0)
 const detectedImages = ref<string[]>([])
@@ -279,6 +305,7 @@ const attachmentUploading = ref(false)
 const MAX_ATTACHMENT_UPLOAD_BYTES = 100 * 1024 * 1024
 const ATTACHMENT_UPLOAD_TIMEOUT_MS = 120 * 1000
 const NOTE_EDITOR_AUTO_WRAP_STORAGE_KEY = 'codeyun.noteEditor.autoWrap'
+const NOTE_EDITOR_TOOLBAR_COLLAPSED_STORAGE_KEY = 'codeyun.noteEditor.toolbarCollapsed'
 
 const canUseLocalStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
 
@@ -289,11 +316,23 @@ const loadAutoWrapPreference = () => {
   return raw !== '0'
 }
 
+const loadToolbarCollapsedPreference = () => {
+  if (!canUseLocalStorage()) return true
+  const raw = window.localStorage.getItem(NOTE_EDITOR_TOOLBAR_COLLAPSED_STORAGE_KEY)
+  if (raw == null) return true
+  return raw !== '0'
+}
+
 const autoWrapEnabled = ref(loadAutoWrapPreference())
+const toolbarCollapsed = ref(loadToolbarCollapsedPreference())
 const autoWrapTooltip = computed(() => autoWrapEnabled.value
   ? '长行会在编辑区内自动换行'
   : '长行保持单行，用横向滚动查看'
 )
+
+const toggleToolbarCollapsed = () => {
+  toolbarCollapsed.value = !toolbarCollapsed.value
+}
 
 const editorStyle = computed(() => {
     if (props.layout !== 'flow' || typeof props.minHeight !== 'number' || props.minHeight <= 0) {
@@ -348,6 +387,11 @@ watch(readOnly, (val) => {
 watch(autoWrapEnabled, value => {
     if (!canUseLocalStorage()) return
     window.localStorage.setItem(NOTE_EDITOR_AUTO_WRAP_STORAGE_KEY, value ? '1' : '0')
+})
+
+watch(toolbarCollapsed, value => {
+    if (!canUseLocalStorage()) return
+    window.localStorage.setItem(NOTE_EDITOR_TOOLBAR_COLLAPSED_STORAGE_KEY, value ? '1' : '0')
 })
 
 const toolbarConfig = {}
@@ -769,6 +813,60 @@ const confirmInsertMergedImage = () => {
     background: #fff;
     flex-shrink: 0;
     min-width: 0;
+}
+
+.editor-toolbar-row.is-collapsed {
+    justify-content: flex-start;
+}
+
+.toolbar-expand-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    margin: 4px 8px;
+    padding: 0 8px;
+    color: #4b5563;
+    font-size: 13px;
+    background: #fff;
+    border: 1px solid #dcdfe6;
+    border-radius: 4px;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.toolbar-expand-button:hover {
+    color: #2563eb;
+    border-color: #93c5fd;
+    background: #eff6ff;
+}
+
+.toolbar-toggle-caret {
+    color: #6b7280;
+    font-size: 12px;
+}
+
+.toolbar-collapse-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin: 4px 8px 4px 0;
+    padding: 0;
+    color: #6b7280;
+    font-size: 14px;
+    background: #fff;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.toolbar-collapse-button:hover {
+    color: #2563eb;
+    border-color: #bfdbfe;
+    background: #eff6ff;
 }
 
 .editor-toolbar {

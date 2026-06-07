@@ -30,6 +30,14 @@ from backend.core.codeyun_watchdog_runtime import (
     start_codeyun_watchdog,
     stop_codeyun_watchdog,
 )
+from backend.core.proxy_traffic_audit_runtime import (
+    PROXY_TRAFFIC_AUDIT_SERVICE_KEY,
+    ProxyTrafficAuditError,
+    build_proxy_traffic_audit_log_lines,
+    get_proxy_traffic_audit_status,
+    start_proxy_traffic_audit,
+    stop_proxy_traffic_audit,
+)
 from backend.core.game_window_service_runtime import (
     GAME_WINDOW_SERVICE_KEY,
     GameWindowServiceError,
@@ -59,6 +67,7 @@ from backend.core.fanxiu_capture_runtime import (
     FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
     fanxiu_capture_runtime_service,
 )
+from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
 from backend.core.runtime_units import (
     command_runtime_group,
     command_runtime_queue_name,
@@ -540,7 +549,7 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
     payload = dict(status or get_codeyun_watchdog_status())
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "stopped"))
-    interval = payload.get("interval_seconds") or 300
+    interval = payload.get("interval_seconds") or 60
     description = " · ".join(
         part
         for part in (
@@ -591,6 +600,65 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
         "timeout_seconds": None,
         "concurrency_scope": "unit",
         "concurrency_key": CODEYUN_WATCHDOG_SERVICE_KEY,
+        "overlap_policy": "replace",
+        "queue_key": None,
+    }
+
+
+def _serialize_proxy_traffic_audit_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(status or get_proxy_traffic_audit_status())
+    running = bool(payload.get("running"))
+    state = str(payload.get("state") or ("running" if running else "stopped"))
+    interval = payload.get("interval_seconds") or 2
+    description = " · ".join(
+        part
+        for part in (
+            f"每 {interval} 秒采样",
+            "只统计非 DIRECT",
+            "SQLite 落库",
+        )
+        if part
+    )
+    return {
+        "id": f"builtin:{PROXY_TRAFFIC_AUDIT_SERVICE_KEY}",
+        "key": PROXY_TRAFFIC_AUDIT_SERVICE_KEY,
+        "kind": "service",
+        "source": "builtin",
+        "group_id": "service:default",
+        "group_title": "默认服务",
+        "title": payload.get("title") or "代理流量审计",
+        "description": description,
+        "command": payload.get("module") or "",
+        "cwd": payload.get("cwd") or "",
+        "schedule": "",
+        "schedule_policy": None,
+        "schedule_label": "",
+        "next_run_at": None,
+        "timeout": None,
+        "order": 2,
+        "enabled": True,
+        "active": running,
+        "status": {
+            "running": running,
+            "state": state,
+            "state_label": payload.get("state_label") or state,
+            "interval_seconds": interval,
+            "db_path": payload.get("db_path"),
+            "log_path": payload.get("log_path"),
+            "last_sample_at": payload.get("last_sample_at") or "",
+            "last_sample_summary": payload.get("last_sample_summary") or "",
+            "top_hosts": payload.get("top_hosts") or [],
+            "process_count": payload.get("process_count") or 0,
+            "pids": payload.get("pids") or [],
+            "controllable": True,
+        },
+        "actions": ["trigger", "stop", "logs", "configure"],
+        "raw": payload,
+        "schedule_kind": "manual",
+        "timeout_policy": "none",
+        "timeout_seconds": None,
+        "concurrency_scope": "unit",
+        "concurrency_key": PROXY_TRAFFIC_AUDIT_SERVICE_KEY,
         "overlap_policy": "replace",
         "queue_key": None,
     }
@@ -673,17 +741,17 @@ def _read_json_file(path: Path, default: Any) -> Any:
         return default
 
 
-def _game_window3_runtime_dir() -> Path:
-    return get_settings().data_dir / "fanxiu" / "game-window3" / "runtime"
+def _data_annotation_runtime_dir() -> Path:
+    return get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime"
 
 
-def _get_game_window3_behavior_tree_status() -> dict[str, Any]:
-    runtime_dir = _game_window3_runtime_dir()
+def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
+    runtime_dir = _data_annotation_runtime_dir()
     live_status: dict[str, Any] = {}
     try:
-        from backend.api.fanxiu import _game_window3_runtime_status
+        from backend.api.fanxiu import _data_annotation_runtime_status
 
-        live_status = _game_window3_runtime_status()
+        live_status = _data_annotation_runtime_status()
     except Exception as exc:
         live_status = {"last_error": str(exc)}
     runtime_state = live_status or _read_json_file(runtime_dir / "runtime_state.json", {})
@@ -746,19 +814,19 @@ def _get_game_window3_behavior_tree_status() -> dict[str, Any]:
     }
 
 
-def _resolve_game_window3_runtime_entry(session: Session) -> UserDevice:
-    status = _get_game_window3_behavior_tree_status()
+def _resolve_data_annotation_runtime_entry(session: Session) -> UserDevice:
+    status = _get_data_annotation_behavior_tree_status()
     entry_candidates = [
         status.get("entry_id"),
         status.get("guard_entry_id"),
     ]
-    runtime_state = _read_json_file(_game_window3_runtime_dir() / "runtime_state.json", {})
+    runtime_state = _read_json_file(_data_annotation_runtime_dir() / "runtime_state.json", {})
     if isinstance(runtime_state, dict):
         entry_candidates.extend([
             runtime_state.get("entry_id"),
             runtime_state.get("guard_entry_id"),
         ])
-    world_facts = _read_json_file(_game_window3_runtime_dir() / "world_facts.json", {})
+    world_facts = _read_json_file(_data_annotation_runtime_dir() / "world_facts.json", {})
     if isinstance(world_facts, dict):
         runtime = world_facts.get("runtime") if isinstance(world_facts.get("runtime"), dict) else {}
         guard = world_facts.get("guard") if isinstance(world_facts.get("guard"), dict) else {}
@@ -783,31 +851,38 @@ def _resolve_game_window3_runtime_entry(session: Session) -> UserDevice:
     raise HTTPException(status_code=404, detail="未找到可用于凡修行为树的本地设备入口")
 
 
-def ensure_game_window3_behavior_tree_service(session: Session) -> dict[str, Any]:
+def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, Any]:
     from backend.api.fanxiu import (
-        _GAME_WINDOW3_RUNTIME_RUNNER,
-        _game_window3_asset_tree_path,
-        _game_window3_runtime_status,
-        _persist_game_window3_runtime_status,
+        _DATA_ANNOTATION_RUNTIME_RUNNER,
+        _data_annotation_asset_tree_path,
+        _data_annotation_runtime_status,
+        _persist_data_annotation_runtime_status,
     )
 
-    entry = _resolve_game_window3_runtime_entry(session)
-    status = _GAME_WINDOW3_RUNTIME_RUNNER.ensure_service(
+    entry = _resolve_data_annotation_runtime_entry(session)
+    status = _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(
         entry=entry,
         entry_id=entry.entry_id,
-        asset_tree_path=_game_window3_asset_tree_path(entry.entry_id),
+        asset_tree_path=_data_annotation_asset_tree_path(entry.entry_id),
     )
-    _persist_game_window3_runtime_status(status)
-    return {"status": "started", "service": _get_game_window3_behavior_tree_status()}
+    _persist_data_annotation_runtime_status(status)
+    return {"status": "started", "service": _get_data_annotation_behavior_tree_status()}
 
 
-def stop_game_window3_behavior_tree_current_task(session: Session) -> dict[str, Any]:
-    from backend.api.fanxiu import _GAME_WINDOW3_RUNTIME_RUNNER, _persist_game_window3_runtime_status
+def ensure_data_annotation_behavior_tree_service_on_startup() -> dict[str, Any] | None:
+    if not _fanxiu_behavior_tree_service_enabled():
+        return None
+    with Session(engine) as session:
+        return ensure_data_annotation_behavior_tree_service(session)
 
-    entry = _resolve_game_window3_runtime_entry(session)
-    status = _GAME_WINDOW3_RUNTIME_RUNNER.stop_current_task(entry.entry_id)
-    _persist_game_window3_runtime_status(status)
-    return {"status": "stopped", "service": _get_game_window3_behavior_tree_status()}
+
+def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[str, Any]:
+    from backend.api.fanxiu import _DATA_ANNOTATION_RUNTIME_RUNNER, _persist_data_annotation_runtime_status
+
+    entry = _resolve_data_annotation_runtime_entry(session)
+    status = _DATA_ANNOTATION_RUNTIME_RUNNER.stop_current_task(entry.entry_id)
+    _persist_data_annotation_runtime_status(status)
+    return {"status": "stopped", "service": _get_data_annotation_behavior_tree_status()}
 
 
 def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
@@ -827,7 +902,7 @@ def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
 
 
 def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or _get_game_window3_behavior_tree_status())
+    payload = dict(status or _get_data_annotation_behavior_tree_status())
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "idle"))
     return {
@@ -1038,10 +1113,35 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
                 lines.append(f"{entry.get('time') or ''} {entry.get('kind') or ''} {entry.get('message') or ''}".strip())
         return lines
     if item.get("key") == FANXIU_CAPTURE_RUNTIME_SERVICE_KEY:
+        worker_status = fanxiu_packet_insight_worker.status()
+        mail_sync = {}
+        for decoded_item in worker_status.get("decoded") or []:
+            if isinstance(decoded_item, dict) and isinstance(decoded_item.get("mail_packet_sync"), dict):
+                mail_sync = decoded_item["mail_packet_sync"]
+                break
         lines = [
             f"名称：{item.get('title') or item.get('key')}",
             f"状态：{(item.get('status') or {}).get('state_label') or '-'}",
+            (
+                "解析队列："
+                f"{worker_status.get('updated_at') or '-'}；"
+                f"本轮解码 {worker_status.get('decoded_count') or 0}；"
+                f"跳过 {worker_status.get('skipped_count') or 0}；"
+                f"错误 {worker_status.get('error_count') or 0}"
+            ),
         ]
+        if mail_sync:
+            lines.append(
+                "邮件落库："
+                f"记录 {mail_sync.get('record_count') or 0}；"
+                f"新增 {mail_sync.get('inserted') or 0}；"
+                f"更新 {mail_sync.get('updated') or 0}；"
+                f"源包 {mail_sync.get('source_packets') or 0}；"
+                f"动作包 {mail_sync.get('action_packets') or 0}"
+            )
+        for error in worker_status.get("errors") or []:
+            if isinstance(error, dict):
+                lines.append(f"解析错误：{error.get('path') or '-'}；{error.get('error') or '-'}")
         lines.extend(fanxiu_capture_runtime_service.log_lines())
         return lines
     if item.get("key") == GAME_WINDOW_SERVICE_KEY:
@@ -1050,6 +1150,8 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return _build_futu_opend_service_log_lines(item)
     if item.get("key") == CODEYUN_WATCHDOG_SERVICE_KEY:
         return build_codeyun_watchdog_log_lines()
+    if item.get("key") == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
+        return build_proxy_traffic_audit_log_lines()
 
     status = item.get("status") or {}
     raw = item.get("raw") or {}
@@ -1155,7 +1257,7 @@ def _build_game_window_service_log_lines(item: dict[str, Any]) -> list[str]:
             )
 
     lines.append("")
-    lines.append("这个运行单元只负责守护 codepc_mf 本机的 MuMu/凡修窗口画面流；凡修 game-window3 不再使用 mi15 旧云手机画面流。")
+    lines.append("这个运行单元只负责守护 codepc_mf 本机的 MuMu/凡修窗口画面流；凡修 data-annotation 不再使用 mi15 旧云手机画面流。")
     return lines
 
 
@@ -1270,6 +1372,7 @@ def _collect_builtin_services() -> dict[str, Any]:
     items = [
         _serialize_ocr_service_item(get_ocr_service_status()),
         _serialize_codeyun_watchdog_service_item(),
+        _serialize_proxy_traffic_audit_service_item(),
     ]
     if is_attendance_behavior_tree_service_enabled():
         items.append(_serialize_attendance_behavior_tree_service_item())
@@ -1472,6 +1575,11 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             return start_codeyun_watchdog()
         except CodeYunWatchdogError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if normalized_key == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
+        try:
+            return start_proxy_traffic_audit()
+        except ProxyTrafficAuditError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == FUTU_OPEND_SERVICE_KEY:
         try:
             return start_futu_opend()
@@ -1498,7 +1606,7 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
     if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         if not _fanxiu_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="凡修行为树未在当前机器启用")
-        return ensure_game_window3_behavior_tree_service(session)
+        return ensure_data_annotation_behavior_tree_service(session)
     return trigger_builtin_runtime_job(normalized_key, session)
 
 
@@ -1529,6 +1637,8 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         return stop_ocr_service()
     if normalized_key == CODEYUN_WATCHDOG_SERVICE_KEY:
         return stop_codeyun_watchdog()
+    if normalized_key == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
+        return stop_proxy_traffic_audit()
     if normalized_key == FUTU_OPEND_SERVICE_KEY:
         try:
             return stop_futu_opend()
@@ -1550,7 +1660,7 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         if not _fanxiu_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="凡修行为树未在当前机器启用")
         with Session(engine) as session:
-            return stop_game_window3_behavior_tree_current_task(session)
+            return stop_data_annotation_behavior_tree_current_task(session)
     raise HTTPException(status_code=400, detail="该内置运行单元不支持停止")
 
 

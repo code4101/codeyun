@@ -88,6 +88,57 @@ def test_note_type_palette_usage_count_respects_type_weights(client, session, au
     assert module_item["usage_count"] == 0.5
 
 
+def test_note_type_palette_hides_import_script_categories(client, session, auth_user):
+    note = NoteNode(
+        id="import-category-history-note",
+        user_id=auth_user.id,
+        title="Imported History",
+        content="",
+        node_type="note",
+        note_categories=[{"key": "import_programming", "weight": 100}],
+        primary_category="import_programming",
+        created_at=1,
+        updated_at=1,
+        start_at=1,
+    )
+    session.add(note)
+    session.commit()
+
+    update_response = client.put(
+        "/api/notes/category-palette",
+        json={
+            "items": [
+                {
+                    "key": "import_programming",
+                    "label": "编程/技术",
+                    "color": "#409EFF",
+                    "order": 10,
+                    "builtin": False,
+                    "source": "import",
+                },
+                {
+                    "key": "custom_codex",
+                    "label": "CodeYun",
+                    "color": "#67C23A",
+                    "order": 20,
+                    "builtin": False,
+                    "source": "custom",
+                },
+            ]
+        },
+    )
+    assert update_response.status_code == 200
+    updated_items = {item["key"]: item for item in update_response.json()["items"]}
+    assert "import_programming" not in updated_items
+    assert updated_items["custom_codex"]["source"] == "custom"
+
+    reload_response = client.get("/api/notes/category-palette")
+    assert reload_response.status_code == 200
+    reloaded_items = {item["key"]: item for item in reload_response.json()["items"]}
+    assert "import_programming" not in reloaded_items
+    assert reloaded_items["custom_codex"]["source"] == "custom"
+
+
 def test_create_note_promotes_legacy_color_to_note_type(client, auth_user):
     response = client.post(
         "/api/notes/",

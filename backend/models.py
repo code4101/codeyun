@@ -231,6 +231,65 @@ class FanxiuPacketBusinessRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class FanxiuPacketDecodedRecord(SQLModel, table=True):
+    __tablename__ = "fanxiupacketdecodedrecord"
+    __table_args__ = (
+        UniqueConstraint("packet_id", name="uq_fanxiupacketdecodedrecord_packet_id"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    packet_id: str = Field(index=True)
+    record_id: str = Field(default="", index=True)
+    pcap_name: str = Field(default="", index=True)
+    capture_sha256: str = Field(default="", index=True)
+    stream: int = Field(default=0, index=True)
+    direction: str = Field(default="", index=True)
+    frame_index: int = Field(default=0, index=True)
+    offset: Optional[int] = Field(default=None, index=True)
+    sn: Optional[int] = Field(default=None, index=True)
+    pro_id: Optional[int] = Field(default=None, index=True)
+    name: str = Field(default="", index=True)
+    captured_at: str = Field(default="", index=True)
+    captured_date: str = Field(default="", index=True)
+    payload_len: Optional[int] = Field(default=None)
+    decode_error: str = Field(default="", sa_column=Column(Text))
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuMailRecord(SQLModel, table=True):
+    __tablename__ = "fanxiumailrecord"
+    __table_args__ = (
+        UniqueConstraint("mail_key", name="uq_fanxiumailrecord_mail_key"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    mail_key: str = Field(index=True)
+    mail_id: str = Field(default="", index=True)
+    title: str = Field(default="", index=True)
+    normalized_title: str = Field(default="", index=True)
+    mail_type: str = Field(default="", index=True)
+    create_time_text: str = Field(default="", index=True)
+    create_time_ms: Optional[int] = Field(default=None, index=True)
+    source: str = Field(default="", index=True)
+    status: str = Field(default="seen", index=True)
+    locked: bool = Field(default=False, index=True)
+    action_policy: str = Field(default="", index=True)
+    last_action_error: str = Field(default="", sa_column=Column(Text))
+    seen_count: int = Field(default=0)
+    first_seen_at: float = Field(default_factory=time.time)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    last_seen_capture_at: str = Field(default="", index=True)
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class FeatureAccessPolicy(SQLModel, table=True):
     __tablename__ = "featureaccesspolicy"
     __table_args__ = {'extend_existing': True}
@@ -1054,6 +1113,7 @@ class NoteNode(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     title: Optional[str] = Field(default="Untitled")
     content: str = Field(default="") # HTML content
+    version: int = Field(default=1)
     
     # Visual weight level for notes. Non-memo nodes interpret this exponentially.
     weight: int = Field(default=0)

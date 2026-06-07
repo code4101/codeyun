@@ -19,6 +19,7 @@ from backend.core.fanxiu_resources import (
     resolve_fanxiu_sprite_icon_path,
 )
 from backend.core.fanxiu_visual_catalog import (
+    _coerce_visual_manifest_media_path,
     build_fanxiu_static_visual_catalog,
     load_fanxiu_static_visual_manifest,
     resolve_fanxiu_visual_media_path,
@@ -349,6 +350,7 @@ from backend.core.fanxiu_wiki import (
     build_fanxiu_wiki_catalog,
     get_fanxiu_wiki_text_entry,
     resolve_fanxiu_wiki_media_path,
+    search_fanxiu_wiki_gallery,
     search_fanxiu_wiki_texts,
 )
 
@@ -736,6 +738,85 @@ def test_fanxiu_wiki_text_search_and_detail(tmp_path, monkeypatch):
     assert "<color=#864c00>" in detail["rich_text"]
 
 
+def test_fanxiu_wiki_discovers_modern_text_assets_without_legacy_index(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "generate"
+        / "localization"
+        / "chinese"
+        / "lang_abc"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    lang_path = text_dir / "lang.lua"
+    lang_path.write_text(
+        "local _M={\n"
+        "[204189]='十星效果：<color=#864c00>【玄天冥宝】</color>\\n星海之力+12%',\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
+
+    catalog = build_fanxiu_wiki_catalog()
+    assert catalog["text_count"] == 1
+
+    result = search_fanxiu_wiki_texts(query="玄天冥宝")
+    assert result["total"] == 1
+    assert result["items"][0]["source"].startswith("lscripts")
+
+
+def test_fanxiu_wiki_gallery_uses_modern_visual_catalog_without_legacy_index(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    visual_dir = export_root / "parsed_configs" / "visual_catalog"
+    image_dir = visual_dir / "sprite_images" / "item"
+    image_dir.mkdir(parents=True)
+    image_path = image_dir / "icon_item_0067.png"
+    image_path.write_bytes(b"png")
+    (visual_dir / "atlas_sprite_catalog.tsv").write_text(
+        "source_kind\tatlas_key\trelative_source_path\tname\tcategory\tasset_group\twidth\theight\timage_path\n"
+        f"atlas_sprite\titem\tatlasnew/item.bytes\ticon_item_0067\titem_icon\ticon\t64\t64\t{image_path}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
+
+    catalog = build_fanxiu_wiki_catalog()
+    assert catalog["galleries"]["sprites"] == 1
+
+    result = search_fanxiu_wiki_gallery(kind="sprite", query="0067")
+    assert result["total"] == 1
+    assert result["items"][0]["name"] == "icon_item_0067"
+
+
+def test_fanxiu_wiki_gallery_paginates_modern_catalog_without_resolving_every_row(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    visual_dir = export_root / "parsed_configs" / "visual_catalog"
+    image_dir = visual_dir / "sprite_images" / "item"
+    image_dir.mkdir(parents=True)
+    existing_paths: list[Path] = []
+    rows = [
+        "source_kind\tatlas_key\trelative_source_path\tname\tcategory\tasset_group\twidth\theight\timage_path\n"
+    ]
+    for index in range(20):
+        image_path = image_dir / f"icon_item_{index:04d}.png"
+        if index in {5, 6, 7}:
+            image_path.write_bytes(b"png")
+            existing_paths.append(image_path)
+        rows.append(
+            f"atlas_sprite\titem\tatlasnew/item.bytes\ticon_item_{index:04d}\titem_icon\ticon\t64\t64\t{image_path}\n"
+        )
+    (visual_dir / "atlas_sprite_catalog.tsv").write_text("".join(rows), encoding="utf-8")
+    monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
+
+    page = search_fanxiu_wiki_gallery(kind="sprite", limit=3, offset=5)
+
+    assert page["total"] == 20
+    assert [item["name"] for item in page["items"]] == ["icon_item_0005", "icon_item_0006", "icon_item_0007"]
+    assert [Path(item["path"]) for item in page["items"]] == existing_paths
+
+
 def test_fanxiu_wiki_media_path_must_stay_under_export_root(tmp_path, monkeypatch):
     export_root = tmp_path / "exports"
     export_root.mkdir()
@@ -887,6 +968,18 @@ def test_fanxiu_static_visual_catalog_exports_icon_logo_gallery(tmp_path, monkey
     assert resolve_fanxiu_visual_media_path(first_media, export_root=export_root).is_file()
     with pytest.raises(FanxiuResourceError):
         resolve_fanxiu_visual_media_path("../outside.png", export_root=export_root)
+
+
+def test_fanxiu_visual_manifest_path_coercion_is_fast_and_bounded(tmp_path):
+    media_root = tmp_path / "visual_catalog"
+    media_root.mkdir()
+
+    media_path, relative_path = _coerce_visual_manifest_media_path("sprites/icon_item_0001.png", media_root)
+
+    assert media_path == media_root / "sprites" / "icon_item_0001.png"
+    assert relative_path == "sprites/icon_item_0001.png"
+    assert _coerce_visual_manifest_media_path("../outside.png", media_root) == (None, "")
+    assert _coerce_visual_manifest_media_path("sprites/not-image.txt", media_root) == (None, "")
 
 
 def test_fanxiu_static_asset_catalog_indexes_modelish_bundles(tmp_path, monkeypatch):
@@ -1330,6 +1423,9 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
     }
     assert {item["value"]: item["label"] for item in searched["type_options"]}["5"] == "材料"
     assert searched["facet_index"]["rows"]["type_key"]["5"] == ["3020501"]
+    without_facets = search_fanxiu_item_cards(query="玄鸟", include_facets=False, export_root=export_root)
+    assert "facet_index" not in without_facets
+    assert without_facets["items"][0]["id"] == 3020501
 
     filtered = search_fanxiu_item_cards(quality_name="紫色品质", export_root=export_root)
     assert filtered["total"] == 1

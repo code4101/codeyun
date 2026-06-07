@@ -12,13 +12,14 @@ import threading
 import time
 import re
 import uuid
+import anyio
 from math import ceil, floor, isfinite
 from typing import Any, Literal, Optional
 from urllib.parse import quote
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
@@ -36,6 +37,7 @@ from backend.core.auth import (
     get_optional_current_user_from_token,
     validate_api_token_value,
 )
+from backend.api.websocket_manager import manager as ws_manager
 from backend.core.attendance_service import (
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
@@ -105,6 +107,7 @@ NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = "clockin_link_detect"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额"]
 NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS = ["已返款"]
+NOTE_SHEET_REGISTRATION_ORDER_ACTION_OPTIONAL_COLUMNS = [*NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS, "备注"]
 NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = [
     *NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
     *NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
@@ -404,6 +407,7 @@ class NoteSheetSummaryResponse(BaseModel):
     title: str
     engine: str
     scope: str
+    version: int = 1
     owner_user_id: Optional[int] = None
     created_by_user_id: Optional[int] = None
     updated_by_user_id: Optional[int] = None
@@ -461,6 +465,17 @@ class NoteSheetPerfLogRequest(BaseModel):
 class NoteSheetPerfLogResponse(BaseModel):
     stored_count: int = 0
     path: str = ""
+
+
+class AttendanceCourseUpdateDataRequest(BaseModel):
+    course_type: Literal["fanbei", "nianzhu"]
+    course_name: str
+    include_frozen: bool = False
+
+
+class AttendanceCourseUpdateDataResponse(BaseModel):
+    step2: Any
+    step3: dict[str, Any]
 
 
 class NoteSheetPagePatchRequest(BaseModel):
@@ -538,7 +553,71 @@ class NoteSheetTablePatchResponse(BaseModel):
     updated_row_count: int = 0
 
 
+class NoteSheetCellPatchOperation(BaseModel):
+    row_index: int = Field(ge=0)
+    column_index: int = Field(ge=0)
+    value: Any = None
+
+
+class NoteSheetCellPatchRequest(BaseModel):
+    base_version: int | None = Field(default=None, ge=1)
+    operations: list[NoteSheetCellPatchOperation] = Field(default_factory=list)
+
+
+class NoteSheetCellPatchResponse(BaseModel):
+    sheet_id: int
+    version: int
+    updated_cell_count: int = 0
+
+
+class NoteSheetPatchOperation(BaseModel):
+    op: Literal[
+        "set-cell-value",
+        "set-cell-meta",
+        "set-column-width",
+        "set-column-hidden",
+        "set-column-config",
+        "merge-cells",
+        "unmerge-cells",
+        "insert-row",
+        "delete-row",
+        "insert-column",
+        "delete-column",
+        "move-row",
+        "move-column",
+    ]
+    row_index: int | None = Field(default=None, ge=0)
+    column_index: int | None = Field(default=None, ge=0)
+    row: Any = None
+    col: int | None = Field(default=None, ge=0)
+    rowspan: int | None = Field(default=None, ge=1)
+    colspan: int | None = Field(default=None, ge=1)
+    row_id: str | None = None
+    after_row_id: str | None = None
+    column_id: str | None = None
+    after_column_id: str | None = None
+    column: Any = None
+    value: Any = None
+    meta: dict[str, Any] | None = None
+    width: int | float | None = None
+    hidden: bool | None = None
+    config: dict[str, Any] | None = None
+
+
+class NoteSheetPatchRequest(BaseModel):
+    base_version: int = Field(ge=1)
+    ops: list[NoteSheetPatchOperation] = Field(default_factory=list)
+
+
+class NoteSheetPatchResponse(BaseModel):
+    sheet_id: int
+    version: int
+    applied_op_count: int = 0
+    updated_cell_count: int = 0
+
+
 class NoteSheetSortRequest(BaseModel):
+    base_version: int | None = Field(default=None, ge=1)
     column_index: int = Field(ge=0)
     direction: Literal["asc", "desc"] = "asc"
 
@@ -595,6 +674,7 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
 
 class NoteSheetRegistrationUserIdDetectionRequest(BaseModel):
     row_index: int = Field(ge=0)
+    base_version: int | None = Field(default=None, ge=1)
 
 
 class NoteSheetRegistrationUserIdDetectionCandidate(BaseModel):
@@ -652,6 +732,7 @@ class NoteSheetClockinLinkDetectionRunResponse(BaseModel):
 
 
 class NoteSheetAttendanceTemplateGenerationRequest(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     target_year: Optional[int] = Field(default=None, ge=1970, le=9999)
     target_month: Optional[int] = Field(default=None, ge=1, le=12)
     target_date: Optional[str] = None
@@ -677,6 +758,7 @@ class NoteSheetAttendanceTemplateGenerationResponse(BaseModel):
 
 
 class NoteSheetAttendanceCompletionRequest(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     row_index: int = Field(ge=0)
     completion_date: Optional[str] = None
 
@@ -692,6 +774,7 @@ class NoteSheetAttendanceVideoRevisionCell(BaseModel):
 
 
 class NoteSheetAttendanceVideoRevisionRequest(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     revision_label: str
     cells: list[NoteSheetAttendanceVideoRevisionCell] = Field(default_factory=list)
 
@@ -749,6 +832,7 @@ class NoteSheetAttendanceCourseScriptOrganizeResponse(BaseModel):
 
 
 class NoteSheetAttendanceLinkCountUpdateRequest(BaseModel):
+    base_version: Optional[int] = Field(default=None, ge=1)
     field_key: Literal["lesson_links", "clockin_links"]
     row_index: Optional[int] = Field(default=None, ge=0)
 
@@ -845,6 +929,7 @@ class NoteSheetDefinedNameWorksheetScope(BaseModel):
 
 
 class NoteSheetDefinedNamesUpdateRequest(BaseModel):
+    base_version: int | None = Field(default=None, ge=1)
     names: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
     worksheets: list[NoteSheetDefinedNameWorksheetScope] = Field(default_factory=list)
 
@@ -884,7 +969,9 @@ def _create_default_sheet_document() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "columns": list(DEFAULT_NOTE_SHEET_COLUMNS),
+        "column_ids": [_new_sheet_column_id() for _ in DEFAULT_NOTE_SHEET_COLUMNS],
         "rows": [],
+        "row_ids": [],
         "grid_rows": [list(DEFAULT_NOTE_SHEET_COLUMNS)],
         "data_start_row": 1,
         "field_row_index": 0,
@@ -1335,6 +1422,597 @@ def _extract_document_rows(document_json: dict[str, Any]) -> list[Any]:
     return list(rows) if isinstance(rows, list) else []
 
 
+def _new_sheet_row_id() -> str:
+    return f"row_{uuid.uuid4().hex[:12]}"
+
+
+def _new_sheet_column_id() -> str:
+    return f"col_{uuid.uuid4().hex[:12]}"
+
+
+def _normalize_sheet_identity_list(source: Any, *, count: int, prefix: str) -> tuple[list[str], bool]:
+    raw_values = list(source) if isinstance(source, list) else []
+    ids: list[str] = []
+    seen: set[str] = set()
+    changed = not isinstance(source, list) or len(raw_values) != count
+    generator = _new_sheet_row_id if prefix == "row" else _new_sheet_column_id
+
+    for index in range(count):
+        candidate = str(raw_values[index]).strip() if index < len(raw_values) else ""
+        if not candidate or candidate in seen:
+            candidate = generator()
+            changed = True
+        seen.add(candidate)
+        ids.append(candidate)
+    return ids, changed
+
+
+def _ensure_sheet_document_identity(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    row_ids, row_changed = _normalize_sheet_identity_list(normalized.get("row_ids"), count=len(rows), prefix="row")
+    column_ids, column_changed = _normalize_sheet_identity_list(
+        normalized.get("column_ids"),
+        count=len(columns),
+        prefix="column",
+    )
+    if not row_changed and not column_changed:
+        return normalized, False
+    return {
+        **normalized,
+        "row_ids": row_ids,
+        "column_ids": column_ids,
+    }, True
+
+
+def _ensure_sheet_document_identity_persisted(session: Session, document: SheetDocument) -> dict[str, Any]:
+    next_document, changed = _ensure_sheet_document_identity(dict(document.document_json or {}))
+    if changed:
+        document.document_json = next_document
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        return dict(document.document_json or {})
+    return next_document
+
+
+def _find_sheet_identity_index(ids: list[str], value: str | None, *, detail: str) -> int:
+    needle = str(value or "").strip()
+    if not needle:
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        return ids.index(needle)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{detail}不存在") from None
+
+
+def _find_sheet_identity_insert_index(ids: list[str], after_id: str | None) -> int:
+    if after_id is None or str(after_id).strip() == "":
+        return 0
+    return _find_sheet_identity_index(ids, after_id, detail="目标位置") + 1
+
+
+def _coerce_sheet_row_payload(row: Any, *, column_count: int) -> Any:
+    if isinstance(row, dict):
+        return dict(row)
+    if isinstance(row, list):
+        return _normalize_sheet_row(row, column_count)
+    return [""] * column_count
+
+
+def _coerce_sheet_column_header(column: Any, *, existing_columns: list[str]) -> str:
+    if isinstance(column, dict):
+        raw_header = column.get("header") or column.get("name") or column.get("title") or column.get("key")
+    else:
+        raw_header = column
+    base = str(raw_header or "新列").strip() or "新列"
+    if base not in existing_columns:
+        return base
+    suffix = 2
+    while f"{base}{suffix}" in existing_columns:
+        suffix += 1
+    return f"{base}{suffix}"
+
+
+def _extract_sheet_column_width(column: Any) -> int:
+    if isinstance(column, dict):
+        try:
+            width = float(column.get("width"))
+        except (TypeError, ValueError):
+            width = 96
+        if isfinite(width) and width > 0:
+            return int(round(width))
+    return 96
+
+
+def _extract_sheet_column_config(column: Any) -> dict[str, Any]:
+    if not isinstance(column, dict):
+        return {}
+    config = column.get("config")
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _shift_merged_cell_rows_for_insert(merged_cells: Any, insert_index: int, amount: int, *, row_offset: int = 0) -> list[Any]:
+    if not isinstance(merged_cells, list) or amount <= 0:
+        return list(merged_cells) if isinstance(merged_cells, list) else []
+    effective_insert_index = insert_index + row_offset
+    shifted: list[Any] = []
+    for cell in merged_cells:
+        normalized = dict(cell) if isinstance(cell, dict) else None
+        if normalized is None:
+            continue
+        row = int(normalized.get("row") or 0)
+        col = int(normalized.get("col") or 0)
+        rowspan = max(int(normalized.get("rowspan") or 1), 1)
+        colspan = max(int(normalized.get("colspan") or 1), 1)
+        if row < effective_insert_index < row + rowspan:
+            rowspan += amount
+        elif row >= effective_insert_index:
+            row += amount
+        if rowspan > 1 or colspan > 1:
+            shifted.append({"row": row, "col": col, "rowspan": rowspan, "colspan": colspan})
+    return shifted
+
+
+def _shift_merged_cell_rows_for_delete(merged_cells: Any, delete_index: int, *, row_offset: int = 0) -> list[Any]:
+    if not isinstance(merged_cells, list):
+        return []
+    effective_delete_index = delete_index + row_offset
+    shifted: list[Any] = []
+    for cell in merged_cells:
+        if not isinstance(cell, dict):
+            continue
+        row = int(cell.get("row") or 0)
+        col = int(cell.get("col") or 0)
+        rowspan = max(int(cell.get("rowspan") or 1), 1)
+        colspan = max(int(cell.get("colspan") or 1), 1)
+        if row <= effective_delete_index < row + rowspan:
+            rowspan -= 1
+        elif row > effective_delete_index:
+            row -= 1
+        if rowspan > 1 or colspan > 1:
+            shifted.append({"row": row, "col": col, "rowspan": rowspan, "colspan": colspan})
+    return shifted
+
+
+def _shift_cell_meta_rows_for_delete(cell_meta: Any, delete_index: int, *, row_offset: int = 0) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+    shifted: dict[str, Any] = {}
+    effective_delete_index = delete_index + row_offset
+    for key, meta in cell_meta.items():
+        parsed = _parse_cell_meta_key(key)
+        if parsed is None:
+            shifted[str(key)] = meta
+            continue
+        row_index, column_index = parsed
+        if row_index == effective_delete_index:
+            continue
+        next_row_index = row_index - 1 if row_index > effective_delete_index else row_index
+        shifted[f"{next_row_index}:{column_index}"] = meta
+    return shifted
+
+
+def _remap_cell_meta_columns(cell_meta: Any, column_index_map: dict[int, int | None]) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+    remapped: dict[str, Any] = {}
+    for key, meta in cell_meta.items():
+        parsed = _parse_cell_meta_key(key)
+        if parsed is None:
+            remapped[str(key)] = meta
+            continue
+        row_index, column_index = parsed
+        next_column_index = column_index_map.get(column_index)
+        if next_column_index is None:
+            continue
+        remapped[f"{row_index}:{next_column_index}"] = meta
+    return remapped
+
+
+def _move_list_item(values: list[Any], source_index: int, insert_index: int) -> list[Any]:
+    next_values = list(values)
+    item = next_values.pop(source_index)
+    adjusted_insert_index = insert_index - 1 if source_index < insert_index else insert_index
+    next_values.insert(min(max(adjusted_insert_index, 0), len(next_values)), item)
+    return next_values
+
+
+def _sheet_patch_data_row_meta_key(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
+    return f"{_normalize_document_data_start_row(document_json) + row_index}:{column_index}"
+
+
+def _sheet_patch_require_int(value: Any, detail: str) -> int:
+    if value is None:
+        raise HTTPException(status_code=400, detail=detail)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=detail) from None
+
+
+def _sheet_patch_validate_data_cell(
+    *,
+    row_index: int,
+    column_index: int,
+    rows: list[Any],
+    columns: list[str],
+) -> None:
+    if column_index < 0 or column_index >= len(columns):
+        raise HTTPException(status_code=400, detail="列号超出表格范围")
+    if row_index < 0 or row_index >= len(rows):
+        raise HTTPException(status_code=400, detail="行号超出表格范围")
+
+
+def _sheet_patch_validate_grid_range(
+    *,
+    row: int,
+    col: int,
+    rowspan: int,
+    colspan: int,
+    row_count: int,
+    column_count: int,
+) -> None:
+    if row < 0 or col < 0 or row >= row_count or col >= column_count:
+        raise HTTPException(status_code=400, detail="合并范围超出表格范围")
+    if rowspan <= 1 and colspan <= 1:
+        raise HTTPException(status_code=400, detail="合并范围至少需要跨两格")
+    if row + rowspan > row_count or col + colspan > column_count:
+        raise HTTPException(status_code=400, detail="合并范围超出表格范围")
+
+
+def _sheet_ranges_overlap(left: dict[str, int], right: dict[str, int]) -> bool:
+    left_row_end = int(left["row"]) + int(left["rowspan"])
+    left_col_end = int(left["col"]) + int(left["colspan"])
+    right_row_end = int(right["row"]) + int(right["rowspan"])
+    right_col_end = int(right["col"]) + int(right["colspan"])
+    return (
+        int(left["row"]) < right_row_end
+        and int(right["row"]) < left_row_end
+        and int(left["col"]) < right_col_end
+        and int(right["col"]) < left_col_end
+    )
+
+
+def _normalize_sheet_merged_cell(item: Any, *, row_count: int, column_count: int) -> dict[str, int] | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        row = int(item.get("row"))
+        col = int(item.get("col"))
+        rowspan = int(item.get("rowspan") or 1)
+        colspan = int(item.get("colspan") or 1)
+    except (TypeError, ValueError):
+        return None
+    if row < 0 or col < 0 or row >= row_count or col >= column_count or (rowspan <= 1 and colspan <= 1):
+        return None
+    if row + rowspan > row_count or col + colspan > column_count:
+        return None
+    return {"row": row, "col": col, "rowspan": rowspan, "colspan": colspan}
+
+
+def _normalize_sheet_merged_cells(source: Any, *, row_count: int, column_count: int) -> list[dict[str, int]]:
+    if not isinstance(source, list):
+        return []
+    cells: list[dict[str, int]] = []
+    for item in source:
+        cell = _normalize_sheet_merged_cell(item, row_count=row_count, column_count=column_count)
+        if cell is None:
+            continue
+        if any(_sheet_ranges_overlap(cell, existing) for existing in cells):
+            continue
+        cells.append(cell)
+    return cells
+
+
+def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteSheetPatchOperation]) -> tuple[dict[str, Any], int]:
+    next_document, _identity_changed = _ensure_sheet_document_identity(deepcopy(_normalize_document_json(document_json)))
+    columns = _normalize_document_columns(next_document)
+    rows = _extract_document_rows(next_document)
+    row_ids = list(next_document.get("row_ids")) if isinstance(next_document.get("row_ids"), list) else []
+    column_ids = list(next_document.get("column_ids")) if isinstance(next_document.get("column_ids"), list) else []
+    grid_rows = _extract_document_grid_rows(next_document)
+    row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+    column_count = len(columns)
+    updated_cell_count = 0
+
+    for operation in ops:
+        if operation.op == "set-cell-value":
+            row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
+            column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
+            current_row = rows[row_index]
+            current_cells = _normalize_sheet_row(current_row, len(columns))
+            if _normalize_restricted_cell_value(current_cells[column_index]) == _normalize_restricted_cell_value(operation.value):
+                continue
+            rows[row_index] = _set_row_cell_value(current_row, columns, column_index, operation.value)
+            next_document = _replace_document_data_rows(next_document, rows)
+            grid_rows = _extract_document_grid_rows(next_document)
+            row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+            updated_cell_count += 1
+            continue
+
+        if operation.op == "set-cell-meta":
+            row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
+            column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
+            cell_meta = _extract_document_cell_meta(next_document)
+            key = _sheet_patch_data_row_meta_key(next_document, row_index, column_index)
+            meta = dict(operation.meta or {})
+            if meta:
+                cell_meta[key] = meta
+            else:
+                cell_meta.pop(key, None)
+            if cell_meta:
+                next_document["cell_meta"] = cell_meta
+            else:
+                next_document.pop("cell_meta", None)
+            continue
+
+        if operation.op == "set-column-width":
+            column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            if column_index < 0 or column_index >= column_count:
+                raise HTTPException(status_code=400, detail="列号超出表格范围")
+            try:
+                width = float(operation.width)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="列宽无效") from None
+            if not isfinite(width) or width <= 0:
+                raise HTTPException(status_code=400, detail="列宽无效")
+            widths = list(next_document.get("column_widths")) if isinstance(next_document.get("column_widths"), list) else []
+            if len(widths) < column_count:
+                widths.extend([None] * (column_count - len(widths)))
+            widths[column_index] = int(round(width))
+            next_document["column_widths"] = widths[:column_count]
+            continue
+
+        if operation.op in {"set-column-hidden", "set-column-config"}:
+            column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            if column_index < 0 or column_index >= column_count:
+                raise HTTPException(status_code=400, detail="列号超出表格范围")
+            header = columns[column_index]
+            column_configs = dict(next_document.get("column_configs")) if isinstance(next_document.get("column_configs"), dict) else {}
+            current_config = dict(column_configs.get(header)) if isinstance(column_configs.get(header), dict) else {}
+            if operation.op == "set-column-hidden":
+                if operation.hidden is None:
+                    raise HTTPException(status_code=400, detail="缺少隐藏状态")
+                if operation.hidden:
+                    current_config["hidden"] = True
+                else:
+                    current_config.pop("hidden", None)
+                    current_config.pop("restore_index", None)
+            else:
+                current_config = dict(operation.config or {})
+            if current_config:
+                column_configs[header] = current_config
+            else:
+                column_configs.pop(header, None)
+            if column_configs:
+                next_document["column_configs"] = column_configs
+            else:
+                next_document.pop("column_configs", None)
+            continue
+
+        if operation.op == "merge-cells":
+            row = _sheet_patch_require_int(operation.row, "缺少合并起始行")
+            col = _sheet_patch_require_int(operation.col, "缺少合并起始列")
+            rowspan = _sheet_patch_require_int(operation.rowspan, "缺少合并行数")
+            colspan = _sheet_patch_require_int(operation.colspan, "缺少合并列数")
+            _sheet_patch_validate_grid_range(row=row, col=col, rowspan=rowspan, colspan=colspan, row_count=row_count, column_count=column_count)
+            next_cell = {"row": row, "col": col, "rowspan": rowspan, "colspan": colspan}
+            merged_cells = _normalize_sheet_merged_cells(next_document.get("merged_cells"), row_count=row_count, column_count=column_count)
+            if any(_sheet_ranges_overlap(next_cell, existing) for existing in merged_cells):
+                raise HTTPException(status_code=400, detail="合并范围与已有合并单元格重叠")
+            next_document["merged_cells"] = [*merged_cells, next_cell]
+            continue
+
+        if operation.op == "unmerge-cells":
+            row = _sheet_patch_require_int(operation.row, "缺少取消合并行")
+            col = _sheet_patch_require_int(operation.col, "缺少取消合并列")
+            merged_cells = _normalize_sheet_merged_cells(next_document.get("merged_cells"), row_count=row_count, column_count=column_count)
+            next_document["merged_cells"] = [
+                cell
+                for cell in merged_cells
+                if not (
+                    int(cell["row"]) <= row < int(cell["row"]) + int(cell["rowspan"])
+                    and int(cell["col"]) <= col < int(cell["col"]) + int(cell["colspan"])
+                )
+            ]
+            continue
+
+        if operation.op == "insert-row":
+            insert_index = _find_sheet_identity_insert_index(row_ids, operation.after_row_id)
+            next_row = _coerce_sheet_row_payload(operation.row, column_count=column_count)
+            next_row_id = str(operation.row_id or "").strip() or _new_sheet_row_id()
+            if next_row_id in row_ids:
+                raise HTTPException(status_code=400, detail="row_id 已存在")
+            rows = [*rows[:insert_index], next_row, *rows[insert_index:]]
+            row_ids = [*row_ids[:insert_index], next_row_id, *row_ids[insert_index:]]
+            next_document = _replace_document_data_rows(next_document, rows)
+            next_document["row_ids"] = row_ids
+            data_start_row = _normalize_document_data_start_row(next_document)
+            if "cell_meta" in next_document:
+                next_document["cell_meta"] = _shift_cell_meta_rows_for_insert(
+                    next_document.get("cell_meta"),
+                    insert_index,
+                    1,
+                    row_offset=data_start_row,
+                )
+            if "merged_cells" in next_document:
+                next_document["merged_cells"] = _shift_merged_cell_rows_for_insert(
+                    next_document.get("merged_cells"),
+                    insert_index,
+                    1,
+                    row_offset=data_start_row,
+                )
+            grid_rows = _extract_document_grid_rows(next_document)
+            row_count = max(len(grid_rows), data_start_row + len(rows))
+            continue
+
+        if operation.op == "delete-row":
+            delete_index = _find_sheet_identity_index(row_ids, operation.row_id, detail="行 ID")
+            rows = [*rows[:delete_index], *rows[delete_index + 1:]]
+            row_ids = [*row_ids[:delete_index], *row_ids[delete_index + 1:]]
+            next_document = _replace_document_data_rows(next_document, rows)
+            next_document["row_ids"] = row_ids
+            data_start_row = _normalize_document_data_start_row(next_document)
+            if "cell_meta" in next_document:
+                next_document["cell_meta"] = _shift_cell_meta_rows_for_delete(
+                    next_document.get("cell_meta"),
+                    delete_index,
+                    row_offset=data_start_row,
+                )
+            if "merged_cells" in next_document:
+                next_document["merged_cells"] = _shift_merged_cell_rows_for_delete(
+                    next_document.get("merged_cells"),
+                    delete_index,
+                    row_offset=data_start_row,
+                )
+            grid_rows = _extract_document_grid_rows(next_document)
+            row_count = max(len(grid_rows), data_start_row + len(rows))
+            continue
+
+        if operation.op == "move-row":
+            if _normalize_sheet_merged_cells(next_document.get("merged_cells"), row_count=row_count, column_count=column_count):
+                raise HTTPException(status_code=400, detail="存在合并单元格时暂不支持移动行")
+            source_index = _find_sheet_identity_index(row_ids, operation.row_id, detail="行 ID")
+            insert_index = _find_sheet_identity_insert_index(row_ids, operation.after_row_id)
+            if insert_index == source_index or insert_index == source_index + 1:
+                continue
+            order = _move_list_item(list(range(len(rows))), source_index, insert_index)
+            row_index_map = {old_index: new_index for new_index, old_index in enumerate(order)}
+            rows = [rows[old_index] for old_index in order]
+            row_ids = [row_ids[old_index] for old_index in order]
+            next_document = _replace_document_data_rows(next_document, rows)
+            next_document["row_ids"] = row_ids
+            if "cell_meta" in next_document:
+                next_document["cell_meta"] = _remap_cell_meta_rows(
+                    next_document.get("cell_meta"),
+                    row_index_map,
+                    row_offset=_normalize_document_data_start_row(next_document),
+                )
+            grid_rows = _extract_document_grid_rows(next_document)
+            row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+            continue
+
+        if operation.op == "insert-column":
+            insert_index = _find_sheet_identity_insert_index(column_ids, operation.after_column_id)
+            header = _coerce_sheet_column_header(operation.column, existing_columns=columns)
+            next_column_id = str(operation.column_id or "").strip() or _new_sheet_column_id()
+            if next_column_id in column_ids:
+                raise HTTPException(status_code=400, detail="column_id 已存在")
+            next_document = _insert_document_column(
+                next_document,
+                insert_index=insert_index,
+                header=header,
+                width=_extract_sheet_column_width(operation.column),
+            )
+            column_ids = [*column_ids[:insert_index], next_column_id, *column_ids[insert_index:]]
+            next_document["column_ids"] = column_ids
+            config = _extract_sheet_column_config(operation.column)
+            if config:
+                column_configs = dict(next_document.get("column_configs")) if isinstance(next_document.get("column_configs"), dict) else {}
+                column_configs[header] = config
+                next_document["column_configs"] = column_configs
+            columns = _normalize_document_columns(next_document)
+            rows = _extract_document_rows(next_document)
+            grid_rows = _extract_document_grid_rows(next_document)
+            column_count = len(columns)
+            row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+            continue
+
+        if operation.op == "delete-column":
+            delete_index = _find_sheet_identity_index(column_ids, operation.column_id, detail="列 ID")
+            if len(columns) <= 1:
+                raise HTTPException(status_code=400, detail="至少保留一列")
+            next_document = _delete_document_column(next_document, delete_index=delete_index)
+            column_ids = [*column_ids[:delete_index], *column_ids[delete_index + 1:]]
+            next_document["column_ids"] = column_ids
+            columns = _normalize_document_columns(next_document)
+            rows = _extract_document_rows(next_document)
+            grid_rows = _extract_document_grid_rows(next_document)
+            column_count = len(columns)
+            row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+            continue
+
+        if operation.op == "move-column":
+            if _normalize_sheet_merged_cells(next_document.get("merged_cells"), row_count=row_count, column_count=column_count):
+                raise HTTPException(status_code=400, detail="存在合并单元格时暂不支持移动列")
+            source_index = _find_sheet_identity_index(column_ids, operation.column_id, detail="列 ID")
+            insert_index = _find_sheet_identity_insert_index(column_ids, operation.after_column_id)
+            if insert_index == source_index or insert_index == source_index + 1:
+                continue
+            order = _move_list_item(list(range(column_count)), source_index, insert_index)
+            column_index_map = {old_index: new_index for new_index, old_index in enumerate(order)}
+            next_columns = [columns[old_index] for old_index in order]
+            original_grid_rows = _extract_document_grid_rows(next_document)
+            next_rows: list[Any] = []
+            for row in rows:
+                remapped_row = _remap_row_formula_cell_references(row, columns=columns, column_index_map=column_index_map)
+                normalized_row = _normalize_sheet_row(remapped_row, column_count)
+                next_rows.append([normalized_row[old_index] for old_index in order])
+            next_document = {
+                **next_document,
+                "columns": next_columns,
+            }
+            next_document = _replace_document_data_rows(next_document, next_rows)
+            next_document["column_ids"] = [column_ids[old_index] for old_index in order]
+            source_widths = next_document.get("column_widths")
+            if isinstance(source_widths, list):
+                widths = [*source_widths, *([None] * max(column_count - len(source_widths), 0))]
+                next_document["column_widths"] = [widths[old_index] for old_index in order]
+            if original_grid_rows:
+                next_document["grid_rows"] = [
+                    [_normalize_sheet_row(_remap_row_formula_cell_references(row, columns=columns, column_index_map=column_index_map), column_count)[old_index] for old_index in order]
+                    for row in original_grid_rows
+                ]
+            if "cell_meta" in next_document:
+                next_document["cell_meta"] = _remap_cell_meta_columns(next_document.get("cell_meta"), column_index_map)
+            columns = _normalize_document_columns(next_document)
+            rows = _extract_document_rows(next_document)
+            column_ids = list(next_document.get("column_ids")) if isinstance(next_document.get("column_ids"), list) else []
+            grid_rows = _extract_document_grid_rows(next_document)
+            column_count = len(columns)
+            row_count = max(len(grid_rows), _normalize_document_data_start_row(next_document) + len(rows))
+            continue
+
+    return next_document, updated_cell_count
+
+
+def _validate_note_sheet_patch_access(
+    *,
+    access: NoteSheetResourceAccess,
+    current_user: User | None,
+    operations: list[NoteSheetPatchOperation],
+    columns: list[str],
+    rows: list[Any],
+) -> None:
+    editable_columns = {
+        int(index)
+        for index in access.capabilities.editable_data_columns
+        if 0 <= int(index) < len(columns)
+    }
+    can_edit_all_data = bool(access.capabilities.can_edit_data)
+    if not can_edit_all_data and not editable_columns:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if can_edit_all_data and current_user is None:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+
+    for operation in operations:
+        if operation.op == "set-cell-value":
+            row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
+            column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+            _sheet_patch_validate_data_cell(row_index=row_index, column_index=column_index, rows=rows, columns=columns)
+            if not can_edit_all_data and column_index not in editable_columns:
+                raise HTTPException(status_code=403, detail="游客只能编辑开放列")
+            continue
+
+        if not can_edit_all_data:
+            raise HTTPException(status_code=403, detail="没有该资源权限")
+
+
 def _get_document_pagination_settings(document_json: dict[str, Any]) -> tuple[bool, int]:
     normalized = _normalize_document_json(document_json)
     return _get_normalized_document_pagination_settings(normalized)
@@ -1389,17 +2067,19 @@ def _sync_attendance_questionnaire_sheet_document(
     if not _is_attendance_questionnaire_data_sheet(document):
         return
 
+    current_document = deepcopy(dict(document.document_json or {}))
     next_document, changed = _sync_attendance_questionnaire_course_links(
         session,
-        dict(document.document_json or {}),
+        deepcopy(current_document),
     )
-    if changed:
+    if changed and next_document != current_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_at = time.time()
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
         next_document = dict(document.document_json or {})
 
     if sync_entry_statuses:
@@ -2331,6 +3011,8 @@ def _merge_paged_document(
 
     current_rows = _extract_document_rows(normalized_current)
     incoming_rows = _extract_document_rows(normalized_incoming)
+    current_row_ids = list(normalized_current.get("row_ids")) if isinstance(normalized_current.get("row_ids"), list) else []
+    incoming_row_ids = list(normalized_incoming.get("row_ids")) if isinstance(normalized_incoming.get("row_ids"), list) else []
     row_indexes = [
         int(index)
         for index in page_patch.row_indexes
@@ -2360,10 +3042,21 @@ def _merge_paged_document(
             **{
                 key: value
                 for key, value in normalized_incoming.items()
-                if key not in {"rows", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
+                if key not in {"rows", "row_ids", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
             },
             "rows": merged_rows,
         }
+        if current_row_ids or incoming_row_ids:
+            merged_row_ids = [str(value) for value in current_row_ids[:len(current_rows)]]
+            if len(merged_row_ids) < len(current_rows):
+                merged_row_ids.extend([""] * (len(current_rows) - len(merged_row_ids)))
+            for incoming_offset, target_index in enumerate(row_indexes):
+                if incoming_offset < len(incoming_row_ids) and 0 <= target_index < len(merged_row_ids):
+                    merged_row_ids[target_index] = str(incoming_row_ids[incoming_offset])
+            for deleted_index in sorted(deleted_row_indexes, reverse=True):
+                if 0 <= deleted_index < len(merged_row_ids):
+                    del merged_row_ids[deleted_index]
+            next_document["row_ids"] = merged_row_ids
         merged_cell_meta = _merge_paged_cell_meta_by_rows(
             normalized_current,
             normalized_incoming,
@@ -2403,13 +3096,19 @@ def _merge_paged_document(
     ]
     next_document = {
         **normalized_current,
-        **{
-            key: value
-            for key, value in normalized_incoming.items()
-            if key not in {"rows", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
-        },
-        "rows": merged_rows,
-    }
+            **{
+                key: value
+                for key, value in normalized_incoming.items()
+                if key not in {"rows", "row_ids", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
+            },
+            "rows": merged_rows,
+        }
+    if current_row_ids or incoming_row_ids:
+        next_document["row_ids"] = [
+            *[str(value) for value in current_row_ids[:row_offset]],
+            *[str(value) for value in incoming_row_ids[:len(incoming_rows)]],
+            *[str(value) for value in current_row_ids[tail_start:len(current_rows)]],
+        ]
     replacement_indexes = list(range(row_offset, row_offset + len(incoming_rows)))
     deleted_indexes = list(range(row_offset + len(incoming_rows), tail_start))
     merged_cell_meta = _merge_paged_cell_meta_by_rows(
@@ -2449,11 +3148,9 @@ RESTRICTED_DATA_UPDATE_STRUCTURAL_KEYS = (
     "merged_cells",
     "formula_reference_origin",
     "header_groups",
-    "cell_meta",
     "entity_columns",
-    "entity_rows",
-    "entity_cells",
-    "column_configs",
+    "row_ids",
+    "column_ids",
     "column_widths",
     "view_settings",
 )
@@ -4336,7 +5033,7 @@ def _lookup_registration_orders_with_remote_browser(
     extra_config = get_attendance_service_extra_config(session)
     payload = {
         "action": "inspect",
-        "rows": [{"微信支付订单号": order_id} for order_id in order_ids],
+        "rows": [{"微信支付订单号": order_id, "商户订单号": order_id} for order_id in order_ids],
         "login_users": list(extra_config.get("scan_reminder_users") or []),
         "lookup_mode": "browser_only",
     }
@@ -4686,6 +5383,111 @@ def _derive_registration_order_month(order_id: Any) -> str:
     return ""
 
 
+def _registration_order_lookup_id(row: list[Any], indexes: dict[str, int]) -> str:
+    for column in ("微信支付订单号", "商户订单号"):
+        index = indexes.get(column)
+        if index is None or index >= len(row):
+            continue
+        value = _strip_legacy_text_prefix(row[index])
+        if value:
+            return value
+    return ""
+
+
+def _registration_row_has_completed_refund_remark(row: list[Any], indexes: dict[str, int]) -> bool:
+    remark_index = indexes.get("备注")
+    if remark_index is None or remark_index >= len(row):
+        return False
+    remark = _normalize_sheet_text(row[remark_index])
+    if not remark:
+        return False
+    return bool(re.search(r"(?:已\s*退\s*(?:费|款|课)|退款\s*成功|退费\s*完成|退款\s*完成)", remark))
+
+
+def _registration_order_amount_from_row_or_info(
+    row: list[Any],
+    indexes: dict[str, int],
+    order_info: Any = None,
+) -> float | None:
+    if isinstance(order_info, dict):
+        amount = _parse_number_sort_value(order_info.get("订单金额"))
+        if amount is not None:
+            return amount
+    amount_index = indexes.get("订单金额")
+    if amount_index is not None and amount_index < len(row):
+        return _parse_number_sort_value(row[amount_index])
+    return None
+
+
+def _registration_refunded_amount_from_row_or_info(
+    row: list[Any],
+    indexes: dict[str, int],
+    order_info: Any = None,
+) -> float | None:
+    if isinstance(order_info, dict):
+        refunded = _parse_number_sort_value(order_info.get("已返款"))
+        if refunded is not None:
+            return refunded
+    refunded_index = indexes.get("已返款")
+    if refunded_index is not None and refunded_index < len(row):
+        return _parse_number_sort_value(row[refunded_index])
+    return None
+
+
+def _registration_row_needs_refund_payment_audit(
+    row: list[Any],
+    indexes: dict[str, int],
+    *,
+    order_info: Any = None,
+) -> bool:
+    if not _registration_row_has_completed_refund_remark(row, indexes):
+        return False
+    refunded = _registration_refunded_amount_from_row_or_info(row, indexes, order_info)
+    amount = _registration_order_amount_from_row_or_info(row, indexes, order_info)
+    if refunded is None:
+        return True
+    if amount is not None and amount > 0:
+        return refunded + 1e-9 < amount
+    return refunded <= 0
+
+
+_REGISTRATION_REFUND_AUDIT_NOTE_PREFIXES = (
+    "支付复核异常：",
+    "支付复核待确认：",
+)
+
+
+def _set_registration_refund_audit_note(row: list[Any], indexes: dict[str, int], note: str | None) -> bool:
+    remark_index = indexes.get("备注")
+    if remark_index is None or remark_index >= len(row):
+        return False
+    current = _normalize_sheet_text(row[remark_index])
+    parts = [
+        part.strip()
+        for part in re.split(r"[;；]", current)
+        if part.strip() and not part.strip().startswith(_REGISTRATION_REFUND_AUDIT_NOTE_PREFIXES)
+    ]
+    if note:
+        parts.append(note)
+    next_value = "；".join(parts)
+    if next_value == current:
+        return False
+    row[remark_index] = next_value
+    return True
+
+
+def _format_registration_refund_audit_note(row: list[Any], indexes: dict[str, int], *, prefix: str) -> str:
+    refunded = _registration_refunded_amount_from_row_or_info(row, indexes)
+    amount = _registration_order_amount_from_row_or_info(row, indexes)
+    if refunded is not None and amount is not None and amount > 0:
+        refunded_text = _format_registration_match_cell(refunded)
+        amount_text = _format_registration_match_cell(amount)
+        return f"{prefix}源表标退费完成，但支付侧已返款{refunded_text}/{amount_text}"
+    if refunded is not None:
+        return f"{prefix}源表标退费完成，但支付侧已返款{_format_registration_match_cell(refunded)}"
+    return f"{prefix}源表标退费完成，但支付侧未确认已返款"
+
+
 def _apply_registration_order_info_to_row(
     row: list[Any],
     indexes: dict[str, int],
@@ -4722,7 +5524,7 @@ def _update_registration_order_match_document(
     indexes = _find_registration_column_indexes(
         columns,
         NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
-        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
+        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_ACTION_OPTIONAL_COLUMNS,
     )
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     if not rows:
@@ -4749,14 +5551,16 @@ def _update_registration_order_match_document(
 
     for source_row in rows:
         row = list(source_row)
-        order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
-        if len(order_id) < 19:
+        order_id = _registration_order_lookup_id(row, indexes)
+        if len(order_id) < 8:
             skipped_count += 1
             invalid_count += 1
             next_rows.append(row)
             continue
 
-        if all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns):
+        needs_refund_audit = _registration_row_needs_refund_payment_audit(row, indexes)
+        has_complete_order_info = all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns)
+        if has_complete_order_info and not needs_refund_audit:
             skipped_count += 1
             already_complete_count += 1
             next_rows.append(row)
@@ -4767,6 +5571,7 @@ def _update_registration_order_match_document(
         if (
             not _normalize_sheet_text(row[indexes["订单日期"]])
             and all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns if column != "订单日期")
+            and not needs_refund_audit
         ):
             derived_order_month = _derive_registration_order_month(order_id)
             if derived_order_month:
@@ -4797,11 +5602,20 @@ def _update_registration_order_match_document(
                 browser_candidates.append({
                     "row_position": len(next_rows),
                     "order_id": order_id,
+                    "audit": needs_refund_audit,
+                    "already_matched": False,
                 })
             else:
                 skipped_count += 1
                 unmatched_count += 1
                 warning_count += 1
+                if needs_refund_audit:
+                    if _set_registration_refund_audit_note(
+                        row,
+                        indexes,
+                        _format_registration_refund_audit_note(row, indexes, prefix="支付复核待确认："),
+                    ):
+                        updated_count += 1
             next_rows.append(row)
             continue
         if isinstance(order_info, dict) and "error" in order_info:
@@ -4815,6 +5629,24 @@ def _update_registration_order_match_document(
 
         _apply_registration_order_info_to_row(row, indexes, order_info)
         matched_count += 1
+        needs_refund_audit = _registration_row_needs_refund_payment_audit(row, indexes, order_info=order_info)
+        if needs_refund_audit:
+            if use_browser_fallback and session is not None and current_user is not None:
+                browser_candidates.append({
+                    "row_position": len(next_rows),
+                    "order_id": order_id,
+                    "audit": True,
+                    "already_matched": True,
+                })
+            else:
+                warning_count += 1
+                _set_registration_refund_audit_note(
+                    row,
+                    indexes,
+                    _format_registration_refund_audit_note(row, indexes, prefix="支付复核异常："),
+                )
+        elif _registration_row_has_completed_refund_remark(row, indexes):
+            _set_registration_refund_audit_note(row, indexes, None)
         if row != before:
             updated_count += 1
         next_rows.append(row)
@@ -4831,6 +5663,16 @@ def _update_registration_order_match_document(
             for candidate in browser_candidates:
                 row = next_rows[int(candidate["row_position"])]
                 before = list(row)
+                if candidate.get("audit"):
+                    _set_registration_refund_audit_note(
+                        row,
+                        indexes,
+                        _format_registration_refund_audit_note(row, indexes, prefix="支付复核待确认："),
+                    )
+                    warning_count += 1
+                    if row != before:
+                        updated_count += 1
+                    continue
                 row[indexes["订单金额"]] = error_text
                 _clear_registration_order_optional_refund_value(row, indexes)
                 error_count += 1
@@ -4841,6 +5683,16 @@ def _update_registration_order_match_document(
                 row = next_rows[int(candidate["row_position"])]
                 before = list(row)
                 if isinstance(order_info, dict) and _normalize_sheet_text(order_info.get("error")):
+                    if candidate.get("audit"):
+                        _set_registration_refund_audit_note(
+                            row,
+                            indexes,
+                            _format_registration_refund_audit_note(row, indexes, prefix="支付复核待确认："),
+                        )
+                        warning_count += 1
+                        if row != before:
+                            updated_count += 1
+                        continue
                     row[indexes["订单金额"]] = _normalize_sheet_text(order_info.get("error"))
                     _clear_registration_order_optional_refund_value(row, indexes)
                     error_count += 1
@@ -4848,13 +5700,33 @@ def _update_registration_order_match_document(
                         updated_count += 1
                     continue
                 if not _order_info_has_fill_values(order_info, completeness_columns):
-                    skipped_count += 1
-                    unmatched_count += 1
-                    warning_count += 1
+                    if candidate.get("audit"):
+                        _set_registration_refund_audit_note(
+                            row,
+                            indexes,
+                            _format_registration_refund_audit_note(row, indexes, prefix="支付复核待确认："),
+                        )
+                        warning_count += 1
+                        if row != before:
+                            updated_count += 1
+                    else:
+                        skipped_count += 1
+                        unmatched_count += 1
+                        warning_count += 1
                     continue
 
                 _apply_registration_order_info_to_row(row, indexes, order_info)
-                matched_count += 1
+                if not candidate.get("already_matched"):
+                    matched_count += 1
+                if _registration_row_needs_refund_payment_audit(row, indexes, order_info=order_info):
+                    warning_count += 1
+                    _set_registration_refund_audit_note(
+                        row,
+                        indexes,
+                        _format_registration_refund_audit_note(row, indexes, prefix="支付复核异常："),
+                    )
+                elif _registration_row_has_completed_refund_remark(row, indexes):
+                    _set_registration_refund_audit_note(row, indexes, None)
                 if row != before:
                     updated_count += 1
 
@@ -4877,7 +5749,7 @@ def _count_registration_order_match_targets(document_json: dict[str, Any]) -> in
     indexes = _find_registration_column_indexes(
         columns,
         NOTE_SHEET_REGISTRATION_ORDER_REQUIRED_COLUMNS,
-        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_OPTIONAL_COLUMNS,
+        optional_columns=NOTE_SHEET_REGISTRATION_ORDER_ACTION_OPTIONAL_COLUMNS,
     )
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     count = 0
@@ -4887,10 +5759,11 @@ def _count_registration_order_match_targets(document_json: dict[str, Any]) -> in
         if column in indexes
     ]
     for row in rows:
-        order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
-        if len(order_id) < 19:
+        order_id = _registration_order_lookup_id(row, indexes)
+        if len(order_id) < 8:
             continue
-        if all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns):
+        has_complete_order_info = all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns)
+        if has_complete_order_info and not _registration_row_needs_refund_payment_audit(row, indexes):
             continue
         count += 1
     return count
@@ -5634,7 +6507,7 @@ def _is_refunded_registration_row(row: list[Any], columns: list[str]) -> bool:
     remark = _normalize_sheet_text(row[remark_index])
     if not remark:
         return False
-    return bool(re.search(r"已?\s*退\s*(?:费|款|课)", remark))
+    return bool(re.search(r"(?:已\s*退\s*(?:费|款|课)|退款\s*成功|退费\s*完成|退款\s*完成)", remark))
 
 
 def _get_attendance_append_insert_index(rows: list[list[Any]], columns: list[str]) -> int:
@@ -5864,12 +6737,29 @@ def _set_document_entity_cell_value(
 
 def _normalize_attendance_current_refund_note(value: Any) -> str:
     text = _normalize_sheet_text(value)
-    if not text or "返款" not in text:
+    if not text:
         return text
+    should_normalize = "返款" in text or "最近运行更新时间" in text
+    if not should_normalize:
+        return text
+    timestamp_match = re.search(
+        r"\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?(?:,\d+)?",
+        text,
+    )
+    if timestamp_match:
+        return timestamp_match.group(0)
+    if "待首次同步" in text:
+        return "待首次同步"
     normalized = re.sub(
-        r"^\s*[^\r\n]*返款\s*[\r\n]+(?=\s*最近运行更新时间)",
+        r"^\s*[^\r\n]*返款\s*(?:[\r\n]+|(?=最近运行更新时间\s*[:：]?))",
         "",
         text,
+        count=1,
+    ).strip()
+    normalized = re.sub(
+        r"^\s*最近运行更新时间\s*[:：]?\s*",
+        "",
+        normalized,
         count=1,
     ).strip()
     if normalized != text:
@@ -5934,16 +6824,54 @@ def _normalize_attendance_refund_config_row(
     return next_document, len(config_changed_cells)
 
 
+def _normalize_attendance_current_refund_config_note(
+    document_json: dict[str, Any],
+    columns: list[str],
+) -> tuple[dict[str, Any], int]:
+    grid_rows = _extract_document_grid_rows(document_json)
+    config_row_index = _normalize_document_data_start_row(document_json) - 1
+    current_refund_index = _get_column_index(columns, "当前应返款")
+    if (
+        current_refund_index < 0
+        or not grid_rows
+        or config_row_index < 0
+        or config_row_index >= len(grid_rows)
+    ):
+        return document_json, 0
+
+    next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+    config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
+    current_refund_note = _normalize_attendance_current_refund_note(config_row[current_refund_index])
+    if current_refund_note == _normalize_sheet_text(config_row[current_refund_index]):
+        return document_json, 0
+
+    config_row[current_refund_index] = current_refund_note
+    next_grid_rows[config_row_index] = config_row
+    next_document = dict(document_json)
+    next_document["grid_rows"] = next_grid_rows
+    next_document = _set_document_entity_cell_value(
+        next_document,
+        document_row=config_row_index,
+        column_index=current_refund_index,
+        value=current_refund_note,
+    )
+    return next_document, 1
+
+
 def _normalize_attendance_dual_clockin_refund_formulas(
     document_json: dict[str, Any],
 ) -> tuple[dict[str, Any], int]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
-    normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
+    normalized, note_changed_count = _normalize_attendance_current_refund_config_note(normalized, columns)
     refund_index = _get_column_index(columns, "打卡应返款")
     total_index = _get_column_index(columns, "总应返款")
     if refund_index < 0 or _get_column_index(columns, "共学打卡") < 0 or _get_column_index(columns, "共修打卡") < 0:
-        return normalized, config_row_changed_count
+        if note_changed_count:
+            return normalized, note_changed_count
+        return document_json, 0
+
+    normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
 
     rows = [
         _normalize_sheet_row(row, len(columns))
@@ -5975,7 +6903,7 @@ def _normalize_attendance_dual_clockin_refund_formulas(
                 row[total_index] = next_total_formula
                 changed_formula_cells.append((row_index, total_index))
 
-    changed_count = config_row_changed_count
+    changed_count = note_changed_count + config_row_changed_count
     next_document = normalized
     if changed_formula_cells:
         next_document = _replace_document_data_rows(next_document, rows)
@@ -5995,6 +6923,22 @@ def _normalize_attendance_dual_clockin_refund_formulas(
     if changed_count <= 0:
         return document_json, 0
     return next_document, changed_count
+
+
+def _normalize_attendance_dual_clockin_refund_formulas_persisted(
+    session: Session,
+    document: SheetDocument,
+    document_json: dict[str, Any],
+) -> dict[str, Any]:
+    next_document, changed_count = _normalize_attendance_dual_clockin_refund_formulas(document_json)
+    if not changed_count:
+        return next_document
+    document.document_json = next_document
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+    return dict(document.document_json or {})
 
 
 def _merge_attendance_registration_defaults(
@@ -7114,6 +8058,7 @@ def _run_registration_match_action(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     return NoteSheetRegistrationMatchResponse(
         sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
@@ -7326,6 +8271,8 @@ def _save_registration_match_row(
     document.updated_at = time.time()
     session.add(document)
     session.commit()
+    session.refresh(document)
+    _broadcast_sheet_resource_update(document)
     return True
 
 
@@ -7384,6 +8331,7 @@ def _run_registration_order_match_background(
                 document.updated_at = time.time()
                 session.add(document)
                 session.commit()
+                _broadcast_sheet_resource_update(document)
             _update_registration_match_run(
                 run_id,
                 processed_count=total_count,
@@ -7657,6 +8605,7 @@ def _run_registration_composite_update_background(
                 session.add(document)
                 session.commit()
                 session.refresh(document)
+                _broadcast_sheet_resource_update(document)
             updated_count += order_summary["updated_count"]
             skipped_count += order_summary["skipped_count"]
             error_count += order_summary["error_count"]
@@ -7692,6 +8641,7 @@ def _run_registration_composite_update_background(
                 session.add(document)
                 session.commit()
                 session.refresh(document)
+                _broadcast_sheet_resource_update(document)
             updated_count += user_summary["updated_count"]
             skipped_count += user_summary["skipped_count"]
             error_count += user_summary["error_count"]
@@ -8066,6 +9016,7 @@ def _run_clockin_link_detection_background(
                 document.updated_at = time.time()
                 session.add(document)
                 session.commit()
+                _broadcast_sheet_resource_update(document)
             _update_clockin_link_detection_run(
                 run_id,
                 processed_count=len(targets),
@@ -8965,10 +9916,14 @@ def _insert_document_column(
     }
     grid_rows = _extract_document_grid_rows(normalized)
     if grid_rows:
-        next_document["grid_rows"] = [
+        next_grid_rows = [
             _insert_cell_into_grid_row(row, len(columns), bounded_insert_index)
             for row in grid_rows
         ]
+        field_row_index = int(normalized.get("field_row_index") or 0)
+        if 0 <= field_row_index < len(next_grid_rows):
+            next_grid_rows[field_row_index][bounded_insert_index] = header
+        next_document["grid_rows"] = next_grid_rows
     if "cell_meta" in normalized:
         next_document["cell_meta"] = _shift_cell_meta_columns_for_insert(
             normalized.get("cell_meta"),
@@ -9840,6 +10795,7 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
             session.add(document)
             session.commit()
             session.refresh(document)
+            _broadcast_sheet_resource_update(document)
             current_document = _normalize_document_json(dict(document.document_json or {}))
 
         next_document, generated, skipped = _generate_attendance_next_month_templates(
@@ -9853,6 +10809,7 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
             document.updated_at = time.time()
             session.add(document)
             session.commit()
+            _broadcast_sheet_resource_update(document)
 
         if generated or skipped:
             print(
@@ -11328,6 +12285,31 @@ def _deleted_sheet_condition():
     return SheetDocument.deleted_at > 0
 
 
+def _sheet_resource_update_room(sheet_id: int) -> str:
+    return f"resource:sheet:{sheet_id}"
+
+
+def _broadcast_sheet_resource_update(document: SheetDocument) -> None:
+    message = {
+        "type": "resource-updated",
+        "resource_type": "sheet",
+        "resource_id": str(_require_sheet_numeric_id(document)),
+        "version": int(document.version or 1),
+        "updated_at": float(document.updated_at or time.time()),
+        "updated_by_user_id": document.updated_by_user_id,
+    }
+    try:
+        anyio.from_thread.run(ws_manager.broadcast, _sheet_resource_update_room(_require_sheet_numeric_id(document)), message)
+    except RuntimeError:
+        # No active AnyIO worker context, which can happen in unit tests or direct script calls.
+        pass
+
+
+def _check_sheet_base_version(document: SheetDocument, base_version: int | None) -> None:
+    if base_version is not None and int(base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
+
+
 def _active_workbook_condition():
     return or_(WorkbookDocument.deleted_at.is_(None), WorkbookDocument.deleted_at <= 0)
 
@@ -11552,20 +12534,19 @@ def _resolve_sheet_resource_access(
         _fetch_resource_grants(session, RESOURCE_TYPE_SHEET, _sheet_resource_id(document)),
         current_user,
     )
-    if direct_role is not None:
+    if direct_role == "deny":
         return _apply_sheet_specific_access_capabilities(_build_resource_access(direct_role), document)
 
-    if workbook is not None:
-        return _apply_sheet_specific_access_capabilities(
-            _resolve_workbook_resource_access(session, workbook, current_user),
-            document,
-        )
-
     inherited_role: str | None = None
-    for candidate in _get_workbooks_for_sheet(session, document):
-        candidate_access = _resolve_workbook_resource_access(session, candidate, current_user)
-        inherited_role = _highest_resource_role(inherited_role, candidate_access.role)
-    return _apply_sheet_specific_access_capabilities(_build_resource_access(inherited_role), document)
+    if workbook is not None:
+        inherited_role = _resolve_workbook_resource_access(session, workbook, current_user).role
+    else:
+        for candidate in _get_workbooks_for_sheet(session, document):
+            candidate_access = _resolve_workbook_resource_access(session, candidate, current_user)
+            inherited_role = _highest_resource_role(inherited_role, candidate_access.role)
+    return _apply_sheet_specific_access_capabilities(_build_resource_access(
+        _highest_resource_role(direct_role, inherited_role),
+    ), document)
 
 
 def _require_resource_access(
@@ -11825,6 +12806,7 @@ def _serialize_sheet_summary(
         "title": document.title,
         "engine": document.engine,
         "scope": document.scope,
+        "version": int(document.version or 1),
         "owner_user_id": document.owner_user_id,
         "created_by_user_id": document.created_by_user_id,
         "updated_by_user_id": document.updated_by_user_id,
@@ -12554,6 +13536,7 @@ def _build_note_sheet_table_response(
     defined_names: dict[str, str] | None = None,
 ) -> NoteSheetTableResponse:
     normalized = _normalize_document_json(dict(document.document_json or {}))
+    normalized, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(normalized)
     columns = _normalize_document_columns(normalized)
     rows = _extract_document_rows(normalized)
     data_start_row = _normalize_document_data_start_row(normalized)
@@ -13542,6 +14525,8 @@ def get_note_sheet(
         workbook_id=workbook_id,
     )
     _sync_attendance_questionnaire_sheet_document(session, document)
+    stored_document = _ensure_sheet_document_identity_persisted(session, document)
+    stored_document = _normalize_attendance_dual_clockin_refund_formulas_persisted(session, document, stored_document)
     workbook_items, parent_workbook_id = _get_sheet_workbook_context(
         session,
         document,
@@ -13549,7 +14534,7 @@ def get_note_sheet(
         workbook=workbook,
         include_workbook_context=include_workbook_context,
     )
-    full_document = dict(document.document_json or {})
+    full_document = dict(stored_document)
     full_document, _header_link_count = _apply_course_attendance_header_links_for_response(session, document, full_document)
     full_document = _normalize_document_json(full_document)
     full_document, _progress_style_count = _apply_attendance_progress_backgrounds(full_document, assume_normalized=True)
@@ -13737,6 +14722,66 @@ def export_note_sheet_attendance_table(
     )
 
 
+@router.post("/sheets/{sheet_id}/attendance/course-update-data", response_model=AttendanceCourseUpdateDataResponse)
+def update_note_sheet_attendance_course_data(
+    sheet_id: int,
+    payload: AttendanceCourseUpdateDataRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行表格动作的权限")
+
+    if payload.course_type == "nianzhu":
+        from backend.core.nianzhu_course_sheets import (
+            compact_nianzhu_course_sheet_step2,
+            rebuild_nianzhu_attendance_from_course_sheets,
+        )
+
+        step2_summary = compact_nianzhu_course_sheet_step2(
+            session,
+            attendance_sheet_id=sheet_id,
+            course_name=payload.course_name,
+        )
+        step3_summary = rebuild_nianzhu_attendance_from_course_sheets(
+            session,
+            attendance_sheet_id=sheet_id,
+            active_only=True,
+            course_name=payload.course_name,
+        )
+        session.commit()
+        step3_response = {
+            "sheet_id": int(sheet_id),
+            "course_name": payload.course_name,
+            **step3_summary,
+            "message": (
+                f"当前 CodeYun 实例已执行念住闯关 step3："
+                f"从课程存储 sheet 重建 {step3_summary.get('rows', 0)} 行，"
+                f"更新 {step3_summary.get('updated_rows', 0)} 行/"
+                f"{step3_summary.get('updated_cells', 0)} 格，"
+                f"渲染 {step3_summary.get('styled_cells', 0)} 格"
+            ),
+        }
+        return {"step2": {"step2": step2_summary, "rebuild": None}, "step3": step3_response}
+
+    from backend.core.fanbei_attendance_schedule import (
+        _run_fanbei_attendance_step2_local,
+        run_fanbei_attendance_step3_for_sheet,
+    )
+
+    step2_message = _run_fanbei_attendance_step2_local()
+    step3_response = run_fanbei_attendance_step3_for_sheet()
+    return {"step2": {"message": step2_message}, "step3": step3_response}
+
+
 @router.patch("/sheets/{sheet_id}/table", response_model=NoteSheetTablePatchResponse)
 def patch_note_sheet_table(
     sheet_id: int,
@@ -13777,6 +14822,7 @@ def patch_note_sheet_table(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
@@ -13799,6 +14845,161 @@ def patch_note_sheet_table(
         updated_cell_count=updated_cell_count,
         updated_row_count=updated_row_count,
     )
+
+
+@router.patch("/sheets/{sheet_id}/cells", response_model=NoteSheetCellPatchResponse)
+def patch_note_sheet_cells(
+    sheet_id: int,
+    payload: NoteSheetCellPatchRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    editable_columns = list(access.capabilities.editable_data_columns)
+    if not access.capabilities.can_edit_data and not editable_columns:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if access.capabilities.can_edit_data and current_user is None:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
+    if not payload.operations:
+        raise HTTPException(status_code=400, detail="缺少单元格操作")
+
+    current_document = dict(document.document_json or {})
+    normalized = _normalize_document_json(current_document)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    allowed_columns = {
+        int(index)
+        for index in editable_columns
+        if 0 <= int(index) < len(columns)
+    }
+    can_edit_all_data = bool(access.capabilities.can_edit_data)
+    next_rows = list(rows)
+    updated_cell_count = 0
+
+    for operation in payload.operations:
+        row_index = int(operation.row_index)
+        column_index = int(operation.column_index)
+        if column_index < 0 or column_index >= len(columns):
+            raise HTTPException(status_code=400, detail="列号超出表格范围")
+        if row_index < 0 or row_index >= len(next_rows):
+            raise HTTPException(status_code=400, detail="行号超出表格范围")
+        if not can_edit_all_data and column_index not in allowed_columns:
+            raise HTTPException(status_code=403, detail="游客只能编辑开放列")
+
+        current_row = next_rows[row_index]
+        current_cells = _normalize_sheet_row(current_row, len(columns))
+        next_value = operation.value
+        if _normalize_restricted_cell_value(current_cells[column_index]) == _normalize_restricted_cell_value(next_value):
+            continue
+        next_rows[row_index] = _set_row_cell_value(current_row, columns, column_index, next_value)
+        updated_cell_count += 1
+
+    if updated_cell_count > 0:
+        next_document = _replace_document_data_rows(normalized, next_rows)
+        next_document = _strip_formula_cell_rich_text(next_document)
+        next_document = _remove_orphan_document_entity_cells(next_document)
+        next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+        if _is_attendance_questionnaire_data_sheet(document):
+            next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id if current_user is not None else None
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        _broadcast_sheet_resource_update(document)
+
+    if _is_attendance_questionnaire_data_sheet(document):
+        _sync_attendance_questionnaire_entry_statuses(session, dict(document.document_json or {}))
+
+    return NoteSheetCellPatchResponse(
+        sheet_id=_require_sheet_numeric_id(document),
+        version=int(document.version or 1),
+        updated_cell_count=updated_cell_count,
+    )
+
+
+@router.post("/sheets/{sheet_id}/patch", response_model=NoteSheetPatchResponse)
+def patch_note_sheet(
+    sheet_id: int,
+    payload: NoteSheetPatchRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    if int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
+    if not payload.ops:
+        raise HTTPException(status_code=400, detail="缺少表格操作")
+
+    current_document = deepcopy(dict(document.document_json or {}))
+    normalized = _normalize_document_json(current_document)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    _validate_note_sheet_patch_access(
+        access=access,
+        current_user=current_user,
+        operations=payload.ops,
+        columns=columns,
+        rows=rows,
+    )
+
+    next_document, updated_cell_count = _apply_note_sheet_patch_ops(normalized, payload.ops)
+    next_document = _strip_formula_cell_rich_text(next_document)
+    next_document = _remove_orphan_document_entity_cells(next_document)
+    next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+    if _is_attendance_questionnaire_data_sheet(document):
+        next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+
+    if next_document != normalized:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id if current_user is not None else None
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        _broadcast_sheet_resource_update(document)
+
+    if _is_attendance_questionnaire_data_sheet(document):
+        _sync_attendance_questionnaire_entry_statuses(session, dict(document.document_json or {}))
+
+    return NoteSheetPatchResponse(
+        sheet_id=_require_sheet_numeric_id(document),
+        version=int(document.version or 1),
+        applied_op_count=len(payload.ops),
+        updated_cell_count=updated_cell_count,
+    )
+
+
+@router.websocket("/ws/resources/sheet/{sheet_id}")
+async def websocket_sheet_resource_updates(websocket: WebSocket, sheet_id: int):
+    room = _sheet_resource_update_room(sheet_id)
+    await ws_manager.connect(websocket, room)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, room)
+    except Exception:
+        ws_manager.disconnect(websocket, room)
 
 
 @router.get("/sheets/{sheet_id}/access", response_model=NoteSheetResourceAccessResponse)
@@ -13866,6 +15067,8 @@ def update_sheet_defined_names_endpoint(
     )
     if not access.capabilities.can_edit_config:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
 
     current_document = dict(document.document_json or {})
     next_document = _replace_sheet_defined_names(current_document, payload.names)
@@ -13877,6 +15080,7 @@ def update_sheet_defined_names_endpoint(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     workbook_names = _get_workbook_defined_names(session, workbook)
     worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
@@ -13942,11 +15146,6 @@ def update_note_sheet(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if access.capabilities.can_edit_data and current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
-    if not access.capabilities.can_edit_config and payload.title is not None:
-        next_payload_title = _normalize_title(payload.title, default_value=document.title or "未命名表格")
-        if next_payload_title != (document.title or "未命名表格"):
-            raise HTTPException(status_code=403, detail="没有该资源权限")
-
     next_title = (
         _normalize_title(payload.title, default_value=document.title or "未命名表格")
         if payload.title is not None and access.capabilities.can_edit_config
@@ -13996,6 +15195,7 @@ def update_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     if _is_attendance_questionnaire_data_sheet(document):
         _sync_attendance_questionnaire_entry_statuses(session, dict(document.document_json or {}))
@@ -14034,6 +15234,7 @@ async def import_note_sheet_excel_reset(
     mode: Literal["append", "reset"] = Form(default="reset"),
     action_document_row: int | None = Form(default=None),
     action_column: int | None = Form(default=None),
+    base_version: int | None = Form(default=None, ge=1),
     workbook_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
@@ -14047,6 +15248,8 @@ async def import_note_sheet_excel_reset(
     )
     if not access.capabilities.can_edit_data:
         raise HTTPException(status_code=403, detail="导入 Excel 需要完整编辑权限")
+    if base_version is not None and int(base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
 
     filename = str(file.filename or "").strip()
     suffix = Path(filename).suffix.lower()
@@ -14127,6 +15330,7 @@ async def import_note_sheet_excel_reset(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
@@ -14393,6 +15597,8 @@ def detect_note_sheet_registration_user_id(
     )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+    if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格已被其他人更新，请刷新后重试")
     if workbook is None:
         raise HTTPException(status_code=400, detail="检测用户ID需要在工作簿内执行")
 
@@ -14485,6 +15691,7 @@ def detect_note_sheet_registration_user_id(
         session.commit()
         session.refresh(document)
         session.refresh(attendance)
+        _broadcast_sheet_resource_update(document)
         return NoteSheetRegistrationUserIdDetectionResponse(
             sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
             attendance_sheet=None,
@@ -14524,6 +15731,7 @@ def detect_note_sheet_registration_user_id(
         session.commit()
         session.refresh(document)
         session.refresh(attendance)
+        _broadcast_sheet_resource_update(document)
         return NoteSheetRegistrationUserIdDetectionResponse(
             sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
             attendance_sheet=None,
@@ -14604,7 +15812,8 @@ def detect_note_sheet_registration_user_id(
 
     rows[payload.row_index] = target_row
     next_document = _replace_document_data_rows(next_document, rows)
-    if next_document != current_document:
+    document_changed = next_document != current_document
+    if document_changed:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -14623,6 +15832,8 @@ def detect_note_sheet_registration_user_id(
 
     session.commit()
     session.refresh(document)
+    if document_changed:
+        _broadcast_sheet_resource_update(document)
     if applied:
         session.refresh(attendance)
 
@@ -14675,6 +15886,8 @@ def sort_note_sheet(
     )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
     current_document = _normalize_document_json(dict(document.document_json or {}))
     columns = list(current_document.get("columns") or [])
     if payload.column_index >= len(columns):
@@ -14694,6 +15907,7 @@ def sort_note_sheet(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
@@ -14738,6 +15952,7 @@ def generate_attendance_summary_next_month_templates(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
         raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+    _check_sheet_base_version(document, payload.base_version)
 
     target_date = _get_attendance_template_target_date(payload)
     current_document = _normalize_document_json(dict(document.document_json or {}))
@@ -14754,6 +15969,7 @@ def generate_attendance_summary_next_month_templates(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -14792,6 +16008,7 @@ def generate_attendance_summary_course_template(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
         raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+    _check_sheet_base_version(document, payload.base_version)
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     course_type = _resolve_attendance_course_template_type(current_document, payload)
@@ -14813,6 +16030,7 @@ def generate_attendance_summary_course_template(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -14835,6 +16053,7 @@ def generate_attendance_summary_course_template(
 )
 def repair_attendance_summary_cell_meta(
     sheet_id: int,
+    payload: NoteSheetAttendanceTemplateGenerationRequest = NoteSheetAttendanceTemplateGenerationRequest(),
     workbook_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
@@ -14851,6 +16070,7 @@ def repair_attendance_summary_cell_meta(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
         raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+    _check_sheet_base_version(document, payload.base_version)
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     next_document, repaired = _repair_attendance_summary_cell_meta(current_document)
@@ -14863,6 +16083,7 @@ def repair_attendance_summary_cell_meta(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -14982,6 +16203,7 @@ def update_attendance_summary_link_counts(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
         raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+    _check_sheet_base_version(document, payload.base_version)
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     next_document, updated, skipped = _update_attendance_link_counts(
@@ -14998,6 +16220,7 @@ def update_attendance_summary_link_counts(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -15036,6 +16259,7 @@ def set_attendance_summary_row_completed(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
         raise HTTPException(status_code=404, detail="当前工作表没有这个定制功能")
+    _check_sheet_base_version(document, payload.base_version)
 
     completion_date = _parse_attendance_date_text(payload.completion_date) if payload.completion_date else date.today()
     if completion_date is None:
@@ -15056,6 +16280,7 @@ def set_attendance_summary_row_completed(
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -15093,6 +16318,7 @@ def revise_attendance_video_progress(
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    _check_sheet_base_version(document, payload.base_version)
 
     revision_label = payload.revision_label.strip()
     if not revision_label:
@@ -15146,8 +16372,11 @@ def delete_note_sheet(
     document.deleted_by_user_id = current_user.id
     document.updated_by_user_id = current_user.id
     document.updated_at = now
+    document.version = max(int(document.version or 1), 1) + 1
     session.add(document)
     session.commit()
+    session.refresh(document)
+    _broadcast_sheet_resource_update(document)
     return {"ok": True}
 
 
@@ -15167,9 +16396,11 @@ def restore_note_sheet(
         document.deleted_by_user_id = None
         document.updated_by_user_id = current_user.id
         document.updated_at = now
+        document.version = max(int(document.version or 1), 1) + 1
         session.add(document)
         session.commit()
         session.refresh(document)
+        _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
@@ -15404,6 +16635,7 @@ def update_workbook_defined_names_endpoint(
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="editor")
     names = _normalize_defined_names(payload.names, scope="workbook", strict=True)
     _set_workbook_defined_names(session, workbook, names)
+    updated_documents: list[SheetDocument] = []
 
     if payload.worksheets:
         links = session.exec(
@@ -15432,6 +16664,11 @@ def update_workbook_defined_names_endpoint(
             sheet_access = _resolve_sheet_resource_access(session, document, current_user, workbook=workbook)
             if not sheet_access.capabilities.can_edit_config:
                 raise HTTPException(status_code=403, detail=f"没有权限修改工作表: {document.title or payload_sheet_id}")
+            if (
+                worksheet_payload.sheet_version is not None
+                and int(worksheet_payload.sheet_version) != int(document.version or 1)
+            ):
+                raise HTTPException(status_code=409, detail=f"工作表版本已变化，请重新读取后再写入: {document.title or payload_sheet_id}")
 
             current_document = dict(document.document_json or {})
             next_document = _replace_sheet_defined_names(current_document, worksheet_payload.names)
@@ -15441,12 +16678,16 @@ def update_workbook_defined_names_endpoint(
                 document.updated_by_user_id = current_user.id
                 document.updated_at = time.time()
                 session.add(document)
+                updated_documents.append(document)
 
     workbook.updated_by_user_id = current_user.id
     workbook.updated_at = time.time()
     session.add(workbook)
     session.commit()
     session.refresh(workbook)
+    for document in updated_documents:
+        session.refresh(document)
+        _broadcast_sheet_resource_update(document)
     stored_names = _get_workbook_defined_names(session, workbook)
     worksheets = _list_workbook_defined_name_worksheets(session, workbook, current_user)
     return NoteSheetDefinedNamesResponse(

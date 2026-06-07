@@ -30,3 +30,10 @@ def test_current_server_scope_updates_activity_facet_counts() -> None:
     assert response["total"] == len(response["facet_index"]["object_ids"])
     assert len(facet_rows["kind_key"]["activity"]) < 4126
     assert len(facet_rows["time_kind"]["absolute"]) < 1605
+
+
+def test_activity_cards_can_skip_facet_index_for_lightweight_list() -> None:
+    response = search_fanxiu_activity_cards(server_scope="current", limit=10, include_facets=False)
+
+    assert "facet_index" not in response
+    assert response["items"]

@@ -8,6 +8,14 @@
 - 运行测试统一使用：`uv run pytest`
 - 临时 Python 命令统一使用：`uv run python ...`
 
+## 临时产物约定（重要）
+
+- 源码目录只放源码、测试、文档、配置样例和明确要版本管理的静态资产。
+- 调试截图、OCR 裁剪图、抓包片段、探针 JSON、临时 DB、服务 stdout/stderr 日志、一次性脚本输出等临时产物，统一写到系统临时目录，不要写到仓库根目录或源码子目录。
+- Python 代码优先使用 `backend.core.temp_paths.codeyun_temp_root(...)`；一次性 PowerShell 使用 `$env:TEMP\codeyun\...`。
+- `.codex_tmp/` 是历史遗留目录，不再新建或继续使用；需要保留结论时写入文档摘要，不把大体积原始证据放进仓库。
+- 详细规则见：`docs/临时测试产物目录约定.md`。
+
 ## 兜底方案
 
 - 仅在 `uv` 不可用时，Windows 使用：

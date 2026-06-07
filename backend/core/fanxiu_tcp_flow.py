@@ -5,11 +5,13 @@ import json
 import hashlib
 import re
 import shutil
+import subprocess
 import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from threading import Lock
+from types import MethodType
 
 _TTL_CACHE: dict[str, tuple[float, Any]] = {}
 _TTL_CACHE_LOCK = Lock()
@@ -37,8 +39,6 @@ from pyxllib.file.packetstream import (
     LuaPacketSchemaIndex,
     PacketDecodeError,
     VarintBinaryReader,
-    extract_tcp_stream_payloads_with_tshark,
-    list_tcp_streams_with_tshark,
     summarize_decoded_frames,
 )
 
@@ -54,6 +54,7 @@ DEFAULT_TCP_RETENTION_MAX_RECORD_BYTES = 5 * 1024 * 1024 * 1024
 DEFAULT_TCP_RETENTION_MAX_LIVE_CAPTURES = 0
 DEFAULT_TCP_RETENTION_MAX_LIVE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_TCP_RETENTION_MIN_KEEP = 20
+DEFAULT_TSHARK_TIMEOUT_SECONDS = 8.0
 DEFAULT_TEXT_ASSETS = Path(
     "by_source/lscripts/gamesystem/game/message_bf46a8de9ccefb33ec3f4d0545cc766e/text_assets"
 )
@@ -124,10 +125,171 @@ FANXIU_TCP_PROTOCOL_CATEGORY_RULES = [
 ]
 
 
+def list_tcp_streams_with_tshark(
+    pcap: str | Path,
+    *,
+    host: str = "",
+    tshark: str | Path = r"C:\Program Files\Wireshark\tshark.exe",
+    timeout_seconds: float = DEFAULT_TSHARK_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Return TCP stream ids with a timeout so one bad pcap cannot stall ingestion."""
+    display_filter = "tcp.len > 0"
+    if host:
+        display_filter = f"ip.addr == {host} && {display_filter}"
+    cmd = [
+        str(tshark),
+        "-r",
+        str(pcap),
+        "-Y",
+        display_filter,
+        "-T",
+        "fields",
+        "-e",
+        "tcp.stream",
+        "-e",
+        "tcp.len",
+    ]
+    completed = _run_tshark_allow_partial_stdout(
+        cmd,
+        timeout_seconds=timeout_seconds,
+    )
+    streams: dict[int, dict[str, Any]] = {}
+    for line in completed.stdout.splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0]:
+            continue
+        try:
+            stream = int(parts[0])
+            length = int(parts[1] or 0) if len(parts) > 1 else 0
+        except ValueError:
+            continue
+        item = streams.setdefault(stream, {"stream": stream, "packets": 0, "payload_bytes": 0})
+        item["packets"] += 1
+        item["payload_bytes"] += length
+    return sorted(streams.values(), key=lambda item: (item["payload_bytes"], item["packets"]), reverse=True)
+
+
+def extract_tcp_stream_payloads_with_tshark(
+    pcap: str | Path,
+    stream: int,
+    *,
+    server_host: str,
+    tshark: str | Path = r"C:\Program Files\Wireshark\tshark.exe",
+    timeout_seconds: float = DEFAULT_TSHARK_TIMEOUT_SECONDS,
+) -> tuple[bytes, bytes]:
+    """Return client/server TCP payload bytes with bounded tshark runtime."""
+    cmd = [
+        str(tshark),
+        "-r",
+        str(pcap),
+        "-Y",
+        f"tcp.stream == {int(stream)} && tcp.len > 0",
+        "-T",
+        "fields",
+        "-e",
+        "ip.src",
+        "-e",
+        "ip.dst",
+        "-e",
+        "tcp.payload",
+    ]
+    completed = _run_tshark_allow_partial_stdout(
+        cmd,
+        timeout_seconds=timeout_seconds,
+    )
+    client = bytearray()
+    server = bytearray()
+    for line in completed.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[2]:
+            continue
+        payload = bytes.fromhex(parts[2].replace(":", ""))
+        if parts[1] == server_host:
+            client.extend(payload)
+        elif parts[0] == server_host:
+            server.extend(payload)
+    return bytes(client), bytes(server)
+
+
+def _run_tshark_allow_partial_stdout(cmd: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        cmd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=max(1.0, float(timeout_seconds)),
+        check=False,
+    )
+    if completed.returncode == 0 or completed.stdout.strip():
+        return completed
+    raise subprocess.CalledProcessError(
+        completed.returncode,
+        cmd,
+        output=completed.stdout,
+        stderr=completed.stderr,
+    )
+
+
 def _resolve_export_child(export_root: str | Path | None, path: str | Path) -> Path:
     root = resolve_fanxiu_export_root(export_root)
     raw = Path(path)
     return raw.expanduser().resolve() if raw.is_absolute() else (root / raw).resolve()
+
+
+def _resolve_export_child_with_glob_fallback(export_root: str | Path | None, path: str | Path, fallback_glob: str) -> Path:
+    resolved = _resolve_export_child(export_root, path)
+    if resolved.exists() or Path(path).is_absolute():
+        return resolved
+    root = resolve_fanxiu_export_root(export_root)
+    candidates = sorted((item for item in root.glob(fallback_glob) if item.is_dir()), key=lambda item: (item.stat().st_mtime, str(item)))
+    return candidates[-1].resolve() if candidates else resolved
+
+
+def _resolve_fanxiu_message_text_assets(export_root: str | Path | None, path: str | Path = DEFAULT_TEXT_ASSETS) -> Path:
+    resolved = _resolve_export_child_with_glob_fallback(
+        export_root,
+        path,
+        "by_source/lscripts/gamesystem/game/message_*/text_assets",
+    )
+    if resolved.is_dir():
+        return resolved
+    try:
+        from backend.core.fanxiu_resources import export_fanxiu_unity_text_assets, resolve_fanxiu_resource_root
+
+        resource_root = resolve_fanxiu_resource_root(None)
+        bundles = sorted(
+            (item for item in (resource_root / "lscripts" / "gamesystem" / "game").glob("message*.bytes") if item.is_file()),
+            key=lambda item: (item.stat().st_mtime, str(item)),
+        )
+        if bundles:
+            result = export_fanxiu_unity_text_assets(
+                bundles[-1].relative_to(resource_root),
+                resource_root=resource_root,
+                export_root=resolve_fanxiu_export_root(export_root),
+            )
+            output_dir = Path(str(result.get("output_dir") or ""))
+            if output_dir.is_dir():
+                return output_dir.resolve()
+    except Exception:
+        pass
+    return resolved
+
+
+def _resolve_fanxiu_system_message_text_assets(export_root: str | Path | None) -> Path:
+    return _resolve_export_child_with_glob_fallback(
+        export_root,
+        DEFAULT_SYSTEM_MESSAGE_ASSETS,
+        "by_source/lscripts/generate/cfg/systemmessage_*/text_assets",
+    )
+
+
+def _resolve_fanxiu_lang_text_assets(export_root: str | Path | None) -> Path:
+    return _resolve_export_child_with_glob_fallback(
+        export_root,
+        DEFAULT_LANG_ASSETS,
+        "by_source/lscripts/generate/localization/chinese/lang_*/text_assets",
+    )
 
 
 def resolve_fanxiu_tcp_store_root(data_dir: str | Path | None = None) -> Path:
@@ -323,9 +485,8 @@ def prune_fanxiu_tcp_storage(
 
 @lru_cache(maxsize=4)
 def _load_fanxiu_system_message_templates(export_root_text: str) -> dict[int, str]:
-    root = resolve_fanxiu_export_root(export_root_text or None)
-    system_message_path = root / DEFAULT_SYSTEM_MESSAGE_ASSETS / "SystemMessage.lua"
-    lang_path = root / DEFAULT_LANG_ASSETS / "lang.lua"
+    system_message_path = _resolve_fanxiu_system_message_text_assets(export_root_text or None) / "SystemMessage.lua"
+    lang_path = _resolve_fanxiu_lang_text_assets(export_root_text or None) / "lang.lua"
     if not system_message_path.is_file() or not lang_path.is_file():
         return {}
 
@@ -1524,18 +1685,22 @@ def _fanxiu_protocol_business_order(name: str, category: str = "") -> tuple[Any,
     )
 
 
-def _trim_value(value: Any, *, max_items: int = 8) -> Any:
+def _trim_value(value: Any, *, max_items: int = 8, preserve_item_types: set[str] | None = None) -> Any:
+    preserve_item_types = preserve_item_types or {"MailVo"}
     if isinstance(value, dict):
         output: dict[str, Any] = {}
         for key, item in value.items():
             if key == "items" and isinstance(item, list) and len(item) > max_items:
-                output[key] = [_trim_value(x, max_items=max_items) for x in item[:max_items]]
-                output["_truncated_items"] = len(item) - max_items
+                if str(value.get("_type") or "") in preserve_item_types:
+                    output[key] = [_trim_value(x, max_items=max_items, preserve_item_types=preserve_item_types) for x in item]
+                else:
+                    output[key] = [_trim_value(x, max_items=max_items, preserve_item_types=preserve_item_types) for x in item[:max_items]]
+                    output["_truncated_items"] = len(item) - max_items
             else:
-                output[key] = _trim_value(item, max_items=max_items)
+                output[key] = _trim_value(item, max_items=max_items, preserve_item_types=preserve_item_types)
         return output
     if isinstance(value, list):
-        return [_trim_value(x, max_items=max_items) for x in value[:max_items]]
+        return [_trim_value(x, max_items=max_items, preserve_item_types=preserve_item_types) for x in value[:max_items]]
     if isinstance(value, float):
         return round(value, 4)
     return value
@@ -1589,6 +1754,35 @@ def _decode_lusuo_frames_tolerant(data: bytes, schema: LuaPacketSchemaIndex) -> 
     return frames, warnings
 
 
+def _patch_fanxiu_schema_long_list(schema: LuaPacketSchemaIndex) -> LuaPacketSchemaIndex:
+    i18n_num = schema.by_name.get("I18nParam2Num")
+    if i18n_num is not None:
+        i18n_num.ops = [
+            (kind, field, "Double" if kind == "primitive" and field == "value" and arg == "Int" else arg)
+            for kind, field, arg in i18n_num.ops
+        ]
+    original_read_list = schema._read_list
+
+    def read_list_with_raw_long_fallback(self: LuaPacketSchemaIndex, reader: VarintBinaryReader, write_method: str | None = None, depth: int = 0) -> Any:
+        if write_method != "LongList":
+            return original_read_list(reader, write_method=write_method, depth=depth)
+        start = reader.pos
+        try:
+            return original_read_list(reader, write_method=write_method, depth=depth)
+        except Exception:
+            reader.pos = start
+            count = reader.read_int()
+            if count < -1:
+                count = reader.read_int()
+            if count <= 0:
+                return []
+            values = [reader.read_long() for _ in range(count)]
+            return {"_count": count, "_type_id": -15, "_wire": "rawLongList", "items": values}
+
+    schema._read_list = MethodType(read_list_with_raw_long_fallback, schema)
+    return schema
+
+
 def decode_fanxiu_tcp_pcap(
     pcap: str | Path,
     *,
@@ -1599,15 +1793,20 @@ def decode_fanxiu_tcp_pcap(
     output_path: str | Path | None = None,
     persist: bool = True,
     data_dir: str | Path | None = None,
+    sync_after_decode: bool = True,
 ) -> dict[str, Any]:
     root = resolve_fanxiu_export_root(export_root)
     pcap_path = _resolve_export_child(export_root, pcap)
-    text_assets_path = _resolve_export_child(export_root, text_assets)
+    text_assets_path = _resolve_fanxiu_message_text_assets(export_root, text_assets)
+    if not text_assets_path.is_dir():
+        raise FileNotFoundError(f"凡修协议 text_assets 不存在，无法解码抓包：{text_assets_path}")
     pcap_digest = _sha256_file(pcap_path)
     stream_candidates = list_tcp_streams_with_tshark(pcap_path, host=server_host)
     if stream < 0:
         stream = int(stream_candidates[0]["stream"]) if stream_candidates else 0
-    schema = LuaPacketSchemaIndex(text_assets_path)
+    schema = _patch_fanxiu_schema_long_list(LuaPacketSchemaIndex(text_assets_path))
+    if not schema.protocol_names:
+        raise RuntimeError(f"凡修协议表为空，无法解码抓包：{text_assets_path}")
     c2s_payload, s2c_payload = extract_tcp_stream_payloads_with_tshark(
         pcap_path,
         stream,
@@ -1681,16 +1880,32 @@ def decode_fanxiu_tcp_pcap(
             {
                 "record_id": record_dir.name,
                 "record_dir": str(record_dir),
+                "created_at": meta["created_at"],
+                "pcap_name": meta["pcap_name"],
+                "pcap_modified_at": meta["pcap_modified_at"],
                 "stored_pcap": str(stored_pcap),
                 "stored_decoded_path": str(output),
                 "meta_path": str(record_dir / "meta.json"),
             }
         )
+        try:
+            from backend.core.fanxiu_packet_decoded_store import persist_fanxiu_packet_decoded_result
+
+            result["decoded_db_sync"] = persist_fanxiu_packet_decoded_result(result)
+        except Exception as exc:
+            result["decoded_db_sync"] = {
+                "created": 0,
+                "updated": 0,
+                "skipped_invalid": 0,
+                "skipped_duplicate": 0,
+                "error": str(exc),
+            }
         result["retention"] = prune_fanxiu_tcp_storage(
             data_dir=data_dir,
             preserve_paths={pcap_path, record_dir, stored_pcap, output},
         )
-        _sync_fanxiu_packet_runtime_insights_after_decode(result, data_dir=data_dir, export_root=export_root)
+        if sync_after_decode:
+            _sync_fanxiu_packet_runtime_insights_after_decode(result, data_dir=data_dir, export_root=export_root)
     return result
 
 

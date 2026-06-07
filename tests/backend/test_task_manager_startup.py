@@ -1,3 +1,4 @@
+import datetime
 import time
 from types import SimpleNamespace
 
@@ -103,6 +104,61 @@ def test_task_manager_preserves_explicit_next_run_at(engine, session, monkeypatc
         assert refreshed.next_run_at == "2099-05-10T06:00:00"
         assert calls
         assert calls[0]["kwargs"]["id"] == task.id
+    finally:
+        if hasattr(manager.scheduler, "shutdown"):
+            manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_advances_stale_next_run_at_on_schedule_restore(engine, session, monkeypatch):
+    task = Task(
+        id="task-stale-next-run",
+        name="stale-next-run",
+        command="python job.py",
+        device_id="local-device",
+        runtime_kind="job",
+        schedule="0 * * * *",
+        schedule_state={"next_trigger_at": "2026-06-03T22:00:00+08:00"},
+        next_run_at="2026-06-03T22:00:00+08:00",
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    calls = []
+    real_datetime = datetime.datetime
+
+    class FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                return real_datetime(2026, 6, 4, 19, 35, tzinfo=tz)
+            return real_datetime(2026, 6, 4, 19, 35)
+
+        @classmethod
+        def fromisoformat(cls, date_string):
+            return real_datetime.fromisoformat(date_string)
+
+    class FakeScheduler:
+        def get_job(self, task_id):
+            return None
+
+        def add_job(self, func, trigger, **kwargs):
+            calls.append({"trigger": trigger, "kwargs": kwargs})
+
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = FakeScheduler()
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+        monkeypatch.setattr(task_manager_module.dt, "datetime", FrozenDateTime)
+
+        manager.update_schedule(task.id)
+
+        session.expire_all()
+        refreshed = session.get(Task, task.id)
+        assert refreshed.next_run_at == "2026-06-04T20:00:00+08:00"
+        assert refreshed.schedule_state["next_trigger_at"] == "2026-06-04T20:00:00+08:00"
+        assert calls and calls[0]["kwargs"]["id"] == task.id
     finally:
         if hasattr(manager.scheduler, "shutdown"):
             manager.scheduler.shutdown(wait=False)

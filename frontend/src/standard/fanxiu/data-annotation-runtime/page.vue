@@ -5,27 +5,27 @@ import { ElMessage } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
-  getFanxiuGameWindow3RuntimeLogs,
-  getFanxiuGameWindow3RuntimeStatus,
-  getFanxiuGameWindow3SchedulerPlan,
-  getFanxiuGameWindow3SchedulerTasks,
-  saveFanxiuGameWindow3SchedulerTasks,
-  setFanxiuGameWindow3RuntimeGuard,
-  type FanxiuGameWindow3RuntimeLogEntry,
-  type FanxiuGameWindow3RuntimeGuardItem,
-  type FanxiuGameWindow3RuntimeStatus,
-  type FanxiuGameWindow3SchedulerPlanResponse,
-  type FanxiuGameWindow3SchedulerTaskItem,
+  getFanxiuDataAnnotationRuntimeLogs,
+  getFanxiuDataAnnotationRuntimeStatus,
+  getFanxiuDataAnnotationSchedulerPlan,
+  getFanxiuDataAnnotationSchedulerTasks,
+  saveFanxiuDataAnnotationSchedulerTasks,
+  setFanxiuDataAnnotationRuntimeGuard,
+  type FanxiuDataAnnotationRuntimeLogEntry,
+  type FanxiuDataAnnotationRuntimeGuardItem,
+  type FanxiuDataAnnotationRuntimeStatus,
+  type FanxiuDataAnnotationSchedulerPlanResponse,
+  type FanxiuDataAnnotationSchedulerTaskItem,
 } from '@/api/fanxiu';
 
 const route = useRoute();
 const router = useRouter();
 
 const entryId = ref(String(route.query.entry_id || ''));
-const runtimeStatus = ref<FanxiuGameWindow3RuntimeStatus | null>(null);
-const schedulerTasks = ref<FanxiuGameWindow3SchedulerTaskItem[]>([]);
-const schedulerPlan = ref<FanxiuGameWindow3SchedulerPlanResponse | null>(null);
-const logs = ref<FanxiuGameWindow3RuntimeLogEntry[]>([]);
+const runtimeStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
+const schedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
+const schedulerPlan = ref<FanxiuDataAnnotationSchedulerPlanResponse | null>(null);
+const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
 const actionLoading = ref('');
 const contextMenu = ref({
@@ -60,7 +60,7 @@ const taskProgressText = computed(() => {
   if (!status || !status.total) return '';
   return `${status.current_index}/${status.total}`;
 });
-const guardItems = computed<FanxiuGameWindow3RuntimeGuardItem[]>(() => {
+const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
   const items = runtimeStatus.value?.guard_items || {};
   return Object.values(items).map((item) => ({
     ...item,
@@ -70,25 +70,74 @@ const guardItems = computed<FanxiuGameWindow3RuntimeGuardItem[]>(() => {
     message: item.message || '-',
   }));
 });
-const isBusinessTask = (task: FanxiuGameWindow3SchedulerTaskItem) => {
+const isBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (['go_scene', 'hide_floating_window'].includes(task.task_type)) return false;
   const label = task.label || '';
   if (/到.*#\d+|隐藏浮动窗|到世界|到设置页/.test(label)) return false;
   return true;
 };
 
-const businessTasks = computed(() => schedulerTasks.value.filter((task) => task.supported && isBusinessTask(task)));
-
-const taskMetaText = (task: FanxiuGameWindow3SchedulerTaskItem) => {
-  const source = task.schedule_kind === 'manual' ? '手动' : task.schedule_kind || task.source || '任务';
-  return [source, `P${task.priority}`, task.interruptible ? '可中断' : '不可中断'].filter(Boolean).join(' · ');
+const taskGroupRank = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  const ranks: Record<string, number> = { daily: 10, dynamic: 20, manual: 30 };
+  return ranks[task.schedule_kind || ''] ?? 90;
 };
 
-const nextTriggerText = (task: FanxiuGameWindow3SchedulerTaskItem) => {
-  if (task.retry_after) return `重试 ${task.retry_after}`;
-  if (task.next_time) return task.next_time;
+const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  const exact = parseRuntimeTime(task.retry_after || task.next_time || '');
+  if (exact) return exact.getTime();
+  const clock = [...(task.schedule_times || [])].filter(Boolean).sort()[0] || '';
+  return clock ? Date.parse(`1970-01-01T${clock}`) : 0;
+};
+
+const businessTasks = computed(() => schedulerTasks.value
+  .filter((task) => task.supported && isBusinessTask(task))
+  .sort((a, b) => (
+    taskGroupRank(a) - taskGroupRank(b)
+    || taskTriggerValue(a) - taskTriggerValue(b)
+    || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
+  )));
+
+const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  const labels: Record<string, string> = {
+    daily: '每日',
+    dynamic: '动态',
+    manual: '手动',
+  };
+  return labels[task.schedule_kind || ''] || task.source || '任务';
+};
+
+const pad2 = (value: number) => String(value).padStart(2, '0');
+
+const parseRuntimeTime = (value: string) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const date = new Date(text.replace(' ', 'T'));
+  return Number.isFinite(date.getTime()) ? date : null;
+};
+
+const formatRuntimeTime = (value: string) => {
+  const date = parseRuntimeTime(value);
+  if (!date) return value;
+  const now = new Date();
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const isSameDate = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const isWithinNext24Hours = date.getTime() >= now.getTime()
+    && date.getTime() - now.getTime() < 24 * 60 * 60 * 1000;
+  if (isSameDate || isWithinNext24Hours) return time;
+  const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
+  if (date.getFullYear() === now.getFullYear()) return monthDayTime;
+  return `${date.getFullYear()}-${monthDayTime}`;
+};
+
+const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  if (task.retry_after) return `重试 ${formatRuntimeTime(task.retry_after)}`;
+  if (task.next_time) return formatRuntimeTime(task.next_time);
   return '';
 };
+
+const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => task.retry_after || task.next_time || '';
 
 const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: string) => {
   contextMenu.value = {
@@ -119,24 +168,24 @@ const openContextLogs = () => {
   });
 };
 
-const applyStatus = (status: FanxiuGameWindow3RuntimeStatus) => {
+const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
 };
 
 const refreshStatus = async () => {
-  const status = await getFanxiuGameWindow3RuntimeStatus(entryId.value);
+  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value);
   applyStatus(status);
 };
 
 const refreshLogs = async () => {
-  const response = await getFanxiuGameWindow3RuntimeLogs(500);
+  const response = await getFanxiuDataAnnotationRuntimeLogs(500);
   logs.value = response.entries || [];
 };
 
 const refreshScheduler = async () => {
   const [tasksResponse, planResponse] = await Promise.all([
-    getFanxiuGameWindow3SchedulerTasks(),
-    getFanxiuGameWindow3SchedulerPlan(),
+    getFanxiuDataAnnotationSchedulerTasks(),
+    getFanxiuDataAnnotationSchedulerPlan(),
   ]);
   schedulerTasks.value = tasksResponse.tasks || [];
   schedulerPlan.value = planResponse;
@@ -151,7 +200,7 @@ const refreshAll = async () => {
   }
 };
 
-const runAction = async (name: string, action: () => Promise<FanxiuGameWindow3RuntimeStatus | void>) => {
+const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotationRuntimeStatus | void>) => {
   if (!entryId.value) {
     ElMessage.warning('未找到 mf 设备入口');
     return;
@@ -168,23 +217,24 @@ const runAction = async (name: string, action: () => Promise<FanxiuGameWindow3Ru
   }
 };
 
-const toggleGuard = () => runAction('guard', () => setFanxiuGameWindow3RuntimeGuard(entryId.value, !guardEnabled.value, 2, 'close_popups'));
+const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntimeGuard(entryId.value, !guardEnabled.value, 2, 'close_popups'));
 
 const toggleGuardItem = (itemId: string) => {
   if (itemId === 'close_popups') {
     void toggleGuard();
     return;
   }
-  void runAction(`guard:${itemId}`, () => setFanxiuGameWindow3RuntimeGuard(entryId.value, !guardItemEnabled(itemId), 2, itemId));
+  void runAction(`guard:${itemId}`, () => setFanxiuDataAnnotationRuntimeGuard(entryId.value, !guardItemEnabled(itemId), 2, itemId));
 };
 
-const toggleTaskEnabled = async (task: FanxiuGameWindow3SchedulerTaskItem) => {
+const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  if (task.schedule_kind === 'manual') return;
   actionLoading.value = `enable:${task.id}`;
   try {
     const tasks = schedulerTasks.value.map((item) => (
       item.id === task.id ? { ...item, enabled: !item.enabled } : { ...item }
     ));
-    const response = await saveFanxiuGameWindow3SchedulerTasks(tasks);
+    const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     await refreshScheduler();
   } catch (error: any) {
@@ -243,7 +293,7 @@ onUnmounted(() => {
             </template>
             <div class="runtime-help-doc">
               <h4>运行分组</h4>
-              <p>运行时按分组管理记忆。当前分为守护、手动作业、自动作业，优先级依次降低。</p>
+              <p>运行时按分组管理记忆。当前分为守护、手动作业、自动作业。</p>
               <p>跨组只暂停，不清记忆。守护处理弹窗时，正在运行的作业本轮不推进；守护结束后，作业从原来的生成器位置继续。</p>
               <p>手动按钮会写入手动作业队列。没有守护时，手动作业优先于后台自动作业执行。</p>
               <p>同组默认串行，不抢占。一个作业开始后会先跑完，同组里新到期的作业进入候选池，等当前作业结束后再选择。</p>
@@ -271,7 +321,7 @@ onUnmounted(() => {
               <tr>
                 <th>序号</th>
                 <th>名称</th>
-                <th>执行</th>
+                <th>备注</th>
                 <th>启用</th>
               </tr>
             </thead>
@@ -317,7 +367,7 @@ onUnmounted(() => {
               <tr>
                 <th>序号</th>
                 <th>名称</th>
-                <th>执行</th>
+                <th>备注</th>
                 <th>启用</th>
                 <th>下次触发</th>
               </tr>
@@ -336,12 +386,12 @@ onUnmounted(() => {
                     class="enable-dot"
                     :class="{ enabled: task.enabled }"
                     type="button"
-                    :disabled="actionLoading === `enable:${task.id}`"
-                    title="切换启用"
+                    :disabled="task.schedule_kind === 'manual' || actionLoading === `enable:${task.id}`"
+                    :title="task.schedule_kind === 'manual' ? '手动作业不启用' : '切换启用'"
                     @click="toggleTaskEnabled(task)"
                   />
                 </td>
-                <td>{{ nextTriggerText(task) }}</td>
+                <td :title="nextTriggerTitle(task)">{{ nextTriggerText(task) }}</td>
               </tr>
               <tr v-if="!businessTasks.length">
                 <td colspan="5" class="empty-cell">暂无作业</td>

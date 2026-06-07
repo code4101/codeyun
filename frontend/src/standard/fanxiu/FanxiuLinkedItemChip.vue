@@ -49,6 +49,12 @@ function hideBrokenIcon(event: Event) {
     event.target.style.display = 'none'
   }
 }
+
+function showLoadedIcon(event: Event) {
+  if (event.target instanceof HTMLImageElement) {
+    event.target.style.display = ''
+  }
+}
 </script>
 
 <template>
@@ -68,12 +74,12 @@ function hideBrokenIcon(event: Event) {
     data-wiki-reward-preview=""
     :data-wiki-alias="itemName"
   >
-    <span class="linked-item-icon">
+    <span v-if="itemIconUrl" class="linked-item-icon">
       <img
-        v-if="itemIconUrl"
         :src="itemIconUrl"
         :alt="itemName"
         loading="lazy"
+        @load="showLoadedIcon"
         @error="hideBrokenIcon"
       >
     </span>
@@ -84,12 +90,12 @@ function hideBrokenIcon(event: Event) {
     class="linked-item"
     :class="{ compact, muted }"
   >
-    <span class="linked-item-icon">
+    <span v-if="itemIconUrl" class="linked-item-icon">
       <img
-        v-if="itemIconUrl"
         :src="itemIconUrl"
         :alt="itemName"
         loading="lazy"
+        @load="showLoadedIcon"
         @error="hideBrokenIcon"
       >
     </span>
@@ -152,6 +158,8 @@ function hideBrokenIcon(event: Event) {
 .linked-item-icon img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  padding: 1px;
+  box-sizing: border-box;
 }
 </style>

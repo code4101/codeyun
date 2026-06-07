@@ -1,4 +1,4 @@
-from backend.core.fanxiu_sunlogin_rotate import _ocr_shape_box, _ocr_text_matches
+from backend.core.fanxiu_mumu_control import _ocr_shape_box, _ocr_text_matches
 
 
 def test_ocr_text_match_modes():
@@ -28,3 +28,4 @@ def test_ocr_shape_box_offsets_rectangle_points():
         "w": 10,
         "h": 15,
     }
+

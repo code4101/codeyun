@@ -7,12 +7,12 @@ def test_capture_runtime_tracks_multiple_reasons(monkeypatch):
     service = FanxiuCaptureRuntimeService(supervisor_interval=0.01)
     monkeypatch.setattr(service, "_ensure_supervisor_locked", lambda: None)
 
-    service.ensure_running("game-window3")
+    service.ensure_running("data-annotation")
     status = service.ensure_running("packet-capture")
 
-    assert status["active_reasons"] == ["game-window3", "packet-capture"]
+    assert status["active_reasons"] == ["data-annotation", "packet-capture"]
 
-    status = service.release("game-window3")
+    status = service.release("data-annotation")
 
     assert status["active_reasons"] == ["packet-capture"]
     assert status["state"] == "stopped"
@@ -23,7 +23,7 @@ def test_capture_runtime_force_stop_clears_reasons(monkeypatch):
     monkeypatch.setattr(service, "_ensure_supervisor_locked", lambda: None)
 
     service.ensure_running("runtime-manual")
-    service.ensure_running("game-window3")
+    service.ensure_running("data-annotation")
     status = service.force_stop()
 
     assert status["active_reasons"] == []
@@ -101,3 +101,24 @@ def test_capture_runtime_watchdog_releases_auto_reason_when_game_stops(monkeypat
 
     assert status["active_reasons"] == ["packet-page"]
     assert status["watchdog_last_action"] == "skip_no_game"
+
+
+def test_capture_runtime_flush_recent_seals_without_queueing_sync(tmp_path, monkeypatch):
+    service = FanxiuCaptureRuntimeService(supervisor_interval=0.01)
+    monkeypatch.setattr(service, "_ensure_supervisor_locked", lambda: None)
+    service.ensure_running("mail-claim-check")
+    pcap = tmp_path / "recent.pcap"
+    pcap.write_bytes(b"pcap" * 16)
+    events: list[tuple[str, bool | None]] = []
+
+    monkeypatch.setattr(service, "_tcpdump_process_alive_locked", lambda: True)
+    monkeypatch.setattr(service, "_stop_tcpdump_locked", lambda *, queue_sync=True: events.append(("stop", queue_sync)))
+    monkeypatch.setattr(service, "_start_tcpdump_locked", lambda: events.append(("start", None)))
+    with service._lock:
+        service._current_pcap_path = str(pcap)
+
+    result = service.flush_recent_capture("mail-test")
+
+    assert result["flushed"] is True
+    assert result["pcap_path"] == str(pcap)
+    assert events == [("stop", False), ("start", None)]

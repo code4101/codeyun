@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.core.fanxiu_sunlogin_rotate import get_fanxiu_mainwin_root
+from backend.core.fanxiu_mumu_control import get_fanxiu_mainwin_root
 
 
 VISUAL_ACTION_MARKER_START = "<!-- codeyun-visual-action-v1"
@@ -562,3 +562,4 @@ def run_fanxiu_visual_script(
         "result": _json_dumps(payload, indent=2),
         "updated_at": payload["updated_at"],
     }
+

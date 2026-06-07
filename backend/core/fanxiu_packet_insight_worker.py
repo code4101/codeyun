@@ -7,13 +7,30 @@ import time
 from pathlib import Path
 from typing import Any
 
-from backend.core.fanxiu_packet_insights import decode_and_sync_fanxiu_runtime_capture
-from backend.core.fanxiu_tcp_flow import resolve_fanxiu_tcp_live_capture_dir, resolve_fanxiu_tcp_store_root
+from backend.core.fanxiu_activity_packet_sync import sync_fanxiu_activity_packets
+from backend.core.fanxiu_packet_insights import (
+    PLAYER_PROFILE_PROTOCOLS,
+    decode_and_sync_fanxiu_runtime_capture,
+    sync_fanxiu_packet_player_profiles,
+    sync_fanxiu_packet_runtime_insights,
+    sync_fanxiu_packet_runtime_insights_for_decode_result,
+)
+from backend.core.fanxiu_packet_decoded_store import sync_fanxiu_decoded_record_backlog
+from backend.core.fanxiu_tcp_flow import (
+    resolve_fanxiu_tcp_live_capture_dir,
+    resolve_fanxiu_tcp_store_root,
+)
 
 
 DEFAULT_SCAN_INTERVAL_SECONDS = 15.0
+DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 30 * 60.0
 DEFAULT_STABLE_SECONDS = 8.0
+DEFAULT_FAILED_RETRY_SECONDS = 600.0
+DEFAULT_LIVE_CAPTURE_MAX_AGE_SECONDS = 24 * 60 * 60
+DEFAULT_MAINTENANCE_DECODE_LIMIT = 32
+DEFAULT_DECODE_MAX_STREAMS = 2
 MIN_PCAP_BYTES = 24
+PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
 
 
 def _now_text() -> str:
@@ -46,6 +63,10 @@ def _worker_state_path(data_dir: str | Path | None = None) -> Path:
     return resolve_fanxiu_tcp_store_root(data_dir).parent / "packet-insights" / "live_capture_worker_state.json"
 
 
+def _maintenance_state_path(data_dir: str | Path | None = None) -> Path:
+    return resolve_fanxiu_tcp_store_root(data_dir).parent / "packet-insights" / "maintenance_worker_state.json"
+
+
 def _decoded_capture_digests(data_dir: str | Path | None = None) -> set[str]:
     root = resolve_fanxiu_tcp_store_root(data_dir)
     digests: set[str] = set()
@@ -58,10 +79,64 @@ def _decoded_capture_digests(data_dir: str | Path | None = None) -> set[str]:
     return digests
 
 
+def _decoded_capture_sources_by_digest(data_dir: str | Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    root = resolve_fanxiu_tcp_store_root(data_dir)
+    sources_by_digest: dict[str, list[dict[str, Any]]] = {}
+    if not root.is_dir():
+        return sources_by_digest
+    for meta_path in root.glob("*/meta.json"):
+        meta = _load_json(meta_path, {})
+        if not isinstance(meta, dict):
+            continue
+        digest = str(meta.get("capture_sha256") or "").strip()
+        if not digest:
+            continue
+        record_dir = meta_path.parent
+        decoded_path = Path(str(meta.get("decoded_path") or record_dir / "decoded.json"))
+        if not decoded_path.is_file():
+            continue
+        sources_by_digest.setdefault(digest, []).append(
+            {
+                "decoded_path": str(decoded_path),
+                "record_id": meta.get("record_id") or record_dir.name,
+                "pcap_name": meta.get("pcap_name") or "",
+                "created_at": meta.get("created_at") or "",
+                "source_kind": "record",
+                "source_pcap": meta.get("source_pcap") or "",
+                "stored_pcap": meta.get("stored_pcap") or "",
+                "stream": int(meta.get("stream") or 0),
+            }
+        )
+    return sources_by_digest
+
+
+def _decode_result_from_source(source: dict[str, Any]) -> dict[str, Any] | None:
+    decoded_path = Path(str(source.get("decoded_path") or ""))
+    decoded = _load_json(decoded_path, {})
+    if not isinstance(decoded, dict):
+        return None
+    decoded.update(
+        {
+            "record_id": source.get("record_id") or decoded.get("record_id") or "",
+            "created_at": source.get("created_at") or decoded.get("created_at") or "",
+            "pcap_name": source.get("pcap_name") or decoded.get("pcap_name") or "",
+            "source_pcap": source.get("source_pcap") or decoded.get("pcap") or "",
+            "stored_pcap": source.get("stored_pcap") or decoded.get("stored_pcap") or "",
+            "stream": int(source.get("stream") or decoded.get("stream") or 0),
+            "stored_decoded_path": str(decoded_path),
+            "output_path": str(decoded_path),
+        }
+    )
+    return decoded
+
+
 def _iter_stable_live_pcaps(
     *,
     data_dir: str | Path | None = None,
     stable_seconds: float = DEFAULT_STABLE_SECONDS,
+    max_age_seconds: float | None = None,
+    min_mtime: float = 0.0,
+    newest_first: bool = False,
     now: float | None = None,
 ) -> list[Path]:
     live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
@@ -69,56 +144,242 @@ def _iter_stable_live_pcaps(
         return []
     now_value = time.time() if now is None else now
     rows: list[Path] = []
-    for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.stat().st_mtime, reverse=bool(newest_first)):
         try:
             stat = path.stat()
         except OSError:
             continue
         if stat.st_size <= MIN_PCAP_BYTES:
             continue
+        if min_mtime and stat.st_mtime <= min_mtime:
+            continue
         if now_value - stat.st_mtime < max(1.0, float(stable_seconds)):
+            continue
+        if max_age_seconds is not None and max_age_seconds > 0 and now_value - stat.st_mtime > float(max_age_seconds):
             continue
         rows.append(path)
     return rows
 
 
-def sync_fanxiu_live_capture_backlog(
+def _previous_errors_by_digest(state: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(state, dict):
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for item in state.get("errors") or []:
+        if not isinstance(item, dict):
+            continue
+        digest = str(item.get("digest") or "").strip()
+        if digest:
+            output[digest] = item
+    return output
+
+
+def _pcap_state_item(path: Path, digest: str, *, status: str, reason: str = "", extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        stat = path.stat()
+        mtime = float(stat.st_mtime)
+        size = int(stat.st_size)
+    except OSError:
+        mtime = 0.0
+        size = 0
+    item: dict[str, Any] = {
+        "path": str(path),
+        "name": path.name,
+        "digest": digest,
+        "status": status,
+        "reason": reason,
+        "mtime": mtime,
+        "size": size,
+        "updated_at": _now_text(),
+    }
+    if extra:
+        item.update(extra)
+    return item
+
+
+def _merge_pcap_states(previous_state: Any, updates: list[dict[str, Any]], *, limit: int = 200) -> list[dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    if isinstance(previous_state, dict):
+        for item in previous_state.get("pcap_states") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("digest") or item.get("path") or "").strip()
+            if key:
+                states[key] = item
+    for item in updates:
+        key = str(item.get("digest") or item.get("path") or "").strip()
+        if key:
+            states[key] = item
+    return sorted(states.values(), key=lambda item: float(item.get("mtime") or 0), reverse=True)[:limit]
+
+
+def _sync_business_after_decoded(
+    decoded: list[dict[str, Any]],
     *,
     data_dir: str | Path | None = None,
-    stable_seconds: float = DEFAULT_STABLE_SECONDS,
-    limit: int = 8,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not decoded:
+        return {}, {}
+    runtime_sync: dict[str, Any] = {
+        "ok": True,
+        "changed": False,
+        "mode": "incremental_decoded_business_sync",
+        "source_count": 0,
+        "sync_count": 0,
+        "error_count": 0,
+        "errors": [],
+    }
+    decoded_sources = [
+        source
+        for item in decoded
+        for source in (item.get("decoded_sources") or [])
+        if isinstance(source, dict)
+    ]
+    for source in decoded_sources:
+        result = _decode_result_from_source(source)
+        if result is None:
+            continue
+        frames = result.get("frames") if isinstance(result.get("frames"), list) else []
+        profile_frames = [
+            frame
+            for frame in frames
+            if isinstance(frame, dict) and str(frame.get("name") or "") in PLAYER_PROFILE_PROTOCOLS
+        ]
+        if not profile_frames:
+            continue
+        result = {**result, "frames": profile_frames}
+        runtime_sync["source_count"] += 1
+        try:
+            sync_result = sync_fanxiu_packet_runtime_insights_for_decode_result(
+                result,
+                data_dir=data_dir,
+                force=False,
+            )
+            if sync_result is not None:
+                runtime_sync["sync_count"] += 1
+                runtime_sync["changed"] = bool(runtime_sync["changed"] or sync_result.get("changed"))
+        except Exception as exc:
+            runtime_sync["ok"] = False
+            runtime_sync["error_count"] += 1
+            runtime_sync["errors"].append({"decoded_path": str(source.get("decoded_path") or ""), "error": str(exc)})
+    try:
+        from sqlmodel import Session
+
+        from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets
+        from backend.db import engine
+
+        with Session(engine) as session:
+            mail_sync = sync_fanxiu_mail_packets(
+                session,
+                data_dir=data_dir,
+                clear_existing=False,
+                decoded_sources=decoded_sources,
+            )
+    except Exception as exc:
+        mail_sync = {"ok": False, "error": str(exc)}
+    for item in decoded:
+        item["batch_packet_runtime_sync"] = {
+            "changed": bool(runtime_sync.get("changed")) if isinstance(runtime_sync, dict) else False,
+            "snapshot_path": str(runtime_sync.get("snapshot_path") or "") if isinstance(runtime_sync, dict) else "",
+        }
+        item["batch_mail_packet_sync"] = mail_sync
+    return runtime_sync, mail_sync
+
+
+def _sync_historical_business_backlog(
+    *,
+    data_dir: str | Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    runtime_sync: dict[str, Any] = {"ok": True, "mode": "historical_business_backlog"}
+    try:
+        packet_runtime_sync = sync_fanxiu_packet_runtime_insights(data_dir=data_dir, force=False)
+    except Exception as exc:
+        packet_runtime_sync = {"ok": False, "error": str(exc)}
+    try:
+        player_profile_sync = sync_fanxiu_packet_player_profiles(data_dir=data_dir, force=False)
+    except Exception as exc:
+        player_profile_sync = {"ok": False, "error": str(exc)}
+    runtime_sync["packet_runtime_sync"] = packet_runtime_sync
+    runtime_sync["player_profile_sync"] = player_profile_sync
+    runtime_sync["ok"] = bool(packet_runtime_sync.get("ok", True) and player_profile_sync.get("ok", True))
+    runtime_sync["changed"] = bool(packet_runtime_sync.get("changed") or player_profile_sync.get("changed"))
+
+    try:
+        from sqlmodel import Session
+
+        from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets
+        from backend.db import engine
+
+        with Session(engine) as session:
+            mail_sync = sync_fanxiu_mail_packets(
+                session,
+                data_dir=data_dir,
+                clear_existing=False,
+                decoded_sources=None,
+            )
+    except Exception as exc:
+        mail_sync = {"ok": False, "error": str(exc)}
+    return runtime_sync, mail_sync
+
+
+def sync_fanxiu_capture_paths(
+    paths: list[str | Path],
+    *,
+    data_dir: str | Path | None = None,
+    max_streams: int = DEFAULT_DECODE_MAX_STREAMS,
 ) -> dict[str, Any]:
-    """Decode stable live captures that were not already persisted into tcp-flow records."""
+    """Decode specific sealed pcaps and update business facts once.
+
+    Behavior-tree jobs use this for short, recent capture segments. It avoids
+    walking the historical live-capture backlog while keeping decode/upsert
+    responsibilities inside the packet service.
+    """
     decoded_digests = _decoded_capture_digests(data_dir)
-    previous_state = _load_json(_worker_state_path(data_dir), {})
-    failed_digests = {
-        str(item.get("digest") or "")
-        for item in (previous_state.get("errors") or [])
-        if isinstance(item, dict) and item.get("digest")
-    } if isinstance(previous_state, dict) else set()
-    scanned = 0
+    decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
     decoded: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-
-    for path in _iter_stable_live_pcaps(data_dir=data_dir, stable_seconds=stable_seconds):
-        if scanned >= max(1, int(limit)):
-            break
-        scanned += 1
+    for raw_path in paths:
+        path = Path(raw_path).expanduser().resolve()
+        if not path.is_file():
+            skipped.append({"path": str(path), "reason": "missing"})
+            continue
         try:
+            if path.stat().st_size <= MIN_PCAP_BYTES:
+                skipped.append({"path": str(path), "reason": "too_small"})
+                continue
             digest = _sha256_file(path)
         except OSError as exc:
             errors.append({"path": str(path), "error": str(exc)})
             continue
         if digest in decoded_digests:
-            skipped.append({"path": str(path), "reason": "already_decoded"})
-            continue
-        if digest in failed_digests:
-            skipped.append({"path": str(path), "reason": "previous_error"})
+            backfill_sources = decoded_sources_by_digest.get(digest) or []
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "already_decoded",
+                    "business_backfill_source_count": len(backfill_sources),
+                }
+            )
+            if backfill_sources:
+                decoded.append(
+                    {
+                        "path": str(path),
+                        "decoded_count": 0,
+                        "runtime_protocol_count": 0,
+                        "worship_protocol_count": 0,
+                        "already_decoded": True,
+                        "decoded_sources": backfill_sources,
+                    }
+                )
             continue
         try:
-            result = decode_and_sync_fanxiu_runtime_capture(path, data_dir=data_dir)
-            decoded_digests.add(digest)
+            result = decode_and_sync_fanxiu_runtime_capture(
+                path,
+                data_dir=data_dir,
+                max_streams=max(1, int(max_streams)),
+                sync_business=False,
+            )
             decoded.append(
                 {
                     "path": str(path),
@@ -126,23 +387,324 @@ def sync_fanxiu_live_capture_backlog(
                     "runtime_protocol_count": result.get("runtime_protocol_count") or 0,
                     "worship_protocol_count": result.get("worship_protocol_count") or 0,
                     "packet_runtime_sync": result.get("packet_runtime_sync") or {},
+                    "mail_packet_sync": result.get("mail_packet_sync") or {},
+                    "decoded_sources": [
+                        {
+                            "decoded_path": item.get("output_path") or "",
+                            "record_id": item.get("record_id") or "",
+                            "pcap_name": path.name,
+                            "created_at": _now_text(),
+                            "source_kind": "runtime",
+                            "source_pcap": str(path),
+                            "stream": item.get("stream"),
+                            "capture_sha256": digest,
+                        }
+                        for item in (result.get("decoded") or [])
+                        if isinstance(item, dict) and item.get("output_path")
+                    ],
                 }
             )
+            decoded_digests.add(digest)
         except Exception as exc:
             errors.append({"path": str(path), "digest": digest, "error": str(exc)})
-
+    _runtime_sync, mail_sync = _sync_business_after_decoded(decoded, data_dir=data_dir)
     payload = {
+        "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
         "ok": not errors,
         "updated_at": _now_text(),
-        "scanned": scanned,
+        "input_count": len(paths),
         "decoded_count": len(decoded),
+        "new_decode_count": sum(1 for item in decoded if not item.get("already_decoded")),
+        "business_backfill_count": sum(1 for item in decoded if item.get("already_decoded")),
         "skipped_count": len(skipped),
         "error_count": len(errors),
         "decoded": decoded,
+        "skipped": skipped,
+        "errors": errors,
+        "mail_packet_sync": mail_sync,
+    }
+    return payload
+
+
+def sync_fanxiu_live_capture_backlog(
+    *,
+    data_dir: str | Path | None = None,
+    stable_seconds: float = DEFAULT_STABLE_SECONDS,
+    retry_failed_after_seconds: float = DEFAULT_FAILED_RETRY_SECONDS,
+    max_capture_age_seconds: float | None = DEFAULT_LIVE_CAPTURE_MAX_AGE_SECONDS,
+    max_streams: int = DEFAULT_DECODE_MAX_STREAMS,
+    use_cursor: bool = True,
+    limit: int = 8,
+    newest_first: bool = False,
+) -> dict[str, Any]:
+    """Decode stable live captures and push decoded facts into business writers.
+
+    This worker is the packet service's independent ingestion path. It must not
+    depend on UI pages or behavior-tree jobs to refresh mail/bag/activity data.
+    """
+    decoded_digests = _decoded_capture_digests(data_dir)
+    decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
+    previous_state = _load_json(_worker_state_path(data_dir), {})
+    previous_errors = _previous_errors_by_digest(previous_state)
+    previous_cursor_mtime = float(
+        previous_state.get("confirmed_cursor_mtime") or previous_state.get("cursor_mtime") or 0
+    ) if isinstance(previous_state, dict) else 0.0
+    retry_seconds = max(0.0, float(retry_failed_after_seconds))
+    now_epoch = time.time()
+    scanned = 0
+    decoded: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    pcap_state_updates: list[dict[str, Any]] = []
+    decode_attempts = 0
+    business_backfill_attempts = 0
+    max_scanned = max(max(1, int(limit)) * 500, max(1, int(limit)))
+    confirmed_cursor_mtime = previous_cursor_mtime
+    confirmed_cursor_pcap = str(
+        previous_state.get("confirmed_cursor_pcap") or previous_state.get("cursor_pcap") or ""
+    ) if isinstance(previous_state, dict) else ""
+    latest_scanned_mtime = float(previous_state.get("latest_scanned_mtime") or previous_cursor_mtime) if isinstance(previous_state, dict) else previous_cursor_mtime
+    latest_scanned_pcap = str(previous_state.get("latest_scanned_pcap") or "") if isinstance(previous_state, dict) else ""
+    cursor_blocked = False
+
+    for path in _iter_stable_live_pcaps(
+        data_dir=data_dir,
+        stable_seconds=stable_seconds,
+        max_age_seconds=max_capture_age_seconds,
+        min_mtime=previous_cursor_mtime if use_cursor else 0.0,
+        newest_first=newest_first,
+        now=now_epoch,
+    ):
+        if decode_attempts >= max(1, int(limit)) or scanned >= max_scanned:
+            break
+        scanned += 1
+        try:
+            path_mtime = float(path.stat().st_mtime)
+            latest_scanned_mtime = max(path_mtime, latest_scanned_mtime)
+            latest_scanned_pcap = str(path)
+        except OSError:
+            path_mtime = 0.0
+        try:
+            digest = _sha256_file(path)
+        except OSError as exc:
+            errors.append({"path": str(path), "error": str(exc)})
+            pcap_state_updates.append(_pcap_state_item(path, "", status="failed", reason="hash_error", extra={"error": str(exc)}))
+            cursor_blocked = True
+            continue
+        if digest in decoded_digests:
+            backfill_sources = decoded_sources_by_digest.get(digest) or []
+            should_backfill = bool(backfill_sources) and business_backfill_attempts < max(1, int(limit))
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "already_decoded",
+                    "business_backfill_source_count": len(backfill_sources),
+                    "business_backfill_queued": should_backfill,
+                }
+            )
+            if should_backfill:
+                business_backfill_attempts += 1
+                decoded.append(
+                    {
+                        "path": str(path),
+                        "decoded_count": 0,
+                        "runtime_protocol_count": 0,
+                        "worship_protocol_count": 0,
+                        "already_decoded": True,
+                        "decoded_sources": backfill_sources,
+                    }
+                )
+            pcap_state_updates.append(_pcap_state_item(path, digest, status="already_decoded", reason="digest_seen"))
+            if not cursor_blocked and path_mtime:
+                confirmed_cursor_mtime = max(path_mtime, confirmed_cursor_mtime)
+                confirmed_cursor_pcap = str(path)
+            continue
+        previous_error = previous_errors.get(digest)
+        if previous_error:
+            last_error_at = float(previous_error.get("last_error_at_epoch") or 0)
+            if retry_seconds and now_epoch - last_error_at < retry_seconds:
+                retry_after = round(retry_seconds - (now_epoch - last_error_at), 3)
+                skipped_item = {
+                    "path": str(path),
+                    "reason": "recent_error",
+                    "retry_after_seconds": retry_after,
+                    "attempts": int(previous_error.get("attempts") or 1),
+                }
+                skipped.append(skipped_item)
+                pcap_state_updates.append(
+                    _pcap_state_item(path, digest, status="recent_error", reason="retry_backoff", extra=skipped_item)
+                )
+                cursor_blocked = True
+                continue
+        decode_attempts += 1
+        try:
+            result = decode_and_sync_fanxiu_runtime_capture(
+                path,
+                data_dir=data_dir,
+                max_streams=max(1, int(max_streams)),
+                sync_business=False,
+            )
+            decoded_digests.add(digest)
+            previous_errors.pop(digest, None)
+            decoded.append(
+                {
+                    "path": str(path),
+                    "decoded_count": result.get("decoded_count") or 0,
+                    "runtime_protocol_count": result.get("runtime_protocol_count") or 0,
+                    "worship_protocol_count": result.get("worship_protocol_count") or 0,
+                    "packet_runtime_sync": result.get("packet_runtime_sync") or {},
+                    "mail_packet_sync": result.get("mail_packet_sync") or {},
+                    "decoded_sources": [
+                        {
+                            "decoded_path": item.get("output_path") or "",
+                            "record_id": item.get("record_id") or "",
+                            "pcap_name": path.name,
+                            "created_at": _now_text(),
+                            "source_kind": "runtime",
+                            "source_pcap": str(path),
+                            "stream": item.get("stream"),
+                            "capture_sha256": digest,
+                        }
+                        for item in (result.get("decoded") or [])
+                        if isinstance(item, dict) and item.get("output_path")
+                    ],
+                }
+            )
+            pcap_state_updates.append(
+                _pcap_state_item(
+                    path,
+                    digest,
+                    status="decoded",
+                    extra={
+                        "decoded_count": result.get("decoded_count") or 0,
+                        "runtime_protocol_count": result.get("runtime_protocol_count") or 0,
+                        "worship_protocol_count": result.get("worship_protocol_count") or 0,
+                    },
+                )
+            )
+            if not cursor_blocked and path_mtime:
+                confirmed_cursor_mtime = max(path_mtime, confirmed_cursor_mtime)
+                confirmed_cursor_pcap = str(path)
+        except Exception as exc:
+            attempts = int((previous_error or {}).get("attempts") or 0) + 1
+            error_item = {
+                "path": str(path),
+                "digest": digest,
+                "error": str(exc),
+                "attempts": attempts,
+                "first_error_at": (previous_error or {}).get("first_error_at") or _now_text(),
+                "last_error_at": _now_text(),
+                "last_error_at_epoch": now_epoch,
+                "parser_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+            }
+            errors.append(error_item)
+            pcap_state_updates.append(_pcap_state_item(path, digest, status="failed", reason="decode_error", extra=error_item))
+            cursor_blocked = True
+
+    _batch_runtime_sync, batch_mail_sync = _sync_business_after_decoded(decoded, data_dir=data_dir)
+
+    merged_errors = {**previous_errors}
+    for error in errors:
+        digest = str(error.get("digest") or "").strip()
+        if digest:
+            merged_errors[digest] = error
+    payload = {
+        "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "ok": not errors,
+        "updated_at": _now_text(),
+        "cursor_mtime": confirmed_cursor_mtime,
+        "cursor_pcap": confirmed_cursor_pcap,
+        "confirmed_cursor_mtime": confirmed_cursor_mtime,
+        "confirmed_cursor_pcap": confirmed_cursor_pcap,
+        "latest_scanned_mtime": latest_scanned_mtime,
+        "latest_scanned_pcap": latest_scanned_pcap,
+        "has_unconfirmed_gap": cursor_blocked or bool(merged_errors),
+        "scanned": scanned,
+        "decode_attempts": decode_attempts,
+        "business_backfill_attempts": business_backfill_attempts,
+        "decoded_count": len(decoded),
+        "new_decode_count": sum(1 for item in decoded if not item.get("already_decoded")),
+        "business_backfill_count": sum(1 for item in decoded if item.get("already_decoded")),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "known_error_count": len(merged_errors),
+        "decoded": decoded,
         "skipped": skipped[-20:],
-        "errors": errors[-20:],
+        "errors": list(merged_errors.values())[-20:],
+        "pcap_states": _merge_pcap_states(previous_state, pcap_state_updates),
     }
     _write_json(_worker_state_path(data_dir), payload)
+    return payload
+
+
+def sync_fanxiu_capture_maintenance_backlog(
+    *,
+    data_dir: str | Path | None = None,
+    stable_seconds: float = DEFAULT_STABLE_SECONDS,
+    retry_failed_after_seconds: float = 0.0,
+    max_streams: int = DEFAULT_DECODE_MAX_STREAMS,
+    limit: int = DEFAULT_MAINTENANCE_DECODE_LIMIT,
+    include_decoded_record_backlog: bool = False,
+    include_activity_packet_sync: bool = False,
+    include_historical_business_backlog: bool = False,
+) -> dict[str, Any]:
+    """Run the non-urgent catch-up pass over historical live captures.
+
+    The live worker is optimized for low latency and recent captures. This
+    maintenance pass intentionally ignores the realtime cursor and age window so
+    old missed captures, failed gaps, and newly fixed parser rules can be
+    retried without depending on UI refreshes or behavior-tree jobs.
+    """
+    result = sync_fanxiu_live_capture_backlog(
+        data_dir=data_dir,
+        stable_seconds=stable_seconds,
+        retry_failed_after_seconds=retry_failed_after_seconds,
+        max_capture_age_seconds=None,
+        max_streams=max_streams,
+        use_cursor=False,
+        newest_first=True,
+        limit=limit,
+    )
+    if include_decoded_record_backlog:
+        decoded_record_sync = sync_fanxiu_decoded_record_backlog(data_dir=data_dir, limit=max(64, int(limit) * 4))
+    else:
+        decoded_record_sync = {
+            "ok": True,
+            "skipped": True,
+            "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
+        }
+    if include_activity_packet_sync:
+        activity_sync = sync_fanxiu_activity_packets(data_dir=data_dir, force=False)
+    else:
+        activity_sync = {
+            "ok": True,
+            "skipped": True,
+            "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
+        }
+    if include_historical_business_backlog:
+        historical_runtime_sync, historical_mail_sync = _sync_historical_business_backlog(data_dir=data_dir)
+    else:
+        historical_runtime_sync = {
+            "ok": True,
+            "mode": "historical_business_backlog",
+            "skipped": True,
+            "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
+        }
+        historical_mail_sync = {
+            "ok": True,
+            "skipped": True,
+            "reason": "default_maintenance_keeps_latest_pcap_backfill_bounded",
+        }
+    payload = {
+        **result,
+        "mode": "maintenance",
+        "updated_at": _now_text(),
+        "decoded_record_db_sync": decoded_record_sync,
+        "activity_packet_sync": activity_sync,
+        "historical_runtime_business_sync": historical_runtime_sync,
+        "historical_mail_packet_sync": historical_mail_sync,
+    }
+    _write_json(_maintenance_state_path(data_dir), payload)
     return payload
 
 
@@ -151,38 +713,82 @@ class FanxiuPacketInsightWorker:
         self,
         *,
         scan_interval_seconds: float = DEFAULT_SCAN_INTERVAL_SECONDS,
+        maintenance_interval_seconds: float = DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
         stable_seconds: float = DEFAULT_STABLE_SECONDS,
     ) -> None:
         self.scan_interval_seconds = max(3.0, float(scan_interval_seconds))
+        self.maintenance_interval_seconds = max(60.0, float(maintenance_interval_seconds))
         self.stable_seconds = max(1.0, float(stable_seconds))
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_result: dict[str, Any] = {}
+        self._maintenance_stop_event = threading.Event()
+        self._maintenance_thread: threading.Thread | None = None
+        self._last_realtime_result: dict[str, Any] = {}
+        self._last_maintenance_result: dict[str, Any] = {}
 
     def start(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
             self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run_loop, name="fanxiu-packet-insight-worker", daemon=True)
-            self._thread.start()
+            self._maintenance_stop_event.clear()
+            if not (self._thread and self._thread.is_alive()):
+                self._thread = threading.Thread(target=self._run_loop, name="fanxiu-packet-realtime-worker", daemon=True)
+                self._thread.start()
+            if not (self._maintenance_thread and self._maintenance_thread.is_alive()):
+                self._maintenance_thread = threading.Thread(
+                    target=self._maintenance_loop,
+                    name="fanxiu-packet-maintenance-worker",
+                    daemon=True,
+                )
+                self._maintenance_thread.start()
 
     def stop(self) -> None:
         with self._lock:
             self._stop_event.set()
+            self._maintenance_stop_event.set()
             thread = self._thread
+            maintenance_thread = self._maintenance_thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+        if maintenance_thread and maintenance_thread.is_alive():
+            maintenance_thread.join(timeout=2.0)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return dict(self._last_result)
+            realtime = dict(self._last_realtime_result)
+            maintenance = dict(self._last_maintenance_result)
+            return {
+                **realtime,
+                "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+                "ok": bool(
+                    realtime.get("ok", True)
+                    and maintenance.get("ok", True)
+                ),
+                "updated_at": _now_text(),
+                "realtime_running": bool(self._thread and self._thread.is_alive()),
+                "maintenance_running": bool(self._maintenance_thread and self._maintenance_thread.is_alive()),
+                "realtime_interval_seconds": self.scan_interval_seconds,
+                "maintenance_interval_seconds": self.maintenance_interval_seconds,
+                "realtime": realtime,
+                "maintenance": maintenance,
+            }
 
     def scan_once(self) -> dict[str, Any]:
-        result = sync_fanxiu_live_capture_backlog(stable_seconds=self.stable_seconds)
+        result = sync_fanxiu_live_capture_backlog(
+            stable_seconds=self.stable_seconds,
+            use_cursor=False,
+            newest_first=True,
+        )
+        result["decoded_record_db_sync"] = sync_fanxiu_decoded_record_backlog(limit=16)
+        result["activity_packet_sync"] = sync_fanxiu_activity_packets(force=False)
         with self._lock:
-            self._last_result = result
+            self._last_realtime_result = result
+        return result
+
+    def maintenance_once(self) -> dict[str, Any]:
+        result = sync_fanxiu_capture_maintenance_backlog(stable_seconds=self.stable_seconds)
+        with self._lock:
+            self._last_maintenance_result = result
         return result
 
     def _run_loop(self) -> None:
@@ -191,7 +797,15 @@ class FanxiuPacketInsightWorker:
                 self.scan_once()
             except Exception as exc:
                 with self._lock:
-                    self._last_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+                    self._last_realtime_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+
+    def _maintenance_loop(self) -> None:
+        while not self._maintenance_stop_event.wait(self.maintenance_interval_seconds):
+            try:
+                self.maintenance_once()
+            except Exception as exc:
+                with self._lock:
+                    self._last_maintenance_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
 
 
 fanxiu_packet_insight_worker = FanxiuPacketInsightWorker()

@@ -135,7 +135,7 @@ def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
 def get_codeyun_watchdog_status() -> dict[str, Any]:
     processes = list_codeyun_watchdog_processes()
     running = bool(processes)
-    interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "300")
+    interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60")
     settings = get_settings()
     return {
         "key": CODEYUN_WATCHDOG_SERVICE_KEY,
@@ -173,7 +173,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
         os.fspath(WATCHDOG_SCRIPT),
         "--loop",
         "--interval",
-        str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "300"),
+        str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60"),
     ]
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")

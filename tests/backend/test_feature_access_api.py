@@ -301,7 +301,7 @@ def test_feature_access_denied_fanxiu_api_returns_403(client):
 
     assert update_response.status_code == 200
 
-    response = client.get("/api/fanxiu/game-window3/runtime/status")
+    response = client.get("/api/fanxiu/data-annotation/runtime/status")
 
     assert response.status_code == 403
     assert response.json()["detail"] == "当前账号无权访问该功能"

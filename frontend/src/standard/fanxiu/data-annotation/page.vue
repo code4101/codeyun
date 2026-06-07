@@ -87,14 +87,6 @@
               </div>
             </div>
             <div class="control-row switch-row">
-              <div v-if="selectedWindowKey === 'sunlogin'" class="switch-field">
-                <span class="control-label">自动关向日葵广告弹窗</span>
-                <el-switch
-                  v-model="autoDismissPopup"
-                  size="small"
-                  @change="restartStream"
-                />
-              </div>
               <div class="switch-field">
                 <span class="control-label">模式</span>
                 <el-select
@@ -292,6 +284,15 @@
                 >
                   图片对比
                 </button>
+                <button
+                  v-if="selectedImageUsesJpegFrame"
+                  type="button"
+                  class="jpeg-frame-reset-hint"
+                  title="JPG 有压缩损失，建议用当前画面重置为 PNG 帧"
+                  @click="resetSelectedAssetFrameFromHint"
+                >
+                  JPG，建议重置 PNG
+                </button>
               </div>
             </div>
 
@@ -410,21 +411,18 @@
     <div v-if="selectedShape" class="shape-fields">
                 <el-input v-model="selectedShape.title" size="small" placeholder="标题" />
                 <div v-if="selectedShape.kind !== 'group'" class="shape-detect-row">
-                  <el-checkbox v-model="selectedShape.floating">
-                    浮动
-                  </el-checkbox>
-                  <button
-                    type="button"
-                    class="shape-condition-toggle"
-                    :class="'is-' + selectedShapeSceneIdentityRole"
-                    :title="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
-                    :aria-label="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
-                    @click="cycleSelectedShapeSceneIdentityRole"
-                  >
-                    {{ shapeMatchRoleLabel(selectedShapeSceneIdentityRole) }}
-                  </button>
-                  <span>
-                    场景标识
+                  <span class="shape-action-group">
+                    <button
+                      type="button"
+                      class="shape-condition-toggle"
+                      :class="'is-' + selectedShapeSceneIdentityRole"
+                      :title="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
+                      :aria-label="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
+                      @click="cycleSelectedShapeSceneIdentityRole"
+                    >
+                      {{ shapeMatchRoleLabel(selectedShapeSceneIdentityRole) }}
+                    </button>
+                    <span>场景标识</span>
                   </span>
                   <div class="shape-jump-field">
                     <span>场景跳转</span>
@@ -448,6 +446,9 @@
                       <el-option label="→" value="right" />
                     </el-select>
                   </div>
+                  <el-checkbox v-model="selectedShape.floating">
+                    浮动
+                  </el-checkbox>
                   <span class="shape-row-break" aria-hidden="true" />
                   <div class="shape-jump-field shape-pixel-tolerance-field">
                     <button
@@ -489,6 +490,21 @@
                     <el-button size="small" :disabled="!selectedShape" @click="openShapeDiscriminatorDialog">
                       区分
                     </el-button>
+                  </div>
+                  <div class="shape-action-group shape-jitter-config">
+                    <el-checkbox v-model="selectedShape.jitterEnabled" title="启用抖动校正" aria-label="启用抖动校正">
+                      抖动
+                    </el-checkbox>
+                    <el-input-number
+                      v-if="selectedShape.jitterEnabled"
+                      v-model="selectedShape.jitterRadius"
+                      class="shape-jitter-radius-input"
+                      size="small"
+                      :min="1"
+                      :max="12"
+                      :step="1"
+                      :controls="false"
+                    />
                   </div>
                   <span class="shape-row-break" aria-hidden="true" />
                   <div class="shape-action-group shape-ocr-config">
@@ -532,9 +548,22 @@
                     <span v-if="selectedShapeDetectResult" class="shape-detect-result">
                       {{ selectedShapeDetectResult }}
                     </span>
+                    <el-button
+                      v-if="selectedShapeDetectDebug"
+                      size="small"
+                      plain
+                      @click="openShapeDetectDebugDialog"
+                    >
+                      调试
+                    </el-button>
                   </div>
                 </div>
-                <el-input v-model="selectedShape.description" type="textarea" :rows="4" placeholder="说明" />
+                <el-input
+                  v-model="selectedShape.description"
+                  type="textarea"
+                  :autosize="{ minRows: 4 }"
+                  placeholder="说明"
+                />
               </div>
             </div>
 
@@ -739,39 +768,81 @@
           <div class="shape-mask-preview">
             <div class="shape-mask-label">当前直播</div>
             <img v-if="shapeMaskLivePreviewUrl" :src="shapeMaskLivePreviewUrl" alt="当前直播" />
-            <div v-else class="shape-mask-empty">等待采样</div>
+            <div v-else class="shape-mask-empty">等待抠图</div>
           </div>
           <div class="shape-mask-preview">
             <div class="shape-mask-label">抠图结果</div>
             <img v-if="shapeMaskResultPreviewUrl" :src="shapeMaskResultPreviewUrl" alt="抠图结果" />
-            <div v-else class="shape-mask-empty">等待采样</div>
+            <div v-else class="shape-mask-empty">等待抠图</div>
           </div>
         </div>
         <div class="shape-mask-controls">
-          <span>采样 {{ shapeMaskFrameCount }} 帧</span>
-          <div class="shape-mask-slider">
-            <span>阈值 {{ shapeMaskThreshold }}</span>
-            <el-slider v-model="shapeMaskThreshold" :min="0" :max="120" :step="1" @input="refreshShapeMaskPreview" />
+          <div class="shape-mask-control-row">
+            <el-select v-model="shapeMaskCaptureMode" class="shape-mask-select is-capture" size="small" @change="pauseShapeMaskSampling">
+              <el-option label="单帧" value="single" />
+              <el-option label="连拍" value="burst" />
+            </el-select>
+            <el-select v-model="shapeMaskAlgorithm" class="shape-mask-select is-algorithm" size="small" @change="pauseShapeMaskSampling">
+              <el-option label="差异抠图" value="difference" />
+              <el-option label="连通抠图" value="background" />
+            </el-select>
+            <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
+            <span class="shape-mask-frame-count">已取 {{ shapeMaskFrameCount }} 帧</span>
           </div>
-          <el-button size="small" type="primary" plain :disabled="shapeMaskRunning" @click="startShapeMaskSampling">
-            开始
-          </el-button>
-          <el-button size="small" :disabled="!shapeMaskRunning" @click="pauseShapeMaskSampling">
-            暂停
-          </el-button>
-          <el-button size="small" :disabled="!shapeMaskStats?.reference" @click="cleanShapeMaskAlpha">
-            净化
-          </el-button>
-          <button
-            type="button"
-            class="shape-help-button is-inline"
-            title="查看净化说明"
-            aria-label="查看净化说明"
-            @click="showShapeMaskCleanHelp"
-          >
-            ?
-          </button>
-          <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
+          <div class="shape-mask-control-row">
+            <el-button size="small" :type="shapeMaskRunning ? 'default' : 'primary'" plain @click="runSelectedShapeMaskMode">
+              {{ shapeMaskRunning ? '暂停' : (shapeMaskCaptureMode === 'burst' ? '开始' : '执行') }}
+            </el-button>
+            <el-button size="small" @click="toggleShapeMaskManualEditor">
+              手动编辑
+            </el-button>
+            <div v-if="shapeMaskAlgorithm === 'difference'" class="shape-mask-slider">
+              <span>阈值 {{ shapeMaskThreshold }}</span>
+              <el-slider v-model="shapeMaskThreshold" :min="0" :max="120" :step="1" @input="refreshShapeMaskPreview" />
+            </div>
+            <button
+              type="button"
+              class="shape-help-button is-inline"
+              title="查看抠图说明"
+              aria-label="查看抠图说明"
+              @click="showShapeMaskCleanHelp"
+            >
+              ?
+            </button>
+          </div>
+          <div v-if="shapeMaskManualVisible" class="shape-mask-manual">
+            <div class="shape-mask-manual-toolbar">
+              <el-select v-model="shapeMaskManualTool" class="shape-mask-select is-manual-tool" size="small">
+                <el-option label="擦除" value="erase" />
+                <el-option label="恢复" value="restore" />
+              </el-select>
+              <div class="shape-mask-slider is-brush">
+                <span>画笔 {{ shapeMaskManualBrushSize }}</span>
+                <el-slider v-model="shapeMaskManualBrushSize" :min="1" :max="40" :step="1" />
+              </div>
+              <el-button size="small" :disabled="!shapeMaskManualUndoStack.length" @click="undoShapeMaskManual">撤销</el-button>
+              <el-button size="small" :disabled="!shapeMaskManualRedoStack.length" @click="redoShapeMaskManual">重做</el-button>
+            </div>
+            <div
+              ref="shapeMaskManualCanvasWrapRef"
+              class="shape-mask-manual-canvas-wrap"
+              :class="{
+                'is-pan-ready': screenshotSpacePressed && !shapeMaskManualPanState,
+                'is-panning': Boolean(shapeMaskManualPanState),
+              }"
+              @wheel="handleShapeMaskManualWheel"
+            >
+              <canvas
+                ref="shapeMaskManualCanvasRef"
+                class="shape-mask-manual-canvas"
+                @pointerdown="handleShapeMaskManualPointerDown"
+                @pointermove="handleShapeMaskManualPointerMove"
+                @pointerup="handleShapeMaskManualPointerUp"
+                @pointercancel="handleShapeMaskManualPointerUp"
+                @pointerleave="handleShapeMaskManualPointerUp"
+              />
+            </div>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -932,6 +1003,54 @@
       </template>
     </el-dialog>
     <el-dialog
+      v-model="shapeDetectDebugDialogVisible"
+      class="shape-detect-debug-dialog"
+      title="匹配调试"
+      width="860px"
+      append-to-body
+      top="8vh"
+    >
+      <div v-if="shapeDetectDebugCurrent" class="shape-detect-debug">
+        <div class="shape-detect-debug-stats">
+          <span>相似度 {{ shapeDetectDebugCurrent.similarity }}%</span>
+          <span>容差 {{ shapeDetectDebugCurrent.pixel_tolerance }}</span>
+          <span>有效 {{ shapeDetectDebugCurrent.effective_pixel_count }}</span>
+          <span>命中 {{ shapeDetectDebugCurrent.matched_pixel_count }}</span>
+          <span>错配 {{ shapeDetectDebugCurrent.unmatched_pixel_count }}</span>
+          <span>遮罩 {{ Math.round(shapeDetectDebugCurrent.mask_coverage * 100) }}%</span>
+        </div>
+        <div class="shape-detect-debug-images">
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">参考遮罩</div>
+            <img
+              v-if="shapeDetectDebugCurrent.reference_masked_data_url"
+              :src="shapeDetectDebugCurrent.reference_masked_data_url"
+              alt="参考遮罩"
+            />
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">当前遮罩</div>
+            <img
+              v-if="shapeDetectDebugCurrent.current_masked_data_url"
+              :src="shapeDetectDebugCurrent.current_masked_data_url"
+              alt="当前遮罩"
+            />
+          </div>
+          <div class="shape-mask-preview">
+            <div class="shape-mask-label">错配热力</div>
+            <img
+              v-if="shapeDetectDebugCurrent.mismatch_heatmap_data_url"
+              :src="shapeDetectDebugCurrent.mismatch_heatmap_data_url"
+              alt="错配热力"
+            />
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="shapeDetectDebugDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog
       v-model="runtimeLogDialogVisible"
       class="runtime-log-dialog"
       title="任务调试台日志"
@@ -1017,9 +1136,9 @@ import {
 } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 import {
-  annotateFanxiuGameWindow3MacroShape,
+  annotateFanxiuDataAnnotationMacroShape,
   clearFanxiuGameWindow2BurstFrames,
-  clearFanxiuGameWindow3RuntimeLogs,
+  clearFanxiuDataAnnotationRuntimeLogs,
   clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
@@ -1029,12 +1148,12 @@ import {
   dragFanxiuGameWindow2,
   getFanxiuGameWindow2BurstFrameImage,
   getFanxiuGameWindow2ServiceStatus,
-  getFanxiuGameWindow3AssetTree,
-  getFanxiuGameWindow3RuntimeStatus,
-  getFanxiuGameWindow3RuntimeLogs,
-  getFanxiuGameWindow3WorldFacts,
-  getFanxiuGameWindow3SchedulerPlan,
-  getFanxiuGameWindow3SchedulerTasks,
+  getFanxiuDataAnnotationAssetTree,
+  getFanxiuDataAnnotationRuntimeStatus,
+  getFanxiuDataAnnotationRuntimeLogs,
+  getFanxiuDataAnnotationWorldFacts,
+  getFanxiuDataAnnotationSchedulerPlan,
+  getFanxiuDataAnnotationSchedulerTasks,
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
@@ -1044,36 +1163,37 @@ import {
   listFanxiuPseudoCodeCards,
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
-  recognizeFanxiuGameWindow3OcrFrame,
+  recognizeFanxiuDataAnnotationOcrFrame,
   runFanxiuVisualScript,
   saveFanxiuGameWindow2BurstFrame,
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
-  saveFanxiuGameWindow3AssetTree,
-  runDueFanxiuGameWindow3SchedulerTasks,
-  runNowFanxiuGameWindow3SchedulerTask,
+  saveFanxiuDataAnnotationAssetTree,
+  runDueFanxiuDataAnnotationSchedulerTasks,
+  runNowFanxiuDataAnnotationSchedulerTask,
   screencapFanxiuGameWindow2,
-  setFanxiuGameWindow3RuntimeGuard,
+  setFanxiuDataAnnotationRuntimeGuard,
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
-  stopFanxiuGameWindow3RuntimeCurrentTask,
-  tickFanxiuGameWindow3RuntimeTask,
+  stopFanxiuDataAnnotationRuntimeCurrentTask,
+  tickFanxiuDataAnnotationRuntimeTask,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
   type FanxiuGameWindow2MatchBox,
   type FanxiuGameWindow2BurstFrameItem,
+  type FanxiuGameWindow2MatchDebug,
   type FanxiuGameWindow2MatchPayload,
   type FanxiuGameWindow2MatchResponse,
   type FanxiuGameWindow2ServiceStatus,
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
-  type FanxiuGameWindow3RuntimeStatus,
-  type FanxiuGameWindow3MacroAnnotateResponse,
-  type FanxiuGameWindow3OcrFrameLine,
-  type FanxiuGameWindow3SchedulerTaskItem,
-  type FanxiuGameWindow3RuntimeLogEntry,
+  type FanxiuDataAnnotationRuntimeStatus,
+  type FanxiuDataAnnotationMacroAnnotateResponse,
+  type FanxiuDataAnnotationOcrFrameLine,
+  type FanxiuDataAnnotationSchedulerTaskItem,
+  type FanxiuDataAnnotationRuntimeLogEntry,
   type FanxiuPseudoCodeCard,
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
@@ -1125,7 +1245,7 @@ interface ControlClickState {
   startedAt: number;
 }
 
-type WindowSceneKey = 'sunlogin' | 'mumu';
+type WindowSceneKey = 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
@@ -1331,7 +1451,8 @@ const VISUAL_MACRO_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow2.visualMacro.uiStat
 const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defaultThreshold';
 const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
 const VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPixelTolerance';
-const GAME_MACRO_CONFIG_STORAGE_KEY = 'fanxiu.gameWindow3.gameMacro.config.v1';
+const DEFAULT_VISUAL_MACRO_THRESHOLD = 0.8;
+const GAME_MACRO_CONFIG_STORAGE_KEY = 'fanxiu.dataAnnotation.gameMacro.config.v1';
 const GAME_MACRO_CONFIG_VERSION = 2;
 const GAME_MACRO_DEFAULT_DRAG_DURATION_MS = 1500;
 const FALLBACK_FRAME_WIDTH = 900;
@@ -1354,25 +1475,6 @@ const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'off', label: '关闭' },
 ];
 const windowScenes: WindowScene[] = [
-  {
-    key: 'sunlogin',
-    label: '向日葵',
-    defaults: {
-      targetTitle: '1249152866',
-      titleMatch: 'contains',
-      cropText: '0,49,4,4',
-      trimBorderText: '0,0,0,0',
-      captureArea: 'outer',
-      rotateDegrees: '90',
-      fps: 10,
-      quality: 80,
-      autoDismissPopup: true,
-      displayScale: 100,
-      fixedWidth: 0,
-      fixedHeight: 0,
-      mumuChannel: 'desktop',
-    },
-  },
   {
     key: 'mumu',
     label: 'MuMu模拟器',
@@ -1497,7 +1599,7 @@ const codeCardsLoading = ref(false);
 const expandedCodeCardIds = ref<string[]>([]);
 const activeVisualMacroCardId = ref<string | null>(null);
 const visualMacroCapturePending = ref(false);
-const visualMacroDefaultThreshold = ref(0.88);
+const visualMacroDefaultThreshold = ref(DEFAULT_VISUAL_MACRO_THRESHOLD);
 const visualMacroDefaultPointRadius = ref(10);
 const visualMacroDefaultPixelTolerance = ref(5);
 const selectedVisualInstructionKey = ref('');
@@ -1904,12 +2006,12 @@ const normalizeVisualAction = (raw: unknown): VisualMacroAction => {
 
 const setVisualMacroDefaultThreshold = (value: unknown, persist = true) => {
   if (value === null || value === undefined || value === '') {
-    visualMacroDefaultThreshold.value = 0.88;
+    visualMacroDefaultThreshold.value = DEFAULT_VISUAL_MACRO_THRESHOLD;
     if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
     return;
   }
   const nextValue = Number(value);
-  visualMacroDefaultThreshold.value = Number.isFinite(nextValue) ? clamp(nextValue, 0.5, 1) : 0.88;
+  visualMacroDefaultThreshold.value = Number.isFinite(nextValue) ? clamp(nextValue, 0.5, 1) : DEFAULT_VISUAL_MACRO_THRESHOLD;
   if (persist) {
     window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
   }
@@ -1971,7 +2073,13 @@ const migrateVisualMacroDefaultPixelTolerance = (value: unknown) => {
 };
 
 const loadVisualMacroDefaults = () => {
-  setVisualMacroDefaultThreshold(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY), false);
+  const storedThreshold = window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY);
+  const thresholdValue = Number(storedThreshold);
+  if (storedThreshold !== null && Number.isFinite(thresholdValue) && Math.abs(thresholdValue - 0.88) < 0.0001) {
+    setVisualMacroDefaultThreshold(DEFAULT_VISUAL_MACRO_THRESHOLD);
+  } else {
+    setVisualMacroDefaultThreshold(storedThreshold, false);
+  }
   setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
   setVisualMacroDefaultPixelTolerance(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_PIXEL_TOLERANCE_KEY), false);
 };
@@ -3361,8 +3469,8 @@ const streamUrl = computed(() => {
     rotate: rotateDegrees.value,
     fixed_width: String(fixedFrameWidth.value),
     fixed_height: String(fixedFrameHeight.value),
-    auto_dismiss_popup: selectedWindowKey.value === 'sunlogin' && autoDismissPopup.value ? 'true' : 'false',
-    adb_screencap: selectedWindowKey.value === 'mumu' ? 'true' : 'false',
+    auto_dismiss_popup: 'false',
+    adb_screencap: 'true',
     popup_check_interval: '3',
     nonce: String(streamNonce.value),
   });
@@ -4805,7 +4913,7 @@ const clearBurstFrames = async () => {
   }
 };
 
-const resetAssetFrame = async (node: GameWindow3AssetNode) => {
+const resetAssetFrame = async (node: DataAnnotationAssetNode) => {
   if (!selectedEntryId.value || node.type !== 'image' || !node.filename) return;
   const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
   const result = await saveFanxiuGameWindow2Frame({
@@ -6327,6 +6435,8 @@ const handleWindowBlur = () => {
   imageCompareSpacePressed.value = false;
   stopLivePan();
   stopScreenshotPan();
+  shapeMaskManualPointer.value = null;
+  shapeMaskManualPanState.value = null;
 };
 
 const handleWindowResize = () => {
@@ -6456,24 +6566,26 @@ onBeforeUnmount(() => {
   clearMatchResults();
 });
 
-type GameWindow3AssetNode = {
+type DataAnnotationAssetNode = {
   id: string;
   type: 'folder' | 'image';
   title: string;
-  children?: GameWindow3AssetNode[];
+  children?: DataAnnotationAssetNode[];
   filename?: string;
   imageDataUrl?: string;
   width?: number;
   height?: number;
-  shapes?: GameWindow3Shape[];
+  shapes?: DataAnnotationShape[];
 };
 
-type GameWindow3Shape = {
+type DataAnnotationShape = {
   id: string;
   kind?: 'shape' | 'group';
   title: string;
   description: string;
   floating?: boolean;
+  jitterEnabled?: boolean;
+  jitterRadius?: number;
   isSceneIdentity?: boolean;
   sceneIdentityRole?: ShapeMatchRole;
   sceneJumpTarget?: string;
@@ -6496,7 +6608,7 @@ type GameWindow3Shape = {
   y: number;
   w: number;
   h: number;
-  children?: GameWindow3Shape[];
+  children?: DataAnnotationShape[];
 };
 
 type ShapeAlphaMask = {
@@ -6523,7 +6635,7 @@ type SceneJumpEntry = {
 
 type RuntimeLogKind = 'start' | 'wait' | 'action' | 'success' | 'stop' | 'error' | 'detail';
 
-type RuntimeLogEntry = FanxiuGameWindow3RuntimeLogEntry & {
+type RuntimeLogEntry = FanxiuDataAnnotationRuntimeLogEntry & {
   id: string;
   time: string;
   kind: RuntimeLogKind | string;
@@ -6549,7 +6661,7 @@ type ShapeDragState = {
   mode: 'move' | 'top-left' | 'bottom-right';
   startClientX: number;
   startClientY: number;
-  startBox: Pick<GameWindow3Shape, 'x' | 'y' | 'w' | 'h'>;
+  startBox: Pick<DataAnnotationShape, 'x' | 'y' | 'w' | 'h'>;
 };
 
 type ShapeDraftState = {
@@ -6588,13 +6700,13 @@ type ImageCompareDragState =
       startOffsetY: number;
     };
 
-const GAME_WINDOW3_STORAGE_KEY = 'fanxiu.gameWindow3.assetTree.v1';
-const GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY = 'fanxiu.gameWindow3.deletedShapes.v1';
-const GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.gameWindow3.discriminatorGroups.v1';
-const GAME_WINDOW3_UI_STATE_STORAGE_KEY = 'fanxiu.gameWindow3.uiState.v1';
-const GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY = 'fanxiu.gameWindow3.occlusionMaskEnabled.v1';
-const getGameWindow3UiStateStorageKey = (entryId = selectedEntryId.value) => (
-  entryId ? `${GAME_WINDOW3_UI_STATE_STORAGE_KEY}.${entryId}` : GAME_WINDOW3_UI_STATE_STORAGE_KEY
+const DATA_ANNOTATION_STORAGE_KEY = 'fanxiu.dataAnnotation.assetTree.v1';
+const DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY = 'fanxiu.dataAnnotation.deletedShapes.v1';
+const DATA_ANNOTATION_DISCRIMINATOR_GROUPS_KEY = 'fanxiu.dataAnnotation.discriminatorGroups.v1';
+const DATA_ANNOTATION_UI_STATE_STORAGE_KEY = 'fanxiu.dataAnnotation.uiState.v1';
+const DATA_ANNOTATION_OCCLUSION_MASK_ENABLED_KEY = 'fanxiu.dataAnnotation.occlusionMaskEnabled.v1';
+const getDataAnnotationUiStateStorageKey = (entryId = selectedEntryId.value) => (
+  entryId ? `${DATA_ANNOTATION_UI_STATE_STORAGE_KEY}.${entryId}` : DATA_ANNOTATION_UI_STATE_STORAGE_KEY
 );
 const GAME_MACRO_FRAME_MATCH_THRESHOLD = 80;
 const RUNTIME_LOG_PAGE_SIZE = 20;
@@ -6604,7 +6716,7 @@ const selectedShapeId = ref<string | null>(null);
 const selectedShapeIds = ref<string[]>([]);
 const shapeSelectionAnchorId = ref<string | null>(null);
 const globalOcclusionMaskEnabled = ref(false);
-const copiedShapes = ref<GameWindow3Shape[]>([]);
+const copiedShapes = ref<DataAnnotationShape[]>([]);
 const expandedAssetNodeIds = ref<string[]>([]);
 const expandedShapeNodeIds = ref<string[]>([]);
 const deletedShapeIds = ref<Set<string>>(new Set());
@@ -6673,7 +6785,7 @@ const runtimeLogKindLabel = (kind: RuntimeLogKind | string) => {
   };
   return labels[kind] || kind || '日志';
 };
-const runtimeTaskStatus = ref<FanxiuGameWindow3RuntimeStatus | null>(null);
+const runtimeTaskStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
 const runtimeFactsDialogVisible = ref(false);
 const runtimeFactsLoading = ref(false);
 const runtimeFactsJson = ref('{}');
@@ -6683,7 +6795,7 @@ const runtimePlanLoading = ref(false);
 const runtimePlanJson = ref('{}');
 const runtimePlanPath = ref('');
 const runtimeGuardSwitching = ref(false);
-const runtimeSchedulerTasks = ref<FanxiuGameWindow3SchedulerTaskItem[]>([]);
+const runtimeSchedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const runtimeSchedulerLoading = ref(false);
 const selectedRuntimeTaskType = ref('');
 const selectedRuntimeTaskId = ref('');
@@ -6714,16 +6826,34 @@ const runtimeTaskTypeLabel = (taskType: string) => {
     gift_code_redeem: '兑换礼包码',
     go_scene: '到场景',
     hide_floating_window: '隐藏浮动窗',
+    daily_signup: '日常_报名',
     legacy_daily_task: '旧版每日任务',
     legacy_dynamic_task: '旧版动态任务',
   };
   return labels[taskType] || taskType || '任务';
 };
-const runtimeTaskSourceLabel = (task: FanxiuGameWindow3SchedulerTaskItem) => {
+const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.source === 'legacy_behavior_tree') return '旧行为树';
   if (task.schedule_kind === 'daily') return '每日';
   if (task.schedule_kind === 'dynamic') return '动态';
   return '手动';
+};
+const formatRuntimeScheduleTime = (value: string) => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const date = new Date(text.replace(' ', 'T'));
+  if (!Number.isFinite(date.getTime())) return text;
+  const now = new Date();
+  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const isSameDate = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const isWithinNext24Hours = date.getTime() >= now.getTime()
+    && date.getTime() - now.getTime() < 24 * 60 * 60 * 1000;
+  if (isSameDate || isWithinNext24Hours) return time;
+  const monthDayTime = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${time}`;
+  if (date.getFullYear() === now.getFullYear()) return monthDayTime;
+  return `${date.getFullYear()}-${monthDayTime}`;
 };
 const runtimeTaskFunctionDefinitions = computed(() => {
   const grouped = new Map<string, { id: string; label: string }>();
@@ -6745,7 +6875,7 @@ const parseRuntimeGiftCodes = () => (
     .map((item) => item.trim())
     .filter(Boolean)
 );
-const buildRuntimeTaskPayloadOverride = (task: FanxiuGameWindow3SchedulerTaskItem) => {
+const buildRuntimeTaskPayloadOverride = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.task_type !== 'gift_code_redeem') return {};
   const codes = parseRuntimeGiftCodes();
   return codes.length ? { codes } : {};
@@ -6757,7 +6887,7 @@ const selectedRuntimeTaskConfigText = computed(() => {
     runtimeTaskSourceLabel(task),
     task.schedule_times?.length ? `时间 ${task.schedule_times.join('/')}` : '',
     task.window?.length ? `窗口 ${task.window.join('-')}` : '',
-    task.next_time ? `下次 ${task.next_time}` : '',
+    task.next_time ? `下次 ${formatRuntimeScheduleTime(task.next_time)}` : '',
     `P${task.priority}`,
     task.interruptible ? '可中断' : '不可中断',
     task.last_result ? `上次 ${task.last_result}` : '',
@@ -6766,9 +6896,12 @@ const selectedRuntimeTaskConfigText = computed(() => {
 });
 const shapeDragState = ref<ShapeDragState | null>(null);
 const shapeDraftState = ref<ShapeDraftState | null>(null);
-const shapeDraftBox = ref<GameWindow3Shape | null>(null);
+const shapeDraftBox = ref<DataAnnotationShape | null>(null);
 const shapeDetectingId = ref<string | null>(null);
 const shapeDetectResults = ref<Record<string, string>>({});
+const shapeDetectDebugByShapeId = ref<Record<string, FanxiuGameWindow2MatchDebug>>({});
+const shapeDetectDebugDialogVisible = ref(false);
+const shapeDetectDebugCurrent = ref<FanxiuGameWindow2MatchDebug | null>(null);
 const shapeDetectLiveBoxes = ref<FanxiuGameWindow2MatchBox[]>([]);
 const shapeDetectSeq = ref(0);
 const shapeDetectStopRequestedRef = ref(false);
@@ -6777,11 +6910,36 @@ let shapeDetectAbortController: AbortController | null = null;
 const shapeMaskDialogVisible = ref(false);
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
+type ShapeMaskCaptureMode = 'single' | 'burst';
+type ShapeMaskAlgorithm = 'difference' | 'background';
+type ShapeMaskManualTool = 'erase' | 'restore';
+const shapeMaskCaptureMode = ref<ShapeMaskCaptureMode>('single');
+const shapeMaskAlgorithm = ref<ShapeMaskAlgorithm>('difference');
 const shapeMaskLivePreviewUrl = ref('');
 const shapeMaskResultPreviewUrl = ref('');
 const shapeMaskAlphaDataUrl = ref('');
 const shapeMaskRunning = ref(false);
 const shapeMaskResetToEmpty = ref(false);
+const shapeMaskManualVisible = ref(false);
+const shapeMaskManualTool = ref<ShapeMaskManualTool>('erase');
+const shapeMaskManualBrushSize = ref(10);
+const shapeMaskManualZoom = ref(3);
+const shapeMaskManualCanvasWrapRef = ref<HTMLDivElement | null>(null);
+const shapeMaskManualCanvasRef = ref<HTMLCanvasElement | null>(null);
+const shapeMaskManualUndoStack = ref<Uint8ClampedArray[]>([]);
+const shapeMaskManualRedoStack = ref<Uint8ClampedArray[]>([]);
+const shapeMaskManualPointer = ref<{
+  pointerId: number;
+  x: number;
+  y: number;
+} | null>(null);
+const shapeMaskManualPanState = ref<{
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startScrollLeft: number;
+  startScrollTop: number;
+} | null>(null);
 const shapeMaskSamplingFrame = ref<number | null>(null);
 const shapeMaskLivePreviewFrame = ref<number | null>(null);
 const shapeMaskStats = ref<{
@@ -6854,7 +7012,7 @@ const shapeTreeProps = {
   label: 'title',
 };
 
-type GameWindow3UiState = {
+type DataAnnotationUiState = {
   selectedAssetId?: string | null;
   selectedShapeId?: string | null;
   expandedAssetNodeIds?: string[];
@@ -6865,8 +7023,8 @@ const createAssetId = (prefix: string) => prefix + '-' + Date.now() + '-' + Math
 
 const createAssetImageNode = (
   title: string,
-  options: Partial<Pick<GameWindow3AssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height'>> = {},
-): GameWindow3AssetNode => ({
+  options: Partial<Pick<DataAnnotationAssetNode, 'filename' | 'imageDataUrl' | 'width' | 'height'>> = {},
+): DataAnnotationAssetNode => ({
   id: createAssetId('image'),
   type: 'image',
   title,
@@ -6874,7 +7032,7 @@ const createAssetImageNode = (
   shapes: [],
 });
 
-const createDefaultAssetTree = (): GameWindow3AssetNode[] => ([
+const createDefaultAssetTree = (): DataAnnotationAssetNode[] => ([
   {
     id: createAssetId('folder'),
     type: 'folder',
@@ -6883,7 +7041,7 @@ const createDefaultAssetTree = (): GameWindow3AssetNode[] => ([
   },
 ]);
 
-const normalizeShapeContentDirection = (value: unknown): GameWindow3Shape['contentDirection'] => (
+const normalizeShapeContentDirection = (value: unknown): DataAnnotationShape['contentDirection'] => (
   value === 'up' || value === 'down' || value === 'left' || value === 'right' ? value : 'none'
 );
 
@@ -6892,12 +7050,17 @@ const normalizeShapePixelTolerance = (value: unknown) => {
   return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 0, 255) : 5;
 };
 
+const normalizeShapeJitterRadius = (value: unknown) => {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? clamp(Math.round(numberValue), 1, 12) : 4;
+};
+
 const normalizeShapeMatchRole = (value: unknown, fallback: ShapeMatchRole = 'off'): ShapeMatchRole => (
   value === 'optional' || value === 'required' || value === 'off' ? value : fallback
 );
 
-const normalizeLegacyShapeMatchRole = (shape: GameWindow3Shape, key: 'imageRole' | 'ocrRole') => {
-  const legacyShape = shape as GameWindow3Shape & Record<string, unknown>;
+const normalizeLegacyShapeMatchRole = (shape: DataAnnotationShape, key: 'imageRole' | 'ocrRole') => {
+  const legacyShape = shape as DataAnnotationShape & Record<string, unknown>;
   return normalizeShapeMatchRole(legacyShape[key], 'off');
 };
 
@@ -6966,14 +7129,14 @@ const normalizeSceneJumpTargetText = (value: string | number | null | undefined)
 
 const DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION = '日常滚动窗口内的单个任务块模板。它本身是普通 shape，同时作为字段子树的父节点；运行时由任务块模板整体浮动，子字段只按父 shape 相对位置读取状态、次数和活跃度。';
 
-const isDailyTaskBlockTemplateShape = (shape: GameWindow3Shape) => (
+const isDailyTaskBlockTemplateShape = (shape: DataAnnotationShape) => (
   shape.id === 'shape-daily-task-block-template' || shape.title === '任务块模板'
 );
 
 const normalizeShapes = (
-  shapes: GameWindow3Shape[] = [],
+  shapes: DataAnnotationShape[] = [],
   parentIsDailyTaskBlockTemplate = false,
-): GameWindow3Shape[] => shapes.flatMap((shape) => {
+): DataAnnotationShape[] => shapes.flatMap((shape) => {
   if (shape.id === 'scene-identity') {
     return normalizeShapes(shape.children ?? [], parentIsDailyTaskBlockTemplate);
   }
@@ -7001,6 +7164,8 @@ const normalizeShapes = (
       ? DAILY_TASK_BLOCK_TEMPLATE_DESCRIPTION
       : (typeof shape.description === 'string' ? shape.description : ''),
     floating: effectiveFloating,
+    jitterEnabled: isDailyTaskBlockField ? false : Boolean(shape.jitterEnabled),
+    jitterRadius: normalizeShapeJitterRadius(shape.jitterRadius),
     isSceneIdentity: normalizedSceneIdentityRole !== 'off',
     sceneIdentityRole: normalizedSceneIdentityRole,
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
@@ -7046,14 +7211,14 @@ const normalizeShapes = (
   }];
 });
 
-const normalizeAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.map((node) => {
+const normalizeAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.map((node) => {
   if (node.type === 'folder') {
     return {
       ...node,
       children: normalizeAssetTree(node.children ?? []),
     };
   }
-  const normalizedNode = { ...node } as GameWindow3AssetNode & { occlusionMaskEnabled?: boolean };
+  const normalizedNode = { ...node } as DataAnnotationAssetNode & { occlusionMaskEnabled?: boolean };
   delete normalizedNode.occlusionMaskEnabled;
   return {
     ...normalizedNode,
@@ -7068,15 +7233,15 @@ const normalizeAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode
 
 const loadGlobalOcclusionMaskEnabled = () => {
   if (typeof window === 'undefined') return false;
-  return window.localStorage.getItem(GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY) === 'true';
+  return window.localStorage.getItem(DATA_ANNOTATION_OCCLUSION_MASK_ENABLED_KEY) === 'true';
 };
 
-const loadAssetTree = (): GameWindow3AssetNode[] => {
+const loadAssetTree = (): DataAnnotationAssetNode[] => {
   if (typeof window === 'undefined') return createDefaultAssetTree();
-  const raw = window.localStorage.getItem(GAME_WINDOW3_STORAGE_KEY);
+  const raw = window.localStorage.getItem(DATA_ANNOTATION_STORAGE_KEY);
   if (!raw) return createDefaultAssetTree();
   try {
-    const parsed = JSON.parse(raw) as GameWindow3AssetNode[];
+    const parsed = JSON.parse(raw) as DataAnnotationAssetNode[];
     return Array.isArray(parsed) && parsed.length ? normalizeAssetTree(parsed) : createDefaultAssetTree();
   } catch {
     return createDefaultAssetTree();
@@ -7109,22 +7274,22 @@ const sendRemoteText = async (text: string) => {
 
 globalOcclusionMaskEnabled.value = loadGlobalOcclusionMaskEnabled();
 
-const assetTree = ref<GameWindow3AssetNode[]>(loadAssetTree());
+const assetTree = ref<DataAnnotationAssetNode[]>(loadAssetTree());
 const assetTreeBackendHydrating = ref(false);
 const assetTreeBackendUpdatedAt = ref(0);
 let assetTreeSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
-const cloneAssetTree = (nodes: GameWindow3AssetNode[]) => (
-  JSON.parse(JSON.stringify(nodes)) as GameWindow3AssetNode[]
+const cloneAssetTree = (nodes: DataAnnotationAssetNode[]) => (
+  JSON.parse(JSON.stringify(nodes)) as DataAnnotationAssetNode[]
 );
 
-const assetFrameNumberOf = (node: GameWindow3AssetNode) => {
+const assetFrameNumberOf = (node: DataAnnotationAssetNode) => {
   const source = node.filename || node.title || '';
   const match = source.match(/(?:^|#|[^\d])0*(\d+)(?=\.[^.]+$|[^\d]|$)/);
   return match ? Number(match[1]) : null;
 };
 
-const assetNodeMergeKey = (node: GameWindow3AssetNode) => (
+const assetNodeMergeKey = (node: DataAnnotationAssetNode) => (
   node.type === 'image'
     ? `image:${assetFrameNumberOf(node) ?? (node.filename || node.title || node.id).trim().toLowerCase()}`
     : `folder:${(node.title || node.id).trim()}`
@@ -7134,7 +7299,7 @@ const shapeDeleteIdKey = (shapeId: string) => `id:${shapeId}`;
 
 const shapeDeleteNumberKey = (value: number) => String(Math.round(value * 10000));
 
-const shapeDeleteSignatureKey = (image: GameWindow3AssetNode, shape: GameWindow3Shape) => [
+const shapeDeleteSignatureKey = (image: DataAnnotationAssetNode, shape: DataAnnotationShape) => [
   'sig',
   assetNodeMergeKey(image),
   (shape.title || '').trim(),
@@ -7144,16 +7309,16 @@ const shapeDeleteSignatureKey = (image: GameWindow3AssetNode, shape: GameWindow3
   shapeDeleteNumberKey(shape.h),
 ].join(':');
 
-const isShapeDeletedForImage = (image: GameWindow3AssetNode, shape: GameWindow3Shape) => (
+const isShapeDeletedForImage = (image: DataAnnotationAssetNode, shape: DataAnnotationShape) => (
   deletedShapeIds.value.has(shape.id)
   || deletedShapeIds.value.has(shapeDeleteIdKey(shape.id))
   || deletedShapeIds.value.has(shapeDeleteSignatureKey(image, shape))
 );
 
 const filterDeletedShapesForImage = (
-  image: GameWindow3AssetNode,
-  shapes: GameWindow3Shape[] = [],
-): GameWindow3Shape[] => shapes.flatMap((shape) => {
+  image: DataAnnotationAssetNode,
+  shapes: DataAnnotationShape[] = [],
+): DataAnnotationShape[] => shapes.flatMap((shape) => {
   if (isShapeDeletedForImage(image, shape)) return [];
   return [{
     ...shape,
@@ -7161,7 +7326,7 @@ const filterDeletedShapesForImage = (
   }];
 });
 
-const filterDeletedShapesFromAssetTree = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.map((node) => {
+const filterDeletedShapesFromAssetTree = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.map((node) => {
   if (node.type === 'folder') {
     return {
       ...node,
@@ -7174,7 +7339,7 @@ const filterDeletedShapesFromAssetTree = (nodes: GameWindow3AssetNode[]): GameWi
   };
 });
 
-const collectAssetNodeMergeKeys = (nodes: GameWindow3AssetNode[], keys = new Set<string>()) => {
+const collectAssetNodeMergeKeys = (nodes: DataAnnotationAssetNode[], keys = new Set<string>()) => {
   for (const node of nodes) {
     keys.add(assetNodeMergeKey(node));
     collectAssetNodeMergeKeys(node.children ?? [], keys);
@@ -7182,7 +7347,7 @@ const collectAssetNodeMergeKeys = (nodes: GameWindow3AssetNode[], keys = new Set
   return keys;
 };
 
-const findMergeTargetFolder = (nodes: GameWindow3AssetNode[], title: string) => {
+const findMergeTargetFolder = (nodes: DataAnnotationAssetNode[], title: string) => {
   for (const node of nodes) {
     if (node.type === 'folder' && node.title === title) return node;
     const found = findMergeTargetFolder(node.children ?? [], title);
@@ -7191,7 +7356,7 @@ const findMergeTargetFolder = (nodes: GameWindow3AssetNode[], title: string) => 
   return null;
 };
 
-const findAssetNodeByMergeKey = (nodes: GameWindow3AssetNode[], key: string): GameWindow3AssetNode | null => {
+const findAssetNodeByMergeKey = (nodes: DataAnnotationAssetNode[], key: string): DataAnnotationAssetNode | null => {
   for (const node of nodes) {
     if (assetNodeMergeKey(node) === key) return node;
     const found = findAssetNodeByMergeKey(node.children ?? [], key);
@@ -7209,7 +7374,7 @@ const preferAssetFilename = (left = '', right = '') => {
   return left;
 };
 
-const shapeMergeKey = (shape: GameWindow3Shape) => [
+const shapeMergeKey = (shape: DataAnnotationShape) => [
   (shape.title || '').trim(),
   shapeDeleteNumberKey(shape.x),
   shapeDeleteNumberKey(shape.y),
@@ -7217,7 +7382,7 @@ const shapeMergeKey = (shape: GameWindow3Shape) => [
   shapeDeleteNumberKey(shape.h),
 ].join(':');
 
-const mergeDuplicateAssetNode = (target: GameWindow3AssetNode, source: GameWindow3AssetNode) => {
+const mergeDuplicateAssetNode = (target: DataAnnotationAssetNode, source: DataAnnotationAssetNode) => {
   target.filename = preferAssetFilename(target.filename, source.filename);
   if (!target.imageDataUrl && source.imageDataUrl) target.imageDataUrl = source.imageDataUrl;
   if (!target.width && source.width) target.width = source.width;
@@ -7234,15 +7399,15 @@ const mergeDuplicateAssetNode = (target: GameWindow3AssetNode, source: GameWindo
     if (extraShapes.length) {
       target.shapes = [
         ...(target.shapes ?? []),
-        ...(JSON.parse(JSON.stringify(extraShapes)) as GameWindow3Shape[]),
+        ...(JSON.parse(JSON.stringify(extraShapes)) as DataAnnotationShape[]),
       ];
     }
   }
 };
 
 const removeAssetNodeByReference = (
-  nodes: GameWindow3AssetNode[],
-  target: GameWindow3AssetNode,
+  nodes: DataAnnotationAssetNode[],
+  target: DataAnnotationAssetNode,
 ): boolean => {
   const index = nodes.indexOf(target);
   if (index >= 0) {
@@ -7252,10 +7417,10 @@ const removeAssetNodeByReference = (
   return nodes.some((node) => removeAssetNodeByReference(node.children ?? [], target));
 };
 
-const compactDuplicateAssetNodes = (nodes: GameWindow3AssetNode[]) => {
+const compactDuplicateAssetNodes = (nodes: DataAnnotationAssetNode[]) => {
   const merged = cloneAssetTree(nodes);
-  const seen = new Map<string, GameWindow3AssetNode>();
-  const visit = (items: GameWindow3AssetNode[]) => {
+  const seen = new Map<string, DataAnnotationAssetNode>();
+  const visit = (items: DataAnnotationAssetNode[]) => {
     for (const node of [...items]) {
       const key = assetNodeMergeKey(node);
       const previous = seen.get(key);
@@ -7273,10 +7438,10 @@ const compactDuplicateAssetNodes = (nodes: GameWindow3AssetNode[]) => {
   return merged;
 };
 
-const mergeAssetTreeNodes = (baseNodes: GameWindow3AssetNode[], extraNodes: GameWindow3AssetNode[]) => {
+const mergeAssetTreeNodes = (baseNodes: DataAnnotationAssetNode[], extraNodes: DataAnnotationAssetNode[]) => {
   const merged = cloneAssetTree(baseNodes);
   const knownKeys = collectAssetNodeMergeKeys(merged);
-  const appendMissing = (target: GameWindow3AssetNode[], incoming: GameWindow3AssetNode[]) => {
+  const appendMissing = (target: DataAnnotationAssetNode[], incoming: DataAnnotationAssetNode[]) => {
     for (const node of incoming) {
       const key = assetNodeMergeKey(node);
       const existingNode = findAssetNodeByMergeKey(merged, key);
@@ -7299,7 +7464,7 @@ const mergeAssetTreeNodes = (baseNodes: GameWindow3AssetNode[], extraNodes: Game
   return compactDuplicateAssetNodes(merged);
 };
 
-const mergeEntryAssetTrees = (localTree: GameWindow3AssetNode[], backendTree: GameWindow3AssetNode[]) => {
+const mergeEntryAssetTrees = (localTree: DataAnnotationAssetNode[], backendTree: DataAnnotationAssetNode[]) => {
   const mergedTree = mergeAssetTreeNodes(
     filterDeletedShapesFromAssetTree(backendTree),
     filterDeletedShapesFromAssetTree(localTree),
@@ -7307,9 +7472,9 @@ const mergeEntryAssetTrees = (localTree: GameWindow3AssetNode[], backendTree: Ga
   return filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(mergedTree));
 };
 
-const flushAssetTreeToBackend = async (entryId: string, tree: GameWindow3AssetNode[]) => {
+const flushAssetTreeToBackend = async (entryId: string, tree: DataAnnotationAssetNode[]) => {
   try {
-    const response = await saveFanxiuGameWindow3AssetTree(entryId, tree);
+    const response = await saveFanxiuDataAnnotationAssetTree(entryId, tree);
     assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
   } catch {
     // 帧树仍保留在本地缓存；后端短暂失败时不打断标注操作。
@@ -7319,7 +7484,7 @@ const flushAssetTreeToBackend = async (entryId: string, tree: GameWindow3AssetNo
 const scheduleAssetTreeBackendSave = () => {
   if (assetTreeBackendHydrating.value || !selectedEntryId.value) return;
   const entryId = selectedEntryId.value;
-  const tree = JSON.parse(JSON.stringify(assetTree.value)) as GameWindow3AssetNode[];
+  const tree = JSON.parse(JSON.stringify(assetTree.value)) as DataAnnotationAssetNode[];
   if (assetTreeSaveTimer) window.clearTimeout(assetTreeSaveTimer);
   assetTreeSaveTimer = window.setTimeout(() => {
     assetTreeSaveTimer = null;
@@ -7332,16 +7497,16 @@ const loadEntryAssetTree = async (entryId: string) => {
   assetTreeBackendHydrating.value = true;
   try {
     const localTree = loadAssetTree();
-    const response = await getFanxiuGameWindow3AssetTree(entryId);
+    const response = await getFanxiuDataAnnotationAssetTree(entryId);
     if (response.exists && Array.isArray(response.tree) && response.tree.length) {
-      const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
+      const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
       assetTree.value = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
       assetTreeBackendUpdatedAt.value = Math.max(assetTreeBackendUpdatedAt.value, Number(response.updated_at) || 0);
     } else {
       assetTree.value = localTree;
       void flushAssetTreeToBackend(entryId, localTree);
     }
-    restoreGameWindow3UiState();
+    restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
     void nextTick(syncCanvas);
   } catch (error) {
@@ -7357,14 +7522,16 @@ const refreshEntryAssetTreeIfChanged = async () => {
   const selectedNode = selectedAssetNode.value;
   const selectedKey = selectedNode ? assetNodeMergeKey(selectedNode) : '';
   try {
-    const response = await getFanxiuGameWindow3AssetTree(entryId);
+    const response = await getFanxiuDataAnnotationAssetTree(entryId);
     const backendUpdatedAt = Number(response.updated_at) || 0;
     if (!response.exists || !Array.isArray(response.tree) || backendUpdatedAt <= assetTreeBackendUpdatedAt.value) return;
     assetTreeBackendHydrating.value = true;
-    const backendTree = normalizeAssetTree(response.tree as GameWindow3AssetNode[]);
+    const backendTree = normalizeAssetTree(response.tree as DataAnnotationAssetNode[]);
     const mergedTree = filterDeletedShapesFromAssetTree(compactDuplicateAssetNodes(backendTree));
     assetTree.value = mergedTree;
     assetTreeBackendUpdatedAt.value = backendUpdatedAt;
+    expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
+    await syncAssetTreeExpansionFromState();
     if (selectedAssetId.value && findAssetNode(mergedTree, selectedAssetId.value)) return;
     const restoredNode = selectedKey ? findAssetNodeByMergeKey(mergedTree, selectedKey) : null;
     selectedAssetId.value = restoredNode?.id ?? findFirstImageNode(mergedTree)?.id ?? null;
@@ -7392,7 +7559,7 @@ const normalizeDiscriminatorGroups = (groups: DiscriminatorGroup[] = []): Discri
 
 const loadDiscriminatorGroups = (): DiscriminatorGroup[] => {
   if (typeof window === 'undefined') return [];
-  const raw = window.localStorage.getItem(GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY);
+  const raw = window.localStorage.getItem(DATA_ANNOTATION_DISCRIMINATOR_GROUPS_KEY);
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as DiscriminatorGroup[];
@@ -7413,7 +7580,7 @@ const normalizeStringIdArray = (value: unknown) => (
 const loadDeletedShapeIds = () => {
   if (typeof window === 'undefined') return new Set<string>();
   try {
-    return new Set(normalizeStringIdArray(JSON.parse(window.localStorage.getItem(GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY) || '[]')));
+    return new Set(normalizeStringIdArray(JSON.parse(window.localStorage.getItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY) || '[]')));
   } catch {
     return new Set<string>();
   }
@@ -7421,28 +7588,28 @@ const loadDeletedShapeIds = () => {
 
 const persistDeletedShapeIds = () => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(GAME_WINDOW3_DELETED_SHAPES_STORAGE_KEY, JSON.stringify([...deletedShapeIds.value]));
+  window.localStorage.setItem(DATA_ANNOTATION_DELETED_SHAPES_STORAGE_KEY, JSON.stringify([...deletedShapeIds.value]));
 };
 
 deletedShapeIds.value = loadDeletedShapeIds();
 
-const loadGameWindow3UiState = (): GameWindow3UiState => {
+const loadDataAnnotationUiState = (): DataAnnotationUiState => {
   if (typeof window === 'undefined') return {};
-  const scopedKey = getGameWindow3UiStateStorageKey();
+  const scopedKey = getDataAnnotationUiStateStorageKey();
   const raw = window.localStorage.getItem(scopedKey)
-    || (scopedKey === GAME_WINDOW3_UI_STATE_STORAGE_KEY ? '' : window.localStorage.getItem(GAME_WINDOW3_UI_STATE_STORAGE_KEY));
+    || (scopedKey === DATA_ANNOTATION_UI_STATE_STORAGE_KEY ? '' : window.localStorage.getItem(DATA_ANNOTATION_UI_STATE_STORAGE_KEY));
   if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw) as GameWindow3UiState;
+    const parsed = JSON.parse(raw) as DataAnnotationUiState;
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
   }
 };
 
-const persistGameWindow3UiState = () => {
+const persistDataAnnotationUiState = () => {
   if (typeof window === 'undefined' || !selectedEntryId.value) return;
-  window.localStorage.setItem(getGameWindow3UiStateStorageKey(), JSON.stringify({
+  window.localStorage.setItem(getDataAnnotationUiStateStorageKey(), JSON.stringify({
     selectedAssetId: selectedAssetId.value,
     selectedShapeId: selectedShapeId.value,
     expandedAssetNodeIds: expandedAssetNodeIds.value,
@@ -7450,7 +7617,7 @@ const persistGameWindow3UiState = () => {
   }));
 };
 
-const findAssetNode = (nodes: GameWindow3AssetNode[], id: string | null): GameWindow3AssetNode | null => {
+const findAssetNode = (nodes: DataAnnotationAssetNode[], id: string | null): DataAnnotationAssetNode | null => {
   if (!id) return null;
   for (const node of nodes) {
     if (node.id === id) return node;
@@ -7460,7 +7627,7 @@ const findAssetNode = (nodes: GameWindow3AssetNode[], id: string | null): GameWi
   return null;
 };
 
-const findFirstImageNode = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode | null => {
+const findFirstImageNode = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode | null => {
   for (const node of nodes) {
     if (node.type === 'image') return node;
     const found = findFirstImageNode(node.children ?? []);
@@ -7469,16 +7636,16 @@ const findFirstImageNode = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode
   return null;
 };
 
-const flattenAssetImages = (nodes: GameWindow3AssetNode[]): GameWindow3AssetNode[] => nodes.flatMap((node) => [
+const flattenAssetImages = (nodes: DataAnnotationAssetNode[]): DataAnnotationAssetNode[] => nodes.flatMap((node) => [
   ...(node.type === 'image' ? [node] : []),
   ...flattenAssetImages(node.children ?? []),
 ]);
 
 const findAssetParentFolder = (
-  nodes: GameWindow3AssetNode[],
+  nodes: DataAnnotationAssetNode[],
   id: string | null,
-  parent: GameWindow3AssetNode | null = null,
-): GameWindow3AssetNode | null => {
+  parent: DataAnnotationAssetNode | null = null,
+): DataAnnotationAssetNode | null => {
   if (!id) return null;
   for (const node of nodes) {
     if (node.id === id) return parent;
@@ -7488,7 +7655,7 @@ const findAssetParentFolder = (
   return null;
 };
 
-const assetImageIdMark = (node: GameWindow3AssetNode) => {
+const assetImageIdMark = (node: DataAnnotationAssetNode) => {
   const source = node.filename || node.id;
   const filenameNumber = node.filename?.match(/(\d+)(?=\.[^.]+$|$)/)?.[1];
   if (filenameNumber) return '#' + String(Number(filenameNumber));
@@ -7496,13 +7663,13 @@ const assetImageIdMark = (node: GameWindow3AssetNode) => {
   return '#' + idTail.slice(-6);
 };
 
-const assetNumericImageId = (node: GameWindow3AssetNode) => {
+const assetNumericImageId = (node: DataAnnotationAssetNode) => {
   if (node.type !== 'image') return null;
   const filenameNumber = node.filename?.match(/(\d+)(?=\.[^.]+$|$)/)?.[1];
   return filenameNumber ? Number(filenameNumber) : null;
 };
 
-const findAssetImageByNumericId = (nodes: GameWindow3AssetNode[], id: number | null): GameWindow3AssetNode | null => {
+const findAssetImageByNumericId = (nodes: DataAnnotationAssetNode[], id: number | null): DataAnnotationAssetNode | null => {
   if (id === null) return null;
   for (const node of nodes) {
     if (assetNumericImageId(node) === id) return node;
@@ -7524,7 +7691,7 @@ const normalizeSelectedShapeSceneJumpTarget = () => {
   shape.sceneJumpTarget = normalizeSceneJumpTargetText(shape.sceneJumpTarget);
 };
 
-const findImageNodeByShapeId = (nodes: GameWindow3AssetNode[], shapeId: string): GameWindow3AssetNode | null => {
+const findImageNodeByShapeId = (nodes: DataAnnotationAssetNode[], shapeId: string): DataAnnotationAssetNode | null => {
   for (const node of nodes) {
     if (node.type === 'image' && findShapeById(node.shapes ?? [], shapeId)) return node;
     const found = findImageNodeByShapeId(node.children ?? [], shapeId);
@@ -7540,9 +7707,9 @@ const findShapeGlobal = (shapeId: string) => {
 };
 
 const findAssetParentChildren = (
-  nodes: GameWindow3AssetNode[],
+  nodes: DataAnnotationAssetNode[],
   id: string | null,
-): GameWindow3AssetNode[] | null => {
+): DataAnnotationAssetNode[] | null => {
   if (!id) return null;
   if (nodes.some((node) => node.id === id)) return nodes;
   for (const node of nodes) {
@@ -7563,6 +7730,10 @@ const selectedImageTitleText = computed(() => (
     ? `${assetImageIdMark(selectedImageNode.value)} ${selectedImageNode.value.title}`
     : '未选择图片'
 ));
+const selectedImageUsesJpegFrame = computed(() => {
+  const filename = selectedImageNode.value?.filename?.trim().toLowerCase() || '';
+  return filename.endsWith('.jpg') || filename.endsWith('.jpeg');
+});
 const selectedImagePreviewUrl = computed(() => {
   const image = selectedImageNode.value;
   if (!image) return '';
@@ -7573,19 +7744,19 @@ const selectedImagePreviewLoading = computed(() => {
   return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewLoadingIds.value[image.id]);
 });
 const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
-const isDrawableShape = (shape: GameWindow3Shape) => shape.kind !== 'group';
-const flattenShapes = (shapes: GameWindow3Shape[]): GameWindow3Shape[] => shapes.flatMap((shape) => [
+const isDrawableShape = (shape: DataAnnotationShape) => shape.kind !== 'group';
+const flattenShapes = (shapes: DataAnnotationShape[]): DataAnnotationShape[] => shapes.flatMap((shape) => [
   shape,
   ...flattenShapes(shape.children ?? []),
 ]);
-const isOcclusionAssetGroup = (node: GameWindow3AssetNode) => (
+const isOcclusionAssetGroup = (node: DataAnnotationAssetNode) => (
   node.type === 'folder' && node.title.trim() === '遮挡标记'
 );
 const collectOcclusionAssetImages = (
-  nodes: GameWindow3AssetNode[],
+  nodes: DataAnnotationAssetNode[],
   inOcclusionGroup = false,
-): GameWindow3AssetNode[] => {
-  const images: GameWindow3AssetNode[] = [];
+): DataAnnotationAssetNode[] => {
+  const images: DataAnnotationAssetNode[] = [];
   for (const node of nodes) {
     const nextInOcclusionGroup = inOcclusionGroup || isOcclusionAssetGroup(node);
     if (node.type === 'image' && nextInOcclusionGroup) images.push(node);
@@ -7593,7 +7764,7 @@ const collectOcclusionAssetImages = (
   }
   return images;
 };
-const findShapeById = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape | null => {
+const findShapeById = (shapes: DataAnnotationShape[], id: string | null): DataAnnotationShape | null => {
   if (!id) return null;
   for (const shape of shapes) {
     if (shape.id === id) return shape;
@@ -7610,7 +7781,7 @@ const filterExistingShapeNodeIds = (ids: string[]) => {
   return ids.filter((id) => Boolean(findShapeById(image.shapes ?? [], id)));
 };
 
-const collectAssetFolderIds = (nodes: GameWindow3AssetNode[]): string[] => nodes.flatMap((node) => [
+const collectAssetFolderIds = (nodes: DataAnnotationAssetNode[]): string[] => nodes.flatMap((node) => [
   ...(node.type === 'folder' ? [node.id] : []),
   ...collectAssetFolderIds(node.children ?? []),
 ]);
@@ -7631,13 +7802,13 @@ const syncAssetTreeExpansionFromState = async () => {
   }
 };
 
-const collectExpandableShapeIds = (shapes: GameWindow3Shape[]): string[] => shapes.flatMap((shape) => [
+const collectExpandableShapeIds = (shapes: DataAnnotationShape[]): string[] => shapes.flatMap((shape) => [
   ...((shape.children ?? []).length ? [shape.id] : []),
   ...collectExpandableShapeIds(shape.children ?? []),
 ]);
 
-const restoreGameWindow3UiState = () => {
-  const state = loadGameWindow3UiState();
+const restoreDataAnnotationUiState = () => {
+  const state = loadDataAnnotationUiState();
   const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
   const savedAsset = savedAssetId ? findAssetNode(assetTree.value, savedAssetId) : null;
   selectedAssetId.value = savedAsset?.id ?? findFirstImageNode(assetTree.value)?.id ?? null;
@@ -7669,7 +7840,7 @@ const setShapeNodeExpanded = (id: string, expanded: boolean) => {
   expandedShapeNodeIds.value = setExpandedNodeId(expandedShapeNodeIds.value, id, expanded);
 };
 
-const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape[] | null => {
+const findShapeParentChildren = (shapes: DataAnnotationShape[], id: string | null): DataAnnotationShape[] | null => {
   if (!id) return null;
   if (shapes.some((shape) => shape.id === id)) return shapes;
   for (const shape of shapes) {
@@ -7679,7 +7850,7 @@ const findShapeParentChildren = (shapes: GameWindow3Shape[], id: string | null):
   return null;
 };
 
-const findShapeParentShape = (shapes: GameWindow3Shape[], id: string | null): GameWindow3Shape | null => {
+const findShapeParentShape = (shapes: DataAnnotationShape[], id: string | null): DataAnnotationShape | null => {
   if (!id) return null;
   for (const shape of shapes) {
     if ((shape.children ?? []).some((child) => child.id === id)) return shape;
@@ -7689,12 +7860,12 @@ const findShapeParentShape = (shapes: GameWindow3Shape[], id: string | null): Ga
   return null;
 };
 
-const isShapeDescendantOf = (shape: GameWindow3Shape, ancestorId: string): boolean => (
+const isShapeDescendantOf = (shape: DataAnnotationShape, ancestorId: string): boolean => (
   (shape.children ?? []).some((child) => child.id === ancestorId || isShapeDescendantOf(child, ancestorId))
 );
 
-const cloneShapeTreeWithNewIds = (shape: GameWindow3Shape): GameWindow3Shape => ({
-  ...JSON.parse(JSON.stringify(shape)) as GameWindow3Shape,
+const cloneShapeTreeWithNewIds = (shape: DataAnnotationShape): DataAnnotationShape => ({
+  ...JSON.parse(JSON.stringify(shape)) as DataAnnotationShape,
   id: createAssetId('shape'),
   children: (shape.children ?? []).map(cloneShapeTreeWithNewIds),
 });
@@ -7714,6 +7885,9 @@ const selectedShapeCopyCount = computed(() => {
 });
 const selectedShapeDetectResult = computed(() => (
   selectedShapeId.value ? shapeDetectResults.value[selectedShapeId.value] || '' : ''
+));
+const selectedShapeDetectDebug = computed(() => (
+  selectedShapeId.value ? shapeDetectDebugByShapeId.value[selectedShapeId.value] || null : null
 ));
 const selectedShapeImageMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.imageMatchRole));
 const selectedShapeOcrMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.ocrMatchRole, selectedShape.value?.ocrEnabled ? 'required' : 'off'));
@@ -7745,7 +7919,7 @@ const canDetectSelectedShape = computed(() => Boolean(
   && shapePrimaryMatchKind(selectedShape.value)
   && (!shapeDetectingId.value || shapeDetectingId.value === selectedShape.value.id)
 ));
-const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): FanxiuGameWindow2MatchBox => {
+const shapeToMatchBox = (shape: DataAnnotationShape, image: DataAnnotationAssetNode): FanxiuGameWindow2MatchBox => {
   const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
   const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1;
   return {
@@ -7757,27 +7931,27 @@ const shapeToMatchBox = (shape: GameWindow3Shape, image: GameWindow3AssetNode): 
   };
 };
 
-const shapePixelTolerance = (shape: GameWindow3Shape) => normalizeShapePixelTolerance(shape.pixelTolerance);
-const shapeImageMatchRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.imageMatchRole);
-const shapeOcrMatchRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
+const shapePixelTolerance = (shape: DataAnnotationShape) => normalizeShapePixelTolerance(shape.pixelTolerance);
+const shapeImageMatchRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.imageMatchRole);
+const shapeOcrMatchRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off');
 type ShapeMatchKind = 'image' | 'ocr';
-const shapeMatchRoleForKind = (shape: GameWindow3Shape, kind: ShapeMatchKind) => (
+const shapeMatchRoleForKind = (shape: DataAnnotationShape, kind: ShapeMatchKind) => (
   kind === 'image' ? shapeImageMatchRole(shape) : shapeOcrMatchRole(shape)
 );
-const shapeActiveMatchKinds = (shape: GameWindow3Shape): ShapeMatchKind[] => [
+const shapeActiveMatchKinds = (shape: DataAnnotationShape): ShapeMatchKind[] => [
   ...(shapeImageMatchRole(shape) !== 'off' ? ['image' as const] : []),
   ...(shapeOcrMatchRole(shape) !== 'off' && shape.ocrText?.trim() ? ['ocr' as const] : []),
 ];
-const shapeCanFloat = (shape: GameWindow3Shape) => Boolean(shapeActiveMatchKinds(shape).length);
-const shapePrimaryMatchKind = (shape: GameWindow3Shape): ShapeMatchKind | null => shapeActiveMatchKinds(shape)[0] ?? null;
-const shapeHasRequiredMatch = (shape: GameWindow3Shape) => (
+const shapeCanFloat = (shape: DataAnnotationShape) => Boolean(shapeActiveMatchKinds(shape).length);
+const shapePrimaryMatchKind = (shape: DataAnnotationShape): ShapeMatchKind | null => shapeActiveMatchKinds(shape)[0] ?? null;
+const shapeHasRequiredMatch = (shape: DataAnnotationShape) => (
   shapeImageMatchRole(shape) === 'required'
   || (shapeOcrMatchRole(shape) === 'required' && Boolean(shape.ocrText?.trim()))
 );
-const shapeSceneIdentityRole = (shape: GameWindow3Shape) => normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
-const isSceneIdentityShape = (shape: GameWindow3Shape) => shapeSceneIdentityRole(shape) !== 'off';
+const shapeSceneIdentityRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityRole(shape) !== 'off';
 
-const shapeBoxIou = (a: GameWindow3Shape, b: GameWindow3Shape) => {
+const shapeBoxIou = (a: DataAnnotationShape, b: DataAnnotationShape) => {
   const left = Math.max(a.x, b.x);
   const top = Math.max(a.y, b.y);
   const right = Math.min(a.x + a.w, b.x + b.w);
@@ -7787,7 +7961,7 @@ const shapeBoxIou = (a: GameWindow3Shape, b: GameWindow3Shape) => {
   return union > 0 ? intersection / union : 0;
 };
 
-const shapeBoxCenterDistance = (a: GameWindow3Shape, b: GameWindow3Shape) => {
+const shapeBoxCenterDistance = (a: DataAnnotationShape, b: DataAnnotationShape) => {
   const dx = (a.x + a.w / 2) - (b.x + b.w / 2);
   const dy = (a.y + a.h / 2) - (b.y + b.h / 2);
   return Math.sqrt(dx * dx + dy * dy);
@@ -7813,8 +7987,8 @@ const shapeDiscriminatorCandidateShapes = computed(() => {
 });
 
 const buildOcclusionAlphaMaskDataUrl = (
-  image: GameWindow3AssetNode,
-  targetShape: GameWindow3Shape,
+  image: DataAnnotationAssetNode,
+  targetShape: DataAnnotationShape,
   box: FanxiuGameWindow2MatchBox,
 ) => {
   if (!globalOcclusionMaskEnabled.value || box.w <= 0 || box.h <= 0) return '';
@@ -7843,10 +8017,10 @@ const buildOcclusionAlphaMaskDataUrl = (
 };
 
 const buildRuntimeShapeMatchPayload = (
-  image: GameWindow3AssetNode,
-  shape: GameWindow3Shape,
+  image: DataAnnotationAssetNode,
+  shape: DataAnnotationShape,
   currentFrameDataUrl?: string,
-  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr' } = {},
+  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr'; debugMatch?: boolean } = {},
 ): FanxiuGameWindow2MatchPayload | null => {
   if (!selectedEntryId.value || !image.filename) return null;
   const box = shapeToMatchBox(shape, image);
@@ -7858,6 +8032,7 @@ const buildRuntimeShapeMatchPayload = (
   const toleranceMinDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.minDataUrl || '' : '';
   const toleranceMaxDataUrl = shape.toleranceEnabled ? shape.toleranceRange?.maxDataUrl || '' : '';
   const scanEnabled = Boolean(shape.floating && !ocrEnabled);
+  const jitterEnabled = Boolean(shape.jitterEnabled && !scanEnabled && !ocrEnabled);
   return {
     entry_id: selectedEntryId.value,
     filename: image.filename,
@@ -7879,25 +8054,27 @@ const buildRuntimeShapeMatchPayload = (
     quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
     current_frame_data_url: currentFrameDataUrl || undefined,
     prefer_cached: false,
-    match_strategy: forceOcr ? 'auto' : (scanEnabled ? 'auto' : 'anchor_pixel'),
+    match_strategy: forceOcr || scanEnabled || jitterEnabled ? 'auto' : 'anchor_pixel',
+    match_search_radius: jitterEnabled ? normalizeShapeJitterRadius(shape.jitterRadius) : undefined,
     ocr_enabled: ocrEnabled,
     ocr_text: ocrEnabled ? ocrText : undefined,
     ocr_match_mode: shape.ocrMatchMode || 'contains',
     read_only_cache: options.readOnlyCache && ocrEnabled,
     save_match_frame: options.saveMatchFrame ?? true,
+    debug_match: Boolean(options.debugMatch && !ocrEnabled),
   };
 };
 
 const matchRuntimeShape = async (
-  image: GameWindow3AssetNode,
-  shape: GameWindow3Shape,
+  image: DataAnnotationAssetNode,
+  shape: DataAnnotationShape,
   currentFrameDataUrl?: string,
   signal?: AbortSignal,
-  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr' } = {},
+  options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr'; timeout?: number; debugMatch?: boolean } = {},
 ) => {
   const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, options);
   if (!payload) return null;
-  return matchFanxiuGameWindow2Screenshot(payload, { signal, timeout: 30000 });
+  return matchFanxiuGameWindow2Screenshot(payload, { signal, timeout: options.timeout ?? 30000 });
 };
 
 const waitShapeDetectLoopInterval = async (seq: number, shapeId: string, delayMs = 1500) => {
@@ -7912,13 +8089,16 @@ const waitShapeDetectLoopInterval = async (seq: number, shapeId: string, delayMs
 };
 
 const bestRuntimeShapeMatchOf = (
-  shape: GameWindow3Shape,
+  shape: DataAnnotationShape,
   response: FanxiuGameWindow2MatchResponse,
-  image?: GameWindow3AssetNode | null,
+  image?: DataAnnotationAssetNode | null,
 ): { box: FanxiuGameWindow2MatchBox; score: number } => {
   const firstMatch = response.matches?.[0];
   const fixedBox = response.fixed_box;
-  const box = shape.floating
+  const isOcrCondition = response.match_strategy === 'ocr';
+  const box = isOcrCondition && shape.sceneJumpTarget?.trim()
+    ? (response.current_box ?? response.box ?? fixedBox ?? (image ? shapeToMatchBox(shape, image) : response.box))
+    : shape.floating
     ? firstMatch?.box ?? fixedBox ?? response.current_box ?? response.box
     : (image ? shapeToMatchBox(shape, image) : response.box);
   const score = Number(
@@ -7931,20 +8111,20 @@ const bestRuntimeShapeMatchOf = (
   return { box, score };
 };
 
-const shapeImageThreshold = (shape: GameWindow3Shape) => (
-  thresholdRatioToPercent(visualMacroDefaultThreshold.value)
-);
+const RUNTIME_SHAPE_IMAGE_THRESHOLD = 80;
+
+const shapeImageThreshold = (_shape: DataAnnotationShape) => RUNTIME_SHAPE_IMAGE_THRESHOLD;
 
 const shapeOcrMatched = (response: FanxiuGameWindow2MatchResponse | null | undefined) => (
   Boolean(response?.matches?.length)
 );
 
-const shapeImageMatched = (shape: GameWindow3Shape, score: number) => (
+const shapeImageMatched = (shape: DataAnnotationShape, score: number) => (
   score >= shapeImageThreshold(shape)
 );
 
 const formatShapeDetectCombinedResult = (
-  shape: GameWindow3Shape,
+  shape: DataAnnotationShape,
   results: Array<{
     kind: 'image' | 'ocr';
     response: FanxiuGameWindow2MatchResponse;
@@ -7970,6 +8150,13 @@ const formatShapeDetectCombinedResult = (
   return parts.join('；');
 };
 
+const openShapeDetectDebugDialog = () => {
+  const debug = selectedShapeDetectDebug.value;
+  if (!debug) return;
+  shapeDetectDebugCurrent.value = debug;
+  shapeDetectDebugDialogVisible.value = true;
+};
+
 const detectSelectedShape = async () => {
   const currentId = selectedShape.value?.id ?? '';
   if (shapeDetectingId.value) {
@@ -7991,6 +8178,9 @@ const detectSelectedShape = async () => {
     ...shapeDetectResults.value,
     [shape.id]: '检测中...',
   };
+  const nextDebugByShapeId = { ...shapeDetectDebugByShapeId.value };
+  delete nextDebugByShapeId[shape.id];
+  shapeDetectDebugByShapeId.value = nextDebugByShapeId;
   try {
     while (!shapeDetectStopRequested && shapeDetectSeq.value === seq && selectedShape.value?.id === currentId) {
       const frameAbortController = new AbortController();
@@ -8016,12 +8206,21 @@ const detectSelectedShape = async () => {
       for (const condition of enabledConditions) {
         const abortController = new AbortController();
         shapeDetectAbortController = abortController;
+        const conditionFrameDataUrl = condition === 'image'
+          ? frameDataUrl
+          : (matchFrameDataUrl || frameDataUrl);
         const response = await matchRuntimeShape(
           image,
           shape,
-          matchFrameDataUrl || frameDataUrl,
+          conditionFrameDataUrl,
           abortController.signal,
-          { readOnlyCache: true, saveMatchFrame: false, condition },
+          {
+            readOnlyCache: true,
+            saveMatchFrame: false,
+            condition,
+            debugMatch: condition === 'image',
+            timeout: condition === 'ocr' ? 120000 : 30000,
+          },
         );
         if (shapeDetectAbortController === abortController) shapeDetectAbortController = null;
         if (!response) throw new Error('检测参数不完整');
@@ -8031,6 +8230,12 @@ const detectSelectedShape = async () => {
           response,
           best: bestRuntimeShapeMatchOf(shape, response, image),
         });
+        if (condition === 'image' && response.match_debug) {
+          shapeDetectDebugByShapeId.value = {
+            ...shapeDetectDebugByShapeId.value,
+            [shape.id]: response.match_debug,
+          };
+        }
       }
       if (shapeDetectStopRequested || shapeDetectSeq.value !== seq || selectedShape.value?.id !== currentId) break;
       if (!conditionResults.length) throw new Error('没有启用可检测条件');
@@ -8094,19 +8299,19 @@ const annotationContentStyle = computed(() => ({
 
 watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(GAME_WINDOW3_STORAGE_KEY, JSON.stringify(value));
+  window.localStorage.setItem(DATA_ANNOTATION_STORAGE_KEY, JSON.stringify(value));
   expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
   scheduleAssetTreeBackendSave();
 }, { deep: true });
 
 watch(discriminatorGroups, (value) => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(GAME_WINDOW3_DISCRIMINATOR_GROUPS_KEY, JSON.stringify(value));
+  window.localStorage.setItem(DATA_ANNOTATION_DISCRIMINATOR_GROUPS_KEY, JSON.stringify(value));
 }, { deep: true });
 
 watch(globalOcclusionMaskEnabled, (value) => {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(GAME_WINDOW3_OCCLUSION_MASK_ENABLED_KEY, value ? 'true' : 'false');
+  window.localStorage.setItem(DATA_ANNOTATION_OCCLUSION_MASK_ENABLED_KEY, value ? 'true' : 'false');
 });
 watch(selectedRuntimeTaskType, (value) => {
   const sameTypeTasks = runtimeSchedulerTasks.value.filter((task) => task.task_type === value);
@@ -8145,7 +8350,7 @@ watch(selectedShapeId, (id) => {
 
 watch(
   [selectedAssetId, selectedShapeId, expandedAssetNodeIds, expandedShapeNodeIds],
-  persistGameWindow3UiState,
+  persistDataAnnotationUiState,
   { deep: true },
 );
 
@@ -8179,7 +8384,7 @@ const getAssetInsertContext = () => {
   };
 };
 
-const insertAssetNodeAfterSelection = (node: GameWindow3AssetNode) => {
+const insertAssetNodeAfterSelection = (node: DataAnnotationAssetNode) => {
   const { siblings, insertIndex } = getAssetInsertContext();
   siblings.splice(insertIndex, 0, node);
   selectedAssetId.value = node.id;
@@ -8188,7 +8393,7 @@ const insertAssetNodeAfterSelection = (node: GameWindow3AssetNode) => {
 const addAssetFolder = () => {
   const { siblings } = getAssetInsertContext();
   const folderCount = siblings.filter((node) => node.type === 'folder').length + 1;
-  const node: GameWindow3AssetNode = {
+  const node: DataAnnotationAssetNode = {
     id: createAssetId('folder'),
     type: 'folder',
     title: '分组' + folderCount,
@@ -8233,7 +8438,7 @@ const releaseAssetImagePreviewUrls = () => {
 
 const blobToObjectUrl = (blob: Blob) => URL.createObjectURL(blob);
 
-const getAssetImageDataUrl = async (image: GameWindow3AssetNode) => {
+const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
   if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
   if (image.imageDataUrl) return image.imageDataUrl;
   if (!selectedEntryId.value || !image.filename) return '';
@@ -8505,7 +8710,7 @@ const handleImageComparePointerLeave = () => {
   if (!imageCompareDrag.value) drawImageCompare();
 };
 
-const insertSavedFrameNode = (node: GameWindow3AssetNode) => {
+const insertSavedFrameNode = (node: DataAnnotationAssetNode) => {
   const selectedNode = selectedAssetNode.value;
   if (selectedNode?.type === 'folder') {
     selectedNode.children = selectedNode.children ?? [];
@@ -8517,7 +8722,7 @@ const insertSavedFrameNode = (node: GameWindow3AssetNode) => {
   insertAssetNodeAfterSelection(node);
 };
 
-const addSavedFrameToAssetTree = (node: GameWindow3AssetNode) => {
+const addSavedFrameToAssetTree = (node: DataAnnotationAssetNode) => {
   insertSavedFrameNode(node);
 };
 
@@ -8547,12 +8752,12 @@ const saveFrameDataUrlToAssetTree = async (currentFrameDataUrl: string) => {
   return node;
 };
 
-const gameMacroFrameTargetText = (image: GameWindow3AssetNode) => {
+const gameMacroFrameTargetText = (image: DataAnnotationAssetNode) => {
   const numeric = assetNumericImageId(image);
   return numeric !== null ? String(numeric) : image.title.trim();
 };
 
-const setGameMacroPendingJumpTarget = (targetImage: GameWindow3AssetNode) => {
+const setGameMacroPendingJumpTarget = (targetImage: DataAnnotationAssetNode) => {
   const pending = gameMacroPendingJump.value;
   if (!pending) return;
   const sourceImage = findAssetNode(assetTree.value, pending.imageId);
@@ -8566,11 +8771,11 @@ const setGameMacroPendingJumpTarget = (targetImage: GameWindow3AssetNode) => {
   gameMacroPendingJump.value = null;
 };
 
-const isGameMacroFrameAsset = (image: GameWindow3AssetNode) => (
+const isGameMacroFrameAsset = (image: DataAnnotationAssetNode) => (
   image.type === 'image' && Boolean(image.filename)
 );
 
-const matchGameMacroFrameCandidate = async (image: GameWindow3AssetNode, currentFrameDataUrl: string) => {
+const matchGameMacroFrameCandidate = async (image: DataAnnotationAssetNode, currentFrameDataUrl: string) => {
   if (!selectedEntryId.value || !image.filename) return null;
   const width = image.width || fixedFrameWidth.value || selectedWindowScene.value.defaults.fixedWidth;
   const height = image.height || fixedFrameHeight.value || selectedWindowScene.value.defaults.fixedHeight;
@@ -8602,8 +8807,8 @@ const matchGameMacroFrameCandidate = async (image: GameWindow3AssetNode, current
   return { image, score };
 };
 
-const matchGameMacroFrameCandidates = async (candidates: GameWindow3AssetNode[], currentFrameDataUrl: string) => {
-  let best: { image: GameWindow3AssetNode; score: number } | null = null;
+const matchGameMacroFrameCandidates = async (candidates: DataAnnotationAssetNode[], currentFrameDataUrl: string) => {
+  let best: { image: DataAnnotationAssetNode; score: number } | null = null;
   for (const image of candidates) {
     try {
       const result = await matchGameMacroFrameCandidate(image, currentFrameDataUrl);
@@ -8628,7 +8833,7 @@ const findOrCreateGameMacroFrame = async (currentFrameDataUrl: string) => {
 };
 
 const boxToShapeRect = (
-  image: GameWindow3AssetNode,
+  image: DataAnnotationAssetNode,
   box: { x: number; y: number; w: number; h: number },
 ) => {
   const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1;
@@ -8641,7 +8846,7 @@ const boxToShapeRect = (
   };
 };
 
-const pointShapeBox = (point: VisualPoint, image: GameWindow3AssetNode) => {
+const pointShapeBox = (point: VisualPoint, image: DataAnnotationAssetNode) => {
   const size = gameMacroConfig.value.defaultShapeSize;
   const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || size;
   const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || size;
@@ -8655,7 +8860,7 @@ const pointShapeBox = (point: VisualPoint, image: GameWindow3AssetNode) => {
   };
 };
 
-const dragShapeBox = (start: VisualPoint, end: VisualPoint, image: GameWindow3AssetNode) => {
+const dragShapeBox = (start: VisualPoint, end: VisualPoint, image: DataAnnotationAssetNode) => {
   const size = gameMacroConfig.value.defaultShapeSize;
   const width = image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || size;
   const height = image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || size;
@@ -8670,7 +8875,7 @@ const dragShapeBox = (start: VisualPoint, end: VisualPoint, image: GameWindow3As
   return { x, y, w: right - x, h: bottom - y };
 };
 
-const dragDirectionOf = (start: VisualPoint, end: VisualPoint): GameWindow3Shape['contentDirection'] => {
+const dragDirectionOf = (start: VisualPoint, end: VisualPoint): DataAnnotationShape['contentDirection'] => {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
@@ -8684,7 +8889,7 @@ const gameMacroDragDurationMs = (durationMs: number) => (
 );
 
 const buildGameMacroFallbackBox = (
-  image: GameWindow3AssetNode,
+  image: DataAnnotationAssetNode,
   action: 'click' | 'drag',
   point: VisualPoint,
   endPoint: VisualPoint | null,
@@ -8693,14 +8898,14 @@ const buildGameMacroFallbackBox = (
   return { name: action === 'drag' ? '拖拽' : '点击', ...box };
 };
 
-const gameMacroFrameSize = (image: GameWindow3AssetNode) => ({
+const gameMacroFrameSize = (image: DataAnnotationAssetNode) => ({
   width: image.width || naturalWidth.value || selectedWindowScene.value.defaults.fixedWidth || 1,
   height: image.height || naturalHeight.value || selectedWindowScene.value.defaults.fixedHeight || 1,
 });
 
 const applyGameMacroShapeAnnotation = (
-  image: GameWindow3AssetNode,
-  shape: GameWindow3Shape,
+  image: DataAnnotationAssetNode,
+  shape: DataAnnotationShape,
   annotation: GameMacroShapeAnnotation,
   action: 'click' | 'drag',
   durationMs: number,
@@ -8725,7 +8930,7 @@ const applyGameMacroShapeAnnotation = (
 };
 
 const createRecordedGameShape = (
-  image: GameWindow3AssetNode,
+  image: DataAnnotationAssetNode,
   action: 'click' | 'drag',
   point: VisualPoint,
   endPoint: VisualPoint | null,
@@ -8738,12 +8943,14 @@ const createRecordedGameShape = (
     && !existingShapes.some(isSceneIdentityShape);
   const box = annotation?.box ?? buildGameMacroFallbackBox(image, action, point, endPoint);
   const rect = boxToShapeRect(image, box);
-  const shape: GameWindow3Shape = {
+  const shape: DataAnnotationShape = {
     id: createAssetId('shape'),
     kind: 'shape',
     title: (annotation?.label || '').trim() || (action === 'drag' ? '拖拽' : '点击'),
     description: '',
     floating: false,
+    jitterEnabled: false,
+    jitterRadius: 4,
     isSceneIdentity: shouldMarkScene,
     sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
     sceneJumpTarget: '',
@@ -8774,8 +8981,8 @@ const createRecordedGameShape = (
 };
 
 const refineRecordedGameShapeWithAi = async (
-  image: GameWindow3AssetNode,
-  shape: GameWindow3Shape,
+  image: DataAnnotationAssetNode,
+  shape: DataAnnotationShape,
   action: 'click' | 'drag',
   point: VisualPoint,
   endPoint: VisualPoint | null,
@@ -8785,10 +8992,10 @@ const refineRecordedGameShapeWithAi = async (
 ) => {
   const size = gameMacroFrameSize(image);
   const direction = action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none';
-  let response: FanxiuGameWindow3MacroAnnotateResponse | null = null;
+  let response: FanxiuDataAnnotationMacroAnnotateResponse | null = null;
   try {
     gameMacroStatusText.value = `录制宏：${shape.title} 已生成，AI 标注中`;
-    response = await annotateFanxiuGameWindow3MacroShape({
+    response = await annotateFanxiuDataAnnotationMacroShape({
       image_data_url: currentFrameDataUrl,
       action,
       start: point,
@@ -8854,7 +9061,7 @@ const isAssetTreeExpandIconClick = (event: MouseEvent | undefined) => {
   return target instanceof Element && Boolean(target.closest('.el-tree-node__expand-icon'));
 };
 
-const selectAssetNode = (node: GameWindow3AssetNode, _treeNode?: unknown, _component?: unknown, event?: MouseEvent) => {
+const selectAssetNode = (node: DataAnnotationAssetNode, _treeNode?: unknown, _component?: unknown, event?: MouseEvent) => {
   closeAssetContextMenu();
   selectedAssetId.value = node.id;
   if (node.type === 'folder') {
@@ -8874,7 +9081,7 @@ const closeAssetContextMenu = () => {
   };
 };
 
-const openAssetContextMenu = (event: MouseEvent, node: GameWindow3AssetNode) => {
+const openAssetContextMenu = (event: MouseEvent, node: DataAnnotationAssetNode) => {
   event.preventDefault();
   selectedAssetId.value = node.id;
   assetContextMenu.value = {
@@ -8886,8 +9093,8 @@ const openAssetContextMenu = (event: MouseEvent, node: GameWindow3AssetNode) => 
 };
 
 const allowAssetDrop = (
-  _draggingNode: { data?: GameWindow3AssetNode },
-  _dropNode: { data?: GameWindow3AssetNode },
+  _draggingNode: { data?: DataAnnotationAssetNode },
+  _dropNode: { data?: DataAnnotationAssetNode },
   _type: 'prev' | 'inner' | 'next',
 ) => true;
 
@@ -8904,7 +9111,7 @@ const selectAssetRenameInputText = async () => {
   input?.select();
 };
 
-const renameAssetNode = async (node: GameWindow3AssetNode) => {
+const renameAssetNode = async (node: DataAnnotationAssetNode) => {
   selectedAssetId.value = node.id;
   closeAssetContextMenu();
   const nodeKindText = node.type === 'folder' ? '目录' : '图片';
@@ -8929,6 +9136,14 @@ const resetAssetFrameFromContextMenu = async () => {
   selectedAssetId.value = assetContextMenu.value.nodeId || selectedAssetId.value;
   const node = selectedAssetNode.value;
   closeAssetContextMenu();
+  await resetAssetFrameWithConfirm(node);
+};
+
+const resetSelectedAssetFrameFromHint = async () => {
+  await resetAssetFrameWithConfirm(selectedImageNode.value);
+};
+
+const resetAssetFrameWithConfirm = async (node: DataAnnotationAssetNode | null) => {
   if (!node || node.type !== 'image' || !node.filename) return;
   try {
     await ElMessageBox.confirm(`用当前画面覆盖 ${node.filename}？`, '重置帧', { type: 'warning' });
@@ -8944,12 +9159,14 @@ const addAnnotationShape = () => {
   const image = selectedImageNode.value;
   if (!image) return;
   image.shapes ??= [];
-  const shape: GameWindow3Shape = {
+  const shape: DataAnnotationShape = {
     id: createAssetId('shape'),
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes).filter(isDrawableShape).length + 1),
     description: '',
     floating: false,
+    jitterEnabled: false,
+    jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
     sceneJumpTarget: '',
@@ -9003,11 +9220,11 @@ const selectedShapeRoots = () => {
     : (selectedShapeId.value ? [selectedShapeId.value] : []);
   const selected = ids
     .map((id) => findShapeById(selectedImageShapes.value, id))
-    .filter((shape): shape is GameWindow3Shape => Boolean(shape));
+    .filter((shape): shape is DataAnnotationShape => Boolean(shape));
   return selected.filter((shape) => !selected.some((other) => other.id !== shape.id && isShapeDescendantOf(other, shape.id)));
 };
 
-const removeShapesByIds = (shapes: GameWindow3Shape[], ids: Set<string>) => {
+const removeShapesByIds = (shapes: DataAnnotationShape[], ids: Set<string>) => {
   for (let index = shapes.length - 1; index >= 0; index -= 1) {
     const shape = shapes[index];
     if (ids.has(shape.id)) {
@@ -9059,7 +9276,7 @@ const selectShape = (id: string | null, event?: MouseEvent) => {
 };
 
 const handleShapeTreeNodeClick = (
-  data: GameWindow3Shape,
+  data: DataAnnotationShape,
   _node: unknown,
   _component: unknown,
   event?: MouseEvent,
@@ -9070,7 +9287,7 @@ const handleShapeTreeNodeClick = (
 const copySelectedShapes = () => {
   const targets = selectedShapeRoots();
   if (!targets.length) return;
-  copiedShapes.value = targets.map((shape) => JSON.parse(JSON.stringify(shape)) as GameWindow3Shape);
+  copiedShapes.value = targets.map((shape) => JSON.parse(JSON.stringify(shape)) as DataAnnotationShape);
   closeShapeContextMenu();
   ElMessage.success(`已复制 ${copiedShapes.value.length} 个 shape`);
 };
@@ -9113,7 +9330,7 @@ const openShapeContextMenu = (event: MouseEvent, shapeId: string) => {
   };
 };
 
-const openShapeTreeContextMenu = (event: MouseEvent, data: GameWindow3Shape) => {
+const openShapeTreeContextMenu = (event: MouseEvent, data: DataAnnotationShape) => {
   openShapeContextMenu(event, data.id);
 };
 
@@ -9138,7 +9355,7 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 
 const loadRuntimeLogs = async () => {
   try {
-    const response = await getFanxiuGameWindow3RuntimeLogs(500);
+    const response = await getFanxiuDataAnnotationRuntimeLogs(500);
     runtimeLogs.value = response.entries;
     goRuntimeLogLastPage();
   } catch {
@@ -9147,7 +9364,7 @@ const loadRuntimeLogs = async () => {
 };
 
 const clearRuntimeLogs = async () => {
-  const response = await clearFanxiuGameWindow3RuntimeLogs();
+  const response = await clearFanxiuDataAnnotationRuntimeLogs();
   runtimeLogs.value = response.entries;
   goRuntimeLogLastPage();
 };
@@ -9155,7 +9372,7 @@ const clearRuntimeLogs = async () => {
 const loadRuntimeFacts = async () => {
   runtimeFactsLoading.value = true;
   try {
-    const response = await getFanxiuGameWindow3WorldFacts();
+    const response = await getFanxiuDataAnnotationWorldFacts();
     runtimeFactsPath.value = response.path;
     runtimeFactsJson.value = JSON.stringify(response.facts, null, 2);
   } catch (error) {
@@ -9173,7 +9390,7 @@ const openRuntimeFactsDialog = async () => {
 const loadRuntimePlan = async () => {
   runtimePlanLoading.value = true;
   try {
-    const response = await getFanxiuGameWindow3SchedulerPlan();
+    const response = await getFanxiuDataAnnotationSchedulerPlan();
     runtimePlanPath.value = response.path;
     runtimePlanJson.value = JSON.stringify(response, null, 2);
   } catch (error) {
@@ -9192,7 +9409,7 @@ const setRuntimeRunStatus = (message: string, _kind: RuntimeLogKind | 'start' | 
   runtimeRunStatus.value = message;
 };
 
-const applyRuntimeTaskStatus = (status: FanxiuGameWindow3RuntimeStatus) => {
+const applyRuntimeTaskStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeTaskStatus.value = status;
   runtimeRunStatus.value = status.message || status.status || '';
   if (status.logs?.length) {
@@ -9209,7 +9426,7 @@ const applyRuntimeTaskStatus = (status: FanxiuGameWindow3RuntimeStatus) => {
 
 const refreshRuntimeTaskStatus = async () => {
   try {
-    const status = await getFanxiuGameWindow3RuntimeStatus();
+    const status = await getFanxiuDataAnnotationRuntimeStatus();
     applyRuntimeTaskStatus(status);
   } catch {
     // Runtime 调试状态不是页面主数据，静默等待下一次刷新或用户操作。
@@ -9219,7 +9436,7 @@ const refreshRuntimeTaskStatus = async () => {
 const loadRuntimeSchedulerTasks = async () => {
   runtimeSchedulerLoading.value = true;
   try {
-    const response = await getFanxiuGameWindow3SchedulerTasks();
+    const response = await getFanxiuDataAnnotationSchedulerTasks();
     runtimeSchedulerTasks.value = response.tasks;
     if (!selectedRuntimeTaskType.value || !response.tasks.some((task) => task.task_type === selectedRuntimeTaskType.value)) {
       selectedRuntimeTaskType.value = response.tasks[0]?.task_type ?? '';
@@ -9249,7 +9466,7 @@ const stopRuntimeTaskPolling = () => {
 const pollRuntimeTask = async () => {
   stopRuntimeTaskPolling();
   try {
-    const status = await getFanxiuGameWindow3RuntimeStatus();
+    const status = await getFanxiuDataAnnotationRuntimeStatus();
     applyRuntimeTaskStatus(status);
     if (status.running || status.status === 'stopping') {
       runtimeTaskPollTimer = window.setTimeout(() => {
@@ -9272,7 +9489,7 @@ const toggleRuntimeGuard = async () => {
   if (!selectedEntryId.value || runtimeGuardSwitching.value) return;
   runtimeGuardSwitching.value = true;
   try {
-    const status = await setFanxiuGameWindow3RuntimeGuard(selectedEntryId.value, !runtimeGuardEnabled.value, 2);
+    const status = await setFanxiuDataAnnotationRuntimeGuard(selectedEntryId.value, !runtimeGuardEnabled.value, 2);
     applyRuntimeTaskStatus(status);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -9282,7 +9499,7 @@ const toggleRuntimeGuard = async () => {
   }
 };
 
-const runRuntimeTaskDefinition = async (task: FanxiuGameWindow3SchedulerTaskItem) => {
+const runRuntimeTaskDefinition = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (!selectedEntryId.value) return;
   const payloadOverride = buildRuntimeTaskPayloadOverride(task);
   runtimeRunning.value = true;
@@ -9290,7 +9507,7 @@ const runRuntimeTaskDefinition = async (task: FanxiuGameWindow3SchedulerTaskItem
   runtimeLogs.value = [];
   setRuntimeRunStatus(`Scheduler 手动任务：${task.label}`, 'start');
   try {
-    const status = await runNowFanxiuGameWindow3SchedulerTask(selectedEntryId.value, task.id, payloadOverride);
+    const status = await runNowFanxiuDataAnnotationSchedulerTask(selectedEntryId.value, task.id, payloadOverride);
     applyRuntimeTaskStatus(status);
     await pollRuntimeTask();
     void loadRuntimeSchedulerTasks();
@@ -9318,7 +9535,7 @@ const runRuntimeDueTasks = async () => {
   runtimeLogs.value = [];
   setRuntimeRunStatus('Scheduler：执行全部到期任务', 'start');
   try {
-    const status = await runDueFanxiuGameWindow3SchedulerTasks(selectedEntryId.value);
+    const status = await runDueFanxiuDataAnnotationSchedulerTasks(selectedEntryId.value);
     applyRuntimeTaskStatus(status);
     if (status.running || status.status === 'stopping') await pollRuntimeTask();
     else runtimeRunning.value = false;
@@ -9335,7 +9552,7 @@ const runRuntimeSingleTick = async () => {
   await ensureRuntimeSchedulerTasks();
   runtimeStepping.value = true;
   try {
-    const status = await tickFanxiuGameWindow3RuntimeTask(selectedEntryId.value);
+    const status = await tickFanxiuDataAnnotationRuntimeTask(selectedEntryId.value);
     applyRuntimeTaskStatus(status);
   } catch (error) {
     setRuntimeRunStatus(getErrorMessage(error), 'error');
@@ -9349,7 +9566,7 @@ const stopRuntimeTask = async () => {
   runtimeStopRequested.value = true;
   setRuntimeRunStatus('正在停止当前任务', 'stop');
   try {
-    const status = await stopFanxiuGameWindow3RuntimeCurrentTask(selectedEntryId.value);
+    const status = await stopFanxiuDataAnnotationRuntimeCurrentTask(selectedEntryId.value);
     applyRuntimeTaskStatus(status);
   } catch {
     // 停止失败时保留本地停止标记，下一轮轮询会同步真实状态。
@@ -9375,7 +9592,7 @@ const loadMaskImage = (src: string) => new Promise<HTMLImageElement>((resolve, r
   image.src = src;
 });
 
-const cropImageDataUrlByShape = async (imageDataUrl: string, shape: GameWindow3Shape | null, width: number, height: number) => {
+const cropImageDataUrlByShape = async (imageDataUrl: string, shape: DataAnnotationShape | null, width: number, height: number) => {
   if (!shape) return null;
   const image = await loadMaskImage(imageDataUrl);
   const canvas = document.createElement('canvas');
@@ -9418,7 +9635,7 @@ const cropImageDataUrlByBox = async (imageDataUrl: string, box: FanxiuGameWindow
   return context.getImageData(0, 0, width, height);
 };
 
-const cropLiveImageDataByShape = (shape: GameWindow3Shape, width: number, height: number) => {
+const cropLiveImageDataByShape = (shape: DataAnnotationShape, width: number, height: number) => {
   const image = streamImageRef.value;
   if (!image || !image.naturalWidth || !image.naturalHeight) return null;
   const canvas = document.createElement('canvas');
@@ -9440,7 +9657,7 @@ const cropLiveImageDataByShape = (shape: GameWindow3Shape, width: number, height
   return context.getImageData(0, 0, width, height);
 };
 
-const loadShapeAlphaMask = async (shape: GameWindow3Shape, width: number, height: number) => {
+const loadShapeAlphaMask = async (shape: DataAnnotationShape, width: number, height: number) => {
   if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
   const image = await loadMaskImage(shape.alphaMask.dataUrl);
   const canvas = document.createElement('canvas');
@@ -9545,6 +9762,7 @@ const refreshShapeMaskPreview = () => {
   }
   shapeMaskAlphaDataUrl.value = imageDataToDataUrl(maskImage);
   shapeMaskResultPreviewUrl.value = imageDataToDataUrl(resultImage);
+  scheduleShapeMaskManualCanvasRender();
 };
 
 const currentShapeMaskAlpha = () => {
@@ -9564,6 +9782,240 @@ const currentShapeMaskAlpha = () => {
     alpha[index] = Math.min(stats.baseAlpha?.[index] ?? 255, volatilityAlpha, differenceAlpha);
   }
   return alpha;
+};
+
+const renderShapeMaskManualCanvas = () => {
+  if (!shapeMaskManualVisible.value) return;
+  const stats = shapeMaskStats.value;
+  const canvas = shapeMaskManualCanvasRef.value;
+  if (!stats?.reference || !canvas) return;
+  const alpha = currentShapeMaskAlpha();
+  if (!alpha) return;
+  const zoom = shapeMaskManualZoom.value;
+  const canvasWidth = Math.max(1, Math.round(stats.width * zoom));
+  const canvasHeight = Math.max(1, Math.round(stats.height * zoom));
+  if (canvas.width !== canvasWidth) canvas.width = canvasWidth;
+  if (canvas.height !== canvasHeight) canvas.height = canvasHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const previewCanvas = document.createElement('canvas');
+  previewCanvas.width = stats.width;
+  previewCanvas.height = stats.height;
+  const previewCtx = previewCanvas.getContext('2d');
+  if (!previewCtx) return;
+  previewCtx.putImageData(applyAlphaToPreview(stats.reference, alpha), 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(previewCanvas, 0, 0, canvas.width, canvas.height);
+};
+
+const scheduleShapeMaskManualCanvasRender = () => {
+  if (!shapeMaskManualVisible.value) return;
+  void nextTick(() => renderShapeMaskManualCanvas());
+};
+
+const commitShapeMaskManualAlpha = (alpha: Uint8ClampedArray) => {
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) return;
+  stats.baseAlpha = alpha;
+  stats.min.fill(255);
+  stats.max.fill(0);
+  stats.diffMax.fill(0);
+  shapeMaskResetToEmpty.value = isFullShapeMaskAlpha(alpha);
+  shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(alpha, stats.width, stats.height));
+  shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, alpha));
+  scheduleShapeMaskManualCanvasRender();
+};
+
+const pushShapeMaskManualUndo = () => {
+  const alpha = currentShapeMaskAlpha();
+  if (!alpha) return;
+  const stack = shapeMaskManualUndoStack.value;
+  stack.push(new Uint8ClampedArray(alpha));
+  if (stack.length > 30) stack.shift();
+  shapeMaskManualRedoStack.value = [];
+};
+
+const ensureShapeMaskManualBaseAlpha = () => {
+  const alpha = currentShapeMaskAlpha();
+  if (!alpha) return false;
+  commitShapeMaskManualAlpha(new Uint8ClampedArray(alpha));
+  return true;
+};
+
+const toggleShapeMaskManualEditor = async () => {
+  shapeMaskManualVisible.value = !shapeMaskManualVisible.value;
+  if (!shapeMaskManualVisible.value) {
+    shapeMaskManualPointer.value = null;
+    shapeMaskManualPanState.value = null;
+    return;
+  }
+  pauseShapeMaskSampling();
+  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  shapeMaskManualUndoStack.value = [];
+  shapeMaskManualRedoStack.value = [];
+  ensureShapeMaskManualBaseAlpha();
+  await nextTick();
+  renderShapeMaskManualCanvas();
+};
+
+const setShapeMaskManualZoom = async (
+  value: number,
+  options?: { anchorClientX?: number; anchorClientY?: number },
+) => {
+  const wrap = shapeMaskManualCanvasWrapRef.value;
+  const currentZoom = shapeMaskManualZoom.value;
+  const nextZoom = clamp(Math.round(Number(value) * 4) / 4, 1, 8);
+  if (!Number.isFinite(nextZoom) || nextZoom === currentZoom) return;
+  if (!wrap) {
+    shapeMaskManualZoom.value = nextZoom;
+    scheduleShapeMaskManualCanvasRender();
+    return;
+  }
+  const rect = wrap.getBoundingClientRect();
+  const anchorClientX = options?.anchorClientX ?? (rect.left + rect.width / 2);
+  const anchorClientY = options?.anchorClientY ?? (rect.top + rect.height / 2);
+  const anchorX = anchorClientX - rect.left + wrap.scrollLeft;
+  const anchorY = anchorClientY - rect.top + wrap.scrollTop;
+  const imageX = anchorX / currentZoom;
+  const imageY = anchorY / currentZoom;
+  shapeMaskManualZoom.value = nextZoom;
+  await nextTick();
+  renderShapeMaskManualCanvas();
+  wrap.scrollLeft = Math.max(0, imageX * nextZoom - (anchorClientX - rect.left));
+  wrap.scrollTop = Math.max(0, imageY * nextZoom - (anchorClientY - rect.top));
+};
+
+const handleShapeMaskManualWheel = (event: WheelEvent) => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -0.25 : 0.25;
+  void setShapeMaskManualZoom(shapeMaskManualZoom.value + delta, {
+    anchorClientX: event.clientX,
+    anchorClientY: event.clientY,
+  });
+};
+
+const shapeMaskManualPointOf = (event: PointerEvent) => {
+  const stats = shapeMaskStats.value;
+  const canvas = shapeMaskManualCanvasRef.value;
+  if (!stats || !canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    x: clamp(Math.floor((event.clientX - rect.left) * (stats.width / rect.width)), 0, stats.width - 1),
+    y: clamp(Math.floor((event.clientY - rect.top) * (stats.height / rect.height)), 0, stats.height - 1),
+  };
+};
+
+const paintShapeMaskManualPoint = (alpha: Uint8ClampedArray, x: number, y: number) => {
+  const stats = shapeMaskStats.value;
+  if (!stats) return;
+  const radius = Math.max(0.5, shapeMaskManualBrushSize.value / 2);
+  const radiusSquared = radius * radius;
+  const value = shapeMaskManualTool.value === 'erase' ? 0 : 255;
+  const left = Math.max(0, Math.floor(x - radius));
+  const right = Math.min(stats.width - 1, Math.ceil(x + radius));
+  const top = Math.max(0, Math.floor(y - radius));
+  const bottom = Math.min(stats.height - 1, Math.ceil(y + radius));
+  for (let yy = top; yy <= bottom; yy += 1) {
+    for (let xx = left; xx <= right; xx += 1) {
+      const dx = xx - x;
+      const dy = yy - y;
+      if (dx * dx + dy * dy > radiusSquared) continue;
+      alpha[yy * stats.width + xx] = value;
+    }
+  }
+};
+
+const paintShapeMaskManualLine = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+  const stats = shapeMaskStats.value;
+  if (!stats?.baseAlpha) return;
+  const alpha = new Uint8ClampedArray(stats.baseAlpha);
+  const distance = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y), 1);
+  for (let step = 0; step <= distance; step += 1) {
+    const ratio = step / distance;
+    const x = from.x + (to.x - from.x) * ratio;
+    const y = from.y + (to.y - from.y) * ratio;
+    paintShapeMaskManualPoint(alpha, x, y);
+  }
+  commitShapeMaskManualAlpha(alpha);
+};
+
+const handleShapeMaskManualPointerDown = (event: PointerEvent) => {
+  const wrap = shapeMaskManualCanvasWrapRef.value;
+  const shouldPan = event.button === 1 || (event.button === 0 && screenshotSpacePressed.value);
+  if (shouldPan && wrap) {
+    event.preventDefault();
+    shapeMaskManualPanState.value = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScrollLeft: wrap.scrollLeft,
+      startScrollTop: wrap.scrollTop,
+    };
+    shapeMaskManualCanvasRef.value?.setPointerCapture(event.pointerId);
+    return;
+  }
+  if (event.button !== 0) return;
+  const point = shapeMaskManualPointOf(event);
+  if (!point || !ensureShapeMaskManualBaseAlpha()) return;
+  pushShapeMaskManualUndo();
+  shapeMaskManualPointer.value = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+  };
+  shapeMaskManualCanvasRef.value?.setPointerCapture(event.pointerId);
+  paintShapeMaskManualLine(point, point);
+};
+
+const handleShapeMaskManualPointerMove = (event: PointerEvent) => {
+  const panState = shapeMaskManualPanState.value;
+  const wrap = shapeMaskManualCanvasWrapRef.value;
+  if (panState && panState.pointerId === event.pointerId && wrap) {
+    wrap.scrollLeft = panState.startScrollLeft - (event.clientX - panState.startClientX);
+    wrap.scrollTop = panState.startScrollTop - (event.clientY - panState.startClientY);
+    return;
+  }
+  const state = shapeMaskManualPointer.value;
+  const point = shapeMaskManualPointOf(event);
+  if (!state || state.pointerId !== event.pointerId || !point) return;
+  paintShapeMaskManualLine({ x: state.x, y: state.y }, point);
+  shapeMaskManualPointer.value = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+  };
+};
+
+const handleShapeMaskManualPointerUp = (event: PointerEvent) => {
+  const panState = shapeMaskManualPanState.value;
+  if (panState && panState.pointerId === event.pointerId) {
+    shapeMaskManualPanState.value = null;
+    shapeMaskManualCanvasRef.value?.releasePointerCapture(event.pointerId);
+    return;
+  }
+  const state = shapeMaskManualPointer.value;
+  if (!state || state.pointerId !== event.pointerId) return;
+  shapeMaskManualPointer.value = null;
+  shapeMaskManualCanvasRef.value?.releasePointerCapture(event.pointerId);
+};
+
+const undoShapeMaskManual = () => {
+  const alpha = currentShapeMaskAlpha();
+  const previous = shapeMaskManualUndoStack.value.pop();
+  if (!previous || !alpha) return;
+  shapeMaskManualRedoStack.value.push(new Uint8ClampedArray(alpha));
+  commitShapeMaskManualAlpha(previous);
+};
+
+const redoShapeMaskManual = () => {
+  const alpha = currentShapeMaskAlpha();
+  const next = shapeMaskManualRedoStack.value.pop();
+  if (!next || !alpha) return;
+  shapeMaskManualUndoStack.value.push(new Uint8ClampedArray(alpha));
+  commitShapeMaskManualAlpha(next);
 };
 
 const referencePixelSaturation = (reference: ImageData, index: number) => {
@@ -9803,12 +10255,18 @@ const cleanAlphaSemanticForeground = (
   return cleaned;
 };
 
-const cleanShapeMaskAlpha = () => {
+const applyShapeMaskBackgroundCleanup = (commitBase: boolean) => {
   const stats = shapeMaskStats.value;
   if (!stats?.reference) return;
   const alpha = currentShapeMaskAlpha();
   if (!alpha) return;
   const cleaned = cleanAlphaSemanticForeground(alpha, stats.reference, stats.width, stats.height);
+  if (!commitBase) {
+    shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(cleaned, stats.width, stats.height));
+    shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, cleaned));
+    scheduleShapeMaskManualCanvasRender();
+    return;
+  }
   stats.baseAlpha = cleaned;
   stats.min.fill(255);
   stats.max.fill(0);
@@ -9817,6 +10275,18 @@ const cleanShapeMaskAlpha = () => {
   shapeMaskResetToEmpty.value = false;
   shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(cleaned, stats.width, stats.height));
   shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, cleaned));
+  scheduleShapeMaskManualCanvasRender();
+};
+
+const cleanShapeMaskAlpha = () => applyShapeMaskBackgroundCleanup(true);
+
+const resetShapeMaskAccumulatedDiff = () => {
+  const stats = shapeMaskStats.value;
+  if (!stats) return;
+  stats.min.fill(255);
+  stats.max.fill(0);
+  stats.diffMax.fill(0);
+  shapeMaskFrameCount.value = 0;
 };
 
 const updateShapeMaskStats = (frame: ImageData) => {
@@ -9844,6 +10314,7 @@ const updateShapeMaskStats = (frame: ImageData) => {
     shapeMaskLivePreviewUrl.value = imageDataToDataUrl(frame);
   }
   refreshShapeMaskPreview();
+  if (shapeMaskAlgorithm.value === 'background') applyShapeMaskBackgroundCleanup(false);
 };
 
 const updateShapeMaskLivePreview = async () => {
@@ -9892,6 +10363,8 @@ const pauseShapeMaskSampling = () => {
 const stopShapeMaskSampling = () => {
   pauseShapeMaskSampling();
   stopShapeMaskLivePreview();
+  shapeMaskManualPointer.value = null;
+  shapeMaskManualPanState.value = null;
 };
 
 const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
@@ -9922,6 +10395,7 @@ const initializeShapeMaskSampling = async (useExistingMask: boolean) => {
     baseAlpha: initialAlpha,
     reference,
   };
+  scheduleShapeMaskManualCanvasRender();
   await updateShapeMaskLivePreview();
   scheduleShapeMaskLivePreview();
 };
@@ -9942,6 +10416,7 @@ const resetShapeMaskSampling = async () => {
   shapeMaskResetToEmpty.value = true;
   shapeMaskAlphaDataUrl.value = imageDataToDataUrl(alphaToMaskImageData(fullAlpha, stats.width, stats.height));
   shapeMaskResultPreviewUrl.value = imageDataToDataUrl(applyAlphaToPreview(stats.reference, fullAlpha));
+  scheduleShapeMaskManualCanvasRender();
 };
 
 const startShapeMaskSampling = async () => {
@@ -9949,6 +10424,33 @@ const startShapeMaskSampling = async () => {
   if (!shapeMaskStats.value || shapeMaskRunning.value) return;
   shapeMaskRunning.value = true;
   scheduleShapeMaskSampling();
+};
+
+const runShapeMaskSingleFrame = async () => {
+  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  const stats = shapeMaskStats.value;
+  if (!stats) return;
+  if (shapeMaskAlgorithm.value === 'background') {
+    cleanShapeMaskAlpha();
+    return;
+  }
+  resetShapeMaskAccumulatedDiff();
+  const frame = await captureLiveShapeImageData(stats.width, stats.height);
+  if (!frame) return;
+  updateShapeMaskStats(frame);
+};
+
+const runSelectedShapeMaskMode = async () => {
+  if (shapeMaskRunning.value) {
+    pauseShapeMaskSampling();
+    return;
+  }
+  if (shapeMaskCaptureMode.value === 'single') {
+    await runShapeMaskSingleFrame();
+    return;
+  }
+  resetShapeMaskAccumulatedDiff();
+  await startShapeMaskSampling();
 };
 
 const openShapeMaskDialog = async () => {
@@ -10155,17 +10657,19 @@ const ensureDiscriminatorCurrentMember = () => {
   }
 };
 
-const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number, label: string) => {
+const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: number, label: string) => {
   const source = selectedShape.value;
   image.shapes ??= [];
   const existing = image.shapes.find((shape) => shape.discriminatorGroupId === shapeDiscriminatorGroupId.value);
   if (existing) return existing;
-  const shape: GameWindow3Shape = {
+  const shape: DataAnnotationShape = {
     id: createAssetId('shape'),
     kind: 'shape',
     title: label || source?.title || image.title,
     description: '',
     floating: Boolean(source?.floating),
+    jitterEnabled: Boolean(source?.jitterEnabled),
+    jitterRadius: normalizeShapeJitterRadius(source?.jitterRadius),
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
     sceneJumpTarget: '',
@@ -10194,7 +10698,7 @@ const createLinkedShapeForImage = (image: GameWindow3AssetNode, imageId: number,
   return shape;
 };
 
-const selectShapeDiscriminatorCandidate = (shape: GameWindow3Shape, label: string) => {
+const selectShapeDiscriminatorCandidate = (shape: DataAnnotationShape, label: string) => {
   shape.discriminatorEnabled = true;
   shape.discriminatorGroupId = shapeDiscriminatorGroupId.value;
   shape.discriminatorValue = label;
@@ -10377,7 +10881,7 @@ const startShapeDiscriminatorSampling = async () => {
 const openShapeDiscriminatorDialog = async () => {
   const shape = selectedShape.value;
   if (!shape || shape.kind === 'group') return;
-  const imageId = assetNumericImageId(selectedImageNode.value as GameWindow3AssetNode);
+  const imageId = assetNumericImageId(selectedImageNode.value as DataAnnotationAssetNode);
   let group = shape.discriminatorGroupId
     ? discriminatorGroups.value.find((item) => item.id === shape.discriminatorGroupId) ?? null
     : null;
@@ -10447,17 +10951,17 @@ const saveShapeDiscriminatorAndClose = () => {
 };
 
 const helpSectionHtml = (title: string, lines: string[]) => (
-  `<section class="game-window3-help-section"><h4>${title}</h4>${lines.map((line) => `<p>${line}</p>`).join('')}</section>`
+  `<section class="data-annotation-help-section"><h4>${title}</h4>${lines.map((line) => `<p>${line}</p>`).join('')}</section>`
 );
 
 const showStructuredHelp = (title: string, sections: Array<{ title: string; lines: string[] }>) => {
   ElMessageBox.alert(
-    `<div class="game-window3-help">${sections.map((section) => helpSectionHtml(section.title, section.lines)).join('')}</div>`,
+    `<div class="data-annotation-help">${sections.map((section) => helpSectionHtml(section.title, section.lines)).join('')}</div>`,
     title,
     {
       confirmButtonText: '知道了',
       dangerouslyUseHTMLString: true,
-      customClass: 'game-window3-help-message',
+      customClass: 'data-annotation-help-message',
     },
   );
 };
@@ -10471,35 +10975,36 @@ const showShapeMaskHelp = () => {
     {
       title: '2. 计算机制',
       lines: [
-        '开始后持续采样直播画面，记录每个像素的波动范围。',
-        '波动越大的像素，越容易被判定为动态背景，并在 alpha 通道里变透明。',
+        '单帧/连拍只决定取几帧；差异抠图/连通抠图只决定怎么生成 alpha。',
+        '差异抠图按参考图和当前帧差异、连拍波动来扣动态背景；阈值越小，扣除越严格。',
       ],
     },
     {
       title: '3. 检测效果',
       lines: [
         '保存后，透明像素会被跳过，不参与相似度计算。',
-        '等待越久，动态背景识别通常越精细；随时保存就是固化当前结果。',
+        '连通抠图从边缘背景开始扩散，清掉与边缘连通且颜色相近的区域；两种算法都只更新预览，保存后才写入 shape。',
       ],
     },
   ]);
 };
 
 const showShapeMaskCleanHelp = () => {
-  showStructuredHelp('净化说明', [
+  showStructuredHelp('连通抠图说明', [
     {
       title: '1. 它做什么',
-      lines: ['基于当前抠图结果，自动去掉零散噪点，只保留最主要的一块稳定前景。'],
+      lines: ['从方框边缘开始找背景，把与边缘连通且颜色相近的区域设为透明。'],
     },
     {
       title: '2. 适用场景',
-      lines: ['抠图结果里出现小碎点、背景残留、边缘散斑时使用。'],
+      lines: ['图标、文字、按钮叠在复杂背景上时使用，例如大地图、日常入口这类局部锚点。'],
     },
     {
       title: '3. 注意事项',
       lines: [
-        '净化会重置采样统计，并把净化后的 alpha 作为新的基础遮罩。',
-        '如果目标本身由多个分离部件组成，净化可能只保留最大的一块。',
+        '单帧会立即计算一次；连拍会持续采样，直到再次点击暂停。',
+        '连通抠图基于当前参考图和已有 alpha 生成结果，不依赖差异阈值。',
+        '如果目标本身和背景颜色太接近，可能需要保存前手动检查抠图结果。',
       ],
     },
   ]);
@@ -10656,19 +11161,21 @@ const showRuntimeHelp = () => {
   ]);
 };
 
-const shapeBoxStyle = (shape: GameWindow3Shape) => ({
+const shapeBoxStyle = (shape: DataAnnotationShape) => ({
   left: (shape.x * 100) + '%',
   top: (shape.y * 100) + '%',
   width: (shape.w * 100) + '%',
   height: (shape.h * 100) + '%',
 });
 
-const buildShapeBox = (startX: number, startY: number, endX: number, endY: number): GameWindow3Shape => ({
+const buildShapeBox = (startX: number, startY: number, endX: number, endY: number): DataAnnotationShape => ({
   id: 'draft-shape',
   kind: 'shape',
   title: '',
   description: '',
   floating: false,
+  jitterEnabled: false,
+  jitterRadius: 4,
   isSceneIdentity: false,
   sceneIdentityRole: 'off',
   sceneJumpTarget: '',
@@ -10710,7 +11217,7 @@ const getAnnotationPoint = (event: PointerEvent, rect = getAnnotationRect()) => 
   };
 };
 
-const clampShapeBox = (shape: GameWindow3Shape) => {
+const clampShapeBox = (shape: DataAnnotationShape) => {
   shape.w = Math.min(Math.max(shape.w, 0), 1);
   shape.h = Math.min(Math.max(shape.h, 0), 1);
   shape.x = Math.min(Math.max(shape.x, 0), 1 - shape.w);
@@ -10744,13 +11251,15 @@ const finishShapeDraft = (event: PointerEvent) => {
     return;
   }
   image.shapes ??= [];
-  const shape: GameWindow3Shape = {
+  const shape: DataAnnotationShape = {
     ...draft,
     id: createAssetId('shape'),
     kind: 'shape',
     title: 'shape ' + (flattenShapes(image.shapes ?? []).filter(isDrawableShape).length + 1),
     description: '',
     floating: false,
+    jitterEnabled: false,
+    jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
     sceneJumpTarget: '',
@@ -12919,6 +13428,24 @@ const finishShapeDrag = () => {
   cursor: not-allowed;
 }
 
+.jpeg-frame-reset-hint {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #f3d19e;
+  border-radius: 4px;
+  background: #fdf6ec;
+  color: #b88230;
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.jpeg-frame-reset-hint:hover {
+  border-color: #e6a23c;
+  color: #a16a1b;
+}
+
 .asset-tree-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -13247,7 +13774,16 @@ const finishShapeDrag = () => {
 }
 
 .shape-jump-field .shape-pixel-tolerance-input {
-  width: 48px;
+  width: 38px;
+}
+
+.shape-jump-field .shape-pixel-tolerance-input :deep(.el-input__wrapper) {
+  padding: 0 4px;
+}
+
+.shape-jump-field .shape-pixel-tolerance-input :deep(.el-input__inner) {
+  padding: 0;
+  text-align: center;
 }
 
 .shape-ocr-config {
@@ -13260,6 +13796,23 @@ const finishShapeDrag = () => {
 
 .shape-ocr-mode-select {
   width: 72px;
+}
+
+.shape-jitter-config {
+  gap: 4px;
+}
+
+.shape-jitter-radius-input {
+  width: 34px;
+}
+
+.shape-jitter-radius-input :deep(.el-input__wrapper) {
+  padding: 0 4px;
+}
+
+.shape-jitter-radius-input :deep(.el-input__inner) {
+  padding: 0;
+  text-align: center;
 }
 
 .shape-row-break {
@@ -13301,6 +13854,31 @@ const finishShapeDrag = () => {
 .shape-detect-result {
   color: #606266;
   font-size: 12px;
+}
+
+.shape-detect-debug {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shape-detect-debug-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+}
+
+.shape-detect-debug-stats span {
+  white-space: nowrap;
+}
+
+.shape-detect-debug-images {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .shape-dialog-head {
@@ -13438,14 +14016,44 @@ const finishShapeDrag = () => {
 
 .shape-mask-controls {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.shape-mask-control-row {
+  display: flex;
   align-items: center;
   gap: 12px;
+  min-height: 24px;
+}
+
+.shape-mask-frame-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.shape-mask-select {
+  flex: 0 0 auto;
+}
+
+.shape-mask-select.is-capture {
+  width: 76px;
+}
+
+.shape-mask-select.is-algorithm {
+  width: 112px;
+}
+
+.shape-mask-select.is-manual-tool {
+  width: 78px;
 }
 
 .shape-mask-slider {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 300px;
   width: 300px;
 }
 
@@ -13457,6 +14065,55 @@ const finishShapeDrag = () => {
 .shape-mask-slider .el-slider {
   flex: 1;
   min-width: 0;
+}
+
+.shape-mask-slider.is-brush {
+  flex-basis: 220px;
+  width: 220px;
+}
+
+.shape-mask-manual {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shape-mask-manual-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.shape-mask-manual-canvas-wrap {
+  max-width: 100%;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #dcdfe6;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #f1f3f5 25%, transparent 25%),
+    linear-gradient(-45deg, #f1f3f5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f1f3f5 75%),
+    linear-gradient(-45deg, transparent 75%, #f1f3f5 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.shape-mask-manual-canvas-wrap.is-pan-ready,
+.shape-mask-manual-canvas-wrap.is-pan-ready * {
+  cursor: grab;
+}
+
+.shape-mask-manual-canvas-wrap.is-panning,
+.shape-mask-manual-canvas-wrap.is-panning * {
+  cursor: grabbing;
+}
+
+.shape-mask-manual-canvas {
+  display: block;
+  cursor: crosshair;
 }
 
 .image-compare-dialog {
@@ -13513,11 +14170,11 @@ const finishShapeDrag = () => {
   cursor: crosshair;
 }
 
-:global(.game-window3-help-message) {
+:global(.data-annotation-help-message) {
   width: min(520px, calc(100vw - 32px));
 }
 
-:global(.game-window3-help) {
+:global(.data-annotation-help) {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -13526,11 +14183,11 @@ const finishShapeDrag = () => {
   line-height: 1.7;
 }
 
-:global(.game-window3-help-section) {
+:global(.data-annotation-help-section) {
   margin: 0;
 }
 
-:global(.game-window3-help-section h4) {
+:global(.data-annotation-help-section h4) {
   margin: 0 0 4px;
   color: #1f2937;
   font-size: 14px;
@@ -13538,7 +14195,7 @@ const finishShapeDrag = () => {
   line-height: 1.4;
 }
 
-:global(.game-window3-help-section p) {
+:global(.data-annotation-help-section p) {
   margin: 0;
   color: #606266;
 }

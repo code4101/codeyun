@@ -1,4 +1,5 @@
 import api from '@/api';
+import axios from 'axios';
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ElMessage } from 'element-plus';
@@ -69,6 +70,7 @@ export interface NoteNode {
   user_id?: number;
   title: string;
   content?: string;
+  version: number;
   weight: number;
   node_type?: string | null;
   note_types?: NoteTypeAssignment[];
@@ -427,6 +429,7 @@ export const normalizeNote = (raw: any): NoteNode => ({
     return {
       id: normalizeNoteId(raw.id),
       numeric_id: raw.numeric_id == null ? null : normalizeInteger(raw.numeric_id, 0) || null,
+      version: normalizeInteger(raw.version, 1) || 1,
       created_at: normalizeApiTimestamp(raw.created_at),
       updated_at: normalizeApiTimestamp(raw.updated_at),
       start_at: normalizeApiTimestamp(raw.start_at),
@@ -494,6 +497,7 @@ export type NoteDocUpdatePayload = Partial<Pick<
   | 'private_level'
   | 'custom_fields'
 >> & {
+  base_version?: number;
   completion_progress_expr?: string | null;
 }
 
@@ -2186,6 +2190,7 @@ export const useNoteStore = defineStore('notes', () => {
       private_level?: number;
       custom_fields?: any[];
       completion_progress_expr?: string | null;
+      base_version?: number;
     }
   ) => {
     bumpPending(1);
@@ -2201,6 +2206,10 @@ export const useNoteStore = defineStore('notes', () => {
       return mergedNote;
     } catch (error) {
       console.error('Failed to update note:', error);
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        ElMessage.warning('文档已被其他人更新，已保留本地草稿');
+        throw error;
+      }
       ElMessage.error('保存任务失败');
       return null;
     } finally {
@@ -2220,8 +2229,7 @@ export const useNoteStore = defineStore('notes', () => {
       return mergedNote;
     } catch (error) {
       console.error('Failed to update note doc:', error);
-      ElMessage.error('保存文档失败');
-      return null;
+      throw error;
     } finally {
       bumpPending(-1);
     }

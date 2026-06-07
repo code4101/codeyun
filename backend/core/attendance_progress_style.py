@@ -153,7 +153,23 @@ def refund_progress_color(
 
 def partial_refund_progress_color(ratio: float) -> str:
     normalized = max(0.0, min(float(ratio), 1.0))
-    return rgb_to_hex([255, 255, 255 * (1 - normalized)])
+    stops = [
+        (0.0, (255, 255, 255)),
+        (0.5, (255, 243, 196)),
+        (0.75, (255, 224, 138)),
+        (0.9, (255, 196, 61)),
+        (1.0, (255, 196, 61)),
+    ]
+    for (left_ratio, left_color), (right_ratio, right_color) in zip(stops, stops[1:], strict=False):
+        if normalized > right_ratio:
+            continue
+        span = right_ratio - left_ratio
+        weight = 0.0 if span <= 0 else (normalized - left_ratio) / span
+        return rgb_to_hex(
+            left + (right - left) * weight
+            for left, right in zip(left_color, right_color, strict=False)
+        )
+    return rgb_to_hex(stops[-1][1])
 
 
 def progress_weight_from_percent_text(text: Any) -> float:

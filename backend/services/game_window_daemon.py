@@ -10,11 +10,11 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.core.fanxiu_sunlogin_rotate import (
-    activate_sunlogin_rotate_window,
-    click_sunlogin_rotate_processed_point,
-    drag_sunlogin_rotate_processed_points,
-    stream_sunlogin_rotate_mjpeg,
+from backend.core.fanxiu_mumu_control import (
+    activate_mumu_window,
+    click_mumu_window_processed_point,
+    drag_mumu_window_processed_points,
+    stream_mumu_window_mjpeg,
 )
 
 
@@ -136,7 +136,7 @@ def stream_game_window(
     popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
 ):
     try:
-        frames = stream_sunlogin_rotate_mjpeg(
+        frames = stream_mumu_window_mjpeg(
             title=(title or _default_target_title()).strip() or _default_target_title(),
             title_match=title_match,
             fps=fps,
@@ -168,7 +168,7 @@ def stream_game_window(
 @router.post("/input/click")
 def click_game_window(req: GameWindowClickRequest):
     try:
-        result = click_sunlogin_rotate_processed_point(
+        result = click_mumu_window_processed_point(
             x=req.x,
             y=req.y,
             title=(req.title or _default_target_title()).strip() or _default_target_title(),
@@ -194,7 +194,7 @@ def click_game_window(req: GameWindowClickRequest):
 @router.post("/input/activate")
 def activate_game_window(req: GameWindowActivateRequest):
     try:
-        return activate_sunlogin_rotate_window(
+        return activate_mumu_window(
             title=(req.title or _default_target_title()).strip() or _default_target_title(),
             title_match=req.title_match,
             click_title=req.click_title,
@@ -206,7 +206,7 @@ def activate_game_window(req: GameWindowActivateRequest):
 @router.post("/input/drag")
 def drag_game_window(req: GameWindowDragRequest):
     try:
-        result = drag_sunlogin_rotate_processed_points(
+        result = drag_mumu_window_processed_points(
             start_x=req.start_x,
             start_y=req.start_y,
             end_x=req.end_x,
@@ -274,3 +274,4 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

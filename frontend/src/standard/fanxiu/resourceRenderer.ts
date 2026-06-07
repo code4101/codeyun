@@ -1,6 +1,6 @@
 import type { FanxiuGongfaLinkedItem, FanxiuWikiLinkIndexItem } from '@/api/fanxiu'
 
-export type FanxiuResourceType = 'gongfa' | 'item' | 'lingjie'
+export type FanxiuResourceType = 'gongfa' | 'item' | 'lingjie' | 'activity' | 'digitdoor' | 'doupotd'
 
 export type FanxiuResourceLinkTarget = Pick<
   FanxiuWikiLinkIndexItem,
@@ -94,7 +94,11 @@ export function renderFanxiuResourceLinkTarget(target: FanxiuResourceLinkTarget)
   const alias = escapeFanxiuHtml(aliasText)
   const tab = target.tab as FanxiuResourceType
   const id = String(target.id ?? '').trim()
-  if (!aliasText || !id || (tab !== 'gongfa' && tab !== 'item' && tab !== 'lingjie')) return alias
+  if (
+    !aliasText
+    || !id
+    || !['gongfa', 'item', 'lingjie', 'activity', 'digitdoor', 'doupotd'].includes(tab)
+  ) return alias
   const href = buildFanxiuResourceHref(tab, id)
   const title = escapeFanxiuHtml(target.title || aliasText)
   const preview = escapeFanxiuHtml(encodeFanxiuDataText(target.preview))

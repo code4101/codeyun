@@ -214,6 +214,16 @@ class TaskManager:
             raise ValueError(f"Invalid next_run_at: {value}") from exc
         return parsed.replace(microsecond=0).isoformat()
 
+    def _is_next_run_at_stale(self, value: Any) -> bool:
+        if not value:
+            return False
+        run_at = self._parse_schedule_run_date(value)
+        timezone = run_at.tzinfo or getattr(self.scheduler, "timezone", None)
+        now = dt.datetime.now(timezone) if timezone else dt.datetime.now()
+        if run_at.tzinfo is None and now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
+        return (now - run_at).total_seconds() > SCHEDULED_TASK_MISFIRE_GRACE_SECONDS
+
     def _install_next_run_job(self, task_id: str, next_run_at: Optional[str]) -> None:
         self.clear_schedule(task_id)
         if not next_run_at:
@@ -336,7 +346,11 @@ class TaskManager:
                     next_run_at = self._compute_rule_next_run_at(session, task, force=True)
                     self._set_task_next_run_at(session, task, next_run_at)
                 elif task.next_run_at:
-                    next_run_at = self._format_next_run_at(task.next_run_at)
+                    if self._is_next_run_at_stale(task.next_run_at):
+                        next_run_at = self._compute_rule_next_run_at(session, task, force=True)
+                        self._set_task_next_run_at(session, task, next_run_at)
+                    else:
+                        next_run_at = self._format_next_run_at(task.next_run_at)
                 else:
                     next_run_at = self._compute_rule_next_run_at(session, task)
                     self._set_task_next_run_at(session, task, next_run_at)
