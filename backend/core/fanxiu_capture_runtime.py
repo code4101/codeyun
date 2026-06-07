@@ -16,10 +16,12 @@ from backend.core.fanxiu_tcp_flow import resolve_fanxiu_tcp_live_capture_dir
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
 DEFAULT_FANXIU_DEVICE_ID = "127.0.0.1:7555"
+FANXIU_DEVICE_ID_ENV_KEYS = ("FANXIU_CAPTURE_DEVICE_ID", "FANXIU_ADB_DEVICE_ID")
 DEFAULT_FANXIU_PACKAGE_NAME = "com.frxxcrjpwssc3.ggws"
 DEFAULT_REMOTE_CAPTURE_DIR = "/data/local/tmp"
 DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 6.0
 DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
+MIN_CAPTURE_PCAP_BYTES = 24
 
 
 def _now_label() -> str:
@@ -43,7 +45,7 @@ class FanxiuCaptureRuntimeService:
         supervisor_interval: float = 5.0,
         idle_finalize_seconds: float = DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS,
     ) -> None:
-        self.device_id = device_id
+        self.device_id = self._configured_device_id() or str(device_id or DEFAULT_FANXIU_DEVICE_ID).strip()
         self.package_name = package_name
         self.supervisor_interval = supervisor_interval
         self.idle_finalize_seconds = max(1.0, float(idle_finalize_seconds))
@@ -99,6 +101,39 @@ class FanxiuCaptureRuntimeService:
             self._log(f"force stop {self._normalize_reason(reason)}")
             self._force_stop_locked(clear_reasons=True, state="stopped")
             return self.status()
+
+    def flush_recent_capture(self, reason: str = "manual-flush", *, restart: bool = True) -> dict[str, Any]:
+        """Seal the current capture segment without decoding it in this service.
+
+        This is the collaboration point for behavior-tree jobs that need the
+        packet pipeline to catch up on very recent facts. The capture service
+        only produces a sealed pcap; packet decoding and DB upserts remain the
+        packet worker's responsibility.
+        """
+        normalized_reason = self._normalize_reason(reason)
+        with self._lock:
+            running = self._tcpdump_process_alive_locked()
+            if not running:
+                self._log(f"flush skipped {normalized_reason}: tcpdump not running")
+                return {"ok": True, "flushed": False, "reason": normalized_reason, "status": self.status()}
+            self._log(f"flush requested: {normalized_reason}")
+            local_path = self._current_pcap_path
+            self._stop_tcpdump_locked(queue_sync=False)
+            local_size = Path(local_path).stat().st_size if local_path and Path(local_path).exists() else 0
+            if restart and self._active_reasons:
+                try:
+                    self._start_tcpdump_locked()
+                except Exception as exc:
+                    self._mark_error_locked(exc)
+            return {
+                "ok": True,
+                "flushed": bool(local_path and local_size > MIN_CAPTURE_PCAP_BYTES),
+                "reason": normalized_reason,
+                "restarted": bool(restart and self._active_reasons and self._tcpdump_process_alive_locked()),
+                "pcap_path": local_path,
+                "pcap_size": local_size,
+                "status": self.status(),
+            }
 
     def start_watchdog(self, *, interval_seconds: float = DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS) -> dict[str, Any]:
         with self._lock:
@@ -259,18 +294,85 @@ class FanxiuCaptureRuntimeService:
             self._start_tcpdump_locked()
 
     def _connect_adb(self) -> None:
-        output = self._run_adb(["connect", self.device_id], timeout=8)
-        connected = (
-            "connected" in output.lower()
-            or "already connected" in output.lower()
-            or self.device_id in self._run_adb(["devices"], timeout=8)
-        )
+        errors: list[str] = []
+        for candidate in self._adb_device_candidates():
+            try:
+                output = self._ensure_adb_device_connected(candidate)
+            except Exception as exc:
+                errors.append(f"{candidate}: {exc}")
+                continue
+            with self._lock:
+                previous_device_id = self.device_id
+                self.device_id = candidate
+                self._adb_connected = True
+                if previous_device_id != candidate:
+                    self._log(f"adb device switched: {previous_device_id} -> {candidate}")
+                self._log(f"adb connect ok: {candidate}; {self._compact_output(output)}")
+            return
+
         with self._lock:
-            self._adb_connected = connected
-            if connected:
-                self._log(f"adb connect ok: {self._compact_output(output)}")
-            else:
-                raise RuntimeError(f"adb connect 未确认：{output}")
+            self._adb_connected = False
+        detail = "；".join(errors) if errors else "没有可用 ADB 设备"
+        raise RuntimeError(f"adb connect 未确认：{detail}")
+
+    def _ensure_adb_device_connected(self, device_id: str) -> str:
+        output_parts: list[str] = []
+        if self._looks_like_adb_host_port(device_id):
+            output_parts.append(self._run_adb(["connect", device_id], timeout=8))
+        devices_output = self._run_adb(["devices"], timeout=8)
+        output_parts.append(devices_output)
+        if device_id in self._parse_adb_devices(devices_output):
+            return "\n".join(part for part in output_parts if part)
+        raise RuntimeError(f"{device_id} 不在 adb devices 在线列表中")
+
+    def _adb_device_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        configured_device_id = self._configured_device_id()
+        if configured_device_id:
+            candidates.append(configured_device_id)
+        elif self.device_id != DEFAULT_FANXIU_DEVICE_ID:
+            candidates.append(self.device_id)
+        try:
+            devices_output = self._run_adb(["devices"], timeout=8)
+            candidates.extend(self._parse_adb_devices(devices_output))
+        except Exception as exc:
+            self._log(f"adb devices scan failed: {exc}")
+        candidates.append(self.device_id)
+        candidates.append(DEFAULT_FANXIU_DEVICE_ID)
+        return self._dedupe_device_ids(candidates)
+
+    def _configured_device_id(self) -> str:
+        for key in FANXIU_DEVICE_ID_ENV_KEYS:
+            value = os.environ.get(key)
+            if value and value.strip():
+                return value.strip()
+        return ""
+
+    def _parse_adb_devices(self, output: str) -> list[str]:
+        devices: list[str] = []
+        for line in str(output or "").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.lower().startswith("list of devices"):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
+        return devices
+
+    def _dedupe_device_ids(self, values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            device_id = str(value or "").strip()
+            if not device_id or device_id in seen:
+                continue
+            seen.add(device_id)
+            result.append(device_id)
+        return result
+
+    def _looks_like_adb_host_port(self, value: str) -> bool:
+        host, sep, port = str(value or "").rpartition(":")
+        return bool(sep and host and port.isdigit())
 
     def _ensure_root(self) -> None:
         output = self._run_adb(["-s", self.device_id, "root"], timeout=8)
@@ -354,7 +456,7 @@ class FanxiuCaptureRuntimeService:
                 output = str(exc)
         raise RuntimeError(f"tcpdump 启动后立即退出：{remote_path}；{self._compact_output(output)}")
 
-    def _stop_tcpdump_locked(self) -> None:
+    def _stop_tcpdump_locked(self, *, queue_sync: bool = True) -> None:
         remote_path = self._current_remote_pcap_path
         local_path = self._current_pcap_path
         proc = self._tcpdump_process
@@ -379,7 +481,7 @@ class FanxiuCaptureRuntimeService:
                 self._run_adb(["-s", self.device_id, "shell", "rm", "-f", remote_path], timeout=5)
                 self._current_pcap_size = Path(local_path).stat().st_size if Path(local_path).exists() else 0
                 self._log(f"pcap pulled: {local_path} ({self._current_pcap_size} bytes)")
-                if self._current_pcap_size > 0:
+                if queue_sync and self._current_pcap_size > 0:
                     self._start_runtime_packet_sync_thread(local_path)
             except Exception as exc:
                 self._log(f"pcap pull failed: {exc}")
@@ -399,17 +501,18 @@ class FanxiuCaptureRuntimeService:
 
     def _decode_and_sync_runtime_packets(self, local_path: str) -> None:
         try:
-            from backend.core.fanxiu_packet_insights import decode_and_sync_fanxiu_runtime_capture
+            from backend.core.fanxiu_packet_insight_worker import sync_fanxiu_capture_paths
 
-            result = decode_and_sync_fanxiu_runtime_capture(local_path)
-            sync = result.get("packet_runtime_sync") or {}
+            result = sync_fanxiu_capture_paths([local_path], max_streams=4)
+            mail_sync = result.get("mail_packet_sync") or {}
             self._log(
                 "runtime packet sync done: "
                 f"decoded={result.get('decoded_count') or 0}, "
-                f"runtime_packets={result.get('runtime_protocol_count') or 0}, "
-                f"worship_packets={sync.get('worship_packet_count') or 0}, "
-                f"worship_records={sync.get('worship_record_count') or 0}, "
-                f"bag_stacks={sync.get('bag_stack_count') or 0}"
+                f"skipped={result.get('skipped_count') or 0}, "
+                f"errors={result.get('error_count') or 0}, "
+                f"mail_records={mail_sync.get('record_count') or 0}, "
+                f"mail_inserted={mail_sync.get('inserted') or 0}, "
+                f"mail_updated={mail_sync.get('updated') or 0}"
             )
         except Exception as exc:
             self._log(f"runtime packet sync failed: {exc}")

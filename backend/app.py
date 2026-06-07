@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 import os
 
 import uvicorn
@@ -10,6 +11,7 @@ from backend.api.admin_feature_access import router as admin_feature_access_rout
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
+from backend.api.proxy_traffic_audit import router as proxy_traffic_audit_router
 from backend.api.services import control_router as service_control_router
 from backend.api.services import router as services_router
 from backend.api.task_manager import (
@@ -24,6 +26,7 @@ from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
 from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
+from backend.core.runtime_management import ensure_data_annotation_behavior_tree_service_on_startup
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -40,6 +43,7 @@ from backend.standard import register_standard_modules
 from sqlmodel import Session
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _env_enabled(value: str | None) -> bool | None:
@@ -83,6 +87,13 @@ async def lifespan(app: FastAPI):
             interval_seconds=_fanxiu_capture_watchdog_interval_seconds()
         )
     if not settings.is_test:
+        try:
+            ensure_data_annotation_behavior_tree_service_on_startup()
+        except Exception as exc:
+            # Startup must not fail just because the local game runtime is unavailable.
+            logger.warning("Skipping Fanxiu behavior backend startup: %s", exc)
+            pass
+    if not settings.is_test:
         start_enabled_codex_bridges()
     yield
     if not settings.is_test:
@@ -124,6 +135,7 @@ app.include_router(access_router, prefix="/api/access", tags=["access"])
 app.include_router(services_router, prefix="/api/services", tags=["services"])
 app.include_router(service_control_router, prefix="/api/service-control", tags=["service-control"])
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
+app.include_router(proxy_traffic_audit_router, prefix="/api/proxy-traffic-audit", tags=["proxy-traffic-audit"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(
     admin_feature_access_router,

@@ -22,8 +22,8 @@ except ImportError:  # pragma: no cover - CodeYun runtime includes psutil.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000/api/health"
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
-DEFAULT_INTERVAL_SECONDS = 300
-DEFAULT_TIMEOUT_SECONDS = 3.0
+DEFAULT_INTERVAL_SECONDS = 60
+DEFAULT_TIMEOUT_SECONDS = 10.0
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
 
 
@@ -110,31 +110,44 @@ def _cmdline_text(proc: Any) -> str:
     return " ".join(_safe_cmdline(proc))
 
 
+def _safe_cwd(proc: Any) -> str:
+    try:
+        return str(proc.cwd() or "")
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+        return ""
+
+
 def _path_in_project(text: str) -> bool:
     normalized_text = text.lower().replace("/", "\\")
     root_text = str(PROJECT_ROOT).lower().replace("/", "\\")
     return root_text in normalized_text
 
 
+def _process_in_project(proc: Any) -> bool:
+    return _path_in_project(_cmdline_text(proc)) or _path_in_project(_safe_cwd(proc))
+
+
 def _matches_watchdog(proc: Any) -> bool:
     cmdline = _cmdline_text(proc).lower()
-    return "scripts" in cmdline and "codeyun_watchdog.py" in cmdline and "--loop" in cmdline and _path_in_project(cmdline)
+    return "scripts" in cmdline and "codeyun_watchdog.py" in cmdline and "--loop" in cmdline and _process_in_project(proc)
 
 
 def _matches_codeyun_dev(proc: Any) -> bool:
     name = _safe_name(proc).lower()
     cmdline = _cmdline_text(proc).lower()
-    if not _path_in_project(cmdline):
+    if not _process_in_project(proc):
         return False
     if "codeyun_watchdog.py" in cmdline:
         return False
     if "dev.py" in cmdline:
         return True
+    if name in {"uv.exe", "uv"} and "run" in cmdline and "dev.py" in cmdline:
+        return True
     if "uvicorn" in cmdline and "backend.app:app" in cmdline:
         return True
     if name in {"node.exe", "node"} and "vite" in cmdline:
         return True
-    if name in {"cmd.exe", "cmd"} and "npm" in cmdline and "dev" in cmdline:
+    if name in {"cmd.exe", "cmd"} and ("vite" in cmdline or ("npm" in cmdline and "dev" in cmdline)):
         return True
     return False
 
@@ -226,6 +239,7 @@ def _background_popen_kwargs() -> dict[str, Any]:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
         creationflags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+        creationflags |= 0x08000000  # CREATE_NO_WINDOW
         return {"creationflags": creationflags}
     return {"start_new_session": True}
 
@@ -236,6 +250,10 @@ def _resolve_uv_command() -> list[str]:
         if os.name == "nt":
             return ["powershell", "-NoProfile", "-Command", configured]
         return ["/bin/sh", "-lc", configured]
+    if os.name == "nt":
+        pythonw_path = PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe"
+        if pythonw_path.is_file():
+            return [os.fspath(pythonw_path), "dev.py"]
     uv_path = shutil.which("uv") or "uv"
     return [uv_path, "run", "dev.py"]
 

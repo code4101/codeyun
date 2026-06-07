@@ -65,6 +65,7 @@ export interface NoteSheetSummary {
   title: string
   engine: string
   scope: string
+  version: number
   owner_user_id?: number | null
   created_by_user_id?: number | null
   updated_by_user_id?: number | null
@@ -81,7 +82,6 @@ export interface NoteSheetDetail extends NoteSheetSummary {
   owner_type: string
   owner_key: string
   sheet_key: string
-  version: number
   document_json: Record<string, unknown>
   pagination?: NoteSheetPaginationState | null
 }
@@ -184,6 +184,50 @@ export interface NoteSheetUpdateRequest {
   }
 }
 
+export interface NoteSheetCellPatchOperation {
+  row_index: number
+  column_index: number
+  value: unknown
+}
+
+export interface NoteSheetCellPatchRequest {
+  base_version?: number
+  operations: NoteSheetCellPatchOperation[]
+}
+
+export interface NoteSheetCellPatchResponse {
+  sheet_id: number
+  version: number
+  updated_cell_count: number
+}
+
+export type NoteSheetPatchOperation =
+  | { op: 'set-cell-value'; row_index: number; column_index: number; value: unknown }
+  | { op: 'set-cell-meta'; row_index: number; column_index: number; meta: Record<string, unknown> }
+  | { op: 'set-column-width'; column_index: number; width: number }
+  | { op: 'set-column-hidden'; column_index: number; hidden: boolean }
+  | { op: 'set-column-config'; column_index: number; config: Record<string, unknown> }
+  | { op: 'merge-cells'; row: number; col: number; rowspan: number; colspan: number }
+  | { op: 'unmerge-cells'; row: number; col: number }
+  | { op: 'insert-row'; after_row_id?: string | null; row_id?: string; row?: unknown }
+  | { op: 'delete-row'; row_id: string }
+  | { op: 'insert-column'; after_column_id?: string | null; column_id?: string; column?: unknown }
+  | { op: 'delete-column'; column_id: string }
+  | { op: 'move-row'; row_id: string; after_row_id?: string | null }
+  | { op: 'move-column'; column_id: string; after_column_id?: string | null }
+
+export interface NoteSheetPatchRequest {
+  base_version: number
+  ops: NoteSheetPatchOperation[]
+}
+
+export interface NoteSheetPatchResponse {
+  sheet_id: number
+  version: number
+  applied_op_count: number
+  updated_cell_count: number
+}
+
 export interface NoteSheetQueryRequest {
   page?: number
   page_size?: number
@@ -194,6 +238,7 @@ export interface NoteSheetQueryRequest {
 }
 
 export interface NoteSheetSortRequest {
+  base_version?: number
   column_index: number
   direction?: 'asc' | 'desc'
 }
@@ -322,6 +367,7 @@ export interface AttendanceTemplateGenerationResponse {
 }
 
 export interface AttendanceCourseTemplateGenerationRequest {
+  base_version?: number
   row_index?: number
   course_type?: string
   target_date?: string
@@ -330,6 +376,7 @@ export interface AttendanceCourseTemplateGenerationRequest {
 }
 
 export interface AttendanceCompletionRequest {
+  base_version?: number
   row_index: number
   completion_date?: string
 }
@@ -345,6 +392,7 @@ export interface AttendanceVideoRevisionCell {
 }
 
 export interface AttendanceVideoRevisionRequest {
+  base_version?: number
   revision_label: string
   cells: AttendanceVideoRevisionCell[]
 }
@@ -404,6 +452,7 @@ export interface AttendanceCourseScriptOrganizeResponse {
 export type AttendanceLinkCountFieldKey = 'lesson_links' | 'clockin_links'
 
 export interface AttendanceLinkCountUpdateRequest {
+  base_version?: number
   field_key: AttendanceLinkCountFieldKey
   row_index?: number
 }
@@ -550,6 +599,48 @@ export async function updateNoteSheet(
   }
 }
 
+export async function patchNoteSheetCells(
+  sheetId: number,
+  payload: NoteSheetCellPatchRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const request = async () => {
+    const response = await api.patch<NoteSheetCellPatchResponse>(`/note-sheets/sheets/${sheetId}/cells`, payload, {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    })
+    return response.data
+  }
+
+  try {
+    return await request()
+  } catch (error) {
+    return retryAfterOptionalAuthRepair(error, request)
+  }
+}
+
+export async function patchNoteSheet(
+  sheetId: number,
+  payload: NoteSheetPatchRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const request = async () => {
+    const response = await api.post<NoteSheetPatchResponse>(`/note-sheets/sheets/${sheetId}/patch`, payload, {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    })
+    return response.data
+  }
+
+  try {
+    return await request()
+  } catch (error) {
+    return retryAfterOptionalAuthRepair(error, request)
+  }
+}
+
 export async function sortNoteSheet(
   sheetId: number,
   payload: NoteSheetSortRequest,
@@ -570,6 +661,7 @@ export async function importNoteSheetFromExcel(
     instruction?: string
     mode?: NoteSheetExcelImportMode
     actionCell?: { documentRow: number; column: number }
+    baseVersion?: number
   },
   options?: NoteSheetResourceRequestOptions,
 ) {
@@ -577,6 +669,9 @@ export async function importNoteSheetFromExcel(
   formData.append('file', payload.file)
   formData.append('instruction', payload.instruction ?? '')
   formData.append('mode', payload.mode ?? 'reset')
+  if (payload.baseVersion != null) {
+    formData.append('base_version', String(payload.baseVersion))
+  }
   if (payload.actionCell) {
     formData.append('action_document_row', String(payload.actionCell.documentRow))
     formData.append('action_column', String(payload.actionCell.column))
@@ -667,7 +762,7 @@ export async function updateNoteSheetRegistrationUserMatch(
 
 export async function detectNoteSheetRegistrationUserId(
   sheetId: number,
-  payload: { row_index: number },
+  payload: { row_index: number; base_version?: number },
   options?: NoteSheetResourceRequestOptions,
 ) {
   const response = await api.post<NoteSheetRegistrationUserIdDetectionResponse>(
@@ -799,10 +894,13 @@ export async function fetchNoteSheetClockinLinkDetectionRun(
   return response.data
 }
 
-export async function generateAttendanceNextMonthTemplates(sheetId: number, options?: NoteSheetResourceRequestOptions) {
+export async function generateAttendanceNextMonthTemplates(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions & { baseVersion?: number },
+) {
   const response = await api.post<AttendanceTemplateGenerationResponse>(
     `/note-sheets/sheets/${sheetId}/attendance-summary/generate-next-month-templates`,
-    {},
+    { base_version: options?.baseVersion },
     {
       params: {
         workbook_id: options?.workbookId ?? undefined,
@@ -1046,11 +1144,11 @@ export async function fetchSheetDefinedNames(sheetId: number, options?: NoteShee
 export async function updateSheetDefinedNames(
   sheetId: number,
   names: NoteSheetDefinedNameItem[],
-  options?: NoteSheetResourceRequestOptions,
+  options?: NoteSheetResourceRequestOptions & { baseVersion?: number },
 ) {
   const response = await api.put<NoteSheetDefinedNamesResponse>(
     `/note-sheets/sheets/${sheetId}/defined-names`,
-    { names },
+    { names, base_version: options?.baseVersion },
     {
       params: {
         workbook_id: options?.workbookId ?? undefined,

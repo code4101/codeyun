@@ -4858,6 +4858,77 @@ def v72_add_noteedge_graph_lookup_indexes(session: Session):
     print("  Added noteedge graph lookup indexes.")
 
 
+def v73_add_fanxiu_packet_decoded_records(session: Session):
+    """
+    Migration V73: Add Fanxiu decoded packet plaintext records.
+    """
+    print("Running System Upgrade V73: Add Fanxiu packet decoded records...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiupacketdecodedrecord (
+                id VARCHAR PRIMARY KEY,
+                packet_id VARCHAR NOT NULL,
+                record_id VARCHAR NOT NULL DEFAULT '',
+                pcap_name VARCHAR NOT NULL DEFAULT '',
+                capture_sha256 VARCHAR NOT NULL DEFAULT '',
+                stream INTEGER NOT NULL DEFAULT 0,
+                direction VARCHAR NOT NULL DEFAULT '',
+                frame_index INTEGER NOT NULL DEFAULT 0,
+                offset INTEGER,
+                sn INTEGER,
+                pro_id INTEGER,
+                name VARCHAR NOT NULL DEFAULT '',
+                captured_at VARCHAR NOT NULL DEFAULT '',
+                captured_date VARCHAR NOT NULL DEFAULT '',
+                payload_len INTEGER,
+                decode_error TEXT NOT NULL DEFAULT '',
+                payload JSON DEFAULT '{}',
+                evidence JSON DEFAULT '{}',
+                created_at FLOAT NOT NULL DEFAULT 0,
+                updated_at FLOAT NOT NULL DEFAULT 0,
+                CONSTRAINT uq_fanxiupacketdecodedrecord_packet_id UNIQUE (packet_id)
+            )
+            """
+        )
+    )
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_packet_id ON fanxiupacketdecodedrecord (packet_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_record_id ON fanxiupacketdecodedrecord (record_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_pcap_name ON fanxiupacketdecodedrecord (pcap_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_capture_sha256 ON fanxiupacketdecodedrecord (capture_sha256)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_stream ON fanxiupacketdecodedrecord (stream)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_direction ON fanxiupacketdecodedrecord (direction)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_frame_index ON fanxiupacketdecodedrecord (frame_index)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_offset ON fanxiupacketdecodedrecord (offset)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_sn ON fanxiupacketdecodedrecord (sn)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_pro_id ON fanxiupacketdecodedrecord (pro_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_name ON fanxiupacketdecodedrecord (name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_captured_at ON fanxiupacketdecodedrecord (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiupacketdecodedrecord_captured_date ON fanxiupacketdecodedrecord (captured_date)",
+    )
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Fanxiu decoded packet record table.")
+
+
+def v74_add_notenode_version(session: Session):
+    """
+    Migration V74: Add optimistic concurrency version to note documents.
+    """
+    print("Running System Upgrade V74: Add note node version...")
+    if not _table_exists(session, "notenode"):
+        print("  notenode table not found, skipping.")
+        return
+    columns = _get_table_columns(session, "notenode")
+    if "version" not in columns:
+        session.exec(text("ALTER TABLE notenode ADD COLUMN version INTEGER NOT NULL DEFAULT 1"))
+    session.exec(text("UPDATE notenode SET version = 1 WHERE version IS NULL OR version <= 0"))
+    session.commit()
+    print("  Added notenode version column.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -4933,6 +5004,8 @@ MIGRATIONS = [
     (70, "Add Fanxiu player profile cultivation fields", v70_add_fanxiu_player_profile_cultivation_fields),
     (71, "Add notenode calendar time indexes", v71_add_notenode_calendar_time_indexes),
     (72, "Add noteedge graph lookup indexes", v72_add_noteedge_graph_lookup_indexes),
+    (73, "Add Fanxiu packet decoded records", v73_add_fanxiu_packet_decoded_records),
+    (74, "Add note node version", v74_add_notenode_version),
 ]
 
 def get_current_version(session: Session) -> int:

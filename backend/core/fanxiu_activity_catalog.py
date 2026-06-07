@@ -1247,6 +1247,13 @@ def _resolve_open_function(row: dict[str, Any], functions_by_id: dict[str, dict[
     return None
 
 
+def _active_task_resource_icon(row: dict[str, Any]) -> str:
+    resource_icon = str(row.get("resource") or "").strip()
+    if "_bg_" in resource_icon.lower():
+        return ""
+    return resource_icon
+
+
 def _compact_active_task_row(row: dict[str, Any], *, item_by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
     reward_values = [row.get("goods")]
     reward_items = _extract_reward_items(reward_values, item_by_id)
@@ -1261,7 +1268,7 @@ def _compact_active_task_row(row: dict[str, Any], *, item_by_id: dict[str, dict[
         "parent_activity_id": None,
         "sub_type": row.get("subType"),
         "reward_group": None,
-        "icon": row.get("resource"),
+        "icon": _active_task_resource_icon(row),
         "sort": row.get("sort"),
         "mainui_pos": None,
         "jump": None,
@@ -2728,6 +2735,12 @@ def build_fanxiu_activity_catalog(*, export_root: str | Path | None = None) -> d
         "catalog_card_count": len(cards),
         "current_card_count": current_card_count,
         "stale_card_count": stale_card_count,
+        "activity_card_with_icon_count": sum(1 for card in cards if str(card.get("icon") or "").strip()),
+        "activity_row_with_icon_count": sum(1 for row in activity_rows if str(row.get("icon") or "").strip()),
+        "active_task_with_resource_icon_count": sum(1 for row in active_task_rows if _active_task_resource_icon(row)),
+        "active_task_background_resource_filtered_count": sum(
+            1 for row in active_task_rows if "_bg_" in str(row.get("resource") or "").lower()
+        ),
         "activity_with_time_hint_count": sum(1 for card in cards if card.get("first_time_hint")),
         "activity_with_reward_count": sum(1 for card in cards if card.get("reward_sections")),
         "activity_with_challenge_reward_count": sum(1 for card in cards if card.get("challenge_sections")),

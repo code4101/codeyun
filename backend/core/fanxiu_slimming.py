@@ -168,7 +168,7 @@ def _build_slimming_prompt(
             "请作为后台工程代理，在本机执行凡修项目的安全减肥巡检。",
             "",
             "上下文：",
-            "- 凡修脚本已经迁移到 codepc_mf 本机运行；game-window3、Runtime、Scheduler 和资产树均以 mf 为准。",
+            "- 凡修脚本已经迁移到 codepc_mf 本机运行；data-annotation、Runtime、Scheduler 和资产树均以 mf 为准。",
             "- codepc_mi15 的旧凡修运行数据不再作为运行事实来源，不要再把结果同步回 mi15。",
             f"- 数据目录：{_safe_path_text(data_dir)}",
             f"- 源码目录：{_safe_path_text(source_dir)}",

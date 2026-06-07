@@ -107,6 +107,7 @@ const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
 const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
 const NOTES_CENTER_CANONICAL_PATH = requirePageCanonicalPath('NotesCenter');
 const NOTES_CHAT_DATA_PATH = requirePageMenuPath('NotesChatData');
+const NOTES_TASK_SYSTEM_PATH = requirePageMenuPath('NotesTaskSystem');
 const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
@@ -180,6 +181,7 @@ const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJI
 const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
 const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
 const NOTES_CHAT_DATA_TITLE = requirePermissionTitleByMenuPath(NOTES_CHAT_DATA_PATH);
+const NOTES_TASK_SYSTEM_TITLE = requirePermissionTitleByMenuPath(NOTES_TASK_SYSTEM_PATH);
 const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
 const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
@@ -455,6 +457,7 @@ const noteToolsMenuVisible = computed(() =>
   && [
     NOTES_CENTER_MENU_PATH,
     NOTES_CHAT_DATA_PATH,
+    NOTES_TASK_SYSTEM_PATH,
     NOTES_COMMON_SITES_PATH,
     EASTMONEY_PATH,
     FREEBILL_PATH,
@@ -918,6 +921,7 @@ watch(
                 {{ NOTES_CHAT_DATA_TITLE }}
               </el-menu-item>
             </el-sub-menu>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_TASK_SYSTEM_PATH)" :index="NOTES_TASK_SYSTEM_PATH">{{ NOTES_TASK_SYSTEM_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(EASTMONEY_PATH)" :index="EASTMONEY_PATH">{{ EASTMONEY_TITLE }}</el-menu-item>

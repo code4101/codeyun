@@ -7,6 +7,12 @@ from sqlmodel import Session, select
 
 from backend.models import FanxiuPlayerProfileRecord
 
+_REAL_PROFILE_PCAP_PREFIXES = (
+    "fanxiu_runtime_",
+    "fanxiu_live_",
+    "fanxiu_windows_rank",
+)
+
 
 def _profile_attack_attr(row: dict[str, Any]) -> dict[str, Any] | None:
     attrs = row.get("combat_attributes")
@@ -23,6 +29,18 @@ def _packet_id(row: dict[str, Any]) -> str:
     if isinstance(evidence, dict):
         return str(evidence.get("packet_id") or "")
     return ""
+
+
+def _has_real_capture_evidence(row: dict[str, Any]) -> bool:
+    evidence = row.get("evidence")
+    if not isinstance(evidence, dict):
+        return False
+    packet_id = str(evidence.get("packet_id") or row.get("packet_id") or "").strip()
+    record_id = str(evidence.get("record_id") or "").strip()
+    pcap_name = str(evidence.get("pcap_name") or "").strip()
+    if not packet_id or not record_id or not pcap_name:
+        return False
+    return pcap_name.startswith(_REAL_PROFILE_PCAP_PREFIXES)
 
 
 def _record_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -76,6 +94,9 @@ def upsert_fanxiu_player_profile_rows(session: Session, rows: list[dict[str, Any
         if not packet_id:
             skipped_invalid += 1
             continue
+        if not _has_real_capture_evidence(row):
+            skipped_invalid += 1
+            continue
         existing = session.exec(
             select(FanxiuPlayerProfileRecord).where(FanxiuPlayerProfileRecord.packet_id == packet_id)
         ).first()
@@ -126,3 +147,20 @@ def list_fanxiu_player_profile_records(session: Session, *, limit: int = 1000) -
         .limit(max(1, min(limit, 5000)))
     ).all()
     return [serialize_fanxiu_player_profile_record(row) for row in rows]
+
+
+def list_latest_fanxiu_player_profile_records(session: Session, *, limit: int = 1000) -> list[dict[str, Any]]:
+    rows = session.exec(
+        select(FanxiuPlayerProfileRecord)
+        .order_by(FanxiuPlayerProfileRecord.captured_at.desc(), FanxiuPlayerProfileRecord.created_at.desc())
+        .limit(5000)
+    ).all()
+    latest_by_role: dict[str, FanxiuPlayerProfileRecord] = {}
+    for row in rows:
+        role_key = str(row.role_id_text or row.role_id or row.name or row.packet_id).strip()
+        if not role_key or role_key in latest_by_role:
+            continue
+        latest_by_role[role_key] = row
+        if len(latest_by_role) >= max(1, min(limit, 5000)):
+            break
+    return [serialize_fanxiu_player_profile_record(row) for row in latest_by_role.values()]

@@ -56,11 +56,8 @@
               <slot name="meta-actions" :note="currentNote" :readonly="effectiveReadonly" />
             </div>
           </div>
-          <div class="save-status">
-            <span v-if="effectiveReadonly" class="status-readonly">只读</span>
-            <span v-else-if="saveStatus === 'saved'" class="status-saved"><el-icon><Check /></el-icon> 已保存</span>
-            <span v-else-if="saveStatus === 'saving'" class="status-saving"><el-icon class="is-loading"><Loading /></el-icon> 保存中...</span>
-            <span v-else class="status-unsaved">未保存</span>
+          <div v-if="effectiveReadonly" class="save-status">
+            <span class="status-readonly">只读</span>
           </div>
         </div>
 
@@ -410,8 +407,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
-import { ArrowDown, ArrowRight, Calendar, Check, Clock, Close, List, Loading, Plus } from '@element-plus/icons-vue';
+import { computed, defineAsyncComponent, h, onMounted, onUnmounted, ref, watch } from 'vue';
+import { ArrowDown, ArrowRight, Calendar, Clock, Close, List, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';
@@ -497,8 +494,14 @@ interface LocalNoteHistoryEntry {
   createdAt: number;
 }
 
-const CONTENT_SAVE_DELAY_MS = 1800;
-const META_SAVE_DELAY_MS = 450;
+interface DraftDiffRow {
+  label: string;
+  serverText: string;
+  draftText: string;
+}
+
+const CONTENT_SAVE_DELAY_MS = 0;
+const META_SAVE_DELAY_MS = 0;
 const LOCAL_NOTE_UNDO_STACK_LIMIT = 40;
 const EMPTY_RICH_TEXT_HTML_VALUES = new Set(['', '<p><br></p>', '<p></p>']);
 const CUSTOM_FIELD_KEY_WIDTH_MIN = 96;
@@ -740,7 +743,7 @@ const persistSourceHtmlEditorContent = (options: { immediate?: boolean } = {}) =
   const sanitizedHtml = sanitizeSourcePreviewHtml(element.innerHTML);
   if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
   if (currentNote.value.content !== sanitizedHtml) currentNote.value.content = sanitizedHtml;
-  queueAutoSave({ immediate: options.immediate, delayMs: options.immediate ? 0 : CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const showSourceImageMenu = (image: HTMLImageElement, event: MouseEvent) => {
@@ -813,7 +816,7 @@ const handleSourceHtmlInput = () => {
   hideSourceImageMenu();
   currentNote.value.content = element.innerHTML;
   recordLocalEditHistory('content');
-  queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const handleSourceHtmlClick = (event: MouseEvent) => {
@@ -856,7 +859,7 @@ const handleSourceHtmlBlur = () => {
   if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
   if (currentNote.value.content !== sanitizedHtml) {
     currentNote.value.content = sanitizedHtml;
-    queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+    queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
   }
 };
 
@@ -1047,6 +1050,102 @@ const handleLocalUndoRedoKeydown = (event: KeyboardEvent) => {
   event.stopPropagation();
 };
 
+const normalizeDiffText = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+const htmlToDiffText = (html: unknown) => {
+  const raw = String(html ?? '');
+  if (!raw) return '';
+  if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
+    try {
+      const doc = new DOMParser().parseFromString(raw, 'text/html');
+      return normalizeDiffText(doc.body.textContent || '');
+    } catch {
+      // Fall back to the lightweight tag strip below.
+    }
+  }
+  return normalizeDiffText(raw.replace(/<[^>]*>/g, ' '));
+};
+
+const truncateDiffText = (value: unknown, maxLength = 140) => {
+  const text = normalizeDiffText(value);
+  if (!text) return '空';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+};
+
+const diffValueText = (snapshot: EditableNoteSnapshot, key: keyof EditableNoteSnapshot) => {
+  if (key === 'content') return htmlToDiffText(snapshot.content);
+  if (key === 'start_at') return formatDateDetailed(snapshot.start_at);
+  if (key === 'note_categories') {
+    return snapshot.note_categories
+      .map(item => String((item as { label?: string; key?: string }).label || (item as { key?: string }).key || ''))
+      .filter(Boolean)
+      .join('、') || '无';
+  }
+  if (key === 'custom_fields') return snapshot.custom_fields.map(item => `${item[0]}=${String(item[2])}`).join('；') || '无';
+  const value = snapshot[key];
+  if (Array.isArray(value)) return JSON.stringify(value);
+  return String(value ?? '');
+};
+
+const buildDraftDiffRows = (
+  draftSnapshot: EditableNoteSnapshot,
+  serverSnapshot: EditableNoteSnapshot
+): DraftDiffRow[] => {
+  const fields: Array<[keyof EditableNoteSnapshot, string]> = [
+    ['title', '标题'],
+    ['content', '正文'],
+    ['weight', '权重'],
+    ['start_at', '起始时间'],
+    ['note_categories', '分类'],
+    ['note_form', '形态'],
+    ['lifecycle_stage', '阶段'],
+    ['private_level', '私密'],
+    ['custom_fields', '自定义属性']
+  ];
+
+  return fields
+    .map(([key, label]) => {
+      const serverText = diffValueText(serverSnapshot, key);
+      const draftText = diffValueText(draftSnapshot, key);
+      return normalizeDiffText(serverText) === normalizeDiffText(draftText)
+        ? null
+        : { label, serverText, draftText };
+    })
+    .filter((item): item is DraftDiffRow => Boolean(item));
+};
+
+const buildDraftRestoreMessage = (
+  pendingDraft: { updatedAt: number; snapshot: EditableNoteSnapshot; hasConflict: boolean },
+  serverSnapshot: EditableNoteSnapshot
+) => {
+  const rows = buildDraftDiffRows(pendingDraft.snapshot, serverSnapshot);
+  const summary = pendingDraft.hasConflict
+    ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。`
+    : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。`;
+
+  return h('div', { class: 'draft-restore-message' }, [
+    h('p', { class: 'draft-restore-summary' }, summary),
+    h('div', { class: 'draft-diff-panel' }, rows.length
+      ? [
+          h('div', { class: 'draft-diff-head' }, [
+            h('span', '字段'),
+            h('span', '服务器版本'),
+            h('span', '本地草稿')
+          ]),
+          ...rows.slice(0, 6).map(row => h('div', { class: 'draft-diff-row' }, [
+            h('span', { class: 'draft-diff-label' }, row.label),
+            h('span', { class: 'draft-diff-value' }, truncateDiffText(row.serverText)),
+            h('span', { class: 'draft-diff-value is-draft' }, truncateDiffText(row.draftText))
+          ])),
+          rows.length > 6
+            ? h('div', { class: 'draft-diff-more' }, `还有 ${rows.length - 6} 项差异`)
+            : null
+        ]
+      : [h('div', { class: 'draft-diff-empty' }, '没有检测到可展示的字段差异')]
+    )
+  ]);
+};
+
 const normalizeIncomingNote = (note: NoteNode) => {
   const cloned = JSON.parse(JSON.stringify(note)) as NoteNode;
   if (cloned.start_at && cloned.start_at < 10000000000) cloned.start_at *= 1000;
@@ -1188,7 +1287,7 @@ useSortableList({
 });
 
 const autoSave = useAutoSave<EditableNoteSnapshot>({
-  debounceMs: 2000,
+  debounceMs: 0,
   equals: areEditableNoteSnapshotsEqual,
   storageKey: () => currentDraftKey.value,
   save: async snapshot => {
@@ -1212,7 +1311,10 @@ const autoSave = useAutoSave<EditableNoteSnapshot>({
     }
     return canonicalSnapshot;
   },
-  onError: error => console.error(error),
+  onError: error => {
+    console.error(error);
+    ElMessage.error('文档保存失败');
+  },
   saveOnPageHide: (snapshot, baselineSnapshot) => {
     if (!props.onSaveKeepalive) return;
     const patch = buildEditableNotePatch(snapshot, baselineSnapshot);
@@ -1276,12 +1378,9 @@ watch(() => props.modelValue, async newVal => {
 
   if (pendingDraft) {
     const draftKeyForPrompt = currentDraftKey.value;
-    const promptMessage = pendingDraft.hasConflict
-      ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。是否恢复本地草稿？`
-      : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。是否恢复继续编辑？`;
 
     try {
-      await ElMessageBox.confirm(promptMessage, '恢复本地草稿', {
+      await ElMessageBox.confirm(buildDraftRestoreMessage(pendingDraft, serverSnapshot), '恢复本地草稿', {
         confirmButtonText: '恢复草稿',
         cancelButtonText: '使用服务器版本',
         type: pendingDraft.hasConflict ? 'warning' : 'info'
@@ -1344,7 +1443,7 @@ const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) 
 };
 
 const queueMetaAutoSave = (options: { immediate?: boolean } = {}) => {
-  queueAutoSave({ immediate: options.immediate, delayMs: options.immediate ? 0 : META_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: options.immediate ?? true, delayMs: options.immediate === false ? META_SAVE_DELAY_MS : 0 });
 };
 
 const handleTitleInput = () => {
@@ -1355,7 +1454,7 @@ const handleTitleInput = () => {
 const handleContentChange = (html: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   currentNote.value.content = html;
-  queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const syncCustomFields = (options: { immediate?: boolean } = {}) => {
@@ -1665,7 +1764,7 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .history-panel{margin-top:15px;padding:10px;background:#f8f9fb;border-radius:4px;max-height:200px;overflow-y:auto;font-size:13px;border:1px solid #ebeef5}
 .history-list{display:flex;flex-direction:column}.history-item{display:flex;align-items:flex-start;gap:15px;padding:6px 0;border-bottom:1px dashed #ebeef5}.history-item:last-child{border-bottom:none}
 .history-time{color:#909399;white-space:nowrap;font-family:monospace}.history-content{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.field-tag{min-width:40px;text-align:center}.history-value{color:#303133;word-break:break-all}
-.status-saved{color:#67c23a}.status-saving{color:#e6a23c}.status-unsaved,.status-readonly{color:#909399}
+.status-readonly{color:#909399}
 .state-line,.state-block{display:flex;justify-content:center;align-items:center;color:#909399}.state-line{gap:8px;font-size:14px}.state-block{flex:1;min-height:0}
 .source-html-preview{box-sizing:border-box;width:100%;padding:12px;color:#1f2933;background:#fff;border:1px solid #dcdfe6;overflow:auto}
 .source-html-preview[contenteditable='true']{cursor:text}
@@ -1678,6 +1777,18 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .source-html-preview :deep(img){max-width:100%;height:auto}
 .source-html-preview :deep(a){color:#2f7edb;cursor:pointer}
 .source-image-menu{position:fixed;z-index:2600;padding:4px;background:#fff;border:1px solid #dcdfe6;border-radius:4px;box-shadow:0 6px 18px rgba(31,41,51,.16)}
+:global(.draft-restore-message){min-width:520px;max-width:720px}
+:global(.draft-restore-summary){margin:0 0 10px;color:#606266;line-height:1.5}
+:global(.draft-diff-panel){overflow:hidden;border:1px solid #ebeef5;border-radius:4px;background:#fff}
+:global(.draft-diff-head),:global(.draft-diff-row){display:grid;grid-template-columns:82px minmax(0,1fr) minmax(0,1fr);gap:0;border-bottom:1px solid #f0f2f5}
+:global(.draft-diff-head){background:#f8f9fb;color:#909399;font-size:12px;font-weight:600}
+:global(.draft-diff-head span),:global(.draft-diff-row span){padding:7px 9px;border-right:1px solid #f0f2f5}
+:global(.draft-diff-head span:last-child),:global(.draft-diff-row span:last-child){border-right:0}
+:global(.draft-diff-row:last-child){border-bottom:0}
+:global(.draft-diff-label){color:#606266;font-weight:600}
+:global(.draft-diff-value){max-height:64px;overflow:auto;color:#303133;line-height:1.45;word-break:break-word}
+:global(.draft-diff-value.is-draft){background:#fdf6ec}
+:global(.draft-diff-more),:global(.draft-diff-empty){padding:8px 10px;color:#909399;font-size:12px}
 .shared-note-editor.is-readonly-presentation .editor-header{margin-bottom:8px;padding-bottom:0;border-bottom:none}
 .shared-note-editor.is-readonly-presentation :deep(.editor-container){border:0;cursor:default}
 .shared-note-editor.is-readonly-presentation :deep(.w-e-text-container){background:transparent !important}

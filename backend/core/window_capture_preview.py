@@ -51,7 +51,7 @@ class WindowCandidate:
 
 def ensure_windows_runtime() -> None:
     if sys.platform != "win32":
-        raise RuntimeError("向日葵投屏旋转预览仅支持 Windows 桌面环境")
+        raise RuntimeError("Windows 窗口捕获预览仅支持 Windows 桌面环境")
 
 
 def set_dpi_awareness() -> None:
@@ -280,7 +280,7 @@ def rotate_frame(frame: np.ndarray, rotate: str) -> np.ndarray:
     return frame
 
 
-def ascii_title(text: str, fallback: str = "codeyun-sunlogin-rotate") -> str:
+def ascii_title(text: str, fallback: str = "codeyun-mumu-window") -> str:
     title = text.encode("ascii", errors="ignore").decode("ascii").strip()
     return title or fallback
 
@@ -444,7 +444,7 @@ def encode_jpeg(frame: np.ndarray, quality: int) -> bytes:
     return encode_jpeg_bytes(frame, quality=quality, source_format="auto")
 
 
-def detect_sunlogin_promotion_cancel_point(frame: np.ndarray) -> tuple[int, int] | None:
+def detect_window_promotion_cancel_point(frame: np.ndarray) -> tuple[int, int] | None:
     height, width = frame.shape[:2]
     if width <= 0 or height <= 0:
         return None
@@ -654,7 +654,7 @@ def iter_mjpeg_frames(
         )
         if can_auto_click:
             last_popup_check_at = now
-            cancel_point = detect_sunlogin_promotion_cancel_point(frame)
+            cancel_point = detect_window_promotion_cancel_point(frame)
             if cancel_point is not None:
                 raw_point = map_processed_point_to_raw_point(
                     cancel_point,
@@ -667,9 +667,9 @@ def iter_mjpeg_frames(
                     try:
                         click_window_raw_point(capturer.hwnd, area, raw_point)
                         last_popup_click_at = now
-                        print(f"已自动点击向日葵弹窗取消按钮: frame={cancel_point} raw={raw_point}", flush=True)
+                        print(f"已自动点击窗口弹窗取消按钮: frame={cancel_point} raw={raw_point}", flush=True)
                     except Exception as exc:
-                        print(f"自动关闭向日葵弹窗失败: {exc}", file=sys.stderr, flush=True)
+                        print(f"自动关闭窗口弹窗失败: {exc}", file=sys.stderr, flush=True)
 
         data = encode_jpeg(frame, quality)
         yield (
@@ -769,7 +769,7 @@ def preview_loop(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="捕捉指定 Windows 窗口，按顺时针角度旋转后预览。")
-    parser.add_argument("--title", default="1249152866", help="目标窗口标题包含的文字")
+    parser.add_argument("--title", default="MuMu", help="目标窗口标题包含的文字")
     parser.add_argument("--fps", type=float, default=15.0, help="目标刷新帧率")
     parser.add_argument("--rotate", choices=["0", "90", "180", "270", "ccw", "cw", "none"], default="90", help="顺时针旋转角度")
     parser.add_argument("--area", choices=["outer", "client"], default="outer", help="捕捉外框或客户区")
@@ -783,7 +783,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fixed-height", type=int, default=0, help="固定输出画布高度，需和 --fixed-width 一起使用")
     parser.add_argument("--window-x", type=int, default=None, help="预览窗口左上角 x 坐标")
     parser.add_argument("--window-y", type=int, default=None, help="预览窗口左上角 y 坐标")
-    parser.add_argument("--preview-title", default="codeyun-sunlogin-rotate", help="OpenCV 预览窗口标题，建议只用英文/数字")
+    parser.add_argument("--preview-title", default="codeyun-mumu-window", help="OpenCV 预览窗口标题，建议只用英文/数字")
     parser.add_argument("--resizable", action="store_true", help="允许手动缩放 OpenCV 预览窗口")
     parser.add_argument("--refind-interval", type=float, default=1.0, help="目标窗口失效后重新查找的最小间隔秒数，0 表示禁用")
     parser.add_argument("--activate", action="store_true", help="启动时尝试激活目标窗口")
@@ -863,3 +863,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(1)
+

@@ -816,6 +816,87 @@ def test_rebuild_nianzhu_attendance_can_use_custom_timed_text_refund_rules(sessi
     assert row[3] == '=COUNTIF(G2:H2,"*当堂*")*19+COUNTIF(G2:H2,"*第1天*")*14+COUNTIF(G2:H2,"*第2天*")*9+COUNTIF(G2:H2,"*第3天*")*4'
 
 
+def test_rebuild_nianzhu_attendance_uses_challenge_refund_formulas(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    columns = ["姓名", "用户ID", "完成视频数", "视频应返款", "打卡应返款", "打卡数", "第01课", "第02课"]
+    rows = [["甲", "u1", "", "", "", "", "", ""]]
+    note_row = [""] * len(columns)
+    note_row[columns.index("视频应返款")] = (
+        '21课*20元=420元。\n进度达到90%即视为完成，退还全部促学金。'
+        '视频在"当堂/第1天/第2天/第3天"看完，对应返回"20/15/10/5"元'
+    )
+    attendance.document_json = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, note_row, *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {"lesson_id": 1, "lesson_name": "第01课", "video_duration": 3600}),
+            _row_from_dict(VIDEO_CONFIG_COLUMNS, {"lesson_id": 2, "lesson_name": "第02课", "video_duration": 3600}),
+        ],
+    )
+    video_config.document_json["source_meta"] = {
+        "course_name": "d250106念住闯关",
+        "video_refund_rule_mode": "timed_text",
+    }
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 3528,
+                    "progress": 98,
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "cum_seconds": 5400,
+                    "progress": 150,
+                    "lesson_id": 2,
+                },
+            ),
+        ],
+    )
+
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(attendance)
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, attendance_sheet_id=21)
+    session.commit()
+
+    row = attendance.document_json["rows"][0]
+    assert summary["video_refund_total"] == 40
+    assert row[2] == '=COUNTIF(G4:H4,"*遍*")'
+    assert row[3] == '=COUNTIF(G4:H4,"*遍*")*20'
+    assert row[6] == "1遍/98%"
+    assert row[7] == "2遍/150%"
+
+
 def test_rebuild_nianzhu_attendance_prefers_attendance_video_refund_note_rules(session: Session) -> None:
     _create_nianzhu_workbook(session)
     materialize_nianzhu_course_sheets(session, replace=False)
@@ -943,14 +1024,73 @@ def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Sess
     session.refresh(attendance)
     rows = attendance.document_json["rows"]
     rebuilt_columns = attendance.document_json["columns"]
+    config_row = attendance.document_json["grid_rows"][2]
+    assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
+    assert config_row[rebuilt_columns.index("已返款")] == '="第"&返款周期&"天"'
+    assert config_row[rebuilt_columns.index("订单金额")] == "620"
     first_row = rows[0]
-    assert first_row[rebuilt_columns.index("视频应返款")] == 40
+    assert first_row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(K4:L4,"*遍*")*20'
     assert first_row[rebuilt_columns.index("打卡应返款")] == "=SWITCH(TRUE,J4>=15,100,J4>=10,60,J4>=5,30,0)"
-    assert first_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D4+E4+G4-IF($H$3>0,$H$3,G4),0),G4)"
-    assert first_row[rebuilt_columns.index("当前应返款")] == "=(G4>0)*(F4-H4)"
+    assert first_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),H4)"
+    assert first_row[rebuilt_columns.index("当前应返款")] == "=(H4>0)*MAX(0,F4-G4)"
     second_row = rows[1]
-    assert second_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D5+E5+G5-IF($H$3>0,$H$3,G5),0),G5)"
-    assert second_row[rebuilt_columns.index("当前应返款")] == "=(G5>0)*(F5-H5)"
+    assert second_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D5+E5+H5-IF($H$3>0,$H$3,H5),0),H5)"
+    assert second_row[rebuilt_columns.index("当前应返款")] == "=(H5>0)*MAX(0,F5-G5)"
+
+
+def test_rebuild_nianzhu_attendance_uses_clockin_note_rules_for_color(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    columns = ["姓名", "用户ID", "打卡应返款", "打卡数"]
+    rows = [["甲", "u1", "", ""]]
+    note_row = [""] * len(columns)
+    note_row[columns.index("打卡应返款")] = '打卡达到"5/10/15/20"次，累计返回"100/150/180/200"元'
+    attendance.document_json = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "grid_rows": [[""] * len(columns), columns, note_row, *rows],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(
+        CLOCKIN_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                CLOCKIN_DATA_COLUMNS,
+                {
+                    "clockin_data_id": index,
+                    "user_id2": "u1",
+                    "clockin_name": "打卡数",
+                    "task_date": f"2026-05-{index:02}",
+                    "update_title": f"第{index}天",
+                },
+            )
+            for index in range(1, 18)
+        ],
+    )
+    session.add(attendance)
+    session.add(clockin_data)
+    session.commit()
+
+    rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    session.refresh(attendance)
+    document = attendance.document_json
+    rebuilt_columns = document["columns"]
+    row = document["rows"][0]
+    clockin_index = rebuilt_columns.index("打卡数")
+    assert row[clockin_index] == 17
+    assert row[rebuilt_columns.index("打卡应返款")] == 180
+    color = document["cell_meta"][f"3:{clockin_index}"]["style"]["background_color"]
+    assert color == "#FFC43D"
+    assert color != "#80FF80"
 
 
 def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(session: Session) -> None:
@@ -1020,11 +1160,12 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert "商户订单号" not in rebuilt_columns
     assert row[rebuilt_columns.index("用户ID")] == "u1"
     assert row[rebuilt_columns.index("禅客")] == '=IF(AND(G4>=11,N4>=7),"是","")'
-    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4:O4,"*完成*")+COUNTIF(O4:O4,"*回放*")'
-    assert row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(O4:O4,"*当堂*")*19'
+    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4,"*遍*")'
+    assert row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(O4,"*遍*")*20'
     assert row[rebuilt_columns.index("打卡应返款")] == '=SWITCH(TRUE,N4>=15,200,N4>=10,150,N4>=5,100,0)'
-    assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+K4-IF($L$3>0,$L$3,K4),0),K4)"
-    assert row[rebuilt_columns.index("当前应返款")] == "=(K4>0)*(J4-L4)"
+    assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
+    assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),L4)"
+    assert row[rebuilt_columns.index("当前应返款")] == "=(L4>0)*MAX(0,J4-K4)"
 
 
 def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Session) -> None:
@@ -1414,7 +1555,7 @@ def test_rebuild_nianzhu_attendance_repairs_missing_refund_tracking_columns(sess
     repaired = attendance.document_json
     repaired_columns = repaired["columns"]
     assert summary["schema_inserted_columns"] == ["已返款", "规则版本", "追踪分组", "追踪状态", "冻结时间"]
-    assert repaired_columns[repaired_columns.index("订单金额") + 1] == "已返款"
+    assert repaired_columns[repaired_columns.index("订单金额") - 1] == "已返款"
     for column in ["已返款", "当前应返款", "规则版本", "追踪分组", "追踪状态", "冻结时间"]:
         assert column in repaired_columns
         assert repaired["grid_rows"][1][repaired_columns.index(column)] == column
@@ -1535,7 +1676,7 @@ def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: S
     assert row[columns.index("打卡数")] == 10
     assert row[columns.index("打卡应返款")] == 150
     assert row[columns.index("总应返款")] == "=MIN(IFERROR(I5+J5+L5-IF($K$3>0,$K$3,L5),0),L5)"
-    assert row[columns.index("当前应返款")] == -50
+    assert row[columns.index("当前应返款")] == 0
 
 
 def test_materialize_video_config_preserves_legacy_lesson_table_fields(

@@ -105,6 +105,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
+import axios from 'axios'
 
 import NoteCopyDialog from '@/components/NoteCopyDialog.vue'
 import NoteDocAccessDialog from '@/components/NoteDocAccessDialog.vue'
@@ -153,6 +154,13 @@ let initialOutlineRefreshTimers: ReturnType<typeof setTimeout>[] = []
 let outlineMutationObserver: MutationObserver | null = null
 let currentScrollElement: HTMLElement | null = null
 let headingElementMap = new Map<string, HTMLElement>()
+let docResourceSocket: WebSocket | null = null
+let docResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let docResourceReconnectAttempt = 0
+let docResourceSocketCloseRequested = false
+let docSaveInFlight = false
+let docLocalDirty = false
+let docRemoteConflictActive = false
 
 const noteId = computed(() => {
   const raw = Array.isArray(route.params.noteId) ? route.params.noteId[0] : route.params.noteId
@@ -208,6 +216,87 @@ function writeLocalBoolean(key: string, value: boolean) {
   }
 }
 
+function clearDocResourceReconnectTimer() {
+  if (!docResourceReconnectTimer) return
+  clearTimeout(docResourceReconnectTimer)
+  docResourceReconnectTimer = null
+}
+
+function closeDocResourceSocket() {
+  docResourceSocketCloseRequested = true
+  clearDocResourceReconnectTimer()
+  if (!docResourceSocket) return
+  docResourceSocket.onopen = null
+  docResourceSocket.onmessage = null
+  docResourceSocket.onerror = null
+  docResourceSocket.onclose = null
+  docResourceSocket.close()
+  docResourceSocket = null
+}
+
+function scheduleDocResourceReconnect(noteRef: string) {
+  if (typeof window === 'undefined' || docResourceReconnectTimer || noteId.value !== noteRef) return
+  const delay = Math.min(30_000, 1000 * (2 ** Math.min(docResourceReconnectAttempt, 5)))
+  docResourceReconnectAttempt += 1
+  docResourceReconnectTimer = window.setTimeout(() => {
+    docResourceReconnectTimer = null
+    if (noteId.value === noteRef) {
+      connectDocResourceSocket(noteRef, { reconnect: true })
+    }
+  }, delay)
+}
+
+function getDocResourceSocketUrl(noteRef: string) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/api/note-docs/ws/resources/note/${encodeURIComponent(noteRef)}`
+}
+
+function connectDocResourceSocket(noteRef: string, options: { reconnect?: boolean } = {}) {
+  closeDocResourceSocket()
+  if (typeof window === 'undefined' || !noteRef) return
+  const socketNoteRef = noteRef
+  docResourceSocketCloseRequested = false
+  clearDocResourceReconnectTimer()
+  const socket = new WebSocket(getDocResourceSocketUrl(socketNoteRef))
+  docResourceSocket = socket
+  socket.onopen = () => {
+    if (docResourceSocket !== socket || noteId.value !== socketNoteRef) return
+    docResourceReconnectAttempt = 0
+    if (!options.reconnect || docSaveInFlight || docLocalDirty) return
+    void loadNote(socketNoteRef, { reconnectSocket: false })
+  }
+  socket.onmessage = (event) => {
+    if (docResourceSocket !== socket || noteId.value !== socketNoteRef) return
+    let message: Record<string, unknown>
+    try {
+      message = JSON.parse(String(event.data || '{}'))
+    } catch {
+      return
+    }
+    if (message.type !== 'resource-updated' || message.resource_type !== 'note') return
+    const remoteVersion = Number(message.version || 0)
+    if (!Number.isFinite(remoteVersion) || remoteVersion <= Number(currentNote.value?.version || 1)) return
+    if (docSaveInFlight) return
+    if (docLocalDirty) {
+      docRemoteConflictActive = true
+      ElMessage.warning('文档已被其他人更新，已保留本地草稿')
+      return
+    }
+    void loadNote(socketNoteRef)
+  }
+  socket.onerror = () => {
+    socket.close()
+  }
+  socket.onclose = () => {
+    if (docResourceSocket === socket) {
+      docResourceSocket = null
+    }
+    if (!docResourceSocketCloseRequested && noteId.value === socketNoteRef) {
+      scheduleDocResourceReconnect(socketNoteRef)
+    }
+  }
+}
+
 const getDocRouteRef = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
   note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : noteKey(note.id)
 )
@@ -224,10 +313,11 @@ const toDocApiPatch = (patch: NoteDocUpdatePayload): NoteDocUpdatePayload => {
   return outgoing
 }
 
-async function loadNote(id: string, options: { force?: boolean } = {}) {
+async function loadNote(id: string, options: { force?: boolean; reconnectSocket?: boolean } = {}) {
   const requestToken = ++loadToken
 
   if (!id) {
+    closeDocResourceSocket()
     currentNote.value = null
     errorText.value = '文档地址无效'
     return
@@ -249,12 +339,17 @@ async function loadNote(id: string, options: { force?: boolean } = {}) {
     }
 
     currentNote.value = detail
+    docRemoteConflictActive = false
+    docLocalDirty = false
     outlineItems.value = buildOutlineItemsFromHtml(detail.content || '')
     document.title = pageTitle.value
     const canonicalRouteRef = getDocRouteRef(detail)
     if (canonicalRouteRef && id !== canonicalRouteRef) {
       await router.replace(`/doc/${encodeURIComponent(canonicalRouteRef)}`)
       document.title = pageTitle.value
+    }
+    if (options.reconnectSocket !== false) {
+      connectDocResourceSocket(canonicalRouteRef)
     }
     void nextTick().then(scheduleInitialOutlineRefresh)
   } catch (error) {
@@ -279,23 +374,52 @@ function handleEditorModelUpdate(note: NoteNode) {
 
 function handleEditorChange(note: NoteNode) {
   handleEditorModelUpdate(note)
+  docLocalDirty = true
   scheduleOutlineRefresh()
 }
 
 async function handleDocSave(note: NoteNode, patch: EditableNotePatch = {}) {
-  const payload = (Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload
-  const updatedNote = await noteStore.updateNoteDocDetail(note.id, payload)
-  if (!updatedNote) throw new Error('保存文档失败')
-  currentNote.value = {
-    ...(currentNote.value ?? updatedNote),
-    ...updatedNote,
+  if (docRemoteConflictActive) {
+    docLocalDirty = true
+    ElMessage.warning('文档已被其他人更新，已保留本地草稿，请刷新后合并')
+    throw new Error('文档已被其他人更新')
   }
-  scheduleOutlineRefresh()
-  return updatedNote
+  const payload = {
+    ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
+    base_version: Number(note.version || currentNote.value?.version || 1),
+  }
+  docSaveInFlight = true
+  try {
+    const updatedNote = await noteStore.updateNoteDocDetail(note.id, payload)
+    if (!updatedNote) throw new Error('保存文档失败')
+    currentNote.value = {
+      ...(currentNote.value ?? updatedNote),
+      ...updatedNote,
+    }
+    docRemoteConflictActive = false
+    docLocalDirty = false
+    scheduleOutlineRefresh()
+    return updatedNote
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 409) {
+      docRemoteConflictActive = true
+      docLocalDirty = true
+      ElMessage.warning('文档已被其他人更新，已保留本地草稿')
+    }
+    throw error
+  } finally {
+    docSaveInFlight = false
+  }
 }
 
 function handleDocSaveKeepalive(note: NoteNode, patch: EditableNotePatch = {}) {
-  const payload = (Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload
+  if (docRemoteConflictActive) {
+    return
+  }
+  const payload = {
+    ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
+    base_version: Number(note.version || currentNote.value?.version || 1),
+  }
   putJsonKeepalive(`/api/note-docs/${encodeURIComponent(noteKey(note.id))}`, toDocApiPatch(payload))
 }
 
@@ -489,6 +613,9 @@ function jumpToOutlineItem(key: string) {
 }
 
 watch(noteId, (id) => {
+  closeDocResourceSocket()
+  docLocalDirty = false
+  docRemoteConflictActive = false
   void loadNote(id)
 }, { immediate: true })
 
@@ -501,6 +628,7 @@ watch(outlineNumbering, (enabled) => {
 })
 
 onBeforeUnmount(() => {
+  closeDocResourceSocket()
   if (outlineRefreshTimer) {
     clearTimeout(outlineRefreshTimer)
   }

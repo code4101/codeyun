@@ -54,13 +54,94 @@ def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -
     )
 
 
+def _assert_pagination_contains(actual: dict, expected: dict) -> None:
+    for key, value in expected.items():
+        assert actual[key] == value
+
+
 def test_normalize_attendance_refund_note_removes_duplicate_period_label() -> None:
     assert note_sheets_api._normalize_attendance_current_refund_note(
         "第3天返款\n最近运行更新时间：\n2026/06/03 07:18:34,6"
-    ) == "最近运行更新时间：\n2026/06/03 07:18:34,6"
+    ) == "2026/06/03 07:18:34,6"
+    assert note_sheets_api._normalize_attendance_current_refund_note(
+        "第6天返款最近运行更新时间： 2026/06/06 07:40:41,6"
+    ) == "2026/06/06 07:40:41,6"
+    assert note_sheets_api._normalize_attendance_current_refund_note(
+        "网课第6天返款 最近运行更新时间：\n2026/06/06 07:40:41,6"
+    ) == "2026/06/06 07:40:41,6"
     assert note_sheets_api._normalize_attendance_current_refund_note(
         "念住闯关每日返款\n最近运行更新时间：\n2026/06/03 07:11:38,6"
-    ) == "最近运行更新时间：\n2026/06/03 07:11:38,6"
+    ) == "2026/06/03 07:11:38,6"
+    assert note_sheets_api._normalize_attendance_current_refund_note(
+        "最近运行更新时间：\n待首次同步"
+    ) == "待首次同步"
+
+
+def test_attendance_formula_normalizer_does_not_touch_non_dual_clockin_config_row() -> None:
+    columns = ["视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款", "打卡数"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [[0, 0, 0, 620, 0, 0, ""]],
+        "grid_rows": [
+            [""] * len(columns),
+            columns,
+            ["", "", "", '="第"&返款周期&"天"', 620, "2026/06/04 11:00:46,6", ""],
+            [0, 0, 0, 620, 0, 0, ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    normalized, changed_count = note_sheets_api._normalize_attendance_dual_clockin_refund_formulas(document)
+
+    assert changed_count == 0
+    assert normalized["grid_rows"][2][columns.index("已返款")] == '="第"&返款周期&"天"'
+    assert normalized["grid_rows"][2][columns.index("订单金额")] == 620
+
+
+def test_attendance_formula_normalizer_removes_refund_label_from_config_row() -> None:
+    columns = ["共学打卡", "共修打卡", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [[1, 1, "=IF(AND(A4>0,B4>0),30,0)", "=C4", 110, 499, 0]],
+        "grid_rows": [
+            [""] * len(columns),
+            columns,
+            ["", "", "", "", '="第"&返款周期&"天"', 499, "第6天返款最近运行更新时间： 2026/06/06 07:40:41,6"],
+            [1, 1, "=IF(AND(A4>0,B4>0),30,0)", "=C4", 110, 499, 0],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    normalized, changed_count = note_sheets_api._normalize_attendance_dual_clockin_refund_formulas(document)
+
+    assert changed_count >= 1
+    assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
+
+
+def test_attendance_formula_normalizer_removes_refund_label_without_dual_clockin_columns() -> None:
+    columns = ["完成视频数", "视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [[5, 80, 30, 110, 110, 499, 0]],
+        "grid_rows": [
+            [""] * len(columns),
+            columns,
+            ["", "", "", "", "第6天", 499, "第6天返款最近运行更新时间： 2026/06/06 07:40:41,6"],
+            [5, 80, 30, 110, 110, 499, 0],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+    }
+
+    normalized, changed_count = note_sheets_api._normalize_attendance_dual_clockin_refund_formulas(document)
+
+    assert changed_count == 1
+    assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
 
 
 def test_note_sheet_access_user_options_searches_username_and_nickname(client, session):
@@ -131,10 +212,12 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         list_sheets_response = client.get("/api/note-sheets/sheets")
         assert list_sheets_response.status_code == 200
         assert list_sheets_response.json()[0]["workbook_items"] == [{"id": workbook["id"], "title": "禅宗工作簿"}]
+        assert list_sheets_response.json()[0]["version"] == sheet["version"]
 
         detail_workbook_response = client.get(f"/api/note-sheets/workbooks/{workbook['id']}")
         assert detail_workbook_response.status_code == 200
         assert detail_workbook_response.json()["sheets"][0]["id"] == sheet["id"]
+        assert detail_workbook_response.json()["sheets"][0]["version"] == sheet["version"]
 
         rename_workbook_response = client.put(
             f"/api/note-sheets/workbooks/{workbook['id']}",
@@ -157,6 +240,7 @@ def test_note_sheet_workbook_mvp_flow(client, session):
             f"/api/note-sheets/sheets/{sheet['id']}",
             json={
                 "title": "报名表-更新",
+                "base_version": sheet["version"],
                 "document_json": {
                     "schema_version": 1,
                     "columns": ["姓名", "手机号", "组号"],
@@ -169,6 +253,19 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         assert updated_sheet["title"] == "报名表-更新"
         assert updated_sheet["version"] == 2
         assert updated_sheet["document_json"]["columns"] == ["姓名", "手机号", "组号"]
+
+        stale_rename_sheet_response = client.put(
+            f"/api/note-sheets/sheets/{sheet['id']}",
+            json={
+                "title": "报名表-过期重命名",
+                "base_version": sheet["version"],
+            },
+        )
+        assert stale_rename_sheet_response.status_code == 409
+        latest_sheet_response = client.get(f"/api/note-sheets/sheets/{sheet['id']}")
+        assert latest_sheet_response.status_code == 200
+        assert latest_sheet_response.json()["title"] == "报名表-更新"
+        assert latest_sheet_response.json()["version"] == 2
 
         workbook_record = session.exec(
             select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook["id"])
@@ -197,14 +294,22 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         delete_workbook_response = client.delete(f"/api/note-sheets/workbooks/{workbook['id']}")
         assert delete_workbook_response.status_code == 200
 
-        workbook_count = len(session.exec(select(WorkbookDocument)).all())
-        sheet_count = len(session.exec(select(SheetDocument).where(SheetDocument.scope == "notes")).all())
+        session.refresh(workbook_record)
+        session.refresh(sheet_record)
+        workbook_count = len(session.exec(select(WorkbookDocument).where(note_sheets_api._active_workbook_condition())).all())
+        sheet_count = len(session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.scope == "notes")
+            .where(note_sheets_api._active_sheet_condition())
+        ).all())
         link_count = len(session.exec(select(WorkbookSheetLink)).all())
         grant_count = len(session.exec(select(ResourceAccessGrant)).all())
+        assert workbook_record.deleted_at and workbook_record.deleted_at > 0
+        assert sheet_record.deleted_at and sheet_record.deleted_at > 0
         assert workbook_count == 0
         assert sheet_count == 0
-        assert link_count == 0
-        assert grant_count == 0
+        assert link_count == 1
+        assert grant_count == 2
     finally:
         _clear_user_override()
 
@@ -269,7 +374,73 @@ def test_note_sheet_workbook_reorders_sheets(client, session):
         _clear_user_override()
 
 
-def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
+def test_note_sheet_defined_names_check_sheet_versions(client, session):
+    user = _create_user(session, username="note-sheet-defined-name-version-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "名称管理器工作簿"})
+        assert workbook_response.status_code == 200
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "名称管理器表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["A"],
+                    "rows": [["1"]],
+                },
+            },
+        )
+        assert sheet_response.status_code == 200
+        sheet_id = sheet_response.json()["id"]
+        initial_version = sheet_response.json()["version"]
+
+        update_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}/defined-names",
+            json={
+                "base_version": initial_version,
+                "names": [{"name": "LocalValue", "formula": "=A1"}],
+            },
+            params={"workbook_id": workbook_id},
+        )
+        assert update_response.status_code == 200, update_response.text
+        assert update_response.json()["sheet_version"] == initial_version + 1
+
+        stale_sheet_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}/defined-names",
+            json={
+                "base_version": initial_version,
+                "names": [{"name": "StaleLocalValue", "formula": "=A1"}],
+            },
+            params={"workbook_id": workbook_id},
+        )
+        assert stale_sheet_response.status_code == 409
+
+        stale_workbook_response = client.put(
+            f"/api/note-sheets/workbooks/{workbook_id}/defined-names",
+            json={
+                "names": [{"name": "GlobalValue", "formula": "=1"}],
+                "worksheets": [{
+                    "sheet_id": sheet_id,
+                    "sheet_title": "名称管理器表",
+                    "sheet_version": initial_version,
+                    "names": [{"name": "StaleScopedValue", "formula": "=A1"}],
+                }],
+            },
+        )
+        assert stale_workbook_response.status_code == 409
+
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
+        assert persisted.document_json["defined_names"] == [{"name": "LocalValue", "formula": "=A1", "comment": ""}]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_unpack_workbook_preserves_sheets(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-unpack-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -285,6 +456,7 @@ def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
         )
         assert sheet_response.status_code == 200
         sheet_id = sheet_response.json()["id"]
+        sheet_version = sheet_response.json()["version"]
 
         workbook_record = session.exec(
             select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)
@@ -313,9 +485,34 @@ def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
         assert links == []
         assert workbook_grants == []
 
+        broadcasts: list[tuple[str, dict]] = []
+
+        async def fake_broadcast(room: str, message: dict) -> None:
+            broadcasts.append((room, message))
+
+        monkeypatch.setattr(note_sheets_api.ws_manager, "broadcast", fake_broadcast)
+
         delete_sheet_response = client.delete(f"/api/note-sheets/sheets/{sheet_id}")
         assert delete_sheet_response.status_code == 200
-        assert session.exec(select(SheetDocument).where(SheetDocument.scope == "notes")).all() == []
+        active_sheets = session.exec(
+            select(SheetDocument)
+            .where(SheetDocument.scope == "notes")
+            .where(note_sheets_api._active_sheet_condition())
+        ).all()
+        deleted_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
+        assert active_sheets == []
+        assert deleted_sheet.deleted_at and deleted_sheet.deleted_at > 0
+        assert deleted_sheet.version == sheet_version + 1
+        assert broadcasts[-1][0] == f"resource:sheet:{sheet_id}"
+        assert broadcasts[-1][1]["version"] == deleted_sheet.version
+
+        restore_sheet_response = client.post(f"/api/note-sheets/sheets/{sheet_id}/restore")
+        assert restore_sheet_response.status_code == 200
+        restored_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
+        assert not restored_sheet.deleted_at
+        assert restored_sheet.version == sheet_version + 2
+        assert broadcasts[-1][0] == f"resource:sheet:{sheet_id}"
+        assert broadcasts[-1][1]["version"] == restored_sheet.version
     finally:
         _clear_user_override()
 
@@ -378,14 +575,18 @@ def test_delete_workbook_preserves_sheets_linked_from_other_workbooks(client, se
 
         delete_first_response = client.delete(f"/api/note-sheets/workbooks/{first_workbook['id']}")
         assert delete_first_response.status_code == 200
-        assert session.exec(select(SheetDocument).where(SheetDocument.id == sheet_record.id)).first() is not None
-        assert len(session.exec(select(WorkbookSheetLink)).all()) == 1
+        first_record = session.exec(select(WorkbookDocument).where(WorkbookDocument.numeric_id == first_workbook["id"])).one()
+        session.refresh(sheet_record)
+        assert first_record.deleted_at and first_record.deleted_at > 0
+        assert not sheet_record.deleted_at
+        assert len(session.exec(select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == str(second_workbook["id"]))).all()) == 1
         assert len(session.exec(select(ResourceAccessGrant)).all()) == 1
 
         delete_second_response = client.delete(f"/api/note-sheets/workbooks/{second_workbook['id']}")
         assert delete_second_response.status_code == 200
-        assert session.exec(select(SheetDocument).where(SheetDocument.id == sheet_record.id)).first() is None
-        assert session.exec(select(ResourceAccessGrant)).all() == []
+        session.refresh(sheet_record)
+        assert sheet_record.deleted_at and sheet_record.deleted_at > 0
+        assert len(session.exec(select(ResourceAccessGrant)).all()) == 1
     finally:
         _clear_user_override()
 
@@ -603,11 +804,31 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
             },
         )
         sheet_id = sheet_response.json()["id"]
+        initial_version = sheet_response.json()["version"]
+
+        stale_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
+            params={"workbook_id": workbook_id},
+            data={"instruction": "旧版本导入", "base_version": str(initial_version + 1)},
+            files={
+                "file": (
+                    "source.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+        assert stale_response.status_code == 409
 
         response = client.post(
             f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
             params={"workbook_id": workbook_id},
-            data={"instruction": "只导入报名学员", "action_document_row": "1", "action_column": "2"},
+            data={
+                "instruction": "只导入报名学员",
+                "action_document_row": "1",
+                "action_column": "2",
+                "base_version": str(initial_version),
+            },
             files={
                 "file": (
                     "source.xlsx",
@@ -1535,12 +1756,12 @@ def test_note_sheet_attendance_progress_backgrounds_are_derived_from_cell_text_a
     })
 
     assert changed_count == 8
-    assert document["cell_meta"]["3:1"]["style"]["background_color"] == "#FFFF66"
+    assert document["cell_meta"]["3:1"]["style"]["background_color"] == "#FFEBAD"
     assert "3:2" not in document["cell_meta"]
     assert document["cell_meta"]["3:3"]["style"]["background_color"] == "#80FF80"
     assert "4:2" not in document["cell_meta"]
     assert document["cell_meta"]["5:2"]["style"]["background_color"] == "#F2F2F2"
-    assert document["cell_meta"]["6:1"]["style"]["background_color"] == "#FFFFB2"
+    assert document["cell_meta"]["6:1"]["style"]["background_color"] == "#FFF8DC"
     assert document["cell_meta"]["6:2"]["style"]["background_color"] == "#80FF80"
     assert document["cell_meta"]["6:3"]["style"]["background_color"] == "#ABCDEF"
     assert document["cell_meta"]["7:2"]["style"]["background_color"] == "#80FF80"
@@ -1588,7 +1809,7 @@ def test_note_sheet_attendance_video_backgrounds_parse_refund_rules_from_existin
     })
 
     assert document["cell_meta"]["3:2"]["style"]["background_color"] == "#80FF80"
-    assert document["cell_meta"]["3:3"]["style"]["background_color"] == "#FFFF43"
+    assert document["cell_meta"]["3:3"]["style"]["background_color"] == "#FFE18D"
     assert "3:4" not in document["cell_meta"]
     assert document["cell_meta"]["3:5"]["style"]["background_color"] == "#D9D9D9"
 
@@ -2255,6 +2476,65 @@ def test_note_sheet_registration_order_run_uses_remote_fallback_when_db_missing(
         _clear_user_override()
 
 
+def test_note_sheet_registration_order_match_audits_completed_refund_remark_with_merchant_order(session, monkeypatch):
+    user = _create_user(session, username="note-sheet-order-refund-audit-user")
+    target_columns = ["姓名", "备注", "微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
+    remote_calls: list[list[str]] = []
+
+    def fake_get_kqdb():
+        return object()
+
+    def fake_lookup_order(order_id, **kwargs):
+        assert order_id == "MA2026051816560312333250"
+        assert kwargs["lookup_mode"] == "db_only"
+        assert kwargs["use_browser"] is False
+        return {
+            "微信支付订单号": "`4200003054202605183494484451",
+            "订单日期": "202605",
+            "商户订单号": "MA2026051816560312333250",
+            "订单金额": 499,
+            "已返款": 0,
+        }
+
+    def fake_remote_order_lookup(session_arg, current_user, *, order_ids):
+        remote_calls.append(list(order_ids))
+        return [
+            {
+                "微信支付订单号": "`4200003054202605183494484451",
+                "商户订单号": "MA2026051816560312333250",
+                "订单金额": 499,
+                "已返款": 0,
+            }
+        ]
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_remote_browser", fake_remote_order_lookup)
+
+    document = {
+        "schema_version": 1,
+        "columns": target_columns,
+        "rows": [["刘海燕", "已退费", "", "202605", "MA2026051816560312333250", "499", "0"]],
+    }
+
+    next_doc, summary = note_sheets_api._update_registration_order_match_document(
+        document,
+        session=session,
+        current_user=user,
+        use_browser_fallback=True,
+    )
+
+    updated_row = next_doc["rows"][0]
+    assert summary["target_count"] == 1
+    assert summary["matched_count"] == 1
+    assert summary["warning_count"] == 1
+    assert remote_calls == [["MA2026051816560312333250"]]
+    assert updated_row[target_columns.index("微信支付订单号")] == "4200003054202605183494484451"
+    assert updated_row[target_columns.index("已返款")] == "0"
+    assert "支付复核异常" in updated_row[target_columns.index("备注")]
+    assert "0/499" in updated_row[target_columns.index("备注")]
+
+
 def test_note_sheet_registration_order_run_defaults_to_remote_fallback_when_db_missing(client, session, engine, monkeypatch):
     user = _create_user(session, username="note-sheet-order-run-default-remote-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
@@ -2811,6 +3091,7 @@ def test_note_sheet_registration_user_id_detection_replaces_stale_primary_id(cli
         )
         assert registration_response.status_code == 200
         registration_sheet_id = registration_response.json()["id"]
+        initial_version = registration_response.json()["version"]
         for title, document_json in [
             ("考勤表", {"columns": ["姓名", "用户ID"], "rows": [], "grid_rows": [["姓名", "用户ID"]], "data_start_row": 1}),
             ("视频数据", {"columns": ["user_id2", "nickname"], "rows": [["u_real", "学员昵称"]], "grid_rows": [["user_id2", "nickname"], ["u_real", "学员昵称"]], "data_start_row": 1}),
@@ -2825,10 +3106,17 @@ def test_note_sheet_registration_user_id_detection_replaces_stale_primary_id(cli
             )
             assert response.status_code == 200
 
+        stale_response = client.post(
+            f"/api/note-sheets/sheets/{registration_sheet_id}/registration/detect-user-id",
+            params={"workbook_id": workbook_id},
+            json={"row_index": 0, "base_version": initial_version + 1},
+        )
+        assert stale_response.status_code == 409
+
         response = client.post(
             f"/api/note-sheets/sheets/{registration_sheet_id}/registration/detect-user-id",
             params={"workbook_id": workbook_id},
-            json={"row_index": 0},
+            json={"row_index": 0, "base_version": initial_version},
         )
 
         assert response.status_code == 200
@@ -3384,6 +3672,27 @@ def test_note_sheet_resource_access_acl_flow(client, session):
     )
     assert anonymous_update_response.status_code == 403
 
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=str(workbook.numeric_id),
+        subject_key=f"user:{editor.id}",
+        subject_type="user",
+        subject_user_id=editor.id,
+        role="editor",
+    ))
+    session.commit()
+
+    _override_user(editor)
+    try:
+        inherited_editor_sheet_response = client.get("/api/note-sheets/sheets/4", params={"workbook_id": 2})
+        assert inherited_editor_sheet_response.status_code == 200
+        inherited_editor_access = inherited_editor_sheet_response.json()["access"]
+        assert inherited_editor_access["role"] == "editor"
+        assert inherited_editor_access["capabilities"]["can_edit_data"] is True
+        assert inherited_editor_access["capabilities"]["can_run_sheet_actions"] is True
+    finally:
+        _clear_user_override()
+
     assert client.get("/api/note-sheets/workbooks").status_code == 401
 
     _override_user(owner)
@@ -3557,7 +3866,7 @@ def test_sheet_detail_only_lists_accessible_parent_workbooks(client, session):
     assert shared_parent_payload["workbook_items"] == [{"id": 2, "title": "私有工作簿"}]
 
 
-def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(client, session):
+def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(client, session, monkeypatch):
     owner = _create_user(session, username="note-sheet-public-status-owner")
     sheet = SheetDocument(
         numeric_id=5,
@@ -3593,6 +3902,12 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                     "page_size": 100,
                 },
             },
+            "column_configs": {
+                "姓名": {"display_mode": "single_line"},
+            },
+            "entity_rows": [
+                {"id": "field_1", "kind": "field"},
+            ],
         },
     )
     session.add(sheet)
@@ -3623,6 +3938,12 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
         role="viewer",
     ))
     session.commit()
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(note_sheets_api.ws_manager, "broadcast", fake_broadcast)
 
     detail_response = client.get("/api/note-sheets/sheets/5")
     assert detail_response.status_code == 200
@@ -3640,8 +3961,12 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     update_response = client.put(
         "/api/note-sheets/sheets/5",
         json={
+            "title": "不应被部分编辑保存改名",
             "document_json": {
                 **detail["document_json"],
+                "column_configs": {
+                    "序号": {"display_mode": "single_line"},
+                },
                 "rows": rows,
             },
             "page_patch": page_patch,
@@ -3650,25 +3975,119 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     assert update_response.status_code == 200, update_response.json()
     session.refresh(sheet)
     session.refresh(entry)
+    assert sheet.title == "问卷数据"
     assert sheet.document_json["rows"][0][9] == "用户d问题，已修正"
     assert sheet.document_json["rows"][0][7] == "第一堂视频课"
     assert entry.process_status == "用户d问题，已修正"
     assert entry.process_note == "用户d问题，已修正"
+    assert broadcasts[-1][0] == "resource:sheet:5"
+    assert broadcasts[-1][1]["type"] == "resource-updated"
+    assert broadcasts[-1][1]["resource_type"] == "sheet"
+    assert broadcasts[-1][1]["resource_id"] == "5"
+    assert broadcasts[-1][1]["version"] == sheet.version
+
+    broadcasts_before_cell_patch = len(broadcasts)
+    cell_patch_base_version = sheet.version
+    cell_patch_response = client.patch(
+        "/api/note-sheets/sheets/5/cells",
+        json={
+            "base_version": cell_patch_base_version,
+            "operations": [
+                {"row_index": 0, "column_index": 9, "value": "单元格patch已处理"},
+            ],
+        },
+    )
+    assert cell_patch_response.status_code == 200, cell_patch_response.json()
+    cell_patch_payload = cell_patch_response.json()
+    assert cell_patch_payload["updated_cell_count"] == 1
+    session.refresh(sheet)
+    session.refresh(entry)
+    assert sheet.document_json["rows"][0][9] == "单元格patch已处理"
+    assert entry.process_status == "单元格patch已处理"
+    assert entry.process_note == "单元格patch已处理"
+    assert len(broadcasts) == broadcasts_before_cell_patch + 1
+    assert broadcasts[-1][0] == "resource:sheet:5"
+    assert broadcasts[-1][1]["version"] == sheet.version
+
+    stale_cell_patch_response = client.patch(
+        "/api/note-sheets/sheets/5/cells",
+        json={
+            "base_version": cell_patch_base_version,
+            "operations": [
+                {"row_index": 0, "column_index": 9, "value": "过期单元格patch"},
+            ],
+        },
+    )
+    assert stale_cell_patch_response.status_code == 409
+    session.refresh(sheet)
+    session.refresh(entry)
+    assert sheet.document_json["rows"][0][9] == "单元格patch已处理"
+    assert entry.process_status == "单元格patch已处理"
+    assert len(broadcasts) == broadcasts_before_cell_patch + 1
+
+    op_patch_response = client.post(
+        "/api/note-sheets/sheets/5/patch",
+        json={
+            "base_version": sheet.version,
+            "ops": [
+                {"op": "set-cell-value", "row_index": 0, "column_index": 9, "value": ""},
+            ],
+        },
+    )
+    assert op_patch_response.status_code == 200, op_patch_response.json()
+    op_patch_payload = op_patch_response.json()
+    assert op_patch_payload["updated_cell_count"] == 1
+    session.refresh(sheet)
+    session.refresh(entry)
+    assert sheet.document_json["rows"][0][9] == ""
+    assert entry.process_status == ""
+    assert entry.process_note == ""
+
+    forbidden_cell_patch_response = client.patch(
+        "/api/note-sheets/sheets/5/cells",
+        json={
+            "operations": [
+                {"row_index": 0, "column_index": 7, "value": "越权patch"},
+            ],
+        },
+    )
+    assert forbidden_cell_patch_response.status_code == 403
+
+    forbidden_op_patch_response = client.post(
+        "/api/note-sheets/sheets/5/patch",
+        json={
+            "base_version": sheet.version,
+            "ops": [
+                {"op": "set-column-width", "column_index": 9, "width": 180},
+            ],
+        },
+    )
+    assert forbidden_op_patch_response.status_code == 403
 
     forbidden_config_response = client.put(
         "/api/note-sheets/sheets/5",
         json={
             "document_json": {
                 **detail["document_json"],
-                "column_configs": {
-                    **detail["document_json"].get("column_configs", {}),
-                    "AI初判": {"display_mode": "single_line"},
-                },
+                "column_widths": [120] * len(detail["document_json"]["columns"]),
             },
             "page_patch": page_patch,
         },
     )
     assert forbidden_config_response.status_code == 403
+
+    forbidden_identity_response = client.put(
+        "/api/note-sheets/sheets/5",
+        json={
+            "document_json": {
+                **detail["document_json"],
+                "row_ids": ["tampered-row-1", "tampered-row-2"],
+                "column_ids": [f"tampered-col-{index}" for index, _ in enumerate(detail["document_json"]["columns"])],
+            },
+            "page_patch": page_patch,
+        },
+    )
+    assert forbidden_identity_response.status_code == 403
 
     rows[0][7] = "越权修改"
     forbidden_response = client.put(
@@ -3682,6 +4101,236 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
         },
     )
     assert forbidden_response.status_code == 403
+
+
+def test_note_sheet_operation_patch_applies_atomically_and_checks_version(client, session, monkeypatch):
+    owner = _create_user(session, username="note-sheet-op-patch-owner")
+    sheet = SheetDocument(
+        numeric_id=61,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="op-patch",
+        sheet_key="main",
+        title="操作 Patch",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "状态", "备注"],
+            "rows": [["张三", "待处理", ""]],
+            "grid_rows": [["姓名", "状态", "备注"], ["张三", "待处理", ""]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "column_widths": [100, 100, 100],
+            "column_configs": {},
+            "merged_cells": [],
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(note_sheets_api.ws_manager, "broadcast", fake_broadcast)
+
+    try:
+        response = client.post(
+            "/api/note-sheets/sheets/61/patch",
+            json={
+                "base_version": sheet.version,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 1, "value": ""},
+                    {"op": "set-cell-meta", "row_index": 0, "column_index": 1, "meta": {"cell_type": "rich_text"}},
+                    {"op": "set-column-width", "column_index": 1, "width": 168},
+                    {"op": "set-column-hidden", "column_index": 2, "hidden": True},
+                    {"op": "set-column-config", "column_index": 1, "config": {"display_mode": "single_line"}},
+                    {"op": "merge-cells", "row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.json()
+        payload = response.json()
+        assert payload["applied_op_count"] == 6
+        assert payload["updated_cell_count"] == 1
+        session.refresh(sheet)
+        assert sheet.version == 2
+        document = sheet.document_json
+        assert document["rows"][0][1] == ""
+        assert document["cell_meta"]["1:1"] == {"cell_type": "rich_text"}
+        assert document["column_widths"][1] == 168
+        assert document["column_configs"]["备注"]["hidden"] is True
+        assert document["column_configs"]["状态"]["display_mode"] == "single_line"
+        assert document["merged_cells"] == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}]
+        assert broadcasts[-1][0] == "resource:sheet:61"
+        assert broadcasts[-1][1]["type"] == "resource-updated"
+        assert broadcasts[-1][1]["resource_type"] == "sheet"
+        assert broadcasts[-1][1]["resource_id"] == "61"
+        assert broadcasts[-1][1]["version"] == 2
+
+        stale_response = client.post(
+            "/api/note-sheets/sheets/61/patch",
+            json={
+                "base_version": 1,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 1, "value": "旧版本覆盖"},
+                ],
+            },
+        )
+        assert stale_response.status_code == 409
+        session.refresh(sheet)
+        assert sheet.document_json["rows"][0][1] == ""
+
+        atomic_response = client.post(
+            "/api/note-sheets/sheets/61/patch",
+            json={
+                "base_version": sheet.version,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 1, "value": "不应落库"},
+                    {"op": "set-column-width", "column_index": 99, "width": 120},
+                ],
+            },
+        )
+        assert atomic_response.status_code == 400
+        session.refresh(sheet)
+        assert sheet.document_json["rows"][0][1] == ""
+
+        unmerge_response = client.post(
+            "/api/note-sheets/sheets/61/patch",
+            json={
+                "base_version": sheet.version,
+                "ops": [
+                    {"op": "unmerge-cells", "row": 0, "col": 1},
+                ],
+            },
+        )
+        assert unmerge_response.status_code == 200, unmerge_response.json()
+        session.refresh(sheet)
+        assert sheet.document_json["merged_cells"] == []
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_get_backfills_stable_row_and_column_ids(client, session):
+    owner = _create_user(session, username="note-sheet-identity-owner")
+    sheet = SheetDocument(
+        numeric_id=62,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="identity",
+        sheet_key="main",
+        title="旧表身份补齐",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "状态"],
+            "rows": [["张三", "待处理"], ["李四", "已处理"]],
+            "grid_rows": [["姓名", "状态"], ["张三", "待处理"], ["李四", "已处理"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+
+    try:
+        response = client.get("/api/note-sheets/sheets/62")
+        assert response.status_code == 200, response.json()
+        document = response.json()["document_json"]
+        assert len(document["row_ids"]) == 2
+        assert len(document["column_ids"]) == 2
+        assert all(str(row_id).startswith("row_") for row_id in document["row_ids"])
+        assert all(str(column_id).startswith("col_") for column_id in document["column_ids"])
+
+        session.refresh(sheet)
+        assert sheet.document_json["row_ids"] == document["row_ids"]
+        assert sheet.document_json["column_ids"] == document["column_ids"]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_structure_patch_uses_stable_ids_and_keeps_metadata_aligned(client, session):
+    owner = _create_user(session, username="note-sheet-structure-owner")
+    sheet = SheetDocument(
+        numeric_id=63,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="structure-patch",
+        sheet_key="main",
+        title="结构 Patch",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "状态", "备注"],
+            "column_ids": ["col_name", "col_status", "col_note"],
+            "rows": [["张三", "待处理", "a"], ["李四", "已处理", "b"]],
+            "row_ids": ["row_zhang", "row_li"],
+            "grid_rows": [["姓名", "状态", "备注"], ["张三", "待处理", "a"], ["李四", "已处理", "b"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "cell_meta": {"1:1": {"cell_type": "rich_text"}, "2:2": {"cell_type": "note"}},
+            "column_widths": [80, 90, 100],
+            "column_configs": {"状态": {"display_mode": "single_line"}, "备注": {"hidden": True}},
+            "merged_cells": [],
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+
+    try:
+        response = client.post(
+            "/api/note-sheets/sheets/63/patch",
+            json={
+                "base_version": sheet.version,
+                "ops": [
+                    {"op": "insert-row", "after_row_id": "row_zhang", "row_id": "row_wang", "row": ["王五", "新建", "c"]},
+                    {"op": "delete-row", "row_id": "row_li"},
+                    {
+                        "op": "insert-column",
+                        "after_column_id": "col_name",
+                        "column_id": "col_priority",
+                        "column": {"header": "优先级", "width": 144, "config": {"value_type": "number"}},
+                    },
+                    {"op": "delete-column", "column_id": "col_note"},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.json()
+        session.refresh(sheet)
+        document = sheet.document_json
+        assert sheet.version == 2
+        assert document["row_ids"] == ["row_zhang", "row_wang"]
+        assert document["column_ids"] == ["col_name", "col_priority", "col_status"]
+        assert document["columns"] == ["姓名", "优先级", "状态"]
+        assert document["rows"] == [["张三", "", "待处理"], ["王五", "", "新建"]]
+        assert document["grid_rows"] == [["姓名", "优先级", "状态"], ["张三", "", "待处理"], ["王五", "", "新建"]]
+        assert document["cell_meta"] == {"1:2": {"cell_type": "rich_text"}}
+        assert document["column_widths"] == [80, 144, 90]
+        assert document["column_configs"]["优先级"] == {"value_type": "number"}
+        assert document["column_configs"]["状态"] == {"display_mode": "single_line"}
+        assert "备注" not in document["column_configs"]
+
+        stale_response = client.post(
+            "/api/note-sheets/sheets/63/patch",
+            json={
+                "base_version": 1,
+                "ops": [{"op": "delete-row", "row_id": "row_zhang"}],
+            },
+        )
+        assert stale_response.status_code == 409
+        session.refresh(sheet)
+        assert sheet.document_json["row_ids"] == ["row_zhang", "row_wang"]
+    finally:
+        _clear_user_override()
 
 
 def test_attendance_questionnaire_sheet_get_backfills_course_links(client, session):
@@ -3842,6 +4491,14 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
         assert persisted.document_json["rows"][0][4] == ""
         assert persisted.document_json["column_configs"]["AI初判"]["display_mode"] == "single_line"
         assert persisted.document_json["rows"][0][3]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
+
+        second_response = client.get("/api/note-sheets/sheets/5")
+        assert second_response.status_code == 200
+        second_detail = second_response.json()
+        assert second_detail["version"] == 2
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 5)).first()
+        assert persisted is not None
+        assert persisted.version == 2
     finally:
         _clear_user_override()
 
@@ -4269,10 +4926,17 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         session.refresh(sheet)
         session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
         session.commit()
+        initial_version = sheet.version
+
+        stale_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
+            json={"base_version": initial_version + 1, "target_year": 2026, "target_month": 5},
+        )
+        assert stale_response.status_code == 409
 
         response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
-            json={"target_year": 2026, "target_month": 5},
+            json={"base_version": initial_version, "target_year": 2026, "target_month": 5},
         )
         assert response.status_code == 200
         payload = response.json()
@@ -4362,7 +5026,7 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
 
         second_response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
-            json={"target_year": 2026, "target_month": 5},
+            json={"base_version": payload["sheet"]["version"], "target_year": 2026, "target_month": 5},
         )
         assert second_response.status_code == 200
         second_payload = second_response.json()
@@ -4377,7 +5041,7 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         )
         generic_response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/generate-course-template",
-            json={"row_index": fanbei_zengyi_row_index},
+            json={"base_version": second_payload["sheet"]["version"], "row_index": fanbei_zengyi_row_index},
         )
         assert generic_response.status_code == 200
         generic_payload = generic_response.json()
@@ -4577,10 +5241,17 @@ def test_attendance_summary_set_completed_moves_row_to_completion_boundary(clien
         session.refresh(sheet)
         session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
         session.commit()
+        initial_version = sheet.version
+
+        stale_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/set-completed",
+            json={"base_version": initial_version + 1, "row_index": 1, "completion_date": "2026-04-30"},
+        )
+        assert stale_response.status_code == 409
 
         response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/set-completed",
-            json={"row_index": 1, "completion_date": "2026-04-30"},
+            json={"base_version": initial_version, "row_index": 1, "completion_date": "2026-04-30"},
         )
         assert response.status_code == 200
         payload = response.json()
@@ -4974,10 +5645,17 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
         session.refresh(sheet)
         session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
         session.commit()
+        initial_version = sheet.version
+
+        stale_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/update-link-counts",
+            json={"base_version": initial_version + 1, "field_key": "lesson_links"},
+        )
+        assert stale_response.status_code == 409
 
         lesson_response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/update-link-counts",
-            json={"field_key": "lesson_links"},
+            json={"base_version": initial_version, "field_key": "lesson_links"},
         )
         assert lesson_response.status_code == 200
         lesson_payload = lesson_response.json()
@@ -5000,7 +5678,7 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
 
         clockin_response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/update-link-counts",
-            json={"field_key": "clockin_links"},
+            json={"base_version": lesson_payload["sheet"]["version"], "field_key": "clockin_links"},
         )
         assert clockin_response.status_code == 200
         clockin_payload = clockin_response.json()
@@ -5230,7 +5908,9 @@ def test_note_sheet_pagination_load_and_page_patch_save(client, session):
                 "document_json": {
                     "schema_version": 1,
                     "columns": ["序号", "内容"],
+                    "column_ids": ["cid-seq", "cid-content"],
                     "rows": [[str(index), f"row-{index}"] for index in range(1, 251)],
+                    "row_ids": [f"rid-{index}" for index in range(1, 251)],
                     "view_settings": {
                         "pagination": {
                             "enabled": True,
@@ -5249,25 +5929,29 @@ def test_note_sheet_pagination_load_and_page_patch_save(client, session):
         )
         assert page2_response.status_code == 200
         page2_detail = page2_response.json()
-        assert page2_detail["pagination"] == {
+        _assert_pagination_contains(page2_detail["pagination"], {
             "page": 2,
             "page_size": 100,
             "total_rows": 250,
             "page_count": 3,
             "row_offset": 100,
             "loaded_row_count": 100,
-        }
+        })
+        assert len(page2_detail["document_json"]["row_ids"]) == 250
         assert page2_detail["document_json"]["rows"][0] == ["101", "row-101"]
         assert page2_detail["document_json"]["rows"][-1] == ["200", "row-200"]
 
         edited_rows = page2_detail["document_json"]["rows"][2:]
+        edited_row_ids = page2_detail["document_json"]["row_ids"][102:200]
         save_response = client.put(
             f"/api/note-sheets/sheets/{sheet_id}",
             json={
                 "document_json": {
                     "schema_version": 1,
                     "columns": ["序号", "内容"],
+                    "column_ids": ["cid-seq", "cid-content"],
                     "rows": edited_rows,
+                    "row_ids": edited_row_ids,
                 },
                 "page_patch": {
                     "page": 2,
@@ -5279,16 +5963,21 @@ def test_note_sheet_pagination_load_and_page_patch_save(client, session):
         )
         assert save_response.status_code == 200
         save_detail = save_response.json()
-        assert save_detail["pagination"] == {
+        _assert_pagination_contains(save_detail["pagination"], {
             "page": 2,
             "page_size": 100,
             "total_rows": 248,
             "page_count": 3,
             "row_offset": 100,
             "loaded_row_count": 98,
-        }
+        })
         assert len(save_detail["document_json"]["rows"]) == 98
         assert save_detail["document_json"]["rows"][0] == ["103", "row-103"]
+        stored_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
+        assert stored_sheet.document_json["row_ids"][:100] == [f"rid-{index}" for index in range(1, 101)]
+        assert stored_sheet.document_json["row_ids"][100:198] == [f"rid-{index}" for index in range(103, 201)]
+        assert stored_sheet.document_json["row_ids"][198:] == [f"rid-{index}" for index in range(201, 251)]
+        assert stored_sheet.document_json["column_ids"] == ["cid-seq", "cid-content"]
 
         normalized_page2_response = client.get(
             f"/api/note-sheets/sheets/{sheet_id}",
@@ -5682,14 +6371,14 @@ def test_note_sheet_respects_document_pagination_settings(client, session):
         auto_page_response = client.get(f"/api/note-sheets/sheets/{sheet_id}")
         assert auto_page_response.status_code == 200
         auto_page_detail = auto_page_response.json()
-        assert auto_page_detail["pagination"] == {
+        _assert_pagination_contains(auto_page_detail["pagination"], {
             "page": 1,
             "page_size": 50,
             "total_rows": 250,
             "page_count": 5,
             "row_offset": 0,
             "loaded_row_count": 50,
-        }
+        })
         assert len(auto_page_detail["document_json"]["rows"]) == 50
 
         disable_pagination_response = client.put(
@@ -6036,29 +6725,42 @@ def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(clien
         )
         assert create_sheet_response.status_code == 200
         sheet_id = create_sheet_response.json()["id"]
+        initial_version = create_sheet_response.json()["version"]
 
         asc_response = client.post(
             f"/api/note-sheets/sheets/{sheet_id}/sort",
             json={
+                "base_version": initial_version,
                 "column_index": 0,
                 "direction": "asc",
             },
         )
         assert asc_response.status_code == 200
         asc_detail = asc_response.json()
-        assert asc_detail["pagination"] == {
+        _assert_pagination_contains(asc_detail["pagination"], {
             "page": 1,
             "page_size": 2,
             "total_rows": 5,
             "page_count": 3,
             "row_offset": 0,
             "loaded_row_count": 2,
-        }
+        })
         assert asc_detail["document_json"]["rows"] == [
             ["1", {"value": "row-1", "link": {"url": "https://example.com/row-1"}}],
             ["2", "row-2"],
         ]
         assert asc_detail["document_json"]["cell_meta"] == {}
+        assert asc_detail["version"] == initial_version + 1
+
+        stale_sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/sort",
+            json={
+                "base_version": initial_version,
+                "column_index": 0,
+                "direction": "desc",
+            },
+        )
+        assert stale_sort_response.status_code == 409
 
         page2_response = client.get(
             f"/api/note-sheets/sheets/{sheet_id}",

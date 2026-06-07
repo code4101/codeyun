@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field as PydanticField
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from backend.core.device import get_device_id
@@ -1910,8 +1911,29 @@ def _build_directory_stats_by_name(
     *,
     target_path: Path,
     directory_items: list[dict],
+    required_fields: set[DirectorySortField] | None = None,
 ) -> dict[str, dict[str, int | None]]:
     if session is None or not directory_items:
+        return {}
+
+    normalized_required_fields = set(required_fields or set())
+    if "recursive_total_bytes" in normalized_required_fields:
+        normalized_required_fields.update(
+            {
+                "recursive_file_count",
+                "latest_descendant_modified_at",
+                "max_weight",
+                "weighted_file_count",
+            }
+        )
+    derived_fields = {
+        "recursive_total_bytes",
+        "recursive_file_count",
+        "latest_descendant_modified_at",
+        "max_weight",
+        "weighted_file_count",
+    }
+    if not (normalized_required_fields & derived_fields):
         return {}
 
     try:
@@ -1971,18 +1993,18 @@ def _build_directory_stats_by_name(
         modified_value = int(modified_at_ms) if isinstance(modified_at_ms, (int, float)) else None
         weight_value = int(weight) if isinstance(weight, (int, float)) else 0
 
-        stats["recursive_total_bytes"] = int(stats["recursive_total_bytes"] or 0) + size_value
-        stats["recursive_file_count"] = int(stats["recursive_file_count"] or 0) + 1
-        if child_relative_path and "\\" not in child_relative_path:
-            stats["direct_file_bytes"] = int(stats["direct_file_bytes"] or 0) + size_value
-            stats["direct_file_count"] = int(stats["direct_file_count"] or 0) + 1
-        if modified_value is not None:
+        if "recursive_total_bytes" in normalized_required_fields:
+            stats["recursive_total_bytes"] = int(stats["recursive_total_bytes"] or 0) + size_value
+        if "recursive_file_count" in normalized_required_fields:
+            stats["recursive_file_count"] = int(stats["recursive_file_count"] or 0) + 1
+        if "latest_descendant_modified_at" in normalized_required_fields and modified_value is not None:
             stats["latest_descendant_modified_at"] = max(
                 int(stats["latest_descendant_modified_at"] or 0),
                 modified_value,
             )
-        stats["max_weight"] = max(int(stats["max_weight"] or 0), weight_value)
-        if weight_value != 0:
+        if "max_weight" in normalized_required_fields:
+            stats["max_weight"] = max(int(stats["max_weight"] or 0), weight_value)
+        if "weighted_file_count" in normalized_required_fields and weight_value != 0:
             stats["weighted_file_count"] = int(stats["weighted_file_count"] or 0) + 1
 
     return stats_by_name
@@ -2295,6 +2317,14 @@ def _sort_directory_entries(entries: list[dict], sort_program: DirectorySortProg
     entries.sort(key=cmp_to_key(lambda left, right: _compare_directory_entries(left, right, normalized_rules)))
 
 
+def _get_required_directory_stats_fields(sort_program: DirectorySortProgram | None) -> set[DirectorySortField]:
+    return {
+        rule.field
+        for rule in _normalize_directory_sort_program(sort_program)
+        if rule.field not in {"name", "modified_at"}
+    }
+
+
 def _list_system_root_entries() -> list[dict]:
     def build_entry(candidate: str, name: str) -> dict:
         disk_total_bytes: int | None = None
@@ -2388,17 +2418,24 @@ def list_directory_items(
 
     directory_items = [item for item in items if item["is_dir"]]
     file_items = [item for item in items if not item["is_dir"]]
-    stats_by_name = _build_directory_stats_by_name(session, target_path=target_path, directory_items=directory_items)
-    everything_stats_by_name = _build_everything_directory_stats_by_name(
+    required_stats_fields = _get_required_directory_stats_fields(sort_program)
+    stats_by_name = _build_directory_stats_by_name(
+        session,
         target_path=target_path,
         directory_items=directory_items,
-        existing_stats_by_name=stats_by_name,
+        required_fields=required_stats_fields,
     )
-    stats_by_name = _merge_directory_stats(
-        stats_by_name,
-        everything_stats_by_name,
-        override_keys={"recursive_total_bytes"},
-    )
+    if "recursive_total_bytes" in required_stats_fields:
+        everything_stats_by_name = _build_everything_directory_stats_by_name(
+            target_path=target_path,
+            directory_items=directory_items,
+            existing_stats_by_name=stats_by_name,
+        )
+        stats_by_name = _merge_directory_stats(
+            stats_by_name,
+            everything_stats_by_name,
+            override_keys={"recursive_total_bytes"},
+        )
     direct_stats_by_name = _build_direct_directory_stats_by_name(
         target_path=target_path,
         directory_items=directory_items,
@@ -3885,11 +3922,14 @@ def _build_media_listing_response(
     layout_column_width: int,
     layout_gap: int,
     layout_column_heights: list[float],
+    attach_response_metadata: bool = True,
 ) -> dict:
     sliced_entries, total_count, next_offset = _slice_media_listing_entries(entries, offset=offset, limit=limit)
     response_entries = list(sliced_entries)
     response_visual_hash_status = visual_hash_status
-    if _media_sort_rules_use_duplicate_cluster(normalized_rules) and response_entries:
+    if not attach_response_metadata:
+        pass
+    elif _media_sort_rules_use_duplicate_cluster(normalized_rules) and response_entries:
         response_visual_hash_status = _attach_cached_media_metadata(
             response_entries,
             session,
@@ -3929,6 +3969,200 @@ def _build_media_listing_response(
         "next_offset": next_offset,
         "layout": layout,
         response_key: _serialize_media_entries(response_entries),
+    }
+
+
+def _build_supported_media_entry(
+    file_path: Path,
+    *,
+    target_path: Path,
+    root_path: Path | None,
+    is_absolute_request: bool,
+    allowed_kinds: set[str],
+) -> dict | None:
+    media_info = _resolve_media_kind(file_path)
+    if not media_info:
+        return None
+
+    kind, mime_type = media_info
+    if kind not in allowed_kinds:
+        return None
+
+    try:
+        stat_result = file_path.stat()
+    except OSError:
+        return None
+
+    try:
+        display_relative = os.fspath(file_path.relative_to(target_path)).replace("\\", "/")
+    except ValueError:
+        return None
+    folder_path = os.path.dirname(display_relative).replace("\\", "/")
+    request_path = (
+        os.fspath(file_path)
+        if is_absolute_request or root_path is None
+        else os.fspath(file_path.relative_to(root_path)).replace("\\", "/")
+    )
+    return {
+        "id": f"{request_path}:{stat_result.st_size}:{stat_result.st_mtime_ns}",
+        "name": file_path.name,
+        "path": request_path,
+        "absolute_path": os.fspath(file_path) if is_absolute_request else "",
+        "relative_path": display_relative,
+        "folder_path": "" if folder_path == "." else folder_path,
+        "size": stat_result.st_size,
+        "created_at": _resolve_created_at_ms(stat_result),
+        "modified_at": int(stat_result.st_mtime * 1000),
+        "kind": kind,
+        "mime_type": mime_type,
+        "_absolute_identity_path": os.fspath(file_path.resolve(strict=False)),
+        "_file_path": file_path,
+    }
+
+
+def _build_database_media_order_clauses(normalized_rules: list[GallerySortRule]) -> list[Any] | None:
+    field_columns = {
+        "weight": DeviceFile.weight,
+        "modified_at": DeviceFile.modified_at_ms,
+        "size": DeviceFile.file_size,
+        "relative_path": DeviceFile.absolute_path,
+        "kind": DeviceFile.media_kind,
+    }
+    order_clauses: list[Any] = []
+    for rule in normalized_rules:
+        if rule.field == "name" and order_clauses:
+            continue
+        column = field_columns.get(rule.field)
+        if column is None:
+            return None
+        order_clauses.append(column.desc() if rule.direction == "desc" else column.asc())
+    order_clauses.append(DeviceFile.absolute_path.asc())
+    return order_clauses
+
+
+def _can_use_database_media_page(
+    *,
+    recursive: bool,
+    explicit_sort_program: bool,
+    normalized_rules: list[GallerySortRule],
+) -> bool:
+    if not recursive or not explicit_sort_program or _media_sort_rules_need_full_metadata(normalized_rules):
+        return False
+    if _media_sort_rules_use_duplicate_cluster(normalized_rules):
+        return False
+    if any(rule.field == "random" for rule in normalized_rules):
+        return False
+    return _build_database_media_order_clauses(normalized_rules) is not None
+
+
+def _build_database_media_page(
+    *,
+    session: Session | None,
+    device_id: str,
+    target_path: Path,
+    resolved: dict,
+    root_path: Path | None,
+    allowed_kinds: set[str],
+    normalized_rules: list[GallerySortRule],
+    sort_mode: str,
+    offset: int,
+    limit: int,
+    response_key: str,
+    layout_mode: str,
+    layout_columns: int,
+    layout_column_width: int,
+    layout_gap: int,
+    layout_column_heights: list[float],
+) -> dict | None:
+    if session is None or not device_id:
+        return None
+
+    normalized_offset = max(0, int(offset or 0))
+    normalized_limit = max(1, int(limit or 0) or 50)
+    scope_prefix = os.fspath(target_path.resolve(strict=False)).strip().rstrip("/\\")
+    if not scope_prefix:
+        return None
+    order_clauses = _build_database_media_order_clauses(normalized_rules)
+    if order_clauses is None:
+        return None
+
+    base_filters = [
+        DeviceFile.device_id == device_id,
+        DeviceFile.absolute_path.is_not(None),
+        DeviceFile.match_status == "matched",
+        DeviceFile.absolute_path.startswith(scope_prefix),
+        or_(DeviceFile.media_kind.in_(sorted(allowed_kinds)), DeviceFile.media_kind.is_(None)),
+    ]
+    total_count = int(session.exec(select(func.count()).select_from(DeviceFile).where(*base_filters)).one() or 0)
+    if total_count <= 0:
+        return None
+    total_bytes = int(
+        session.exec(
+            select(func.coalesce(func.sum(DeviceFile.file_size), 0)).where(*base_filters)
+        ).one() or 0
+    )
+    overfetch_limit = min(MAX_MEDIA_SCAN_LIMIT, normalized_offset + max(normalized_limit * 4, normalized_limit))
+    rows = session.exec(
+        select(DeviceFile)
+        .where(*base_filters)
+        .order_by(*order_clauses)
+        .limit(overfetch_limit)
+    ).all()
+
+    entries: list[dict] = []
+    skipped_before_page = 0
+    for record in rows:
+        absolute_path = str(record.absolute_path or "")
+        if not absolute_path or not _path_matches_scope_prefix(absolute_path, scope_prefix):
+            continue
+        file_path = Path(absolute_path)
+        entry = _build_supported_media_entry(
+            file_path,
+            target_path=target_path,
+            root_path=root_path,
+            is_absolute_request=bool(resolved["is_absolute"]),
+            allowed_kinds=allowed_kinds,
+        )
+        if entry is None:
+            continue
+        if skipped_before_page < normalized_offset:
+            skipped_before_page += 1
+            continue
+        entries.append(entry)
+        if len(entries) >= normalized_limit:
+            break
+
+    if not entries and total_count > 0 and normalized_offset == 0:
+        return None
+
+    visual_hash_status = _attach_lightweight_cached_media_metadata(entries, session)
+    sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
+    return _build_media_listing_response(
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        sort_mode=sort_mode,
+        sort_program=sort_program_payload,
+        snapshot_id="",
+        entries=entries,
+        total_bytes=total_bytes,
+        visual_hash_status=visual_hash_status,
+        normalized_rules=normalized_rules,
+        session=session,
+        offset=0,
+        limit=normalized_limit,
+        response_key=response_key,
+        layout_mode=layout_mode,
+        layout_columns=layout_columns,
+        layout_column_width=layout_column_width,
+        layout_gap=layout_gap,
+        layout_column_heights=layout_column_heights,
+        attach_response_metadata=False,
+    ) | {
+        "total_count": total_count,
+        "offset": normalized_offset,
+        "has_more": normalized_offset + len(entries) < total_count,
+        "next_offset": normalized_offset + len(entries) if normalized_offset + len(entries) < total_count else None,
     }
 
 
@@ -4025,6 +4259,32 @@ def _list_supported_entries(
         )
 
     root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+    if _can_use_database_media_page(
+        recursive=recursive,
+        explicit_sort_program=bool(sort_program and sort_program.rules),
+        normalized_rules=normalized_rules,
+    ):
+        database_page = _build_database_media_page(
+            session=session,
+            device_id=device_id,
+            target_path=target_path,
+            resolved=resolved,
+            root_path=root_path,
+            allowed_kinds=allowed_kinds,
+            normalized_rules=normalized_rules,
+            sort_mode=sort_mode,
+            offset=offset,
+            limit=limit,
+            response_key=response_key,
+            layout_mode=layout_mode,
+            layout_columns=layout_columns,
+            layout_column_width=layout_column_width,
+            layout_gap=layout_gap,
+            layout_column_heights=layout_column_heights or [],
+        )
+        if database_page is not None:
+            return database_page
+
     entries = []
     if progress_callback is not None:
         progress_callback(
@@ -4037,43 +4297,15 @@ def _list_supported_entries(
         )
 
     def _append_supported_file(file_path: Path) -> None:
-        media_info = _resolve_media_kind(file_path)
-        if not media_info:
-            return
-
-        kind, mime_type = media_info
-        if kind not in allowed_kinds:
-            return
-
-        try:
-            stat_result = file_path.stat()
-        except OSError:
-            return
-
-        display_relative = os.fspath(file_path.relative_to(target_path)).replace("\\", "/")
-        folder_path = os.path.dirname(display_relative).replace("\\", "/")
-        request_path = (
-            os.fspath(file_path)
-            if resolved["is_absolute"]
-            else os.fspath(file_path.relative_to(root_path)).replace("\\", "/")
+        entry = _build_supported_media_entry(
+            file_path,
+            target_path=target_path,
+            root_path=root_path,
+            is_absolute_request=bool(resolved["is_absolute"]),
+            allowed_kinds=allowed_kinds,
         )
-        entries.append(
-            {
-                "id": f"{request_path}:{stat_result.st_size}:{stat_result.st_mtime_ns}",
-                "name": file_path.name,
-                "path": request_path,
-                "absolute_path": os.fspath(file_path) if resolved["is_absolute"] else "",
-                "relative_path": display_relative,
-                "folder_path": "" if folder_path == "." else folder_path,
-                "size": stat_result.st_size,
-                "created_at": _resolve_created_at_ms(stat_result),
-                "modified_at": int(stat_result.st_mtime * 1000),
-                "kind": kind,
-                "mime_type": mime_type,
-                "_absolute_identity_path": os.fspath(file_path.resolve(strict=False)),
-                "_file_path": file_path,
-            }
-        )
+        if entry is not None:
+            entries.append(entry)
 
     scanned_count = 0
     for file_path in _iter_scanned_media_files(

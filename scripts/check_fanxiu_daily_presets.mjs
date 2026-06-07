@@ -4,10 +4,10 @@ import {
   decideDailyFindResult,
   extractDailyProgress,
   getDailyStatusCode,
-} from '../frontend/src/standard/fanxiu/game-window3/dailyFindDecision.ts';
+} from '../frontend/src/standard/fanxiu/data-annotation/dailyFindDecision.ts';
 import {
   defaultDailyTaskPresets,
-} from '../frontend/src/standard/fanxiu/game-window3/dailyTaskPresets.ts';
+} from '../frontend/src/standard/fanxiu/data-annotation/dailyTaskPresets.ts';
 
 const normalizeSearchText = (text) => text.replace(/\s+/g, '').trim();
 

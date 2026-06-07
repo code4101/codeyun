@@ -80,9 +80,12 @@ def test_anonymous_guest_seed_contains_public_weekly_note(client, session):
     assert response.status_code == 200
 
     guest_user = session.exec(select(User).where(User.username == GUEST_NOTES_USERNAME)).one()
-    weekly_note = session.get(NoteNode, "guest-star-notes-weekly-issue-300")
+    weekly_note = session.exec(
+        select(NoteNode)
+        .where(NoteNode.user_id == guest_user.id)
+        .where(NoteNode.title == "科技爱好者周刊（第 300 期）：三十年，解决人生三大问题")
+    ).first()
 
     assert weekly_note is not None
     assert weekly_note.user_id == guest_user.id
-    assert weekly_note.title == "科技爱好者周刊（第 300 期）：三十年，解决人生三大问题"
     assert [RUANYF_WEEKLY_ISSUE_FIELD, "number", 300] in weekly_note.custom_fields

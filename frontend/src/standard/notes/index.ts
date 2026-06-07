@@ -6,6 +6,7 @@ import commonSitesPage from './common-sites'
 import eastmoneyPage from './eastmoney'
 import freebillPage from './freebill'
 import notesCenterPage from './center'
+import notesTaskSystemPage from './task-system'
 import notesSheetEditorPage from './sheet-editor'
 import notesSheetsManagerPage from './sheets-manager'
 import notesTrashPage from './trash'
@@ -16,6 +17,7 @@ import notesWechatStoragePage from './wechat/storage'
 
 const pages: AppPageDefinition[] = [
   notesCenterPage,
+  notesTaskSystemPage,
   notesChatDataPage,
   commonSitesPage,
   eastmoneyPage,

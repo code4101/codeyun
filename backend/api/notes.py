@@ -2,6 +2,7 @@ import html
 import hashlib
 import json
 import threading
+import anyio
 from typing import Any, Iterable, List, Optional, Tuple
 import re
 from datetime import datetime, timedelta
@@ -121,6 +122,7 @@ from backend.core.note_refs import (
 from backend.core.note_walker import NoteGraphContext, NoteWalker, _resolve_time_point_expr
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.resource_identity import RESOURCE_TYPE_NOTE
+from backend.api.websocket_manager import manager as ws_manager
 import time
 import uuid
 
@@ -211,7 +213,7 @@ CODEX_DIARY_SOURCE_THREADS_FIELD = "__codex_source_thread_ids"
 CODEX_DIARY_WORKLOG_FIELD = "__codex_diary_worklog"
 CODEX_DIARY_TARGET_SECONDS = 10 * 60 * 60
 CODEX_DIARY_PROGRESS_BASE_MINUTES = CODEX_DIARY_TARGET_SECONDS // 60
-CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
+CODEX_DIARY_TINY_TAIL_SECONDS = 90 * 60
 CODEX_DIARY_DRAFT_BATCH_SIZE = 12
 CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK = 24
 CODEX_DIARY_AI_EDGE_RECORD_COUNT_PER_BLOCK = CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK // 2
@@ -621,6 +623,11 @@ CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS = (
     "前端",
     "后端",
     "脚本",
+    "数据",
+    "采集",
+    "写表",
+    "核对",
+    "恢复",
     "数据库",
     "SQL",
     "缓存",
@@ -1311,17 +1318,17 @@ def _build_codex_diary_category_scores(
     )
     if attendance_key:
         if any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_TERMS):
-            _add_codex_diary_category_score(combined_scores, attendance_key, 120)
+            _add_codex_diary_category_score(combined_scores, attendance_key, 360)
         elif (
             any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_CONTEXT_TERMS)
             and any(marker in content_text for marker in ("数据", "截图", "核对", "恢复", "记录"))
         ):
-            _add_codex_diary_category_score(combined_scores, attendance_key, 80)
+            _add_codex_diary_category_score(combined_scores, attendance_key, 260)
 
     fanxiu_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("凡修", "fanxiu"))
     fanxiu_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_FANXIU_FORCE_TERMS)
     if fanxiu_key and fanxiu_hits:
-        _add_codex_diary_category_score(combined_scores, fanxiu_key, 160 + fanxiu_hits * 28)
+        _add_codex_diary_category_score(combined_scores, fanxiu_key, 300 + fanxiu_hits * 36)
 
     input_method_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_INPUT_METHOD_FORCE_TERMS)
     if input_method_hits:
@@ -1335,27 +1342,31 @@ def _build_codex_diary_category_scores(
     codeyun_note_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun笔记", "codeyunnote"))
     codeyun_note_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_NOTE_FORCE_TERMS)
     if codeyun_note_key and codeyun_note_hits:
-        _add_codex_diary_category_score(combined_scores, codeyun_note_key, 130 + codeyun_note_hits * 24)
+        _add_codex_diary_category_score(combined_scores, codeyun_note_key, 240 + codeyun_note_hits * 30)
 
     codeyun_cluster_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun集群", "集群", "cluster"))
     codeyun_cluster_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS)
     if codeyun_cluster_key and codeyun_cluster_hits:
-        _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 130 + codeyun_cluster_hits * 24)
+        _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 300 + codeyun_cluster_hits * 36)
 
     engineering_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_ENGINEERING_VALUE_FORCE_TERMS)
-    if engineering_hits:
+    has_explicit_domain_hit = any(
+        bool(key) and int(combined_scores.get(key, 0)) >= 180
+        for key in (attendance_key, fanxiu_key, input_method_key if input_method_hits else None, codeyun_note_key, codeyun_cluster_key)
+    )
+    if engineering_hits and not has_explicit_domain_hit:
         engineering_key = (
             _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("编程", "技术", "programming", "develop", "代码"))
-            or _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("工作", "项目", "work", "project"))
+            or _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun笔记", "codeyunnote"))
         )
         if engineering_key:
-            _add_codex_diary_category_score(combined_scores, engineering_key, 90 + min(engineering_hits, 6) * 10)
+            _add_codex_diary_category_score(combined_scores, engineering_key, 130 + min(engineering_hits, 6) * 12)
 
     project_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_PROJECT_VALUE_FORCE_TERMS)
-    if project_hits and not engineering_hits:
+    if project_hits:
         project_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("工作", "项目", "work", "project"))
         if project_key:
-            _add_codex_diary_category_score(combined_scores, project_key, 80 + min(project_hits, 5) * 10)
+            _add_codex_diary_category_score(combined_scores, project_key, 320 + min(project_hits, 5) * 20)
     return combined_scores
 
 
@@ -1626,9 +1637,13 @@ def _collect_project_palette_candidates(*values: Any) -> list[str]:
 
 
 def _build_codex_diary_category_lookup(user_id: int, session: Session) -> dict[str, dict[str, Any]]:
-    palette_items = _filter_note_auto_classification_category_items(
-        _build_note_type_palette_response(user_id, session).get("items", [])
-    )
+    palette_items = [
+        item
+        for item in _build_note_type_palette_response(user_id, session).get("items", [])
+        if isinstance(item, dict) and not _is_imported_script_category_key(item.get("key"))
+    ]
+    if not any(str(item.get("key") or "").strip() == NOTE_CATEGORY_DEFAULT for item in palette_items):
+        palette_items.insert(0, _fallback_note_ai_default_category_item())
     lookup: dict[str, dict[str, Any]] = {}
     for item in palette_items:
         if not isinstance(item, dict):
@@ -2048,6 +2063,101 @@ def _merge_codex_diary_blocks_for_target_duration(
     for category_key in list(current_by_category):
         close_current(category_key)
     return sorted(merged_blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
+
+
+def _absorb_tiny_codex_diary_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+    title_hints: dict[str, str],
+) -> list[dict[str, Any]]:
+    if len(blocks) <= 1:
+        return blocks
+
+    ordered_blocks = sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["block_key"])))
+    core_blocks = [
+        block
+        for block in ordered_blocks
+        if float(block.get("duration_seconds") or 0) > CODEX_DIARY_TINY_TAIL_SECONDS
+    ]
+    if not core_blocks:
+        total_duration = sum(float(block.get("duration_seconds") or 0) for block in ordered_blocks)
+        if total_duration > CODEX_DIARY_TARGET_SECONDS:
+            return ordered_blocks
+        core_blocks = [
+            sorted(
+                ordered_blocks,
+                key=lambda item: (
+                    -float(item.get("duration_seconds") or 0),
+                    float(item.get("start_at") or 0),
+                    str(item.get("block_key") or ""),
+                ),
+            )[0]
+        ]
+
+    core_ids = {id(core) for core in core_blocks}
+    tiny_blocks = [
+        block
+        for block in ordered_blocks
+        if float(block.get("duration_seconds") or 0) <= CODEX_DIARY_TINY_TAIL_SECONDS
+        and id(block) not in core_ids
+    ]
+    if not tiny_blocks:
+        return ordered_blocks
+
+    absorbed_ids: set[int] = set()
+
+    def block_midpoint(block: dict[str, Any]) -> float:
+        start_at = float(block.get("start_at") or 0)
+        end_at = float(block.get("end_at") or start_at)
+        return (start_at + end_at) / 2
+
+    def refresh_target(target: dict[str, Any]) -> None:
+        category_key = str(target.get("category_key") or NOTE_CATEGORY_DEFAULT)
+        records = list(target.get("records") or [])
+        target["records"] = records
+        target["start_at"] = min(float(record.get("start_at") or 0) for record in records)
+        target["end_at"] = max(float(record.get("end_at") or record.get("start_at") or 0) for record in records)
+        target["note_categories"] = _resolve_codex_diary_group_categories(
+            records,
+            palette_lookup=palette_lookup,
+            title_hints=title_hints,
+            primary_category_key=category_key,
+        )
+        category_labels = _codex_diary_category_labels_for_weights(target["note_categories"], palette_lookup=palette_lookup)
+        if category_labels:
+            target["category_label"] = " / ".join(category_labels)
+        target["title"] = _build_codex_diary_title(target)
+        target["block_key"] = _build_codex_diary_block_key(target)
+
+    for tiny in tiny_blocks:
+        tiny_duration = float(tiny.get("duration_seconds") or 0)
+        if tiny_duration <= 0:
+            continue
+        tiny_category = str(tiny.get("category_key") or NOTE_CATEGORY_DEFAULT)
+        tiny_midpoint = block_midpoint(tiny)
+        candidates = [
+            target
+            for target in core_blocks
+            if float(target.get("duration_seconds") or 0) + tiny_duration <= CODEX_DIARY_TARGET_SECONDS
+        ]
+        if not candidates:
+            continue
+        target = sorted(
+            candidates,
+            key=lambda item: (
+                0 if str(item.get("category_key") or NOTE_CATEGORY_DEFAULT) == tiny_category else 1,
+                abs(block_midpoint(item) - tiny_midpoint),
+                -float(item.get("duration_seconds") or 0),
+            ),
+        )[0]
+        target["records"] = [*(target.get("records") or []), *(tiny.get("records") or [])]
+        target["duration_seconds"] = float(target.get("duration_seconds") or 0) + tiny_duration
+        refresh_target(target)
+        absorbed_ids.add(id(tiny))
+
+    result = [block for block in ordered_blocks if id(block) not in absorbed_ids]
+    return sorted(result, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
 
 
 def _format_codex_diary_time(timestamp: float) -> str:
@@ -2742,8 +2852,13 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
     close_current()
 
     blocks = sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
-    return _merge_codex_diary_blocks_for_target_duration(
+    merged_blocks = _merge_codex_diary_blocks_for_target_duration(
         blocks,
+        palette_lookup=palette_lookup,
+        title_hints=title_hints,
+    )
+    return _absorb_tiny_codex_diary_blocks(
+        merged_blocks,
         palette_lookup=palette_lookup,
         title_hints=title_hints,
     )
@@ -3095,7 +3210,7 @@ def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> di
         source = "builtin"
     elif is_legacy_color_type_key(key):
         source = "legacy"
-    elif source not in {"builtin", "custom", "legacy"}:
+    elif source not in {"builtin", "custom", "legacy", "import"}:
         source = "custom"
 
     generated_from_color = normalize_note_color(value.get("generated_from_color"))
@@ -3315,6 +3430,8 @@ def _collect_note_type_usage(user_id: int, session: Session) -> dict[str, float]
 def _discover_used_note_type_items(usage: dict[str, float]) -> list[dict[str, Any]]:
     discovered: list[dict[str, Any]] = []
     for index, key in enumerate(sorted(usage.keys())):
+        if _is_imported_script_category_key(key):
+            continue
         if is_legacy_color_type_key(key):
             legacy_color = get_legacy_color_from_type_key(key)
             discovered.append({
@@ -3338,6 +3455,10 @@ def _discover_used_note_type_items(usage: dict[str, float]) -> list[dict[str, An
             "generated_from_color": None,
         })
     return discovered
+
+
+def _is_imported_script_category_key(value: Any) -> bool:
+    return str(value or "").strip().startswith("import_")
 
 
 def _discover_legacy_color_palette_items(user_id: int, session: Session) -> list[dict[str, Any]]:
@@ -3371,7 +3492,11 @@ def _discover_legacy_color_palette_items(user_id: int, session: Session) -> list
 
 def _build_note_type_palette_response(user_id: int, session: Session) -> dict[str, list[dict[str, Any]]]:
     stored_items = _load_note_type_palette_items(user_id, session)
-    base_items = stored_items or _default_note_type_palette_items()
+    base_items = [
+        item
+        for item in (stored_items or _default_note_type_palette_items())
+        if not _is_imported_script_category_key(item.get("key"))
+    ]
     usage = _collect_note_type_usage(user_id, session)
     merged = {item["key"]: item for item in base_items}
     for item in _discover_used_note_type_items(usage):
@@ -4135,6 +4260,26 @@ def _is_numeric_note_ref(value: str) -> bool:
 
 def _note_public_id(note: NoteNode) -> str:
     return note_public_id(note)
+
+
+def _note_resource_update_room(note_ref: str) -> str:
+    return f"resource:note:{note_ref}"
+
+
+def _broadcast_note_resource_update(note: NoteNode) -> None:
+    public_ref = _note_public_id(note)
+    message = {
+        "type": "resource-updated",
+        "resource_type": "note",
+        "resource_id": public_ref,
+        "version": int(note.version or 1),
+        "updated_at": float(note.updated_at or time.time()),
+        "updated_by_user_id": note.user_id,
+    }
+    try:
+        anyio.from_thread.run(ws_manager.broadcast, _note_resource_update_room(public_ref), message)
+    except RuntimeError:
+        pass
 
 
 def _note_edge_ref_set(notes: Iterable[NoteNode]) -> set[str]:
@@ -6186,8 +6331,11 @@ def update_note(
     db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
-    
-    note_data = _prepare_note_update_data(db_note, note_in.model_dump(exclude_unset=True))
+
+    if note_in.base_version is not None and int(db_note.version or 1) != int(note_in.base_version):
+        raise HTTPException(status_code=409, detail="文档版本已变化，请重新读取后再写入")
+
+    note_data = _prepare_note_update_data(db_note, note_in.model_dump(exclude_unset=True, exclude={"base_version"}))
     _append_note_history(db_note, note_data, int(time.time()))
     _record_note_metadata_feedback_safely(
         session,
@@ -6198,11 +6346,15 @@ def update_note(
 
     for key, value in note_data.items():
         setattr(db_note, key, value)
-    
+
+    if note_data:
+        db_note.version = max(int(db_note.version or 1), 1) + 1
     db_note.updated_at = time.time()
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
+    if note_data:
+        _broadcast_note_resource_update(db_note)
     return _serialize_note_read(db_note, current_user)
 
 @router.delete("/{note_id}")
@@ -6221,8 +6373,18 @@ def delete_note(
     db_note.deleted_at = now
     db_note.deleted_by_user_id = current_user.id
     db_note.updated_at = now
+    db_note.version = max(int(db_note.version or 1), 1) + 1
+    note_refs = note_ref_aliases(db_note)
+    session.exec(
+        delete(NoteEdge).where(
+            NoteEdge.user_id == current_user.id,
+            or_(NoteEdge.source_id.in_(note_refs), NoteEdge.target_id.in_(note_refs)),
+        )
+    )
     session.add(db_note)
     session.commit()
+    session.refresh(db_note)
+    _broadcast_note_resource_update(db_note)
     return {"ok": True}
 
 
@@ -6242,9 +6404,11 @@ def restore_note(
     db_note.deleted_at = None
     db_note.deleted_by_user_id = None
     db_note.updated_at = now
+    db_note.version = max(int(db_note.version or 1), 1) + 1
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
+    _broadcast_note_resource_update(db_note)
     return _serialize_note_read(db_note, current_user)
 
 # --- Edges ---

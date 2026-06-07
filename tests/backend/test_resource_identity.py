@@ -4,6 +4,7 @@ import re
 from sqlmodel import Session, select, text
 
 from backend.core import attachment_resources
+from backend.api import note_docs as note_docs_api
 from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.core.fanxiu_inventory import get_inventory_storage_path
 from backend.core.note_refs import load_notes_by_refs
@@ -214,6 +215,199 @@ def test_note_doc_access_response_uses_numeric_resource_id(client, session: Sess
 
     legacy_response = client.get("/api/note-docs/note-doc-a/access")
     assert legacy_response.status_code == 404
+
+
+def test_note_doc_update_rejects_stale_base_version(client, session: Session, auth_user: User, monkeypatch):
+    session.add(
+        NoteNode(
+            id="note-doc-version-a",
+            numeric_id=11,
+            user_id=auth_user.id,
+            title="Doc Version",
+            content="<p>old</p>",
+            note_form="document",
+            version=1,
+        )
+    )
+    session.commit()
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(note_docs_api.ws_manager, "broadcast", fake_broadcast)
+
+    response = client.put(
+        "/api/note-docs/11",
+        json={"base_version": 1, "content": "<p>new</p>"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["version"] == 2
+    assert payload["content"] == "<p>new</p>"
+    assert broadcasts[-1][0] == "resource:note:11"
+    assert broadcasts[-1][1]["type"] == "resource-updated"
+    assert broadcasts[-1][1]["resource_type"] == "note"
+    assert broadcasts[-1][1]["resource_id"] == "11"
+    assert broadcasts[-1][1]["version"] == 2
+
+    stale_response = client.put(
+        "/api/note-docs/11",
+        json={"base_version": 1, "content": "<p>stale</p>"},
+    )
+    assert stale_response.status_code == 409
+    note = session.get(NoteNode, "note-doc-version-a")
+    assert note is not None
+    assert note.content == "<p>new</p>"
+    assert note.version == 2
+
+
+def test_note_doc_resource_websocket_receives_update_event(client, session: Session, auth_user: User):
+    session.add(
+        NoteNode(
+            id="note-doc-ws-a",
+            numeric_id=12,
+            user_id=auth_user.id,
+            title="Doc WS",
+            content="<p>old</p>",
+            note_form="document",
+            version=1,
+        )
+    )
+    session.commit()
+
+    with client.websocket_connect("/api/note-docs/ws/resources/note/12") as websocket:
+        response = client.put(
+            "/api/note-docs/12",
+            json={"base_version": 1, "content": "<p>new</p>"},
+        )
+        assert response.status_code == 200, response.text
+        message = websocket.receive_json()
+
+    assert message["type"] == "resource-updated"
+    assert message["resource_type"] == "note"
+    assert message["resource_id"] == "12"
+    assert message["version"] == 2
+
+
+def test_note_doc_resource_websocket_broadcasts_to_multiple_clients(client, session: Session, auth_user: User):
+    session.add(
+        NoteNode(
+            id="note-doc-ws-multi",
+            numeric_id=13,
+            user_id=auth_user.id,
+            title="Doc WS Multi",
+            content="<p>old</p>",
+            note_form="document",
+            version=1,
+        )
+    )
+    session.commit()
+
+    with (
+        client.websocket_connect("/api/note-docs/ws/resources/note/13") as first,
+        client.websocket_connect("/api/note-docs/ws/resources/note/13") as second,
+    ):
+        response = client.put(
+            "/api/note-docs/13",
+            json={"base_version": 1, "content": "<p>new</p>"},
+        )
+        assert response.status_code == 200, response.text
+        first_message = first.receive_json()
+        second_message = second.receive_json()
+
+    for message in (first_message, second_message):
+        assert message["type"] == "resource-updated"
+        assert message["resource_type"] == "note"
+        assert message["resource_id"] == "13"
+        assert message["version"] == 2
+
+
+def test_note_sheet_resource_websocket_receives_patch_event(client, session: Session, auth_user: User):
+    session.add(
+        SheetDocument(
+            numeric_id=72,
+            scope="notes",
+            owner_type="user",
+            owner_key=str(auth_user.id),
+            sheet_key="ws-patch",
+            title="Sheet WS",
+            owner_user_id=auth_user.id,
+            created_by_user_id=auth_user.id,
+            updated_by_user_id=auth_user.id,
+            version=1,
+            document_json={
+                "schema_version": 1,
+                "columns": ["状态"],
+                "rows": [["待处理"]],
+            },
+        )
+    )
+    session.commit()
+
+    with client.websocket_connect("/api/note-sheets/ws/resources/sheet/72") as websocket:
+        response = client.post(
+            "/api/note-sheets/sheets/72/patch",
+            json={
+                "base_version": 1,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 0, "value": "已处理"},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.text
+        message = websocket.receive_json()
+
+    assert message["type"] == "resource-updated"
+    assert message["resource_type"] == "sheet"
+    assert message["resource_id"] == "72"
+    assert message["version"] == 2
+
+
+def test_note_sheet_resource_websocket_broadcasts_to_multiple_clients(client, session: Session, auth_user: User):
+    session.add(
+        SheetDocument(
+            numeric_id=73,
+            scope="notes",
+            owner_type="user",
+            owner_key=str(auth_user.id),
+            sheet_key="ws-multi-client",
+            title="Sheet WS Multi",
+            owner_user_id=auth_user.id,
+            created_by_user_id=auth_user.id,
+            updated_by_user_id=auth_user.id,
+            version=1,
+            document_json={
+                "schema_version": 1,
+                "columns": ["状态"],
+                "rows": [["待处理"]],
+            },
+        )
+    )
+    session.commit()
+
+    with (
+        client.websocket_connect("/api/note-sheets/ws/resources/sheet/73") as first,
+        client.websocket_connect("/api/note-sheets/ws/resources/sheet/73") as second,
+    ):
+        response = client.post(
+            "/api/note-sheets/sheets/73/patch",
+            json={
+                "base_version": 1,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 0, "value": "已处理"},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.text
+        first_message = first.receive_json()
+        second_message = second.receive_json()
+
+    for message in (first_message, second_message):
+        assert message["type"] == "resource-updated"
+        assert message["resource_type"] == "sheet"
+        assert message["resource_id"] == "73"
+        assert message["version"] == 2
 
 
 def test_public_resource_api_responses_use_numeric_ids(client, session: Session, auth_user: User, monkeypatch, tmp_path):

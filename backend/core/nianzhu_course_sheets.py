@@ -640,12 +640,9 @@ NIANZHU_ATTENDANCE_MANAGED_FORMULA_COLUMNS = {
 
 def _find_nianzhu_refund_insert_index(columns: list[str], header: str) -> int:
     if header == "已返款":
-        current_refund_index = _find_column_index(columns, "当前应返款")
-        if current_refund_index is not None:
-            return current_refund_index
         order_amount_index = _find_column_index(columns, "订单金额")
         if order_amount_index is not None:
-            return min(order_amount_index + 1, len(columns))
+            return order_amount_index
         total_refund_index = _find_column_index(columns, "总应返款")
         if total_refund_index is not None:
             return min(total_refund_index + 1, len(columns))
@@ -658,6 +655,81 @@ def _find_nianzhu_refund_insert_index(columns: list[str], header: str) -> int:
         return min(order_amount_index + 1, len(columns))
     clockin_index = _find_column_index(columns, "打卡数")
     return clockin_index if clockin_index is not None else len(columns)
+
+
+def _move_nianzhu_document_column(
+    document: dict[str, Any],
+    *,
+    from_index: int,
+    to_index: int,
+) -> dict[str, Any]:
+    columns = _normalize_document_columns(document)
+    if from_index < 0 or from_index >= len(columns) or to_index < 0 or to_index >= len(columns) or from_index == to_index:
+        return document
+
+    def move_item(items: list[Any]) -> list[Any]:
+        next_items = list(items)
+        item = next_items.pop(from_index)
+        next_items.insert(to_index, item)
+        return next_items
+
+    def move_row(row: Any) -> list[Any]:
+        return move_item(_normalize_row(row, len(columns)))
+
+    next_document = dict(document)
+    next_document["columns"] = move_item(columns)
+    next_document["rows"] = [move_row(row) for row in _extract_document_rows(document)]
+
+    grid_rows = document.get("grid_rows")
+    if isinstance(grid_rows, list):
+        next_document["grid_rows"] = [move_row(row) for row in grid_rows]
+
+    column_widths = document.get("column_widths")
+    if isinstance(column_widths, list) and len(column_widths) == len(columns):
+        next_document["column_widths"] = move_item(column_widths)
+
+    entity_columns = document.get("entity_columns")
+    if isinstance(entity_columns, list) and len(entity_columns) == len(columns):
+        next_document["entity_columns"] = move_item(entity_columns)
+
+    cell_meta = document.get("cell_meta")
+    if isinstance(cell_meta, dict):
+        index_map: dict[int, int] = {}
+        for index in range(len(columns)):
+            if index == from_index:
+                index_map[index] = to_index
+            elif from_index < to_index and from_index < index <= to_index:
+                index_map[index] = index - 1
+            elif to_index < from_index and to_index <= index < from_index:
+                index_map[index] = index + 1
+            else:
+                index_map[index] = index
+
+        next_cell_meta: dict[str, Any] = {}
+        for key, value in cell_meta.items():
+            match = re.fullmatch(r"(-?\d+):(-?\d+)", str(key))
+            if not match:
+                next_cell_meta[str(key)] = value
+                continue
+            row_index = int(match.group(1))
+            column_index = int(match.group(2))
+            next_cell_meta[f"{row_index}:{index_map.get(column_index, column_index)}"] = value
+        next_document["cell_meta"] = next_cell_meta
+
+    return next_document
+
+
+def _ensure_nianzhu_refund_column_order(document: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    columns = _normalize_document_columns(document)
+    refunded_index = _find_column_index(columns, "已返款")
+    order_amount_index = _find_column_index(columns, "订单金额")
+    if refunded_index is None or order_amount_index is None or refunded_index < order_amount_index:
+        return document, False
+    return _move_nianzhu_document_column(
+        document,
+        from_index=refunded_index,
+        to_index=order_amount_index,
+    ), True
 
 
 def _find_nianzhu_meta_insert_index(columns: list[str], header: str) -> int:
@@ -813,6 +885,8 @@ def _ensure_nianzhu_attendance_schema(
         next_document = _delete_document_column(next_document, delete_index=column_index)
         removed_columns.append(header)
 
+    next_document, refund_columns_reordered = _ensure_nianzhu_refund_column_order(next_document)
+
     columns = _normalize_document_columns(next_document)
     has_refund_context = any(
         _find_column_index(columns, header) is not None
@@ -852,6 +926,7 @@ def _ensure_nianzhu_attendance_schema(
         "schema_changed": next_document != document,
         "schema_inserted_columns": inserted_columns,
         "schema_removed_columns": removed_columns,
+        "schema_refund_columns_reordered": refund_columns_reordered,
         "schema_defaulted_cells": defaulted_cells,
     }
 
@@ -2359,7 +2434,9 @@ def _load_video_config(
         item_type = "课次" if lesson_number is not None or is_zen_stage_video else ("答疑" if is_qa_item else "视频")
         participates_refund = lesson_number is not None or is_zen_stage_video
         refund_rule_mode = _normalize_text(source_meta.get("video_refund_rule_mode"))
-        if timed_video_rules_override:
+        if "念住闯关" in course_name:
+            refund_rule_mode = ""
+        if timed_video_rules_override and "念住闯关" not in course_name:
             refund_rule_mode = "timed_text"
         rules_by_version: dict[str, list[PercentageRefundRule]] = {
             CURRENT_RULE: _parse_percentage_rules(
@@ -2438,6 +2515,10 @@ def _legacy_video_algorithm_kind(lesson: VideoConfigItem) -> str:
     if "念住闯关" in text:
         return "c"
     return "a"
+
+
+def _is_challenge_video_item(item: VideoConfigItem) -> bool:
+    return _legacy_video_algorithm_kind(item) == "c"
 
 
 def _custom_fillna_like_kq5034(df: Any, default_fill_value: Any = 0, numeric_fill_value: Any = 0) -> None:
@@ -3113,6 +3194,9 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     current_document, formula_config_defaulted_cells = _ensure_refund_baseline_config_cell(current_document)
     if formula_config_defaulted_cells:
         schema_summary["formula_config_defaulted_cells"] = formula_config_defaulted_cells
+    current_document, refund_period_config_repaired_cells = _ensure_refund_period_config_cell(current_document)
+    if refund_period_config_repaired_cells:
+        schema_summary["refund_period_config_repaired_cells"] = refund_period_config_repaired_cells
     columns = _normalize_document_columns(current_document)
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     data_start_row = _normalize_document_data_start_row(current_document)
@@ -3288,8 +3372,18 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                 updated_cells += 1
                 row_changed = True
 
+            clockin_refund_rules = (
+                _clockin_refund_rules_for_formula(
+                    current_document,
+                    refund_column_index=indexes["打卡应返款"],
+                    rule_version=rule_version,
+                    clockin_rules=clockin_rules,
+                )
+                if output_name == "打卡数"
+                else _rules_for_version(clockin_rules.get(field_name, {}), rule_version)
+            )
             field_refund, clockin_color = highlight_threshold_refund_progress(
-                _rules_for_version(clockin_rules.get(field_name, {}), rule_version),
+                clockin_refund_rules,
                 clockin_count,
             )
             if output_name == "打卡数":
@@ -3311,7 +3405,12 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             row_number=row_number,
             rule_version=rule_version,
         )
-        video_refund_formula = _build_timed_video_refund_formula(
+        video_refund_formula = _build_challenge_video_refund_formula(
+            video_config,
+            video_column_indexes,
+            row_number=row_number,
+            rule_version=rule_version,
+        ) or _build_timed_video_refund_formula(
             video_config,
             video_column_indexes,
             row_number=row_number,
@@ -3570,6 +3669,17 @@ def _build_completed_video_count_formula(
     row_number: int,
     rule_version: str,
 ) -> str | None:
+    challenge_column_indexes = [
+        column_index
+        for item in video_config
+        for column_index in [video_column_indexes.get(item.lesson_id)]
+        if item.participates_refund and column_index is not None and _is_challenge_video_item(item)
+    ]
+    if challenge_column_indexes:
+        ranges = _formula_row_ranges(challenge_column_indexes, row_number)
+        if not ranges:
+            return None
+        return "=" + "+".join(f'COUNTIF({range_ref},"*遍*")' for range_ref in ranges)
     column_indexes = [
         column_index
         for item in video_config
@@ -3595,6 +3705,48 @@ def _build_completed_video_count_formula(
         for range_ref in ranges
     )
     return "=" + "+".join(parts)
+
+
+def _build_challenge_video_refund_formula(
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+    *,
+    row_number: int,
+    rule_version: str,
+) -> str | None:
+    items = [
+        item
+        for item in video_config
+        if (
+            item.participates_refund
+            and video_column_indexes.get(item.lesson_id) is not None
+            and _is_challenge_video_item(item)
+        )
+    ]
+    if not items:
+        return None
+
+    ranges = _formula_row_ranges(
+        [video_column_indexes[item.lesson_id] for item in items if video_column_indexes.get(item.lesson_id) is not None],
+        row_number,
+    )
+    if not ranges:
+        return None
+
+    rules = _rules_for_version(items[0].rules_by_version, rule_version)
+    thresholds = [(int(rule.threshold_percent), rule.refund_amount) for rule in rules]
+    if thresholds == [(90, 20)]:
+        return "=" + "+".join(f'COUNTIF({range_ref},"*遍*")*20' for range_ref in ranges)
+    if thresholds == [(90, 10), (150, 15), (200, 20)]:
+        parts: list[str] = []
+        for range_ref in ranges:
+            parts.extend([
+                f'COUNTIF({range_ref},"*1遍*")*10',
+                f'COUNTIF({range_ref},"*2遍*")*15',
+                f'COUNTIF({range_ref},"*3遍*")*20',
+            ])
+        return "=" + "+".join(parts)
+    return None
 
 
 def _build_timed_video_refund_formula(
@@ -3710,13 +3862,12 @@ def _build_total_refund_formula(
     video_index = _find_column_index(columns, "视频应返款")
     clockin_index = _find_column_index(columns, "打卡应返款")
     order_amount_index = _find_column_index(columns, "订单金额")
-    refunded_index = _find_column_index(columns, "已返款")
-    if video_index is None or clockin_index is None or order_amount_index is None or refunded_index is None:
+    if video_index is None or clockin_index is None or order_amount_index is None:
         return None
     video_ref = _formula_cell_ref(video_index, row_number)
     clockin_ref = _formula_cell_ref(clockin_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
-    baseline_ref = _formula_absolute_cell_ref(refunded_index, config_row_number)
+    baseline_ref = _formula_absolute_cell_ref(order_amount_index, config_row_number)
     return f"=MIN(IFERROR({video_ref}+{clockin_ref}+{order_ref}-IF({baseline_ref}>0,{baseline_ref},{order_ref}),0),{order_ref})"
 
 
@@ -3729,7 +3880,7 @@ def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str
     total_ref = _formula_cell_ref(total_index, row_number)
     refunded_ref = _formula_cell_ref(refunded_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
-    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
+    return f"=({order_ref}>0)*MAX(0,{total_ref}-{refunded_ref})"
 
 
 def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
@@ -3744,23 +3895,22 @@ def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | No
 
 def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
     columns = _normalize_document_columns(document)
-    refunded_index = _find_column_index(columns, "已返款")
-    if refunded_index is None:
+    order_amount_index = _find_column_index(columns, "订单金额")
+    if order_amount_index is None:
         return document, 0
 
     config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
-    if _normalize_text(_grid_cell_value(document, config_row_index, refunded_index)):
+    current_value = _grid_cell_value(document, config_row_index, order_amount_index)
+    if _normalize_text(current_value) and _to_float(current_value) > 0:
         return document, 0
 
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(document)]
     baseline = ""
-    order_amount_index = _find_column_index(columns, "订单金额")
-    if order_amount_index is not None:
-        for row in rows:
-            amount = _to_float(row[order_amount_index])
-            if amount > 0:
-                baseline = str(_format_numeric_cell(amount))
-                break
+    for row in rows:
+        amount = _to_float(row[order_amount_index])
+        if amount > 0:
+            baseline = str(_format_numeric_cell(amount))
+            break
     if not baseline:
         total_index = _find_column_index(columns, "总应返款")
         baseline = _normalize_text(_grid_cell_value(document, config_row_index, total_index if total_index is not None else -1))
@@ -3773,7 +3923,41 @@ def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[
     while len(grid_rows) <= config_row_index:
         grid_rows.append([""] * len(columns))
     config_row = _normalize_row(grid_rows[config_row_index], len(columns))
-    config_row[refunded_index] = baseline
+    config_row[order_amount_index] = baseline
+    grid_rows[config_row_index] = config_row
+    next_document = dict(document)
+    next_document["grid_rows"] = grid_rows
+    _set_entity_cell_value(
+        next_document,
+        document_row=config_row_index,
+        column_index=order_amount_index,
+        value=baseline,
+    )
+    return next_document, 1
+
+
+def _ensure_refund_period_config_cell(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    columns = _normalize_document_columns(document)
+    refunded_index = _find_column_index(columns, "已返款")
+    if refunded_index is None:
+        return document, 0
+
+    config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
+    current_value = _grid_cell_value(document, config_row_index, refunded_index)
+    current_text = _normalize_text(current_value)
+    period_formula = '="第"&返款周期&"天"'
+    if current_value == period_formula:
+        return document, 0
+    if current_text and not _is_numeric_literal(current_value) and "返款周期" not in current_text:
+        return document, 0
+
+    grid_rows = copy.deepcopy(document.get("grid_rows") or [])
+    if not isinstance(grid_rows, list):
+        return document, 0
+    while len(grid_rows) <= config_row_index:
+        grid_rows.append([""] * len(columns))
+    config_row = _normalize_row(grid_rows[config_row_index], len(columns))
+    config_row[refunded_index] = period_formula
     grid_rows[config_row_index] = config_row
     next_document = dict(document)
     next_document["grid_rows"] = grid_rows
@@ -3781,7 +3965,7 @@ def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[
         next_document,
         document_row=config_row_index,
         column_index=refunded_index,
-        value=baseline,
+        value=period_formula,
     )
     return next_document, 1
 
@@ -3997,8 +4181,18 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
                 updated_cells += 1
                 row_changed = True
 
+            clockin_refund_rules = (
+                _clockin_refund_rules_for_formula(
+                    current_document,
+                    refund_column_index=indexes["打卡应返款"],
+                    rule_version=rule_version,
+                    clockin_rules=clockin_rules,
+                )
+                if output_name == "打卡数"
+                else _rules_for_version(clockin_rules.get(field_name, {}), rule_version)
+            )
             clockin_refund, clockin_color = highlight_threshold_refund_progress(
-                _rules_for_version(clockin_rules.get(field_name, {}), rule_version),
+                clockin_refund_rules,
                 clockin_count,
             )
             if output_name == "打卡数":
@@ -4087,7 +4281,7 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
             old_current_refund = next_row[current_index]
             refunded_amount = _to_float(next_row[indexes["已返款"]]) if indexes["已返款"] is not None else 0.0
             order_amount = _to_float(next_row[order_amount_index]) if order_amount_index is not None else 0.0
-            current_refund = computed_total_refund - refunded_amount if order_amount > 0 else 0.0
+            current_refund = max(0.0, computed_total_refund - refunded_amount) if order_amount > 0 else 0.0
             if _set_row_value(
                 current_document,
                 next_row,

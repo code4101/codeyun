@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from collections import Counter, defaultdict
 from pathlib import Path
 from threading import RLock
@@ -21,14 +22,27 @@ from pyxllib.file.game_assets import (
 
 FANXIU_RESOURCE_ROOT_ENV = "FANXIU_RESOURCE_ROOT"
 FANXIU_RESOURCE_EXPORT_ROOT_ENV = "FANXIU_RESOURCE_EXPORT_ROOT"
-DEFAULT_FANXIU_RESOURCE_ROOT = Path(
-    r"D:\TapTap\Support\android_emulator\engine\vms\EGTapTap-12.0-1\frxx_game_files"
-)
-DEFAULT_FANXIU_RESOURCE_EXPORT_ROOT = DEFAULT_FANXIU_RESOURCE_ROOT.parent / "frxx_analysis_exports"
+DEFAULT_FANXIU_REVERSE_ROOT = Path(r"D:\home\chenkunze\data\m2606凡修逆向")
+DEFAULT_FANXIU_RESOURCE_ROOT = DEFAULT_FANXIU_REVERSE_ROOT / "frxx_game_files"
+DEFAULT_FANXIU_RESOURCE_EXPORT_ROOT = DEFAULT_FANXIU_REVERSE_ROOT / "frxx_analysis_exports"
 _SAFE_PATH_PART_RE = re.compile(r"[^0-9A-Za-z_.\-\u4e00-\u9fff]+")
 _SPRITE_ICON_NAME_RE = re.compile(r"^[0-9A-Za-z_.-]{1,96}$")
 _SPRITE_ATLAS_KEY_RE = re.compile(r"^(?P<key>icon\d*|skill\d*)_")
 _SPRITE_EXPORT_LOCK = RLock()
+_SPRITE_ICON_ALIASES: dict[str, dict[str, str]] = {
+    "icon_item_0067": {
+        "sprite_name": "xmgf_icon_0067",
+        "reason": "Item 9070194 / 玉骨煞甲丹 references a missing legacy icon; xmgf_icon_0067 is the matching current visual asset and uieffect uses icon_0067 textures.",
+    },
+    "icon_skill_ld_zw_6001": {
+        "sprite_name": "skill_icon2_ld_6001",
+        "reason": "Item 3060015 / 绝招·天罡战气 references a missing legacy icon; skill_icon2_ld_6001 is the matching ld_6001 skill icon in the current atlas.",
+    },
+    "icon_item_0052": {
+        "sprite_name": "xmgf_icon_0052",
+        "reason": "Item 7 / 宗门资金 references a missing legacy icon; xmgf_icon_0052 is the current unclaimed money-bag style sprite with the same suffix and matching funds semantics.",
+    },
+}
 
 
 class FanxiuResourceError(ValueError):
@@ -268,7 +282,22 @@ def _atlas_key_for_sprite_name(sprite_name: str) -> str:
 def _candidate_sprite_atlas_files(resource_root: Path, sprite_name: str) -> list[Path]:
     atlas_dir = resource_root / "atlasnew"
     atlas_key = _atlas_key_for_sprite_name(sprite_name)
-    candidates = sorted(atlas_dir.glob(f"{atlas_key}_*.bytes"))
+    atlas_keys = [atlas_key]
+    parts = sprite_name.split("_")
+    if len(parts) >= 2 and parts[0] == "icon":
+        atlas_keys.append(parts[1])
+        if parts[1] == "skill":
+            atlas_keys.extend(["skill2", "skill3"])
+        elif parts[1] == "item":
+            atlas_keys.extend([f"icon{i}" for i in range(2, 10)])
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for key in atlas_keys:
+        for path in sorted(atlas_dir.glob(f"{key}_*.bytes")):
+            if path not in seen:
+                candidates.append(path)
+                seen.add(path)
     if candidates:
         return candidates
     return sorted(atlas_dir.glob("*.bytes"))
@@ -290,23 +319,39 @@ def export_fanxiu_sprite_icon(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{sprite_name}.png"
     if output_path.is_file():
-        return {
+        result = {
             "resource_root": str(root),
             "export_root": str(export_base),
             "sprite_name": sprite_name,
             "output_path": str(output_path),
             "cached": True,
         }
+        if sprite_name in _SPRITE_ICON_ALIASES:
+            result.update(
+                {
+                    "alias_sprite_name": _SPRITE_ICON_ALIASES[sprite_name].get("sprite_name", ""),
+                    "alias_reason": _SPRITE_ICON_ALIASES[sprite_name].get("reason", ""),
+                }
+            )
+        return result
 
     with _SPRITE_EXPORT_LOCK:
         if output_path.is_file():
-            return {
+            result = {
                 "resource_root": str(root),
                 "export_root": str(export_base),
                 "sprite_name": sprite_name,
                 "output_path": str(output_path),
                 "cached": True,
             }
+            if sprite_name in _SPRITE_ICON_ALIASES:
+                result.update(
+                    {
+                        "alias_sprite_name": _SPRITE_ICON_ALIASES[sprite_name].get("sprite_name", ""),
+                        "alias_reason": _SPRITE_ICON_ALIASES[sprite_name].get("reason", ""),
+                    }
+                )
+            return result
 
         for atlas_path in _candidate_sprite_atlas_files(root, sprite_name):
             try:
@@ -334,6 +379,35 @@ def export_fanxiu_sprite_icon(
                     "path_id": int(obj.path_id),
                     "cached": False,
                 }
+
+        alias = _SPRITE_ICON_ALIASES.get(sprite_name)
+        if alias:
+            alias_sprite_name = str(alias.get("sprite_name") or "").strip()
+            if alias_sprite_name and alias_sprite_name != sprite_name:
+                alias_result = export_fanxiu_sprite_icon(
+                    alias_sprite_name,
+                    resource_root=root,
+                    export_root=export_base,
+                )
+                alias_output_path = Path(alias_result["output_path"]).expanduser().resolve()
+                if alias_output_path.is_file():
+                    shutil.copyfile(alias_output_path, output_path)
+                    result = {
+                        "resource_root": str(root),
+                        "export_root": str(export_base),
+                        "sprite_name": sprite_name,
+                        "output_path": str(output_path),
+                        "width": alias_result.get("width"),
+                        "height": alias_result.get("height"),
+                        "cached": False,
+                        "alias_sprite_name": alias_sprite_name,
+                        "alias_reason": alias.get("reason", ""),
+                        "alias_output_path": str(alias_output_path),
+                    }
+                    for key in ("source_path", "relative_source_path", "path_id"):
+                        if key in alias_result:
+                            result[f"alias_{key}"] = alias_result[key]
+                    return result
 
     raise FanxiuResourceError(f"没有找到 Unity Sprite 图标：{sprite_name}")
 

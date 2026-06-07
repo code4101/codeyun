@@ -4,6 +4,7 @@ from datetime import date
 
 from sqlmodel import select
 
+from backend.api import note_sheets as note_sheets_api
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 
 
@@ -44,8 +45,14 @@ def _create_structured_sheet(session) -> None:
     session.commit()
 
 
-def test_note_sheet_table_api_allows_trusted_device_read_and_patch(client, session, test_device):
+def test_note_sheet_table_api_allows_trusted_device_read_and_patch(client, session, test_device, monkeypatch):
     _create_structured_sheet(session)
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(note_sheets_api.ws_manager, "broadcast", fake_broadcast)
 
     read_response = client.get(
         "/api/note-sheets/sheets/4/table",
@@ -75,7 +82,7 @@ def test_note_sheet_table_api_allows_trusted_device_read_and_patch(client, sessi
                 {
                     "type": "set_note_cell",
                     "field": "商户订单号",
-                    "value": "最近运行更新时间: 2026/05/10 07:10",
+                    "value": "2026/05/10 07:10",
                 },
             ],
         },
@@ -89,7 +96,12 @@ def test_note_sheet_table_api_allows_trusted_device_read_and_patch(client, sessi
 
     stored = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
     assert stored.document_json["rows"][1][5] == 1
-    assert stored.document_json["grid_rows"][2][3] == "最近运行更新时间: 2026/05/10 07:10"
+    assert stored.document_json["grid_rows"][2][3] == "2026/05/10 07:10"
+    assert broadcasts[-1][0] == "resource:sheet:4"
+    assert broadcasts[-1][1]["type"] == "resource-updated"
+    assert broadcasts[-1][1]["resource_type"] == "sheet"
+    assert broadcasts[-1][1]["resource_id"] == "4"
+    assert broadcasts[-1][1]["version"] == 2
 
 
 def test_note_sheet_table_api_defaults_to_text_values_and_can_read_raw(client, session, test_device):

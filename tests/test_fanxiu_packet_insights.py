@@ -717,6 +717,67 @@ def test_player_profile_decode_result_persists_incrementally(tmp_path, monkeypat
     assert any(attr["key"] == 2001 for attr in rows[0]["combat_attributes"])
 
 
+def test_player_profile_redecode_uses_record_text_assets(tmp_path):
+    record_dir = tmp_path / "record"
+    record_dir.mkdir()
+    decoded_path = record_dir / "decoded.json"
+    decoded_path.write_text("{}", encoding="utf-8")
+    text_assets = tmp_path / "message_text_assets"
+    text_assets.mkdir()
+    (record_dir / "meta.json").write_text(
+        json.dumps({"text_assets": str(text_assets)}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    resolved = insights._entry_text_assets_path({"source_path": str(decoded_path)})
+
+    assert resolved == text_assets.resolve()
+
+
+def test_truncated_show_other_profile_uses_full_redecode(monkeypatch):
+    parsed = {
+        "_class": "SM_ShowOther",
+        "otherRoleVO": {
+            "roleId": 24082878061087586,
+            "name": "凌霄༅青风”",
+            "server": 22077,
+            "attrMap": {
+                "_count": 3,
+                "items": [{"key": 35006, "value": 1.3124726699597634e19}],
+                "_truncated_items": 2,
+            },
+        },
+    }
+
+    def fake_full(_entry, **_kwargs):
+        return {
+            "_class": "SM_ShowOther",
+            "otherRoleVO": {
+                "roleId": 24082878061087586,
+                "name": "凌霄༅青风”",
+                "server": 22077,
+                "attrMap": {
+                    "_count": 3,
+                    "items": [
+                        {"key": 35006, "value": 1.3124726699597634e19},
+                        {"key": 2001, "value": 2.844220239520223e18},
+                        {"key": 4001, "value": 17935316859795.0},
+                    ],
+                },
+            },
+        }
+
+    monkeypatch.setattr(insights, "_full_show_other_parsed_from_packet", fake_full)
+
+    row = insights._extract_show_other_profile(
+        parsed,
+        {"decoded_at": "2026-06-07 19:19:19", "name": "SM_ShowOther", "pcap_name": "a.pcap", "record_id": "r1"},
+    )
+
+    assert row["decoded_from_pcap"] is True
+    assert row["combat_attributes"][1] == {"key": 2001, "name": "攻击", "value": 2.844220239520223e18, "text": "284.4京"}
+
+
 def test_player_profile_parse_error_frame_recovers_from_pcap(tmp_path, monkeypatch):
     decoded_path = tmp_path / "decoded.json"
     decoded_path.write_text(

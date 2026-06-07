@@ -24,13 +24,14 @@ from backend.core.fanxiu_tcp_flow import (
     _build_fanxiu_tcp_entries,
     _decode_lusuo_frames_tolerant,
     _iter_fanxiu_tcp_decoded_sources,
+    _patch_fanxiu_schema_long_list,
     decode_fanxiu_tcp_pcap,
     list_tcp_streams_with_tshark,
     resolve_fanxiu_tcp_store_root,
 )
 from backend.core.settings import get_settings
 
-PACKET_INSIGHT_SCHEMA_VERSION = 15
+PACKET_INSIGHT_SCHEMA_VERSION = 16
 
 PACKET_RUNTIME_INSIGHT_PROTOCOLS = {
     "SM_Login",
@@ -58,6 +59,7 @@ PACKET_RUNTIME_INSIGHT_PROTOCOLS = {
     "SM_WorldLevelRankWorship",
 }
 PLAYER_PROFILE_PROTOCOLS = {"SM_ShowOther", "SM_SyncPlayer"}
+ACTIVITY_PACKET_PROTOCOLS = {"SM_WorldLineActivitySync", "SM_ActivityRankSync"}
 FANXIU_STORAGE_BAG_OWNER_ROLE_ID = "24082878061086206"
 FANXIU_STORAGE_BAG_OWNER_NAME_KEYWORD = "羊驼"
 
@@ -176,6 +178,28 @@ def _resolve_export_child(export_root: str | Path | None, path: str | Path) -> P
     return raw.expanduser().resolve() if raw.is_absolute() else (root / raw).resolve()
 
 
+def _entry_text_assets_path(entry: dict[str, Any], export_root: str | Path | None = None) -> Path:
+    source_path = Path(str(entry.get("source_path") or ""))
+    meta_candidates: list[Path] = []
+    if source_path:
+        meta_candidates.append(source_path.parent / "meta.json")
+    stored_pcap = Path(str(entry.get("stored_pcap") or ""))
+    if stored_pcap:
+        meta_candidates.append(stored_pcap.parent / "meta.json")
+    for meta_path in meta_candidates:
+        if not meta_path.is_file():
+            continue
+        meta = _load_json(meta_path, {})
+        if not isinstance(meta, dict):
+            continue
+        text_assets = str(meta.get("text_assets") or "").strip()
+        if text_assets:
+            path = Path(text_assets).expanduser()
+            if path.is_dir():
+                return path.resolve()
+    return _resolve_export_child(export_root, DEFAULT_TEXT_ASSETS)
+
+
 def _item_summary(base_id: Any, item_index: dict[str, Any]) -> dict[str, Any]:
     item_id = "" if base_id is None else str(base_id)
     card = (item_index.get("cards_by_id") or {}).get(item_id) or {}
@@ -240,7 +264,7 @@ def _full_parsed_from_packet(entry: dict[str, Any], packet_name: str, export_roo
     if not pcap_path.is_file():
         return None
     try:
-        schema = LuaPacketSchemaIndex(_resolve_export_child(export_root, DEFAULT_TEXT_ASSETS))
+        schema = _patch_fanxiu_schema_long_list(LuaPacketSchemaIndex(_entry_text_assets_path(entry, export_root)))
         _c2s_payload, s2c_payload = extract_tcp_stream_payloads_with_tshark(
             pcap_path,
             int(entry.get("stream") or 0),
@@ -259,7 +283,7 @@ def _full_parsed_from_packet(entry: dict[str, Any], packet_name: str, export_roo
         and (target_sn is None or _as_int(frame.get("sn")) == target_sn)
         and (target_pro_id is None or _as_int(frame.get("pro_id")) == target_pro_id)
     ]
-    if not candidates:
+    if not candidates and target_sn is None and target_pro_id is None:
         candidates = [frame for frame in frames if frame.get("name") == packet_name and isinstance(frame.get("parsed"), dict)]
     return candidates[-1].get("parsed") if candidates else None
 
@@ -339,7 +363,7 @@ def _partial_show_other_parsed_from_packet(entry: dict[str, Any], export_root: s
     if not pcap_path.is_file():
         return None
     try:
-        schema = LuaPacketSchemaIndex(_resolve_export_child(export_root, DEFAULT_TEXT_ASSETS))
+        schema = _patch_fanxiu_schema_long_list(LuaPacketSchemaIndex(_entry_text_assets_path(entry, export_root)))
         _c2s_payload, s2c_payload = extract_tcp_stream_payloads_with_tshark(
             pcap_path,
             int(entry.get("stream") or 0),
@@ -354,7 +378,7 @@ def _partial_show_other_parsed_from_packet(entry: dict[str, Any], export_root: s
         for packet in _iter_stream_packet_payloads(s2c_payload)
         if _as_int(packet.get("pro_id")) == target_pro_id and (target_sn is None or _as_int(packet.get("sn")) == target_sn)
     ]
-    if not candidates:
+    if not candidates and target_sn is None:
         candidates = [packet for packet in _iter_stream_packet_payloads(s2c_payload) if _as_int(packet.get("pro_id")) == 30008]
     for packet in reversed(candidates):
         payload = packet.get("payload")
@@ -758,26 +782,32 @@ def _format_significant_number(value: float, significant_digits: int = 4) -> str
     return f"-{text}" if value < 0 else text
 
 
+def _format_fanxiu_game_decimal(value: float, fraction_digits: int = 1) -> str:
+    factor = 10**fraction_digits
+    truncated = math.floor(abs(value) * factor) / factor
+    text = f"{truncated:.{fraction_digits}f}".rstrip("0").rstrip(".")
+    return f"-{text}" if value < 0 else text
+
+
 def _format_panel_number(value: Any) -> str:
     number = _as_float(value)
     if number is None:
         return "" if value in (None, "") else str(value)
     units = (
-        ("载", 10**44),
-        ("正", 10**40),
-        ("涧", 10**36),
-        ("沟", 10**32),
-        ("穰", 10**28),
-        ("秭", 10**24),
-        ("垓", 10**20),
+        ("秭秭", 10**48),
+        ("垓秭", 10**44),
+        ("垓垓", 10**40),
+        ("京垓", 10**36),
+        ("京京", 10**32),
+        ("兆京", 10**28),
+        ("亿京", 10**24),
+        ("万京", 10**20),
         ("京", 10**16),
         ("兆", 10**12),
-        ("亿", 10**8),
-        ("万", 10**4),
     )
     for unit, divisor in units:
         if abs(number) >= divisor:
-            return f"{_format_significant_number(number / divisor)}{unit}"
+            return f"{_format_fanxiu_game_decimal(number / divisor)}{unit}"
     return _format_significant_number(number)
 
 
@@ -1829,18 +1859,63 @@ def _runtime_business_record_rows(snapshot: dict[str, Any]) -> list[dict[str, An
     return [row for row in rows if str(row.get("record_key") or "").strip("|")]
 
 
+def _runtime_player_profile_rows(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    player_profiles = snapshot.get("player_profiles") if isinstance(snapshot.get("player_profiles"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    seen_packets: set[str] = set()
+    for collection_key in ("daily_records", "records"):
+        collection = player_profiles.get(collection_key)
+        if not isinstance(collection, list):
+            continue
+        for row in collection:
+            if not isinstance(row, dict):
+                continue
+            evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+            packet_id = str(evidence.get("packet_id") or "")
+            if not packet_id or packet_id in seen_packets:
+                continue
+            seen_packets.add(packet_id)
+            rows.append(row)
+    return rows
+
+
 def _persist_runtime_business_records_to_database(snapshot: dict[str, Any]) -> dict[str, Any]:
     rows = _runtime_business_record_rows(snapshot)
-    if not rows:
-        return {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+    player_profile_rows = _runtime_player_profile_rows(snapshot)
+    empty_player_profile_sync = {"created": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+    if not rows and not player_profile_rows:
+        return {
+            "created": 0,
+            "updated": 0,
+            "skipped_invalid": 0,
+            "skipped_duplicate": 0,
+            "player_profile_database_sync": empty_player_profile_sync,
+        }
     try:
         from sqlmodel import Session
         from backend.db import engine
 
         with Session(engine) as session:
-            return upsert_fanxiu_packet_business_records(session, rows)
+            result = (
+                upsert_fanxiu_packet_business_records(session, rows)
+                if rows
+                else {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+            )
+            result["player_profile_database_sync"] = (
+                upsert_fanxiu_player_profile_rows(session, player_profile_rows)
+                if player_profile_rows
+                else empty_player_profile_sync
+            )
+            return result
     except Exception:
-        return {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0, "error": True}
+        return {
+            "created": 0,
+            "updated": 0,
+            "skipped_invalid": 0,
+            "skipped_duplicate": 0,
+            "player_profile_database_sync": empty_player_profile_sync,
+            "error": True,
+        }
 
 
 def sync_fanxiu_packet_player_profiles(
@@ -2143,7 +2218,22 @@ def sync_fanxiu_packet_runtime_insights_for_decode_result(
         for frame in frames
         if isinstance(frame, dict)
     }
+    activity_names = names.intersection(ACTIVITY_PACKET_PROTOCOLS)
+    activity_sync = None
+    if activity_names:
+        activity_sync = sync_fanxiu_activity_packets(data_dir=data_dir, export_root=export_root, force=False)
     if not names.intersection(PACKET_RUNTIME_INSIGHT_PROTOCOLS):
+        if activity_sync is not None:
+            return {
+                "ok": True,
+                "changed": bool(
+                    activity_sync.get("inserted")
+                    or activity_sync.get("updated")
+                    or activity_sync.get("rank_inserted")
+                    or activity_sync.get("rank_updated")
+                ),
+                "activity_packet_sync": activity_sync,
+            }
         return None
     profile_names = names.intersection(PLAYER_PROFILE_PROTOCOLS)
     non_profile_names = names.intersection(PACKET_RUNTIME_INSIGHT_PROTOCOLS - PLAYER_PROFILE_PROTOCOLS)
@@ -2282,6 +2372,8 @@ def decode_and_sync_fanxiu_runtime_capture(
     export_root: str | Path | None = None,
     server_host: str = DEFAULT_FANXIU_SERVER_HOST,
     max_streams: int = 8,
+    sync_business: bool = True,
+    sync_runtime_insights: bool = True,
 ) -> dict[str, Any]:
     path = Path(pcap_path).expanduser().resolve()
     if not path.is_file():
@@ -2295,6 +2387,7 @@ def decode_and_sync_fanxiu_runtime_capture(
         stream_ids.append(int(stream_value))
 
     decoded: list[dict[str, Any]] = []
+    decoded_sources: list[dict[str, Any]] = []
     runtime_protocol_count = 0
     worship_protocol_count = 0
     for stream in stream_ids:
@@ -2305,6 +2398,7 @@ def decode_and_sync_fanxiu_runtime_capture(
             export_root=export_root,
             persist=True,
             data_dir=data_dir,
+            sync_after_decode=False,
         )
         frames = result.get("frames") or []
         runtime_count = sum(
@@ -2328,8 +2422,42 @@ def decode_and_sync_fanxiu_runtime_capture(
                 "worship_protocol_count": worship_count,
             }
         )
+        output_path = str(result.get("output_path") or "")
+        if output_path:
+            decoded_sources.append(
+                {
+                    "decoded_path": Path(output_path),
+                    "record_id": result.get("record_id") or "",
+                    "pcap_name": path.name,
+                    "created_at": "",
+                    "source_kind": "runtime",
+                    "source_pcap": str(path),
+                    "stored_pcap": "",
+                    "stream": int(stream),
+                }
+            )
 
-    sync = sync_fanxiu_packet_runtime_insights(data_dir=data_dir, export_root=export_root, force=False)
+    sync: dict[str, Any] = {}
+    mail_sync: dict[str, Any] = {}
+    if sync_business:
+        if sync_runtime_insights:
+            sync = sync_fanxiu_packet_runtime_insights(data_dir=data_dir, export_root=export_root, force=False)
+        try:
+            from sqlmodel import Session
+
+            from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets
+            from backend.db import engine
+
+            with Session(engine) as session:
+                mail_sync = sync_fanxiu_mail_packets(
+                    session,
+                    data_dir=data_dir,
+                    export_root=export_root,
+                    clear_existing=False,
+                    decoded_sources=decoded_sources,
+                )
+        except Exception as exc:
+            mail_sync = {"ok": False, "error": str(exc)}
     snapshot = sync.get("snapshot") if isinstance(sync, dict) else {}
     worship = snapshot.get("worship") if isinstance(snapshot, dict) else {}
     bag = snapshot.get("bag") if isinstance(snapshot, dict) else {}
@@ -2349,4 +2477,5 @@ def decode_and_sync_fanxiu_runtime_capture(
             "worship_packet_count": int((worship or {}).get("packet_count") or 0) if isinstance(worship, dict) else 0,
             "bag_stack_count": int((bag or {}).get("stack_count") or 0) if isinstance(bag, dict) else 0,
         },
+        "mail_packet_sync": mail_sync,
     }

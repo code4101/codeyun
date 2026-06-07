@@ -8,9 +8,9 @@ import discountGuidePage from './discount'
 import drawCalculatorPage from './draw-calc'
 import fanxiuKunlunSecretPage from './kunlun-secret'
 import fanxiuLabelmePage from './labelme'
-import fanxiuGameWindow3Page from './game-window3'
-import fanxiuGameWindow3RuntimeLogsPage from './game-window3-runtime-logs'
-import fanxiuGameWindow3RuntimePage from './game-window3-runtime'
+import fanxiuDataAnnotationPage from './data-annotation'
+import fanxiuDataAnnotationRuntimeLogsPage from './data-annotation-runtime-logs'
+import fanxiuDataAnnotationRuntimePage from './data-annotation-runtime'
 import fanxiuLotteryModelPage from './lottery-model'
 import magicTreasureHallPage from './magic-treasure-hall'
 import magicTreasureFormationsPage from './magic-treasure-formations'
@@ -26,9 +26,9 @@ import xianzhouRacePage from './xianzhou-race'
 
 const pages: AppPageDefinition[] = [
   fanxiuWikiPage,
-  fanxiuGameWindow3Page,
-  fanxiuGameWindow3RuntimePage,
-  fanxiuGameWindow3RuntimeLogsPage,
+  fanxiuDataAnnotationPage,
+  fanxiuDataAnnotationRuntimePage,
+  fanxiuDataAnnotationRuntimeLogsPage,
   fanxiuActivityListPage,
   fanxiuKunlunSecretPage,
   fanxiuModaoInvasionPage,

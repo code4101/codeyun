@@ -37,6 +37,9 @@
           :storage-key-prefix="galleryStorageKey"
           item-label="媒体"
           item-count-label="项媒体"
+          empty-badge="设备文件"
+          empty-title="当前目录没有媒体"
+          empty-description="可以从上方目录进入子目录，或打开递归检索查看子目录媒体。"
           :empty-inline-text="mediaEmptyInlineText"
           :show-folder-filter="false"
           :ensure-image-ready="ensureMediaReady"
@@ -565,6 +568,20 @@ const getQueryString = (value: unknown) => {
   return typeof value === 'string' ? value : '';
 };
 
+const getQueryBoolean = (value: unknown): boolean | null => {
+  const normalizedValue = getQueryString(value).trim().toLowerCase();
+  if (!normalizedValue) {
+    return null;
+  }
+  if (['1', 'true', 'yes', 'on'].includes(normalizedValue)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalizedValue)) {
+    return false;
+  }
+  return null;
+};
+
 const devices = computed(() => taskStore.devices);
 const normalizedFixedDeviceId = computed(() => (props.fixedDeviceId || '').trim().toLowerCase());
 const selectedEntryId = ref(getQueryString(route.query.entry_id));
@@ -1018,9 +1035,18 @@ const restoreMediaScanLimit = (storageKey: string) => {
   mediaScanLimitInput.value = restoredLimit;
 };
 
+const resolveRecursiveDisplayForRoute = (storageKey: string) => {
+  const queryValue = getQueryBoolean(route.query.recursive);
+  if (queryValue !== null) {
+    return queryValue;
+  }
+  const persistedValue = loadPersistedRecursiveDisplay(storageKey);
+  return persistedValue || Boolean(getQueryString(route.query.path));
+};
+
 const restoreRecursiveDisplay = (storageKey: string) => {
   suppressNextRecursiveDisplayReload = true;
-  recursiveDisplay.value = loadPersistedRecursiveDisplay(storageKey);
+  recursiveDisplay.value = resolveRecursiveDisplayForRoute(storageKey);
 };
 
 restoreBackendSortProgram(galleryStorageKey.value);
@@ -1371,7 +1397,11 @@ const markMediaListingDirty = () => {
   mediaSnapshotId.value = null;
 };
 
-const buildRouteQuery = (entryId = selectedEntryId.value, pathValue = normalizedPathInput.value) => {
+const buildRouteQuery = (
+  entryId = selectedEntryId.value,
+  pathValue = normalizedPathInput.value,
+  recursive = recursiveDisplay.value
+) => {
   const nextQuery: Record<string, string> = {};
   if (entryId) {
     nextQuery.entry_id = entryId;
@@ -1379,15 +1409,26 @@ const buildRouteQuery = (entryId = selectedEntryId.value, pathValue = normalized
   if (!isDeviceRootPath(pathValue)) {
     nextQuery.path = pathValue;
   }
+  if (recursive) {
+    nextQuery.recursive = '1';
+  }
   return nextQuery;
 };
 
 const syncRouteQuery = async (mode: 'replace' | 'push' = 'replace') => {
   const currentRoutePath = normalizePathInput(getQueryString(route.query.path)) || DEVICE_ROOT_SENTINEL;
-  const currentQuery = buildRouteQuery(getQueryString(route.query.entry_id), currentRoutePath);
+  const currentQuery = buildRouteQuery(
+    getQueryString(route.query.entry_id),
+    currentRoutePath,
+    getQueryBoolean(route.query.recursive) === true
+  );
   const nextQuery = buildRouteQuery();
 
-  if (currentQuery.entry_id === nextQuery.entry_id && currentQuery.path === nextQuery.path) {
+  if (
+    currentQuery.entry_id === nextQuery.entry_id
+    && currentQuery.path === nextQuery.path
+    && currentQuery.recursive === nextQuery.recursive
+  ) {
     return false;
   }
 
@@ -1872,7 +1913,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 };
 
 watch(
-  () => [route.query.entry_id, route.query.path],
+  () => [route.query.entry_id, route.query.path, route.query.recursive],
   ([nextEntryId, nextPath]) => {
     const previousEntryId = selectedEntryId.value;
     const previousPath = normalizePathInput(selectedPath.value) || DEVICE_ROOT_SENTINEL;
@@ -1887,6 +1928,11 @@ watch(
     }
     if (normalizedPath !== selectedPath.value) {
       selectedPath.value = normalizedPath;
+    }
+
+    const nextRecursive = resolveRecursiveDisplayForRoute(`device_media_gallery_${normalizedEntryId || 'default'}`);
+    if (nextRecursive !== recursiveDisplay.value) {
+      recursiveDisplay.value = nextRecursive;
     }
 
     if (normalizedEntryId === previousEntryId && normalizedPath !== previousPath) {
@@ -1962,6 +2008,7 @@ watch(recursiveDisplay, (nextRecursive) => {
   }
   if (canBrowse.value) {
     currentMediaPage.value = 1;
+    void syncRouteQuery('replace');
     void loadMediaPage(1, { resetSnapshot: true });
   }
 });

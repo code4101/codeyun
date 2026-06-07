@@ -133,9 +133,23 @@ const usesDuplicateClusterSort = (payload: DeviceMediaListRequest) =>
   Array.isArray(payload.sort_program?.rules)
   && payload.sort_program.rules.some((rule) => rule?.field === 'duplicate_cluster');
 
+const canUseRecursiveDatabaseFastPath = (payload: DeviceMediaListRequest) => {
+  if (payload.recursive !== true) {
+    return false;
+  }
+  const rules = Array.isArray(payload.sort_program?.rules) ? payload.sort_program.rules : [];
+  const databaseFields = new Set(['weight', 'modified_at', 'size', 'relative_path', 'kind']);
+  return rules.length > 0 && rules.every((rule, index) => {
+    if (rule?.field === 'name' && index > 0) {
+      return true;
+    }
+    return databaseFields.has(String(rule?.field || ''));
+  });
+};
+
 const canUseFastMediaList = (payload: DeviceMediaListRequest) =>
   !usesDuplicateClusterSort(payload)
-  && payload.recursive !== true
+  && (payload.recursive !== true || canUseRecursiveDatabaseFastPath(payload))
   && Number(payload.scan_limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT
   && Number(payload.limit ?? 0) <= DEVICE_MEDIA_LIST_FAST_PATH_LIMIT
   && !payload.snapshot_id;

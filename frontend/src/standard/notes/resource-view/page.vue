@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { User } from '@element-plus/icons-vue'
 
 import {
   createNoteSheet,
@@ -108,6 +109,14 @@ type SheetWorkspaceLoadErrorPayload = {
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const userIdentityLabel = computed(() => userStore.user?.nickname || userStore.user?.username || '')
+
+function openLoginPage() {
+  void router.push({
+    path: '/login',
+    query: { redirect: route.fullPath },
+  })
+}
 
 const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
@@ -1084,9 +1093,15 @@ async function renameSheetFromTabContextMenu() {
     if (nextTitle === sheet.title) {
       return
     }
-    await updateNoteSheet(sheet.id, { title: nextTitle }, { workbookId: workbook.value?.id ?? null })
+    await updateNoteSheet(sheet.id, {
+      title: nextTitle,
+      base_version: Number(sheet.version || 1),
+    }, { workbookId: workbook.value?.id ?? null })
     await refreshWorkbookAfterSheetMutation(sheet.id)
-  } catch {
+  } catch (error) {
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      ElMessage.warning('工作表已被其他人更新，请刷新后重试')
+    }
     return
   }
 }
@@ -1350,6 +1365,15 @@ onBeforeUnmount(() => {
             {{ sheet.title }}
           </button>
         </div>
+        <div class="resource-user-slot">
+          <div v-if="userIdentityLabel" class="resource-user-identity">
+            <el-icon><User /></el-icon>
+            <span>{{ userIdentityLabel }}</span>
+          </div>
+          <button v-else type="button" class="resource-login-button" @click="openLoginPage">
+            登录
+          </button>
+        </div>
       </div>
       <div
         v-if="sheetTabContextMenu.visible"
@@ -1544,6 +1568,7 @@ onBeforeUnmount(() => {
         class="resource-sheet-workspace"
         :key="`workbook:${workbookId}:${sheetWorkspaceReloadKey}`"
         :workbook-id="workbookId"
+        :workbook-title="workbook?.title ?? ''"
         :sheet-id="activeSheetId"
         :initial-detail="activeSheetPrefetchedDetail"
         :initial-workspace-view="routeWorkspaceView"
@@ -1568,6 +1593,7 @@ onBeforeUnmount(() => {
         default-height-mode="fill"
         :show-title-input="false"
         :show-back-button="standaloneWorkbookBackTo !== ''"
+        show-user-identity
         :back-to="standaloneWorkbookBackTo || '/notes/sheets'"
         back-label="回到工作簿"
         empty-text="工作表不存在"
@@ -1677,6 +1703,40 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;
   gap: 0;
+}
+
+.resource-user-slot {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 2px 10px 16px;
+}
+
+.resource-user-identity,
+.resource-login-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.resource-user-identity :deep(.el-icon) {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.resource-login-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.resource-login-button:hover {
+  color: #1d4ed8;
 }
 
 .resource-sheet-tab {

@@ -567,6 +567,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "notes.task-system",
+      "title": "任务系统",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 14,
+      "route_paths": ["/notes/task-system"],
+      "menu_paths": ["/notes/task-system"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "notes.common-sites",
       "title": "常用网站",
       "node_type": "feature",

@@ -2,14 +2,17 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { User } from '@element-plus/icons-vue'
 import type Handsontable from 'handsontable/base'
 
 import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
 import NoteSheetAccessDialog from './NoteSheetAccessDialog.vue'
 import {
   fetchAttendanceFeedbackHistory,
+  runAttendanceCourseUpdateData,
   runAttendanceWjxDataAiPrecheck,
   submitAttendanceFeedback,
+  type AttendanceCourseUpdateDataCourseType,
   type AttendanceWjxDataItem,
 } from '@/api/attendance'
 import {
@@ -30,6 +33,7 @@ import {
   getNoteSheetApiErrorStatus,
   importNoteSheetFromExcel,
   organizeAttendanceCourseScripts,
+  patchNoteSheet,
   queryNoteSheet,
   setAttendanceRowCompleted,
   startNoteSheetClockinLinkDetectionRun,
@@ -44,6 +48,7 @@ import {
   type NoteSheetDefinedNameWorksheetScope,
   type NoteSheetDefinedNamesResponse,
   type NoteSheetAccessCapabilities,
+  type NoteSheetPatchOperation,
   type NoteSheetColumnOptionItem,
   type NoteSheetExcelImportMode,
   type NoteSheetPaginationState,
@@ -69,6 +74,7 @@ import {
   openUrlInNewWindow,
   type CodeyunLinkVariant,
 } from '@/utils/codeyunLinks'
+import { useUserStore } from '@/store/userStore'
 
 const HotTable = defineAsyncComponent(async () => {
   const [
@@ -193,6 +199,7 @@ const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
 const SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = 'registration_composite_update'
 const SHEET_CELL_ACTION_ATTENDANCE_EXPORT = 'attendance_export'
 const SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = 'clockin_link_detect'
+const SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA = 'attendance_course_update_data'
 const ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY = 'codeyun.noteSheet.rowDetailDialog.size.v1'
 const ROW_DETAIL_DIALOG_DEFAULT_WIDTH = 760
 const ROW_DETAIL_DIALOG_DEFAULT_HEIGHT = 760
@@ -207,6 +214,7 @@ const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]: '综合更新',
   [SHEET_CELL_ACTION_ATTENDANCE_EXPORT]: '导出excel',
   [SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]: '自动检测打卡链接',
+  [SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA]: '更新数据',
 } as const
 const EXCEL_IMPORT_ACTION_LABEL = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]
 const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据'
@@ -513,6 +521,12 @@ type SheetCellMeta = {
 }
 
 type SheetCellMetaMap = Record<string, SheetCellMeta>
+
+type SheetCellMetaPatchResult = {
+  documentRow: number
+  column: number
+  meta: SheetCellMeta | null
+}
 
 type SheetEntityRowKind = 'header_group' | 'field' | 'field_note' | 'data'
 
@@ -958,7 +972,9 @@ type SheetViewSettings = {
 type SheetDocument = {
   schema_version: 1
   columns: string[]
+  column_ids?: string[]
   rows: SheetStoredRow[]
+  row_ids?: string[]
   grid_rows?: SheetStoredRow[]
   data_start_row?: number
   field_row_index?: number
@@ -1209,12 +1225,14 @@ type SheetInternalClipboard = {
 interface Props {
   sheetId: number | null
   workbookId?: number | null
+  workbookTitle?: string
   inlineDocument?: Record<string, unknown> | null
   inlineTitle?: string
   initialDetail?: NoteSheetDetail | null
   initialWorkspaceView?: SheetWorkspaceView | null
   accessCapabilities?: NoteSheetAccessCapabilities | null
   showBackButton?: boolean
+  showUserIdentity?: boolean
   showTitleInput?: boolean
   backTo?: string
   backLabel?: string
@@ -1234,12 +1252,14 @@ type RestoreInitialDocumentOptions = {
 
 const props = withDefaults(defineProps<Props>(), {
   workbookId: null,
+  workbookTitle: '',
   inlineDocument: null,
   inlineTitle: '未命名表格',
   initialDetail: null,
   initialWorkspaceView: null,
   accessCapabilities: null,
   showBackButton: false,
+  showUserIdentity: false,
   showTitleInput: true,
   backTo: '/notes/sheets',
   backLabel: '返回星云表格',
@@ -1257,6 +1277,18 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const userStore = useUserStore()
+const userIdentityLabel = computed(() => userStore.user?.nickname || userStore.user?.username || '')
+
+function openLoginPage() {
+  const redirect = typeof window === 'undefined'
+    ? router.currentRoute.value.fullPath
+    : `${window.location.pathname}${window.location.search}${window.location.hash}`
+  void router.push({
+    path: '/login',
+    query: { redirect },
+  })
+}
 
 const remoteAccessCapabilities = ref<NoteSheetAccessCapabilities | null>(null)
 const hasInlineDocument = computed(() => props.inlineDocument != null)
@@ -2527,13 +2559,33 @@ const sheetWorkspaceViewOptions = computed<SheetWorkspaceViewOption[]>(() => {
 const shouldShowSheetWorkspaceViewSelect = computed(() => sheetWorkspaceViewOptions.value.length > 1)
 const currentWorkbookTitle = computed(() => {
   const matchedWorkbook = sheetWorkbookItems.value.find((item) => item.id === props.workbookId)
-  return normalizeCellValue(matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || '').trim()
+  return normalizeCellValue(props.workbookTitle || matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || '').trim()
 })
 const isNianzhuChuangguanWorkbook = computed(() => (
   props.workbookId === NIANZHU_CHUANGGUAN_WORKBOOK_ID
   || currentWorkbookTitle.value.includes(NIANZHU_CHUANGGUAN_TITLE_KEYWORD)
 ))
 const shouldShowExcelImportResetButton = computed(() => !isNianzhuChuangguanWorkbook.value)
+function resolveAttendanceCourseType(courseName: string): AttendanceCourseUpdateDataCourseType | null {
+  if (courseName.includes('梵呗')) {
+    return 'fanbei'
+  }
+  if (courseName.includes('念住') || courseName.includes('觉观')) {
+    return 'nianzhu'
+  }
+  return null
+}
+const attendanceCourseUpdateTarget = computed(() => {
+  const candidates = [currentWorkbookTitle.value, sheetTitle.value]
+  for (const candidate of candidates) {
+    const text = normalizeStudentLookupFeedbackCourseName(candidate)
+    const courseType = resolveAttendanceCourseType(text)
+    if (courseType) {
+      return { courseName: text, courseType }
+    }
+  }
+  return null
+})
 const studentLookupPrimaryLabel = computed(() => (isStudentLookupQuestionnaireMode.value ? '序号' : '学员'))
 const studentLookupEmptyText = computed(() => (
   isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : ''
@@ -2993,15 +3045,24 @@ async function renameSheetFromWorkspaceViewMenu() {
   const previousTitle = sheetTitle.value
   sheetTitle.value = nextTitle
   try {
-    const saved = await updateNoteSheet(props.sheetId, { title: nextTitle }, { workbookId: props.workbookId })
+    const saved = await updateNoteSheet(props.sheetId, {
+      title: nextTitle,
+      base_version: Number(sheetVersion.value || 1),
+    }, { workbookId: props.workbookId })
     sheetTitle.value = saved.title || nextTitle
     sheetVersion.value = Number(saved.version || sheetVersion.value)
+    sheetRemoteConflictActive = false
     emitSheetSync(saved)
     ElMessage.success('已重命名')
   } catch (error) {
     sheetTitle.value = previousTitle
     console.warn('Failed to rename sheet:', error)
-    ElMessage.error('重命名失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地状态，请刷新后合并')
+    } else {
+      ElMessage.error('重命名失败')
+    }
   }
 }
 
@@ -4262,6 +4323,14 @@ let lastQueuedSerial = 0
 let savedChangeSerial = 0
 let saveInFlight = false
 let saveInFlightPromise: Promise<void> | null = null
+let sheetRemoteConflictActive = false
+let cellPatchQueue: Promise<void> = Promise.resolve()
+let cellPatchInFlight = false
+let suppressNextRemoteSaveWatcher = false
+let sheetResourceSocket: WebSocket | null = null
+let sheetResourceReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let sheetResourceReconnectAttempt = 0
+let sheetResourceSocketCloseRequested = false
 let sheetLayoutObserver: ResizeObserver | null = null
 let rowDetailDialogResizeObserver: ResizeObserver | null = null
 let rowDetailDialogResizeInitialized = false
@@ -4278,6 +4347,7 @@ let lastNotifiedClockinLinkDetectionRunId = ''
 let lastNotifiedClockinLinkDetectionRunStatus = ''
 let pendingColumnInsertionTemplate: ColumnInsertionTemplate | null = null
 let pendingRowInsertionTemplate: RowInsertionTemplate | null = null
+let cutRowBounds: { start: number; end: number } | null = null
 let contextMenuRowInsertAmount = 1
 let contextMenuColumnInsertAmount = 1
 let suppressLocalHistory = false
@@ -4615,6 +4685,27 @@ const contextMenu = {
         ],
       },
     },
+    cut_row: {
+      name: '剪切行',
+      hidden: () => !shouldShowCutRowAction() || !canEditData.value,
+      callback: () => {
+        cutSelectedRows()
+      },
+    },
+    paste_cut_row_above: {
+      name: '在上方插入剪切行',
+      hidden: () => !shouldShowPasteCutRowAction() || !canEditData.value,
+      callback: () => {
+        pasteCutRowsFromSelection('above')
+      },
+    },
+    paste_cut_row_below: {
+      name: '在下方插入剪切行',
+      hidden: () => !shouldShowPasteCutRowAction() || !canEditData.value,
+      callback: () => {
+        pasteCutRowsFromSelection('below')
+      },
+    },
     hsep1: {
       name: '---------',
       hidden: () => !(
@@ -4862,6 +4953,18 @@ const contextMenu = {
       hidden: () => !canUpdateAttendanceLinkCountsFromSelection('clockin_links') || !canRunSheetActions.value,
       callback: () => {
         void handleUpdateAttendanceLinkCountsFromSelection('clockin_links')
+      },
+    },
+    hsep_attendance_course_update_data: {
+      name: '---------',
+      hidden: () => !canRunAttendanceCourseUpdateDataFromSelection(),
+    },
+    attendance_course_update_data: {
+      name: 'step2,3:重新加载数据并重算应返款',
+      hidden: () => !canRunAttendanceCourseUpdateDataFromSelection(),
+      disabled: () => workspaceLoading.value || sheetCellActionRunning.value === SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA,
+      callback: () => {
+        void updateAttendanceCourseData()
       },
     },
     hsep_style: {
@@ -5233,6 +5336,32 @@ function canDetectClockinLinks() {
   return props.sheetId != null && canEditData.value && canRunSheetActions.value
 }
 
+function canRunAttendanceCourseUpdateData() {
+  return props.sheetId != null && canEditData.value && canRunSheetActions.value && !!attendanceCourseUpdateTarget.value
+}
+
+function isAttendanceCurrentRefundColumn(columnIndex: number) {
+  return normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim() === '当前应返款'
+}
+
+function getSelectedAttendanceCourseUpdateDataCell() {
+  const cell = getSingleSelectedSheetCell()
+  const noteRowIndex = columnNoteHeaderLevel.value
+  if (
+    !cell
+    || noteRowIndex < 0
+    || cell.documentRow !== noteRowIndex
+    || !isAttendanceCurrentRefundColumn(cell.column)
+  ) {
+    return null
+  }
+  return cell
+}
+
+function canRunAttendanceCourseUpdateDataFromSelection() {
+  return !!getSelectedAttendanceCourseUpdateDataCell() && canRunAttendanceCourseUpdateData()
+}
+
 function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) {
   if (actionType === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
     return !canOpenExcelImportDialog()
@@ -5252,6 +5381,9 @@ function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) 
   }
   if (actionType === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     return !canDetectClockinLinks()
+  }
+  if (actionType === SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA) {
+    return !canRunAttendanceCourseUpdateData()
   }
   return false
 }
@@ -5574,6 +5706,7 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
         instruction: excelImportInstruction.value,
         mode,
         actionCell: excelImportActionCell.value ?? undefined,
+        baseVersion: Number(sheetVersion.value || 1),
       },
       { workbookId: props.workbookId },
     )
@@ -5594,7 +5727,12 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
     closeExcelImportDialog(true)
   } catch (error) {
     console.warn('Failed to import note sheet from Excel', error)
-    ElMessage.error(getExcelImportErrorMessage(error))
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地状态，请刷新后合并')
+    } else {
+      ElMessage.error(getExcelImportErrorMessage(error))
+    }
   } finally {
     excelImportRunningMode.value = null
   }
@@ -5671,6 +5809,45 @@ async function startClockinLinkDetectionRun(forceRestart = false) {
   } catch (error) {
     console.warn('Failed to start clockin link detection run', error)
     ElMessage.error(getSheetActionErrorMessage(error, '启动自动检测打卡链接失败'))
+  } finally {
+    sheetCellActionRunning.value = null
+  }
+}
+
+async function updateAttendanceCourseData() {
+  if (props.sheetId == null) {
+    return
+  }
+  if (!canRunAttendanceCourseUpdateData()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (sheetCellActionRunning.value) {
+    return
+  }
+
+  const target = attendanceCourseUpdateTarget.value
+  if (!target) {
+    ElMessage.warning('没有识别到梵呗/念住/觉观课程名')
+    return
+  }
+
+  sheetCellActionRunning.value = SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const result = await runAttendanceCourseUpdateData({
+      course_type: target.courseType,
+      attendance_sheet_id: props.sheetId,
+      course_name: target.courseName,
+      include_frozen: false,
+      workbook_id: props.workbookId,
+    })
+    await restoreInitialDocument({ preserveContent: true })
+    ElMessage.success(result.step3.message || '考勤数据已更新')
+  } catch (error) {
+    console.warn('Failed to update attendance course data', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '更新考勤数据失败'))
   } finally {
     sheetCellActionRunning.value = null
   }
@@ -5798,6 +5975,10 @@ function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: 
   }
   if (action.type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     void startClockinLinkDetectionRun()
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA) {
+    void updateAttendanceCourseData()
     return
   }
   if (isRegistrationAsyncAction(action.type) && activeRegistrationActionRun.value) {
@@ -5993,6 +6174,112 @@ function invalidateColumnFilterGlobalOptionsCache() {
 
 function isSheetDataDirtyForColumnFilterStats() {
   return changeSerial !== savedChangeSerial || saveTimer != null || saveInFlight
+}
+
+function isSheetLocallyDirty() {
+  return changeSerial !== savedChangeSerial || saveTimer != null || saveInFlight
+}
+
+function clearSheetResourceReconnectTimer() {
+  if (!sheetResourceReconnectTimer) {
+    return
+  }
+  clearTimeout(sheetResourceReconnectTimer)
+  sheetResourceReconnectTimer = null
+}
+
+function closeSheetResourceSocket() {
+  sheetResourceSocketCloseRequested = true
+  clearSheetResourceReconnectTimer()
+  if (!sheetResourceSocket) {
+    return
+  }
+  sheetResourceSocket.onopen = null
+  sheetResourceSocket.onmessage = null
+  sheetResourceSocket.onerror = null
+  sheetResourceSocket.onclose = null
+  sheetResourceSocket.close()
+  sheetResourceSocket = null
+}
+
+function scheduleSheetResourceReconnect(sheetId: number) {
+  if (typeof window === 'undefined' || sheetResourceReconnectTimer || props.sheetId !== sheetId) {
+    return
+  }
+  const delay = Math.min(30_000, 1000 * (2 ** Math.min(sheetResourceReconnectAttempt, 5)))
+  sheetResourceReconnectAttempt += 1
+  sheetResourceReconnectTimer = window.setTimeout(() => {
+    sheetResourceReconnectTimer = null
+    if (props.sheetId === sheetId) {
+      connectSheetResourceSocket({ reconnect: true })
+    }
+  }, delay)
+}
+
+function getSheetResourceSocketUrl(sheetId: number) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/api/note-sheets/ws/resources/sheet/${encodeURIComponent(String(sheetId))}`
+}
+
+function connectSheetResourceSocket(options: { reconnect?: boolean } = {}) {
+  closeSheetResourceSocket()
+  if (typeof window === 'undefined' || props.sheetId == null) {
+    return
+  }
+  const socketSheetId = Number(props.sheetId)
+  sheetResourceSocketCloseRequested = false
+  clearSheetResourceReconnectTimer()
+  const socket = new WebSocket(getSheetResourceSocketUrl(socketSheetId))
+  sheetResourceSocket = socket
+  socket.onopen = () => {
+    if (sheetResourceSocket !== socket || props.sheetId !== socketSheetId) {
+      return
+    }
+    sheetResourceReconnectAttempt = 0
+    if (!options.reconnect || saveInFlight || cellPatchInFlight || isSheetLocallyDirty()) {
+      return
+    }
+    void restoreInitialDocument({ preserveContent: false })
+  }
+  socket.onmessage = (event) => {
+    if (sheetResourceSocket !== socket || props.sheetId !== socketSheetId) {
+      return
+    }
+    let message: Record<string, unknown>
+    try {
+      message = JSON.parse(String(event.data || '{}'))
+    } catch {
+      return
+    }
+    if (message.type !== 'resource-updated' || message.resource_type !== 'sheet') {
+      return
+    }
+    const remoteVersion = Number(message.version || 0)
+    if (!Number.isFinite(remoteVersion) || remoteVersion <= Number(sheetVersion.value || 1)) {
+      return
+    }
+    if (saveInFlight || cellPatchInFlight) {
+      return
+    }
+    if (isSheetLocallyDirty()) {
+      sheetRemoteConflictActive = true
+      persistDraftDocument(buildCurrentDocument())
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿')
+      return
+    }
+    void restoreInitialDocument({ preserveContent: false })
+  }
+  socket.onerror = () => {
+    socket.close()
+  }
+  socket.onclose = () => {
+    if (sheetResourceSocket === socket) {
+      sheetResourceSocket = null
+    }
+    if (!sheetResourceSocketCloseRequested && props.sheetId === socketSheetId) {
+      scheduleSheetResourceReconnect(socketSheetId)
+    }
+  }
 }
 
 function waitForRemoteSaveIdle(timeoutMs = 10_000) {
@@ -9294,7 +9581,9 @@ function buildCurrentDocument(): SheetDocument {
   return {
     schema_version: 1,
     columns: headers,
+    column_ids: [...columnEntityIds.value],
     rows: entitySnapshot.rows,
+    row_ids: [...dataRowEntityIds.value],
     grid_rows: buildGridRowsWithInlineLinks(
       normalizedGridRows,
       entitySnapshot.entity_rows,
@@ -9342,7 +9631,10 @@ function initializeSheetEntitiesFromDocument(
   normalizedCellMeta: SheetCellMetaMap,
 ) {
   const entityColumns = normalizeEntityColumns(document.entity_columns, headers)
-  columnEntityIds.value = entityColumns.map((column) => column.id)
+  const sourceColumnIds = Array.isArray(document.column_ids) ? document.column_ids : []
+  columnEntityIds.value = entityColumns.map((column, index) => (
+    normalizeSheetEntityId(sourceColumnIds[index]) || column.id
+  ))
 
   const sourceEntityRows = normalizeEntityRows(
     document.entity_rows,
@@ -9360,8 +9652,9 @@ function initializeSheetEntitiesFromDocument(
   ))
   dataRowEntityIds.value = normalizedRows.map((row, localIndex) => {
     const sourceIndex = getEntitySourceDataRowIndex(sourceEntityRows.length, dataStartRow, normalizedRows.length, localIndex)
-    return sourceEntityRows[sourceIndex]?.id
-      ?? createFallbackSheetEntityId('row', getDocumentRowIndex(localIndex), row.join('\u001f'))
+    return normalizeSheetEntityId(Array.isArray(document.row_ids) ? document.row_ids[getDocumentRowIndex(localIndex)] : '')
+      || sourceEntityRows[sourceIndex]?.id
+      || createFallbackSheetEntityId('row', getDocumentRowIndex(localIndex), row.join('\u001f'))
   })
 
   const normalizedEntityCells = normalizeEntityCellMap(document.entity_cells)
@@ -11965,6 +12258,10 @@ function getCellActionDisplayLabel(action: SheetCellAction, rawText: string) {
   return rawText.trim() || action.label?.trim() || SHEET_CELL_ACTION_LABELS[action.type]
 }
 
+function getCellActionButtonLabel(action: SheetCellAction, fallbackLabel: string) {
+  return fallbackLabel
+}
+
 function getCellActionTitle(action: SheetCellAction) {
   if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
     return '用 AI 识别新 Excel 的字段与格式，并按当前表格结构标准化导入'
@@ -11986,6 +12283,9 @@ function getCellActionTitle(action: SheetCellAction) {
   }
   if (action.type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
     return '从名称管理器的“打卡根目录”开始识别共学、共修打卡数据页，并写回当前打卡配置'
+  }
+  if (action.type === SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA) {
+    return '重新执行当前梵呗/念住/觉观考勤表的 step2 和 step3，并更新返款相关数据'
   }
   return ''
 }
@@ -12030,12 +12330,14 @@ function renderCellActionButton(
   label: string,
   action: SheetCellAction,
   actionCell: { documentRow: number; column: number },
+  rawText = '',
 ) {
   TD.textContent = ''
   const button = document.createElement('button')
   button.type = 'button'
   button.tabIndex = -1
   button.className = 'sheet-cell-action-button-inner'
+  button.dataset.sheetActionType = action.type
   button.title = getCellActionTitle(action)
   const activeRun = getActiveRegistrationRunForAction(action.type)
   const activeClockinRun = getActiveClockinLinkDetectionRunForAction(action.type)
@@ -12048,7 +12350,7 @@ function renderCellActionButton(
     button.classList.add('is-disabled')
     button.disabled = true
   }
-  button.textContent = getCellActionRunningLabel(action, label)
+  button.textContent = getCellActionRunningLabel(action, getCellActionButtonLabel(action, label))
   const trigger = (event: Event) => {
     triggerSheetCellActionButtonFromEvent(event, action, actionCell)
   }
@@ -13124,7 +13426,21 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
   }
   if (options.save) {
     pushLocalUndoEntry(undoEntry)
-    scheduleRemoteSave(0)
+    const header = columnHeaders.value[columnIndex]
+    const operations: NoteSheetPatchOperation[] = [{
+      op: 'set-column-width',
+      column_index: columnIndex,
+      width: nextWidth,
+    }]
+    if (header) {
+      operations.push({
+        op: 'set-column-config',
+        column_index: columnIndex,
+        config: normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)[header] ?? {},
+      })
+    }
+    suppressNextRemoteSaveWatcher = true
+    queueImmediateColumnConfigPatchSave(operations)
   }
 }
 
@@ -14139,6 +14455,52 @@ function moveMergedCellsRows(movedRows: number[], finalIndex: number) {
   }))
 }
 
+function moveDataRowsToFinalIndex(movedRows: number[], finalIndex: number, reason = 'row-move') {
+  const effectiveMovedRows = normalizeMovedRowIndexes(movedRows.map((row) => getGridRowIndex(row)))
+  const effectiveFinalIndex = Math.min(Math.max(finalIndex, 0), rows.value.length - effectiveMovedRows.length)
+  const effectiveMovePossible = (
+    effectiveMovedRows.length > 0
+    && effectiveFinalIndex >= 0
+    && effectiveFinalIndex + effectiveMovedRows.length <= rows.value.length
+    && canMoveMergedCellsRows(effectiveMovedRows)
+  )
+
+  if (!effectiveMovePossible) {
+    return false
+  }
+
+  const rowIndexMap = buildMoveIndexMap(rows.value.length, effectiveMovedRows, effectiveFinalIndex)
+  const orderChanged = Array.from({ length: rows.value.length }, (_, index) => index)
+    .some((index) => (rowIndexMap.get(index) ?? index) !== index)
+  if (!orderChanged) {
+    return false
+  }
+
+  const nextRows = remapRowsWithFormulaReferenceMaps(rows.value, rowIndexMap)
+
+  pushLocalUndoSnapshot(reason)
+  clearEditingColumnState()
+  moveDataEntityRows(effectiveMovedRows, effectiveFinalIndex)
+  moveCellMetaRows(effectiveMovedRows, effectiveFinalIndex)
+  moveMergedCellsRows(effectiveMovedRows, effectiveFinalIndex)
+  rows.value = nextRows
+  const movedRangeStart = effectiveFinalIndex
+  const movedRangeEnd = effectiveFinalIndex + effectiveMovedRows.length - 1
+  const hot = getHotInstance()
+  if (hot) {
+    hot.updateSettings({
+      data: sheetHotGridRows.value,
+    })
+    hot.render()
+    void nextTick(() => {
+      hot.selectRows(getGridRowIndex(movedRangeStart), getGridRowIndex(movedRangeEnd))
+    })
+  }
+  void refreshComputedRowHeights()
+
+  return true
+}
+
 function remapVisiblePageCellMetaRows(rowIndexMap: Map<number, number>) {
   const pageStart = sheetHeaderRowCount.value + getDocumentRowIndex(0)
   const pageEnd = pageStart + rows.value.length
@@ -14254,32 +14616,7 @@ function handleBeforeRowMove(
     return false
   }
 
-  const rowIndexMap = buildMoveIndexMap(rows.value.length, effectiveMovedRows, effectiveFinalIndex)
-  const nextRows = remapRowsWithFormulaReferenceMaps(rows.value, rowIndexMap)
-  const rowsChanged = nextRows.some((row, index) => row !== rows.value[index])
-  if (!rowsChanged) {
-    return false
-  }
-
-  pushLocalUndoSnapshot('row-move')
-  clearEditingColumnState()
-  moveDataEntityRows(effectiveMovedRows, effectiveFinalIndex)
-  moveCellMetaRows(effectiveMovedRows, effectiveFinalIndex)
-  moveMergedCellsRows(effectiveMovedRows, effectiveFinalIndex)
-  rows.value = nextRows
-  const movedRangeStart = effectiveFinalIndex
-  const movedRangeEnd = effectiveFinalIndex + effectiveMovedRows.length - 1
-  const hot = getHotInstance()
-  if (hot) {
-    hot.updateSettings({
-      data: sheetHotGridRows.value,
-    })
-    hot.render()
-    void nextTick(() => {
-      hot.selectRows(getGridRowIndex(movedRangeStart), getGridRowIndex(movedRangeEnd))
-    })
-  }
-  void refreshComputedRowHeights()
+  moveDataRowsToFinalIndex(effectiveMovedRows, effectiveFinalIndex, 'row-move')
 
   return false
 }
@@ -15245,7 +15582,7 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
     renderCellActionButton(TD, getCellActionDisplayLabel(action, value), action, {
       documentRow,
       column,
-    })
+    }, value)
     const actionTitle = getCellActionTitle(action)
     if (actionTitle) {
       TD.title = actionTitle
@@ -15563,7 +15900,7 @@ async function applyDefinedNamesDialog() {
       const sheetResponse = await updateSheetDefinedNames(
         props.sheetId,
         serializeDefinedNameItems(worksheetNamesBySheetId.get(currentSheetId) ?? []),
-        { workbookId: props.workbookId },
+        { workbookId: props.workbookId, baseVersion: Number(sheetVersion.value || 1) },
       )
       syncDefinedNamesFromResponse(sheetResponse)
     }
@@ -15572,8 +15909,14 @@ async function applyDefinedNamesDialog() {
     closeDefinedNamesDialog()
     ElMessage.success('名称管理器已保存')
   } catch (error) {
-    definedNamesError.value = '名称管理器保存失败'
     console.warn('Failed to save defined names:', error)
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      persistDraftDocument(buildCurrentDocument())
+      definedNamesError.value = '工作表已被其他人更新，已保留本地草稿，请刷新后合并'
+    } else {
+      definedNamesError.value = '名称管理器保存失败'
+    }
   } finally {
     definedNamesSaving.value = false
   }
@@ -15928,7 +16271,7 @@ async function saveDocumentSnapshot(document: SheetDocument, pagePatch = buildUp
   }
 
   return updateNoteSheet(props.sheetId, {
-    title: sheetTitle.value.trim() || '未命名表格',
+    ...(canEditConfig.value ? { title: sheetTitle.value.trim() || '未命名表格' } : {}),
     document_json: document,
     base_version: Number(sheetVersion.value || 1),
     page_patch: pagePatch,
@@ -16001,6 +16344,7 @@ function applyRemoteSheetDetail(
     remoteAccessCapabilities.value = effectiveDetail.access?.capabilities ?? null
     sheetTitle.value = effectiveDetail.title || '未命名表格'
     sheetVersion.value = Number(effectiveDetail.version || 1)
+    sheetRemoteConflictActive = false
     applyPaginationState(effectiveDetail.pagination)
     pendingDeletedPageRowIndexes.value = []
     emitSheetSync(effectiveDetail)
@@ -16218,6 +16562,7 @@ async function flushRemoteSave() {
       }
       emitSheetSync(saved)
       savedChangeSerial = Math.max(savedChangeSerial, serial)
+      sheetRemoteConflictActive = false
 
       if (serial === changeSerial) {
         clearDraftStorage()
@@ -16226,16 +16571,16 @@ async function flushRemoteSave() {
       }
     } catch (error) {
       if (getNoteSheetApiErrorStatus(error) === 409) {
-        clearDraftStorage()
-        ElMessage.warning('工作表已更新，已重新加载最新数据')
-        await restoreInitialDocument({ preserveContent: false })
+        sheetRemoteConflictActive = true
+        persistDraftDocument(document)
+        ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
         return
       }
       console.warn('Failed to save note sheet', error)
       persistDraftDocument(document)
     } finally {
       saveInFlight = false
-      if (lastQueuedSerial > serial) {
+      if (!sheetRemoteConflictActive && lastQueuedSerial > serial) {
         void flushRemoteSave()
       }
     }
@@ -16264,6 +16609,10 @@ function scheduleRemoteSave(delayMs = REMOTE_SAVE_DEBOUNCE_MS) {
   changeSerial += 1
   lastQueuedSerial = changeSerial
   invalidateColumnFilterGlobalOptionsCache()
+  if (sheetRemoteConflictActive) {
+    clearSaveTimer()
+    return
+  }
   clearSaveTimer()
   saveTimer = setTimeout(() => {
     void flushRemoteSave()
@@ -16365,6 +16714,7 @@ async function sortColumn(columnIndex: number, direction: SortDirection) {
   try {
     await flushRemoteSave()
     const detail = await sortNoteSheet(props.sheetId, {
+      base_version: Number(sheetVersion.value || 1),
       column_index: columnIndex,
       direction,
     }, {
@@ -16375,7 +16725,12 @@ async function sortColumn(columnIndex: number, direction: SortDirection) {
     void updateSheetViewportHeight()
   } catch (error) {
     console.warn('Failed to sort note sheet', error)
-    ElMessage.error('排序失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('排序失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -16441,6 +16796,7 @@ async function handleDetectRegistrationUserIdFromSelection() {
     await flushRemoteSave()
     const result = await detectNoteSheetRegistrationUserId(props.sheetId, {
       row_index: cell.documentRow,
+      base_version: Number(sheetVersion.value || 1),
     }, {
       workbookId: props.workbookId,
     })
@@ -16456,7 +16812,12 @@ async function handleDetectRegistrationUserIdFromSelection() {
     }
   } catch (error) {
     console.warn('Failed to detect registration user id', error)
-    ElMessage.error('检测用户ID失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('检测用户ID失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -16600,6 +16961,7 @@ async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string)
     const scrollPosition = captureSheetScrollPosition()
     await flushRemoteSave()
     const result = await applyAttendanceVideoRevision(props.sheetId, {
+      base_version: Number(sheetVersion.value || 1),
       revision_label: revisionLabel,
       cells,
     }, {
@@ -16611,7 +16973,12 @@ async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string)
     ElMessage.success(`已修订 ${result.updated_count || cells.length} 个视频数据`)
   } catch (error) {
     console.warn('Failed to revise attendance video progress', error)
-    ElMessage.error('修订失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('修订失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -16676,6 +17043,7 @@ async function handleSetAttendanceCompletedFromSelection() {
     const scrollPosition = captureSheetScrollPosition()
     await flushRemoteSave()
     const result = await setAttendanceRowCompleted(props.sheetId, {
+      base_version: Number(sheetVersion.value || 1),
       row_index: selectedCompletionCell.documentRow,
     }, {
       workbookId: props.workbookId,
@@ -16686,7 +17054,12 @@ async function handleSetAttendanceCompletedFromSelection() {
     ElMessage.success('已设置完结')
   } catch (error) {
     console.warn('Failed to set attendance row completed', error)
-    ElMessage.error('设置完结失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('设置完结失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -16791,6 +17164,7 @@ async function handleGenerateAttendanceCourseTemplateFromSelection() {
   try {
     await flushRemoteSave()
     const result = await generateAttendanceCourseTemplate(props.sheetId, {
+      base_version: Number(sheetVersion.value || 1),
       row_index: selectedCourseTypeCell.documentRow,
     }, {
       workbookId: props.workbookId,
@@ -16808,7 +17182,12 @@ async function handleGenerateAttendanceCourseTemplateFromSelection() {
     }
   } catch (error) {
     console.warn('Failed to generate attendance course template', error)
-    ElMessage.error('生成新课模板失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('生成新课模板失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -16900,6 +17279,7 @@ async function handleUpdateAttendanceLinkCountsFromSelection(fieldKey: Attendanc
   try {
     await flushRemoteSave()
     const result = await updateAttendanceLinkCounts(props.sheetId, {
+      base_version: Number(sheetVersion.value || 1),
       field_key: fieldKey,
       row_index: selectedCell?.documentRow,
     }, {
@@ -16917,7 +17297,12 @@ async function handleUpdateAttendanceLinkCountsFromSelection(fieldKey: Attendanc
     }
   } catch (error) {
     console.warn('Failed to update attendance link counts', error)
-    ElMessage.error('更新数据失败')
+    if (getNoteSheetApiErrorStatus(error) === 409) {
+      sheetRemoteConflictActive = true
+      ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    } else {
+      ElMessage.error('更新数据失败')
+    }
   } finally {
     workspaceLoading.value = false
   }
@@ -17430,6 +17815,254 @@ function hasEffectiveSheetGridChanges(changes: unknown) {
   ))
 }
 
+function isImmediateCellPatchSource(source?: string) {
+  return (
+    source == null
+    || source === 'edit'
+    || source === 'CopyPaste.paste'
+    || source === 'Autofill.fill'
+    || source === 'formula-bar'
+    || source === 'row-detail'
+    || source === 'UndoRedo.undo'
+    || source === 'UndoRedo.redo'
+  )
+}
+
+function buildImmediateCellPatchOperations(records: SheetGridChangeRecord[], source?: string) {
+  if (!isImmediateCellPatchSource(source)) {
+    return null
+  }
+
+  const operations: NoteSheetPatchOperation[] = []
+  for (const record of records) {
+    if (normalizeCellValue(record.previousValue) === normalizeCellValue(record.nextValue)) {
+      continue
+    }
+    if (isSheetHeaderGridRow(record.rowIndex)) {
+      return null
+    }
+    if (!canEditDataColumn(record.columnIndex)) {
+      return null
+    }
+    const dataRow = getDataRowIndex(record.rowIndex)
+    if (dataRow < 0) {
+      return null
+    }
+    const merge = findMergedCellAtGridCell(record.rowIndex, record.columnIndex)
+    if (merge && (merge.rowspan > 1 || merge.colspan > 1)) {
+      return null
+    }
+    operations.push({
+      op: 'set-cell-value',
+      row_index: getDocumentRowIndex(dataRow),
+      column_index: record.columnIndex,
+      value: normalizeCellInputValueForColumn(record.nextValue, record.columnIndex),
+    })
+  }
+
+  return operations.length ? operations : []
+}
+
+function queueImmediateSheetPatchSave(operations: NoteSheetPatchOperation[], failureMessage = '表格保存失败，已保留本地草稿') {
+  if (props.sheetId == null || !operations.length) {
+    return
+  }
+  const sheetId = props.sheetId
+  const workbookId = props.workbookId
+  persistDraftDocument(buildCurrentDocument())
+  changeSerial += 1
+  lastQueuedSerial = changeSerial
+  const serial = changeSerial
+  invalidateColumnFilterGlobalOptionsCache()
+  if (sheetRemoteConflictActive) {
+    ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+    return
+  }
+  cellPatchQueue = cellPatchQueue
+    .catch(() => undefined)
+    .then(async () => {
+      cellPatchInFlight = true
+      const result = await patchNoteSheet(
+        sheetId,
+        {
+          base_version: Number(sheetVersion.value || 1),
+          ops: operations,
+        },
+        {
+          workbookId,
+        },
+      )
+      sheetVersion.value = Number(result.version || sheetVersion.value || 1)
+      savedChangeSerial = Math.max(savedChangeSerial, serial)
+      sheetRemoteConflictActive = false
+      if (serial === changeSerial) {
+        clearDraftStorage()
+      } else {
+        persistDraftDocument(buildCurrentDocument())
+      }
+    })
+    .catch((error) => {
+      console.warn('Failed to patch note sheet', error)
+      persistDraftDocument(buildCurrentDocument())
+      if (getNoteSheetApiErrorStatus(error) === 409) {
+        sheetRemoteConflictActive = true
+        ElMessage.warning('工作表已被其他人更新，已保留本地草稿，请刷新后合并')
+      } else {
+        ElMessage.error(failureMessage)
+      }
+    })
+    .finally(() => {
+      cellPatchInFlight = false
+    })
+}
+
+function queueImmediateCellPatchSave(operations: NoteSheetPatchOperation[]) {
+  queueImmediateSheetPatchSave(operations, '单元格保存失败，已保留本地草稿')
+}
+
+function queueImmediateColumnConfigPatchSave(operations: NoteSheetPatchOperation[]) {
+  queueImmediateSheetPatchSave(operations, '字段设置保存失败，已保留本地草稿')
+}
+
+function queueImmediateMergePatchSave(operations: NoteSheetPatchOperation[]) {
+  queueImmediateSheetPatchSave(operations, '合并单元格保存失败，已保留本地草稿')
+}
+
+function buildCellMetaPatchOperations(results: Array<SheetCellMetaPatchResult | null | undefined>) {
+  const operations: NoteSheetPatchOperation[] = []
+  results.forEach((result) => {
+    if (!result) {
+      return
+    }
+    const dataRowIndex = result.documentRow - sheetHeaderRowCount.value
+    if (dataRowIndex < 0) {
+      return
+    }
+    operations.push({
+      op: 'set-cell-meta',
+      row_index: dataRowIndex,
+      column_index: result.column,
+      meta: result.meta ? { ...result.meta } : {},
+    })
+  })
+  return operations
+}
+
+function queueImmediateCellMetaPatchSave(results: Array<SheetCellMetaPatchResult | null | undefined>) {
+  const hasMetaChanges = results.some((result) => !!result)
+  const operations = buildCellMetaPatchOperations(results)
+  if (!operations.length) {
+    if (hasMetaChanges) {
+      scheduleRemoteSave(0)
+    }
+    return
+  }
+  queueImmediateSheetPatchSave(operations, '单元格格式保存失败，已保留本地草稿')
+}
+
+function buildDataCellValuePatchOperation(documentRow: number, columnIndex: number, value: unknown) {
+  const dataRowIndex = documentRow - sheetHeaderRowCount.value
+  if (dataRowIndex < 0 || !canEditDataColumn(columnIndex)) {
+    return null
+  }
+  return {
+    op: 'set-cell-value',
+    row_index: dataRowIndex,
+    column_index: columnIndex,
+    value,
+  } satisfies NoteSheetPatchOperation
+}
+
+function queueImmediateDataCellValueAndMetaPatchSave(
+  documentRow: number,
+  columnIndex: number,
+  value: unknown,
+  metaResult: SheetCellMetaPatchResult | null | undefined,
+  valueChanged: boolean,
+  failureMessage = '单元格保存失败，已保留本地草稿',
+) {
+  const operations: NoteSheetPatchOperation[] = []
+  if (valueChanged) {
+    const valueOperation = buildDataCellValuePatchOperation(documentRow, columnIndex, value)
+    if (!valueOperation) {
+      scheduleRemoteSave(0)
+      return
+    }
+    operations.push(valueOperation)
+  }
+  operations.push(...buildCellMetaPatchOperations([metaResult]))
+  if (operations.length) {
+    queueImmediateSheetPatchSave(operations, failureMessage)
+  } else if (metaResult) {
+    scheduleRemoteSave(0)
+  }
+}
+
+function buildColumnConfigPatchOperation(columnIndex: number): NoteSheetPatchOperation | null {
+  const header = columnHeaders.value[columnIndex]
+  if (!header) {
+    return null
+  }
+  return {
+    op: 'set-column-config',
+    column_index: columnIndex,
+    config: normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)[header] ?? {},
+  }
+}
+
+function clearSelectedEditableDataCellsFromKeyboard(event: KeyboardEvent) {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') {
+    return false
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey || getActiveOpenedEditor()) {
+    return false
+  }
+
+  const cells = getSelectedDataCells()
+  if (!cells.length || cells.some((cell) => !canEditDataColumn(cell.column))) {
+    return false
+  }
+
+  const operations: NoteSheetPatchOperation[] = []
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  let changed = false
+  for (const cell of cells) {
+    const currentValue = normalizeCellValue(nextRows[cell.row]?.[cell.column] ?? '')
+    if (!currentValue) {
+      continue
+    }
+    if (!nextRows[cell.row]) {
+      nextRows[cell.row] = createEmptyRow(columnHeaders.value.length)
+    }
+    nextRows[cell.row][cell.column] = ''
+    operations.push({
+      op: 'set-cell-value',
+      row_index: getDocumentRowIndex(cell.row),
+      column_index: cell.column,
+      value: '',
+    })
+    changed = true
+  }
+
+  if (!changed) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return true
+  }
+
+  pushLocalUndoSnapshot('cell-clear')
+  suppressNextRemoteSaveWatcher = true
+  rows.value = nextRows
+  refreshFormulaDisplayState()
+  syncFormulaBarDraftFromSelectedCell(true)
+  getHotInstance()?.updateSettings({ data: sheetHotGridRows.value })
+  getHotInstance()?.render()
+  queueImmediateCellPatchSave(operations)
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  return true
+}
+
 function clearCoveredMergedCellValuesInRows(nextRows: SheetRow[], merge: SheetMergedCell) {
   for (let documentRow = merge.row; documentRow < merge.row + merge.rowspan; documentRow += 1) {
     const gridRow = getCurrentGridRowIndexFromDocumentRow(documentRow)
@@ -17510,10 +18143,11 @@ function clearRichTextForGridChanges(changes: unknown, source?: string) {
     || source === 'rich-text-dialog'
     || source === 'rich-text-inline'
   ) {
-    return
+    return []
   }
 
   const records = normalizeSheetGridChanges(changes)
+  const metaPatchResults: SheetCellMetaPatchResult[] = []
   records.forEach((record) => {
     const previousValue = normalizeCellValue(record.previousValue)
     const nextValue = normalizeCellValue(record.nextValue)
@@ -17521,20 +18155,32 @@ function clearRichTextForGridChanges(changes: unknown, source?: string) {
       return
     }
     if (isFormulaExpression(nextValue)) {
-      clearCellRichTextFormat(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+      const result = clearCellRichTextFormat(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+      if (result) {
+        metaPatchResults.push(result)
+      }
     } else {
-      clearCellRichText(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+      const result = clearCellRichText(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+      if (result) {
+        metaPatchResults.push(result)
+      }
     }
   })
+  return metaPatchResults
 }
 
 function handleAfterChange(_changes: unknown, source?: string) {
   if (source === 'loadData' || source === 'external-update' || source === 'MergeCells') {
     return
   }
+  const changeRecords = normalizeSheetGridChanges(_changes)
+  const hasEffectiveChanges = changeRecords.some((record) => (
+    normalizeCellValue(record.previousValue) !== normalizeCellValue(record.nextValue)
+  ))
+  const immediateCellPatchOperations = buildImmediateCellPatchOperations(changeRecords, source)
   finishFormulaReferenceRange()
   clearFormulaReferencePreviewRange()
-  clearRichTextForGridChanges(_changes, source)
+  const metaPatchResults = clearRichTextForGridChanges(_changes, source)
   syncRowsFromGrid()
   const mergedAnchorSynced = syncCoveredMergedCellChangesToAnchors(_changes)
   const registrationDefaultsUpdated = handleRegistrationSubmittedAtUserChanges(_changes, source)
@@ -17544,6 +18190,19 @@ function handleAfterChange(_changes: unknown, source?: string) {
     refreshGridStructure()
   } else {
     getHotInstance()?.render()
+  }
+  if (hasEffectiveChanges) {
+    if (immediateCellPatchOperations && !mergedAnchorSynced && !registrationDefaultsUpdated) {
+      suppressNextRemoteSaveWatcher = true
+      queueImmediateCellPatchSave([
+        ...immediateCellPatchOperations,
+        ...buildCellMetaPatchOperations(canEditConfig.value ? metaPatchResults : []),
+      ])
+    } else if (source === 'rich-text-inline' || source === 'rich-text-dialog') {
+      // Rich text commit paths explicitly save value + meta as one patch.
+    } else {
+      scheduleRemoteSave(0)
+    }
   }
 }
 
@@ -18318,6 +18977,7 @@ function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
 }
 
 function handleAfterCreateRow(index = 0, amount = 1) {
+  suppressNextRemoteSaveWatcher = true
   const dataIndex = Math.max(0, getDataRowIndex(index))
   const documentDataIndex = getDocumentRowIndex(dataIndex)
   const documentGridRow = sheetHeaderRowCount.value + documentDataIndex
@@ -18331,10 +18991,26 @@ function handleAfterCreateRow(index = 0, amount = 1) {
     getHotInstance()?.updateSettings({ data: sheetHotGridRows.value })
     getHotInstance()?.render()
   }
+  const insertedIds = dataRowEntityIds.value.slice(dataIndex, dataIndex + amount)
+  const insertedRows = rows.value.slice(dataIndex, dataIndex + amount).map((row) => normalizeRow(row, columnHeaders.value))
+  let afterRowId = dataIndex > 0 ? dataRowEntityIds.value[dataIndex - 1] ?? null : null
+  const operations: NoteSheetPatchOperation[] = insertedIds.map((rowId, offset) => {
+    const operation: NoteSheetPatchOperation = {
+      op: 'insert-row',
+      after_row_id: afterRowId,
+      row_id: rowId,
+      row: insertedRows[offset] ?? createEmptyRow(columnHeaders.value.length),
+    }
+    afterRowId = rowId
+    return operation
+  })
+  queueImmediateSheetPatchSave(operations, '插入行保存失败，已保留本地草稿')
 }
 
 function handleAfterRemoveRow(index = 0, amount = 1) {
+  suppressNextRemoteSaveWatcher = true
   const dataIndex = Math.max(0, getDataRowIndex(index))
+  const removedRowIds = dataRowEntityIds.value.slice(dataIndex, dataIndex + amount)
   const documentDataIndex = getDocumentRowIndex(dataIndex)
   const removedPageRowIndexes = pageRowIndexes.value
     ? pageRowIndexes.value.slice(dataIndex, dataIndex + amount)
@@ -18380,9 +19056,17 @@ function handleAfterRemoveRow(index = 0, amount = 1) {
       return rowIndex >= endIndex ? rowIndex - amount : rowIndex
     })
   }
+  queueImmediateSheetPatchSave(
+    removedRowIds.map((rowId): NoteSheetPatchOperation => ({
+      op: 'delete-row',
+      row_id: rowId,
+    })),
+    '删除行保存失败，已保留本地草稿',
+  )
 }
 
 function handleAfterCreateCol(hotIndex: number, amount: number) {
+  suppressNextRemoteSaveWatcher = true
   const index = Math.max(0, toSheetColumnIndex(hotIndex))
   const insertionTemplate = pendingColumnInsertionTemplate
   const nextHeaders = [...columnHeaders.value]
@@ -18409,6 +19093,26 @@ function handleAfterCreateCol(hotIndex: number, amount: number) {
   remapFormulaReferencesInRows(undefined, (columnIndex) => (
     columnIndex >= index ? columnIndex + amount : columnIndex
   ))
+  let afterColumnId = index > 0 ? columnEntityIds.value[index - 1] ?? null : null
+  const normalizedConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
+  const operations: NoteSheetPatchOperation[] = Array.from({ length: amount }, (_, offset) => {
+    const columnIndex = index + offset
+    const columnId = columnEntityIds.value[columnIndex]
+    const header = columnHeaders.value[columnIndex] ?? createFallbackHeader(columnIndex)
+    const operation: NoteSheetPatchOperation = {
+      op: 'insert-column',
+      after_column_id: afterColumnId,
+      column_id: columnId,
+      column: {
+        header,
+        width: normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex)),
+        config: normalizedConfigs[header] ?? {},
+      },
+    }
+    afterColumnId = columnId
+    return operation
+  })
+  queueImmediateSheetPatchSave(operations, '插入列保存失败，已保留本地草稿')
 }
 
 function handleBeforeRemoveCol(hotIndex: number, amount: number) {
@@ -18419,7 +19123,9 @@ function handleBeforeRemoveCol(hotIndex: number, amount: number) {
 }
 
 function handleAfterRemoveCol(hotIndex: number, amount: number) {
+  suppressNextRemoteSaveWatcher = true
   const index = Math.max(0, toSheetColumnIndex(hotIndex))
+  const removedColumnIds = columnEntityIds.value.slice(index, index + amount)
   const nextHeaders = [...columnHeaders.value]
   nextHeaders.splice(index, amount)
   columnHeaders.value = nextHeaders.length ? nextHeaders : [createFallbackHeader(0)]
@@ -18441,6 +19147,13 @@ function handleAfterRemoveCol(hotIndex: number, amount: number) {
     }
     return columnIndex >= endIndex ? columnIndex - amount : columnIndex
   })
+  queueImmediateSheetPatchSave(
+    removedColumnIds.map((columnId): NoteSheetPatchOperation => ({
+      op: 'delete-column',
+      column_id: columnId,
+    })),
+    '删除列保存失败，已保留本地草稿',
+  )
 }
 
 function getSelectionColumnBounds() {
@@ -19221,7 +19934,8 @@ function commitRichTextContentEditor(options: { close?: boolean; save?: boolean 
     ? getRichTextContentEditorText()
     : normalizeCellInputValueForColumn(getRichTextContentEditorText(), cell.column)
   const hot = getHotInstance()
-  if (getGridCellRawValue(cell.row, cell.column) !== finalText) {
+  const valueChanged = getGridCellRawValue(cell.row, cell.column) !== finalText
+  if (valueChanged) {
     if (hot) {
       hot.setDataAtCell(cell.row, toHotColumnIndex(cell.column), finalText, 'rich-text-inline')
     } else {
@@ -19229,15 +19943,23 @@ function commitRichTextContentEditor(options: { close?: boolean; save?: boolean 
     }
   }
 
+  let metaResult: SheetCellMetaPatchResult | null = null
   if (isFormulaExpression(finalText)) {
-    clearCellRichTextFormat(cell.documentRow, cell.column)
+    metaResult = clearCellRichTextFormat(cell.documentRow, cell.column)
   } else {
-    setCellRichText(cell.documentRow, cell.column, { spans: state.spans }, finalText)
+    metaResult = setCellRichText(cell.documentRow, cell.column, { spans: state.spans }, finalText)
   }
   syncFormulaBarFromRichTextContentEditor(finalText)
   refreshFormulaDisplayState()
   if (options.save !== false) {
-    scheduleRemoteSave(0)
+    queueImmediateDataCellValueAndMetaPatchSave(
+      cell.documentRow,
+      cell.column,
+      finalText,
+      metaResult,
+      valueChanged,
+      '富文本保存失败，已保留本地草稿',
+    )
   }
   if (options.close) {
     richTextContentEditor.value = {
@@ -20197,6 +20919,9 @@ function handleBeforeKeyDown(event: KeyboardEvent) {
   if (handleFormulaReferenceArrowKey(event)) {
     return false
   }
+  if (clearSelectedEditableDataCellsFromKeyboard(event)) {
+    return false
+  }
   return undefined
 }
 
@@ -20735,6 +21460,9 @@ function mergeSelectedCells() {
   }
   const undoEntry = createLocalUndoEntry('merge-cells')
   const anchorSynced = syncMergedCellAnchorFromVisibleGrid(nextCell)
+  if (!anchorSynced) {
+    suppressNextRemoteSaveWatcher = true
+  }
   mergedCells.value = normalizeMergedCells(
     [...mergedCells.value, nextCell],
     getMergedCellsDocumentRowCount(),
@@ -20745,7 +21473,17 @@ function mergeSelectedCells() {
     refreshFormulaDisplayState()
   }
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  if (anchorSynced) {
+    scheduleRemoteSave(0)
+  } else {
+    queueImmediateMergePatchSave([{
+      op: 'merge-cells',
+      row: nextCell.row,
+      col: nextCell.col,
+      rowspan: nextCell.rowspan,
+      colspan: nextCell.colspan,
+    }])
+  }
 }
 
 function getSelectedMergedCells() {
@@ -20827,6 +21565,9 @@ function unmergeSelectedCells() {
     anchorSynced = syncMergedCellAnchorFromVisibleGrid(cell) || anchorSynced
   })
   const selectedKeys = new Set(selected.map((cell) => `${cell.row}:${cell.col}`))
+  if (!anchorSynced) {
+    suppressNextRemoteSaveWatcher = true
+  }
   mergedCells.value = normalizeMergedCells(
     mergedCells.value.filter((cell) => !selectedKeys.has(`${cell.row}:${cell.col}`)),
     getMergedCellsDocumentRowCount(),
@@ -20834,9 +21575,15 @@ function unmergeSelectedCells() {
   )
   refreshGridStructure()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
   if (anchorSynced) {
     refreshFormulaDisplayState()
+    scheduleRemoteSave(0)
+  } else {
+    queueImmediateMergePatchSave(selected.map((cell): NoteSheetPatchOperation => ({
+      op: 'unmerge-cells',
+      row: cell.row,
+      col: cell.col,
+    })))
   }
 }
 
@@ -20859,7 +21606,8 @@ function getCellLinkAt(documentRow: number, columnIndex: number) {
 }
 
 function getCellActionAt(documentRow: number, columnIndex: number) {
-  return getCellMetaAt(documentRow, columnIndex)?.action ?? null
+  const action = getCellMetaAt(documentRow, columnIndex)?.action ?? null
+  return action?.type === SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA ? null : action
 }
 
 function getCellStyleAt(documentRow: number, columnIndex: number) {
@@ -20890,7 +21638,7 @@ function updateCellMetaEntry(
   documentRow: number,
   columnIndex: number,
   updater: (entry: SheetCellMeta) => SheetCellMeta,
-) {
+): SheetCellMetaPatchResult | null {
   const anchor = getMergeAnchorForDocumentCell(documentRow, columnIndex)
   const targetRow = anchor.documentRow
   const targetColumn = anchor.column
@@ -20909,11 +21657,16 @@ function updateCellMetaEntry(
   }
   cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
   getHotInstance()?.render()
+  return {
+    documentRow: targetRow,
+    column: targetColumn,
+    meta: nextEntry,
+  }
 }
 
 function setCellLink(documentRow: number, columnIndex: number, url: string) {
   const normalizedUrl = normalizeHyperlinkUrl(url)
-  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+  return updateCellMetaEntry(documentRow, columnIndex, (entry) => {
     const nextEntry = { ...entry }
     if (normalizedUrl) {
       nextEntry.link = { url: normalizedUrl }
@@ -20945,7 +21698,7 @@ function setColumnHeaderLink(columnIndex: number, url: string) {
 
 function setCellStyle(documentRow: number, columnIndex: number, styleSource: unknown) {
   const normalizedStyle = normalizeCellStyle(styleSource)
-  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+  return updateCellMetaEntry(documentRow, columnIndex, (entry) => {
     const nextEntry = { ...entry }
     if (normalizedStyle) {
       nextEntry.style = normalizedStyle
@@ -20960,7 +21713,7 @@ function setCellRichText(documentRow: number, columnIndex: number, richTextSourc
   const normalizedRichText = isFormulaExpression(text)
     ? null
     : normalizeRichTextForText(richTextSource, text)
-  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+  return updateCellMetaEntry(documentRow, columnIndex, (entry) => {
     const nextEntry = { ...entry }
     if (normalizedRichText) {
       nextEntry.cell_type = 'rich_text'
@@ -20974,9 +21727,9 @@ function setCellRichText(documentRow: number, columnIndex: number, richTextSourc
 
 function clearCellRichText(documentRow: number, columnIndex: number) {
   if (!hasCellRichTextAt(documentRow, columnIndex)) {
-    return
+    return null
   }
-  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+  return updateCellMetaEntry(documentRow, columnIndex, (entry) => {
     const nextEntry = { ...entry }
     delete nextEntry.rich_text
     return nextEntry
@@ -20986,9 +21739,9 @@ function clearCellRichText(documentRow: number, columnIndex: number) {
 function clearCellRichTextFormat(documentRow: number, columnIndex: number) {
   const meta = getCellMetaAt(documentRow, columnIndex)
   if (!meta?.cell_type && !meta?.rich_text) {
-    return
+    return null
   }
-  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+  return updateCellMetaEntry(documentRow, columnIndex, (entry) => {
     const nextEntry = { ...entry }
     delete nextEntry.cell_type
     delete nextEntry.rich_text
@@ -20999,13 +21752,14 @@ function clearCellRichTextFormat(documentRow: number, columnIndex: number) {
 function updateCellMetaEntries(
   cells: SelectedSheetCell[],
   updater: (entry: SheetCellMeta, cell: SelectedSheetCell) => SheetCellMeta,
-) {
+): SheetCellMetaPatchResult[] {
   const anchorCells = normalizeSheetCellsToMergeAnchors(cells)
   if (!anchorCells.length) {
-    return
+    return []
   }
 
   const nextMeta = { ...cellMeta.value }
+  const results: SheetCellMetaPatchResult[] = []
   anchorCells.forEach((cell) => {
     const key = createCellMetaKey(cell.documentRow, cell.column)
     const nextEntry = normalizeCellMetaEntry(updater({ ...(nextMeta[key] ?? {}) }, cell))
@@ -21019,9 +21773,15 @@ function updateCellMetaEntries(
     } else {
       delete nextMeta[key]
     }
+    results.push({
+      documentRow: cell.documentRow,
+      column: cell.column,
+      meta: nextEntry,
+    })
   })
   cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
   getHotInstance()?.render()
+  return results
 }
 
 function getCommonSelectedCellStyle(cells: SelectedSheetCell[], field: SheetCellStyleField) {
@@ -21128,7 +21888,7 @@ function pasteCellFormatToSelectedCells() {
     })
   }
   const undoEntry = createLocalUndoEntry('cell-format')
-  updateCellMetaEntries(cells, (entry, cell) => {
+  const metaPatchResults = updateCellMetaEntries(cells, (entry, cell) => {
     const nextEntry = { ...entry }
     const key = createCellMetaKey(cell.documentRow, cell.column)
     if (copiedCellType === 'rich_text' && !rejectedKeys.has(key)) {
@@ -21145,7 +21905,7 @@ function pasteCellFormatToSelectedCells() {
     return nextEntry
   })
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateCellMetaPatchSave(metaPatchResults)
   if (rejectedKeys.size) {
     ElMessage.warning('公式或动作单元格不支持富文本类型，已跳过')
   }
@@ -21450,11 +22210,13 @@ function applyRichTextInlineToolbarPatch(patch: SheetRichTextStyle) {
   }
 
   const undoEntry = createLocalUndoEntry('rich-text')
+  const previousText = getGridCellRawValue(target.cell.row, target.cell.column)
   const finalText = commitRichTextInlineToolbarText(target)
   if (finalText == null) {
     ElMessage.warning('公式单元格不支持富文本')
-    clearCellRichTextFormat(target.cell.documentRow, target.cell.column)
+    const metaResult = clearCellRichTextFormat(target.cell.documentRow, target.cell.column)
     pushLocalUndoEntry(undoEntry)
+    queueImmediateCellMetaPatchSave([metaResult])
     hideRichTextInlineToolbar({ force: true })
     return
   }
@@ -21475,11 +22237,18 @@ function applyRichTextInlineToolbarPatch(patch: SheetRichTextStyle) {
     slots[index] = mergeRichTextStyles(slots[index], patch)
   }
 
-  setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
+  const metaResult = setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
   refreshFormulaDisplayState()
   syncFormulaBarDraftFromSelectedCell(true)
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateDataCellValueAndMetaPatchSave(
+    target.cell.documentRow,
+    target.cell.column,
+    finalText,
+    metaResult,
+    previousText !== finalText,
+    '富文本保存失败，已保留本地草稿',
+  )
   restoreRichTextInlineEditorSelection(target, finalText)
   richTextInlineToolbar.value = {
     ...richTextInlineToolbar.value,
@@ -21501,6 +22270,7 @@ function clearRichTextInlineToolbarSelectionStyle() {
   }
 
   const undoEntry = createLocalUndoEntry('rich-text')
+  const previousText = getGridCellRawValue(target.cell.row, target.cell.column)
   const finalText = commitRichTextInlineToolbarText(target)
   if (finalText == null) {
     ElMessage.warning('公式单元格不支持富文本')
@@ -21517,11 +22287,18 @@ function clearRichTextInlineToolbarSelectionStyle() {
     slots[index] = null
   }
 
-  setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
+  const metaResult = setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
   refreshFormulaDisplayState()
   syncFormulaBarDraftFromSelectedCell(true)
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateDataCellValueAndMetaPatchSave(
+    target.cell.documentRow,
+    target.cell.column,
+    finalText,
+    metaResult,
+    previousText !== finalText,
+    '富文本保存失败，已保留本地草稿',
+  )
   restoreRichTextInlineEditorSelection(target, finalText)
 }
 
@@ -21784,6 +22561,7 @@ function applyCellRichTextDialog() {
 
   const undoEntry = createLocalUndoEntry('rich-text')
   let finalText = nextText
+  const previousText = getGridCellRawValue(cell.row, cell.column)
   if (cell.row < sheetHeaderRowCount.value) {
     applySheetHeaderGridChange(cell.row, cell.column, finalText)
   } else {
@@ -21804,12 +22582,19 @@ function applyCellRichTextDialog() {
     }
   }
 
-  setCellRichText(cell.documentRow, cell.column, { spans: cellRichTextDraftSpans.value }, finalText)
+  const metaResult = setCellRichText(cell.documentRow, cell.column, { spans: cellRichTextDraftSpans.value }, finalText)
   refreshFormulaDisplayState()
   syncFormulaBarDraftFromSelectedCell(true)
   refreshGridStructure()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateDataCellValueAndMetaPatchSave(
+    cell.documentRow,
+    cell.column,
+    finalText,
+    metaResult,
+    previousText !== finalText,
+    '富文本保存失败，已保留本地草稿',
+  )
   closeCellRichTextDialog()
 }
 
@@ -21980,7 +22765,7 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
   }
 
   const undoEntry = createLocalUndoEntry('cell-style')
-  updateCellMetaEntries(cells, (entry, cell) => {
+  const metaPatchResults = updateCellMetaEntries(cells, (entry, cell) => {
     const nextEntry = { ...entry }
     const nextStyle: SheetCellStyle = { ...(nextEntry.style ?? {}) }
     if (touched.cell_type) {
@@ -22049,6 +22834,7 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
     return nextEntry
   })
   pushLocalUndoEntry(undoEntry)
+  queueImmediateCellMetaPatchSave(metaPatchResults)
   if (richTextTypeRejectedKeys.size) {
     ElMessage.warning('公式或动作单元格不支持富文本类型，已跳过')
   }
@@ -22133,7 +22919,7 @@ function clearCellStyleDialog() {
   const cells = [...cellStyleDialogCells.value]
   if (cells.length) {
     const undoEntry = createLocalUndoEntry('cell-style')
-    updateCellMetaEntries(cells, (entry) => {
+    const metaPatchResults = updateCellMetaEntries(cells, (entry) => {
       const nextEntry = { ...entry }
       delete nextEntry.style
       delete nextEntry.cell_type
@@ -22141,6 +22927,7 @@ function clearCellStyleDialog() {
       return nextEntry
     })
     pushLocalUndoEntry(undoEntry)
+    queueImmediateCellMetaPatchSave(metaPatchResults)
   }
   closeCellStyleDialog()
 }
@@ -22314,27 +23101,45 @@ function applyCellLinkDialog() {
     }
 
     const undoEntry = createLocalUndoEntry('cell-link')
+    let metaResult: SheetCellMetaPatchResult | null = null
+    let configOperation: NoteSheetPatchOperation | null = null
     if (target.kind === 'cell') {
-      setCellLink(target.row, target.column, '')
+      metaResult = setCellLink(target.row, target.column, '')
     } else {
-      setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, '')
+      metaResult = setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, '')
       setColumnHeaderLink(target.column, '')
+      configOperation = buildColumnConfigPatchOperation(target.column)
     }
     pushLocalUndoEntry(undoEntry)
-    scheduleRemoteSave(0)
+    const operations = [
+      ...buildCellMetaPatchOperations([metaResult]),
+      ...(configOperation ? [configOperation] : []),
+    ]
+    if (operations.length) {
+      queueImmediateSheetPatchSave(operations, '链接保存失败，已保留本地草稿')
+    }
     closeCellLinkDialog()
     return
   }
 
   const undoEntry = createLocalUndoEntry('cell-link')
+  let metaResult: SheetCellMetaPatchResult | null = null
+  let configOperation: NoteSheetPatchOperation | null = null
   if (target.kind === 'cell') {
-    setCellLink(target.row, target.column, normalizedUrl)
+    metaResult = setCellLink(target.row, target.column, normalizedUrl)
   } else {
-    setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, normalizedUrl)
+    metaResult = setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, normalizedUrl)
     setColumnHeaderLink(target.column, normalizedUrl)
+    configOperation = buildColumnConfigPatchOperation(target.column)
   }
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  const operations = [
+    ...buildCellMetaPatchOperations([metaResult]),
+    ...(configOperation ? [configOperation] : []),
+  ]
+  if (operations.length) {
+    queueImmediateSheetPatchSave(operations, '链接保存失败，已保留本地草稿')
+  }
   closeCellLinkDialog()
 }
 
@@ -22966,6 +23771,10 @@ function applyColumnSettings() {
       getSheetHeaderRowCountForColumnNoteEntity(hasColumnNoteEntityRow.value),
     )
     : rows.value
+  const canPatchColumnSettings = !normalizedValuesChanged && nextRows === rows.value
+  if (canPatchColumnSettings) {
+    suppressNextRemoteSaveWatcher = true
+  }
 
   if (configChanged) {
     columnConfigs.value = nextNormalizedConfigs
@@ -22979,9 +23788,35 @@ function applyColumnSettings() {
   refreshGridStructure()
   void refreshComputedRowHeights()
   pushLocalUndoEntry(undoEntry)
-  void nextTick(() => {
-    scheduleRemoteSave(0)
-  })
+  if (canPatchColumnSettings) {
+    const operations: NoteSheetPatchOperation[] = []
+    const normalizedConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
+    for (const columnIndex of indexes) {
+      const header = columnHeaders.value[columnIndex]
+      if (!header) {
+        continue
+      }
+      if (configChanged) {
+        operations.push({
+          op: 'set-column-config',
+          column_index: columnIndex,
+          config: normalizedConfigs[header] ?? {},
+        })
+      }
+      if (widthChanged) {
+        operations.push({
+          op: 'set-column-width',
+          column_index: columnIndex,
+          width: normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex)),
+        })
+      }
+    }
+    queueImmediateColumnConfigPatchSave(operations)
+  } else {
+    void nextTick(() => {
+      scheduleRemoteSave(0)
+    })
+  }
 }
 
 function shouldShowRemoveColumnAction() {
@@ -22991,6 +23826,87 @@ function shouldShowRemoveColumnAction() {
 function shouldShowRemoveRowAction() {
   const hot = getHotInstance()
   return shouldShowRowActions() && !!getSelectionRowBounds() && !!hot?.countSourceRows()
+}
+
+function isRowRangeWithinData(
+  bounds: { start: number; end: number } | null | undefined,
+): bounds is { start: number; end: number } {
+  return !!bounds && bounds.start >= 0 && bounds.end >= bounds.start && bounds.end < rows.value.length
+}
+
+function shouldShowCutRowAction() {
+  return isWholeRowSelection() && !isSelectedByCorner() && isRowRangeWithinData(getSelectionRowBounds())
+}
+
+function getValidCutRowBounds() {
+  if (!isRowRangeWithinData(cutRowBounds)) {
+    cutRowBounds = null
+    return null
+  }
+  return cutRowBounds
+}
+
+function shouldShowPasteCutRowAction() {
+  return !!getValidCutRowBounds() && isWholeRowSelection() && !isSelectedByCorner() && isRowRangeWithinData(getSelectionRowBounds())
+}
+
+function getDataRowRangeLabel(bounds: { start: number; end: number }) {
+  const startLabel = getSheetRowHeaderLabel(getGridRowIndex(bounds.start))
+  const endLabel = getSheetRowHeaderLabel(getGridRowIndex(bounds.end))
+  return bounds.start === bounds.end ? `第 ${startLabel} 行` : `第 ${startLabel}-${endLabel} 行`
+}
+
+function cutSelectedRows() {
+  if (!ensureCanEditData()) {
+    return
+  }
+
+  const bounds = getSelectionRowBounds()
+  if (!isRowRangeWithinData(bounds)) {
+    return
+  }
+  cutRowBounds = { start: bounds.start, end: bounds.end }
+  ElMessage.success(`已剪切${getDataRowRangeLabel(cutRowBounds)}`)
+}
+
+function pasteCutRowsFromSelection(side: 'above' | 'below') {
+  if (!ensureCanEditData()) {
+    return
+  }
+
+  const sourceBounds = getValidCutRowBounds()
+  const targetBounds = getSelectionRowBounds()
+  if (!sourceBounds || !isRowRangeWithinData(targetBounds)) {
+    return
+  }
+
+  const targetDataIndex = side === 'above' ? targetBounds.start : targetBounds.end
+  if (targetDataIndex >= sourceBounds.start && targetDataIndex <= sourceBounds.end) {
+    ElMessage.info('目标行在已剪切行内，无需移动')
+    return
+  }
+
+  const movedRows = Array.from(
+    { length: sourceBounds.end - sourceBounds.start + 1 },
+    (_, offset) => sourceBounds.start + offset,
+  )
+  const movedRowSet = new Set(movedRows)
+  let remainingBeforeTarget = 0
+  for (let rowIndex = 0; rowIndex < targetDataIndex; rowIndex += 1) {
+    if (!movedRowSet.has(rowIndex)) {
+      remainingBeforeTarget += 1
+    }
+  }
+  const finalIndex = remainingBeforeTarget + (side === 'below' ? 1 : 0)
+
+  const moved = moveDataRowsToFinalIndex(movedRows, finalIndex, 'row-cut-paste')
+  if (!moved) {
+    ElMessage.warning('当前行无法移动，可能是合并单元格选区不完整')
+    return
+  }
+
+  cutRowBounds = null
+  ElMessage.success(`已移动到${getDataRowRangeLabel(targetBounds)}${side === 'above' ? '上方' : '下方'}`)
 }
 
 function getSingleSelectedRowDetailIndex() {
@@ -23279,8 +24195,14 @@ function updateRowDetailItemValue(item: SheetRowDetailItem, value: unknown) {
 
   const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
   nextRows[rowIndex][item.columnIndex] = nextValue
+  suppressNextRemoteSaveWatcher = true
   rows.value = nextRows
-  scheduleRemoteSave()
+  queueImmediateCellPatchSave([{
+    op: 'set-cell-value',
+    row_index: getDocumentRowIndex(rowIndex),
+    column_index: item.columnIndex,
+    value: nextValue,
+  }])
 }
 
 function getStudentLookupSectionTitle(columnIndex: number) {
@@ -24042,10 +24964,17 @@ function hideSelectedColumns() {
 
   clearEditingColumnState()
   closeColumnNotePopover()
+  suppressNextRemoteSaveWatcher = true
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
-  scheduleRemoteSave(0)
+  queueImmediateColumnConfigPatchSave(
+    Array.from({ length: bounds.end - bounds.start + 1 }, (_, offset): NoteSheetPatchOperation => ({
+      op: 'set-column-hidden',
+      column_index: bounds.start + offset,
+      hidden: true,
+    })),
+  )
 }
 
 function isVisibleColumnEmpty(columnIndex: number) {
@@ -24160,11 +25089,16 @@ function detectAndSetOptionFilters() {
   const undoEntry = createLocalUndoEntry('column-settings')
   closeColumnFilterPopover()
   closeColumnNotePopover()
+  suppressNextRemoteSaveWatcher = true
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateColumnConfigPatchSave(indexes.map((index): NoteSheetPatchOperation => ({
+    op: 'set-column-config',
+    column_index: index,
+    config: nextConfigs[columnHeaders.value[index]] ?? {},
+  })))
   ElMessage.success(`已设置 ${indexes.length} 个选项筛选字段`)
 }
 
@@ -24195,11 +25129,16 @@ function hideEmptyColumns() {
   const undoEntry = createLocalUndoEntry('column-hide')
   clearEditingColumnState()
   closeColumnNotePopover()
+  suppressNextRemoteSaveWatcher = true
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateColumnConfigPatchSave(indexes.map((index): NoteSheetPatchOperation => ({
+    op: 'set-column-hidden',
+    column_index: index,
+    hidden: true,
+  })))
   ElMessage.success(`已隐藏 ${indexes.length} 个空列`)
 }
 
@@ -24229,11 +25168,16 @@ function showHiddenColumnsFromSelection() {
   const undoEntry = createLocalUndoEntry('column-show')
   clearEditingColumnState()
   closeColumnNotePopover()
+  suppressNextRemoteSaveWatcher = true
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  queueImmediateColumnConfigPatchSave(indexes.map((index): NoteSheetPatchOperation => ({
+    op: 'set-column-hidden',
+    column_index: index,
+    hidden: false,
+  })))
 }
 
 function restoreHiddenColumn(header: string) {
@@ -24285,7 +25229,16 @@ function restoreHiddenColumn(header: string) {
   refreshGridStructure()
   void refreshComputedRowHeights()
   pushLocalUndoEntry(undoEntry)
-  scheduleRemoteSave(0)
+  if (restoreIndex >= 0 && currentIndex !== restoreIndex) {
+    scheduleRemoteSave(0)
+  } else {
+    suppressNextRemoteSaveWatcher = true
+    queueImmediateColumnConfigPatchSave([{
+      op: 'set-column-hidden',
+      column_index: currentIndex,
+      hidden: false,
+    }])
+  }
 }
 
 function removeSelectedRows() {
@@ -24718,7 +25671,7 @@ function handleAfterRenderer(
     renderCellActionButton(TD, renderedText, action, {
       documentRow,
       column: renderColumn,
-    })
+    }, rawText)
   } else if (richText) {
     renderRichTextCell(TD, renderedText, richText)
   } else if (formulaText != null || renderedText !== rawText) {
@@ -24906,6 +25859,10 @@ watch(
 watch(
   [rows, columnHeaders, headerGroups, cellMeta, columnConfigs, columnWidths],
   () => {
+    if (suppressNextRemoteSaveWatcher) {
+      suppressNextRemoteSaveWatcher = false
+      return
+    }
     scheduleRemoteSave()
   },
   { deep: true },
@@ -24948,6 +25905,7 @@ watch(
     userMatchStartPending.value = false
     clearSaveTimer()
     resetSheetFilterReloadState()
+    closeSheetResourceSocket()
     if (!nextSheetId) {
       restoreInitialDocumentSeq += 1
       sheetLoadSettled.value = true
@@ -24990,6 +25948,7 @@ watch(
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
     }).finally(() => {
+      connectSheetResourceSocket()
       void updateSheetViewportHeight()
     })
   },
@@ -25207,6 +26166,7 @@ onMounted(() => {
       initialDetail: getUsableInitialSheetDetail(props.initialDetail),
       applyInitialWorkspaceView: true,
     }).finally(() => {
+      connectSheetResourceSocket()
       void updateSheetViewportHeight()
     })
   } else if (hasInlineDocument.value) {
@@ -25218,6 +26178,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  closeSheetResourceSocket()
   closeRichTextContentEditor({ save: true })
   clearSheetRenderEnhancementFrame()
   clearSheetOverlayAlignmentFrame()
@@ -25279,6 +26240,15 @@ defineExpose({
         :disabled="!canEditConfig"
       />
       <el-button v-if="showBackButton" @click="router.push(backTo)">{{ backLabel }}</el-button>
+      <div v-if="showUserIdentity" class="sheet-user-slot">
+        <span v-if="userIdentityLabel" class="sheet-user-identity">
+          <el-icon><User /></el-icon>
+          <span>{{ userIdentityLabel }}</span>
+        </span>
+        <button v-else type="button" class="sheet-login-button" @click="openLoginPage">
+          登录
+        </button>
+      </div>
     </div>
 
     <div v-if="shouldRenderSheetContent" class="sheet-formula-bar">
@@ -27015,6 +27985,40 @@ defineExpose({
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.sheet-user-slot {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+.sheet-user-identity,
+.sheet-login-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 32px;
+  white-space: nowrap;
+}
+
+.sheet-user-identity :deep(.el-icon) {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.sheet-login-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.sheet-login-button:hover {
+  color: #1d4ed8;
 }
 
 .sheet-student-lookup {

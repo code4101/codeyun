@@ -157,7 +157,7 @@ def _map_text(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     if "最近运行更新时间" in value:
-        return "最近运行更新时间：\n待首次同步"
+        return "待首次同步"
     return _shift_template_dates(value)
 
 
@@ -205,6 +205,74 @@ def _remove_column(document: dict[str, Any], column_index: int) -> None:
             col -= 1
         merged_cells.append({**item, "col": col, "colspan": colspan})
     document["merged_cells"] = merged_cells
+
+
+def _move_column(document: dict[str, Any], from_index: int, to_index: int) -> None:
+    columns = list(document.get("columns") or [])
+    if not 0 <= from_index < len(columns) or not 0 <= to_index < len(columns) or from_index == to_index:
+        return
+
+    def move_item(items: list[Any]) -> list[Any]:
+        next_items = list(items)
+        item = next_items.pop(from_index)
+        next_items.insert(to_index, item)
+        return next_items
+
+    def normalize_row(row: Any) -> list[Any]:
+        if isinstance(row, list):
+            return [*row[:len(columns)], *([""] * max(len(columns) - len(row), 0))]
+        return [""] * len(columns)
+
+    document["columns"] = move_item(columns)
+    for key in ("rows", "grid_rows"):
+        document[key] = [move_item(normalize_row(row)) for row in document.get(key) or [] if isinstance(row, list)]
+
+    widths = list(document.get("column_widths") or [])
+    if len(widths) == len(columns):
+        document["column_widths"] = move_item(widths)
+
+    if "cell_meta" in document:
+        index_map = {index: index for index in range(len(columns))}
+        moved = index_map.pop(from_index)
+        for index in list(index_map):
+            if from_index < index <= to_index:
+                index_map[index] = index - 1
+            elif to_index <= index < from_index:
+                index_map[index] = index + 1
+        index_map[from_index] = to_index
+        for index in range(len(columns)):
+            if index == from_index:
+                continue
+            if from_index < to_index and from_index < index <= to_index:
+                index_map[index] = index - 1
+            elif to_index < from_index and to_index <= index < from_index:
+                index_map[index] = index + 1
+            else:
+                index_map[index] = index
+        index_map[from_index] = to_index
+        adjusted_meta: dict[str, Any] = {}
+        for key, value in dict(document.get("cell_meta") or {}).items():
+            try:
+                row_text, col_text = str(key).split(":", 1)
+                col = int(col_text)
+            except ValueError:
+                adjusted_meta[key] = value
+                continue
+            adjusted_meta[f"{row_text}:{index_map.get(col, col)}"] = value
+        document["cell_meta"] = adjusted_meta
+
+    # Current templates only have header merges over this area; they are rebuilt by _normalize_refund_layout.
+
+
+def _ensure_refunded_before_order_amount(document: dict[str, Any]) -> None:
+    columns = list(document.get("columns") or [])
+    if "已返款" not in columns or "订单金额" not in columns:
+        return
+    refunded_index = columns.index("已返款")
+    order_amount_index = columns.index("订单金额")
+    if refunded_index < order_amount_index:
+        return
+    _move_column(document, refunded_index, order_amount_index)
 
 
 def _set_cell_style(document: dict[str, Any], row: int, col: int, style: dict[str, Any]) -> None:
@@ -273,10 +341,11 @@ def _lesson_label(config: dict[str, Any], number: int) -> str:
 
 def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
     doc = _map_text(copy.deepcopy(document))
-    for column_name in ("返款配置", "已返款"):
+    for column_name in ("返款配置",):
         columns = list(doc.get("columns") or [])
         if column_name in columns:
             _remove_column(doc, columns.index(column_name))
+    _ensure_refunded_before_order_amount(doc)
 
     columns = list(doc.get("columns") or [])
     grid_rows = [list(row) for row in doc.get("grid_rows") or [] if isinstance(row, list)]
@@ -303,14 +372,16 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
         _set_cell_link(doc, 1, extra_start + 1, None)
 
     feedback_index = columns.index("打卡应返款")
-    order_amount_index = columns.index("总应返款")
-    refund_period_index = columns.index("订单金额")
+    total_refund_index = columns.index("总应返款")
+    refund_period_index = columns.index("已返款")
+    standard_amount_index = columns.index("订单金额")
     status_index = columns.index("当前应返款")
     clockin_index = columns.index("打卡数")
     grid_rows[2][feedback_index] = "点击我-反馈考勤返款数据问题。义工有空会统一处理。"
-    grid_rows[2][order_amount_index] = 499
+    grid_rows[2][total_refund_index] = ""
     grid_rows[2][refund_period_index] = '="第"&返款周期&"天"'
-    grid_rows[2][status_index] = "最近运行更新时间：\n待首次同步"
+    grid_rows[2][standard_amount_index] = 499
+    grid_rows[2][status_index] = "待首次同步"
     grid_rows[2][clockin_index] = "只统计正课的打卡次数！！！"
     doc["columns"] = columns
     doc["grid_rows"] = grid_rows[: int(doc.get("data_start_row") or 0)]
@@ -328,8 +399,9 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
     _normalize_refund_layout(doc)
     _set_cell_style(doc, 2, 1, {"font_size": 16, "text_color": "#FF0000", "text_align": "center", "vertical_align": "middle", "background_color": "#D9D9D9"})
     _set_cell_style(doc, 2, feedback_index, {"background_color": "#D9D9D9", "text_color": "#333333", "text_align": "center", "vertical_align": "middle"})
-    _set_cell_style(doc, 2, order_amount_index, {"background_color": "#D9D9D9", "text_color": "#555555", "text_align": "center", "vertical_align": "middle"})
+    _set_cell_style(doc, 2, total_refund_index, {"background_color": "#D9D9D9", "text_color": "#555555", "text_align": "center", "vertical_align": "middle"})
     _set_cell_style(doc, 2, refund_period_index, {"background_color": "#D9D9D9", "text_color": "#555555", "text_align": "center", "vertical_align": "middle"})
+    _set_cell_style(doc, 2, standard_amount_index, {"background_color": "#D9D9D9", "text_color": "#555555", "text_align": "center", "vertical_align": "middle"})
     _set_cell_style(doc, 2, status_index, {"background_color": "#D9D9D9", "text_color": "#555555", "text_align": "center", "vertical_align": "middle"})
     _set_cell_style(doc, 2, first_lesson_index, {"text_align": "left", "vertical_align": "middle", "background_color": "#D9D9D9"})
     doc["defined_names"] = _attendance_defined_names()

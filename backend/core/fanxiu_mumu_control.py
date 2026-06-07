@@ -28,7 +28,7 @@ from pyxllib.cv.rgbfmt import (
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
-from backend.core.sunlogin_rotate_preview import (
+from backend.core.window_capture_preview import (
     WindowCapture,
     activate_window,
     click_window_title_bar,
@@ -45,11 +45,11 @@ from backend.core.sunlogin_rotate_preview import (
 )
 
 
-PROCESS_ENV_MARKER = "CODEYUN_FANXIU_SUNLOGIN_ROTATE"
+PROCESS_ENV_MARKER = "CODEYUN_FANXIU_MUMU_CONTROL"
 PROCESS_ENV_VALUE = "1"
-PREVIEW_MODULE = "backend.core.sunlogin_rotate_preview"
-DEFAULT_TARGET_TITLE = "1249152866"
-DEFAULT_PREVIEW_TITLE = "codeyun-sunlogin-rotate"
+PREVIEW_MODULE = "backend.core.window_capture_preview"
+DEFAULT_TARGET_TITLE = "MuMu"
+DEFAULT_PREVIEW_TITLE = "codeyun-mumu-window"
 DEFAULT_FPS = "15"
 DEFAULT_CROP = "0,49,4,4"
 DEFAULT_TRIM_BORDER = "0,0,0,0"
@@ -70,6 +70,8 @@ _LATEST_FRAME_MAX_AGE_SECONDS = 3.0
 _SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.(?:jpe?g|png)$", re.IGNORECASE)
 _SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MUMU_ADB_PORTS = (7555, 16416, 5555)
+MUMU_ADB_SERIAL_ENV_KEYS = ("FANXIU_MUMU_ADB_SERIAL", "FANXIU_ADB_DEVICE_ID", "FANXIU_CAPTURE_DEVICE_ID")
+MUMU_ADB_ALLOW_PROXY_DEVICES_ENV = "FANXIU_MUMU_ADB_ALLOW_PROXY_DEVICES"
 _MUMU_ADB_FAILURE_CACHE_TTL = 3.0
 _MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
 _mumu_adb_failure_cache: tuple[float, str] | None = None
@@ -118,17 +120,89 @@ def _clear_mumu_adb_failure_cache() -> None:
         _mumu_adb_failure_cache = None
 
 
+def _parse_adb_serial_host_port(serial: str) -> tuple[str, int] | None:
+    host, sep, port_text = str(serial or "").strip().rpartition(":")
+    if not sep or not host or not port_text.isdigit():
+        return None
+    return host, int(port_text)
+
+
+def _dedupe_mumu_adb_serials(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        serial = str(value or "").strip()
+        if not serial or serial in seen or _parse_adb_serial_host_port(serial) is None:
+            continue
+        seen.add(serial)
+        result.append(serial)
+    return result
+
+
+def _is_truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _is_local_mumu_adb_serial(serial: str) -> bool:
+    parsed = _parse_adb_serial_host_port(serial)
+    if parsed is None:
+        return False
+    host, port = parsed
+    return host in {"127.0.0.1", "localhost", "::1"} and port in MUMU_ADB_PORTS
+
+
+def _mumu_adb_serial_candidates() -> list[str]:
+    env_candidates: list[str] = []
+    for key in MUMU_ADB_SERIAL_ENV_KEYS:
+        value = os.environ.get(key)
+        if value and value.strip():
+            env_candidates.append(value.strip())
+            break
+    if env_candidates:
+        return _dedupe_mumu_adb_serials(env_candidates)
+
+    candidates: list[str] = []
+    cached_serial = _MUMU_ADB_SESSION.get("serial")
+    if cached_serial and _is_local_mumu_adb_serial(str(cached_serial)):
+        candidates.append(str(cached_serial))
+    candidates.extend(f"127.0.0.1:{port}" for port in MUMU_ADB_PORTS)
+    if _is_truthy_env(os.environ.get(MUMU_ADB_ALLOW_PROXY_DEVICES_ENV)):
+        try:
+            candidates.extend(fanxiu_android_proxy_service.devices())
+        except Exception:
+            pass
+    return _dedupe_mumu_adb_serials(candidates)
+
+
+def _mumu_adb_meta(serial: str, *, input_name: str, adb_size: str = "") -> dict[str, Any]:
+    parsed = _parse_adb_serial_host_port(serial)
+    host, port = parsed if parsed is not None else ("", 0)
+    return {
+        "input": input_name,
+        "adb_serial": serial,
+        "adb_host": host,
+        "adb_port": port,
+        "adb_size": adb_size,
+    }
+
+
 def _ensure_mumu_adb_port_available() -> None:
     cached_error = _get_mumu_adb_failure_cache()
     if cached_error:
         raise RuntimeError(cached_error)
-    for port in MUMU_ADB_PORTS:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.05):
-                return
-        except OSError:
+    errors: list[str] = []
+    for serial in _mumu_adb_serial_candidates():
+        parsed = _parse_adb_serial_host_port(serial)
+        if parsed is None:
             continue
-    message = "ADB 端口不可用：" + ", ".join(f"127.0.0.1:{port}" for port in MUMU_ADB_PORTS)
+        host, port = parsed
+        try:
+            with socket.create_connection((host, port), timeout=0.15):
+                return
+        except OSError as exc:
+            errors.append(f"{serial}: {exc}")
+            continue
+    message = "ADB 端口不可用：" + ("; ".join(errors) if errors else "没有可用 ADB serial")
     _set_mumu_adb_failure_cache(message)
     raise RuntimeError(message)
 
@@ -163,26 +237,38 @@ def _map_frame_point_to_adb(
 
 def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
     _ensure_mumu_adb_port_available()
-    try:
-        from adb_shell.adb_device import AdbDeviceTcp
-    except Exception as exc:
-        raise RuntimeError(f"ADB 输入依赖不可用：{exc}") from exc
-
+    adb_path = fanxiu_android_proxy_service.adb_path()
     errors: list[str] = []
-    for port in MUMU_ADB_PORTS:
-        device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+    for serial in _mumu_adb_serial_candidates():
+        parsed = _parse_adb_serial_host_port(serial)
+        if parsed is None:
+            continue
         try:
-            device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
-            size_text = device.shell("wm size", transport_timeout_s=5, read_timeout_s=5)
-            device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s)
-            device.close()
-            return {"input": "adb", "adb_port": port, "adb_size": size_text.strip()}
+            size_process = subprocess.run(
+                [str(adb_path), "-s", serial, "shell", "wm size"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if size_process.returncode != 0:
+                raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
+            input_process = subprocess.run(
+                [str(adb_path), "-s", serial, "shell", command],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if input_process.returncode != 0:
+                raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
+            return _mumu_adb_meta(serial, input_name="adb-cli", adb_size=size_process.stdout.strip())
         except Exception as exc:
-            errors.append(f"{port}: {exc}")
-            try:
-                device.close()
-            except Exception:
-                pass
+            errors.append(f"{serial}: {exc}")
     raise RuntimeError("ADB 输入失败：" + "; ".join(errors))
 
 
@@ -194,16 +280,20 @@ def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[byte
         raise RuntimeError(f"ADB 依赖不可用：{exc}") from exc
 
     errors: list[str] = []
-    for port in MUMU_ADB_PORTS:
-        device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+    for serial in _mumu_adb_serial_candidates():
+        parsed = _parse_adb_serial_host_port(serial)
+        if parsed is None:
+            continue
+        host, port = parsed
+        device = AdbDeviceTcp(host, port, default_transport_timeout_s=5)
         try:
             device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
             size_text = device.shell("wm size", transport_timeout_s=5, read_timeout_s=5)
             data = device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
             device.close()
-            return bytes(data), {"input": "adb", "adb_port": port, "adb_size": size_text.strip()}
+            return bytes(data), _mumu_adb_meta(serial, input_name="adb", adb_size=size_text.strip())
         except Exception as exc:
-            errors.append(f"{port}: {exc}")
+            errors.append(f"{serial}: {exc}")
             try:
                 device.close()
             except Exception:
@@ -214,6 +304,8 @@ def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[byte
 def _close_mumu_adb_session() -> None:
     device = _MUMU_ADB_SESSION.pop("device", None)
     _MUMU_ADB_SESSION.pop("port", None)
+    _MUMU_ADB_SESSION.pop("host", None)
+    _MUMU_ADB_SESSION.pop("serial", None)
     try:
         if device is not None:
             device.close()
@@ -232,24 +324,31 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
         errors: list[str] = []
         cached_device = _MUMU_ADB_SESSION.get("device")
         cached_port = _MUMU_ADB_SESSION.get("port")
-        if cached_device is not None and cached_port is not None:
+        cached_serial = str(_MUMU_ADB_SESSION.get("serial") or "")
+        if cached_device is not None and cached_port is not None and cached_serial:
             try:
                 data = cached_device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
-                return bytes(data), {"input": "adb-session", "adb_port": cached_port, "adb_size": ""}
+                return bytes(data), _mumu_adb_meta(cached_serial, input_name="adb-session")
             except Exception as exc:
-                errors.append(f"{cached_port}: {exc}")
+                errors.append(f"{cached_serial}: {exc}")
                 _close_mumu_adb_session()
 
-        for port in MUMU_ADB_PORTS:
-            device = AdbDeviceTcp("127.0.0.1", port, default_transport_timeout_s=5)
+        for serial in _mumu_adb_serial_candidates():
+            parsed = _parse_adb_serial_host_port(serial)
+            if parsed is None:
+                continue
+            host, port = parsed
+            device = AdbDeviceTcp(host, port, default_transport_timeout_s=5)
             try:
                 device.connect(rsa_keys=[], auth_timeout_s=1, read_timeout_s=5)
                 data = device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
                 _MUMU_ADB_SESSION["device"] = device
+                _MUMU_ADB_SESSION["host"] = host
                 _MUMU_ADB_SESSION["port"] = port
-                return bytes(data), {"input": "adb-session", "adb_port": port, "adb_size": ""}
+                _MUMU_ADB_SESSION["serial"] = serial
+                return bytes(data), _mumu_adb_meta(serial, input_name="adb-session")
             except Exception as exc:
-                errors.append(f"{port}: {exc}")
+                errors.append(f"{serial}: {exc}")
                 try:
                     device.close()
                 except Exception:
@@ -309,7 +408,7 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             _set_mumu_adb_failure_cache(session_error)
             raise RuntimeError(session_error) from session_exc
         adb_path = fanxiu_android_proxy_service.adb_path()
-        serial = f"127.0.0.1:{MUMU_ADB_PORTS[0]}"
+        serial = (_mumu_adb_serial_candidates() or [f"127.0.0.1:{MUMU_ADB_PORTS[0]}"])[0]
         process = subprocess.run(
             [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
             capture_output=True,
@@ -318,7 +417,7 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         )
         if process.returncode == 0 and process.stdout:
             data = process.stdout
-            meta = {"input": "adb", "adb_port": MUMU_ADB_PORTS[0], "adb_size": ""}
+            meta = _mumu_adb_meta(serial, input_name="adb")
         else:
             message = (process.stderr or b"").decode("utf-8", errors="replace") or f"adb 退出码 {process.returncode}"
             _set_mumu_adb_failure_cache(message)
@@ -351,7 +450,10 @@ def get_mumu_adb_cached_stream_frame(*, max_age_seconds: float = 3.0) -> bytes |
 def screencap_mumu_adb_cached_png(*, cached_only: bool = False, max_age_seconds: float = 3.0) -> tuple[bytes, dict[str, Any]]:
     cached = get_mumu_adb_cached_stream_frame(max_age_seconds=max_age_seconds)
     if cached is not None:
-        return cached, {"input": "adb_cached_stream", "adb_port": MUMU_ADB_PORTS[0], "adb_size": ""}
+        serial = str(_MUMU_ADB_SESSION.get("serial") or "")
+        if not serial:
+            serial = (_mumu_adb_serial_candidates() or [f"127.0.0.1:{MUMU_ADB_PORTS[0]}"])[0]
+        return cached, _mumu_adb_meta(serial, input_name="adb_cached_stream")
     if cached_only:
         raise RuntimeError("当前没有可用的画面流缓存帧")
     return screencap_mumu_adb_png()
@@ -468,7 +570,7 @@ def _swipe_mumu_adb(
 
 
 @dataclass(frozen=True)
-class SunloginRotateProcessInfo:
+class MumuWindowProcessInfo:
     pid: int
     parent_pid: int | None
     name: str
@@ -478,7 +580,7 @@ class SunloginRotateProcessInfo:
 
 
 @dataclass(frozen=True)
-class SunloginRotateStatus:
+class MumuWindowStatus:
     running: bool
     pids: list[int]
     primary_pid: int | None
@@ -493,11 +595,11 @@ class SunloginRotateStatus:
 
 
 def get_target_title() -> str:
-    return (os.getenv("CODEYUN_FANXIU_SUNLOGIN_TITLE") or DEFAULT_TARGET_TITLE).strip() or DEFAULT_TARGET_TITLE
+    return (os.getenv("CODEYUN_FANXIU_MUMU_TITLE") or DEFAULT_TARGET_TITLE).strip() or DEFAULT_TARGET_TITLE
 
 
 def get_preview_title() -> str:
-    return (os.getenv("CODEYUN_FANXIU_SUNLOGIN_PREVIEW_TITLE") or DEFAULT_PREVIEW_TITLE).strip() or DEFAULT_PREVIEW_TITLE
+    return (os.getenv("CODEYUN_FANXIU_MUMU_PREVIEW_TITLE") or DEFAULT_PREVIEW_TITLE).strip() or DEFAULT_PREVIEW_TITLE
 
 
 def _home_root() -> Path:
@@ -816,7 +918,7 @@ def write_fanxiu_screenshot_pre_label(filename: str, payload: dict[str, Any]) ->
 
 
 def _runtime_dir() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "sunlogin-rotate"
+    path = get_settings().data_dir / "fanxiu" / "mumu-window"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -883,10 +985,10 @@ def _is_preview_process(proc: psutil.Process) -> bool:
     return PREVIEW_MODULE in normalized and get_preview_title() in command_line
 
 
-def _process_info(proc: psutil.Process) -> SunloginRotateProcessInfo | None:
+def _process_info(proc: psutil.Process) -> MumuWindowProcessInfo | None:
     try:
         created_ts = _safe_create_time(proc)
-        return SunloginRotateProcessInfo(
+        return MumuWindowProcessInfo(
             pid=proc.pid,
             parent_pid=_safe_ppid(proc),
             name=_safe_name(proc),
@@ -898,8 +1000,8 @@ def _process_info(proc: psutil.Process) -> SunloginRotateProcessInfo | None:
         return None
 
 
-def _list_preview_processes() -> list[SunloginRotateProcessInfo]:
-    items: list[SunloginRotateProcessInfo] = []
+def _list_preview_processes() -> list[MumuWindowProcessInfo]:
+    items: list[MumuWindowProcessInfo] = []
     for proc in psutil.process_iter(["pid"]):
         try:
             if not _is_preview_process(proc):
@@ -923,10 +1025,10 @@ def _tail_text(path: Path, max_chars: int = 2000) -> str:
     return data[-max_chars:].decode("utf-8", errors="replace").strip()
 
 
-def get_sunlogin_rotate_status() -> dict[str, Any]:
+def get_mumu_window_status() -> dict[str, Any]:
     items = _list_preview_processes()
     primary = items[0] if items else None
-    status = SunloginRotateStatus(
+    status = MumuWindowStatus(
         running=bool(items),
         pids=[item.pid for item in items],
         primary_pid=primary.pid if primary else None,
@@ -950,19 +1052,19 @@ def _build_preview_command() -> list[str]:
         "--title",
         get_target_title(),
         "--fps",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_FPS", DEFAULT_FPS),
+        os.getenv("CODEYUN_FANXIU_MUMU_FPS", DEFAULT_FPS),
         "--mode",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
+        os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen"),
         "--crop",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP),
+        os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP),
         "--trim-border",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER),
+        os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER),
         "--rotate",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE),
+        os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE),
         "--fixed-width",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH),
+        os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH),
         "--fixed-height",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT),
+        os.getenv("CODEYUN_FANXIU_MUMU_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT),
         "--preview-title",
         get_preview_title(),
     ]
@@ -976,11 +1078,11 @@ def _build_child_env() -> dict[str, str]:
     return env
 
 
-def start_sunlogin_rotate_preview() -> dict[str, Any]:
+def start_window_capture_preview() -> dict[str, Any]:
     if sys.platform != "win32":
-        raise RuntimeError("向日葵投屏旋转预览仅支持 Windows 桌面环境")
+        raise RuntimeError("MuMu 窗口预览仅支持 Windows 桌面环境")
 
-    current_status = get_sunlogin_rotate_status()
+    current_status = get_mumu_window_status()
     if current_status["running"]:
         return current_status
 
@@ -1016,10 +1118,10 @@ def start_sunlogin_rotate_preview() -> dict[str, Any]:
         detail = _tail_text(stderr_path) or _tail_text(stdout_path) or "无日志"
         raise RuntimeError(f"投屏旋转预览启动后退出（退出码 {return_code}）：{detail}")
 
-    return get_sunlogin_rotate_status()
+    return get_mumu_window_status()
 
 
-def stop_sunlogin_rotate_preview(timeout: float = 3.0) -> dict[str, Any]:
+def stop_window_capture_preview(timeout: float = 3.0) -> dict[str, Any]:
     targets: list[psutil.Process] = []
     for proc in psutil.process_iter(["pid"]):
         try:
@@ -1049,13 +1151,13 @@ def stop_sunlogin_rotate_preview(timeout: float = 3.0) -> dict[str, Any]:
     if alive:
         psutil.wait_procs(alive, timeout=timeout)
 
-    status = get_sunlogin_rotate_status()
+    status = get_mumu_window_status()
     if errors:
         status["errors"] = errors
     return status
 
 
-def stream_sunlogin_rotate_mjpeg(
+def stream_mumu_window_mjpeg(
     *,
     title: str | None = None,
     title_match: str = "contains",
@@ -1072,16 +1174,16 @@ def stream_sunlogin_rotate_mjpeg(
     popup_check_interval: float = 3.0,
 ):
     resolved_title = (title or get_target_title()).strip() or get_target_title()
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
-    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER))
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
     resolved_fixed_width = int(
-        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
     resolved_fixed_height = int(
-        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     cache_key = _latest_frame_cache_key(
         resolved_title,
@@ -1097,7 +1199,7 @@ def stream_sunlogin_rotate_mjpeg(
 
     return iter_mjpeg_frames(
         title=resolved_title,
-        fps=float(fps or os.getenv("CODEYUN_FANXIU_SUNLOGIN_FPS", DEFAULT_FPS)),
+        fps=float(fps or os.getenv("CODEYUN_FANXIU_MUMU_FPS", DEFAULT_FPS)),
         crop=resolved_crop,
         trim_border=resolved_trim_border,
         rotate=resolved_rotate,
@@ -1157,7 +1259,7 @@ def _load_latest_frame(cache_key: tuple[Any, ...]) -> Any | None:
     return frame.copy()
 
 
-def capture_sunlogin_rotate_frame(
+def capture_mumu_window_frame(
     *,
     title: str | None = None,
     title_match: str = "contains",
@@ -1174,16 +1276,16 @@ def capture_sunlogin_rotate_frame(
     set_dpi_awareness()
 
     normalized_title = (title or get_target_title()).strip() or get_target_title()
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
-    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER))
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
     resolved_fixed_width = int(
-        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
     resolved_fixed_height = int(
-        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     if prefer_cached:
         cached = _load_latest_frame(
@@ -1245,7 +1347,7 @@ def save_fanxiu_screenshot_frame(
 ) -> dict[str, Any]:
     frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if frame is None:
-        frame = capture_sunlogin_rotate_frame(
+        frame = capture_mumu_window_frame(
             title=title,
             title_match=title_match,
             mode=mode,
@@ -1302,7 +1404,7 @@ def save_fanxiu_burst_frame(
 ) -> dict[str, Any]:
     frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if frame is None:
-        frame = capture_sunlogin_rotate_frame(
+        frame = capture_mumu_window_frame(
             title=title,
             title_match=title_match,
             mode=mode,
@@ -1542,8 +1644,6 @@ def _compare_frame_crops(
     tolerance_min: Any = None,
     tolerance_max: Any = None,
 ) -> tuple[int, float]:
-    if alpha_mask is None and (tolerance_min is None or tolerance_max is None):
-        return compare_bgr_pixel_tolerance(reference_crop, current_crop, pixel_tolerance)
     import cv2
     import numpy as np
 
@@ -1571,6 +1671,98 @@ def _compare_frame_crops(
         mask = np.ones((height, width), dtype="float32")
     score = float((matched * mask).sum() / mask.sum())
     return int(round(score * 100)), score
+
+
+def _encode_bgra_data_url(image: Any) -> str:
+    import base64
+    import cv2
+
+    ok, buffer = cv2.imencode(".png", image)
+    if not ok:
+        return ""
+    return "data:image/png;base64," + base64.b64encode(buffer.tobytes()).decode("ascii")
+
+
+def _build_frame_crop_match_debug(
+    reference_crop: Any,
+    current_crop: Any,
+    pixel_tolerance: int = 5,
+    alpha_mask: Any = None,
+    tolerance_min: Any = None,
+    tolerance_max: Any = None,
+) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    reference = _ensure_bgr_frame(reference_crop)
+    current = _ensure_bgr_frame(current_crop)
+    if reference.size == 0 or current.size == 0:
+        return {}
+    if reference.shape[:2] != current.shape[:2]:
+        current = cv2.resize(current, (reference.shape[1], reference.shape[0]), interpolation=cv2.INTER_AREA)
+    height, width = reference.shape[:2]
+    mask = _normalize_alpha_mask(alpha_mask, width, height)
+    min_frame, max_frame = _normalize_tolerance_frames(tolerance_min, tolerance_max, width, height)
+    if mask is None:
+        mask = np.ones((height, width), dtype="float32")
+    effective = mask > (1.0 / 255.0)
+    effective_count = int(effective.sum())
+    if effective_count <= 0:
+        return {
+            "width": width,
+            "height": height,
+            "pixel_tolerance": max(0, min(255, int(pixel_tolerance))),
+            "effective_pixel_count": 0,
+            "matched_pixel_count": 0,
+            "unmatched_pixel_count": 0,
+            "score": 0.0,
+            "similarity": 0,
+            "mask_coverage": 0.0,
+        }
+
+    if min_frame is not None and max_frame is not None:
+        current_i = current.astype("int16")
+        min_i = np.minimum(min_frame, max_frame).astype("int16")
+        max_i = np.maximum(min_frame, max_frame).astype("int16")
+        diff = np.maximum(min_i - current_i, current_i - max_i)
+        diff = np.max(np.maximum(diff, 0), axis=2).astype("float32")
+    else:
+        diff = np.max(np.abs(reference.astype("int16") - current.astype("int16")), axis=2).astype("float32")
+    tolerance = max(0, min(255, int(pixel_tolerance)))
+    matched = (diff <= tolerance) & effective
+    matched_count = int(matched.sum())
+    unmatched_count = int(effective_count - matched_count)
+    score = float((matched.astype("float32") * mask).sum() / max(float(mask[effective].sum()), 1e-6))
+
+    alpha = np.clip(mask * 255.0, 0, 255).astype("uint8")
+    reference_masked = cv2.cvtColor(reference, cv2.COLOR_BGR2BGRA)
+    current_masked = cv2.cvtColor(current, cv2.COLOR_BGR2BGRA)
+    reference_masked[:, :, 3] = alpha
+    current_masked[:, :, 3] = alpha
+
+    heatmap = np.zeros((height, width, 4), dtype="uint8")
+    heatmap[matched] = [64, 180, 64, 96]
+    mismatch = effective & ~matched
+    mismatch_strength = np.clip(diff, 0, 255).astype("uint8")
+    heatmap[mismatch, 0] = 0
+    heatmap[mismatch, 1] = np.maximum(32, 255 - mismatch_strength[mismatch] // 2)
+    heatmap[mismatch, 2] = 255
+    heatmap[mismatch, 3] = 220
+
+    return {
+        "width": width,
+        "height": height,
+        "pixel_tolerance": tolerance,
+        "effective_pixel_count": effective_count,
+        "matched_pixel_count": matched_count,
+        "unmatched_pixel_count": unmatched_count,
+        "score": score,
+        "similarity": int(round(score * 100)),
+        "mask_coverage": round(effective_count / float(width * height), 6),
+        "reference_masked_data_url": _encode_bgra_data_url(reference_masked),
+        "current_masked_data_url": _encode_bgra_data_url(current_masked),
+        "mismatch_heatmap_data_url": _encode_bgra_data_url(heatmap),
+    }
 
 
 def _jpeg_normalize_frame(frame: Any, quality: int) -> tuple[Any, bytes]:
@@ -1868,12 +2060,30 @@ def _match_local_pixel_frame(
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
+    search_radius: int | None = None,
 ) -> dict[str, Any]:
     frame = _ensure_bgr_frame(current_frame)
     frame_height, frame_width = frame.shape[:2]
     template = _ensure_bgr_frame(reference_crop)
     template_height, template_width = template.shape[:2]
-    radius = max(8, min(24, round(max(int(current_box["w"]), int(current_box["h"])) * 0.25)))
+    radius = max(0, min(64, int(search_radius or 0)))
+    if radius <= 0:
+        similarity, score = _compare_frame_crops(
+            template,
+            _crop_frame_box(frame, current_box),
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
+        return {
+            "box": current_box,
+            "similarity": similarity,
+            "score": score,
+            "crop_similarity": similarity,
+            "crop_score": score,
+            "search_radius": 0,
+        }
     x1 = max(0, int(current_box["x"]) - radius)
     y1 = max(0, int(current_box["y"]) - radius)
     x2 = min(frame_width - template_width, int(current_box["x"]) + radius)
@@ -2102,10 +2312,12 @@ def match_fanxiu_screenshot_box_frame(
     current_frame_data_url: str | None = None,
     prefer_cached: bool = True,
     match_strategy: str = "auto",
+    match_search_radius: int | None = None,
     ocr_enabled: bool = False,
     ocr_text: str | None = None,
     ocr_match_mode: str = "contains",
     ocr_min_confidence: float = 0.0,
+    debug_match: bool = False,
     save_match_frame: bool = True,
 ) -> dict[str, Any]:
     source_path = get_fanxiu_screenshot_path(filename)
@@ -2121,7 +2333,7 @@ def match_fanxiu_screenshot_box_frame(
 
     current_frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if current_frame is None:
-        current_frame = capture_sunlogin_rotate_frame(
+        current_frame = capture_mumu_window_frame(
             title=title,
             title_match=title_match,
             mode=mode,
@@ -2218,7 +2430,7 @@ def match_fanxiu_screenshot_box_frame(
             tolerance_min,
             tolerance_max,
         )
-        return {
+        result = {
             "ok": True,
             "index": 0,
             "source_filename": source_path.name,
@@ -2246,6 +2458,16 @@ def match_fanxiu_screenshot_box_frame(
             "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
             "match_strategy": "anchor_pixel",
         }
+        if debug_match:
+            result["match_debug"] = _build_frame_crop_match_debug(
+                reference_crop,
+                current_crop,
+                pixel_tolerance,
+                alpha_mask,
+                tolerance_min,
+                tolerance_max,
+            )
+        return result
     fixed_exact_pixel_similarity, fixed_exact_pixel_score = _compare_frame_crops(
         reference_crop,
         current_crop,
@@ -2274,6 +2496,7 @@ def match_fanxiu_screenshot_box_frame(
             alpha_mask,
             tolerance_min,
             tolerance_max,
+            match_search_radius,
         )
 
     index = 0
@@ -2288,7 +2511,7 @@ def match_fanxiu_screenshot_box_frame(
                 output = output_dir / f"{index:04d}{match_frame_suffix}"
             output.write_bytes(data)
 
-    return {
+    result = {
         "ok": True,
         "index": index,
         "source_filename": source_path.name,
@@ -2326,9 +2549,21 @@ def match_fanxiu_screenshot_box_frame(
         "height": current_height,
         "pixel_tolerance": max(0, min(255, int(pixel_tolerance if pixel_tolerance is not None else 5))),
     }
+    if debug_match:
+        debug_box = fixed_match.get("box") or current_box
+        debug_crop = _crop_frame_box(current_frame, debug_box)
+        result["match_debug"] = _build_frame_crop_match_debug(
+            reference_crop,
+            debug_crop,
+            pixel_tolerance,
+            alpha_mask,
+            tolerance_min,
+            tolerance_max,
+        )
+    return result
 
 
-def click_sunlogin_rotate_processed_point(
+def click_mumu_window_processed_point(
     *,
     x: float,
     y: float,
@@ -2346,10 +2581,10 @@ def click_sunlogin_rotate_processed_point(
     input_backend: str = "desktop",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
-        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
     resolved_fixed_height = int(
-        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     frame_x = int(round(x))
@@ -2373,13 +2608,13 @@ def click_sunlogin_rotate_processed_point(
         }
     ensure_windows_runtime()
     set_dpi_awareness()
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
     resolved_trim_border = parse_crop(
-        trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)
+        trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
     )
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
 
     target = find_window(normalized_title, title_match)
     capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
@@ -2441,7 +2676,7 @@ def click_sunlogin_rotate_processed_point(
     }
 
 
-def activate_sunlogin_rotate_window(
+def activate_mumu_window(
     *,
     title: str | None = None,
     title_match: str = "contains",
@@ -2469,7 +2704,7 @@ def activate_sunlogin_rotate_window(
     }
 
 
-def drag_sunlogin_rotate_processed_points(
+def drag_mumu_window_processed_points(
     *,
     start_x: float,
     start_y: float,
@@ -2490,10 +2725,10 @@ def drag_sunlogin_rotate_processed_points(
     input_backend: str = "desktop",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
-        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
     resolved_fixed_height = int(
-        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
     )
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     frame_start_x = int(round(start_x))
@@ -2525,13 +2760,13 @@ def drag_sunlogin_rotate_processed_points(
         }
     ensure_windows_runtime()
     set_dpi_awareness()
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
     resolved_trim_border = parse_crop(
-        trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)
+        trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
     )
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
 
     target = find_window(normalized_title, title_match)
     capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
@@ -2615,3 +2850,5 @@ def drag_sunlogin_rotate_processed_points(
         "mode": resolved_mode,
         "rotate": resolved_rotate,
     }
+
+

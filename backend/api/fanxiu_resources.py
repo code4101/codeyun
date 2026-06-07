@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from html import escape
 import json
 from typing import Any
@@ -343,6 +344,7 @@ from backend.core.fanxiu_resources import (
     inspect_fanxiu_unity_bundle,
     inspect_fanxiu_wwise_bank,
     list_fanxiu_unity_bundles,
+    resolve_fanxiu_export_root,
     resolve_fanxiu_sprite_icon_path,
 )
 from backend.core.fanxiu_visual_catalog import (
@@ -407,6 +409,12 @@ class FanxiuStaticVisualCatalogRequest(BaseModel):
     build_usage_index: bool = True
     max_export_images: int | None = Field(default=None, ge=0, le=20000)
     max_usage_rows: int = Field(default=200000, ge=0, le=1000000)
+
+
+class FanxiuWikiLinkTargetsRequest(BaseModel):
+    texts: list[str] = Field(default_factory=list)
+    limit: int = Field(default=200, ge=1, le=1000)
+    export_root: str | None = None
 
 
 class FanxiuStaticAssetCatalogRequest(BaseModel):
@@ -1903,7 +1911,7 @@ def _add_link_alias(
     )
 
 
-def build_fanxiu_wiki_link_index(export_root: str | None = None) -> dict[str, Any]:
+def _build_fanxiu_wiki_link_index_uncached(export_root: str | None = None) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
@@ -1988,6 +1996,66 @@ def build_fanxiu_wiki_link_index(export_root: str | None = None) -> dict[str, An
     return {"items": rows, "total": len(rows)}
 
 
+def _wiki_link_index_source_key(export_root: str | None = None) -> tuple[str, int, int, int, int]:
+    root = resolve_fanxiu_export_root(export_root)
+    source_paths = [
+        root / "parsed_configs" / "gongfa_catalog" / "gongfa_catalog.json",
+        root / "parsed_configs" / "item_catalog" / "item_catalog.json",
+    ]
+    values: list[int] = []
+    for path in source_paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            values.extend([0, 0])
+        else:
+            values.extend([stat.st_mtime_ns, stat.st_size])
+    return (str(root), *values)
+
+
+@lru_cache(maxsize=4)
+def _build_fanxiu_wiki_link_index_cached(
+    export_root_text: str,
+    gongfa_mtime_ns: int,
+    gongfa_size: int,
+    item_mtime_ns: int,
+    item_size: int,
+) -> dict[str, Any]:
+    return _build_fanxiu_wiki_link_index_uncached(export_root=export_root_text)
+
+
+def build_fanxiu_wiki_link_index(export_root: str | None = None) -> dict[str, Any]:
+    return _build_fanxiu_wiki_link_index_cached(*_wiki_link_index_source_key(export_root))
+
+
+def build_fanxiu_wiki_link_targets(
+    *,
+    texts: list[str],
+    limit: int = 200,
+    export_root: str | None = None,
+) -> dict[str, Any]:
+    joined_text = "\n".join(str(text or "") for text in texts)
+    if not joined_text.strip():
+        return {"items": [], "total": 0, "source_total": build_fanxiu_wiki_link_index(export_root).get("total", 0)}
+    index = build_fanxiu_wiki_link_index(export_root)
+    rows = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in index.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        alias = str(item.get("alias") or "").strip()
+        if not alias or alias not in joined_text:
+            continue
+        key = (alias, str(item.get("tab") or ""), str(item.get("id") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(item)
+        if len(rows) >= limit:
+            break
+    return {"items": rows, "total": len(rows), "source_total": index.get("total", 0)}
+
+
 @router.get("/resources/summary")
 def get_fanxiu_resource_summary(resource_root: str | None = Query(default=None)) -> dict[str, Any]:
     return _run_resource_operation(build_fanxiu_resource_summary, resource_root=resource_root)
@@ -2001,6 +2069,16 @@ def get_fanxiu_resource_wiki_catalog(export_root: str | None = Query(default=Non
 @router.get("/resources/wiki/link-index")
 def get_fanxiu_resource_wiki_link_index(export_root: str | None = Query(default=None)) -> dict[str, Any]:
     return _run_resource_operation(build_fanxiu_wiki_link_index, export_root=export_root)
+
+
+@router.post("/resources/wiki/link-targets")
+def get_fanxiu_resource_wiki_link_targets(req: FanxiuWikiLinkTargetsRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_wiki_link_targets,
+        texts=req.texts,
+        limit=req.limit,
+        export_root=req.export_root,
+    )
 
 
 @router.get("/resources/wiki/texts")
@@ -2297,6 +2375,7 @@ def get_fanxiu_item_cards(
     sort_order: str = Query(default="asc"),
     limit: int = Query(default=80, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    include_facets: bool = Query(default=True),
     export_root: str | None = Query(default=None),
 ) -> dict[str, Any]:
     return _run_resource_operation(
@@ -2309,6 +2388,7 @@ def get_fanxiu_item_cards(
         sort_order=sort_order,
         limit=limit,
         offset=offset,
+        include_facets=include_facets,
         export_root=export_root,
     )
 

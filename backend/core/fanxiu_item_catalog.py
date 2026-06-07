@@ -7537,6 +7537,7 @@ def search_fanxiu_item_cards(
     sort_order: str = "asc",
     limit: int = 80,
     offset: int = 0,
+    include_facets: bool = True,
     export_root: str | Path | None = None,
     rebuild_missing: bool = True,
 ) -> dict[str, Any]:
@@ -7594,7 +7595,7 @@ def search_fanxiu_item_cards(
     else:
         scored_rows.sort(key=lambda item: (_sort_value(item[2].get("type")), _sort_value(item[2].get("id")), item[1]))
     page_rows = scored_rows[offset : offset + limit]
-    return {
+    response = {
         "query": query,
         "quality_name": quality_name,
         "type_key": type_key,
@@ -7609,9 +7610,11 @@ def search_fanxiu_item_cards(
         "quality_options": runtime_index["quality_options"],
         "type_options": runtime_index["type_options"],
         "sub_type_options": runtime_index["sub_type_options"],
-        "facet_index": _build_item_facet_index(query_rows),
         "items": [_format_item_search_item(card, score) for score, _index, card in page_rows],
     }
+    if include_facets:
+        response["facet_index"] = _build_item_facet_index(query_rows)
+    return response
 
 
 def get_fanxiu_item_card(

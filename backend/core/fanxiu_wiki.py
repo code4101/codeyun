@@ -17,6 +17,7 @@ _RICH_TAG_RE = re.compile(r"<[^>]+>")
 _BRACKET_TERM_RE = re.compile(r"【([^】]{1,30})】")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _TEXT_ENTRIES_LOCK = RLock()
+_BUNDLE_HASH_SUFFIX_RE = re.compile(r"_[0-9a-f]{32}$", re.IGNORECASE)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -36,6 +37,47 @@ def _read_tsv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         return [dict(row) for row in csv.DictReader(f, delimiter="\t")]
+
+
+def _iter_tsv(path: Path):
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        yield from csv.DictReader(f, delimiter="\t")
+
+
+def _coerce_export_media_path(path_text: str, root: Path) -> Path | None:
+    if not path_text:
+        return None
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+    if path.suffix.lower() not in _IMAGE_SUFFIXES or not _is_relative_to(path, root):
+        return None
+    return path
+
+
+def _coerce_export_media_path_text(path_text: str, root: Path) -> str:
+    if not path_text:
+        return ""
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path_text = str(path.resolve())
+    except OSError:
+        return ""
+    if Path(path_text).suffix.lower() not in _IMAGE_SUFFIXES:
+        return ""
+    root_text = str(root.resolve()).rstrip("\\/") + "\\"
+    normalized = path_text.replace("/", "\\")
+    if not normalized.startswith(root_text):
+        return ""
+    return path_text
 
 
 def _unescape_lua_string(value: str) -> str:
@@ -172,6 +214,30 @@ def _load_lua_text_entries(path: Path, source: str, asset: str) -> list[dict[str
     return list(_load_lua_text_entries_cached(str(path), stat.st_mtime_ns, stat.st_size, source, asset))
 
 
+def _iter_lua_text_entries_from_path(path: Path, source: str, asset: str):
+    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.rstrip("\n\r")
+            match = _LUA_NUMERIC_ENTRY_RE.match(line) or _LUA_STRING_ENTRY_RE.match(line)
+            if not match:
+                continue
+            key = _unescape_lua_string(match.group("key"))
+            rich_text = _unescape_lua_string(match.group("text"))
+            plain_text = strip_fanxiu_rich_text(rich_text)
+            yield {
+                "id": f"{asset}:{key}",
+                "source": source,
+                "asset": asset,
+                "key": key,
+                "title": _guess_title(key, rich_text),
+                "category": _classify_text(asset, rich_text),
+                "terms": _first_terms(plain_text),
+                "plain_text": plain_text,
+                "rich_text": rich_text,
+                "line_no": line_no,
+            }
+
+
 def _text_asset_rows(export_root: str | Path | None = None) -> list[dict[str, str]]:
     rows = _read_tsv(_indexes_dir(export_root) / "text_assets.tsv")
     root = resolve_fanxiu_export_root(export_root)
@@ -180,7 +246,38 @@ def _text_asset_rows(export_root: str | Path | None = None) -> list[dict[str, st
         path = Path(row.get("path") or "").expanduser().resolve()
         if path.is_file() and _is_relative_to(path, root):
             valid_rows.append(row)
-    return valid_rows
+    if valid_rows:
+        return valid_rows
+
+    candidates: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
+    for path in sorted(root.glob("by_source/**/text_assets/*.lua"), key=lambda item: str(item).lower()):
+        asset = path.name
+        if asset not in {"lang.lua", "localization.lua"}:
+            continue
+        try:
+            rel_source = path.relative_to(root / "by_source")
+        except ValueError:
+            rel_source = path.relative_to(root)
+        source_dir = rel_source.parent.parent
+        source_key = _BUNDLE_HASH_SUFFIX_RE.sub("", str(source_dir).replace("\\", "/"))
+        priority = 1 if _BUNDLE_HASH_SUFFIX_RE.search(source_dir.name) else 0
+        row = {
+            "source": str(source_dir),
+            "asset": asset,
+            "entries": "",
+            "path": str(path.resolve()),
+        }
+        key = (source_key, asset)
+        existing = candidates.get(key)
+        if existing is None or priority > existing[0]:
+            candidates[key] = (priority, row)
+    return [
+        row
+        for _priority, row in sorted(
+            candidates.values(),
+            key=lambda item: (str(item[1].get("source", "")).lower(), str(item[1].get("asset", "")).lower()),
+        )
+    ]
 
 
 TextAssetSignature = tuple[tuple[str, int, int, str, str], ...]
@@ -222,16 +319,83 @@ def _text_entry_index_by_signature(signature: TextAssetSignature) -> dict[tuple[
 
 @lru_cache(maxsize=8)
 def _text_catalog_counts_by_signature(signature: TextAssetSignature) -> dict[str, Any]:
-    entries = _load_text_entries_by_signature(signature)
+    if not signature:
+        return {
+            "text_count": 0,
+            "text_assets": {},
+            "text_categories": {},
+            "text_display_kinds": {},
+        }
+    entries: list[dict[str, Any]] = []
+    for path_text, mtime_ns, size, source, asset in signature:
+        entries.extend(_sample_lua_text_entries_cached(path_text, mtime_ns, size, source, asset, 5000))
     by_asset = Counter(item["asset"] for item in entries)
     by_category = Counter(item["category"] for item in entries)
     by_display_kind = Counter(_display_text_kind(item) for item in entries)
     return {
-        "text_count": len(entries),
+        "text_count": _count_lua_text_entries_by_signature(signature),
         "text_assets": dict(by_asset.most_common()),
         "text_categories": dict(by_category.most_common()),
         "text_display_kinds": dict(by_display_kind.most_common()),
     }
+
+
+@lru_cache(maxsize=16)
+def _count_lua_text_entries_cached(path_text: str, mtime_ns: int, size: int) -> int:
+    del mtime_ns, size
+    count = 0
+    with Path(path_text).open("r", encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            if _LUA_NUMERIC_ENTRY_RE.match(line.rstrip("\n\r")) or _LUA_STRING_ENTRY_RE.match(line.rstrip("\n\r")):
+                count += 1
+    return count
+
+
+def _count_lua_text_entries_by_signature(signature: TextAssetSignature) -> int:
+    return sum(
+        _count_lua_text_entries_cached(path_text, mtime_ns, size)
+        for path_text, mtime_ns, size, _source, _asset in signature
+    )
+
+
+@lru_cache(maxsize=16)
+def _sample_lua_text_entries_cached(
+    path_text: str,
+    mtime_ns: int,
+    size: int,
+    source: str,
+    asset: str,
+    limit: int,
+) -> tuple[dict[str, Any], ...]:
+    del mtime_ns, size
+    path = Path(path_text)
+    entries: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.rstrip("\n\r")
+            match = _LUA_NUMERIC_ENTRY_RE.match(line) or _LUA_STRING_ENTRY_RE.match(line)
+            if not match:
+                continue
+            key = _unescape_lua_string(match.group("key"))
+            rich_text = _unescape_lua_string(match.group("text"))
+            plain_text = strip_fanxiu_rich_text(rich_text)
+            entries.append(
+                {
+                    "id": f"{asset}:{key}",
+                    "source": source,
+                    "asset": asset,
+                    "key": key,
+                    "title": _guess_title(key, rich_text),
+                    "category": _classify_text(asset, rich_text),
+                    "terms": _first_terms(plain_text),
+                    "plain_text": plain_text,
+                    "rich_text": rich_text,
+                    "line_no": line_no,
+                }
+            )
+            if len(entries) >= limit:
+                break
+    return tuple(entries)
 
 
 @lru_cache(maxsize=8)
@@ -268,9 +432,9 @@ def build_fanxiu_wiki_catalog(export_root: str | Path | None = None) -> dict[str
     with _TEXT_ENTRIES_LOCK:
         text_counts = _text_catalog_counts_by_signature(signature)
     galleries = {
-        "meaningful_textures": len(_read_tsv(_indexes_dir(export_root) / "meaningful_textures.tsv")),
-        "sprites": len(_read_tsv(_indexes_dir(export_root) / "sprites.tsv")),
-        "model_textures": len(_read_tsv(_indexes_dir(export_root) / "model_textures.tsv")),
+        "meaningful_textures": _gallery_count("texture", export_root),
+        "sprites": _gallery_count("sprite", export_root),
+        "model_textures": _gallery_count("model_texture", export_root),
     }
     return {
         "export_root": str(root),
@@ -399,6 +563,64 @@ def _format_text_variant(entry: dict[str, Any], *, reference: dict[str, Any]) ->
     }
 
 
+def _search_empty_text_page_by_signature(
+    signature: TextAssetSignature,
+    *,
+    asset: str,
+    category: str,
+    display_kind: str,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    if category == "all" and display_kind == "all":
+        matched_signature = tuple(
+            item for item in signature if asset == "all" or item[4] == asset
+        )
+        total = _count_lua_text_entries_by_signature(matched_signature)
+        page_entries: list[dict[str, Any]] = []
+        seen = 0
+        for path_text, _mtime_ns, _size, source, row_asset in matched_signature:
+            for entry in _iter_lua_text_entries_from_path(Path(path_text), source, row_asset):
+                if seen >= offset and len(page_entries) < limit:
+                    page_entries.append(entry)
+                    if len(page_entries) >= limit:
+                        break
+                seen += 1
+            if len(page_entries) >= limit:
+                break
+        return {
+            "total": total,
+            "raw_total": total,
+            "items": [
+                _format_text_search_item(1, entry, [entry])
+                for entry in page_entries
+            ],
+        }
+
+    total = 0
+    page_entries: list[dict[str, Any]] = []
+    for path_text, _mtime_ns, _size, source, row_asset in signature:
+        if asset != "all" and row_asset != asset:
+            continue
+        for entry in _iter_lua_text_entries_from_path(Path(path_text), source, row_asset):
+            if category != "all" and entry["category"] != category:
+                continue
+            row_display_kind = _display_text_kind(entry)
+            if display_kind != "all" and row_display_kind != display_kind:
+                continue
+            if total >= offset and len(page_entries) < limit:
+                page_entries.append(entry)
+            total += 1
+    return {
+        "total": total,
+        "raw_total": total,
+        "items": [
+            _format_text_search_item(1, entry, [entry])
+            for entry in page_entries
+        ],
+    }
+
+
 @lru_cache(maxsize=64)
 def _search_text_groups_by_signature(
     signature: TextAssetSignature,
@@ -449,6 +671,25 @@ def search_fanxiu_wiki_texts(
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
     signature = _text_asset_signature(export_root)
+    if not str(query or "").strip():
+        page = _search_empty_text_page_by_signature(
+            signature,
+            asset=asset,
+            category=category,
+            display_kind=display_kind,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "query": query,
+            "asset": asset,
+            "category": category,
+            "display_kind": display_kind,
+            "limit": limit,
+            "offset": offset,
+            **page,
+        }
+
     with _TEXT_ENTRIES_LOCK:
         grouped_rows = _search_text_groups_by_signature(signature, query, asset, category, display_kind)
 
@@ -483,15 +724,133 @@ def get_fanxiu_wiki_text_entry(
     raise FanxiuResourceError(f"没有找到图鉴文本：{asset}:{key}")
 
 
-def _gallery_rows(kind: str, export_root: str | Path | None = None) -> list[dict[str, str]]:
+GallerySignature = tuple[str, str, int, int]
+
+
+def _gallery_signature(kind: str, export_root: str | Path | None = None) -> GallerySignature | None:
     index_name = {
         "texture": "meaningful_textures.tsv",
         "sprite": "sprites.tsv",
         "model_texture": "model_textures.tsv",
     }.get(kind)
     if not index_name:
+        return None
+    root = resolve_fanxiu_export_root(export_root)
+    legacy_path = _indexes_dir(export_root) / index_name
+    if legacy_path.exists():
+        stat = legacy_path.stat()
+        return (kind, str(legacy_path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+    visual_dir = root / "parsed_configs" / "visual_catalog"
+    modern_index = {
+        "texture": "visual_asset_catalog.tsv",
+        "sprite": "atlas_sprite_catalog.tsv",
+        "model_texture": "apk_visual_assets.tsv",
+    }[kind]
+    modern_path = visual_dir / modern_index
+    if not modern_path.exists():
+        return None
+    stat = modern_path.stat()
+    return (kind, str(modern_path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def _is_legacy_gallery_signature(signature: GallerySignature) -> bool:
+    return Path(signature[1]).name in {"meaningful_textures.tsv", "sprites.tsv", "model_textures.tsv"}
+
+
+def _gallery_row_from_modern_tsv(row: dict[str, str], root: Path) -> dict[str, str] | None:
+    path_text = row.get("image_path") or row.get("path") or ""
+    media_path_text = _coerce_export_media_path_text(path_text, root)
+    if not media_path_text:
+        return None
+    return {
+        "group": row.get("atlas_key") or row.get("asset_group") or row.get("category") or "",
+        "source": row.get("relative_source_path") or row.get("source") or "",
+        "name": row.get("name") or Path(media_path_text).stem,
+        "width": row.get("width") or "0",
+        "height": row.get("height") or "0",
+        "path": media_path_text,
+    }
+
+
+def _gallery_row_from_legacy_tsv(row: dict[str, str], root: Path) -> dict[str, str] | None:
+    media_path_text = _coerce_export_media_path_text(row.get("path") or "", root)
+    if not media_path_text:
+        return None
+    normalized = dict(row)
+    normalized["path"] = media_path_text
+    normalized.setdefault("name", Path(media_path_text).stem)
+    return normalized
+
+
+def _gallery_row_metadata_from_tsv(signature: GallerySignature, row: dict[str, str]) -> dict[str, str]:
+    if _is_legacy_gallery_signature(signature):
+        path_text = row.get("path") or ""
+        name = row.get("name") or Path(path_text).stem
+        return {
+            "group": row.get("group", ""),
+            "source": row.get("source", ""),
+            "name": name,
+            "width": row.get("width") or "0",
+            "height": row.get("height") or "0",
+            "path": path_text,
+        }
+    path_text = row.get("image_path") or row.get("path") or ""
+    return {
+        "group": row.get("atlas_key") or row.get("asset_group") or row.get("category") or "",
+        "source": row.get("relative_source_path") or row.get("source") or "",
+        "name": row.get("name") or Path(path_text).stem,
+        "width": row.get("width") or "0",
+        "height": row.get("height") or "0",
+        "path": path_text,
+    }
+
+
+def _iter_gallery_rows_by_signature(signature: GallerySignature, root: Path):
+    _kind, path_text, _mtime_ns, _size = signature
+    is_legacy = _is_legacy_gallery_signature(signature)
+    for row in _iter_tsv(Path(path_text)) or ():
+        normalized = _gallery_row_from_legacy_tsv(row, root) if is_legacy else _gallery_row_from_modern_tsv(row, root)
+        if normalized is not None:
+            yield normalized
+
+
+@lru_cache(maxsize=16)
+def _gallery_count_by_signature(signature: GallerySignature, root_text: str) -> int:
+    del root_text
+    _kind, path_text, _mtime_ns, _size = signature
+    count = 0
+    if _is_legacy_gallery_signature(signature):
+        path_field = "path"
+    else:
+        path_field = "image_path"
+    for row in _iter_tsv(Path(path_text)) or ():
+        media_name = row.get(path_field) or row.get("path") or ""
+        if Path(media_name).suffix.lower() in _IMAGE_SUFFIXES:
+            count += 1
+    return count
+
+
+def _gallery_count(kind: str, export_root: str | Path | None = None) -> int:
+    signature = _gallery_signature(kind, export_root)
+    if signature is None:
+        return 0
+    root = resolve_fanxiu_export_root(export_root)
+    return _gallery_count_by_signature(signature, str(root.resolve()))
+
+
+@lru_cache(maxsize=16)
+def _gallery_rows_by_signature(signature: GallerySignature, root_text: str) -> tuple[dict[str, str], ...]:
+    root = Path(root_text)
+    return tuple(_iter_gallery_rows_by_signature(signature, root))
+
+
+def _gallery_rows(kind: str, export_root: str | Path | None = None) -> list[dict[str, str]]:
+    signature = _gallery_signature(kind, export_root)
+    if signature is None:
         return []
-    return _read_tsv(_indexes_dir(export_root) / index_name)
+    root = resolve_fanxiu_export_root(export_root)
+    return list(_gallery_rows_by_signature(signature, str(root.resolve())))
 
 
 def search_fanxiu_wiki_gallery(
@@ -505,41 +864,67 @@ def search_fanxiu_wiki_gallery(
     root = resolve_fanxiu_export_root(export_root)
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
+    original_offset = offset
     kinds = ["texture", "sprite", "model_texture"] if kind == "all" else [kind]
     terms = [item.strip().lower() for item in re.split(r"\s+", query or "") if item.strip()]
     rows: list[dict[str, Any]] = []
+    total = 0
+    remaining_skip = offset
 
     for row_kind in kinds:
-        for row in _gallery_rows(row_kind, export_root):
-            path = Path(row.get("path") or "").expanduser().resolve()
-            if not path.is_file() or path.suffix.lower() not in _IMAGE_SUFFIXES or not _is_relative_to(path, root):
+        signature = _gallery_signature(row_kind, export_root)
+        if signature is None:
+            continue
+        if not terms:
+            kind_total = _gallery_count_by_signature(signature, str(root.resolve()))
+            total += kind_total
+            if remaining_skip >= kind_total:
+                remaining_skip -= kind_total
                 continue
+            for row in _iter_gallery_rows_by_signature(signature, root):
+                if remaining_skip > 0:
+                    remaining_skip -= 1
+                    continue
+                if len(rows) < limit:
+                    rows.append(_format_gallery_row(row_kind, row))
+                if len(rows) >= limit:
+                    break
+            continue
+        for raw_row in _iter_tsv(Path(signature[1])) or ():
+            metadata = _gallery_row_metadata_from_tsv(signature, raw_row)
             haystack = " ".join(
-                str(row.get(field, ""))
+                str(metadata.get(field, ""))
                 for field in ("group", "source", "name", "width", "height")
             ).lower()
             if terms and not all(term in haystack for term in terms):
                 continue
-            rows.append(
-                {
-                    "kind": row_kind,
-                    "group": row.get("group", ""),
-                    "source": row.get("source", ""),
-                    "name": row.get("name", path.stem),
-                    "width": int(row.get("width") or 0),
-                    "height": int(row.get("height") or 0),
-                    "path": str(path),
-                }
-            )
+            if total >= offset and len(rows) < limit:
+                path = _coerce_export_media_path(metadata.get("path") or "", root)
+                if path is None:
+                    continue
+                rows.append(_format_gallery_row(row_kind, metadata, path=path))
+            total += 1
 
-    rows.sort(key=lambda item: (item["kind"], item["group"], item["name"], item["path"]))
     return {
         "query": query,
         "kind": kind,
         "limit": limit,
-        "offset": offset,
-        "total": len(rows),
-        "items": rows[offset : offset + limit],
+        "offset": original_offset,
+        "total": total,
+        "items": rows,
+    }
+
+
+def _format_gallery_row(row_kind: str, row: dict[str, str], *, path: Path | None = None) -> dict[str, Any]:
+    media_path = path or Path(row.get("path") or "")
+    return {
+        "kind": row_kind,
+        "group": row.get("group", ""),
+        "source": row.get("source", ""),
+        "name": row.get("name", media_path.stem),
+        "width": int(row.get("width") or 0),
+        "height": int(row.get("height") or 0),
+        "path": str(media_path),
     }
 
 

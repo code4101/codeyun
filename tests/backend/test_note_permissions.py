@@ -1,5 +1,6 @@
 import uuid
 
+from backend.api import notes as notes_api
 from backend.app import app
 from backend.api.fanxiu import FANXIU_CHAR_KIND, FANXIU_CHAR_TYPE, get_fanxiu_user
 from backend.core.note_semantics import NOTE_WEIGHT_MODE_LINEAR
@@ -117,6 +118,45 @@ def test_note_update_serializes_legacy_custom_fields_dict(client, session, auth_
     ]
 
 
+def test_note_update_checks_base_version_and_broadcasts(client, session, auth_user, monkeypatch):
+    note = make_note(auth_user, "note-version-conflict", "Version Conflict")
+    note.content = "<p>old</p>"
+    note.version = 1
+    session.add(note)
+    session.commit()
+
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(notes_api.ws_manager, "broadcast", fake_broadcast)
+
+    response = client.put(
+        f"/api/notes/{note.numeric_id}",
+        json={"base_version": 1, "content": "<p>new</p>"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["version"] == 2
+    assert payload["content"] == "<p>new</p>"
+    assert broadcasts[-1][0] == f"resource:note:{note.numeric_id}"
+    assert broadcasts[-1][1]["type"] == "resource-updated"
+    assert broadcasts[-1][1]["resource_type"] == "note"
+    assert broadcasts[-1][1]["resource_id"] == str(note.numeric_id)
+    assert broadcasts[-1][1]["version"] == 2
+
+    stale_response = client.put(
+        f"/api/notes/{note.numeric_id}",
+        json={"base_version": 1, "content": "<p>stale</p>"},
+    )
+    assert stale_response.status_code == 409
+    session.refresh(note)
+    assert note.content == "<p>new</p>"
+    assert note.version == 2
+    assert len(broadcasts) == 1
+
+
 def test_delete_note_removes_connected_edges(client, session, auth_user):
     source = make_note(auth_user, "note-delete-source", "Delete Source")
     target = make_note(auth_user, "note-delete-target", "Delete Target")
@@ -126,6 +166,7 @@ def test_delete_note_removes_connected_edges(client, session, auth_user):
         source_id=source.id,
         target_id=target.id,
     )
+    edge_id = edge.id
     session.add(source)
     session.add(target)
     session.add(edge)
@@ -135,9 +176,11 @@ def test_delete_note_removes_connected_edges(client, session, auth_user):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    assert session.get(NoteNode, source.id) is None
+    session.refresh(source)
+    assert source.deleted_at and source.deleted_at > 0
+    assert source.deleted_by_user_id == auth_user.id
     assert session.get(NoteNode, target.id) is not None
-    assert session.get(NoteEdge, edge.id) is None
+    assert session.get(NoteEdge, edge_id) is None
 
 
 def test_fanxiu_public_read_returns_can_edit_for_current_viewer(client, session):

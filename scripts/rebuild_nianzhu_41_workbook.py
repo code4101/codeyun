@@ -124,7 +124,7 @@ def _replace_text(value: Any) -> Any:
     text = value.replace("第40届念住", "第41届念住")
     text = text.replace("第40届", "第41届")
     if "最近运行更新时间" in text:
-        return "最近运行更新时间：\n待首次同步"
+        return "待首次同步"
     return _shift_template_dates(text)
 
 

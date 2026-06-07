@@ -1143,6 +1143,26 @@ def _coerce_visual_media_path(value: str | None, media_root: Path) -> tuple[Path
     return media_path, _relative_media_path(media_path, media_root)
 
 
+def _coerce_visual_manifest_media_path(value: str | None, media_root: Path) -> tuple[Path | None, str]:
+    text = str(value or "").strip()
+    if not text:
+        return None, ""
+    raw_path = Path(text)
+    if raw_path.suffix.lower() not in _IMAGE_SUFFIXES:
+        return None, ""
+    if raw_path.is_absolute():
+        try:
+            relative_path = raw_path.relative_to(media_root)
+        except ValueError:
+            return None, ""
+    else:
+        relative_path = raw_path
+    if any(part in {"", ".", ".."} for part in relative_path.parts):
+        return None, ""
+    media_path = media_root / relative_path
+    return media_path, relative_path.as_posix()
+
+
 def _load_static_visual_manifest_rows(media_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     source_files = {
@@ -1157,7 +1177,7 @@ def _load_static_visual_manifest_rows(media_root: Path) -> list[dict[str, Any]]:
         for raw in _read_tsv(source_file):
             row_source_kind = raw.get("source_kind") or source_file_kind
             media_value = raw.get("image_path") or raw.get("gallery_path") or raw.get("path")
-            media_path, relative_media_path = _coerce_visual_media_path(media_value, media_root)
+            media_path, relative_media_path = _coerce_visual_manifest_media_path(media_value, media_root)
             if media_path is None:
                 continue
             rows.append(

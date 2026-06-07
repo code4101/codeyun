@@ -555,6 +555,7 @@ def _chat_with_codex_cli(
         command_args = [
             *command,
             "exec",
+            "--ignore-user-config",
             "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
             "--color",
