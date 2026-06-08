@@ -3,12 +3,26 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 import scripts.verify_fanxiu_wiki_browser as browser
 import scripts.verify_fanxiu_card_catalogs as card_catalogs
+import scripts.verify_fanxiu_resource_links as resource_links
 import scripts.verify_fanxiu_wiki_endpoints as endpoints
 import scripts.verify_fanxiu_wiki_icons as icons
 import scripts.verify_fanxiu_wiki_quality as quality
+from backend.core.fanxiu_item_icon_quality import build_item_icon_quality_report, load_item_icon_quality_review
+
+
+def _healthy_contact_sheet_path() -> str:
+    path = Path(tempfile.gettempdir()) / "codeyun" / "fanxiu_item_icon_quality_test_contact_sheet.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from PIL import Image
+
+    with Image.new("RGB", (2, 2), (255, 255, 255)) as image:
+        image.save(path, format="PNG")
+    return str(path)
 
 
 def _args(**overrides):
@@ -51,6 +65,14 @@ def _healthy_payload(name: str) -> dict:
         "wiki_icons": {
             "unique_icons": 3001,
             "icon_uses": 9000,
+            "icon_quality_risk_counts_by_type": {
+                "high_reuse_primary_icon": 10,
+                "high_reuse_small_icon": 12,
+            },
+            "icon_quality_risk_counts_by_scope": {
+                "item_catalog_only": 17,
+                "cross_catalog": 5,
+            },
             "icon_endpoint_failures": 0,
             "api_endpoint_errors": 0,
             "browser_broken_image_endpoint_failures": 0,
@@ -61,6 +83,64 @@ def _healthy_payload(name: str) -> dict:
             "ok": 3295,
             "fail": 0,
             "alias_count": 3,
+        },
+        "item_icon_quality_report": {
+            "item_count": 10030,
+            "group_count": 21,
+            "primary_group_count": 9,
+            "small_group_count": 12,
+            "high_priority_count": 10,
+            "medium_priority_count": 6,
+            "low_priority_count": 5,
+            "candidate_group_count": 18,
+            "candidate_icon_total": 24,
+            "no_candidate_group_count": 3,
+            "unresolved_no_candidate_group_count": 3,
+            "no_candidate_review_status": "pending_manual_decision",
+            "no_candidate_groups": [
+                {
+                    "field": "icon",
+                    "icon": "icon2_item_9034",
+                    "count": 65,
+                    "review_priority": "high",
+                    "sample": {"id": "1300605", "name": "灵材宝匣"},
+                    "nearby_icon_count": 2,
+                    "nearby_icons": [{"icon": "icon2_item_9033"}, {"icon": "icon2_item_9035"}],
+                    "review_status": "pending_manual_decision",
+                    "suggested_manual_action": "continue_static_asset_search",
+                    "recommended_action": "主图主要用于“礼包宝匣”，但仍混有其他类型；优先检查非主类型样本是否误用。",
+                    "remaining_risk": "No same-number or same-family exported asset candidate was found.",
+                },
+                {
+                    "field": "icon",
+                    "icon": "icon5_item_zw_9716",
+                    "count": 50,
+                    "review_priority": "high",
+                    "sample": {"id": "5012047", "name": "芙莲神心诀"},
+                    "nearby_icon_count": 3,
+                    "nearby_icons": [{"icon": "icon5_item_9715"}, {"icon": "icon6_item_9717"}],
+                    "review_status": "pending_manual_decision",
+                    "suggested_manual_action": "continue_static_asset_search",
+                    "recommended_action": "主图主要用于“功法”，但仍混有其他类型；优先检查非主类型样本是否误用。",
+                    "remaining_risk": "No same-number or same-family exported asset candidate was found.",
+                },
+                {
+                    "field": "icon",
+                    "icon": "icon5_item_9503",
+                    "count": 76,
+                    "review_priority": "medium",
+                    "sample": {"id": "20401001", "name": "攻击玉·陈巧倩"},
+                    "nearby_icon_count": 2,
+                    "nearby_icons": [{"icon": "icon5_item_9502"}, {"icon": "icon5_item_9504"}],
+                    "review_status": "pending_manual_decision",
+                    "suggested_manual_action": "review_exemption_candidate",
+                    "recommended_action": "主图几乎只用于“材料”类型；可能是游戏配置的类型通用图，优先决定是否标记豁免。",
+                    "remaining_risk": "No same-number or same-family exported asset candidate was found.",
+                },
+            ],
+            "nearby_context_group_count": 3,
+            "nearby_context_icon_total": 7,
+            "no_candidate_contact_sheet_path": _healthy_contact_sheet_path(),
         },
         "wiki_endpoints": {
             "endpoint_count": 21,
@@ -86,9 +166,15 @@ def _healthy_payload(name: str) -> dict:
             "icon_failure_count": 0,
         },
         "resource_links": {
-            "resource_count": 30,
-            "loaded_icon_count": 25,
-            "required_icon_count": 25,
+            "resource_count": 39,
+            "required_resource_count": 1,
+            "required_resource_failure_count": 0,
+            "mail_reward_resource_count": 8,
+            "mail_reward_resource_failure_count": 0,
+            "icon_review_resource_count": 8,
+            "icon_review_resource_failure_count": 0,
+            "loaded_icon_count": 34,
+            "required_icon_count": 34,
             "failure_count": 0,
             "title_mismatch_count": 0,
             "icon_mismatch_count": 0,
@@ -103,6 +189,8 @@ def _healthy_payload(name: str) -> dict:
             "mail_missing_icon_slot_count": 0,
             "mail_empty_alt_image_count": 0,
             "mail_invalid_item_link_count": 0,
+            "mail_required_content_check_count": 2,
+            "mail_required_content_failure_count": 0,
             "mail_content_dialog_ok": True,
             "mail_item_link_navigation_ok": True,
         },
@@ -112,6 +200,10 @@ def _healthy_payload(name: str) -> dict:
             "item_route_filter_failure_count": 0,
             "item_route_clear_count": 1,
             "item_route_clear_failure_count": 0,
+            "item_icon_review_count": 1,
+            "item_icon_review_failure_count": 0,
+            "item_icon_route_check_count": 2,
+            "item_icon_route_check_failure_count": 0,
             "request_failure_count": 0,
             "broken_visible_image_count": 0,
             "hard_image_failure_count": 0,
@@ -135,6 +227,156 @@ def _healthy_payload(name: str) -> dict:
     return payloads.get(name, {"ok": True})
 
 
+def test_build_item_icon_quality_report_triages_primary_and_corner_icons(tmp_path):
+    catalog_dir = tmp_path / "parsed_configs" / "item_catalog"
+    catalog_dir.mkdir(parents=True)
+    cards = []
+    for index in range(50):
+        cards.append(
+            {
+                "id": 1000 + index,
+                "name": f"跨类道具{index}",
+                "icon": "icon_item_0180",
+                "small_icon": f"small_{index % 20}",
+                "icon_reuse_count": 50,
+                "small_icon_reuse_count": 3,
+                "type_name": "材料" if index < 30 else "礼包宝匣",
+                "type_sub_type_name": "材料 · 通用" if index < 30 else "礼包宝匣 · 活动",
+                "quality_name": "黄色品质",
+                "source_table": "Item",
+            }
+        )
+    for index in range(50):
+        cards.append(
+            {
+                "id": 2000 + index,
+                "name": f"角标道具{index}",
+                "icon": f"main_{index}",
+                "small_icon": "common_corner_skill_0101",
+                "icon_reuse_count": 1,
+                "small_icon_reuse_count": 50,
+                "type_name": "功法",
+                "type_sub_type_name": "功法 · 通用",
+                "quality_name": "紫色品质",
+                "source_table": "Item",
+            }
+        )
+    (catalog_dir / "item_catalog.json").write_text(
+        json.dumps({"schema_version": 50, "stats": {}, "cards": cards}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    icon_dir = tmp_path / "icons"
+    icon_dir.mkdir()
+    (icon_dir / "icon3_item_0180.png").write_bytes(b"png")
+    (icon_dir / "common_corner_skill_0102.png").write_bytes(b"png")
+    (icon_dir / "unrelated_item_9999.png").write_bytes(b"png")
+
+    summary = build_item_icon_quality_report(export_root=tmp_path, threshold=50)
+
+    assert summary["group_count"] == 2
+    assert summary["primary_group_count"] == 1
+    assert summary["small_group_count"] == 1
+    assert summary["candidate_group_count"] == 1
+    assert summary["candidate_icon_total"] == 1
+    assert summary["no_candidate_group_count"] == 1
+    assert summary["unresolved_no_candidate_group_count"] == 1
+    assert summary["no_candidate_review_status"] == "pending_manual_decision"
+    assert summary["no_candidate_groups"][0]["icon"] == "common_corner_skill_0101"
+    assert summary["no_candidate_groups"][0]["review_status"] == "pending_manual_decision"
+    assert summary["no_candidate_groups"][0]["suggested_manual_action"] == "manual_visual_compare"
+    assert summary["no_candidate_groups"][0]["remaining_risk"]
+    assert summary["no_candidate_groups"][0]["sample"]["id"] == "2000"
+    assert summary["no_candidate_groups"][0]["nearby_icons"][0]["icon"] == "common_corner_skill_0102"
+    assert summary["nearby_context_group_count"] == 1
+    assert summary["nearby_context_icon_total"] == 1
+    assert summary["no_candidate_contact_sheet_path"]
+    assert (tmp_path / "parsed_configs" / "item_catalog" / "icon_quality_review" / "item_icon_no_candidate_contact_sheet_latest.png").is_file()
+    report_path = tmp_path / "parsed_configs" / "item_catalog" / "icon_quality_review" / "item_icon_quality_review_latest.tsv"
+    text = report_path.read_text(encoding="utf-8-sig")
+    assert "icon_item_0180" in text
+    assert "icon3_item_0180" in text
+    assert "跨类型主图混用" in text
+    assert "common_corner_skill_0101" in text
+    assert "角标类小图标" in text
+    markdown_path = tmp_path / "parsed_configs" / "item_catalog" / "icon_quality_review" / "item_icon_quality_review_latest.md"
+    markdown_text = markdown_path.read_text(encoding="utf-8")
+    assert "Groups without existing-asset candidates" in markdown_text
+    assert "No Candidate Groups" in markdown_text
+    assert "pending_manual_decision" in markdown_text
+    assert "manual_visual_compare" in markdown_text
+    assert "2000:角标道具0" in markdown_text
+    assert "common_corner_skill_0102" in markdown_text
+    assert "../../../icons/common_corner_skill_0101.png" in markdown_text
+    assert "../../../icons/common_corner_skill_0102.png" in markdown_text
+    assert "item_icon_no_candidate_contact_sheet_latest.png" in markdown_text
+    loaded = load_item_icon_quality_review(export_root=tmp_path, threshold=50, rebuild_missing=False)
+    primary_row = next(row for row in loaded["items"] if row["icon"] == "icon_item_0180")
+    assert primary_row["representative_samples"][0]["id"] == "1000"
+    assert primary_row["representative_samples"][0]["name"] == "跨类道具0"
+    assert "samples_json" in primary_row
+    assert primary_row["candidate_icons"][0]["icon"] == "icon3_item_0180"
+    assert primary_row["candidate_icons"][0]["reason"]
+
+
+def test_load_item_icon_quality_review_rebuilds_when_threshold_changes(tmp_path):
+    catalog_dir = tmp_path / "parsed_configs" / "item_catalog"
+    catalog_dir.mkdir(parents=True)
+    cards = [
+        {
+            "id": index,
+            "name": f"复用道具{index}",
+            "icon": "shared_icon",
+            "icon_reuse_count": 60,
+            "type_name": "材料",
+            "type_sub_type_name": "材料 · 通用",
+            "quality_name": "黄色品质",
+            "source_table": "Item",
+        }
+        for index in range(60)
+    ]
+    (catalog_dir / "item_catalog.json").write_text(
+        json.dumps({"schema_version": 50, "stats": {}, "cards": cards}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    first = load_item_icon_quality_review(export_root=tmp_path, threshold=50)
+    second = load_item_icon_quality_review(export_root=tmp_path, threshold=70)
+
+    assert first["summary"]["threshold"] == 50
+    assert first["total"] == 1
+    assert second["summary"]["threshold"] == 70
+    assert second["total"] == 0
+
+
+def test_icon_review_resource_samples_are_spread_across_groups():
+    review_rows = [
+        {
+            "field": "small_icon",
+            "icon": "group_a",
+            "representative_samples": [{"id": f"a{index}"} for index in range(10)],
+        },
+        {
+            "field": "icon",
+            "icon": "group_b",
+            "representative_samples": [{"id": f"b{index}"} for index in range(10)],
+        },
+        {
+            "field": "small_icon",
+            "icon": "group_c",
+            "representative_samples": [{"id": f"c{index}"} for index in range(10)],
+        },
+    ]
+
+    refs = resource_links._select_icon_review_sample_refs(review_rows, 5)
+
+    assert [ref["item_id"] for ref in refs] == ["a0", "b0", "c0", "a1", "b1"]
+    assert {ref["icon_review_group"] for ref in refs[:3]} == {
+        "small_icon:group_a",
+        "icon:group_b",
+        "small_icon:group_c",
+    }
+
+
 def test_quality_steps_skip_browser_keeps_data_and_resource_gates():
     steps = quality._quality_steps(_args(skip_browser=True, skip_frontend=True))
 
@@ -146,15 +388,23 @@ def test_quality_steps_skip_browser_keeps_data_and_resource_gates():
         "wiki_endpoints",
         "wiki_icons",
         "item_icons",
+        "item_icon_quality_report",
         "card_catalogs",
         "resource_links",
     ]
     assert any("verify_fanxiu_mail_records.py" in part for _name, command, _timeout in steps for part in command)
     assert any("--full-items" in command for _name, command, _timeout in steps)
     assert any("verify_fanxiu_item_icons.py" in part for _name, command, _timeout in steps for part in command)
+    assert any("build_fanxiu_item_icon_quality_report.py" in part for _name, command, _timeout in steps for part in command)
     resource_command = next(command for name, command, _timeout in steps if name == "resource_links")
     assert "--samples-per-type" in resource_command
     assert "5" in resource_command
+    assert "--required-resource" in resource_command
+    assert "item:3080008" in resource_command
+    assert "--mail-reward-resource-samples" in resource_command
+    assert "8" in resource_command
+    assert "--icon-review-resource-samples" in resource_command
+    assert "8" in resource_command
 
 
 def test_quality_steps_include_frontend_typecheck_and_build_by_default():
@@ -168,6 +418,7 @@ def test_quality_steps_include_frontend_typecheck_and_build_by_default():
         "wiki_endpoints",
         "wiki_icons",
         "item_icons",
+        "item_icon_quality_report",
         "card_catalogs",
         "resource_links",
         "frontend_typecheck",
@@ -176,6 +427,57 @@ def test_quality_steps_include_frontend_typecheck_and_build_by_default():
     commands = {name: command for name, command, _timeout in steps}
     assert commands["frontend_typecheck"][1:] == ["run", "typecheck", "--prefix", "frontend"]
     assert commands["frontend_build"][1:] == ["run", "build", "--prefix", "frontend"]
+
+
+def test_wiki_icon_quality_risks_distinguish_primary_and_small_icons():
+    rows = icons._build_icon_quality_risk_rows(
+        {
+            "shared_primary": [
+                icons.IconUse("item_catalog", str(index), f"主图标道具{index}", "icon", "shared_primary")
+                for index in range(50)
+            ],
+            "shared_small": [
+                icons.IconUse("item_catalog", str(index), f"小图标道具{index}", "small_icon", "shared_small")
+                for index in range(50)
+            ],
+            "shared_head": [
+                icons.IconUse("profile_catalog", str(index), f"头像道具{index}", "head_icon", "shared_head")
+                for index in range(50)
+            ],
+            "cross_catalog_primary": [
+                *[
+                    icons.IconUse("item_catalog", str(index), f"道具目录{index}", "icon", "cross_catalog_primary")
+                    for index in range(49)
+                ],
+                *[
+                    icons.IconUse("gongfa_api_full", str(index), f"功法目录{index}", "icon", "cross_catalog_primary")
+                    for index in range(5)
+                ],
+            ],
+        },
+        primary_reuse_threshold=50,
+    )
+
+    rows_by_icon = {row["icon"]: row for row in rows}
+    risks_by_icon = {row["icon"]: row["risk"] for row in rows}
+    assert risks_by_icon["shared_primary"] == "high_reuse_primary_icon"
+    assert risks_by_icon["shared_small"] == "high_reuse_small_icon"
+    assert risks_by_icon["shared_head"] == "high_reuse_head_icon"
+    assert risks_by_icon["cross_catalog_primary"] == "high_reuse_primary_icon"
+    assert rows_by_icon["cross_catalog_primary"]["source_scope"] == "cross_catalog"
+    assert rows_by_icon["cross_catalog_primary"]["item_catalog_use_count"] == 49
+    assert rows_by_icon["cross_catalog_primary"]["primary_use_count"] == 54
+    assert rows_by_icon["cross_catalog_primary"]["sources"] == "gongfa_api_full,item_catalog"
+    assert icons._count_icon_quality_risks_by_type(rows) == {
+        "high_reuse_primary_icon": 2,
+        "high_reuse_small_icon": 1,
+        "high_reuse_head_icon": 1,
+    }
+    assert icons._count_icon_quality_risks_by_scope(rows) == {
+        "cross_catalog": 1,
+        "item_catalog_only": 2,
+        "other_catalog_only": 1,
+    }
 
 
 def test_quality_steps_browser_checks_mail_and_each_requested_item_type():
@@ -189,6 +491,7 @@ def test_quality_steps_browser_checks_mail_and_each_requested_item_type():
         "wiki_endpoints",
         "wiki_icons",
         "item_icons",
+        "item_icon_quality_report",
         "card_catalogs",
         "resource_links",
         "frontend_typecheck",
@@ -226,7 +529,7 @@ def test_verify_quality_reports_failed_steps(monkeypatch):
 
     assert summary["ok"] is False
     assert summary["failed_steps"] == ["wiki_icons"]
-    assert summary["step_count"] == 8
+    assert summary["step_count"] == 9
 
 
 def test_verify_quality_retries_transient_service_failure(monkeypatch):
@@ -419,6 +722,221 @@ def test_verify_quality_fails_when_mail_summary_loses_content(monkeypatch):
     assert "quality_summary" in summary["failed_steps"]
     assert summary["summary_failures"][0]["step"] == "mail_records"
     assert summary["summary_failures"][0]["field"] == "with_content"
+
+
+def test_verify_quality_fails_when_mail_browser_required_content_check_fails(monkeypatch):
+    payloads = {
+        "mail_browser": {
+            **_healthy_payload("mail_browser"),
+            "mail_required_content_failure_count": 1,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args())
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "mail_browser" and row["field"] == "mail_required_content_failure_count"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_has_no_candidates(monkeypatch):
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "candidate_group_count": 0,
+            "candidate_icon_total": 0,
+            "no_candidate_group_count": 21,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report" and row["field"] == "candidate_group_count"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_has_no_candidate_icons(monkeypatch):
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "candidate_icon_total": 0,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report" and row["field"] == "candidate_icon_total"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_omits_no_candidate_details(monkeypatch):
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "no_candidate_groups": [],
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report" and row["field"] == "no_candidate_groups"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_no_candidate_detail_lacks_sample(monkeypatch):
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "no_candidate_groups": [
+                {
+                    "field": "icon",
+                    "icon": "icon2_item_9034",
+                    "review_priority": "high",
+                    "sample": {},
+                },
+                *_healthy_payload("item_icon_quality_report")["no_candidate_groups"][1:],
+            ],
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report" and row["field"] == "no_candidate_groups[0]"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_no_candidate_detail_lacks_status(monkeypatch):
+    first_group = dict(_healthy_payload("item_icon_quality_report")["no_candidate_groups"][0])
+    first_group.pop("review_status")
+    first_group.pop("suggested_manual_action")
+    first_group.pop("remaining_risk")
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "no_candidate_groups": [
+                first_group,
+                *_healthy_payload("item_icon_quality_report")["no_candidate_groups"][1:],
+            ],
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report" and row["field"] == "no_candidate_groups[0]"
+        for row in summary["summary_failures"]
+    )
+
+
+def test_verify_quality_fails_when_item_icon_review_contact_sheet_is_missing(monkeypatch):
+    payloads = {
+        "item_icon_quality_report": {
+            **_healthy_payload("item_icon_quality_report"),
+            "no_candidate_contact_sheet_path": str(Path(tempfile.gettempdir()) / "codeyun" / "missing_contact_sheet.png"),
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert any(
+        row["step"] == "item_icon_quality_report"
+        and row["field"] == "no_candidate_contact_sheet_path"
+        and row["kind"] == "contact_sheet_missing"
+        for row in summary["summary_failures"]
+    )
 
 
 def test_verify_quality_fails_when_mail_summary_has_weak_content(monkeypatch):
@@ -657,6 +1175,58 @@ def test_verify_quality_fails_when_resource_link_summary_has_failures(monkeypatc
     assert summary["summary_failures"][0]["field"] == "failure_count"
 
 
+def test_verify_quality_fails_when_mail_reward_resource_pages_are_not_checked(monkeypatch):
+    payloads = {
+        "resource_links": {
+            **_healthy_payload("resource_links"),
+            "mail_reward_resource_count": 0,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert summary["summary_failures"][0]["step"] == "resource_links"
+    assert summary["summary_failures"][0]["field"] == "mail_reward_resource_count"
+
+
+def test_verify_quality_fails_when_icon_review_resource_pages_are_not_checked(monkeypatch):
+    payloads = {
+        "resource_links": {
+            **_healthy_payload("resource_links"),
+            "icon_review_resource_count": 0,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_browser=True, skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert summary["summary_failures"][0]["step"] == "resource_links"
+    assert summary["summary_failures"][0]["field"] == "icon_review_resource_count"
+
+
 def test_verify_quality_fails_when_item_browser_summary_shows_visible_fallback(monkeypatch):
     payloads = {
         "item_browser": {
@@ -733,6 +1303,84 @@ def test_verify_quality_fails_when_item_browser_skips_route_clear_check(monkeypa
     assert "quality_summary" in summary["failed_steps"]
     assert summary["summary_failures"][0]["step"] == "item_browser"
     assert summary["summary_failures"][0]["field"] == "item_route_clear_count"
+
+
+def test_verify_quality_fails_when_item_browser_skips_icon_route_checks(monkeypatch):
+    payloads = {
+        "item_browser": {
+            **_healthy_payload("item_browser"),
+            "item_icon_route_check_count": 0,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert summary["summary_failures"][0]["step"] == "item_browser"
+    assert summary["summary_failures"][0]["field"] == "item_icon_route_check_count"
+
+
+def test_verify_quality_fails_when_item_browser_skips_icon_review(monkeypatch):
+    payloads = {
+        "item_browser": {
+            **_healthy_payload("item_browser"),
+            "item_icon_review_count": 0,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert summary["summary_failures"][0]["step"] == "item_browser"
+    assert summary["summary_failures"][0]["field"] == "item_icon_review_count"
+
+
+def test_verify_quality_fails_when_item_icon_review_browser_has_failures(monkeypatch):
+    payloads = {
+        "item_browser": {
+            **_healthy_payload("item_browser"),
+            "item_icon_review_failure_count": 1,
+        }
+    }
+
+    def fake_run_step(name, command, *, timeout):
+        return {
+            "name": name,
+            "returncode": 0,
+            "command": " ".join(command),
+            "output": json.dumps(payloads.get(name, _healthy_payload(name)), ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(quality, "_run_command_step", fake_run_step)
+
+    summary = quality.verify_quality(_args(skip_frontend=True))
+
+    assert summary["ok"] is False
+    assert "quality_summary" in summary["failed_steps"]
+    assert summary["summary_failures"][0]["step"] == "item_browser"
+    assert summary["summary_failures"][0]["field"] == "item_icon_review_failure_count"
 
 
 def test_verify_quality_fails_when_core_browser_summary_has_request_failures(monkeypatch):

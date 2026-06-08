@@ -44,6 +44,10 @@ def _mail_content(row: FanxiuMailRecord) -> str:
     return ""
 
 
+def _has_display_payload(row: FanxiuMailRecord) -> bool:
+    return bool(_mail_content(row) or _mail_rewards(row))
+
+
 def _check_icon(base_url: str, icon: str, timeout: int) -> dict[str, Any] | None:
     try:
         response = requests.get(
@@ -86,6 +90,8 @@ def verify_mail_records(args: argparse.Namespace) -> dict[str, Any]:
     title_content_samples: dict[str, str] = {}
     counters = {
         "records": 0,
+        "raw_records": 0,
+        "empty_action_records": 0,
         "with_rewards": 0,
         "reward_items": 0,
         "reward_items_with_icon": 0,
@@ -105,6 +111,9 @@ def verify_mail_records(args: argparse.Namespace) -> dict[str, Any]:
             .order_by(FanxiuMailRecord.updated_at.desc())
             .limit(args.limit)
         ).all()
+        counters["raw_records"] = len(rows)
+        counters["empty_action_records"] = sum(1 for row in rows if not _has_display_payload(row))
+        rows = [row for row in rows if _has_display_payload(row)]
         counters["records"] = len(rows)
         for row in rows:
             rewards = _mail_rewards(row)
@@ -193,19 +202,44 @@ def verify_mail_records(args: argparse.Namespace) -> dict[str, Any]:
                     icon_failures.append(failure)
 
     required_content_failures: list[dict[str, str]] = []
-    for title, expected_part in {
-        "灵脉收益": "所在灵脉",
-        "修炼值自动领取通知": "修炼值",
-    }.items():
+    required_content_rules = {
+        "灵脉收益": {
+            "expected_parts": ["所在灵脉", "本次聚灵时间", "小时"],
+            "forbidden_parts": ["10800000"],
+        },
+        "修炼值自动领取通知": {
+            "expected_parts": ["修炼值"],
+            "forbidden_parts": [],
+        },
+    }
+    for title, rule in required_content_rules.items():
         content = title_content_samples.get(title, "")
-        if expected_part not in content:
-            required_content_failures.append(
-                {
-                    "title": title,
-                    "expected_part": expected_part,
-                    "observed": content,
-                }
-            )
+        for expected_part in rule["expected_parts"]:
+            if expected_part not in content:
+                required_content_failures.append(
+                    {
+                        "title": title,
+                        "expected_part": expected_part,
+                        "observed": content,
+                    }
+                )
+        for forbidden_part in rule["forbidden_parts"]:
+            if forbidden_part in content:
+                required_content_failures.append(
+                    {
+                        "title": title,
+                        "forbidden_part": forbidden_part,
+                        "observed": content,
+                    }
+                )
+    if title_content_samples.get("宗门灵泉活动收益", "").find("720000") >= 0:
+        required_content_failures.append(
+            {
+                "title": "宗门灵泉活动收益",
+                "forbidden_part": "720000",
+                "observed": title_content_samples.get("宗门灵泉活动收益", ""),
+            }
+        )
 
     return {
         **counters,

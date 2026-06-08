@@ -85,7 +85,7 @@ from backend.core.fanxiu_il2cpp_metadata import (
     build_fanxiu_il2cpp_metadata_probe,
 )
 from backend.core.fanxiu_download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
-from backend.core.fanxiu_item_catalog import build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
+from backend.core.fanxiu_item_catalog import _annotate_item_icon_reuse, build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
 from backend.core.fanxiu_doupotd_catalog import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
@@ -1399,10 +1399,16 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
 
     result = build_fanxiu_item_catalog(export_root=export_root)
     catalog = json.loads(Path(result["files"]["catalog"]).read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == 47
+    assert catalog["schema_version"] == 50
     assert catalog["cards"][0]["quality_name"] == "红色品质"
     assert catalog["cards"][0]["type_name"] == "材料"
     assert catalog["cards"][0]["sub_type_key"] == "5:2"
+    assert catalog["cards"][0]["source_table"] == "Item"
+    assert catalog["cards"][0]["source_row_key"] == 3020501
+    assert catalog["cards"][0]["source_path"].endswith("parsed_configs/Item/rows.json") or catalog["cards"][0]["source_path"].endswith("parsed_configs\\Item\\rows.json")
+    assert catalog["cards"][0]["icon_source_table"] == "Item"
+    assert catalog["cards"][0]["icon_source_field"] == "icon"
+    assert catalog["cards"][0]["icon_reuse_count"] == 1
     assert catalog["cards"][0]["progression_counts"] == {"lingjie_jie": 3}
     assert catalog["cards"][0]["first_time_hint"]["date"] == "2025-02-16"
     assert catalog["cards"][0]["first_time_hint"]["activity_name"] == "玄鸟试炼"
@@ -1414,6 +1420,11 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
     assert searched["total"] == 1
     assert searched["items"][0]["id"] == 3020501
     assert searched["items"][0]["quality_name"] == "红色品质"
+    assert searched["items"][0]["source_table"] == "Item"
+    assert searched["items"][0]["source_row_key"] == 3020501
+    assert searched["items"][0]["icon_source_table"] == "Item"
+    assert searched["items"][0]["icon_source_field"] == "icon"
+    assert searched["items"][0]["icon_reuse_count"] == 1
     assert searched["items"][0]["progression_counts"] == {"lingjie_jie": 3}
     assert searched["items"][0]["first_time_hint"]["date"] == "2025-02-16"
     assert {item["label"]: item["count"] for item in searched["quality_options"]} == {
@@ -1449,10 +1460,124 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
 
     detail = get_fanxiu_item_card(3020501, export_root=export_root)
     assert detail["card"]["effect_description"] == "用于玄鸟进阶"
+    assert detail["card"]["source_table"] == "Item"
+    assert detail["card"]["icon_source_field"] == "icon"
     assert detail["card"]["time_hints"][0]["source"] == "ActivityGift.reward"
     assert detail["card"]["progression"]["lingjie_jie"][1]["consume_items"][0]["name"] == "赤书玄鸟卷"
     assert detail["card"]["progression"]["lingjie_jie"][1]["feature_link"]["timelines"] == "TimeLine357601014"
     assert detail["card"]["progression"]["lingjie_jie"][2]["feature_link"]["source_describe"] == "三重：玄鸟暴击后触发额外伤害"
+
+
+def test_fanxiu_item_catalog_marks_high_reuse_primary_and_small_icons():
+    cards = [
+        {
+            "id": index,
+            "name": f"道具{index}",
+            "icon": "shared_icon",
+            "small_icon": "shared_small_icon",
+        }
+        for index in range(50)
+    ]
+    cards.append({"id": 999, "name": "独立道具", "icon": "unique_icon", "small_icon": "unique_small_icon"})
+
+    _annotate_item_icon_reuse(cards)
+
+    assert cards[0]["icon_reuse_count"] == 50
+    assert cards[0]["icon_quality_risk"] == "high_reuse_primary_icon"
+    assert "50" in cards[0]["icon_quality_note"]
+    assert cards[0]["small_icon_reuse_count"] == 50
+    assert cards[0]["small_icon_quality_risk"] == "high_reuse_small_icon"
+    assert "50" in cards[0]["small_icon_quality_note"]
+    assert cards[-1]["icon_reuse_count"] == 1
+    assert cards[-1]["small_icon_reuse_count"] == 1
+    assert "icon_quality_risk" not in cards[-1]
+    assert "small_icon_quality_risk" not in cards[-1]
+
+
+def test_fanxiu_item_catalog_filters_high_reuse_primary_icons(tmp_path):
+    export_root = tmp_path / "exports"
+    item_dir = export_root / "parsed_configs" / "Item"
+    quality_dir = export_root / "parsed_configs" / "Quality"
+    item_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    rows = [
+        {
+            "_row_key": index,
+            "id": index,
+            "name_plain": f"共用图标道具{index}",
+            "descript_plain": "用于验证高复用图标筛选",
+            "effDescript_plain": "",
+            "icon": "shared_primary_icon",
+            "smallIcon": "shared_small_icon",
+            "type": 5,
+            "subType": 1,
+            "quality": 5,
+        }
+        for index in range(1000, 1050)
+    ]
+    rows.append(
+        {
+            "_row_key": 2000,
+            "id": 2000,
+            "name_plain": "独立图标道具",
+            "descript_plain": "用于验证普通图标筛选",
+            "effDescript_plain": "",
+            "icon": "unique_primary_icon",
+            "smallIcon": "unique_small_icon",
+            "type": 5,
+            "subType": 1,
+            "quality": 5,
+        }
+    )
+    (item_dir / "rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    (quality_dir / "rows.json").write_text(json.dumps([], ensure_ascii=False), encoding="utf-8")
+
+    build_fanxiu_item_catalog(export_root=export_root)
+
+    high_reuse = search_fanxiu_item_cards(icon_quality="high_reuse", export_root=export_root)
+    assert high_reuse["total"] == 50
+    assert high_reuse["icon_quality"] == "high_reuse"
+    assert high_reuse["items"][0]["icon_quality_risk"] == "high_reuse_primary_icon"
+    assert {option["value"]: option["count"] for option in high_reuse["icon_quality_options"]} == {
+        "high_reuse": 50,
+        "normal": 1,
+    }
+    assert high_reuse["high_reuse_icon_options"][0]["value"] == "shared_primary_icon"
+    assert high_reuse["high_reuse_icon_options"][0]["count"] == 50
+    assert high_reuse["high_reuse_icon_options"][0]["type_summary"] == "材料50"
+    assert high_reuse["high_reuse_icon_options"][0]["dominant_type"] == "材料"
+    assert high_reuse["high_reuse_icon_options"][0]["review_hint"] == "单一类型通用"
+    assert high_reuse["high_reuse_icon_options"][0]["review_priority"] == "medium"
+    assert high_reuse["high_reuse_icon_options"][0]["samples"][0]["name"] == "共用图标道具1000"
+    assert len(high_reuse["facet_index"]["rows"]["icon_quality"]["high_reuse"]) == 50
+    assert len(high_reuse["facet_index"]["rows"]["icon_name"]["shared_primary_icon"]) == 50
+    assert {option["value"]: option["count"] for option in high_reuse["small_icon_quality_options"]} == {
+        "high_reuse": 50,
+        "normal": 1,
+    }
+    assert high_reuse["high_reuse_small_icon_options"][0]["value"] == "shared_small_icon"
+    assert high_reuse["high_reuse_small_icon_options"][0]["count"] == 50
+
+    normal = search_fanxiu_item_cards(icon_quality="normal", export_root=export_root)
+    assert normal["total"] == 1
+    assert normal["items"][0]["id"] == 2000
+
+    icon_group = search_fanxiu_item_cards(icon_name="shared_primary_icon", export_root=export_root)
+    assert icon_group["total"] == 50
+    assert icon_group["icon_name"] == "shared_primary_icon"
+    assert {item["icon_reuse_count"] for item in icon_group["items"]} == {50}
+
+    small_icon_group = search_fanxiu_item_cards(small_icon_name="shared_small_icon", export_root=export_root)
+    assert small_icon_group["total"] == 50
+    assert small_icon_group["small_icon_name"] == "shared_small_icon"
+    assert {item["small_icon_reuse_count"] for item in small_icon_group["items"]} == {50}
+
+    small_high_reuse = search_fanxiu_item_cards(small_icon_quality="high_reuse", export_root=export_root)
+    assert small_high_reuse["total"] == 50
+    assert small_high_reuse["small_icon_quality"] == "high_reuse"
+    assert small_high_reuse["items"][0]["small_icon_quality_risk"] == "high_reuse_small_icon"
+    assert len(small_high_reuse["facet_index"]["rows"]["small_icon_quality"]["high_reuse"]) == 50
+    assert len(small_high_reuse["facet_index"]["rows"]["small_icon_name"]["shared_small_icon"]) == 50
 
 
 def test_fanxiu_item_catalog_links_optional_gift_rewards(tmp_path):

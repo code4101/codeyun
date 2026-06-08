@@ -402,6 +402,19 @@ def _parse_fanbei_video_refund_rules(text: Any) -> dict[str, int]:
     )
 
 
+def _fanbei_step3_lesson_count(document_json: dict[str, Any]) -> int:
+    source_meta = document_json.get("source_meta")
+    if isinstance(source_meta, dict):
+        value = source_meta.get("official_lesson_count") or source_meta.get("lesson_count")
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return count
+    return FANBEI_ATTENDANCE_STEP3_LESSON_COUNT
+
+
 def _highlight_course_progress(refund_rules: dict[str, int], text: Any) -> tuple[float, str | None]:
     return highlight_text_refund_progress(refund_rules, text)
 
@@ -436,12 +449,13 @@ def _apply_fanbei_attendance_step3_to_sheet(
             raise RuntimeError(f"考勤表缺少 {header} 列")
         indexes[header] = index
 
+    lesson_count = _fanbei_step3_lesson_count(current_document)
     lesson_columns = sorted(
         (
             (number, index)
             for index, column in enumerate(columns)
             if (number := _extract_lesson_number(column)) is not None
-            and 1 <= number <= FANBEI_ATTENDANCE_STEP3_LESSON_COUNT
+            and 1 <= number <= lesson_count
         ),
         key=lambda item: item[0],
     )

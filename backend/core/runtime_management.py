@@ -68,6 +68,14 @@ from backend.core.fanxiu_capture_runtime import (
     fanxiu_capture_runtime_service,
 )
 from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
+from backend.core.fanxiu_behavior_tree import (
+    ensure_fanxiu_behavior_tree_service,
+    fanxiu_data_annotation_runtime_dir,
+    fanxiu_data_annotation_runtime_status,
+    fanxiu_data_annotation_runtime_state_path,
+    fanxiu_data_annotation_world_facts_path,
+    stop_fanxiu_behavior_tree_current_task,
+)
 from backend.core.runtime_units import (
     command_runtime_group,
     command_runtime_queue_name,
@@ -117,12 +125,16 @@ def _fanxiu_game_window_service_enabled() -> bool:
     )
 
 
-def _fanxiu_behavior_tree_service_enabled() -> bool:
+def is_fanxiu_behavior_tree_service_enabled() -> bool:
     return _fanxiu_runtime_service_enabled(
         FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
         {"fanxiu_behavior_tree", "behavior_tree", "runtime", "scheduler", "凡修行为树"},
         "FX_BEHAVIOR_TREE_SERVICE_ENABLED",
     )
+
+
+def _fanxiu_behavior_tree_service_enabled() -> bool:
+    return is_fanxiu_behavior_tree_service_enabled()
 
 
 def _model_dump(value: Any) -> dict[str, Any]:
@@ -742,20 +754,18 @@ def _read_json_file(path: Path, default: Any) -> Any:
 
 
 def _data_annotation_runtime_dir() -> Path:
-    return get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime"
+    return fanxiu_data_annotation_runtime_dir()
 
 
 def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
     runtime_dir = _data_annotation_runtime_dir()
     live_status: dict[str, Any] = {}
     try:
-        from backend.api.fanxiu import _data_annotation_runtime_status
-
-        live_status = _data_annotation_runtime_status()
+        live_status = fanxiu_data_annotation_runtime_status()
     except Exception as exc:
         live_status = {"last_error": str(exc)}
-    runtime_state = live_status or _read_json_file(runtime_dir / "runtime_state.json", {})
-    world_facts = _read_json_file(runtime_dir / "world_facts.json", {})
+    runtime_state = live_status or _read_json_file(fanxiu_data_annotation_runtime_state_path(), {})
+    world_facts = _read_json_file(fanxiu_data_annotation_world_facts_path(), {})
     if not isinstance(runtime_state, dict):
         runtime_state = {}
     if not isinstance(world_facts, dict):
@@ -807,8 +817,8 @@ def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
         "service_running": service_running,
         "task_running": task_running,
         "updated_at": runtime_state.get("updated_at") or facts_runtime.get("updated_at") or world_facts.get("updated_at"),
-        "runtime_state_path": os.fspath(runtime_dir / "runtime_state.json"),
-        "world_facts_path": os.fspath(runtime_dir / "world_facts.json"),
+        "runtime_state_path": os.fspath(fanxiu_data_annotation_runtime_state_path()),
+        "world_facts_path": os.fspath(fanxiu_data_annotation_world_facts_path()),
         "route_path": "/fanxiu/data-annotation/runtime",
         "logs": runtime_state.get("logs") if isinstance(runtime_state.get("logs"), list) else [],
     }
@@ -820,13 +830,13 @@ def _resolve_data_annotation_runtime_entry(session: Session) -> UserDevice:
         status.get("entry_id"),
         status.get("guard_entry_id"),
     ]
-    runtime_state = _read_json_file(_data_annotation_runtime_dir() / "runtime_state.json", {})
+    runtime_state = _read_json_file(fanxiu_data_annotation_runtime_state_path(), {})
     if isinstance(runtime_state, dict):
         entry_candidates.extend([
             runtime_state.get("entry_id"),
             runtime_state.get("guard_entry_id"),
         ])
-    world_facts = _read_json_file(_data_annotation_runtime_dir() / "world_facts.json", {})
+    world_facts = _read_json_file(fanxiu_data_annotation_world_facts_path(), {})
     if isinstance(world_facts, dict):
         runtime = world_facts.get("runtime") if isinstance(world_facts.get("runtime"), dict) else {}
         guard = world_facts.get("guard") if isinstance(world_facts.get("guard"), dict) else {}
@@ -852,20 +862,8 @@ def _resolve_data_annotation_runtime_entry(session: Session) -> UserDevice:
 
 
 def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, Any]:
-    from backend.api.fanxiu import (
-        _DATA_ANNOTATION_RUNTIME_RUNNER,
-        _data_annotation_asset_tree_path,
-        _data_annotation_runtime_status,
-        _persist_data_annotation_runtime_status,
-    )
-
     entry = _resolve_data_annotation_runtime_entry(session)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(
-        entry=entry,
-        entry_id=entry.entry_id,
-        asset_tree_path=_data_annotation_asset_tree_path(entry.entry_id),
-    )
-    _persist_data_annotation_runtime_status(status)
+    ensure_fanxiu_behavior_tree_service(entry=entry, entry_id=entry.entry_id)
     return {"status": "started", "service": _get_data_annotation_behavior_tree_status()}
 
 
@@ -876,12 +874,15 @@ def ensure_data_annotation_behavior_tree_service_on_startup() -> dict[str, Any] 
         return ensure_data_annotation_behavior_tree_service(session)
 
 
-def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[str, Any]:
-    from backend.api.fanxiu import _DATA_ANNOTATION_RUNTIME_RUNNER, _persist_data_annotation_runtime_status
+def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:
+    del replace_existing
+    with Session(engine) as session:
+        return ensure_data_annotation_behavior_tree_service(session)
 
+
+def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[str, Any]:
     entry = _resolve_data_annotation_runtime_entry(session)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.stop_current_task(entry.entry_id)
-    _persist_data_annotation_runtime_status(status)
+    stop_fanxiu_behavior_tree_current_task(entry.entry_id)
     return {"status": "stopped", "service": _get_data_annotation_behavior_tree_status()}
 
 
@@ -1605,7 +1606,7 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="凡修行为树未在当前机器启用")
+            raise HTTPException(status_code=404, detail="凡修行为树只在 mi15 执行主机上管理")
         return ensure_data_annotation_behavior_tree_service(session)
     return trigger_builtin_runtime_job(normalized_key, session)
 

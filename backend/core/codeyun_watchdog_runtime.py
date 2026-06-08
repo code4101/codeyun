@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ CODEYUN_WATCHDOG_SERVICE_KEY = "codeyun-watchdog"
 CODEYUN_WATCHDOG_TITLE = "CodeYun 本机守护"
 WATCHDOG_SCRIPT = ROOT_DIR / "scripts" / "codeyun_watchdog.py"
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
+LEGACY_WATCHDOG_LOCK_PATH = ROOT_DIR / ".codex-run" / "codeyun-watchdog.pid"
 
 
 class CodeYunWatchdogError(RuntimeError):
@@ -37,25 +39,33 @@ def get_codeyun_watchdog_log_path() -> Path:
     configured = (os.getenv("CODEYUN_WATCHDOG_LOG") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve(strict=False)
-    return (ROOT_DIR / ".codex-run-logs" / "codeyun-watchdog.log").resolve(strict=False)
+    return (_temp_runtime_dir() / "codeyun-watchdog.log").resolve(strict=False)
 
 
 def get_codeyun_watchdog_lock_path() -> Path:
     configured = (os.getenv("CODEYUN_WATCHDOG_LOCK") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve(strict=False)
-    return (ROOT_DIR / ".codex-run" / "codeyun-watchdog.pid").resolve(strict=False)
+    return (_temp_runtime_dir() / "codeyun-watchdog.pid").resolve(strict=False)
+
+
+def _temp_runtime_dir() -> Path:
+    return Path(tempfile.gettempdir()) / "codeyun" / "codeyun-watchdog"
 
 
 def _read_lock_pid() -> int | None:
-    path = get_codeyun_watchdog_lock_path()
-    try:
-        value = int(path.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
-        return None
-    if value <= 0 or not psutil.pid_exists(value):
-        return None
-    return value
+    paths = [get_codeyun_watchdog_lock_path()]
+    if not (os.getenv("CODEYUN_WATCHDOG_LOCK") or "").strip():
+        paths.append(LEGACY_WATCHDOG_LOCK_PATH.resolve(strict=False))
+
+    for path in paths:
+        try:
+            value = int(path.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            continue
+        if value > 0 and psutil.pid_exists(value):
+            return value
+    return None
 
 
 def _safe_cmdline(proc: psutil.Process) -> list[str]:
@@ -86,6 +96,15 @@ def _safe_started_at(proc: psutil.Process) -> float | None:
         return None
 
 
+def _ancestor_pids(pid: int | None) -> set[int]:
+    if not pid:
+        return set()
+    try:
+        return {int(proc.pid) for proc in psutil.Process(pid).parents()}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return set()
+
+
 def _matches_watchdog_process(proc: psutil.Process) -> bool:
     cmdline = " ".join(_safe_cmdline(proc)).lower().replace("/", "\\")
     script = str(WATCHDOG_SCRIPT).lower().replace("/", "\\")
@@ -95,24 +114,6 @@ def _matches_watchdog_process(proc: psutil.Process) -> bool:
 def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
     current_pid = os.getpid()
     lock_pid = _read_lock_pid()
-    if lock_pid and lock_pid != current_pid:
-        try:
-            proc = psutil.Process(lock_pid)
-            if _matches_watchdog_process(proc):
-                return [
-                    asdict(
-                        CodeYunWatchdogProcess(
-                            pid=int(proc.pid),
-                            parent_pid=_safe_ppid(proc),
-                            name=_safe_name(proc),
-                            cmdline=" ".join(_safe_cmdline(proc)),
-                            started_at=_safe_started_at(proc),
-                        )
-                    )
-                ]
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            pass
-
     items: list[CodeYunWatchdogProcess] = []
     for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time"]):
         if int(proc.pid) == current_pid:
@@ -128,7 +129,7 @@ def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
                 started_at=_safe_started_at(proc),
             )
         )
-    items.sort(key=lambda item: (item.started_at or 0, item.pid))
+    items.sort(key=lambda item: (0 if lock_pid and item.pid == lock_pid else 1, item.started_at or 0, item.pid))
     return [asdict(item) for item in items]
 
 
@@ -137,6 +138,8 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
     running = bool(processes)
     interval_seconds = int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60")
     settings = get_settings()
+    active_pid = _read_lock_pid()
+    launcher_pids = _ancestor_pids(active_pid)
     return {
         "key": CODEYUN_WATCHDOG_SERVICE_KEY,
         "title": CODEYUN_WATCHDOG_TITLE,
@@ -153,6 +156,19 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
         "process_count": len(processes),
         "processes": processes,
         "pids": [item["pid"] for item in processes if item.get("pid") is not None],
+        "active_pid": active_pid,
+        "launcher_pids": [
+            item["pid"]
+            for item in processes
+            if item.get("pid") is not None and item.get("pid") in launcher_pids
+        ],
+        "stale_pids": [
+            item["pid"]
+            for item in processes
+            if item.get("pid") is not None
+            and item.get("pid") != active_pid
+            and item.get("pid") not in launcher_pids
+        ],
         "last_error": "" if WATCHDOG_SCRIPT.is_file() else f"脚本不存在：{WATCHDOG_SCRIPT}",
         "external": True,
         "controllable": True,

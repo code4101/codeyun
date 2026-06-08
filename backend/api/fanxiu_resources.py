@@ -163,6 +163,7 @@ from backend.core.fanxiu_item_catalog import (
     load_fanxiu_item_runtime_index,
     search_fanxiu_item_cards,
 )
+from backend.core.fanxiu_item_icon_quality import load_item_icon_quality_review
 from backend.core.fanxiu_doupotd_catalog import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
@@ -2371,6 +2372,10 @@ def get_fanxiu_item_cards(
     quality_name: str = Query(default=""),
     type_key: str = Query(default=""),
     sub_type_key: str = Query(default=""),
+    icon_quality: str = Query(default=""),
+    icon_name: str = Query(default=""),
+    small_icon_quality: str = Query(default=""),
+    small_icon_name: str = Query(default=""),
     sort_by: str = Query(default="default"),
     sort_order: str = Query(default="asc"),
     limit: int = Query(default=80, ge=1, le=200),
@@ -2384,12 +2389,17 @@ def get_fanxiu_item_cards(
         quality_name=quality_name,
         type_key=type_key,
         sub_type_key=sub_type_key,
+        icon_quality=icon_quality,
+        icon_name=icon_name,
+        small_icon_quality=small_icon_quality,
+        small_icon_name=small_icon_name,
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
         offset=offset,
         include_facets=include_facets,
         export_root=export_root,
+        rebuild_missing=False,
     )
 
 
@@ -2401,6 +2411,21 @@ def get_fanxiu_item_card_detail(
     return _run_resource_operation(
         get_fanxiu_item_card,
         item_id,
+        export_root=export_root,
+        rebuild_missing=False,
+    )
+
+
+@router.get("/resources/items/icon-quality-review")
+def get_fanxiu_item_icon_quality_review(
+    threshold: int = Query(default=50, ge=1, le=1000),
+    rebuild_missing: bool = Query(default=True),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        load_item_icon_quality_review,
+        threshold=threshold,
+        rebuild_missing=rebuild_missing,
         export_root=export_root,
     )
 

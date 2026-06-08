@@ -96,6 +96,7 @@ CLEAR_IGNORE_DIR_PARTS = {
     ".codex-run",
     ".codex-run-logs",
     ".codex-runlogs",
+    ".codex-runtime-logs",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -198,6 +199,7 @@ LOCAL_ARTIFACT_ROOT_DIRS = {
     ".codex-run",
     ".codex-run-logs",
     ".codex-runlogs",
+    ".codex-runtime-logs",
     "tmp",
     "tmp_mask_debug",
 }
@@ -206,6 +208,10 @@ LOCAL_ARTIFACT_ROOT_PREFIXES = (
     "tmp_",
 )
 LOCAL_ARTIFACT_ROOT_FILE_PATTERNS = (
+    ".codex-dev-*.log",
+    ".codex-vite-*.log",
+    ".dev_*.log",
+    "*.log",
     "tmp_*.png",
     "tmp_*.jpg",
     "tmp_*.jpeg",
@@ -892,6 +898,7 @@ def _build_precheck_report(
     seen_issue_keys: set[tuple[str, str, int, str]] = set()
     for item in checked_items:
         local_artifact_issue = _build_local_artifact_issue(item)
+        has_local_artifact_issue = local_artifact_issue is not None
         if local_artifact_issue is not None:
             key = (
                 str(local_artifact_issue.get("issue_type") or ""),
@@ -903,7 +910,7 @@ def _build_precheck_report(
                 issues.append(local_artifact_issue)
                 seen_issue_keys.add(key)
 
-        ignore_issue = _build_ignore_candidate_issue(repo_root, item)
+        ignore_issue = None if has_local_artifact_issue else _build_ignore_candidate_issue(repo_root, item)
         if ignore_issue is not None:
             key = (
                 str(ignore_issue.get("issue_type") or ""),

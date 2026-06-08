@@ -150,7 +150,7 @@ async def upload_image(file: UploadFile = File(...), session: Session = Depends(
         _attach_uploaded_resource_id(uploaded, session)
 
         # Construct URL (Relative path for frontend proxy to handle, or absolute if needed)
-        # Frontend proxy: /api -> http://localhost:8000
+        # Frontend proxy: /api -> http://127.0.0.1:8000
         # Static mount exposes the data-dir attachments at /static/attachments.
         url = uploaded["url"]
         

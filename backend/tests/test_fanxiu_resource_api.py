@@ -58,3 +58,53 @@ def test_fanxiu_wwise_mp3_manifest_route_reports_missing_manifest(tmp_path, monk
 
     assert response.status_code == 404
     assert "MP3 manifest 不存在" in response.json()["detail"]
+
+
+def test_fanxiu_item_card_routes_do_not_rebuild_catalog_on_read(monkeypatch):
+    client = _build_client(monkeypatch)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_search_fanxiu_item_cards(**kwargs):
+        calls.append(("search", kwargs))
+        return {"total": 0, "items": []}
+
+    def fake_get_fanxiu_item_card(item_id, **kwargs):
+        calls.append(("detail", {"item_id": item_id, **kwargs}))
+        return {"card": {"id": item_id, "name": "测试道具"}}
+
+    monkeypatch.setattr("backend.api.fanxiu_resources.search_fanxiu_item_cards", fake_search_fanxiu_item_cards)
+    monkeypatch.setattr("backend.api.fanxiu_resources.get_fanxiu_item_card", fake_get_fanxiu_item_card)
+
+    list_response = client.get("/api/fanxiu/resources/items/cards", params={"type_key": "46"})
+    detail_response = client.get("/api/fanxiu/resources/items/card", params={"item_id": "30060000"})
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert calls[0][0] == "search"
+    assert calls[0][1]["rebuild_missing"] is False
+    assert calls[1][0] == "detail"
+    assert calls[1][1]["rebuild_missing"] is False
+
+
+def test_fanxiu_item_icon_quality_review_route_forwards_threshold(monkeypatch):
+    client = _build_client(monkeypatch)
+    calls: list[dict] = []
+
+    def fake_load_item_icon_quality_review(**kwargs):
+        calls.append(kwargs)
+        return {
+            "summary": {"threshold": kwargs["threshold"], "group_count": 1},
+            "items": [{"field": "icon", "icon": "shared", "count": 50}],
+            "total": 1,
+        }
+
+    monkeypatch.setattr("backend.api.fanxiu_resources.load_item_icon_quality_review", fake_load_item_icon_quality_review)
+
+    response = client.get(
+        "/api/fanxiu/resources/items/icon-quality-review",
+        params={"threshold": 75, "rebuild_missing": "false"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["threshold"] == 75
+    assert calls == [{"threshold": 75, "rebuild_missing": False, "export_root": None}]

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.models import FanxiuMailRecord
-
 
 FINAL_MAIL_STATUSES = {"claimed", "deleted", "missing_from_list"}
 REQUESTED_MAIL_STATUSES = {"claim_requested", "delete_requested"}
@@ -37,6 +35,16 @@ def fanxiu_mail_rewards_from_payload(payload: Any) -> list[dict[str, Any]]:
         if isinstance(rewards, list):
             return [item for item in rewards if isinstance(item, dict)]
     return []
+
+
+def fanxiu_mail_rewards_unresolved(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("mail_rewards_unresolved") or payload.get("has_attachment_hint"):
+        return True
+    if payload.get("orphan_action_status") is not None:
+        return True
+    return isinstance(payload.get("packet_orphan_action"), dict)
 
 
 def _mail_reward_text(reward: dict[str, Any], key: str) -> str:
@@ -84,11 +92,33 @@ def fanxiu_mail_action_policy_for_rewards(rewards: list[dict[str, Any]]) -> str:
     return "claim"
 
 
-def fanxiu_mail_action_policy_for_record(record: FanxiuMailRecord | None) -> str:
+def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
     if record is None:
         return ""
     if bool(record.locked):
         return ""
     if str(record.status or "").strip().lower() in FINAL_MAIL_STATUSES | REQUESTED_MAIL_STATUSES:
         return ""
+    if fanxiu_mail_rewards_unresolved(record.payload):
+        return ""
     return fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
+
+
+def fanxiu_mail_visible_group_action_policy(records: list[Any]) -> str:
+    if not records:
+        return ""
+    policies: set[str] = set()
+    for record in records:
+        if bool(record.locked):
+            return ""
+        if fanxiu_mail_rewards_unresolved(record.payload):
+            return ""
+        policy = fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
+        if policy not in {"claim", "delete"}:
+            return ""
+        policies.add(policy)
+    if "claim" in policies:
+        return "claim"
+    if policies == {"delete"}:
+        return "delete"
+    return ""

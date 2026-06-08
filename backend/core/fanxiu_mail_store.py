@@ -66,6 +66,8 @@ def _mail_source_rank(value: Any) -> int:
     source = str(value or "").strip().lower()
     if source == "packet":
         return 3
+    if source == "packet_orphan_action":
+        return 2
     if source == "gui":
         return 2
     return 1
@@ -87,7 +89,7 @@ def _mail_status_rank(value: Any) -> int:
 
 
 def _is_unknown_fanxiu_mail_title(value: Any) -> bool:
-    return bool(re.fullmatch(r"未知邮件类型\d+", normalize_fanxiu_mail_title(value)))
+    return bool(re.fullmatch(r"未知邮件(?:类型|动作)\d+", normalize_fanxiu_mail_title(value)))
 
 
 def _find_existing_mail_record(

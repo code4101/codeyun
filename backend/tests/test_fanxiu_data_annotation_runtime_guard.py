@@ -14,7 +14,6 @@ from backend.api import fanxiu as fanxiu_api
 from backend.api.fanxiu import (
     BehaviorTreeStatus,
     _DataAnnotationRuntimeContainer,
-    _DataAnnotationRuntimeRunner,
     _default_data_annotation_scheduler_tasks,
     _enqueue_data_annotation_manual_job,
     _data_annotation_task_supported,
@@ -26,6 +25,8 @@ from backend.api.fanxiu import (
     _remove_data_annotation_manual_job,
     _write_data_annotation_world_facts,
 )
+from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
+from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
 from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
 from backend.core.fanxiu_mumu_control import _compare_frame_crops
 from backend.models import FanxiuMailRecord, UserDevice
@@ -133,8 +134,32 @@ def test_mumu_adb_input_uses_adb_cli_with_online_serial(monkeypatch):
     ]
 
 
+def test_mumu_adb_input_reports_failed_process_output(monkeypatch):
+    for key in mumu_control.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    mumu_control._MUMU_ADB_SESSION.clear()
+
+    monkeypatch.setattr(mumu_control, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setenv("FANXIU_MUMU_ADB_SERIAL", "192.168.31.181:5555")
+    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+
+    def fake_run(command, **_kwargs):
+        if command[-1] == "wm size":
+            return mumu_control.subprocess.CompletedProcess(command, 0, "Physical size: 900x1600\n", "")
+        return mumu_control.subprocess.CompletedProcess(command, 1, "", "input failed\n")
+
+    monkeypatch.setattr(mumu_control.subprocess, "run", fake_run)
+
+    try:
+        mumu_control._run_mumu_adb_input("input swipe 1 2 3 4 1000", timeout_s=7)
+    except RuntimeError as exc:
+        assert "input failed" in str(exc)
+    else:
+        raise AssertionError("expected adb failure")
+
+
 def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("世界下方菜单", "0035.png")
     shape = {
         "id": "mail",
@@ -157,7 +182,10 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
         return {"similarity": 100, "matches": [{"ocr_text": "邮件"}], "fixed_box": {"x": 100, "y": 200, "w": 80, "h": 40}}
 
     monkeypatch.setattr(runner, "_run_match", fake_match)
-    monkeypatch.setattr(fanxiu_api, "_click_game_window2_service", lambda payload: clicked.append(payload) or {"ok": True})
+    monkeypatch.setattr(
+        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        lambda payload: clicked.append(payload) or {"ok": True},
+    )
 
     runner._click_shape(ctx, image, shape, "frame")
 
@@ -167,7 +195,7 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
 
 
 def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("世界下方菜单", "0035.png")
     shape = {
         "id": "mail",
@@ -190,7 +218,10 @@ def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypa
         "_run_match",
         lambda *_args, **_kwargs: {"similarity": 0, "matches": [], "fixed_box": {"x": 450, "y": 1440, "w": 80, "h": 40}},
     )
-    monkeypatch.setattr(fanxiu_api, "_click_game_window2_service", lambda payload: clicked.append(payload) or {"ok": True})
+    monkeypatch.setattr(
+        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        lambda payload: clicked.append(payload) or {"ok": True},
+    )
 
     try:
         runner._click_shape(ctx, image, shape, "frame")
@@ -202,7 +233,7 @@ def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypa
 
 
 def test_click_floating_optional_ocr_shape_still_requires_a_match(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("世界下方菜单", "0035.png")
     shape = {
         "id": "mail",
@@ -225,7 +256,10 @@ def test_click_floating_optional_ocr_shape_still_requires_a_match(monkeypatch):
         "_run_match",
         lambda *_args, **_kwargs: {"similarity": 0, "matches": [], "fixed_box": {"x": 455, "y": 1460, "w": 83, "h": 105}},
     )
-    monkeypatch.setattr(fanxiu_api, "_click_game_window2_service", lambda payload: clicked.append(payload) or {"ok": True})
+    monkeypatch.setattr(
+        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        lambda payload: clicked.append(payload) or {"ok": True},
+    )
 
     try:
         runner._click_shape(ctx, image, shape, "frame")
@@ -237,7 +271,7 @@ def test_click_floating_optional_ocr_shape_still_requires_a_match(monkeypatch):
 
 
 def test_runtime_shape_payload_matches_frontend_protocol_for_floating_ocr():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("世界下方菜单", "0035.png")
     shape = {
         "id": "mail",
@@ -270,7 +304,7 @@ def test_runtime_shape_payload_matches_frontend_protocol_for_floating_ocr():
 
 
 def test_runtime_shape_payload_scans_floating_image_without_ocr():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("世界下方动态", "0068.png")
     shape = {
         "id": "mail-icon",
@@ -301,7 +335,7 @@ def test_runtime_shape_payload_scans_floating_image_without_ocr():
 
 
 def test_auto_close_guard_images_use_only_first_level_popup_group_children():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     top_level = _image("所有提示窗口", "0047.jpg")
     nested = _image("拍卖", "0028.jpg")
     login = _image("修炼", "0019.jpg")
@@ -323,7 +357,7 @@ def test_auto_close_guard_images_use_only_first_level_popup_group_children():
 
 
 def test_scene_score_requires_explicit_scene_identity_shape(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     normal_shape = {"id": "signup", "kind": "rect", "title": "报名", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
     image = _image("报名", "0023.jpg", [normal_shape])
     calls: list[str] = []
@@ -335,7 +369,7 @@ def test_scene_score_requires_explicit_scene_identity_shape(monkeypatch):
 
 
 def test_popup_score_can_fallback_to_plain_shapes(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
     image = _image("所有提示窗口", "0047.jpg", [blank_shape])
 
@@ -345,7 +379,7 @@ def test_popup_score_can_fallback_to_plain_shapes(monkeypatch):
 
 
 def test_scene_jump_edges_infer_nested_leave_returns_to_parent_scene():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     leave_shape = {"id": "leave", "kind": "rect", "title": "离开", "x": 0.8, "y": 0.5, "w": 0.1, "h": 0.1}
     tree = [
         _image("世界", "0034.jpg", []),
@@ -367,7 +401,7 @@ def test_scene_jump_edges_infer_nested_leave_returns_to_parent_scene():
 
 
 def test_scene_jump_edges_infer_world_menu_close_returns_to_world():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     close_shape = {"id": "close-menu", "kind": "rect", "title": "关闭下方菜单", "x": 0.8, "y": 0.9, "w": 0.1, "h": 0.05}
     tree = [
         {
@@ -390,7 +424,7 @@ def test_scene_jump_edges_infer_world_menu_close_returns_to_world():
 
 
 def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     shape = {
         "id": "leave",
         "kind": "rect",
@@ -417,7 +451,7 @@ def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold
 
 
 def test_scene_score_uses_best_scene_identity_shape(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "closed-menu", "kind": "rect", "title": "打开下方菜单", "isSceneIdentity": True}
     second_shape = {"id": "map", "kind": "rect", "title": "大地图", "isSceneIdentity": True}
     image = _image("世界", "0034.jpg", [first_shape, second_shape])
@@ -431,7 +465,7 @@ def test_scene_score_uses_best_scene_identity_shape(monkeypatch):
 
 
 def test_scene_score_enforces_required_ocr_role(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     shape = {
         "id": "leave",
         "kind": "rect",
@@ -457,7 +491,7 @@ def test_scene_score_enforces_required_ocr_role(monkeypatch):
 
 
 def test_scene_jump_intermediate_confirm_shape_is_limited_to_leave_popup():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     confirm = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
     leave_popup = _image("离开场景", "0086.png", [confirm])
 
@@ -467,7 +501,7 @@ def test_scene_jump_intermediate_confirm_shape_is_limited_to_leave_popup():
 
 
 def test_scene_route_candidates_include_leave_confirmation_popup():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     confirm = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.6, "y": 0.6, "w": 0.1, "h": 0.05}
     tree = [
         _image("世界", "0034.jpg", []),
@@ -483,7 +517,7 @@ def test_scene_route_candidates_include_leave_confirmation_popup():
 
 
 def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
     nested_shape = {"id": "nested", "kind": "rect", "title": "空白", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
     tree = [
@@ -512,7 +546,7 @@ def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monke
 
 
 def test_auto_close_guard_clicks_popup_blank_without_jump_target(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     tree = [{
         "type": "folder",
         "title": "弹窗",
@@ -533,7 +567,7 @@ def test_auto_close_guard_clicks_popup_blank_without_jump_target(tmp_path, monke
 
 
 def test_auto_close_guard_candidates_are_cached_by_asset_tree_signature(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [_image("图1", "0001.jpg")]}]), encoding="utf-8")
     load_count = 0
@@ -554,7 +588,7 @@ def test_auto_close_guard_candidates_are_cached_by_asset_tree_signature(tmp_path
 
 
 def test_auto_close_guard_popup_47_child_84_clicks_no_more_prompt_only_when_unchecked(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
@@ -585,8 +619,8 @@ def test_auto_close_guard_popup_47_child_84_clicks_no_more_prompt_only_when_unch
     assert clicked == [("自动切磋", "不再提示")]
 
 
-def test_auto_close_guard_popup_47_child_84_checked_clicks_confirm_only(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+def test_auto_close_guard_popup_47_child_84_checked_clicks_parent_blank_not_confirm(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
     child_84 = _image("自动切磋", "0084.png", [
@@ -606,11 +640,39 @@ def test_auto_close_guard_popup_47_child_84_checked_clicks_confirm_only(tmp_path
     monkeypatch.setattr("backend.api.fanxiu.time.sleep", lambda _seconds: None)
 
     assert runner._auto_close_popup_guard_step({"entry": object()}, path, "data:image/png;base64,frame")
-    assert clicked == [("自动切磋", "确认")]
+    assert clicked == [("所有提示窗口", "空白")]
+
+
+def test_auto_close_guard_popup_47_child_84_can_avoid_confirm_for_mail_wait(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
+    confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
+    child_84 = _image("自动切磋", "0084.png", [
+        {"id": "identity", "kind": "rect", "title": "切磋已满30次", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
+        no_more_prompt_shape,
+        confirm_shape,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
+    popup_47["children"] = [child_84]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] in {"所有提示窗口", "自动切磋"} else 0)
+    monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame: 70)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(
+        {"entry": object()},
+        path,
+        "data:image/png;base64,frame",
+        allow_confirm_actions=False,
+    )
+    assert clicked == [("所有提示窗口", "空白")]
 
 
 def test_auto_close_guard_popup_47_child_86_clicks_confirm(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
     child_86 = _image("离开场景", "0086.png", [
         {"id": "identity", "kind": "rect", "title": "离开场景", "isSceneIdentity": True, "x": 0.2, "y": 0.4, "w": 0.5, "h": 0.1},
@@ -629,8 +691,45 @@ def test_auto_close_guard_popup_47_child_86_clicks_confirm(tmp_path, monkeypatch
     assert clicked == [("离开场景", "确认")]
 
 
+def test_wait_mail_detail_closes_popup_and_keeps_waiting(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": path,
+        "images": {
+            121: _image("邮件", "0121.png"),
+            122: _image("邮件内容", "0122.png"),
+            123: _image("邮件内容", "0123.png"),
+        },
+    }
+    scene_results = iter([(None, 0.0), (122, 100.0)])
+    closed: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(scene_results))
+    monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda _ctx, _frame: closed.append("popup") or True if not closed else False)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_mail_detail_or_list_scene(ctx, FakeStopEvent(), timeout=5.0, label="等待详情"),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == (122, 100.0)
+    assert closed == ["popup"]
+
+
 def test_runtime_behavior_tree_popup_84_uses_separate_ticks_for_checkbox_and_confirm(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     no_more_prompt_shape = {"id": "no-more", "kind": "rect", "title": "不再提示", "x": 0.3, "y": 0.5, "w": 0.1, "h": 0.1}
     confirm_shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1}
     child_84 = _image("自动切磋", "0084.png", [
@@ -705,7 +804,7 @@ def test_runtime_behavior_tree_popup_84_uses_separate_ticks_for_checkbox_and_con
 
 
 def test_runtime_behavior_tree_reuses_guard_frame_for_job_when_guard_skips(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     ctx = {"entry": object()}
@@ -744,7 +843,7 @@ def test_runtime_behavior_tree_reuses_guard_frame_for_job_when_guard_skips(tmp_p
 
 
 def test_runtime_guard_service_skips_manual_jobs(monkeypatch, tmp_path):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     with runner._lock:
         runner._guard_enabled = True
         runner._status["phase"] = "manual_job"
@@ -765,7 +864,7 @@ def test_runtime_guard_service_skips_manual_jobs(monkeypatch, tmp_path):
 
 
 def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     ctx = {"entry": object()}
@@ -819,7 +918,7 @@ def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(
 
 
 def test_popup_guard_restarts_scan_each_tick_so_actual_popup_order_can_differ(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     shapes = {
         title: {"id": title, "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}
         for title in ("图1", "图2", "图3", "图4", "图5")
@@ -871,7 +970,7 @@ def test_popup_guard_restarts_scan_each_tick_so_actual_popup_order_can_differ(tm
 
 
 def test_popup_guard_parallel_scores_still_choose_first_matching_candidate(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     tree = [{
         "type": "folder",
         "title": "弹窗",
@@ -896,7 +995,7 @@ def test_popup_guard_parallel_scores_still_choose_first_matching_candidate(tmp_p
 
 
 def test_popup_guard_parallel_scoring_checks_all_candidates_in_one_tick(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(12)]
     seen: list[str] = []
 
@@ -915,7 +1014,7 @@ def test_popup_guard_parallel_scoring_checks_all_candidates_in_one_tick(tmp_path
 
 
 def test_popup_guard_parallel_scoring_is_faster_than_serial_for_independent_candidates(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(12)]
     ctx = {"entry": object()}
     score_delay = 0.015
@@ -942,7 +1041,7 @@ def test_popup_guard_parallel_scoring_is_faster_than_serial_for_independent_cand
 
 
 def test_runtime_container_reads_guard_whitelist_from_backend_state(tmp_path):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
 
@@ -962,7 +1061,7 @@ def test_runtime_container_reads_guard_whitelist_from_backend_state(tmp_path):
 
 
 def test_runtime_guard_defaults_enable_close_popups_only(tmp_path):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
 
@@ -976,7 +1075,7 @@ def test_runtime_guard_defaults_enable_close_popups_only(tmp_path):
 
 
 def test_runtime_container_groups_are_prioritized_and_non_preemptive(tmp_path):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
 
@@ -1032,7 +1131,7 @@ def test_debug_eval_manual_job_is_registered_as_manual_group(tmp_path, monkeypat
 
 def test_debug_eval_handler_runs_simple_context_code():
     definition = fanxiu_api._data_annotation_manual_job_definition("debug_eval")
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     result = definition.handler(
         runner,
@@ -1047,7 +1146,7 @@ def test_debug_eval_handler_runs_simple_context_code():
 
 def test_debug_eval_readonly_blocks_actions():
     definition = fanxiu_api._data_annotation_manual_job_definition("debug_eval")
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     try:
         definition.handler(
@@ -1161,7 +1260,7 @@ def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch)
 
 
 def test_runtime_container_skips_disabled_guards(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     ctx = {"entry": object()}
@@ -1193,7 +1292,7 @@ def test_runtime_container_skips_disabled_guards(tmp_path, monkeypatch):
 
 
 def test_direct_runtime_action_times_out_generator_and_sets_stop_event(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     stop_event = threading.Event()
     monotonic_values = iter([0.0, 0.0, 31.0])
     monkeypatch.setattr(fanxiu_api.time, "monotonic", lambda: next(monotonic_values))
@@ -1218,7 +1317,7 @@ def test_direct_runtime_action_times_out_generator_and_sets_stop_event(monkeypat
 
 
 def test_go_scene_moves_by_scene_jump_and_records_declared_target_frequency(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     jump_shape = {"id": "jump", "kind": "rect", "title": "去二", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "2"}
     tree = [
         _image("一", "0001.jpg", [jump_shape]),
@@ -1253,7 +1352,7 @@ def test_go_scene_moves_by_scene_jump_and_records_declared_target_frequency(tmp_
 
 
 def test_go_scene_stops_on_unannotated_result_after_timeout(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     second_shape = {"id": "jump23", "kind": "rect", "title": "去三", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
@@ -1334,7 +1433,7 @@ def test_mail_full_scan_is_not_a_default_scheduler_task():
 
 
 def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     image121 = _image("邮件", "0121.png", [])
@@ -1366,7 +1465,7 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
 
 
 def test_mail_claim_check_confirms_world_and_finishes_when_mail_missing(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     open_menu_shape = {"id": "menu-open", "kind": "rect", "title": "打开下方菜单", "x": 0.4, "y": 0.9, "w": 0.1, "h": 0.06}
@@ -1416,7 +1515,7 @@ def test_mail_claim_check_confirms_world_and_finishes_when_mail_missing(tmp_path
 
 
 def test_mail_claim_check_accepts_child_frame_68_under_world(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     mail_shape = {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.38, "y": 0.86, "w": 0.07, "h": 0.04}
@@ -1454,7 +1553,7 @@ def test_mail_claim_check_accepts_child_frame_68_under_world(tmp_path, monkeypat
 
 
 def test_mail_claim_check_stable_entry_mode_skips_dynamic_mail_probe(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     open_menu_shape = {"id": "menu-open", "kind": "rect", "title": "打开下方菜单", "x": 0.4, "y": 0.9, "w": 0.1, "h": 0.06}
@@ -1518,7 +1617,7 @@ def test_mail_claim_check_stable_entry_mode_skips_dynamic_mail_probe(tmp_path, m
 
 
 def test_mail_claim_check_default_entry_mode_tries_dynamic_then_stable(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     image34 = _image("世界", "0034.jpg", [])
@@ -1559,7 +1658,7 @@ def test_mail_claim_check_default_entry_mode_tries_dynamic_then_stable(tmp_path,
 
 
 def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
         "0035.png",
@@ -1576,7 +1675,7 @@ def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
 
 
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
         "0035.png",
@@ -1609,7 +1708,7 @@ def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
 
 
 def test_mail_world_menu_shape_click_uses_mail_shape_center(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
         "0035.png",
@@ -1653,7 +1752,7 @@ def test_mail_world_menu_shape_click_uses_mail_shape_center(monkeypatch):
 
 
 def test_mail_rows_normalize_time_and_mark_read():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -1675,12 +1774,13 @@ def test_mail_rows_normalize_time_and_mark_read():
             "time_text": "2026年06月02日16:17",
             "raw_time_text": "O2026年06月02日16:17已阅",
             "is_read": True,
+            "status": "已阅",
         }
     ]
 
 
 def test_mail_rows_use_template_title_box_and_time_anchor():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -1697,13 +1797,14 @@ def test_mail_rows_use_template_title_box_and_time_anchor():
                 "children": [
                     {"id": "title", "kind": "rect", "title": "标题", "x": 0.2796, "y": 0.4531, "w": 0.413, "h": 0.0396},
                     {"id": "time", "kind": "rect", "title": "时间", "x": 0.2759, "y": 0.499, "w": 0.4148, "h": 0.0323},
+                    {"id": "status", "kind": "rect", "title": "状态", "x": 0.704, "y": 0.4531, "w": 0.11, "h": 0.0396},
                 ],
             },
         ],
     )
     lines = [
         {"text": "活动奖励未领取", "x": 300, "y": 815, "w": 220, "h": 30},
-        {"text": "D中", "x": 690, "y": 815, "w": 36, "h": 30},
+        {"text": "已间", "x": 690, "y": 815, "w": 36, "h": 30},
         {"text": "60F06月03", "x": 300, "y": 885, "w": 120, "h": 30},
         {"text": "2026年06月03日21:30已阅", "x": 300, "y": 885, "w": 250, "h": 30},
         {"text": "单bll业控]业", "x": 330, "y": 1140, "w": 140, "h": 30},
@@ -1720,12 +1821,14 @@ def test_mail_rows_use_template_title_box_and_time_anchor():
             "time_text": "2026年06月03日21:30",
             "raw_time_text": "2026年06月03日21:30已阅",
             "is_read": True,
+            "status": "已阅",
+            "raw_status_text": "已间",
         }
     ]
 
 
 def test_mail_rows_keep_duplicate_same_title_and_time_with_template():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -1762,8 +1865,8 @@ def test_mail_rows_keep_duplicate_same_title_and_time_with_template():
     assert rows[0]["y"] != rows[1]["y"]
 
 
-def test_packet_no_attachment_policy_does_not_skip_read_mail(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+def test_packet_no_attachment_policy_skips_read_mail(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
     row = {"title": "香车馈赠", "time_text": "2026年06月02日16:17", "is_read": True}
     record = FanxiuMailRecord(
         mail_key="id:packet-test",
@@ -1776,12 +1879,50 @@ def test_packet_no_attachment_policy_does_not_skip_read_mail(monkeypatch):
         payload={"mail_rewards": []},
     )
     monkeypatch.setattr(runner, "_find_packet_mail_record", lambda _title, _time_text, **_kwargs: record)
+    monkeypatch.setattr(runner, "_find_packet_mail_records_for_visible_row", lambda _title, _time_text: [record])
 
     runner._prepare_mail_row_policy(row)
 
-    assert row["mail_key"] == "id:packet-test"
-    assert row["policy"] == "delete"
+    assert row["mail_key"] == ""
+    assert row["policy"] == ""
+    assert row["packet_match"] == "ui_skipped"
+    assert row["status"] == "已阅"
     assert row["time_text"] == "2026年06月02日16:17"
+
+
+def test_mail_rows_use_template_status_lock_text():
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image(
+        "邮件",
+        "0121.png",
+        [
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1074, "y": 0.3364, "w": 0.8037, "h": 0.4104},
+            {
+                "id": "tpl",
+                "kind": "rect",
+                "title": "邮件模板",
+                "x": 0.2685,
+                "y": 0.449,
+                "w": 0.5722,
+                "h": 0.0906,
+                "children": [
+                    {"id": "title", "kind": "rect", "title": "标题", "x": 0.2796, "y": 0.4531, "w": 0.413, "h": 0.0396},
+                    {"id": "time", "kind": "rect", "title": "时间", "x": 0.2759, "y": 0.499, "w": 0.4148, "h": 0.0323},
+                    {"id": "status", "kind": "rect", "title": "状态", "x": 0.704, "y": 0.4531, "w": 0.11, "h": 0.0396},
+                ],
+            },
+        ],
+    )
+    lines = [
+        {"text": "珍贵馈赠", "x": 300, "y": 815, "w": 120, "h": 30},
+        {"text": "2026年06月07日12:00", "x": 300, "y": 885, "w": 220, "h": 30},
+        {"text": "锁走", "x": 690, "y": 815, "w": 60, "h": 30},
+    ]
+
+    rows = runner._mail_rows_in_shape(lines, image121, "邮件清单2")
+
+    assert rows[0]["status"] == "锁定"
+    assert rows[0]["raw_status_text"] == "锁走"
 
 
 def test_packet_mail_record_matches_noisy_ocr_title_by_time(monkeypatch):
@@ -1791,7 +1932,7 @@ def test_packet_mail_record_matches_noisy_ocr_title_by_time(monkeypatch):
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(fanxiu_api, "engine", engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
     with Session(engine) as session:
         session.add(
             FanxiuMailRecord(
@@ -1806,7 +1947,7 @@ def test_packet_mail_record_matches_noisy_ocr_title_by_time(monkeypatch):
             )
         )
         session.commit()
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     record = runner._find_packet_mail_record("仙缘夺魅个人榜奖励", "2026年06月04日23:59")
 
@@ -1821,7 +1962,7 @@ def test_packet_mail_record_does_not_match_title_without_same_time(monkeypatch):
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(fanxiu_api, "engine", engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
     with Session(engine) as session:
         session.add(
             FanxiuMailRecord(
@@ -1836,11 +1977,120 @@ def test_packet_mail_record_does_not_match_title_without_same_time(monkeypatch):
             )
         )
         session.commit()
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     record = runner._find_packet_mail_record("太乙馈赠", "2026年06月07日19:43")
 
     assert record is None
+
+
+def test_visible_mail_row_falls_back_to_title_when_time_mismatches(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
+    with Session(engine) as session:
+        session.add(
+            FanxiuMailRecord(
+                mail_key="id:known-same-title",
+                mail_id="known-same-title",
+                title="分红发放",
+                normalized_title=fanxiu_api.normalize_fanxiu_mail_title("分红发放"),
+                create_time_text="2026年06月05日13:07",
+                source="packet",
+                status="seen",
+                payload={"mail_rewards": [{"item_name": "灵石", "amount": 200}]},
+            )
+        )
+        session.commit()
+    runner = create_fanxiu_runtime_runner()
+    row = {"title": "分红发放", "time_text": "2026年06月06日21:35"}
+
+    runner._prepare_mail_row_policy(row, action_enabled=False)
+
+    assert row["policy"] == ""
+    assert row["mail_key"] == "id:known-same-title"
+    assert row["packet_match"] == "title_only"
+    assert row["packet_missing_reason"] == ""
+
+
+def test_visible_mail_row_falls_back_to_title_only_packet_group(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
+    with Session(engine) as session:
+        session.add(
+            FanxiuMailRecord(
+                mail_key="id:title-only-safe",
+                mail_id="title-only-safe",
+                title="节日馈赠",
+                normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
+                create_time_text="2026年06月07日12:00",
+                source="packet",
+                status="seen",
+                payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
+            )
+        )
+        session.add(
+            FanxiuMailRecord(
+                mail_key="id:title-only-protected",
+                mail_id="title-only-protected",
+                title="节日馈赠",
+                normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
+                create_time_text="2026年06月06日12:00",
+                source="packet",
+                status="seen",
+                payload={"mail_rewards": [{"item_name": "洗灵奇石", "item_type": "资源"}]},
+            )
+        )
+        session.commit()
+    runner = create_fanxiu_runtime_runner()
+    row = {"title": "节日馈赠", "time_text": "2026年06月08日12:00"}
+
+    runner._prepare_mail_row_policy(row, action_policies={"claim"})
+
+    assert row["packet_match"] == "title_only"
+    assert row["mail_key"] in {"id:title-only-safe", "id:title-only-protected"}
+    assert row["policy"] == ""
+
+
+def test_visible_mail_row_title_only_claims_when_all_candidates_safe(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
+    with Session(engine) as session:
+        session.add(
+            FanxiuMailRecord(
+                mail_key="id:title-only-safe",
+                mail_id="title-only-safe",
+                title="节日馈赠",
+                normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
+                create_time_text="2026年06月07日12:00",
+                source="packet",
+                status="seen",
+                payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
+            )
+        )
+        session.commit()
+    runner = create_fanxiu_runtime_runner()
+    row = {"title": "节日馈赠", "time_text": "2026年06月08日12:00"}
+
+    runner._prepare_mail_row_policy(row, action_policies={"claim"})
+
+    assert row["packet_match"] == "title_only"
+    assert row["mail_key"] == "id:title-only-safe"
+    assert row["policy"] == "claim"
 
 
 def test_packet_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
@@ -1850,7 +2100,7 @@ def test_packet_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(fanxiu_api, "engine", engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
     with Session(engine) as session:
         session.add(
             FanxiuMailRecord(
@@ -1877,7 +2127,7 @@ def test_packet_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
             )
         )
         session.commit()
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     record = runner._find_packet_mail_record("未取之宝", "2026年06月06日22:00")
 
@@ -1885,8 +2135,8 @@ def test_packet_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
     assert fanxiu_api.fanxiu_mail_action_policy_for_record(record) == ""
 
 
-def test_visible_missing_from_list_packet_mail_can_be_deleted(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+def test_visible_read_mail_skips_even_when_packet_is_missing_from_list(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
     row = {"title": "资源领取通知", "time_text": "2026年06月05日22:00", "is_read": True}
     record = FanxiuMailRecord(
         mail_key="id:missing-visible",
@@ -1902,12 +2152,13 @@ def test_visible_missing_from_list_packet_mail_can_be_deleted(monkeypatch):
 
     runner._prepare_mail_row_policy(row, action_policies={"delete"})
 
-    assert row["mail_key"] == "id:missing-visible"
-    assert row["policy"] == "delete"
+    assert row["mail_key"] == ""
+    assert row["policy"] == ""
+    assert row["packet_match"] == "ui_skipped"
 
 
 def test_mail_ui_delete_probe_deletes_only_delete_detail(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     image123 = _image("邮件内容", "0123.png", [{"id": "delete", "kind": "rect", "title": "删除", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.08}])
     ctx = {"images": {121: image121, 123: image123}}
@@ -1935,7 +2186,7 @@ def test_mail_ui_delete_probe_deletes_only_delete_detail(monkeypatch):
     monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked_points.append((x, y)))
-    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None: clicked_shapes.append(shape["title"]))
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked_shapes.append(shape["title"]))
     monkeypatch.setattr(runner, "_update_packet_mail_action_for_row", lambda _row, **_kwargs: updated.append(_row["title"]))
 
     result = runner._run_direct_runtime_action(
@@ -1951,7 +2202,7 @@ def test_mail_ui_delete_probe_deletes_only_delete_detail(monkeypatch):
 
 
 def test_packet_claim_policy_clicks_claim_detail(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     image122 = _image("邮件内容", "0122.png", [{"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.08}])
     ctx = {"images": {121: image121, 122: image122}}
@@ -1982,11 +2233,16 @@ def test_packet_claim_policy_clicks_claim_detail(monkeypatch):
         yield BehaviorTreeStatus.RUNNING
         return 121, 100.0
 
+    def fake_wait_shape_match(*_args, **_kwargs):
+        yield BehaviorTreeStatus.RUNNING
+        return "frame", {"matched": True, "similarity": 100}
+
     monkeypatch.setattr(runner, "_wait_mail_detail_or_list_scene", fake_wait_detail)
     monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked_points.append((x, y)))
-    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None: clicked_shapes.append(shape["title"]))
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked_shapes.append(shape["title"]))
+    monkeypatch.setattr(runner, "_wait_shape_match", fake_wait_shape_match)
     monkeypatch.setattr(
         runner,
         "_update_packet_mail_action_for_row",
@@ -2006,7 +2262,7 @@ def test_packet_claim_policy_clicks_claim_detail(monkeypatch):
 
 
 def test_packet_claim_requested_retries_after_cooldown(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     requested_at = datetime.fromtimestamp(time.time() - 120).strftime("%Y-%m-%d %H:%M:%S")
     record = FanxiuMailRecord(
         mail_key="id:claim-requested",
@@ -2024,7 +2280,7 @@ def test_packet_claim_requested_retries_after_cooldown(monkeypatch):
 
 
 def test_packet_claim_requested_waits_during_cooldown():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     requested_at = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
     record = FanxiuMailRecord(
         mail_key="id:claim-requested",
@@ -2042,7 +2298,7 @@ def test_packet_claim_requested_waits_during_cooldown():
 
 
 def test_visible_mail_row_ignores_db_terminal_status_for_safe_packet(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     row = {"title": "仙财福礼", "time_text": "2026年06月07日12:00"}
     record = FanxiuMailRecord(
         mail_key="id:already-marked",
@@ -2064,7 +2320,7 @@ def test_visible_mail_row_ignores_db_terminal_status_for_safe_packet(monkeypatch
 
 
 def test_visible_mail_row_skips_when_any_same_title_time_packet_is_protected(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     row = {"title": "活动奖励未领取", "time_text": "2026年06月04日23:59"}
     safe = FanxiuMailRecord(
         mail_key="id:safe",
@@ -2096,7 +2352,7 @@ def test_visible_mail_row_skips_when_any_same_title_time_packet_is_protected(mon
 
 
 def test_scroll_shape_content_uses_half_page_slow_drag(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = _image("邮件", "0121.png", [])
     shape = {"title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6}
     drags: list[tuple[float, float, float, float, int]] = []
@@ -2117,7 +2373,7 @@ def test_scroll_shape_content_uses_half_page_slow_drag(monkeypatch):
 
 
 def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     image122 = _image("邮件内容", "0122.png", [
         {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.08},
@@ -2159,7 +2415,7 @@ def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeyp
 
 
 def test_mail_list_lock_hint_skips_delete_probe(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image("邮件", "0121.png", [])
     ctx = {"images": {121: image121}}
     row = {"title": "锁定邮件", "time_text": "2026年06月06日20:00", "x": 320, "y": 420, "list_has_lock": True}
@@ -2185,7 +2441,7 @@ def test_mail_list_lock_hint_skips_delete_probe(monkeypatch):
 
 
 def test_mail_list_lock_shape_is_shifted_per_row(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -2263,7 +2519,7 @@ def test_running_mail_manual_job_requeues_after_backend_reload():
 
 
 def test_mail_scan_keeps_scrolling_through_old_overlap_pages(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -2321,7 +2577,7 @@ def test_mail_scan_keeps_scrolling_through_old_overlap_pages(monkeypatch):
 
 
 def test_mail_full_action_scan_continues_when_no_pending_packet_actions(monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image121 = _image(
         "邮件",
         "0121.png",
@@ -2387,7 +2643,7 @@ def test_mail_full_action_scan_continues_when_no_pending_packet_actions(monkeypa
 
 
 def test_daily_signup_first_confirms_daily_scene_69(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     claim_shape = {"id": "claim", "kind": "rect", "title": "活动报名-领取", "ocrText": "领"}
@@ -2448,7 +2704,7 @@ def test_daily_signup_first_confirms_daily_scene_69(tmp_path, monkeypatch):
 
 
 def test_daily_signup_finishes_when_no_claim_ocr(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     claim_shape = {"id": "claim", "kind": "rect", "title": "活动报名-领取", "ocrText": "领"}
@@ -2480,7 +2736,7 @@ def test_daily_signup_finishes_when_no_claim_ocr(tmp_path, monkeypatch):
 
 
 def test_daily_signup_skips_go_scene_when_already_daily_scene(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     claim_shape = {"id": "claim", "kind": "rect", "title": "活动报名-领取", "ocrText": "领"}
@@ -2511,7 +2767,7 @@ def test_daily_signup_skips_go_scene_when_already_daily_scene(tmp_path, monkeypa
 
 
 def test_daily_signup_scrolls_signup_column_until_all_signup_items_clicked(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     image23 = _image("报名", "0023.png", [
@@ -2571,7 +2827,7 @@ def test_daily_signup_scrolls_signup_column_until_all_signup_items_clicked(tmp_p
 
 
 def test_daily_signup_uses_first_row_marker_to_stop_after_scroll_exhausted(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     first_row = {"id": "first-row", "kind": "rect", "title": "第1行", "x": 0.35, "y": 0.2, "w": 0.25, "h": 0.05}
@@ -2628,7 +2884,7 @@ def test_daily_signup_uses_first_row_marker_to_stop_after_scroll_exhausted(tmp_p
 
 
 def test_daily_signup_stops_when_scroll_signature_stays_unchanged(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     first_row = {"id": "first-row", "kind": "rect", "title": "第1行", "x": 0.35, "y": 0.2, "w": 0.25, "h": 0.05}
@@ -2672,7 +2928,7 @@ def test_daily_signup_stops_when_scroll_signature_stays_unchanged(tmp_path, monk
 
 
 def test_daily_signup_signature_excludes_occlusion_marker_regions(tmp_path):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     image23 = _image("报名", "0023.png", [
@@ -2698,7 +2954,7 @@ def test_daily_signup_signature_excludes_occlusion_marker_regions(tmp_path):
 
 
 def test_daily_signup_does_not_log_ready_when_scene_confirm_fails(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     ctx = {"entry": object(), "asset_tree": [], "asset_tree_path": path, "images": {}}
@@ -2798,7 +3054,7 @@ def test_scheduler_success_fact_clears_stale_retry_after(tmp_path, monkeypatch):
 
 
 def test_unknown_scene_frame_reports_missing_annotation_without_writing_asset_tree(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     tree: list[dict] = []
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
@@ -2827,7 +3083,7 @@ def test_unknown_scene_frame_reports_missing_annotation_without_writing_asset_tr
 
 
 def test_runtime_logs_include_current_scope_and_item_id():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     previous = runner._set_log_context("job", "weekly_gift_codes")
     try:
@@ -2851,7 +3107,7 @@ def test_runtime_logs_include_current_scope_and_item_id():
 
 
 def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
     with runner._lock:
         runner._log_locked(
@@ -2868,14 +3124,14 @@ def test_manual_job_logs_use_group_item_id_and_keep_instance_id_in_message():
 
 
 def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     executed: list[str] = []
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, task_type, _payload, _stop_event: executed.append(task_type) or "success")
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(fanxiu_api, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
     with runner._lock:
         runner._guard_enabled = True
         runner._guard_entry_id = "entry"
@@ -2907,6 +3163,8 @@ def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(
 def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     task = {
         "id": "legacy-daily-signup",
         "task_type": "daily_signup",
@@ -2927,14 +3185,14 @@ def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp
         "checkpoint": None,
     }
     fanxiu_api._write_data_annotation_scheduler_tasks([task])
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     executed: list[str] = []
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
     monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, task_type, _payload, _stop_event: executed.append(task_type) or "success")
     monkeypatch.setattr(runner, "_persist_status", lambda: None)
-    monkeypatch.setattr(fanxiu_api, "_remove_data_annotation_manual_job", lambda _task_id: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
 
     runner._run_manual_runtime_task(
         entry=object(),
@@ -2960,7 +3218,11 @@ def test_noop_guard_records_enabled_state_and_uses_resident_service(tmp_path, mo
     monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
-    runner = _DataAnnotationRuntimeRunner()
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    runner = create_fanxiu_runtime_runner()
 
     status = runner.set_guard(
         entry=object(),
@@ -2984,8 +3246,12 @@ def test_ensure_service_restarts_stale_loop_when_manual_job_is_pending(tmp_path,
     monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     _enqueue_data_annotation_manual_job("detect_scene", {}, label="单步识别")
-    runner = _DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     old_stop_event = threading.Event()
     starts: list[dict] = []
 
@@ -3003,7 +3269,7 @@ def test_ensure_service_restarts_stale_loop_when_manual_job_is_pending(tmp_path,
         def is_alive(self):
             return True
 
-    monkeypatch.setattr(fanxiu_api.threading, "Thread", FakeThread)
+    monkeypatch.setattr(runtime_runner_core.threading, "Thread", FakeThread)
     runner._service_thread = AliveThread()
     runner._service_stop_event = old_stop_event
     runner._service_generation = 7
@@ -3029,6 +3295,10 @@ def test_ensure_service_uses_device_entry_id_over_raw_alias(tmp_path, monkeypatc
     monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     starts: list[dict] = []
 
     class FakeThread:
@@ -3041,8 +3311,8 @@ def test_ensure_service_uses_device_entry_id_over_raw_alias(tmp_path, monkeypatc
         def is_alive(self):
             return True
 
-    monkeypatch.setattr(fanxiu_api.threading, "Thread", FakeThread)
-    runner = _DataAnnotationRuntimeRunner()
+    monkeypatch.setattr(runtime_runner_core.threading, "Thread", FakeThread)
+    runner = create_fanxiu_runtime_runner()
     entry = UserDevice(
         entry_id="uuid-entry",
         user_id=1,
@@ -3075,4 +3345,6 @@ def test_runtime_status_normalizes_guard_items_from_backend_definitions():
     assert set(status["guard_items"]) == {"close_popups", "wanling_invite"}
     assert status["guard_items"]["close_popups"]["label"] == "关闭弹窗"
     assert status["guard_items"]["wanling_invite"]["label"] == "万灵切磋邀请"
+
+
 

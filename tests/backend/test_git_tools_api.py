@@ -289,6 +289,39 @@ def test_git_tools_inspect_blocks_codex_tmp_artifacts(client, test_device, tmp_p
     assert issue["severity"] == "error"
 
 
+def test_git_tools_inspect_blocks_root_dev_logs(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-root-dev-log-repo"
+    _init_git_repo(repo_path)
+    (repo_path / ".codex-dev-current.out.log").write_text("dev stdout\n", encoding="utf-8")
+    (repo_path / ".dev_stderr.log").write_text("dev stderr\n", encoding="utf-8")
+    (repo_path / "日志文件-2026-05-27-log.log").write_text("", encoding="utf-8")
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    issues = {
+        item["path"]: item
+        for item in payload["precheck"]["issues"]
+        if item["path"] in {
+            ".codex-dev-current.out.log",
+            ".dev_stderr.log",
+            "日志文件-2026-05-27-log.log",
+        }
+    }
+    assert set(issues) == {
+        ".codex-dev-current.out.log",
+        ".dev_stderr.log",
+        "日志文件-2026-05-27-log.log",
+    }
+    assert {item["issue_type"] for item in issues.values()} == {"local_artifact"}
+    assert all(item["blocking"] is True for item in issues.values())
+
+
 def test_git_tools_precheck_allows_nested_source_logs_route(client, test_device, tmp_path):
     repo_path = tmp_path / "git-precheck-source-logs-repo"
     _init_git_repo(repo_path)

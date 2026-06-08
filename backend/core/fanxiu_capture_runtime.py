@@ -547,12 +547,10 @@ class FanxiuCaptureRuntimeService:
         if size != self._last_remote_pcap_size:
             self._last_remote_pcap_size = size
             self._last_remote_pcap_size_seen_at = now
-            return
-        if size <= 24 or now - self._last_remote_pcap_size_seen_at < self.idle_finalize_seconds:
-            return
-        self._log(f"capture idle; finalizing current pcap ({size} bytes)")
-        self._stop_tcpdump_locked()
-        self._start_tcpdump_locked()
+        # Do not auto-finalize an idle capture. Stopping and restarting tcpdump
+        # creates a short blind window, which is exactly where one-shot pushes
+        # such as SM_NewMail can be lost. Explicit flush/stop calls still seal
+        # the segment when a runtime job needs fresh facts.
 
     def _remote_capture_size(self, remote_path: str) -> int:
         output = self._run_adb(

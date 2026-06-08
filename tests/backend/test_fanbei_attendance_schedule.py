@@ -431,3 +431,47 @@ def test_apply_fanbei_step3_calculates_refunds_and_styles(session):
     assert cell_meta["3:15"]["style"]["background_color"] != "#FFFFFF"
     assert "3:17" not in cell_meta
     assert "4:15" not in cell_meta
+
+
+def test_apply_fanbei_step3_uses_source_meta_lesson_count(session):
+    columns = [
+        "学号",
+        "视频应返款",
+        "19:30 第01课",
+        "19:30 第02课",
+        "19:30 第12课",
+    ]
+    rows = [["1", "=FORMULA", "当堂完成/100%", "当堂完成/100%", "当堂完成/100%"]]
+    document = SheetDocument(
+        numeric_id=608,
+        title="考勤表",
+        owner_user_id=1,
+        document_json={
+            "columns": columns,
+            "rows": rows,
+            "grid_rows": [
+                [""] * len(columns),
+                columns,
+                ["", '12课*40元=480元\n对应返回"40/32/24/16/8/0"元', "", "", ""],
+                *rows,
+            ],
+            "data_start_row": 3,
+            "field_row_index": 1,
+            "cell_meta": {},
+            "source_meta": {"official_lesson_count": 12},
+        },
+    )
+    session.add(document)
+    session.commit()
+
+    summary = schedule._apply_fanbei_attendance_step3_to_sheet(
+        session=session,
+        sheet_id=608,
+        course_name="d260609梵呗增益",
+        today=date(2026, 6, 10),
+    )
+
+    assert summary["lesson_columns"] == 3
+    assert summary["video_refund_total"] == 120
+    session.refresh(document)
+    assert document.document_json["rows"][0][1] == 120

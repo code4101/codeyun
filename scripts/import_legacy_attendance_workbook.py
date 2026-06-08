@@ -25,6 +25,7 @@ from backend.core.resource_identity import (
     ensure_resource_identity,
 )
 from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.note_sheet_inline_links import with_inline_cell_link
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
 from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
@@ -603,18 +604,21 @@ def _link_summary_row(
         online_index = columns.index("在线考勤表")
     except ValueError:
         return False
-    rows = list(document.get("rows") or [])
+    rows = [list(row) if isinstance(row, list) else row for row in document.get("rows") or []]
     matched = False
     cell_meta = dict(document.get("cell_meta") or {})
     for row_index, source_row in enumerate(rows):
-        row = list(source_row) if isinstance(source_row, list) else []
+        row = source_row if isinstance(source_row, list) else []
         value = _normalize_text(row[online_index] if online_index < len(row) else "")
         if value != online_sheet_name:
             continue
-        key = f"{row_index}:{online_index}"
-        meta = dict(cell_meta.get(key) or {})
-        meta["link"] = {"url": f"/workbook/{target_workbook_id}?sheet={target_sheet_id}"}
-        cell_meta[key] = meta
+        row[online_index] = with_inline_cell_link(
+            value,
+            {"url": f"/workbook/{target_workbook_id}?sheet={target_sheet_id}"},
+        )
+        data_start_row = int(document.get("data_start_row") or 0)
+        cell_meta.pop(f"{row_index}:{online_index}", None)
+        cell_meta.pop(f"{data_start_row + row_index}:{online_index}", None)
         matched = True
         break
     if not matched:

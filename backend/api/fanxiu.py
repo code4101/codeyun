@@ -1,7 +1,5 @@
 import base64
-import contextlib
 import difflib
-import hashlib
 import asyncio
 import io
 import json
@@ -47,6 +45,7 @@ from backend.core.game_window_service_runtime import (
 )
 from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
 from backend.core.settings import get_settings
+from backend.core.fanxiu_runtime_errors import FanxiuRuntimeError
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import engine, get_session
@@ -77,6 +76,26 @@ from backend.core.fanxiu_mumu_control import (
     stream_mumu_window_mjpeg,
     text_mumu_adb,
     write_fanxiu_screenshot_pre_label,
+)
+from backend.core.fanxiu_game_window_actions import (
+    click_game_window2_service as _core_click_game_window2_service,
+    click_remote_game_window2 as _core_click_remote_game_window2,
+    drag_game_window2_service as _core_drag_game_window2_service,
+    drag_remote_game_window2 as _core_drag_remote_game_window2,
+    extract_stream_error as _core_extract_stream_error,
+    game_window2_desktop_title as _core_game_window2_desktop_title,
+    keyevent_game_window2_service as _core_keyevent_game_window2_service,
+    keyevent_remote_game_window2 as _core_keyevent_remote_game_window2,
+    match_game_window2_service as _core_match_game_window2_service,
+    match_remote_game_window2 as _core_match_remote_game_window2,
+    normalize_game_window2_title as _core_normalize_game_window2_title,
+    post_remote_game_window2_json as _core_post_remote_game_window2_json,
+    remote_entry_base_url as _core_remote_entry_base_url,
+    remote_entry_headers as _core_remote_entry_headers,
+    remote_game_window2_screencap as _core_remote_game_window2_screencap,
+    screencap_game_window2_service as _core_screencap_game_window2_service,
+    text_game_window2_service as _core_text_game_window2_service,
+    text_remote_game_window2 as _core_text_remote_game_window2,
 )
 from backend.core.fanxiu_pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
 from backend.core.fanxiu_visual_macro_runtime import (
@@ -324,9 +343,11 @@ from backend.core.fanxiu_mail_store import (
 from backend.core.fanxiu_mail_policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_visible_group_action_policy,
     fanxiu_mail_rewards_from_payload,
+    fanxiu_mail_rewards_unresolved,
 )
-from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets
+from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets, trace_fanxiu_mail_packet_gap
 from backend.core.fanxiu_packet_insight_worker import (
     fanxiu_packet_insight_worker,
     sync_fanxiu_capture_paths,
@@ -342,6 +363,7 @@ from backend.core.fanxiu_data_annotation_jobs import (
     requeue_running_data_annotation_manual_jobs,
     register_fanxiu_data_annotation_manual_job,
 )
+from backend.core import fanxiu_data_annotation_runtime_control as _runtime_control
 from backend.core.fanxiu_data_annotation_models import (
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
@@ -394,6 +416,25 @@ from backend.core.fanxiu_data_annotation_runtime import (
     DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer,
     DataAnnotationRuntimeGroupSpec as _DataAnnotationRuntimeGroupSpec,
     DataAnnotationRuntimeNodeSpec as _DataAnnotationRuntimeNodeSpec,
+)
+from backend.core.fanxiu_behavior_tree import (
+    acquire_fanxiu_job_group_isolation,
+    create_fanxiu_runtime_runner,
+    data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
+    fanxiu_data_annotation_dir as _core_data_annotation_dir,
+    fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
+    fanxiu_data_annotation_manual_job_state_path as _core_manual_job_state_path,
+    fanxiu_data_annotation_runtime_dir as _core_data_annotation_runtime_dir,
+    fanxiu_data_annotation_runtime_logs as _core_data_annotation_runtime_logs,
+    fanxiu_data_annotation_runtime_status as _core_data_annotation_runtime_status,
+    fanxiu_data_annotation_runtime_state_path as _core_runtime_state_path,
+    fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
+    fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
+    fanxiu_job_group_isolated,
+    fanxiu_job_group_isolation_path as _core_job_group_isolation_path,
+    clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
+    release_fanxiu_job_group_isolation,
+    register_fanxiu_runtime_runner,
 )
 from backend.core.fanxiu_game_macro_annotation import (
     _annotate_game_macro_shape_with_ai,
@@ -2429,13 +2470,33 @@ def _fanxiu_mail_record_sort_key(row: FanxiuMailRecord) -> tuple[float, float, f
     )
 
 
+def _fanxiu_mail_record_has_display_payload(row: FanxiuMailRecord) -> bool:
+    payload = row.payload or {}
+    content = payload.get("mail_content_text")
+    if isinstance(content, str) and content.strip():
+        return True
+    rewards = payload.get("mail_rewards")
+    if isinstance(rewards, list) and rewards:
+        return True
+    packet = payload.get("packet")
+    if isinstance(packet, dict):
+        packet_content = packet.get("mail_content_text")
+        if isinstance(packet_content, str) and packet_content.strip():
+            return True
+        packet_rewards = packet.get("mail_rewards")
+        if isinstance(packet_rewards, list) and packet_rewards:
+            return True
+    return False
+
+
 @status_router.get("/mail-records", response_model=FanxiuMailRecordListResponse)
 def list_fanxiu_mail_records(
     limit: int = Query(2000, ge=1, le=10000),
     offset: int = Query(0, ge=0),
     status: str = Query(""),
     action_policy: str = Query(""),
-    source: str = Query("packet"),
+    source: str = Query("packet_evidence"),
+    include_empty_actions: bool = Query(False),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -2444,15 +2505,19 @@ def list_fanxiu_mail_records(
     stmt = select(FanxiuMailRecord)
     status_text = status.strip() if isinstance(status, str) else ""
     action_policy_text = action_policy.strip() if isinstance(action_policy, str) else ""
-    source_text = source.strip().lower() if isinstance(source, str) else "packet"
+    source_text = source.strip().lower() if isinstance(source, str) else "packet_evidence"
     if status_text:
         stmt = stmt.where(FanxiuMailRecord.status == status_text)
     if action_policy_text:
         stmt = stmt.where(FanxiuMailRecord.action_policy == action_policy_text)
-    if source_text and source_text != "all":
+    if source_text in {"packet_evidence", "packet+orphan", "packet_orphan"}:
+        stmt = stmt.where(FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")))
+    elif source_text and source_text != "all":
         stmt = stmt.where(FanxiuMailRecord.source == source_text)
     stmt = stmt.order_by(FanxiuMailRecord.last_seen_at.desc(), FanxiuMailRecord.updated_at.desc())
     rows = session.exec(stmt).all()
+    if include_empty_actions is not True:
+        rows = [row for row in rows if _fanxiu_mail_record_has_display_payload(row)]
     rows = sorted(rows, key=_fanxiu_mail_record_sort_key, reverse=True)
     total_count = len(rows)
     rows = rows[offset:offset + limit]
@@ -3096,29 +3161,19 @@ def _decode_game_window2_stream_token(session: Session, token: str) -> tuple[Use
 
 
 def _remote_entry_base_url(entry: UserDevice) -> str:
-    if entry.mode != "remote" or not entry.server_url:
-        raise HTTPException(status_code=400, detail="远程设备入口未配置后端地址")
-    return entry.server_url.rstrip("/")
+    return _core_remote_entry_base_url(entry)
 
 
 def _remote_entry_headers(entry: UserDevice) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {entry.token}",
-        "X-Device-Token": entry.token,
-    }
+    return _core_remote_entry_headers(entry)
 
 
 def _normalize_game_window2_title(title: Optional[str]) -> Optional[str]:
-    value = (title or "").strip()
-    if not value:
-        return title
-    if "mumu" in value.lower():
-        return "MuMu"
-    return title
+    return _core_normalize_game_window2_title(title)
 
 
 def _game_window2_desktop_title(title: Optional[str]) -> str:
-    return _normalize_game_window2_title(title) or "MuMu"
+    return _core_game_window2_desktop_title(title)
 
 
 def _game_window2_stream_params(
@@ -3156,15 +3211,7 @@ def _game_window2_stream_params(
 
 
 def _extract_stream_error(response: requests.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        detail = payload.get("detail") or payload.get("message") or payload.get("error")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
-    return response.text.strip() or f"画面流服务返回 HTTP {response.status_code}"
+    return _core_extract_stream_error(response)
 
 
 def _stream_response_from_requests(response: requests.Response, *, cleanup: Callable[[], None] | None = None) -> StreamingResponse:
@@ -3255,115 +3302,10 @@ def _game_window2_match_payload(
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
 
-_GAME_WINDOW2_MATCH_CACHE_TTL = 8.0
-_GAME_WINDOW2_MATCH_CACHE_MAX_SIZE = 64
-_game_window2_match_cache_lock = threading.Lock()
-_game_window2_match_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_game_window2_match_inflight: dict[str, threading.Event] = {}
-
-
-def _clone_json_dict(data: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(json.dumps(data, ensure_ascii=False, default=str))
-
-
-def _game_window2_match_cache_key(payload: dict[str, Any]) -> str:
-    frame_data_url = str(payload.get("current_frame_data_url") or "")
-    cache_payload = dict(payload)
-    if frame_data_url:
-        cache_payload["current_frame_data_url"] = hashlib.sha256(frame_data_url.encode("utf-8")).hexdigest()
-    else:
-        return ""
-    raw = json.dumps(cache_payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _get_game_window2_match_cache(cache_key: str) -> dict[str, Any] | None:
-    if not cache_key:
-        return None
-    now = time.monotonic()
-    with _game_window2_match_cache_lock:
-        cached = _game_window2_match_cache.get(cache_key)
-        if cached is None:
-            return None
-        cached_at, result = cached
-        if now - cached_at > _GAME_WINDOW2_MATCH_CACHE_TTL:
-            _game_window2_match_cache.pop(cache_key, None)
-            return None
-        return _clone_json_dict(result)
-
-
-def _set_game_window2_match_cache(cache_key: str, result: dict[str, Any]) -> None:
-    if not cache_key:
-        return
-    now = time.monotonic()
-    cloned = _clone_json_dict(result)
-    with _game_window2_match_cache_lock:
-        expired_keys = [
-            key for key, (cached_at, _) in _game_window2_match_cache.items()
-            if now - cached_at > _GAME_WINDOW2_MATCH_CACHE_TTL
-        ]
-        for key in expired_keys:
-            _game_window2_match_cache.pop(key, None)
-        while len(_game_window2_match_cache) >= _GAME_WINDOW2_MATCH_CACHE_MAX_SIZE:
-            oldest_key = min(_game_window2_match_cache, key=lambda key: _game_window2_match_cache[key][0])
-            _game_window2_match_cache.pop(oldest_key, None)
-        _game_window2_match_cache[cache_key] = (now, cloned)
-
-
-def _run_game_window2_match_with_cache(payload: dict[str, Any], producer: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    cache_key = _game_window2_match_cache_key(payload)
-    cached = _get_game_window2_match_cache(cache_key)
-    if cached is not None:
-        return cached
-
-    owner = False
-    inflight: threading.Event | None = None
-    if cache_key:
-        with _game_window2_match_cache_lock:
-            inflight = _game_window2_match_inflight.get(cache_key)
-            if inflight is None:
-                inflight = threading.Event()
-                _game_window2_match_inflight[cache_key] = inflight
-                owner = True
-
-    if cache_key and not owner and inflight is not None:
-        wait_timeout = 2.0 if payload.get("read_only_cache") else 8.0
-        if inflight.wait(timeout=wait_timeout):
-            cached = _get_game_window2_match_cache(cache_key)
-            if cached is not None:
-                return cached
-
-    try:
-        result = producer()
-        _set_game_window2_match_cache(cache_key, result)
-        return result
-    finally:
-        if cache_key and owner and inflight is not None:
-            with _game_window2_match_cache_lock:
-                _game_window2_match_inflight.pop(cache_key, None)
-            inflight.set()
 
 
 def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return click_mumu_window_processed_point(
-            x=float(payload.get("x") or 0),
-            y=float(payload.get("y") or 0),
-            title=_game_window2_desktop_title(payload.get("title")),
-            title_match=payload.get("title_match") or "contains",
-            mode=payload.get("mode"),
-            area=payload.get("area"),
-            crop=payload.get("crop"),
-            trim_border=payload.get("trim_border"),
-            rotate=payload.get("rotate"),
-            fixed_width=int(payload.get("fixed_width") or 0),
-            fixed_height=int(payload.get("fixed_height") or 0),
-            frame_width=int(payload.get("frame_width") or 0) or None,
-            frame_height=int(payload.get("frame_height") or 0) or None,
-            input_backend=payload.get("input_backend") or "desktop",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _core_click_game_window2_service(payload)
 
 
 def _activate_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3378,55 +3320,15 @@ def _activate_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return drag_mumu_window_processed_points(
-            start_x=float(payload.get("start_x") or 0),
-            start_y=float(payload.get("start_y") or 0),
-            end_x=float(payload.get("end_x") or 0),
-            end_y=float(payload.get("end_y") or 0),
-            duration_ms=int(payload.get("duration_ms") or 300),
-            title=_game_window2_desktop_title(payload.get("title")),
-            title_match=payload.get("title_match") or "contains",
-            mode=payload.get("mode"),
-            area=payload.get("area"),
-            crop=payload.get("crop"),
-            trim_border=payload.get("trim_border"),
-            rotate=payload.get("rotate"),
-            fixed_width=int(payload.get("fixed_width") or 0),
-            fixed_height=int(payload.get("fixed_height") or 0),
-            frame_width=int(payload.get("frame_width") or 0) or None,
-            frame_height=int(payload.get("frame_height") or 0) or None,
-            input_backend=payload.get("input_backend") or "desktop",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _core_drag_game_window2_service(payload)
 
 
 def _keyevent_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        keys = payload.get("keys")
-        if isinstance(keys, list) and keys:
-            return keyevents_mumu_adb(keys)
-        return keyevent_mumu_adb(str(payload.get("key") or ""))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _core_keyevent_game_window2_service(payload)
 
 
 def _text_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return text_mumu_adb(str(payload.get("text") or ""))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _encode_bgr_png_response(frame: Any, headers: dict[str, str]) -> Response:
-    import cv2
-
-    ok, data = cv2.imencode(".png", frame)
-    if not ok:
-        raise HTTPException(status_code=500, detail="编码游戏窗口截图失败")
-    safe_headers = {key: str(value).encode("ascii", "ignore").decode("ascii") for key, value in headers.items()}
-    return Response(content=data.tobytes(), media_type="image/png", headers=safe_headers)
+    return _core_text_game_window2_service(payload)
 
 
 def _screencap_game_window2_service(
@@ -3444,77 +3346,19 @@ def _screencap_game_window2_service(
     fixed_width: int | None = None,
     fixed_height: int | None = None,
 ) -> Response:
-    title = _game_window2_desktop_title(title)
-    adb_error = ""
-    if prefer_cached or cached_only:
-        try:
-            data, meta = screencap_mumu_adb_cached_png(cached_only=True)
-        except Exception as exc:
-            adb_error = str(exc)
-            if cached_only:
-                raise HTTPException(status_code=400, detail=adb_error) from exc
-        else:
-            return Response(
-                content=data,
-                media_type="image/png",
-                headers={
-                    "Cache-Control": "no-store",
-                    "X-CodeYun-Input": str(meta.get("input") or ""),
-                    "X-CodeYun-Adb-Serial": str(meta.get("adb_serial") or ""),
-                    "X-CodeYun-Adb-Host": str(meta.get("adb_host") or ""),
-                    "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
-                    "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
-                },
-            )
-    elif not cached_only:
-        try:
-            data, meta = screencap_mumu_adb_png()
-        except Exception as exc:
-            adb_error = str(exc)
-        else:
-            return Response(
-                content=data,
-                media_type="image/png",
-                headers={
-                    "Cache-Control": "no-store",
-                    "X-CodeYun-Input": str(meta.get("input") or ""),
-                    "X-CodeYun-Adb-Serial": str(meta.get("adb_serial") or ""),
-                    "X-CodeYun-Adb-Host": str(meta.get("adb_host") or ""),
-                    "X-CodeYun-Adb-Port": str(meta.get("adb_port") or ""),
-                    "X-CodeYun-Adb-Size": str(meta.get("adb_size") or ""),
-                },
-            )
-
-    if not allow_window_fallback:
-        raise HTTPException(status_code=400, detail=f"ADB截图失败：{adb_error or '未取得 MuMu ADB 截图'}")
-
-    try:
-        frame = capture_mumu_window_frame(
-            title=title,
-            title_match=title_match,
-            mode=mode,
-            area=area,
-            crop=crop,
-            trim_border=trim_border,
-            rotate=rotate,
-            fixed_width=fixed_width,
-            fixed_height=fixed_height,
-            prefer_cached=True,
-        )
-    except Exception as exc:
-        detail = str(exc)
-        if adb_error:
-            detail = f"{detail}；ADB截图失败：{adb_error}"
-        raise HTTPException(status_code=400, detail=detail) from exc
-    return _encode_bgr_png_response(
-        frame,
-        {
-            "Cache-Control": "no-store",
-            "X-CodeYun-Input": "window_capture",
-            "X-CodeYun-Adb-Port": "",
-            "X-CodeYun-Adb-Size": "",
-            "X-CodeYun-Adb-Error": adb_error[:200],
-        },
+    return _core_screencap_game_window2_service(
+        prefer_cached=prefer_cached,
+        cached_only=cached_only,
+        allow_window_fallback=allow_window_fallback,
+        title=title,
+        title_match=title_match,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
     )
 
 
@@ -3540,43 +3384,7 @@ def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
-    title = _normalize_game_window2_title(payload.get("title"))
-    try:
-        return _run_game_window2_match_with_cache(
-            payload,
-            lambda: match_fanxiu_screenshot_box_frame(
-                filename=payload["filename"],
-                box=payload["box"],
-                scan=bool(payload.get("scan")),
-                scan_box=payload.get("scan_box"),
-                pixel_tolerance=int(payload.get("pixel_tolerance") if payload.get("pixel_tolerance") is not None else 5),
-                alpha_mask_data_url=payload.get("alpha_mask_data_url"),
-                tolerance_min_data_url=payload.get("tolerance_min_data_url"),
-                tolerance_max_data_url=payload.get("tolerance_max_data_url"),
-                title=title,
-                title_match=payload.get("title_match") or "contains",
-                mode=payload.get("mode"),
-                area=payload.get("area"),
-                crop=payload.get("crop"),
-                trim_border=payload.get("trim_border"),
-                rotate=payload.get("rotate"),
-                fixed_width=int(payload.get("fixed_width") or 0),
-                fixed_height=int(payload.get("fixed_height") or 0),
-                quality=int(payload.get("quality") or 82),
-                current_frame_data_url=payload.get("current_frame_data_url"),
-                prefer_cached=bool(payload.get("prefer_cached", True)),
-                match_strategy=payload.get("match_strategy") or "auto",
-                match_search_radius=payload.get("match_search_radius"),
-                ocr_enabled=bool(payload.get("ocr_enabled")),
-                ocr_text=payload.get("ocr_text"),
-                ocr_match_mode=payload.get("ocr_match_mode") or "contains",
-                ocr_min_confidence=float(payload.get("ocr_min_confidence") or 0.0),
-                debug_match=bool(payload.get("debug_match")),
-                save_match_frame=bool(payload.get("save_match_frame", True)),
-            ),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _core_match_game_window2_service(payload)
 
 
 def _save_burst_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3630,26 +3438,7 @@ def _burst_game_window2_service_image(filename: str) -> FileResponse:
 
 
 def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/click"
-    try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 12.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏操作服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏操作服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏操作服务响应格式不支持")
-    return data
+    return _core_click_remote_game_window2(entry, payload)
 
 
 def _activate_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3681,62 +3470,19 @@ def _activate_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) ->
 
 
 def _drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/drag"
-    try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 12.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏拖拽服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        if response.status_code == 404:
-            raise HTTPException(
-                status_code=502,
-                detail="目标 codeyun 缺少拖拽接口，请更新并重启 codepc_mf 的 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
-            )
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏拖拽服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏拖拽服务响应格式不支持")
-    return data
+    return _core_drag_remote_game_window2(entry, payload)
 
 
 def _post_remote_game_window2_json(entry: UserDevice, service_path: str, payload: dict[str, Any], action: str) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/{service_path}"
-    try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 12.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应格式不支持")
-    return data
+    return _core_post_remote_game_window2_json(entry, service_path, payload, action)
 
 
 def _keyevent_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_remote_game_window2_json(entry, "service-input/keyevent", payload, "按键")
+    return _core_keyevent_remote_game_window2(entry, payload)
 
 
 def _text_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return _post_remote_game_window2_json(entry, "service-input/text", payload, "文本输入")
+    return _core_text_remote_game_window2(entry, payload)
 
 
 def _save_remote_game_window2_frame(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3763,26 +3509,7 @@ def _save_remote_game_window2_frame(entry: UserDevice, payload: dict[str, Any]) 
 
 
 def _match_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-match"
-    try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 30.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏匹配服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应格式不支持")
-    return data
+    return _core_match_remote_game_window2(entry, payload)
 
 
 def _screenshot_game_window2_service_list() -> dict[str, Any]:
@@ -3903,23 +3630,7 @@ def _remote_game_window2_screenshot_image(entry: UserDevice, filename: str) -> R
 
 
 def _remote_game_window2_screencap(entry: UserDevice) -> Response:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-screencap"
-    try:
-        response = requests.get(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 20.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏 ADB 截图服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type") or "image/png",
-        headers={"Cache-Control": "no-store"},
-    )
+    return _core_remote_game_window2_screencap(entry)
 
 
 def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Response:
@@ -3943,5038 +3654,92 @@ def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Respon
     )
 
 
-class _DataAnnotationRuntimeRunner:
-    default_guard_enabled = True
-    default_guard_interval_seconds = 2.0
-    default_guard_items = {
-        "wanling_invite": {"enabled": False, "entry_id": "", "updated_at": 0.0},
-    }
-    guard_definitions = {
-        "close_popups": {
-            "id": "close_popups",
-            "label": "关闭弹窗",
-            "message": "常驻处理已标注弹窗和遮挡",
-        },
-        "wanling_invite": {
-            "id": "wanling_invite",
-            "label": "万灵切磋邀请",
-            "message": "占位触发守护，当前仅保留开关",
-        },
-    }
-    scene_ids = {
-        "world": 34,
-        "world_menu": 35,
-        "settings": 49,
-        "hide_floating": 58,
-        "daily": 69,
-        "wanling_invite": 70,
-        "youli": 71,
-        "youli_explore": 72,
-        "youli_result": 73,
-        "daily_activity": 75,
-        "signup": 23,
-        "signup_reward": 24,
-        "gift": 78,
-        "reward": 81,
-        "duplicated": 82,
-    }
-    scene_threshold = 80
-    scene_thresholds = {"gift": 60, "daily": 60, "hide_floating": 55}
-    overlay_threshold = 55
-
+class _FanxiuRuntimeRunnerProxy:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._service_thread: threading.Thread | None = None
-        self._service_stop_event: threading.Event | None = None
-        self._service_wake_event = threading.Event()
-        self._service_entry: UserDevice | None = None
-        self._service_entry_id = ""
-        self._service_asset_tree_path: Path | None = None
-        self._service_runtime_state_path: Path | None = None
-        self._service_manual_job_state_path: Path | None = None
-        self._service_scheduler_state_path: Path | None = None
-        self._service_world_facts_path: Path | None = None
-        self._service_generation = 0
-        self._service_heartbeat_at = 0.0
-        self._service_step = ""
-        self._service_owner_token = ""
-        self._service_owner_path: Path | None = None
-        self._stop_event: threading.Event | None = None
-        self._guard_enabled = self.default_guard_enabled
-        self._guard_entry_id = ""
-        self._guard_interval_seconds = self.default_guard_interval_seconds
-        self._guard_items: dict[str, dict[str, Any]] = json.loads(json.dumps(self.default_guard_items, ensure_ascii=False))
-        self._auto_close_candidates_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
-        self._log_scope = ""
-        self._log_item_id = ""
-        self._status: dict[str, Any] = self._initial_status()
+        self._runner: Any | None = None
 
-    def _initial_status(self) -> dict[str, Any]:
-        return initial_data_annotation_runtime_status()
+    def resolve(self) -> Any:
+        if self._runner is None:
+            self._runner = create_fanxiu_runtime_runner()
+        return self._runner
 
-    def _status_base_preserving_guard_locked(self) -> dict[str, Any]:
-        base = self._initial_status()
-        base.update({
-            "guard_enabled": bool(self._guard_enabled),
-            "guard_running": bool(self._status.get("guard_running")),
-            "guard_entry_id": self._guard_entry_id,
-            "guard_interval_seconds": self._guard_interval_seconds,
-            "guard_items": json.loads(json.dumps(self._guard_items, ensure_ascii=False)),
-            "last_guard_event": self._status.get("last_guard_event") if isinstance(self._status.get("last_guard_event"), dict) else {},
-            "service_running": bool(self._service_thread is not None and self._service_thread.is_alive()),
-        })
-        return base
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.resolve(), name)
 
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            self._sync_guard_status_locked()
-            self._sync_service_status_locked()
-            return json.loads(json.dumps(self._status, ensure_ascii=False))
 
-    def replace_logs(self, logs: list[dict[str, Any]]) -> dict[str, Any]:
-        with self._lock:
-            self._status["logs"] = list(logs)
-            self._status["updated_at"] = time.time()
-            self._sync_guard_status_locked()
-            self._sync_service_status_locked()
-            return json.loads(json.dumps(self._status, ensure_ascii=False))
+_DATA_ANNOTATION_RUNTIME_RUNNER: Any = _FanxiuRuntimeRunnerProxy()
 
-    def wait_until_idle(self, timeout_seconds: float = 5.0) -> bool:
-        deadline = time.time() + max(0.0, timeout_seconds)
-        while time.time() < deadline:
-            with self._lock:
-                running = bool(self._status.get("running"))
-                stopping = str(self._status.get("status") or "") == "stopping"
-            if not running and not stopping:
-                return True
-            time.sleep(0.1)
-        with self._lock:
-            return not bool(self._status.get("running"))
 
-    def _sync_guard_status_locked(self) -> None:
-        service_running = self._service_thread is not None and self._service_thread.is_alive()
-        guard_running = bool(self._guard_enabled and service_running)
-        guard_items: dict[str, dict[str, Any]] = {}
-        for guard_id, definition in self.guard_definitions.items():
-            state = self._guard_items.get(guard_id)
-            if not isinstance(state, dict):
-                state = {}
-            enabled = bool(state.get("enabled"))
-            entry_id = str(state.get("entry_id") or "")
-            running = False
-            message = str(definition.get("message") or "")
-            if guard_id == "close_popups":
-                enabled = bool(self._guard_enabled)
-                entry_id = self._guard_entry_id
-                running = bool(guard_running)
-                last_guard_event = self._status.get("last_guard_event")
-                if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
-                    message = str(last_guard_event.get("title") or "")
-            guard_items[guard_id] = {
-                **definition,
-                "enabled": enabled,
-                "running": running,
-                "entry_id": entry_id,
-                "updated_at": float(state.get("updated_at") or 0),
-                "message": message,
-            }
-        self._status.update({
-            "guard_enabled": bool(self._guard_enabled),
-            "guard_running": bool(guard_running),
-            "guard_entry_id": self._guard_entry_id,
-            "guard_interval_seconds": self._guard_interval_seconds,
-            "guard_items": guard_items,
-        })
+def __getattr__(name: str) -> Any:
+    if name == "_DataAnnotationRuntimeRunner":
+        from backend.core.fanxiu_data_annotation_runtime_runner import DataAnnotationRuntimeRunner
 
-    def _sync_service_status_locked(self) -> None:
-        self._status["service_running"] = bool(self._service_thread is not None and self._service_thread.is_alive())
+        return DataAnnotationRuntimeRunner
+    raise AttributeError(name)
 
-    def _pending_manual_job_count(self) -> int:
-        return sum(
-            1
-            for job in _read_data_annotation_manual_jobs()
-            if str(job.get("status") or "") in {"pending", "queued", "running"}
-        )
 
-    def _service_should_restart_for_pending_jobs_locked(self) -> bool:
-        if self._service_thread is None or not self._service_thread.is_alive():
-            return False
-        if self._status.get("running"):
-            return False
-        try:
-            pending_count = self._pending_manual_job_count()
-        except Exception:
-            return False
-        if pending_count <= 0:
-            return False
-        heartbeat_at = float(self._service_heartbeat_at or 0.0)
-        if heartbeat_at <= 0:
-            return True
-        return time.time() - heartbeat_at > max(10.0, self._guard_interval_seconds * 3)
+def _sync_data_annotation_runtime_runner_to_core() -> None:
+    register_fanxiu_runtime_runner(_DATA_ANNOTATION_RUNTIME_RUNNER)
 
-    def _mark_service_heartbeat(self, step: str) -> None:
-        with self._lock:
-            self._service_heartbeat_at = time.time()
-            self._service_step = str(step or "")
-            token = self._service_owner_token
-            owner_path = self._service_owner_path
-            entry_id = self._service_entry_id
-            generation = self._service_generation
-        if token and owner_path is not None:
-            self._write_service_owner(owner_path, token, entry_id, generation, self._service_step)
 
-    def _service_owner_stale(self, owner: dict[str, Any]) -> bool:
-        updated_at = float(owner.get("updated_at") or 0.0)
-        if updated_at <= 0:
-            return True
-        return time.time() - updated_at > max(30.0, self._guard_interval_seconds * 10)
-
-    def _write_service_owner(self, owner_path: Path, token: str, entry_id: str, generation: int, step: str) -> None:
-        try:
-            owner_path.parent.mkdir(parents=True, exist_ok=True)
-            owner_path.write_text(
-                json.dumps(
-                    {
-                        "pid": os.getpid(),
-                        "token": token,
-                        "entry_id": entry_id,
-                        "generation": generation,
-                        "step": step,
-                        "updated_at": time.time(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
-    def _acquire_service_owner(self, entry_id: str, generation: int) -> tuple[bool, str]:
-        owner_path = _data_annotation_runtime_state_path().parent / "behavior_tree_service_owner.json"
-        token = uuid.uuid4().hex
-        try:
-            owner_path.parent.mkdir(parents=True, exist_ok=True)
-            if owner_path.exists():
-                try:
-                    owner = json.loads(owner_path.read_text(encoding="utf-8"))
-                except Exception:
-                    owner = {}
-                if isinstance(owner, dict) and not self._service_owner_stale(owner):
-                    pid = owner.get("pid")
-                    step = owner.get("step") or "unknown"
-                    return False, f"行为树执行器已由后端进程 {pid} 持有：{step}"
-                try:
-                    owner_path.unlink()
-                except FileNotFoundError:
-                    pass
-            fd = os.open(str(owner_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as file:
-                json.dump(
-                    {
-                        "pid": os.getpid(),
-                        "token": token,
-                        "entry_id": entry_id,
-                        "generation": generation,
-                        "step": "starting",
-                        "updated_at": time.time(),
-                    },
-                    file,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            self._service_owner_token = token
-            self._service_owner_path = owner_path
-            return True, ""
-        except FileExistsError:
-            return False, "行为树执行器已由另一个后端实例抢先启动"
-        except Exception as exc:
-            return False, f"行为树执行器单例锁获取失败：{exc}"
-
-    def _release_service_owner(self) -> None:
-        with self._lock:
-            owner_path = self._service_owner_path
-            token = self._service_owner_token
-            self._service_owner_path = None
-            self._service_owner_token = ""
-        if owner_path is None or not token:
-            return
-        try:
-            owner = json.loads(owner_path.read_text(encoding="utf-8"))
-        except Exception:
-            owner = {}
-        if isinstance(owner, dict) and str(owner.get("token") or "") == token:
-            try:
-                owner_path.unlink()
-            except FileNotFoundError:
-                pass
-
-    def ensure_service(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        asset_tree_path: Path,
-        tick_seconds: float = 1.0,
-    ) -> dict[str, Any]:
-        entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        with self._lock:
-            self._restore_persisted_config_locked()
-            self._service_entry = entry
-            self._service_entry_id = entry_id
-            self._service_asset_tree_path = asset_tree_path
-            self._service_runtime_state_path = _data_annotation_runtime_state_path()
-            self._service_manual_job_state_path = _data_annotation_manual_job_state_path()
-            self._service_scheduler_state_path = _data_annotation_scheduler_state_path()
-            self._service_world_facts_path = _data_annotation_world_facts_path()
-            if self._guard_enabled:
-                self._guard_entry_id = entry_id
-            if not self._status.get("entry_id"):
-                self._status["entry_id"] = entry_id
-            if self._service_thread is not None and self._service_thread.is_alive():
-                if not self._service_should_restart_for_pending_jobs_locked():
-                    self._service_wake_event.set()
-                    self._sync_service_status_locked()
-                    return json.loads(json.dumps(self._status, ensure_ascii=False))
-                if self._service_stop_event is not None:
-                    self._service_stop_event.set()
-                self._service_generation += 1
-                self._log_locked("stop", f"行为树常驻服务心跳停滞，准备重启：{self._service_step or 'unknown'}")
-            else:
-                self._service_generation += 1
-            stop_event = threading.Event()
-            self._service_stop_event = stop_event
-            generation = self._service_generation
-            acquired, owner_message = self._acquire_service_owner(entry_id, generation)
-            if not acquired:
-                self._sync_service_status_locked()
-                self._set_status_locked("idle", owner_message, phase="service_owned_by_other")
-                self._log_locked("info", owner_message)
-                return json.loads(json.dumps(self._status, ensure_ascii=False))
-            requeued_count = _requeue_running_data_annotation_manual_jobs()
-            self._service_heartbeat_at = time.time()
-            self._service_step = "starting"
-            thread = threading.Thread(
-                target=self._run_service_loop,
-                kwargs={"stop_event": stop_event, "tick_seconds": tick_seconds, "generation": generation},
-                name="fanxiu-data-annotation-runtime-service",
-                daemon=True,
-            )
-            self._service_thread = thread
-            self._sync_service_status_locked()
-            self._log_locked("info", "行为树常驻服务已启动")
-            if requeued_count:
-                self._log_locked("stop", f"已重置 {requeued_count} 个残留 running 作业为 queued")
-            thread.start()
-        self._service_wake_event.set()
-        return self.status()
-
-    def _restore_persisted_config_locked(self) -> None:
-        if self._status.get("service_running") or self._status.get("running") or self._status.get("logs"):
-            return
-        persisted = _read_data_annotation_runtime_status()
-        if not persisted:
-            return
-        self._guard_enabled = bool(persisted.get("guard_enabled"))
-        self._guard_entry_id = str(persisted.get("guard_entry_id") or "")
-        self._guard_interval_seconds = float(persisted.get("guard_interval_seconds") or self._guard_interval_seconds)
-        raw_items = persisted.get("guard_items")
-        if isinstance(raw_items, dict):
-            self._guard_items = {
-                str(key): dict(value)
-                for key, value in raw_items.items()
-                if isinstance(value, dict)
-            }
-        kept_logs = [item for item in persisted.get("logs") or [] if isinstance(item, dict)][-500:]
-        self._status.update({
-            **self._status,
-            "entry_id": persisted.get("entry_id") or persisted.get("guard_entry_id") or self._status.get("entry_id") or "",
-            "current_scene": persisted.get("current_scene"),
-            "message": "行为树常驻服务恢复配置",
-            "logs": kept_logs,
-            "updated_at": time.time(),
-        })
-
-    def _service_context(self) -> tuple[UserDevice, str, Path] | None:
-        with self._lock:
-            entry = self._service_entry
-            entry_id = self._service_entry_id
-            asset_tree_path = self._service_asset_tree_path
-        if entry is None or not entry_id or asset_tree_path is None:
-            return None
-        return entry, entry_id, asset_tree_path
-
-    def _service_paths_still_current(self) -> bool:
-        with self._lock:
-            runtime_state_path = self._service_runtime_state_path
-            manual_job_state_path = self._service_manual_job_state_path
-            scheduler_state_path = self._service_scheduler_state_path
-            world_facts_path = self._service_world_facts_path
-        return (
-            runtime_state_path == _data_annotation_runtime_state_path()
-            and manual_job_state_path == _data_annotation_manual_job_state_path()
-            and scheduler_state_path == _data_annotation_scheduler_state_path()
-            and world_facts_path == _data_annotation_world_facts_path()
-        )
-
-    def _run_service_loop(self, *, stop_event: threading.Event, tick_seconds: float, generation: int) -> None:
-        last_idle_guard_at = 0.0
-        while not stop_event.is_set():
-            with self._lock:
-                if generation != self._service_generation:
-                    break
-            self._mark_service_heartbeat("loop")
-            context = self._service_context()
-            if context is None or not self._service_paths_still_current():
-                self._mark_service_heartbeat("waiting_context")
-                self._service_wake_event.wait(max(0.2, float(tick_seconds or 1.0)))
-                self._service_wake_event.clear()
-                continue
-            entry, entry_id, asset_tree_path = context
-            try:
-                if not self.status().get("running"):
-                    self._mark_service_heartbeat("manual_job_poll")
-                    if _start_next_data_annotation_manual_job_if_idle(entry, entry_id) is not None:
-                        self._mark_service_heartbeat("manual_job_started")
-                        self._service_wake_event.wait(0.1)
-                        self._service_wake_event.clear()
-                        continue
-                    self._mark_service_heartbeat("scheduler_poll")
-                    started_due = self._start_due_scheduler_tasks_if_idle(entry, entry_id, asset_tree_path)
-                    if started_due:
-                        self._mark_service_heartbeat("scheduler_started")
-                        self._service_wake_event.wait(0.1)
-                        self._service_wake_event.clear()
-                        continue
-                    interval = self._guard_interval_seconds
-                    now = time.time()
-                    if self._guard_enabled and now - last_idle_guard_at >= max(0.5, interval):
-                        last_idle_guard_at = now
-                        self._mark_service_heartbeat("idle_guard")
-                        self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
-                        self._mark_service_heartbeat("idle_guard_done")
-            except Exception as exc:
-                with self._lock:
-                    self._log_locked("error", f"行为树 tick 失败：{exc}")
-                    self._status.update({"ok": False, "status": "error", "message": str(exc), "error": str(exc), "updated_at": time.time()})
-                self._persist_status()
-            self._service_wake_event.wait(max(0.2, float(tick_seconds or 1.0)))
-            self._service_wake_event.clear()
-        with self._lock:
-            self._sync_service_status_locked()
-            self._log_locked("stop", "行为树常驻服务已停止")
-        self._release_service_owner()
-        self._persist_status()
-
-    def _start_due_scheduler_tasks_if_idle(self, entry: UserDevice, entry_id: str, asset_tree_path: Path) -> bool:
-        if self.status().get("running"):
-            return False
-        tasks = _read_data_annotation_scheduler_tasks()
-        due_tasks = sorted(
-            [
-                item
-                for item in tasks
-                if str(item.get("schedule_kind") or "") != "manual"
-                and _data_annotation_task_due(item)
-                and _data_annotation_task_supported(item)
-            ],
-            key=data_annotation_scheduler_order_key,
-        )
-        if not due_tasks:
-            return False
-        self.start_scheduler_tasks(
-            entry=entry,
-            entry_id=entry_id,
-            tasks=due_tasks,
-            all_tasks=tasks,
-            asset_tree_path=asset_tree_path,
-            run_label="执行全部到期任务",
-        )
-        return True
-
-    def _run_idle_guard_tick(self, entry: UserDevice, entry_id: str, asset_tree_path: Path) -> None:
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            self._require_assets(ctx)
-            self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, threading.Event())
-            frame = self._screencap(ctx)
-            key, score = self._identify_scene(ctx, frame)
-            scene_id = self.scene_ids.get(key)
-            if scene_id is not None and self._scene_matches(key, score):
-                with self._lock:
-                    self._status.update({
-                        "entry_id": entry_id,
-                        "current_scene": scene_id,
-                        "status": "idle",
-                        "phase": "idle_tick",
-                        "message": f"空转识别：#{scene_id} {key} {score:.0f}%",
-                        "updated_at": time.time(),
-                    })
-            self._clear_tick_frame(ctx)
-            self._persist_status()
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"守护空转失败：{exc}", scope="guard", item_id="close_popups")
-
-    def stop_current_task(self, entry_id: str) -> dict[str, Any]:
-        with self._lock:
-            if entry_id and self._status.get("entry_id") not in {"", entry_id}:
-                return self.status()
-            if not self._status.get("running"):
-                self._sync_guard_status_locked()
-                self._sync_service_status_locked()
-                service_running = bool(self._status.get("service_running"))
-                self._set_status_locked("idle", "当前没有正在运行的任务" if service_running else "行为树常驻服务未初始化")
-                return json.loads(json.dumps(self._status, ensure_ascii=False))
-            if self._stop_event is not None:
-                self._stop_event.set()
-            self._set_status_locked("stopping", "当前任务停止请求已发送")
-        return self.status()
-
-    def set_guard(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        enabled: bool,
-        interval_seconds: float,
-        guard_id: str = "close_popups",
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        guard_id = str(guard_id or "close_popups").strip() or "close_popups"
-        interval_seconds = max(0.5, min(30.0, float(interval_seconds or 2.0)))
-        with self._lock:
-            guard_item = self._guard_items.setdefault(guard_id, {})
-            guard_item.update({
-                "enabled": bool(enabled),
-                "entry_id": entry_id if enabled else "",
-                "updated_at": time.time(),
-            })
-            if guard_id != "close_popups":
-                self._set_status_locked(str(self._status.get("status") or "idle"), f"守护{'已开启' if enabled else '已关闭'}：{guard_id}")
-                self._sync_guard_status_locked()
-                self._sync_service_status_locked()
-                self._log_locked("info", self._status["message"], scope="guard", item_id=guard_id)
-            else:
-                self._guard_enabled = bool(enabled)
-                self._guard_entry_id = entry_id if enabled else ""
-                self._guard_interval_seconds = interval_seconds
-                if not enabled:
-                    self._set_status_locked("idle" if not self._status.get("running") else str(self._status.get("status") or "running"), "守护已关闭")
-                    self._sync_guard_status_locked()
-                    self._sync_service_status_locked()
-                else:
-                    self._set_status_locked(str(self._status.get("status") or "idle"), "守护已开启")
-                    self._sync_guard_status_locked()
-                    self._sync_service_status_locked()
-        self.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-        self._service_wake_event.set()
-        return self.status()
-
-    def start_runtime_task(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        task_type = str(task_type or "").strip()
-        payload = dict(payload or {})
-        definition = _data_annotation_manual_job_definition(task_type)
-        if definition is None:
-            raise HTTPException(status_code=400, detail=f"暂不支持的任务类型：{task_type}")
-        if definition.normalize_payload is not None:
-            payload = definition.normalize_payload(payload)
-        return self._run_inline_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload=payload,
-            asset_tree_path=asset_tree_path,
-        )
-
-    def _run_inline_runtime_task(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        payload = dict(payload or {})
-        with self._lock:
-            if self._status.get("running"):
-                raise HTTPException(status_code=409, detail="数据标注 Runtime 正在运行任务")
-            stop_event = threading.Event()
-            self._stop_event = stop_event
-            now = time.time()
-            label = self._runtime_task_label(task_type, payload)
-            self._status = {
-                **self._status_base_preserving_guard_locked(),
-                "running": True,
-                "status": "running",
-                "entry_id": entry_id,
-                "task_type": task_type,
-                "current_task": label,
-                "phase": "start",
-                "message": "任务已启动",
-                "total": 1,
-                "current_task_id": str(payload.get("__scheduler_task_id") or ""),
-                "interruptible": bool(payload.get("__scheduler_interruptible", True)),
-                "started_at": now,
-                "updated_at": now,
-            }
-            self._log_locked("info", f"启动 Runtime 任务：{label}")
-        self._run_generic_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=task_type,
-            payload=dict(payload),
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-        )
-        return self.status()
-
-    def start_manual_runtime_task(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        task: dict[str, Any],
-        asset_tree_path: Path,
-    ) -> dict[str, Any]:
-        task_id = str(task.get("id") or uuid.uuid4().hex)
-        task_type = str(task.get("task_type") or "detect_scene")
-        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-        label = str(task.get("label") or self._runtime_task_label(task_type, payload) or task_type)
-        with self._lock:
-            if self._status.get("running"):
-                raise HTTPException(status_code=409, detail="数据标注 Runtime 正在运行任务")
-            stop_event = threading.Event()
-            self._stop_event = stop_event
-            now = time.time()
-            self._status = {
-                **self._status_base_preserving_guard_locked(),
-                "running": True,
-                "status": "running",
-                "entry_id": entry_id,
-                "task_type": task_type,
-                "current_task": label,
-                "phase": "manual_job",
-                "message": f"手动作业已启动：{label}",
-                "total": 1,
-                "current_task_id": task_id,
-                "interruptible": bool(task.get("interruptible", True)),
-                "started_at": now,
-                "updated_at": now,
-            }
-            self._log_locked(
-                "info",
-                self._manual_job_log_message(task_id, self._status["message"]),
-                scope="manual_job",
-                item_id="manual_job",
-            )
-        self._run_manual_runtime_task(
-            entry=entry,
-            entry_id=entry_id,
-            task=dict(task),
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-        )
-        return self.status()
-
-    def start_scheduler_tasks(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        tasks: list[dict[str, Any]],
-        all_tasks: list[dict[str, Any]],
-        asset_tree_path: Path,
-        run_label: str = "执行全部到期任务",
-    ) -> dict[str, Any]:
-        if not tasks:
-            raise HTTPException(status_code=400, detail="没有可执行的到期任务")
-        is_run_due = run_label == "执行全部到期任务"
-        with self._lock:
-            if self._status.get("running"):
-                raise HTTPException(status_code=409, detail="数据标注 Runtime 正在运行任务")
-            stop_event = threading.Event()
-            self._stop_event = stop_event
-            now = time.time()
-            self._status = {
-                **self._status_base_preserving_guard_locked(),
-                "running": True,
-                "status": "running",
-                "entry_id": entry_id,
-                "task_type": "scheduler_run_due" if is_run_due else "scheduler_run_now",
-                "current_task": run_label,
-                "phase": "start",
-                "message": f"Scheduler 已启动：{run_label}，共 {len(tasks)} 个任务",
-                "total": len(tasks),
-                "current_task_id": "scheduler_run_due" if is_run_due else str(tasks[0].get("id") or "scheduler_run_now"),
-                "interruptible": all(bool(item.get("interruptible", True)) for item in tasks),
-                "started_at": now,
-                "updated_at": now,
-            }
-            self._log_locked("info", f"启动 Scheduler：{run_label}，共 {len(tasks)} 个")
-        self._run_scheduler_tasks(
-            entry=entry,
-            entry_id=entry_id,
-            tasks=[dict(item) for item in tasks],
-            all_tasks=[dict(item) for item in all_tasks],
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-            run_label=run_label,
-        )
-        return self.status()
-
-    def _set_status_locked(self, status: str, message: str = "", **extra: Any) -> None:
-        self._status.update({"status": status, "updated_at": time.time(), **extra})
-        if message:
-            self._status["message"] = message
-
-    def _clear_current_task_locked(self) -> None:
-        self._status.update({
-            "running": False,
-            "task_type": "",
-            "current_task": "",
-            "current_task_id": "",
-            "interruptible": True,
-        })
-
-    def _set_log_context(self, scope: str, item_id: str) -> tuple[str, str]:
-        with self._lock:
-            previous = (self._log_scope, self._log_item_id)
-            self._log_scope = str(scope or "")
-            self._log_item_id = str(item_id or "")
-            return previous
-
-    def _restore_log_context(self, previous: tuple[str, str]) -> None:
-        with self._lock:
-            self._log_scope, self._log_item_id = previous
-
-    def _log_locked(self, kind: str, message: str, *, scope: str | None = None, item_id: str | None = None) -> None:
-        log_scope = self._log_scope if scope is None else str(scope or "")
-        log_item_id = self._log_item_id if item_id is None else str(item_id or "")
-        append_data_annotation_runtime_status_log(
-            self._status,
-            kind,
-            message,
-            scope=log_scope,
-            item_id=log_item_id,
-            time_text=datetime.now().strftime("%H:%M:%S"),
-            updated_at=time.time(),
-        )
-
-    def _log(self, kind: str, message: str) -> None:
-        with self._lock:
-            self._log_locked(kind, message)
-
-    def _manual_job_log_message(self, task_id: str, message: str) -> str:
-        task_id = str(task_id or "").strip()
-        return f"[{task_id}] {message}" if task_id else message
-
-    def _persist_status(self) -> None:
-        try:
-            _persist_data_annotation_runtime_status(self.status())
-        except Exception:
-            pass
-
-    def _runtime_task_label(self, task_type: str, payload: dict[str, Any] | None = None) -> str:
-        definition = _data_annotation_manual_job_definition(task_type)
-        label = definition.label if definition is not None else task_type
-        if task_type == "go_scene":
-            target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
-            if target:
-                label = f"到场景 #{target}"
-        if task_type == "mail_claim_check" and (payload or {}).get("observe_only"):
-            label = "邮件_全量遍历"
-        return label
-
-    def _runtime_guard_enabled(self, guard_id: str) -> bool:
-        guard_id = str(guard_id or "").strip()
-        with self._lock:
-            if guard_id == "close_popups":
-                return bool(self._guard_enabled)
-            state = self._guard_items.get(guard_id)
-            return bool(state.get("enabled")) if isinstance(state, dict) else False
-
-    def _runtime_guard_service_tick(
-        self,
-        guard_id: str,
-        runtime_ctx: dict[str, Any],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-    ) -> BehaviorTreeStatus:
-        self._raise_if_stopped(stop_event)
-        guard_id = str(guard_id or "").strip()
-        if not self._runtime_guard_enabled(guard_id):
-            return BehaviorTreeStatus.SKIP
-        if guard_id != "close_popups":
-            return BehaviorTreeStatus.SKIP
-        with self._lock:
-            if str(self._status.get("phase") or "") == "manual_job":
-                return BehaviorTreeStatus.SKIP
-        previous_log_context = self._set_log_context("guard", "close_popups")
-        try:
-            frame = self._screencap(runtime_ctx)
-            if not self._auto_close_popup_guard_step(runtime_ctx, asset_tree_path, frame):
-                return BehaviorTreeStatus.SKIP
-            self._persist_status()
-            self._clear_tick_frame(runtime_ctx)
-            return BehaviorTreeStatus.RUNNING
-        finally:
-            self._restore_log_context(previous_log_context)
-
-    def _run_runtime_behavior_tree(
-        self,
-        *,
-        runtime_ctx: dict[str, Any],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-        action: Callable[[], Any],
-        label: str,
-        tick_seconds: float = 1.0,
-        max_runtime_seconds: float | None = None,
-    ) -> Any:
-        return _DataAnnotationRuntimeContainer(
-            self,
-            runtime_ctx=runtime_ctx,
-            asset_tree_path=asset_tree_path,
-            stop_event=stop_event,
-        ).run_job_until_complete(
-            action=action,
-            label=label,
-            tick_seconds=tick_seconds,
-            max_runtime_seconds=max_runtime_seconds,
-        )
-
-    def _task_timeout_seconds(self, payload: dict[str, Any] | None = None) -> float:
-        payload = payload if isinstance(payload, dict) else {}
-        raw_value = payload.get("max_runtime_seconds", payload.get("timeout_seconds", 600))
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            value = 600.0
-        return max(30.0, min(3600.0, value))
-
-    def _run_direct_runtime_action(
-        self,
-        action: Callable[[], Any],
-        *,
-        stop_event: threading.Event,
-        tick_seconds: float = 1.0,
-        max_runtime_seconds: float | None = None,
-    ) -> Any:
-        result = action()
-        if not isinstance(result, GeneratorType):
-            return result
-        started_at = time.monotonic()
-        while True:
-            self._raise_if_stopped(stop_event)
-            if max_runtime_seconds is not None and time.monotonic() - started_at > max_runtime_seconds:
-                stop_event.set()
-                raise RuntimeError(f"行为树任务超时：超过 {max_runtime_seconds:.0f} 秒")
-            try:
-                status = next(result)
-            except StopIteration as stop:
-                return stop.value
-            if status == BehaviorTreeStatus.FAILURE:
-                raise RuntimeError("行为树节点失败")
-            stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
-
-    def _run_generic_runtime_task(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        task_type: str,
-        payload: dict[str, Any],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-    ) -> None:
-        task_id = str(payload.get("__scheduler_task_id") or "")
-        previous_log_context = self._set_log_context("job", task_id) if task_id else None
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            self._require_assets(ctx)
-            task_result = self._run_runtime_behavior_tree(
-                runtime_ctx=ctx,
-                asset_tree_path=asset_tree_path,
-                stop_event=stop_event,
-                action=lambda: self._execute_runtime_task(ctx, task_type, payload, stop_event),
-                label=self._runtime_task_label(task_type, payload),
-                max_runtime_seconds=self._task_timeout_seconds(payload),
-            )
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({
-                    "status": "success" if task_result == "success" else str(task_result or "success"),
-                    "phase": "done",
-                    "message": f"{self._runtime_task_label(task_type, payload)}完成" if task_result == "success" else f"{self._runtime_task_label(task_type, payload)}已跳过",
-                    "finished_at": time.time(),
-                    "updated_at": time.time(),
-                    "current_index": 1,
-                    "current_code": "",
-                })
-                self._log_locked("success" if task_result == "success" else "skip", self._status["message"])
-        except InterruptedError:
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({"status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", "任务已停止")
-        except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc)
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", str(detail))
-        finally:
-            if previous_log_context is not None:
-                self._restore_log_context(previous_log_context)
-            self._persist_status()
-
-    def _run_manual_runtime_task(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        task: dict[str, Any],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-    ) -> None:
-        task_id = str(task.get("id") or "")
-        previous_log_context = self._set_log_context("manual_job", "manual_job")
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            self._require_assets(ctx)
-            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-            result = self._run_direct_runtime_action(
-                lambda: self._execute_runtime_task(ctx, str(task.get("task_type") or ""), payload, stop_event),
-                stop_event=stop_event,
-                max_runtime_seconds=self._task_timeout_seconds(payload),
-            )
-            scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
-            if scheduler_task_id:
-                tasks = _read_data_annotation_scheduler_tasks()
-                self._mark_scheduler_task(tasks, scheduler_task_id, str(result or "success"))
-            elif (result or "success") == "success":
-                self._mark_matching_scheduler_tasks_for_manual_success(str(task.get("task_type") or ""), payload)
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({
-                    "status": "success" if (result or "success") == "success" else str(result or "success"),
-                    "phase": "done",
-                    "message": f"手动作业完成：{task.get('label') or task.get('task_type') or task_id}",
-                    "finished_at": time.time(),
-                    "updated_at": time.time(),
-                    "current_index": 1,
-                })
-                self._log_locked("success", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
-        except InterruptedError:
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({"status": "stopped", "phase": "stopped", "message": "手动作业已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", self._manual_job_log_message(task_id, "手动作业已停止"), scope="manual_job", item_id="manual_job")
-        except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc)
-            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-            scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
-            if scheduler_task_id:
-                tasks = _read_data_annotation_scheduler_tasks()
-                self._mark_scheduler_task(tasks, scheduler_task_id, "error")
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", self._manual_job_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
-        finally:
-            _remove_data_annotation_manual_job(task_id)
-            if previous_log_context is not None:
-                self._restore_log_context(previous_log_context)
-            self._persist_status()
-
-    def _run_scheduler_tasks(
-        self,
-        *,
-        entry: UserDevice,
-        entry_id: str,
-        tasks: list[dict[str, Any]],
-        all_tasks: list[dict[str, Any]],
-        asset_tree_path: Path,
-        stop_event: threading.Event,
-        run_label: str = "执行全部到期任务",
-    ) -> None:
-        try:
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx = {
-                "entry": entry,
-                "asset_tree": tree,
-                "asset_tree_path": asset_tree_path,
-                "images": self._index_images(tree),
-            }
-            self._require_assets(ctx)
-            for index, task in enumerate(tasks):
-                self._raise_if_stopped(stop_event)
-                task_id = str(task.get("id") or "")
-                label = str(task.get("label") or task_id or task.get("task_type") or "未命名任务")
-                previous_log_context = self._set_log_context("job", task_id) if task_id else None
-                try:
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"Scheduler 执行 {index + 1}/{len(tasks)}：{label}",
-                            current_index=index,
-                            current_task=label,
-                            task_type=str(task.get("task_type") or ""),
-                            phase="scheduler_task",
-                            current_task_id=task_id,
-                            interruptible=bool(task.get("interruptible", True)),
-                        )
-                        self._log_locked("action", f"开始到期任务：{label}")
-                    self._mark_scheduler_task(all_tasks, task_id, "running")
-                    result = self._run_runtime_behavior_tree(
-                        runtime_ctx=ctx,
-                        asset_tree_path=asset_tree_path,
-                        stop_event=stop_event,
-                        action=lambda task=task: self._execute_runtime_task(
-                            ctx,
-                            str(task.get("task_type") or ""),
-                            _data_annotation_task_payload_with_meta(task),
-                            stop_event,
-                        ),
-                        label=label,
-                        max_runtime_seconds=self._task_timeout_seconds(_data_annotation_task_payload_with_meta(task)),
-                    )
-                    self._mark_scheduler_task(all_tasks, task_id, result or "success")
-                    with self._lock:
-                        self._log_locked("success" if (result or "success") == "success" else "skip", f"到期任务{('完成' if (result or 'success') == 'success' else '跳过')}：{label}")
-                finally:
-                    if previous_log_context is not None:
-                        self._restore_log_context(previous_log_context)
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({
-                    "status": "success",
-                    "phase": "done",
-                    "message": f"{run_label}完成",
-                    "finished_at": time.time(),
-                    "updated_at": time.time(),
-                    "current_index": len(tasks),
-                    "current_code": "",
-                })
-                self._log_locked("success", f"Scheduler {run_label}完成")
-        except InterruptedError:
-            with self._lock:
-                self._clear_current_task_locked()
-                self._status.update({"status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("stop", "Scheduler 任务已停止")
-        except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc)
-            current_task_id = ""
-            with self._lock:
-                current_task_id = str(self._status.get("current_task_id") or "")
-                self._clear_current_task_locked()
-                self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
-                self._log_locked("error", str(detail), scope="job" if current_task_id else None, item_id=current_task_id or None)
-            if current_task_id:
-                self._mark_scheduler_task(all_tasks, current_task_id, "error")
-        finally:
-            self._persist_status()
-
-    def _mark_scheduler_task(self, tasks: list[dict[str, Any]], task_id: str, result: str) -> None:
-        if not task_id:
-            return
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        changed = False
-        for item in tasks:
-            if str(item.get("id") or "") != task_id:
-                continue
-            if result == "running":
-                item["last_run_at"] = now_text
-                item["retry_after"] = None
-            elif result in {"success", "skipped", "unsupported"}:
-                item["retry_after"] = None
-                item["next_time"] = _next_data_annotation_scheduler_time(item)
-            elif result == "error":
-                cooldown_seconds = int(item.get("cooldown_seconds") or 600)
-                item["retry_after"] = (datetime.now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
-            item["last_result"] = result
-            changed = True
-            break
-        if changed:
-            _write_data_annotation_scheduler_tasks(tasks)
-            _record_data_annotation_scheduler_task_fact(item, result)
-
-    def _mark_matching_scheduler_tasks_for_manual_success(self, task_type: str, payload: dict[str, Any]) -> None:
-        if str(payload.get("__scheduler_task_id") or ""):
-            return
-        normalized_task_type = str(task_type or "").strip()
-        if not normalized_task_type:
-            return
-        tasks = _read_data_annotation_scheduler_tasks()
-        matched = False
-        for item in tasks:
-            if str(item.get("task_type") or "") != normalized_task_type:
-                continue
-            if not _data_annotation_task_supported(item):
-                continue
-            last_result = str(item.get("last_result") or "")
-            if not item.get("retry_after") and last_result not in {"queued", "running", "error", "stopped"}:
-                continue
-            self._mark_scheduler_task(tasks, str(item.get("id") or ""), "success")
-            matched = True
-        if matched:
-            self._log("detail", f"手动作业成功后已同步清理同类 Scheduler 重试：{normalized_task_type}")
-
-    def _execute_runtime_task(self, ctx: dict[str, Any], task_type: str, payload: dict[str, Any], stop_event: threading.Event) -> str:
-        if task_type in {"legacy_daily_task", "legacy_dynamic_task"}:
-            legacy_name = str(payload.get("legacy_name") or task_type)
-            self._log("skip", f"旧版任务「{legacy_name}」尚未迁移，已跳过")
-            return "unsupported"
-        definition = _data_annotation_manual_job_definition(task_type)
-        if definition is None:
-            raise RuntimeError(f"暂不支持的任务类型：{task_type}")
-        normalized_payload = dict(payload or {})
-        if definition.normalize_payload is not None:
-            normalized_payload = definition.normalize_payload(normalized_payload)
-        result = definition.handler(self, ctx, normalized_payload, stop_event)
-        if isinstance(result, GeneratorType):
-            return result
-        return str(result or "success")
-
-    def _execute_mail_claim_check_task(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any] | None = None,
-    ) -> str:
-        ensure_fanxiu_mail_table()
-        payload = dict(payload or {})
-        entry_mode = str(payload.get("entry_mode") or payload.get("mail_entry_mode") or "dynamic").strip().lower()
-        observe_only = bool(payload.get("observe_only") or payload.get("scan_only"))
-        scan_mode = str(payload.get("scan_mode") or ("full" if payload.get("full_scan") else "incremental")).strip().lower()
-        use_current_page = bool(payload.get("use_current_page"))
-        target_title = str(payload.get("target_title") or payload.get("mail_title") or "").strip()
-        target_time_text = self._normalize_mail_time_text(str(payload.get("target_time_text") or payload.get("mail_time_text") or "").strip())
-        capture_enabled = not bool(payload.get("skip_capture") or payload.get("no_capture"))
-        try:
-            max_actions = int(payload.get("max_actions") or 0)
-        except (TypeError, ValueError):
-            max_actions = 0
-        raw_action_policies = payload.get("action_policies")
-        if isinstance(raw_action_policies, list):
-            action_policies = {str(item or "").strip().lower() for item in raw_action_policies}
-            action_policies &= {"claim", "delete"}
-        else:
-            action_policies = {"claim", "delete"}
-        if not action_policies:
-            action_policies = {"claim", "delete"}
-        if observe_only and not payload.get("scan_mode") and not payload.get("full_scan"):
-            scan_mode = "full"
-        capture_reason = f"mail-full-scan:{'observe' if observe_only else 'action'}"
-        asset_tree_path = ctx.get("asset_tree_path")
-        if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少邮件_领取检查资产树路径，无法执行邮件作业")
-        try:
-            if capture_enabled:
-                fanxiu_capture_runtime_service.ensure_running(capture_reason)
-                with self._lock:
-                    self._log_locked("info", f"邮件_抓包：已请求抓包服务 {capture_reason}")
-                self._refresh_recent_mail_packets_for_runtime_log("启动抓包后", flush_capture=False)
-            else:
-                with self._lock:
-                    self._log_locked("info", "邮件_领取检查：本轮跳过抓包协作，仅使用当前页与既有邮件事实")
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"邮件_抓包：启动抓包服务失败：{exc}")
-            raise
-        try:
-            if observe_only:
-                with self._lock:
-                    self._log_locked("info", "邮件_全量遍历：只观察并滚动加载邮件，不领取、不删除")
-            scene_id, score, frame = self._current_scene_number(ctx)
-            force_reopen_mail = observe_only or scan_mode in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}
-            if scene_id == 121 and not use_current_page and (force_reopen_mail or (not observe_only and self._pending_packet_mail_action_count() > 0)):
-                image121 = ctx.get("images", {}).get(121)
-                back_shape = self._find_shape(image121, "空白-返回") if isinstance(image121, dict) else None
-                if isinstance(image121, dict) and back_shape:
-                    reason = "刷新邮件 packet 列表" if force_reopen_mail else "重置列表顶部"
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"邮件_领取检查：退出邮件页以{reason}",
-                            phase="mail_claim_reset_mail_list",
-                            current_scene=121,
-                        )
-                        self._log_locked("action", f"邮件_领取检查：点击 #121「空白-返回」，重新从顶部进入邮件，{reason}")
-                    self._click_shape(ctx, image121, back_shape, frame)
-                    yield from self._wait_scene_id(ctx, stop_event, 34, timeout=12.0, label="邮件_领取检查：返回世界 #34")
-                    scene_id = 34
-                else:
-                    with self._lock:
-                        self._log_locked("error", "邮件_领取检查：缺少 #121「空白-返回」标注，保留当前位置扫描")
-            if scene_id != 121:
-                open_result = self._open_mail_scene(ctx, stop_event, asset_tree_path, entry_mode=entry_mode)
-                result = (yield from open_result) if isinstance(open_result, GeneratorType) else open_result
-                if result == "no_mail":
-                    return "success"
-                if result != "success":
-                    return result
-            else:
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"邮件_领取检查：当前已在邮件 #121 {score:.0f}%",
-                        phase="mail_claim_resume_mail_scene",
-                        current_scene=121,
-                    )
-                    self._log_locked("info", f"邮件_领取检查：当前已在邮件 #121 {score:.0f}%，直接扫描")
-            scan_result = self._scan_mail_scene(
-                ctx,
-                stop_event,
-                action_enabled=not observe_only,
-                scan_mode=scan_mode,
-                action_policies=action_policies,
-                max_actions=max_actions if max_actions > 0 else None,
-                target_title=target_title,
-                target_time_text=target_time_text,
-            )
-            return (yield from scan_result) if isinstance(scan_result, GeneratorType) else scan_result
-        finally:
-            if capture_enabled:
-                self._refresh_recent_mail_packets_for_runtime_log("释放抓包前", flush_capture=True)
-                try:
-                    fanxiu_capture_runtime_service.release(capture_reason)
-                    with self._lock:
-                        self._log_locked("info", f"邮件_抓包：已释放抓包服务 {capture_reason}")
-                except Exception as exc:
-                    with self._lock:
-                        self._log_locked("error", f"邮件_抓包：释放抓包服务失败：{exc}")
-
-    def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
-        try:
-            pcap_paths: list[str] = []
-            if flush_capture:
-                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-claim-check:{label}", restart=False)
-                pcap_path = str(flush.get("pcap_path") or "").strip() if isinstance(flush, dict) else ""
-                if pcap_path and bool(flush.get("flushed")):
-                    pcap_paths.append(pcap_path)
-                with self._lock:
-                    self._log_locked(
-                        "info",
-                        "邮件_抓包协作："
-                        f"{label} flush={bool(flush.get('flushed')) if isinstance(flush, dict) else False} "
-                        f"pcap_size={flush.get('pcap_size', 0) if isinstance(flush, dict) else 0}",
-                    )
-            if pcap_paths:
-                result = sync_fanxiu_capture_paths(pcap_paths, max_streams=4)
-            else:
-                result = {"decoded_count": 0, "mail_packet_sync": {}}
-            mail_sync = result.get("mail_packet_sync") or {}
-            if not mail_sync:
-                for decoded_item in result.get("decoded") or []:
-                    if isinstance(decoded_item, dict) and isinstance(decoded_item.get("batch_mail_packet_sync"), dict):
-                        mail_sync = decoded_item["batch_mail_packet_sync"]
-                        break
-            with self._lock:
-                self._log_locked(
-                    "info",
-                    "邮件_抓包协作："
-                    f"{label} decoded={result.get('decoded_count', 0)} "
-                    f"updated={mail_sync.get('updated', 0)} inserted={mail_sync.get('inserted', 0)} "
-                    f"source_packets={mail_sync.get('source_packets', 0)} action_packets={mail_sync.get('action_packets', 0)}",
-                )
-        except Exception as exc:
-            with self._lock:
-                self._log_locked("error", f"邮件_抓包协作：{label}失败：{exc}")
-
-    def _open_mail_scene(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        asset_tree_path: Path,
-        *,
-        entry_mode: str = "dynamic",
-    ) -> str:
-        if entry_mode in {"stable", "menu", "full", "full_scan", "debug"}:
-            visible_menu_result = self._try_open_mail_from_visible_world_menu(ctx, stop_event, timeout=1.0)
-            opened_from_menu = (yield from visible_menu_result) if isinstance(visible_menu_result, GeneratorType) else visible_menu_result
-            if opened_from_menu == "success":
-                return "success"
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：确认世界 #34", phase="mail_claim_go_world")
-            self._log_locked("action", "邮件_领取检查：先确认进入世界 #34")
-        go_scene_result = self._go_scene_task(ctx, asset_tree_path, 34, stop_event)
-        result = (yield from go_scene_result) if isinstance(go_scene_result, GeneratorType) else go_scene_result
-        if result != "success":
-            return result
-        if entry_mode in {"stable", "menu", "full", "full_scan", "debug"}:
-            stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path)
-            return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
-        dynamic_result = self._try_open_mail_dynamic_entry(ctx, stop_event)
-        opened = (yield from dynamic_result) if isinstance(dynamic_result, GeneratorType) else dynamic_result
-        if opened == "no_mail":
-            return "no_mail"
-        if opened == "success":
-            return "success"
-        stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path)
-        return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
-
-    def _try_open_mail_dynamic_entry(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
-        image34 = ctx.get("images", {}).get(34)
-        image68 = ctx.get("images", {}).get(68)
-        if not isinstance(image68, dict) and isinstance(image34, dict):
-            image68 = self._find_child_image_by_number(image34, 68)
-        mail_shape = self._find_shape(image68, "邮件") if isinstance(image68, dict) else None
-        if not isinstance(image68, dict) or not mail_shape:
-            self._log("detail", "邮件_领取检查：#68 动态邮件入口标注缺失，尝试稳定入口")
-            return "missing"
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：检测 #68 邮件入口", phase="mail_claim_check_mail", current_scene=34)
-            self._log_locked("action", "邮件_领取检查：检测 #68「邮件」")
-        frame = self._screencap(ctx)
-        result = self._match_shape(ctx, image68, mail_shape, frame)
-        similarity = float(result.get("similarity") or 0)
-        matched = bool(result.get("matched"))
-        if not matched:
-            with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：#68 未命中，改走 #35 稳定入口", phase="mail_claim_dynamic_missing", current_scene=34)
-                self._log_locked("info", f"邮件_领取检查：未发现 #68「邮件」{similarity:.0f}%，改走稳定入口")
-            return "missing"
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：打开 #68 邮件入口", phase="mail_claim_open_mail", current_scene=34)
-            self._log_locked("action", f"邮件_领取检查：识别到 #68「邮件」{similarity:.0f}%，点击打开")
-        self._click_shape(ctx, image68, mail_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
-        return "success"
-
-    def _open_mail_stable_entry(self, ctx: dict[str, Any], stop_event: threading.Event, asset_tree_path: Path) -> str:
-        image34 = ctx.get("images", {}).get(34)
-        open_shape = self._find_shape(image34, "打开下方菜单") if isinstance(image34, dict) else None
-        if not isinstance(image34, dict) or not open_shape:
-            raise RuntimeError("缺少 #34「打开下方菜单」标注，无法走稳定邮件入口")
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：打开下方菜单 #35", phase="mail_claim_open_world_menu", current_scene=34)
-            self._log_locked("action", "邮件_领取检查：#68 不可用，尝试 #34 -> #35 稳定入口")
-        frame = self._screencap(ctx)
-        try:
-            self._click_shape(ctx, image34, open_shape, frame)
-        except RuntimeError as exc:
-            message = str(exc)
-            if "打开下方菜单" not in message or "定位" not in message:
-                raise
-            box = self._box(open_shape, image34)
-            x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
-            y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
-            with self._lock:
-                self._log_locked("info", f"邮件_领取检查：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
-            self._click_frame_point(ctx, image34, x, y)
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
-        deadline = time.time() + 1.0
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            yield BehaviorTreeStatus.RUNNING
-        menu_result = self._open_mail_from_world_menu_shape(ctx, stop_event)
-        return (yield from menu_result) if isinstance(menu_result, GeneratorType) else menu_result
-
-    def _open_mail_from_world_menu_shape(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
-        # Runtime actions must be driven by the asset-tree annotations. Do not
-        # infer alternate menu coordinates from screenshots here; if the current
-        # UI changed, update the #34/#35/#121 shapes or sceneJumpTarget data.
-        image35 = ctx.get("images", {}).get(35)
-        mail_shape = self._find_shape(image35, "邮件") if isinstance(image35, dict) else None
-        menu_shape = self._find_shape(image35, "菜单") if isinstance(image35, dict) else None
-        if not isinstance(image35, dict) or (not mail_shape and not menu_shape):
-            raise RuntimeError("缺少 #35「邮件」或「菜单」标注，无法走稳定邮件入口")
-        self._raise_if_stopped(stop_event)
-        with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：等待 #35 邮件命中", phase="mail_claim_wait_world_menu_mail", current_scene=35)
-        if mail_shape and not menu_shape:
-            wait_result = self._wait_shape_match(
-                ctx,
-                stop_event,
-                image35,
-                mail_shape,
-                timeout=8.0,
-                label="邮件_领取检查：等待 #35「邮件」",
-            )
-            frame, match_result = (yield from wait_result) if isinstance(wait_result, GeneratorType) else wait_result
-            with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                self._log_locked("action", "邮件_领取检查：按 #35「邮件」标注点击")
-            self._click_shape(ctx, image35, mail_shape, frame, match_result=match_result)
-            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
-            return "success"
-        deadline = time.time() + 8.0
-        last_score = 0.0
-        last_ocr = ""
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
-            if mail_shape:
-                match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto")
-                last_score = max(last_score, match_score)
-                if match_score >= float(self.scene_threshold):
-                    mail_box = self._box(mail_shape, image35)
-                    x = float(mail_box.get("x") or 0) + float(mail_box.get("w") or 0) / 2
-                    y = float(mail_box.get("y") or 0) + float(mail_box.get("h") or 0) / 2
-                    with self._lock:
-                        self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                        self._log_locked("action", f"邮件_领取检查：#35「邮件」标注命中 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
-                    self._click_frame_point(ctx, image35, x, y)
-                    yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
-                    return "success"
-
-            ocr_lines = self._ocr_lines(frame)
-            last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_lines[-3:]) or last_ocr
-            menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
-            if menu_matches:
-                x, y, text = menu_matches[0]
-                x, y = self._mail_world_menu_icon_click_point(image35, x, y)
-                with self._lock:
-                    self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                    self._log_locked("action", f"邮件_领取检查：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
-                self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
-                return "success"
-
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"邮件_领取检查：等待 #35 邮件入口 {last_score:.0f}%",
-                    phase="mail_claim_wait_world_menu_mail",
-                    current_scene=35,
-                )
-            yield BehaviorTreeStatus.RUNNING
-        raise RuntimeError(f"邮件_领取检查：等待 #35 邮件入口超时，最后 {last_score:.0f}% OCR={last_ocr}")
-
-    def _mail_world_menu_icon_click_point(self, image35: dict[str, Any], x: float, y: float) -> tuple[float, float]:
-        mail_shape = self._find_shape(image35, "邮件")
-        if mail_shape:
-            box = self._box(mail_shape, image35)
-            return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) / 2
-        return x, y
-
-    def _try_open_mail_from_visible_world_menu(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        *,
-        timeout: float,
-    ) -> str:
-        image35 = ctx.get("images", {}).get(35)
-        if not isinstance(image35, dict):
-            return "missing"
-        mail_shape = self._find_shape(image35, "邮件")
-        deadline = time.time() + max(0.1, float(timeout or 0.1))
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
-            if mail_shape:
-                scene_id, score, _frame = self._current_scene_number(ctx)
-                if scene_id == 35 and score >= float(self.scene_threshold):
-                    return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
-                match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto")
-                if match_score >= float(self.scene_threshold):
-                    return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
-            menu_matches = self._ocr_centers_in_shape(self._ocr_lines(frame), image35, "菜单", include=("邮件",))
-            if menu_matches:
-                x, y, text = menu_matches[0]
-                x, y = self._mail_world_menu_icon_click_point(image35, x, y)
-                with self._lock:
-                    self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                    self._log_locked("action", f"邮件_领取检查：#35 无「邮件」shape，点击菜单 OCR「{text}」({x:.0f},{y:.0f})")
-                self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
-                return "success"
-            with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
-            yield BehaviorTreeStatus.RUNNING
-        return "missing"
-
-    def _scan_mail_scene(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        *,
-        action_enabled: bool = True,
-        scan_mode: str = "incremental",
-        action_policies: set[str] | None = None,
-        max_actions: int | None = None,
-        target_title: str = "",
-        target_time_text: str = "",
-    ) -> str:
-        image121 = ctx.get("images", {}).get(121)
-        if not isinstance(image121, dict):
-            raise RuntimeError("缺少 #121 邮件帧标注，无法扫描邮件")
-        first_shape = self._find_shape(image121, "第1封")
-        list_shape = self._find_shape(image121, "邮件清单2") or self._find_shape(image121, "邮件清单")
-        if not first_shape:
-            raise RuntimeError("缺少 #121「第1封」标注，无法处理首封邮件")
-        if not list_shape:
-            raise RuntimeError("缺少 #121「邮件清单2」标注，无法遍历邮件清单")
-
-        processed_count = 0
-        seen_count = 0
-        scroll_count = 0
-        scan_started_at = time.monotonic()
-        last_signature = ""
-        stable_same_pages = 0
-        empty_pages = 0
-        max_scrolls = 80
-        configured_max_actions = max_actions is not None
-        max_actions = max(1, min(int(max_actions or 200), 200))
-        max_stable_same_pages = 5
-        max_empty_pages = 5
-        mode = str(scan_mode or "incremental").strip().lower()
-        full_scan = mode in {"full", "full_scan", "observe", "observe_only"}
-        target_title = str(target_title or "").strip()
-        target_time_text = self._normalize_mail_time_text(str(target_time_text or "").strip())
-        target_requested = bool(target_title or target_time_text)
-        allowed_policies = (set(action_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-        pending_actions = self._pending_packet_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
-        if action_enabled and (pending_actions > 0 or full_scan):
-            max_scrolls = min(max_scrolls, 24)
-            max_scan_seconds = 420.0 if full_scan else 300.0
-        elif not action_enabled and full_scan:
-            max_scrolls = min(max_scrolls, 16)
-            max_scan_seconds = 360.0
-        else:
-            max_scan_seconds = 0.0
-        scan_state = self._read_mail_scan_state()
-        watermark_time = "" if full_scan else str(scan_state.get("confirmed_time_bucket") or "")
-        top_time = ""
-        crossed_watermark = not bool(watermark_time)
-        scan_truncated = False
-        if action_enabled:
-            with self._lock:
-                self._log_locked("info", f"邮件_领取检查：packet 待处理邮件 {pending_actions} 封")
-                if target_requested:
-                    target_parts = []
-                    if target_title:
-                        target_parts.append(f"标题={target_title}")
-                    if target_time_text:
-                        target_parts.append(f"时间={target_time_text}")
-                    self._log_locked("info", f"邮件_领取检查：本轮只处理目标邮件：{'，'.join(target_parts)}")
-            if pending_actions <= 0 and not full_scan and not target_requested:
-                with self._lock:
-                    self._log_locked("success", "邮件_领取检查：packet 无待处理邮件，跳过动作扫描")
-                return "success"
-        if watermark_time:
-            with self._lock:
-                self._log_locked("info", f"邮件_领取检查：增量扫描水位 {watermark_time}，需扫到更早时间才可停止")
-        else:
-            with self._lock:
-                self._log_locked("info", "邮件_领取检查：未建立增量水位，本轮按深扫建立水位")
-        while scroll_count <= max_scrolls and processed_count < max_actions:
-            self._raise_if_stopped(stop_event)
-            if max_scan_seconds > 0 and time.monotonic() - scan_started_at >= max_scan_seconds:
-                scan_truncated = True
-                with self._lock:
-                    self._log_locked(
-                        "info",
-                        f"邮件_领取检查：动作扫描达到内部时间预算 {max_scan_seconds:.0f}s，提前收尾",
-                    )
-                break
-            frame = self._screencap(ctx)
-            rows = self._recognize_visible_mail_rows(ctx, image121, frame)
-            action_candidate: dict[str, Any] | None = None
-            for row in rows:
-                self._prepare_mail_row_policy(row, action_enabled=action_enabled, action_policies=allowed_policies)
-                if target_requested and not self._mail_row_matches_target(row, target_title=target_title, target_time_text=target_time_text):
-                    row["policy"] = ""
-                seen_count += 1
-                top_time = top_time or str(row.get("time_text") or "")
-                if watermark_time and self._mail_time_is_older_than(str(row.get("time_text") or ""), watermark_time):
-                    crossed_watermark = True
-                if action_candidate is None and row.get("policy"):
-                    action_candidate = row
-            if rows:
-                row_summary = "；".join(
-                    f"{str(row.get('title') or '')[:18]}|{row.get('time_text') or '-'}|{row.get('policy') or '-'}|lock={row.get('list_lock_score', '-')}"
-                    for row in rows[:6]
-                )
-                with self._lock:
-                    self._log_locked("detail", f"邮件_领取检查：当前页重新 OCR 识别 {len(rows)} 行：{row_summary}")
-            if action_candidate is not None:
-                action_status = self._process_mail_row(ctx, stop_event, image121, action_candidate)
-                status = (yield from action_status) if isinstance(action_status, GeneratorType) else action_status
-                if status == "processed":
-                    processed_count += 1
-                    if target_requested:
-                        break
-                    if not full_scan and self._pending_packet_mail_action_count(allowed_policies=allowed_policies) <= 0:
-                        with self._lock:
-                            self._log_locked("success", "邮件_领取检查：packet 待处理邮件已清零，停止扫描")
-                        break
-                    continue
-            if action_enabled and not full_scan and not target_requested and self._pending_packet_mail_action_count(allowed_policies=allowed_policies) <= 0:
-                break
-
-            if watermark_time and crossed_watermark:
-                with self._lock:
-                    self._log_locked("success", f"邮件_领取检查：已扫到早于水位 {watermark_time} 的邮件，增量段完整接回")
-                break
-
-            signature = self._mail_rows_signature(rows)
-            if rows:
-                empty_pages = 0
-                if signature and signature == last_signature:
-                    stable_same_pages += 1
-                    if stable_same_pages >= max_stable_same_pages:
-                        break
-                else:
-                    stable_same_pages = 0
-                    last_signature = signature
-            else:
-                empty_pages += 1
-                if empty_pages >= max_empty_pages:
-                    break
-            scroll_count += 1
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"邮件_领取检查：邮件清单向下滚动 {scroll_count}",
-                    phase="mail_claim_scroll_list",
-                    current_scene=121,
-                )
-                self._log_locked("action", f"邮件_领取检查：当前页无可处理邮件，滚动邮件清单2 {scroll_count}")
-            self._scroll_shape_content(ctx, image121, list_shape)
-            yield from self._wait_scroll_settle(ctx, stop_event)
-
-        if processed_count >= max_actions and not configured_max_actions:
-            raise RuntimeError(f"邮件_领取检查：达到单轮处理上限 {max_actions}，为避免异常循环已停止")
-        if configured_max_actions and processed_count >= max_actions:
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"邮件_领取检查：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封",
-                    phase="mail_claim_done",
-                    current_scene=121,
-                )
-                self._log_locked("success", f"邮件_领取检查：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封")
-            return "success"
-        if target_requested and processed_count > 0:
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"邮件_领取检查：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封",
-                    phase="mail_claim_done",
-                    current_scene=121,
-                )
-                self._log_locked("success", f"邮件_领取检查：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封")
-            return "success"
-        pending_after_scan = self._pending_packet_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
-        if action_enabled and full_scan and pending_after_scan > 0 and not scan_truncated:
-            marked_count = self._mark_pending_packet_mail_actions_not_visible(
-                reason=f"full_scan_seen={seen_count}; processed={processed_count}; scrolls={scroll_count}",
-                allowed_policies=allowed_policies,
-            )
-            with self._lock:
-                self._log_locked(
-                    "info",
-                    f"邮件_领取检查：完整扫描未见 {marked_count} 封待处理邮件，标记为 missing_from_list",
-                )
-        elif action_enabled and full_scan and pending_after_scan > 0 and scan_truncated:
-            with self._lock:
-                self._log_locked(
-                    "info",
-                    f"邮件_领取检查：本轮扫描被时间预算截断，仍有 {pending_after_scan} 封待处理邮件，不标记 missing_from_list",
-                )
-        if watermark_time and not crossed_watermark:
-            self._write_mail_scan_state(
-                {
-                    **scan_state,
-                    "status": "gap_risk",
-                    "last_scan_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "last_seen_top_time": top_time,
-                    "last_seen_count": seen_count,
-                    "last_processed_count": processed_count,
-                    "message": f"未接回增量水位 {watermark_time}",
-                }
-            )
-            raise RuntimeError(f"邮件_领取检查：未接回增量水位 {watermark_time}，可能存在中间遗漏，请继续遍历或用 full_scan/observe_only 补洞")
-        if top_time:
-            self._write_mail_scan_state(
-                {
-                    "status": "confirmed",
-                    "confirmed_time_bucket": top_time,
-                    "confirmed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "last_scan_mode": "full" if full_scan else "incremental",
-                    "last_seen_count": seen_count,
-                    "last_processed_count": processed_count,
-                    "previous_confirmed_time_bucket": scan_state.get("confirmed_time_bucket") or "",
-                }
-            )
-
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"邮件_领取检查：完成，见到 {seen_count} 封，处理 {processed_count} 封",
-                phase="mail_claim_done",
-                current_scene=121,
-            )
-            self._log_locked("success", f"邮件_领取检查：完成，见到 {seen_count} 封，处理 {processed_count} 封")
-        return "success"
-
-    def _recognize_visible_mail_rows(
-        self,
-        ctx: dict[str, Any],
-        image121: dict[str, Any],
-        frame: str,
-    ) -> list[dict[str, Any]]:
-        started_at = time.monotonic()
-        lines = self._ocr_lines_in_shapes(frame, image121, ("第1封", "邮件清单2"))
-        first_rows = self._mail_rows_in_shape(lines, image121, "第1封")
-        list_rows = self._mail_rows_in_shape(lines, image121, "邮件清单2")
-        rows = self._merge_visible_mail_rows_by_position(first_rows, list_rows)
-        self._annotate_mail_rows_list_state(ctx, image121, frame, rows)
-        elapsed = time.monotonic() - started_at
-        self._log("detail", f"邮件_领取检查：当前页 OCR+行解析耗时 {elapsed:.1f}s，识别 {len(rows)} 行")
-        return rows
-
-    def _read_mail_scan_state(self) -> dict[str, Any]:
-        payload = _read_data_annotation_json(_data_annotation_mail_scan_state_path(), {})
-        return payload if isinstance(payload, dict) else {}
-
-    def _write_mail_scan_state(self, payload: dict[str, Any]) -> None:
-        _write_data_annotation_json(_data_annotation_mail_scan_state_path(), payload)
-
-    def _pending_packet_mail_action_count(self, *, allowed_policies: set[str] | None = None) -> int:
-        policies = (set(allowed_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-        with Session(engine) as session:
-            records = session.exec(
-                select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.locked == False,  # noqa: E712
-                )
-            ).all()
-        return sum(1 for record in records if fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload)) in policies)
-
-    def _mark_pending_packet_mail_actions_not_visible(self, *, reason: str, allowed_policies: set[str] | None = None) -> int:
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        marked = 0
-        policies = (set(allowed_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-        with Session(engine) as session:
-            records = session.exec(
-                select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.action_policy.in_(tuple(sorted(policies))),
-                    FanxiuMailRecord.locked == False,  # noqa: E712
-                    FanxiuMailRecord.status.not_in(("claimed", "deleted", "missing_from_list")),
-                )
-            ).all()
-            for record in records:
-                if fanxiu_mail_action_policy_for_record(record) not in policies:
-                    continue
-                evidence = dict(record.evidence or {})
-                evidence.update(
-                    {
-                        "runtime_action": "missing_from_list",
-                        "missing_from_list_at": now_text,
-                        "missing_from_list_reason": reason,
-                    }
-                )
-                record.status = "missing_from_list"
-                record.action_policy = ""
-                record.evidence = evidence
-                record.updated_at = time.time()
-                session.add(record)
-                marked += 1
-            if marked:
-                session.commit()
-        return marked
-
-    def _mail_time_is_older_than(self, current_time_text: str, watermark_time_text: str) -> bool:
-        current = parse_data_annotation_task_time(normalize_fanxiu_mail_time_text(current_time_text))
-        watermark = parse_data_annotation_task_time(normalize_fanxiu_mail_time_text(watermark_time_text))
-        return current is not None and watermark is not None and current < watermark
-
-    def _prepare_and_maybe_process_mail_row(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        image121: dict[str, Any],
-        row: dict[str, Any],
-        *,
-        action_enabled: bool = True,
-        action_policies: set[str] | None = None,
-        target_title: str = "",
-        target_time_text: str = "",
-    ) -> str:
-        self._prepare_mail_row_policy(row, action_enabled=action_enabled, action_policies=action_policies)
-        if (target_title or target_time_text) and not self._mail_row_matches_target(row, target_title=target_title, target_time_text=target_time_text):
-            row["policy"] = ""
-        if not row.get("policy"):
-            return "seen"
-        return (yield from self._process_mail_row(ctx, stop_event, image121, row))
-
-    def _mail_row_matches_target(self, row: dict[str, Any], *, target_title: str, target_time_text: str) -> bool:
-        if target_title:
-            observed_title = str(row.get("title") or "").strip()
-            if self._mail_title_similarity(observed_title, target_title) < 0.86:
-                return False
-        if target_time_text:
-            observed_time = self._normalize_mail_time_text(str(row.get("time_text") or ""))
-            if observed_time != self._normalize_mail_time_text(target_time_text):
-                return False
-        return True
-
-    def _prepare_mail_row_policy(
-        self,
-        row: dict[str, Any],
-        *,
-        action_enabled: bool = True,
-        action_policies: set[str] | None = None,
-    ) -> None:
-        title = str(row.get("title") or "").strip()
-        time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
-        row["policy"] = ""
-        if not self._is_valid_mail_time_text(time_text):
-            row["time_text"] = ""
-            row["mail_key"] = ""
-            return
-        row["time_text"] = time_text
-        record = self._find_packet_mail_record(title, time_text, action_policies=action_policies)
-        row["mail_key"] = str(record.mail_key or "") if record else ""
-        if action_enabled:
-            policy = self._mail_row_packet_action_policy(title, time_text)
-            allowed_policies = (set(action_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-            row["policy"] = policy if policy in allowed_policies else ""
-
-    def _mail_row_packet_action_policy(self, title: str, time_text: str) -> str:
-        records = self._find_packet_mail_records_for_visible_row(title, time_text)
-        if not records:
-            return ""
-        policies: set[str] = set()
-        for record in records:
-            if bool(record.locked):
-                return ""
-            policy = fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
-            if policy not in {"claim", "delete"}:
-                return ""
-            policies.add(policy)
-        if "claim" in policies:
-            return "claim"
-        if policies == {"delete"}:
-            return "delete"
-        return ""
-
-    def _find_packet_mail_records_for_visible_row(self, title: str, time_text: str) -> list[FanxiuMailRecord]:
-        normalized_title = normalize_fanxiu_mail_title(title)
-        normalized_time = normalize_fanxiu_mail_time_text(time_text)
-        if not normalized_title or not normalized_time:
-            return []
-        with Session(engine) as session:
-            exact = session.exec(
-                select(FanxiuMailRecord)
-                .where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.normalized_title == normalized_title,
-                    FanxiuMailRecord.create_time_text == normalized_time,
-                )
-                .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
-            ).all()
-            if exact:
-                return list(exact)
-            same_time = session.exec(
-                select(FanxiuMailRecord)
-                .where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.create_time_text == normalized_time,
-                )
-                .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
-            ).all()
-        observed_key = self._mail_title_similarity_key(title)
-        if len(observed_key) < 3:
-            return []
-        scored: list[tuple[float, FanxiuMailRecord]] = []
-        for record in same_time:
-            score = self._mail_title_similarity(title, str(record.title or record.normalized_title or ""))
-            if score > 0:
-                scored.append((score, record))
-        if not scored:
-            return []
-        scored.sort(key=lambda item: item[0], reverse=True)
-        best_score = scored[0][0]
-        threshold = 0.58 if len(observed_key) >= 5 else 0.72
-        if best_score < threshold:
-            return []
-        return [record for score, record in scored if score >= best_score - 0.06]
-
-    def _find_packet_mail_record(
-        self,
-        title: str,
-        time_text: str,
-        *,
-        action_policies: set[str] | None = None,
-    ) -> FanxiuMailRecord | None:
-        normalized_title = normalize_fanxiu_mail_title(title)
-        normalized_time = normalize_fanxiu_mail_time_text(time_text)
-        if not normalized_title or not normalized_time:
-            return None
-        with Session(engine) as session:
-            record = session.exec(
-                select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.normalized_title == normalized_title,
-                    FanxiuMailRecord.create_time_text == normalized_time,
-                )
-            ).first()
-            if record:
-                return record
-            record = session.exec(
-                select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.title == title,
-                    FanxiuMailRecord.create_time_text == normalized_time,
-                )
-            ).first()
-            if record:
-                return record
-            time_candidates = session.exec(
-                select(FanxiuMailRecord)
-                .where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.create_time_text == normalized_time,
-                )
-                .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
-            ).all()
-            fuzzy = self._select_packet_mail_record_by_fuzzy_title(
-                title,
-                time_candidates,
-                action_policies=action_policies,
-            )
-            if fuzzy:
-                return fuzzy
-            return None
-
-    def _visible_packet_mail_action_policy(self, record: FanxiuMailRecord | None) -> str:
-        if record is None or bool(record.locked):
-            return ""
-        status = str(record.status or "").strip().lower()
-        if status in {"claimed", "deleted"}:
-            return ""
-        if status in {"claim_requested", "delete_requested"}:
-            retry_policy = status.removesuffix("_requested")
-            if not self._mail_requested_action_retryable(record, retry_policy):
-                return ""
-            return retry_policy
-        return fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
-
-    def _mail_requested_action_retryable(self, record: FanxiuMailRecord, policy: str) -> bool:
-        if policy not in {"claim", "delete"}:
-            return False
-        evidence = record.evidence if isinstance(record.evidence, dict) else {}
-        requested_action = str(evidence.get("runtime_requested_action") or "").strip().lower()
-        if requested_action and requested_action != policy:
-            return False
-        requested_at = str(evidence.get("runtime_action_requested_at") or "").strip()
-        try:
-            requested_ts = datetime.strptime(requested_at, "%Y-%m-%d %H:%M:%S").timestamp() if requested_at else 0.0
-        except ValueError:
-            requested_ts = 0.0
-        if requested_ts and time.time() - requested_ts < 60.0:
-            return False
-        server_protocol = "SM_GetMailReward" if policy == "claim" else "SM_DeleteMail"
-        for event in evidence.get("mail_actions") or []:
-            if isinstance(event, dict) and str(event.get("protocol") or "") == server_protocol:
-                return False
-        return True
-
-    def _mail_row_has_attachment_hint(self, row: dict[str, Any]) -> bool:
-        return bool(row.get("list_has_lock") or row.get("has_attachment_hint"))
-
-    def _select_packet_mail_record_by_fuzzy_title(
-        self,
-        observed_title: str,
-        candidates: list[FanxiuMailRecord],
-        *,
-        action_policies: set[str] | None = None,
-    ) -> FanxiuMailRecord | None:
-        observed_key = self._mail_title_similarity_key(observed_title)
-        if len(observed_key) < 3:
-            return None
-        allowed_policies = (set(action_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
-        scored: list[tuple[float, FanxiuMailRecord, str]] = []
-        for candidate in candidates:
-            candidate_title = str(candidate.title or candidate.normalized_title or "")
-            score = self._mail_title_similarity(observed_title, candidate_title)
-            if score <= 0:
-                continue
-            scored.append((score, candidate, self._visible_packet_mail_action_policy(candidate)))
-        if not scored:
-            return None
-        scored.sort(key=lambda item: (item[0], float(item[1].last_seen_at or item[1].updated_at or 0)), reverse=True)
-        best_score, best_record, best_policy = scored[0]
-        threshold = 0.58 if len(observed_key) >= 5 else 0.72
-        if best_score < threshold or best_policy not in allowed_policies:
-            return None
-        close_candidates = [item for item in scored if item[0] >= best_score - 0.06]
-        close_policies = {policy for _, _, policy in close_candidates}
-        if close_policies != {best_policy}:
-            return None
-        return best_record
-
-    def _mail_title_similarity_key(self, value: str) -> str:
-        text = normalize_fanxiu_mail_title(value)
-        return re.sub(r"[^\u4e00-\u9fff0-9A-Za-z]", "", text)
-
-    def _mail_title_similarity(self, left: str, right: str) -> float:
-        left_key = self._mail_title_similarity_key(left)
-        right_key = self._mail_title_similarity_key(right)
-        if not left_key or not right_key:
-            return 0.0
-        if left_key == right_key:
-            return 1.0
-        base = difflib.SequenceMatcher(None, left_key, right_key).ratio()
-        shorter, longer = sorted((left_key, right_key), key=len)
-        if len(shorter) >= 3 and shorter in longer:
-            base = max(base, len(shorter) / max(len(longer), 1))
-        return float(base)
-
-    def _find_packet_mail_key(self, title: str, time_text: str) -> str:
-        record = self._find_packet_mail_record(title, time_text)
-        return str(record.mail_key or "") if record else ""
-
-    def _update_packet_mail_action_for_row(self, row: dict[str, Any], *, status: str, evidence: dict[str, Any]) -> None:
-        mail_key = str(row.get("mail_key") or "").strip()
-        if not mail_key:
-            mail_key = self._find_packet_mail_key(
-                str(row.get("title") or ""),
-                str(row.get("time_text") or ""),
-            )
-        if not mail_key:
-            return
-        with Session(engine) as session:
-            mark_fanxiu_mail_action(session, mail_key, status=status, evidence=evidence)
-            session.commit()
-
-    def _process_mail_row(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        image121: dict[str, Any],
-        row: dict[str, Any],
-    ) -> str:
-        title = str(row.get("title") or "")
-        policy = str(row.get("policy") or "")
-        if policy not in {"claim", "delete"}:
-            return "seen"
-        with self._lock:
-            action_label = "处理"
-            self._set_status_locked(
-                "running",
-                f"邮件_领取检查：打开「{title}」准备{action_label}",
-                phase=f"mail_claim_open_{policy}",
-                current_scene=121,
-            )
-            self._log_locked("action", f"邮件_领取检查：打开「{title}」准备{action_label}")
-        self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
-        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_领取检查：等待「{title}」详情")
-        scene_id, _score = yield from scene_result
-        if scene_id == 121:
-            return "seen"
-        if scene_id not in {122, 123}:
-            raise RuntimeError(f"邮件_领取检查：打开「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
-        target_scene_id = scene_id
-        actual_policy = "claim" if target_scene_id == 122 else "delete"
-        if actual_policy != policy:
-            with self._lock:
-                self._log_locked(
-                    "detail",
-                    f"邮件_领取检查：「{title}」列表策略={policy}，详情实际为 #{target_scene_id} {actual_policy}，按详情按钮处理",
-                )
-        detail_image = ctx.get("images", {}).get(target_scene_id)
-        action_shape = self._find_shape(detail_image, "领取" if actual_policy == "claim" else "删除") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not action_shape:
-            raise RuntimeError(f"缺少 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」标注，无法处理邮件")
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"邮件_领取检查：{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
-                phase=f"mail_claim_do_{actual_policy}",
-                current_scene=target_scene_id,
-            )
-            self._log_locked("action", f"邮件_领取检查：等待并点击 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」")
-        match_result = yield from self._wait_shape_match(
-            ctx,
-            stop_event,
-            detail_image,
-            action_shape,
-            timeout=8.0,
-            label=f"邮件_领取检查：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
-        )
-        frame, action_match = match_result
-        self._click_shape(ctx, detail_image, action_shape, frame, match_result=action_match)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
-        self._update_packet_mail_action_for_row(
-            row,
-            status=f"{actual_policy}_requested",
-            evidence={"runtime_requested_action": actual_policy, "runtime_action_requested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
-        )
-        return "processed"
-
-    def _probe_and_maybe_delete_mail_row(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        image121: dict[str, Any],
-        row: dict[str, Any],
-    ) -> str:
-        if self._mail_row_has_attachment_hint(row):
-            return "seen"
-        title = str(row.get("title") or "")
-        if not title:
-            return "seen"
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"邮件_领取检查：探测「{title}」是否可删除",
-                phase="mail_claim_probe_delete",
-                current_scene=121,
-            )
-            self._log_locked("action", f"邮件_领取检查：打开「{title}」探测无附件删除")
-        self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
-        scene_id, score = yield from self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_领取检查：探测「{title}」详情")
-        if scene_id == 121:
-            return "seen"
-        if scene_id == 122:
-            with self._lock:
-                self._log_locked("detail", f"邮件_领取检查：探测「{title}」进入 #122，视为有附件/可领取，返回不处理")
-            yield from self._return_mail_detail_to_list(ctx, stop_event, 122)
-            return "seen"
-        if scene_id != 123:
-            raise RuntimeError(f"邮件_领取检查：探测「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
-        detail_image = ctx.get("images", {}).get(123)
-        action_shape = self._find_shape(detail_image, "删除") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not action_shape:
-            raise RuntimeError("缺少 #123「删除」标注，无法执行无附件邮件删除")
-        frame = self._screencap(ctx)
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"邮件_领取检查：UI确认无附件，删除「{title}」",
-                phase="mail_claim_do_delete",
-                current_scene=123,
-            )
-            self._log_locked("action", f"邮件_领取检查：UI确认 #123，点击「删除」：{title}")
-        self._click_shape(ctx, detail_image, action_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
-        self._update_packet_mail_action_for_row(
-            row,
-            status="delete_requested",
-            evidence={
-                "runtime_requested_action": "delete",
-                "runtime_action_requested_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "runtime_action_source": "ui_delete_probe",
-            },
-        )
-        return "processed"
-
-    def _return_mail_detail_to_list(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        scene_id: int,
-    ):
-        detail_image = ctx.get("images", {}).get(scene_id)
-        back_shape = self._find_shape(detail_image, "空白-返回") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not back_shape:
-            raise RuntimeError(f"缺少 #{scene_id}「空白-返回」标注，无法从邮件详情返回")
-        frame = self._screencap(ctx)
-        self._click_shape(ctx, detail_image, back_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
-
-    def _wait_mail_detail_or_list_scene(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        *,
-        timeout: float,
-        label: str,
-    ):
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        candidates = [121, 122, 123]
-        while True:
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            scene_id, score = self._identify_scene_number(ctx, frame, candidates)
-            last_scene_id, last_score = scene_id, score
-            if scene_id in candidates:
-                with self._lock:
-                    self._status.update({"current_scene": scene_id, "updated_at": time.time()})
-                self._log("success", f"{label}：识别到 #{scene_id} {score:.0f}%")
-                return scene_id, score
-            with self._lock:
-                self._status.update({
-                    "phase": "wait_mail_detail",
-                    "current_scene": scene_id,
-                    "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
-                    "updated_at": time.time(),
-                })
-            if time.monotonic() - start >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise RuntimeError(f"{label} 超时，未检测到邮件详情，最后 {scene_text} {last_score:.0f}%")
-
-    def _mail_rows_in_shape(self, lines: list[dict[str, Any]], image: dict[str, Any], shape_title: str) -> list[dict[str, Any]]:
-        shape = self._find_shape(image, shape_title)
-        if not shape:
-            return []
-        template_shape = self._find_shape(image, "邮件模板")
-        template_children = self._flatten_shapes(template_shape.get("children")) if isinstance(template_shape, dict) else []
-        title_shape = next((item for item in template_children if str(item.get("title") or "").strip() == "标题"), None)
-        time_shape = next((item for item in template_children if str(item.get("title") or "").strip() == "时间"), None)
-        if template_shape and title_shape and time_shape:
-            rows = self._mail_rows_in_shape_by_template(lines, image, shape, title_shape, time_shape)
-            if rows:
-                return rows
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        candidates: list[dict[str, Any]] = []
-        date_lines: list[dict[str, Any]] = []
-        for line in sorted(lines, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0))):
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            cx = x + w / 2
-            cy = y + h / 2
-            if not (left <= cx <= right and top <= cy <= bottom):
-                continue
-            if self._looks_like_mail_time(text):
-                date_lines.append({"text": text, "x": cx, "y": cy, "is_read": "已阅" in text or "已读" in text})
-                continue
-            if not self._looks_like_mail_title(text):
-                continue
-            title = re.sub(r"[0-9A-Za-z]+$", "", normalize_fanxiu_mail_title(text)).strip()
-            if not title or not self._looks_like_mail_title(title):
-                continue
-            candidates.append({"title": title, "x": cx, "y": cy, "raw_text": text})
-        rows: list[dict[str, Any]] = []
-        for item in candidates:
-            title = str(item.get("title") or "")
-            if not title:
-                continue
-            below_dates = [line for line in date_lines if float(line["y"]) >= float(item["y"]) and float(line["y"]) - float(item["y"]) < 80]
-            if below_dates:
-                raw_time_text = str(below_dates[0].get("text") or "")
-                item["time_text"] = self._normalize_mail_time_text(raw_time_text)
-                item["raw_time_text"] = raw_time_text
-                item["is_read"] = bool(below_dates[0].get("is_read"))
-            rows.append(item)
-        return rows
-
-    def _mail_template_child_shape(self, image: dict[str, Any], title: str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
-        template_shape = self._find_shape(image, "邮件模板")
-        template_children = self._flatten_shapes(template_shape.get("children")) if isinstance(template_shape, dict) else []
-        title_shape = next((item for item in template_children if str(item.get("title") or "").strip() == "标题"), None)
-        child_shape = next((item for item in template_children if str(item.get("title") or "").strip() == title), None)
-        if not (isinstance(template_shape, dict) and isinstance(title_shape, dict) and isinstance(child_shape, dict)):
-            return None
-        return template_shape, title_shape, child_shape
-
-    def _mail_row_template_child_shape(self, image: dict[str, Any], row: dict[str, Any], title: str) -> dict[str, Any] | None:
-        found = self._mail_template_child_shape(image, title)
-        if found is None:
-            return None
-        _template_shape, title_shape, child_shape = found
-        _width, height = self._frame_size(image)
-        try:
-            row_title_center_y = float(row.get("y") or 0) / max(1, height)
-        except (TypeError, ValueError):
-            return None
-        title_center_y = float(title_shape.get("y") or 0) + float(title_shape.get("h") or 0) / 2
-        child_center_y = float(child_shape.get("y") or 0) + float(child_shape.get("h") or 0) / 2
-        adjusted = dict(child_shape)
-        adjusted["y"] = max(0.0, min(1.0, row_title_center_y + (child_center_y - title_center_y) - float(child_shape.get("h") or 0) / 2))
-        adjusted["title"] = str(child_shape.get("title") or title)
-        adjusted["imageMatchRole"] = "required"
-        adjusted["ocrMatchRole"] = "off"
-        return adjusted
-
-    def _annotate_mail_rows_list_state(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        frame_data_url: str,
-        rows: list[dict[str, Any]],
-    ) -> None:
-        if not rows or "entry" not in ctx:
-            return
-        for row in rows:
-            row.setdefault("list_has_lock", False)
-            row.setdefault("has_attachment_hint", False)
-            lock_shape = self._mail_row_template_child_shape(image, row, "锁定")
-            if lock_shape is None:
-                continue
-            score = self._shape_score(ctx, image, lock_shape, frame_data_url, match_strategy="anchor_pixel", ocr_fallback=False)
-            row["list_lock_score"] = score
-            if score >= 75:
-                row["list_has_lock"] = True
-                row["has_attachment_hint"] = True
-
-    def _mail_rows_in_shape_by_template(
-        self,
-        lines: list[dict[str, Any]],
-        image: dict[str, Any],
-        list_shape: dict[str, Any],
-        title_shape: dict[str, Any],
-        time_shape: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        list_box = self._box(list_shape, image)
-        title_box = self._box(title_shape, image)
-        time_box = self._box(time_shape, image)
-        list_left = float(list_box.get("x") or 0)
-        list_top = float(list_box.get("y") or 0)
-        list_right = list_left + float(list_box.get("w") or 0)
-        list_bottom = list_top + float(list_box.get("h") or 0)
-        title_left = float(title_box.get("x") or 0)
-        title_right = title_left + float(title_box.get("w") or 0)
-        title_height = float(title_box.get("h") or 0)
-        title_center_y = float(title_box.get("y") or 0) + title_height / 2
-        time_center_y = float(time_box.get("y") or 0) + float(time_box.get("h") or 0) / 2
-        title_offset_y = title_center_y - time_center_y
-        title_y_tolerance = max(18.0, title_height * 1.25)
-        normalized_lines: list[dict[str, Any]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            cx = x + w / 2
-            cy = y + h / 2
-            if not (list_left <= cx <= list_right and list_top <= cy <= list_bottom):
-                continue
-            normalized_lines.append({"text": text, "x": cx, "y": cy, "w": w, "h": h})
-        time_lines = [
-            line for line in normalized_lines
-            if self._looks_like_mail_time(str(line.get("text") or ""))
-        ]
-        rows: list[dict[str, Any]] = []
-        for time_line in sorted(time_lines, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0))):
-            raw_time_text = str(time_line.get("text") or "")
-            time_text = self._normalize_mail_time_text(raw_time_text)
-            if not self._is_valid_mail_time_text(time_text):
-                continue
-            expected_title_y = float(time_line.get("y") or 0) + title_offset_y
-            candidates: list[dict[str, Any]] = []
-            for line in normalized_lines:
-                text = str(line.get("text") or "")
-                if text == raw_time_text:
-                    continue
-                if self._looks_like_mail_time(text):
-                    continue
-                cx = float(line.get("x") or 0)
-                cy = float(line.get("y") or 0)
-                if not (title_left <= cx <= title_right):
-                    continue
-                if abs(cy - expected_title_y) > title_y_tolerance:
-                    continue
-                if not self._looks_like_mail_title(text):
-                    continue
-                title = normalize_fanxiu_mail_title(text).strip()
-                if not title or not self._looks_like_mail_title(title):
-                    continue
-                candidates.append({"title": title, "x": cx, "y": cy, "raw_text": text})
-            if not candidates:
-                continue
-            best = max(candidates, key=lambda item: len(str(item.get("title") or "")))
-            rows.append({
-                **best,
-                "time_text": time_text,
-                "raw_time_text": raw_time_text,
-                "is_read": "已阅" in raw_time_text or "已读" in raw_time_text,
-            })
-        return rows
-
-    def _normalize_mail_time_text(self, text: str) -> str:
-        return normalize_fanxiu_mail_time_text(_sanitize_ocr_text(text))
-
-    def _is_valid_mail_time_text(self, text: str) -> bool:
-        return bool(normalize_fanxiu_mail_time_text(text))
-
-    def _looks_like_mail_time(self, text: str) -> bool:
-        return bool(re.search(r"\d{4}年|\d{1,2}月\d{1,2}(?:日)?|\d{1,2}:\d{2}", text))
-
-    def _looks_like_mail_title(self, text: str) -> bool:
-        normalized = normalize_fanxiu_mail_title(text)
-        if len(normalized) < 2:
-            return False
-        if any(token in normalized for token in ("邮件", "已锁定", "一键删除", "一键领取", "年月日", "已阅", "未阅", "已读")):
-            return False
-        if self._looks_like_mail_time(normalized):
-            return False
-        return bool(re.search(r"[\u4e00-\u9fff]", normalized))
-
-    def _mail_rows_signature(self, rows: list[dict[str, Any]]) -> str:
-        return "|".join(f"{row.get('title') or ''}@{row.get('time_text') or ''}" for row in rows[:4])
-
-    def _merge_visible_mail_rows_by_position(
-        self,
-        first_rows: list[dict[str, Any]],
-        list_rows: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, int]] = set()
-        for row in sorted([*first_rows, *list_rows], key=lambda item: float(item.get("y") or 0)):
-            title = normalize_fanxiu_mail_title(str(row.get("title") or ""))
-            time_text = self._normalize_mail_time_text(str(row.get("time_text") or ""))
-            y_bucket = int(round(float(row.get("y") or 0) / 16.0))
-            key = (title, time_text, y_bucket)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(row)
-        return merged
-
-    def _execute_daily_signup_task(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
-        frame = self._screencap(ctx)
-        scene_id, score = self._identify_scene_number(ctx, frame, [23, 24, 69])
-        if scene_id is not None:
-            with self._lock:
-                self._status.update({"current_scene": scene_id, "updated_at": time.time()})
-        if scene_id == 23:
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_报名：当前已在报名 #23 {score:.0f}%",
-                    phase="daily_signup_resume_signup_scene",
-                    current_scene=23,
-                )
-                self._log_locked("info", f"日常_报名：当前已在报名 #23 {score:.0f}%，直接处理报名列")
-            list_result = self._execute_daily_signup_signup_list(ctx, stop_event)
-            return (yield from list_result) if isinstance(list_result, GeneratorType) else list_result
-        if scene_id == 24:
-            image24 = ctx.get("images", {}).get(24)
-            claim_shape = self._find_shape(image24, "领取") if isinstance(image24, dict) else None
-            if not isinstance(image24, dict) or not claim_shape:
-                raise RuntimeError("当前在 #24，但缺少 #24「领取」标注，无法续跑日常报名")
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_报名：当前已在领取 #24 {score:.0f}%",
-                    phase="daily_signup_resume_claim_scene",
-                    current_scene=24,
-                )
-                self._log_locked("action", "日常_报名：当前已在 #24，点击「领取」后返回报名列")
-            self._click_shape(ctx, image24, claim_shape, frame)
-            yield from self._wait_scene_id(ctx, stop_event, 23, timeout=12.0, label="日常_报名：返回报名 #23")
-            list_result = self._execute_daily_signup_signup_list(ctx, stop_event)
-            return (yield from list_result) if isinstance(list_result, GeneratorType) else list_result
-        if scene_id == 69:
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_报名：当前已在日常 #69 {score:.0f}%",
-                    phase="daily_signup_check_signup",
-                    current_scene=69,
-                )
-                self._log_locked("info", f"日常_报名：当前已在日常 #69 {score:.0f}%，直接检查活动报名")
-            entry_result = self._execute_daily_signup_activity_entry(ctx, stop_event)
-            entry_status = (yield from entry_result) if isinstance(entry_result, GeneratorType) else entry_result
-            return entry_status or "success"
-        with self._lock:
-            self._set_status_locked("running", "日常_报名：确认日常 #69", phase="daily_signup_go_scene")
-            self._log_locked("action", "日常_报名：先确认进入日常 #69")
-        asset_tree_path = ctx.get("asset_tree_path")
-        if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少日常_报名资产树路径，无法执行场景确认")
-        go_scene_result = self._go_scene_task(ctx, asset_tree_path, 69, stop_event)
-        result = (yield from go_scene_result) if isinstance(go_scene_result, GeneratorType) else go_scene_result
-        if result == "success":
-            with self._lock:
-                self._set_status_locked("running", "日常_报名：检查活动报名", phase="daily_signup_check_signup")
-                self._log_locked("success", "日常_报名：已到达日常 #69")
-            entry_result = self._execute_daily_signup_activity_entry(ctx, stop_event)
-            entry_status = (yield from entry_result) if isinstance(entry_result, GeneratorType) else entry_result
-            if entry_status != "success":
-                return entry_status or "success"
-        return result
-
-    def _execute_daily_signup_activity_entry(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
-        self._raise_if_stopped(stop_event)
-        image = ctx.get("images", {}).get(75)
-        if not isinstance(image, dict):
-            raise RuntimeError("缺少 #75 活动报名帧标注，无法检查日常报名入口")
-        claim_shape = self._find_shape(image, "活动报名-领取")
-        click_shape = self._find_shape(image, "活动报名")
-        if not claim_shape:
-            raise RuntimeError("缺少 #75「活动报名-领取」标注，无法识别领取状态")
-        if not click_shape:
-            raise RuntimeError("缺少 #75「活动报名」标注，无法点击活动报名入口")
-        frame = self._screencap(ctx)
-        result = self._run_match(ctx, image, claim_shape, frame, match_strategy="auto", ocr_enabled=True)
-        similarity = float(result.get("similarity") or 0)
-        matched = bool(result.get("matches")) or similarity >= float(self.scene_threshold)
-        if not matched:
-            with self._lock:
-                self._set_status_locked("running", "日常_报名：今日无需报名", phase="daily_signup_done")
-                self._log_locked("success", "日常_报名：未识别到「领」，今日报名已完成")
-            return "success"
-        with self._lock:
-            self._set_status_locked("running", "日常_报名：点击活动报名", phase="daily_signup_click_signup")
-            self._log_locked("action", "日常_报名：识别到「领」，点击活动报名")
-        self._click_shape(ctx, image, click_shape, frame)
-        scene_id, score = yield from self._wait_scene_id(ctx, stop_event, 23, timeout=12.0, label="日常_报名：等待报名 #23")
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"日常_报名：已进入报名 #23 {score:.0f}%",
-                phase="daily_signup_signup_scene_ready",
-                current_scene=scene_id,
-            )
-            self._log_locked("success", f"日常_报名：已确认报名 #23 {score:.0f}%")
-        list_result = self._execute_daily_signup_signup_list(ctx, stop_event)
-        list_status = (yield from list_result) if isinstance(list_result, GeneratorType) else list_result
-        return list_status or "success"
-
-    def _execute_daily_signup_signup_list(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
-        image23 = ctx.get("images", {}).get(23)
-        image24 = ctx.get("images", {}).get(24)
-        if not isinstance(image23, dict):
-            raise RuntimeError("缺少 #23 报名帧标注，无法处理报名列")
-        if not isinstance(image24, dict):
-            raise RuntimeError("缺少 #24 报名领取帧标注，无法领取报名奖励")
-        column_shape = self._find_shape(image23, "报名列")
-        claim_shape = self._find_shape(image24, "领取")
-        if not column_shape:
-            raise RuntimeError("缺少 #23「报名列」标注，无法识别可报名项目")
-        if not claim_shape:
-            raise RuntimeError("缺少 #24「领取」标注，无法领取报名奖励")
-
-        clicked_count = 0
-        empty_scroll_count = 0
-        last_empty_scroll_signature = ""
-        max_clicks = 30
-        max_empty_scrolls = 8
-        while clicked_count < max_clicks:
-            self._raise_if_stopped(stop_event)
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_报名：扫描报名列，已领取 {clicked_count}",
-                    phase="daily_signup_scan_signup_list",
-                    current_scene=23,
-                )
-            frame = self._screencap(ctx)
-            lines = self._ocr_lines(frame)
-            matches = self._ocr_row_clicks_in_shape(lines, image23, "报名列", include=("报名",), exclude=("已报名",))
-            if matches:
-                x, y, text = matches[0]
-                empty_scroll_count = 0
-                last_empty_scroll_signature = ""
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"日常_报名：点击报名 {text}",
-                        phase="daily_signup_click_signup_item",
-                        current_scene=23,
-                    )
-                    self._log_locked("action", f"日常_报名：点击报名列「{text}」")
-                self._click_frame_point(ctx, image23, x, y)
-                yield from self._wait_scene_id(ctx, stop_event, 24, timeout=12.0, label="日常_报名：等待领取 #24")
-                claim_frame = self._screencap(ctx)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        "日常_报名：点击领取",
-                        phase="daily_signup_claim_reward",
-                        current_scene=24,
-                    )
-                    self._log_locked("action", "日常_报名：点击 #24「领取」")
-                self._click_shape(ctx, image24, claim_shape, claim_frame)
-                yield from self._wait_scene_id(ctx, stop_event, 23, timeout=12.0, label="日常_报名：返回报名 #23")
-                clicked_count += 1
-                continue
-
-            signature = self._daily_signup_first_row_signature(lines, image23, ctx=ctx)
-            if signature and signature == last_empty_scroll_signature:
-                with self._lock:
-                    self._log_locked("info", "日常_报名：报名列滚动后签名未变化，判定已滚到底")
-                break
-            if empty_scroll_count >= max_empty_scrolls:
-                with self._lock:
-                    self._log_locked("info", f"日常_报名：报名列空滚动达到兜底上限 {max_empty_scrolls}，停止扫描")
-                break
-            last_empty_scroll_signature = signature
-            empty_scroll_count += 1
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"日常_报名：报名列向下滚动 {empty_scroll_count}",
-                    phase="daily_signup_scroll_signup_list",
-                    current_scene=23,
-                )
-                self._log_locked("action", f"日常_报名：报名列未发现「报名」，向下滚动 {empty_scroll_count}")
-            self._scroll_shape_content(ctx, image23, column_shape)
-            yield from self._wait_scroll_settle(ctx, stop_event)
-
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                f"日常_报名：报名处理完成，领取 {clicked_count} 个",
-                phase="daily_signup_done",
-                current_scene=23,
-            )
-            self._log_locked("success", f"日常_报名：报名处理完成，领取 {clicked_count} 个")
-        return "success"
-
-    def _scroll_shape_content(self, ctx: dict[str, Any], image: dict[str, Any], shape: dict[str, Any]) -> None:
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        width = float(box.get("w") or 0)
-        height = float(box.get("h") or 0)
-        x = left + width / 2
-        direction = str(shape.get("contentDirection") or "down").strip().lower()
-        if direction == "up":
-            start_y = top + height * 0.25
-            end_y = top + height * 0.75
-        else:
-            start_y = top + height * 0.75
-            end_y = top + height * 0.25
-        self._drag_frame_point(ctx, image, x, start_y, x, end_y, duration_ms=1000)
-
-    def _wait_scroll_settle(self, ctx: dict[str, Any], stop_event: threading.Event, seconds: float = 1.0):
-        self._clear_tick_frame(ctx)
-        if stop_event.wait(max(0.0, float(seconds))):
-            self._raise_if_stopped(stop_event)
-        self._clear_tick_frame(ctx)
-        yield BehaviorTreeStatus.RUNNING
-
-    def _ocr_row_clicks_in_shape(
-        self,
-        lines: list[dict[str, Any]],
-        image: dict[str, Any] | None,
-        shape_title: str,
-        *,
-        include: tuple[str, ...],
-        exclude: tuple[str, ...] = (),
-    ) -> list[tuple[float, float, str]]:
-        shape = self._find_shape(image, shape_title) if image else None
-        if not shape or not image:
-            return []
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        width = float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        click_x = left + width / 2
-        matches: list[tuple[float, float, str]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            if include and not all(fragment in text for fragment in include):
-                continue
-            if exclude and any(fragment in text for fragment in exclude):
-                continue
-            y = float(line.get("y") or 0)
-            h = float(line.get("h") or 0)
-            cy = y + h / 2
-            if top <= cy <= bottom:
-                matches.append((click_x, cy, text))
-        return sorted(matches, key=lambda item: (item[1], item[0]))
-
-    def _daily_signup_first_row_signature(self, lines: list[dict[str, Any]], image23: dict[str, Any], *, ctx: dict[str, Any] | None = None) -> str:
-        exclude_boxes = self._occlusion_marker_boxes(ctx, image23) if ctx else []
-        marker_image = self._find_child_image_by_number(image23, 25) or image23
-        signature = self._text_signature_in_shape(lines, marker_image, "第1行", "shape 1", exclude_boxes=exclude_boxes)
-        if signature:
-            return signature
-        return self._vertical_text_signature_in_shape(lines, image23, "报名列", exclude_boxes=exclude_boxes)
-
-    def _text_signature_in_shape(
-        self,
-        lines: list[dict[str, Any]],
-        image: dict[str, Any] | None,
-        *shape_titles: str,
-        exclude_boxes: list[dict[str, float]] | None = None,
-    ) -> str:
-        shape = self._find_shape(image, *shape_titles) if image else None
-        if not shape or not image:
-            return ""
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        fragments: list[str] = []
-        for line in sorted(lines, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0))):
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            cx = x + w / 2
-            cy = y + h / 2
-            if self._point_in_boxes(cx, cy, exclude_boxes):
-                continue
-            if left <= cx <= right and top <= cy <= bottom:
-                fragments.append(text)
-        return "|".join(fragments)
-
-    def _vertical_text_signature_in_shape(
-        self,
-        lines: list[dict[str, Any]],
-        image: dict[str, Any] | None,
-        shape_title: str,
-        *,
-        exclude_boxes: list[dict[str, float]] | None = None,
-    ) -> str:
-        shape = self._find_shape(image, shape_title) if image else None
-        if not shape or not image:
-            return ""
-        box = self._box(shape, image)
-        top = float(box.get("y") or 0)
-        bottom = top + float(box.get("h") or 0)
-        fragments: list[str] = []
-        for line in sorted(lines, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0))):
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            y = float(line.get("y") or 0)
-            h = float(line.get("h") or 0)
-            cy = y + h / 2
-            x = float(line.get("x") or 0)
-            w = float(line.get("w") or 0)
-            if self._point_in_boxes(x + w / 2, cy, exclude_boxes):
-                continue
-            if top <= cy <= bottom:
-                fragments.append(text)
-        return "|".join(fragments)
-
-    def _occlusion_marker_boxes(self, ctx: dict[str, Any] | None, image: dict[str, Any]) -> list[dict[str, float]]:
-        if not ctx:
-            return []
-        tree = ctx.get("asset_tree")
-        if not isinstance(tree, list):
-            return []
-        boxes: list[dict[str, float]] = []
-
-        def visit(nodes: list[dict[str, Any]], in_occlusion_folder: bool = False) -> None:
-            for node in nodes:
-                if not isinstance(node, dict):
-                    continue
-                node_type = str(node.get("type") or "").strip()
-                title = str(node.get("title") or "").strip()
-                current_in_occlusion = in_occlusion_folder or (node_type == "folder" and title == "遮挡标记")
-                if current_in_occlusion and node_type == "image":
-                    for shape in self._flatten_shapes(node.get("shapes")):
-                        if shape.get("kind") == "group":
-                            continue
-                        box = self._box(shape, image)
-                        boxes.append({
-                            "x": float(box.get("x") or 0),
-                            "y": float(box.get("y") or 0),
-                            "w": float(box.get("w") or 0),
-                            "h": float(box.get("h") or 0),
-                        })
-                children = node.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)], current_in_occlusion)
-
-        visit(tree)
-        return boxes
-
-    def _point_in_boxes(self, x: float, y: float, boxes: list[dict[str, float]] | None) -> bool:
-        if not boxes:
-            return False
-        for box in boxes:
-            left = float(box.get("x") or 0)
-            top = float(box.get("y") or 0)
-            right = left + float(box.get("w") or 0)
-            bottom = top + float(box.get("h") or 0)
-            if left <= x <= right and top <= y <= bottom:
-                return True
-        return False
-
-    def _execute_gift_code_task(self, ctx: dict[str, Any], codes: list[str], stop_event: threading.Event) -> None:
-        with self._lock:
-            self._set_status_locked("running", "对齐 #49 设置页", phase="align_settings")
-        self._align_settings(ctx, stop_event)
-        for index, code in enumerate(codes):
-            self._raise_if_stopped(stop_event)
-            with self._lock:
-                self._set_status_locked("running", f"处理第 {index + 1}/{len(codes)} 个：{code}", current_index=index, current_code=code, phase="process_code")
-                self._log_locked("action", f"开始兑换：{code}")
-            self._process_code(ctx, code, index == len(codes) - 1, stop_event)
-        with self._lock:
-            self._set_status_locked("running", "从 #49 回退", phase="finish_back")
-        self._finish_from_settings(ctx, stop_event)
-
-    def _raise_if_stopped(self, stop_event: threading.Event) -> None:
-        if stop_event.is_set():
-            raise InterruptedError()
-
-    def _load_asset_tree(self, path: Path) -> list[dict[str, Any]]:
-        if not path.is_file():
-            raise RuntimeError("未找到帧树，请先保存帧树标注")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            raise RuntimeError("帧树格式错误")
-        return [item for item in payload if isinstance(item, dict)]
-
-    def _image_number(self, image: dict[str, Any]) -> int | None:
-        title = str(image.get("title") or "")
-        filename = str(image.get("filename") or "")
-        id_text = str(image.get("id") or "")
-        for text in (filename, title, id_text):
-            match = re.search(r"(\d+)", text)
-            if match:
-                return int(match.group(1))
-        return None
-
-    def _find_child_image_by_number(self, image: dict[str, Any], number: int) -> dict[str, Any] | None:
-        def visit(items: list[dict[str, Any]]) -> dict[str, Any] | None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "image" and self._image_number(item) == number:
-                    return item
-                children = item.get("children")
-                if isinstance(children, list):
-                    found = visit([child for child in children if isinstance(child, dict)])
-                    if found is not None:
-                        return found
-            return None
-
-        children = image.get("children")
-        if not isinstance(children, list):
-            return None
-        return visit([child for child in children if isinstance(child, dict)])
-
-    def _index_images(self, nodes: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-        result: dict[int, dict[str, Any]] = {}
-        def visit(items: list[dict[str, Any]]) -> None:
-            for item in items:
-                if item.get("type") == "image":
-                    number = self._image_number(item)
-                    if number is not None:
-                        result[number] = item
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)])
-        visit(nodes)
-        return result
-
-    def _jump_target_text(self, shape: dict[str, Any]) -> str:
-        return str(shape.get("sceneJumpTarget") or "").strip()
-
-    def _parse_scene_jump_entries(self, value: Any) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
-        for raw_token in str(value or "").split(","):
-            token = raw_token.strip()
-            if not token:
-                continue
-            count = 0
-            match = re.match(r"^(.*?)\((\d+)\)$", token)
-            if match:
-                token = match.group(1).strip()
-                count = int(match.group(2))
-            if token:
-                entries.append({"label": token, "count": count})
-        return entries
-
-    def _serialize_scene_jump_entries(self, entries: list[dict[str, Any]]) -> str:
-        normalized: list[dict[str, Any]] = []
-        for entry in entries:
-            label = str(entry.get("label") or "").strip()
-            if not label:
-                continue
-            count = max(0, int(entry.get("count") or 0))
-            normalized.append({"label": label, "count": count})
-        normalized.sort(key=lambda item: int(item.get("count") or 0), reverse=True)
-        return ",".join(
-            f"{item['label']}({item['count']})" if int(item.get("count") or 0) > 0 else item["label"]
-            for item in normalized
-        )
-
-    def _increment_scene_jump_target(self, shape: dict[str, Any], target_scene_id: int) -> bool:
-        current_text = self._jump_target_text(shape)
-        if current_text in {"-1", "0"}:
-            return False
-        entries = self._parse_scene_jump_entries(current_text)
-        for entry in entries:
-            if self._scene_jump_label_number(entry.get("label")) == target_scene_id:
-                entry["count"] = int(entry.get("count") or 0) + 1
-                shape["sceneJumpTarget"] = self._serialize_scene_jump_entries(entries)
-                return True
-        return False
-
-    def _scene_jump_label_number(self, label: Any) -> int | None:
-        text = str(label or "").strip()
-        if text.startswith("#"):
-            text = text[1:].strip()
-        return int(text) if text.isdecimal() else None
-
-    def _collect_folder_image_numbers(self, node: dict[str, Any]) -> list[int]:
-        result: list[int] = []
-        children = node.get("children")
-        if not isinstance(children, list):
-            return result
-        for child in children:
-            if not isinstance(child, dict):
-                continue
-            if child.get("type") == "image":
-                number = self._image_number(child)
-                if number is not None:
-                    result.append(number)
-            result.extend(self._collect_folder_image_numbers(child))
-        return result
-
-    def _resolve_scene_jump_label(self, tree: list[dict[str, Any]], label: Any) -> list[int]:
-        number = self._scene_jump_label_number(label)
-        if number is not None:
-            return [number]
-        target = str(label or "").strip()
-        if not target:
-            return []
-        found: list[int] = []
-
-        def visit(items: list[dict[str, Any]]) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("title") or "").strip() == target:
-                    if item.get("type") == "image":
-                        number = self._image_number(item)
-                        if number is not None:
-                            found.append(number)
-                    elif item.get("type") == "folder":
-                        found.extend(self._collect_folder_image_numbers(item))
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)])
-
-        visit(tree)
-        return found
-
-    def _scene_jump_target_ids(self, tree: list[dict[str, Any]], shape: dict[str, Any]) -> list[int]:
-        result: list[int] = []
-        for entry in self._parse_scene_jump_entries(self._jump_target_text(shape)):
-            for scene_id in self._resolve_scene_jump_label(tree, entry.get("label")):
-                if scene_id not in result:
-                    result.append(scene_id)
-        return result
-
-    def _resolve_scene_image_title_ids(self, tree: list[dict[str, Any]], title: str) -> list[int]:
-        target = title.strip()
-        if not target:
-            return []
-        found: list[int] = []
-
-        def visit(items: list[dict[str, Any]]) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "image" and str(item.get("title") or "").strip() == target:
-                    number = self._image_number(item)
-                    if number is not None and number not in found:
-                        found.append(number)
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)])
-
-        visit(tree)
-        return found
-
-    def _implicit_parent_return_target_ids(
-        self,
-        tree: list[dict[str, Any]],
-        shape: dict[str, Any],
-        parent_image: dict[str, Any] | None,
-        parent_folder_title: str = "",
-    ) -> list[int]:
-        if self._jump_target_text(shape):
-            return []
-        title = str(shape.get("title") or "").strip()
-        if title not in {"离开", "返回", "关闭", "关闭下方菜单"}:
-            return []
-        if parent_image:
-            parent_id = self._image_number(parent_image)
-            if parent_id is not None:
-                return [parent_id]
-        return self._resolve_scene_image_title_ids(tree, parent_folder_title)
-
-    def _scene_id_key(self, scene_id: int) -> str:
-        for key, value in self.scene_ids.items():
-            if int(value) == int(scene_id):
-                return key
-        return str(scene_id)
-
-    def _scene_match_threshold(self, scene_id: int) -> float:
-        key = self._scene_id_key(scene_id)
-        return float(self.scene_thresholds.get(key, self.scene_threshold))
-
-    def _scene_matches_id(self, scene_id: int, score: float) -> bool:
-        return score >= self._scene_match_threshold(scene_id)
-
-    def _identify_scene_number(
-        self,
-        ctx: dict[str, Any],
-        frame_data_url: str,
-        preferred_scene_ids: list[int] | None = None,
-    ) -> tuple[int | None, float]:
-        images: dict[int, dict[str, Any]] = ctx.get("images") or {}
-        candidates: list[tuple[int, float]] = []
-        if preferred_scene_ids:
-            for scene_id in preferred_scene_ids:
-                image = images.get(scene_id)
-                if not image:
-                    continue
-                score = self._scene_score(ctx, image, frame_data_url)
-                candidates.append((scene_id, score))
-            candidates.sort(key=lambda item: (item[1], -item[0]), reverse=True)
-            if not candidates:
-                return None, 0.0
-            scene_id, score = candidates[0]
-            return (scene_id, score) if self._scene_matches_id(scene_id, score) else (None, score)
-
-        for scene_id, image in images.items():
-            score = self._scene_score(ctx, image, frame_data_url)
-            candidates.append((scene_id, score))
-        candidates.sort(key=lambda item: (item[1], -item[0]), reverse=True)
-        if not candidates:
-            return None, 0.0
-        scene_id, score = candidates[0]
-        return (scene_id, score) if self._scene_matches_id(scene_id, score) else (None, score)
-
-    def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
-        edges: dict[int, list[dict[str, Any]]] = {}
-
-        def visit(
-            items: list[dict[str, Any]],
-            parent_image: dict[str, Any] | None = None,
-            parent_folder_title: str = "",
-        ) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                current_parent_image = parent_image
-                current_parent_folder_title = parent_folder_title
-                if item.get("type") == "folder":
-                    current_parent_folder_title = str(item.get("title") or "").strip() or parent_folder_title
-                if item.get("type") == "image":
-                    source_id = self._image_number(item)
-                    if source_id is not None:
-                        for shape in self._flatten_shapes(item.get("shapes")):
-                            if shape.get("kind") == "group":
-                                continue
-                            target_text = self._jump_target_text(shape)
-                            if target_text in {"-1", "0"}:
-                                continue
-                            target_ids = (
-                                self._scene_jump_target_ids(tree, shape)
-                                if target_text
-                                else self._implicit_parent_return_target_ids(
-                                    tree,
-                                    shape,
-                                    parent_image,
-                                    parent_folder_title,
-                                )
-                            )
-                            if target_ids:
-                                edges.setdefault(source_id, []).append({
-                                    "source_id": source_id,
-                                    "image": item,
-                                    "shape": shape,
-                                    "target_ids": target_ids,
-                                })
-                    current_parent_image = item
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit(
-                        [child for child in children if isinstance(child, dict)],
-                        current_parent_image,
-                        current_parent_folder_title,
-                    )
-
-        visit(tree)
-        return edges
-
-    def _find_scene_route(self, tree: list[dict[str, Any]], start_scene_id: int, target_scene_id: int) -> list[dict[str, Any]] | None:
-        if start_scene_id == target_scene_id:
-            return []
-        edges = self._scene_jump_edges(tree)
-        queue: list[tuple[int, list[dict[str, Any]]]] = [(start_scene_id, [])]
-        visited = {start_scene_id}
-        while queue:
-            scene_id, route = queue.pop(0)
-            for edge in edges.get(scene_id, []):
-                for next_scene_id in edge["target_ids"]:
-                    if next_scene_id in visited:
-                        continue
-                    next_route = [*route, edge]
-                    if next_scene_id == target_scene_id:
-                        return next_route
-                    visited.add(next_scene_id)
-                    queue.append((next_scene_id, next_route))
-        return None
-
-    def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
-        result: list[int] = []
-        source_shape = {"title": "离开"}
-
-        def visit(items: list[dict[str, Any]]) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "image" and self._scene_jump_intermediate_confirm_shape(item, source_shape):
-                    scene_id = self._image_number(item)
-                    if scene_id is not None and scene_id not in result:
-                        result.append(scene_id)
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)])
-
-        visit(tree)
-        return result
-
-    def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
-        edges = self._scene_jump_edges(tree)
-        result: list[int] = [target_scene_id]
-        for scene_id in self._scene_jump_confirmation_scene_ids(tree):
-            if scene_id not in result:
-                result.append(scene_id)
-        for source_scene_id in sorted(edges):
-            if source_scene_id == target_scene_id:
-                continue
-            if self._find_scene_route(tree, source_scene_id, target_scene_id) is not None:
-                result.append(source_scene_id)
-        return result
-
-    def _write_asset_tree(self, asset_tree_path: Path, tree: list[dict[str, Any]]) -> None:
-        _write_data_annotation_json(asset_tree_path, tree)
-        self._auto_close_candidates_cache.pop(str(asset_tree_path), None)
-
-    def _save_unknown_scene_frame(
-        self,
-        ctx: dict[str, Any],
-        asset_tree_path: Path,
-        tree: list[dict[str, Any]],
-        frame_data_url: str,
-        *,
-        target_scene_id: int,
-        current_scene_id: int | None,
-        action_shape: dict[str, Any] | None,
-        elapsed_seconds: float,
-        history: list[str],
-    ) -> dict[str, Any]:
-        action_title = action_shape.get("title") if isinstance(action_shape, dict) else "unknown"
-        current_text = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
-        detail = "；".join([
-            f"目标场景=#{target_scene_id}",
-            f"当前/点击前场景={current_text}",
-            f"动作 shape={action_title}",
-            f"累计等待={elapsed_seconds:.1f}s",
-            f"最近识别={history[-1] if history else '无'}",
-        ])
-        self._log("error", f"场景跳转缺少可靠标注，已中断：{detail}")
-        raise RuntimeError(f"场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：{detail}")
-
-    def _is_independent_exit_shape(self, shape: dict[str, Any]) -> bool:
-        return self._jump_target_text(shape) == "-1"
-
-    def _auto_close_guard_action_shape(self, image: dict[str, Any]) -> dict[str, Any] | None:
-        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
-        # Fanxiu annotation convention: in the top-level popup group, "空白" means
-        # the background/overlay area that closes the popup when tapped. Prefer it
-        # over tiny close buttons and "确定", which may trigger extra scene changes.
-        for shape in shapes:
-            if str(shape.get("title") or "").strip() == "空白":
-                return shape
-        for title in ("关闭",):
-            for shape in shapes:
-                if str(shape.get("title") or "").strip() == title:
-                    return shape
-        for shape in shapes:
-            if self._is_independent_exit_shape(shape):
-                return shape
-        for shape in shapes:
-            if str(shape.get("title") or "").strip() == "确定":
-                return shape
-        return None
-
-    def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
-        seen_image_ids: set[int] = set()
-
-        def add_candidate(image: dict[str, Any], folder_path: str, action_shape: dict[str, Any] | None) -> None:
-            identity = id(image)
-            if identity in seen_image_ids:
-                return
-            seen_image_ids.add(identity)
-            candidates.append({
-                "image": image,
-                "folder_path": folder_path,
-                "action_shape": action_shape,
-            })
-
-        def add_first_level_popup_images(folder: dict[str, Any]) -> None:
-            children = folder.get("children")
-            if not isinstance(children, list):
-                return
-            folder_title = str(folder.get("title") or "").strip()
-            for child in children:
-                if not isinstance(child, dict) or child.get("type") != "image":
-                    continue
-                add_candidate(child, folder_title, self._auto_close_guard_action_shape(child))
-
-        def visit(items: list[dict[str, Any]], path: list[str]) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                node_type = str(item.get("type") or "")
-                title = str(item.get("title") or "").strip()
-                current_path = [*path, title] if title else path
-                if node_type == "folder" and title == "弹窗":
-                    add_first_level_popup_images(item)
-                    continue
-                if node_type == "image":
-                    action_shape = self._auto_close_guard_action_shape(item)
-                    if action_shape is not None and self._is_independent_exit_shape(action_shape):
-                        add_candidate(item, "/".join(path), action_shape)
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)], current_path)
-
-        visit(nodes, [])
-        return candidates
-
-    def _handle_auto_close_popup_47_child_84(
-        self,
-        ctx: dict[str, Any],
-        popup_47: dict[str, Any],
-        frame_data_url: str,
-        popup_score: float,
-        event: dict[str, Any],
-    ) -> bool:
-        child_84 = self._find_child_image_by_number(popup_47, 84)
-        if not child_84:
-            return False
-        child_score = self._popup_score(ctx, child_84, frame_data_url)
-        if child_score < self.overlay_threshold:
-            return False
-        no_more_prompt_shape = self._find_shape(child_84, "不再提示")
-        confirm_shape = self._find_shape(child_84, "确认")
-        if not confirm_shape:
-            with self._lock:
-                self._status.update({
-                    "current_scene": 84,
-                    "message": f"守护命中：#84 {child_score:.0f}%，缺少「确认」标注",
-                    "last_guard_event": {**event, "image": "#84", "title": str(child_84.get("title") or ""), "score": round(child_score, 1), "action": "missing_confirm"},
-                    "updated_at": time.time(),
-                })
-                self._log_locked("error", self._status["message"])
-            return True
-        if no_more_prompt_shape:
-            no_more_prompt_score = self._shape_score(ctx, child_84, no_more_prompt_shape, frame_data_url)
-            if no_more_prompt_score < self.overlay_threshold:
-                self._click_shape(ctx, child_84, no_more_prompt_shape, frame_data_url)
-                with self._lock:
-                    self._status.update({
-                        "current_scene": 84,
-                        "message": f"守护处理：#47/#84 点击「不再提示」 {popup_score:.0f}%/{child_score:.0f}%",
-                        "last_guard_event": {
-                            **event,
-                            "image": "#84",
-                            "title": str(child_84.get("title") or ""),
-                            "score": round(child_score, 1),
-                            "parent_score": round(popup_score, 1),
-                            "action": "click:不再提示",
-                        },
-                        "updated_at": time.time(),
-                    })
-                    self._log_locked("guardClick", self._status["message"])
-                return True
-        self._click_shape(ctx, child_84, confirm_shape)
-        with self._lock:
-            self._status.update({
-                "current_scene": 84,
-                "message": f"守护处理：#47/#84 点击「确认」 {popup_score:.0f}%/{child_score:.0f}%",
-                "last_guard_event": {
-                    **event,
-                    "image": "#84",
-                    "title": str(child_84.get("title") or ""),
-                    "score": round(child_score, 1),
-                    "parent_score": round(popup_score, 1),
-                    "action": "click:确认",
-                },
-                "updated_at": time.time(),
-            })
-            self._log_locked("guardClick", self._status["message"])
-        return True
-
-    def _handle_auto_close_popup_47_child_86(
-        self,
-        ctx: dict[str, Any],
-        popup_47: dict[str, Any],
-        frame_data_url: str,
-        popup_score: float,
-        event: dict[str, Any],
-    ) -> bool:
-        child_86 = self._find_child_image_by_number(popup_47, 86)
-        if not child_86:
-            return False
-        child_score = self._popup_score(ctx, child_86, frame_data_url)
-        if child_score < self.overlay_threshold:
-            return False
-        confirm_shape = self._find_shape(child_86, "确认")
-        if not confirm_shape:
-            with self._lock:
-                self._status.update({
-                    "current_scene": 86,
-                    "message": f"守护命中：#86 {child_score:.0f}%，缺少「确认」标注",
-                    "last_guard_event": {**event, "image": "#86", "title": str(child_86.get("title") or ""), "score": round(child_score, 1), "action": "missing_confirm"},
-                    "updated_at": time.time(),
-                })
-                self._log_locked("error", self._status["message"])
-            return True
-        self._click_shape(ctx, child_86, confirm_shape, frame_data_url)
-        with self._lock:
-            self._status.update({
-                "current_scene": 86,
-                "message": f"守护处理：#47/#86 点击「确认」 {popup_score:.0f}%/{child_score:.0f}%",
-                "last_guard_event": {
-                    **event,
-                    "image": "#86",
-                    "title": str(child_86.get("title") or ""),
-                    "score": round(child_score, 1),
-                    "parent_score": round(popup_score, 1),
-                    "action": "click:确认",
-                },
-                "updated_at": time.time(),
-            })
-            self._log_locked("guardClick", self._status["message"])
-        return True
-
-    def _auto_close_guard_images(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return self._index_guard_candidates(nodes)
-
-    def _auto_close_guard_candidates_for_path(self, asset_tree_path: Path) -> list[dict[str, Any]]:
-        try:
-            stat = asset_tree_path.stat()
-            signature = (int(stat.st_mtime_ns), int(stat.st_size))
-        except OSError:
-            signature = (0, 0)
-        cache_key = str(asset_tree_path)
-        cached = self._auto_close_candidates_cache.get(cache_key)
-        if cached and cached[0] == signature[0] and cached[1] == signature[1]:
-            return cached[2]
-        tree = self._load_asset_tree(asset_tree_path)
-        candidates = self._auto_close_guard_images(tree)
-        self._auto_close_candidates_cache[cache_key] = (signature[0], signature[1], candidates)
-        return candidates
-
-    def _auto_close_popup_candidate_score(self, ctx: dict[str, Any], candidate: dict[str, Any], frame_data_url: str) -> float:
-        image = candidate.get("image")
-        if not isinstance(image, dict):
-            return 0.0
-        return self._popup_score(ctx, image, frame_data_url)
-
-    def _auto_close_popup_candidate_scores_serial(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        return [self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url) for candidate in candidates]
-
-    def _auto_close_popup_candidate_scores_parallel(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        if len(candidates) <= 1:
-            return self._auto_close_popup_candidate_scores_serial(ctx, candidates, frame_data_url)
-        workers = len(candidates)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-popup-match") as executor:
-            return list(executor.map(lambda candidate: self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url), candidates))
-
-    def _auto_close_popup_candidate_scores(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        return self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-
-    def _auto_close_popup_first_match(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> tuple[dict[str, Any] | None, float]:
-        if not candidates:
-            return None, 0.0
-        scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-        for candidate, score in zip(candidates, scores):
-            if score >= self.overlay_threshold:
-                return candidate, score
-        return None, 0.0
-
-    def _auto_close_popup_guard_step(self, ctx: dict[str, Any], asset_tree_path: Path, frame_data_url: str) -> bool:
-        candidates = self._auto_close_guard_candidates_for_path(asset_tree_path)
-        candidate, score = self._auto_close_popup_first_match(ctx, candidates, frame_data_url)
-        if candidate is not None:
-            image = candidate.get("image")
-            if not isinstance(image, dict):
-                return False
-            image_number = self._image_number(image)
-            image_label = f"#{image_number}" if image_number is not None else str(image.get("title") or image.get("filename") or "unknown")
-            folder_path = str(candidate.get("folder_path") or "")
-            action_shape = candidate.get("action_shape")
-            event = {
-                "time": time.time(),
-                "kind": "popup",
-                "image": image_label,
-                "title": str(image.get("title") or ""),
-                "folder_path": folder_path,
-                "score": round(score, 1),
-                "action": "",
-            }
-            if image_number == 47 and self._handle_auto_close_popup_47_child_84(ctx, image, frame_data_url, score, event):
-                return True
-            if image_number == 47 and self._handle_auto_close_popup_47_child_86(ctx, image, frame_data_url, score, event):
-                return True
-            if not isinstance(action_shape, dict):
-                with self._lock:
-                    self._status.update({
-                        "current_scene": image_number,
-                        "message": f"守护命中：{image_label} {score:.0f}%，缺少关闭标注",
-                        "last_guard_event": {**event, "action": "missing_action"},
-                        "updated_at": time.time(),
-                    })
-                    self._log_locked("error", self._status["message"])
-                return False
-            action_title = str(action_shape.get("title") or "shape")
-            self._click_shape(ctx, image, action_shape, frame_data_url)
-            with self._lock:
-                self._status.update({
-                    "current_scene": image_number,
-                    "message": f"守护处理：{image_label} 点击「{action_title}」 {score:.0f}%",
-                    "last_guard_event": {**event, "action": f"click:{action_title}"},
-                    "updated_at": time.time(),
-                })
-                self._log_locked("guardClick", self._status["message"])
-            return True
-        return False
-
-    def _require_assets(self, ctx: dict[str, Any]) -> None:
-        images: dict[int, dict[str, Any]] = ctx["images"]
-        if not images:
-            raise RuntimeError("缺少帧标注，请先保存帧树")
-
-    def _image(self, ctx: dict[str, Any], key: str) -> dict[str, Any] | None:
-        return ctx["images"].get(self.scene_ids[key])
-
-    def _flatten_shapes(self, shapes: Any) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        if not isinstance(shapes, list):
-            return result
-        for item in shapes:
-            if not isinstance(item, dict):
-                continue
-            result.append(item)
-            result.extend(self._flatten_shapes(item.get("children")))
-        return result
-
-    def _find_shape(self, image: dict[str, Any] | None, *titles: str, contains: bool = False) -> dict[str, Any] | None:
-        if not image:
-            return None
-        for shape in self._flatten_shapes(image.get("shapes")):
-            title = str(shape.get("title") or "").strip()
-            if not title:
-                continue
-            for target in titles:
-                if (contains and target in title) or (not contains and title == target):
-                    return shape
-        return None
-
-    def _scene_identity_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
-        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
-        return [shape for shape in shapes if bool(shape.get("isSceneIdentity"))]
-
-    def _popup_match_shapes(self, image: dict[str, Any]) -> list[dict[str, Any]]:
-        shapes = [shape for shape in self._flatten_shapes(image.get("shapes")) if shape.get("kind") != "group"]
-        identity = [shape for shape in shapes if bool(shape.get("isSceneIdentity"))]
-        return identity or shapes[:4]
-
-    def _frame_size(self, image: dict[str, Any]) -> tuple[int, int]:
-        return max(1, int(image.get("width") or 900)), max(1, int(image.get("height") or 1600))
-
-    def _box(self, shape: dict[str, Any], image: dict[str, Any]) -> dict[str, Any]:
-        width, height = self._frame_size(image)
-        return {
-            "name": str(shape.get("title") or ""),
-            "x": float(shape.get("x") or 0) * width,
-            "y": float(shape.get("y") or 0) * height,
-            "w": max(1, float(shape.get("w") or 0) * width),
-            "h": max(1, float(shape.get("h") or 0) * height),
-        }
-
-    def _data_url(self, data: bytes) -> str:
-        return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
-
-    def _set_tick_frame(self, ctx: dict[str, Any], frame_data_url: str | None) -> None:
-        if frame_data_url:
-            ctx["_tick_frame_data_url"] = frame_data_url
-
-    def _clear_tick_frame(self, ctx: dict[str, Any]) -> None:
-        ctx.pop("_tick_frame_data_url", None)
-
-    def _capture_frame(self, ctx: dict[str, Any]) -> str:
-        entry: UserDevice = ctx["entry"]
-        response = _screencap_game_window2_service() if entry.mode == "local" else _remote_game_window2_screencap(entry)
-        return self._data_url(bytes(response.body or b""))
-
-    def _screencap(self, ctx: dict[str, Any]) -> str:
-        frame_data_url = ctx.get("_tick_frame_data_url")
-        if isinstance(frame_data_url, str) and frame_data_url:
-            return frame_data_url
-        frame_data_url = self._capture_frame(ctx)
-        self._set_tick_frame(ctx, frame_data_url)
-        return frame_data_url
-
-    def _run_match(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str,
-        *,
-        scan: bool = False,
-        match_strategy: str = "auto",
-        ocr_enabled: bool = False,
-    ) -> dict[str, Any]:
-        payload = self._build_shape_match_payload(
-            image,
-            shape,
-            frame_data_url,
-            scan=scan,
-            match_strategy=match_strategy,
-            ocr_enabled=ocr_enabled,
-        )
-        entry: UserDevice = ctx["entry"]
-        return _match_game_window2_service(payload) if entry.mode == "local" else _match_remote_game_window2(entry, payload)
-
-    def _build_shape_match_payload(
-        self,
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str,
-        *,
-        scan: bool,
-        match_strategy: str,
-        ocr_enabled: bool,
-        save_match_frame: bool | None = None,
-    ) -> dict[str, Any]:
-        filename = str(image.get("filename") or "")
-        if not filename:
-            raise RuntimeError(f"帧「{image.get('title') or image.get('id')}」缺少图片文件")
-        ocr_text = str(shape.get("ocrText") or "").strip()
-        use_ocr = bool(ocr_enabled and ocr_text)
-        if save_match_frame is None:
-            save_match_frame = not use_ocr
-        payload = {
-            "filename": filename,
-            "box": self._box(shape, image),
-            "scan": scan,
-            "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 5),
-            "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),
-            "tolerance_min_data_url": ((shape.get("toleranceRange") or {}).get("minDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
-            "tolerance_max_data_url": ((shape.get("toleranceRange") or {}).get("maxDataUrl") if isinstance(shape.get("toleranceRange"), dict) else None),
-            "current_frame_data_url": frame_data_url,
-            "prefer_cached": False,
-            "match_strategy": match_strategy,
-            "match_search_radius": int(shape.get("jitterRadius") or 0) if bool(shape.get("jitterEnabled")) and match_strategy == "auto" and not scan else None,
-            "ocr_enabled": use_ocr,
-            "ocr_text": ocr_text if use_ocr else "",
-            "ocr_match_mode": shape.get("ocrMatchMode") or "contains",
-            "read_only_cache": use_ocr,
-            "save_match_frame": bool(save_match_frame),
-        }
-        return payload
-
-    def _shape_ocr_fallback_enabled(self, shape: dict[str, Any]) -> bool:
-        if not str(shape.get("ocrText") or "").strip():
-            return False
-        return str(shape.get("ocrMatchRole") or "off").strip().lower() != "off"
-
-    def _shape_score(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str,
-        *,
-        match_strategy: str = "anchor_pixel",
-        ocr_fallback: bool = True,
-    ) -> float:
-        try:
-            condition = "image" if match_strategy == "anchor_pixel" else "auto"
-            score = float(self._match_shape(ctx, image, shape, frame_data_url, condition=condition).get("similarity") or 0)
-            if ocr_fallback and score < self.scene_threshold and self._shape_ocr_fallback_enabled(shape):
-                ocr_score = float(self._match_shape(ctx, image, shape, frame_data_url, condition="ocr").get("similarity") or 0)
-                score = max(score, ocr_score)
-            return score
-        except Exception as exc:
-            self._log("detail", f"匹配失败：{image.get('title')} / {shape.get('title')}：{exc}")
-            return 0
-
-    def _shape_match_role(self, shape: dict[str, Any], key: str, default: str = "required") -> str:
-        role = str(shape.get(key) or default).strip().lower()
-        return role if role in {"required", "optional", "off"} else default
-
-    def _shape_ocr_role(self, shape: dict[str, Any]) -> str:
-        default = "required" if bool(shape.get("ocrEnabled")) and str(shape.get("ocrText") or "").strip() else "off"
-        return self._shape_match_role(shape, "ocrMatchRole", default)
-
-    def _shape_image_role(self, shape: dict[str, Any]) -> str:
-        return self._shape_match_role(shape, "imageMatchRole", "required")
-
-    def _shape_runtime_match_payload_flags(self, shape: dict[str, Any], *, condition: str = "auto") -> dict[str, Any]:
-        ocr_text = str(shape.get("ocrText") or "").strip()
-        image_role = self._shape_image_role(shape)
-        ocr_role = self._shape_ocr_role(shape)
-        force_image = condition == "image"
-        force_ocr = condition == "ocr"
-        ocr_enabled = bool(not force_image and ocr_role != "off" and ocr_text)
-        scan_enabled = bool(shape.get("floating") and not ocr_enabled)
-        jitter_enabled = bool(shape.get("jitterEnabled") and not scan_enabled and not ocr_enabled)
-        return {
-            "image_role": image_role,
-            "ocr_role": ocr_role,
-            "ocr_enabled": ocr_enabled,
-            "scan": scan_enabled,
-            "match_strategy": "auto" if (force_ocr or scan_enabled or jitter_enabled) else "anchor_pixel",
-        }
-
-    def _match_shape(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str,
-        *,
-        condition: str = "auto",
-    ) -> dict[str, Any]:
-        flags = self._shape_runtime_match_payload_flags(shape, condition=condition)
-        image_role = str(flags["image_role"])
-        ocr_role = str(flags["ocr_role"])
-        ocr_enabled = bool(flags["ocr_enabled"])
-        if image_role == "off" and not ocr_enabled:
-            return {"ok": False, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image), "reason": "match_disabled", "flags": flags}
-        try:
-            result = self._run_match(
-                ctx,
-                image,
-                shape,
-                frame_data_url,
-                scan=bool(flags["scan"]),
-                match_strategy=str(flags["match_strategy"]),
-                ocr_enabled=ocr_enabled,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
-        similarity = float(result.get("similarity") or 0)
-        matched = similarity >= float(self.scene_threshold)
-        if ocr_enabled:
-            matched = matched and bool(result.get("matches"))
-        if matched:
-            fixed_box = result.get("fixed_box")
-            if isinstance(fixed_box, dict):
-                result["resolved_box"] = fixed_box
-            else:
-                result["resolved_box"] = result.get("box") if isinstance(result.get("box"), dict) else self._box(shape, image)
-        result["matched"] = matched
-        result["flags"] = flags
-        return result
-
-    def _require_shape_match(
-        self,
-        result: dict[str, Any],
-        shape: dict[str, Any],
-    ) -> None:
-        if bool(result.get("matched")):
-            return
-        flags = result.get("flags") if isinstance(result.get("flags"), dict) else {}
-        ocr_text = str(shape.get("ocrText") or "").strip()
-        if str(flags.get("ocr_role") or "") == "required" and bool(flags.get("ocr_enabled")):
-            raise RuntimeError(f"未能按 OCR 定位浮动按钮「{shape.get('title') or shape.get('id')}」：目标 {ocr_text}")
-        if str(flags.get("image_role") or "") == "required":
-            raise RuntimeError(f"未能按图像定位浮动按钮「{shape.get('title') or shape.get('id')}」")
-        if str(flags.get("image_role") or "") != "off" or bool(flags.get("ocr_enabled")):
-            kind = "浮动按钮" if bool(shape.get("floating")) else "按钮"
-            raise RuntimeError(f"未能定位{kind}「{shape.get('title') or shape.get('id')}」")
-
-    def _scene_identity_shape_score(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str,
-    ) -> float:
-        image_role = self._shape_image_role(shape)
-        ocr_role = self._shape_ocr_role(shape)
-        scores: list[tuple[str, float]] = []
-        if image_role != "off":
-            scores.append((image_role, self._shape_score(ctx, image, shape, frame_data_url, ocr_fallback=False)))
-        if ocr_role != "off" and str(shape.get("ocrText") or "").strip():
-            try:
-                scores.append(
-                    (
-                        ocr_role,
-                        float(
-                            self._match_shape(
-                                ctx,
-                                image,
-                                shape,
-                                frame_data_url,
-                                condition="ocr",
-                            ).get("similarity") or 0
-                        ),
-                    )
-                )
-            except Exception as exc:
-                self._log("detail", f"OCR匹配失败：{image.get('title')} / {shape.get('title')}：{exc}")
-                scores.append((ocr_role, 0))
-        if not scores:
-            return 0
-        threshold = float(self.scene_threshold)
-        required_scores = [score for role, score in scores if role == "required"]
-        if required_scores and any(score < threshold for score in required_scores):
-            return 0
-        return max(score for _role, score in scores)
-
-    def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
-        scores = [
-            self._scene_identity_shape_score(ctx, image, shape, frame_data_url)
-            for shape in self._scene_identity_shapes(image)
-        ]
-        return max(scores) if scores else 0
-
-    def _popup_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
-        return self._match_image_score(ctx, image, frame_data_url, self._popup_match_shapes(image), log_label="弹窗标识")
-
-    def _match_image_score(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        frame_data_url: str,
-        shapes: list[dict[str, Any]],
-        *,
-        log_label: str,
-        scan_fallback: bool = True,
-    ) -> float:
-        scores: list[float] = []
-        for shape in shapes:
-            score = self._shape_score(ctx, image, shape, frame_data_url)
-            if scan_fallback and score < 50:
-                try:
-                    scan_score = float(self._run_match(ctx, image, shape, frame_data_url, scan=True, match_strategy="auto").get("similarity") or 0)
-                    score = max(score, scan_score)
-                except Exception as exc:
-                    self._log("detail", f"{log_label}扫描失败：{image.get('title')} / {shape.get('title')}：{exc}")
-            scores.append(score)
-        scores = [score for score in scores if score > 0]
-        if not scores:
-            return 0
-        scores.sort(reverse=True)
-        return sum(scores[: min(3, len(scores))]) / min(3, len(scores))
-
-    def _identify_scene(self, ctx: dict[str, Any], frame_data_url: str, keys: list[str] | None = None) -> tuple[str, float]:
-        priorities = {
-            "duplicated": 12,
-            "reward": 11,
-            "wanling_invite": 10,
-            "gift": 9,
-            "youli_result": 8,
-            "youli_explore": 7,
-            "youli": 6,
-            "daily_activity": 5,
-            "signup_reward": 5,
-            "signup": 5,
-            "daily": 4,
-            "settings": 3,
-            "world_menu": 2,
-            "hide_floating": 1,
-            "world": 0,
-        }
-        candidates: list[tuple[str, float]] = []
-        for key in keys or list(priorities):
-            image = self._image(ctx, key)
-            if image is None:
-                continue
-            score = self._scene_score(ctx, image, frame_data_url)
-            candidates.append((key, score))
-        candidates.sort(key=lambda item: (item[1], priorities.get(item[0], 0)), reverse=True)
-        return candidates[0] if candidates else ("", 0)
-
-    def _scene_matches(self, key: str, score: float) -> bool:
-        return bool(key) and score >= float(self.scene_thresholds.get(key, self.scene_threshold))
-
-    def _click_shape(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        frame_data_url: str | None = None,
-        *,
-        match_result: dict[str, Any] | None = None,
-    ) -> None:
-        width, height = self._frame_size(image)
-        box = self._box(shape, image)
-        action_match_result: dict[str, Any] | None = None
-        if frame_data_url:
-            action_match_result = match_result if isinstance(match_result, dict) else self._match_shape(ctx, image, shape, frame_data_url)
-            self._require_shape_match(action_match_result, shape)
-        click_x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
-        click_y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
-        if action_match_result is not None:
-            self._log(
-                "detail",
-                (
-                    f"点击标注「{shape.get('title') or shape.get('id')}」："
-                    f"similarity={float(action_match_result.get('similarity') or 0):.0f}，"
-                    f"ocr={str(action_match_result.get('ocr_text') or '')[:40]}，"
-                    f"fixed_box={action_match_result.get('fixed_box')}，"
-                    f"click=({click_x:.1f},{click_y:.1f})"
-                ),
-            )
-        payload = {
-            "x": click_x,
-            "y": click_y,
-            "mode": "screen",
-            "area": "client",
-            "rotate": "0",
-            "fixed_width": width,
-            "fixed_height": height,
-            "frame_width": width,
-            "frame_height": height,
-            "input_backend": "adb",
-        }
-        entry: UserDevice = ctx["entry"]
-        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
-        self._clear_tick_frame(ctx)
-
-    def _wait_shape_match(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        image: dict[str, Any],
-        shape: dict[str, Any],
-        *,
-        timeout: float,
-        label: str,
-    ):
-        deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
-        last_similarity = 0.0
-        last_ocr_text = ""
-        while time.monotonic() < deadline:
-            self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
-            result = self._match_shape(ctx, image, shape, frame)
-            last_similarity = float(result.get("similarity") or 0)
-            last_ocr_text = str(result.get("ocr_text") or "")[:40]
-            if bool(result.get("matched")):
-                return frame, result
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"{label}：等待命中 {last_similarity:.0f}%",
-                    phase="wait_shape_match",
-                )
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-        raise RuntimeError(f"{label} 超时，最后 {last_similarity:.0f}% OCR={last_ocr_text}")
-
-    def _click_frame_point(self, ctx: dict[str, Any], image: dict[str, Any], x: float, y: float) -> None:
-        width, height = self._frame_size(image)
-        payload = {
-            "x": max(0.0, min(float(width - 1), float(x))),
-            "y": max(0.0, min(float(height - 1), float(y))),
-            "mode": "screen",
-            "area": "client",
-            "rotate": "0",
-            "fixed_width": width,
-            "fixed_height": height,
-            "frame_width": width,
-            "frame_height": height,
-            "input_backend": "adb",
-        }
-        entry: UserDevice = ctx["entry"]
-        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
-        self._clear_tick_frame(ctx)
-
-    def _drag_frame_point(
-        self,
-        ctx: dict[str, Any],
-        image: dict[str, Any],
-        start_x: float,
-        start_y: float,
-        end_x: float,
-        end_y: float,
-        duration_ms: int = 300,
-    ) -> None:
-        width, height = self._frame_size(image)
-        payload = {
-            "start_x": max(0.0, min(float(width - 1), float(start_x))),
-            "start_y": max(0.0, min(float(height - 1), float(start_y))),
-            "end_x": max(0.0, min(float(width - 1), float(end_x))),
-            "end_y": max(0.0, min(float(height - 1), float(end_y))),
-            "duration_ms": duration_ms,
-            "mode": "screen",
-            "area": "client",
-            "rotate": "0",
-            "fixed_width": width,
-            "fixed_height": height,
-            "frame_width": width,
-            "frame_height": height,
-            "input_backend": "adb",
-        }
-        entry: UserDevice = ctx["entry"]
-        (_drag_game_window2_service(payload) if entry.mode == "local" else _drag_remote_game_window2(entry, payload))
-        self._clear_tick_frame(ctx)
-
-    def _shape_center(self, shape: dict[str, Any], image: dict[str, Any], frame_data_url: str | None = None, ctx: dict[str, Any] | None = None) -> tuple[float, float]:
-        box = self._box(shape, image)
-        return (
-            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
-            float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
-        )
-
-    def _click_generic_back(self, ctx: dict[str, Any]) -> None:
-        image = self._image(ctx, "settings") or self._image(ctx, "world")
-        if not image:
-            return
-        width, height = self._frame_size(image)
-        self._click_frame_point(ctx, image, width * 0.085, height * 0.947)
-
-    def _keyevents(self, ctx: dict[str, Any], keys: list[str]) -> None:
-        payload = {"keys": keys}
-        entry: UserDevice = ctx["entry"]
-        (_keyevent_game_window2_service(payload) if entry.mode == "local" else _keyevent_remote_game_window2(entry, payload))
-        self._clear_tick_frame(ctx)
-
-    def _text(self, ctx: dict[str, Any], text: str) -> None:
-        payload = {"text": text}
-        entry: UserDevice = ctx["entry"]
-        (_text_game_window2_service(payload) if entry.mode == "local" else _text_remote_game_window2(entry, payload))
-        self._clear_tick_frame(ctx)
-
-    def _wait_for_scene(self, ctx: dict[str, Any], stop_event: threading.Event, keys: list[str], timeout: float, interval: float = 0.8) -> tuple[str, float, str]:
-        deadline = time.time() + timeout
-        last_key, last_score = "", 0.0
-        last_frame = ""
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
-            key, score = self._identify_scene(ctx, frame, keys)
-            last_key, last_score, last_frame = key, score, frame
-            if key in keys and self._scene_matches(key, score):
-                return key, score, frame
-            self._clear_tick_frame(ctx)
-            time.sleep(interval)
-        return last_key, last_score, last_frame
-
-    def _wait_scene_id(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        target_scene_id: int,
-        *,
-        timeout: float,
-        label: str = "等待场景",
-    ):
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        while True:
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            elapsed = time.monotonic() - start
-            scene_id, score = self._identify_scene_number(ctx, frame, [target_scene_id])
-            last_scene_id, last_score = scene_id, score
-            if scene_id == target_scene_id:
-                with self._lock:
-                    self._status.update({
-                        "current_scene": target_scene_id,
-                        "updated_at": time.time(),
-                    })
-                self._log("success", f"{label}：已到达 #{target_scene_id} {score:.0f}%")
-                return target_scene_id, score
-            with self._lock:
-                self._status.update({
-                    "phase": "wait_scene",
-                    "current_scene": scene_id,
-                    "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
-                    "updated_at": time.time(),
-                })
-            if elapsed >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise RuntimeError(f"{label} 超时，未检测到 #{target_scene_id}，最后 {scene_text} {last_score:.0f}%")
-
-    def _wait_mail_list_ready(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        *,
-        timeout: float,
-        label: str = "等待邮件列表",
-    ):
-        image121 = (ctx.get("images") or {}).get(121)
-        marker_shape = self._find_shape(image121, "邮件标识") if isinstance(image121, dict) else None
-        if not isinstance(image121, dict) or not marker_shape:
-            return (yield from self._wait_scene_id(ctx, stop_event, 121, timeout=timeout, label=label))
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        last_marker_score = 0.0
-        while True:
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            elapsed = time.monotonic() - start
-            scene_id, score = self._identify_scene_number(ctx, frame, [121])
-            last_scene_id, last_score = scene_id, score
-            marker_score = 0.0
-            marker_matched = False
-            if scene_id == 121:
-                try:
-                    marker_result = self._match_shape(ctx, image121, marker_shape, frame)
-                    marker_score = float(marker_result.get("similarity") or 0)
-                    marker_matched = bool(marker_result.get("matched"))
-                except Exception as exc:
-                    self._log("detail", f"{label}：邮件标识匹配失败：{exc}")
-            last_marker_score = marker_score
-            if scene_id == 121 and marker_matched:
-                with self._lock:
-                    self._status.update({"current_scene": 121, "updated_at": time.time()})
-                self._log("success", f"{label}：已到达 #121 {score:.0f}%，邮件标识 {marker_score:.0f}%")
-                return 121, score
-            with self._lock:
-                self._status.update(
-                    {
-                        "phase": "wait_mail_list_ready",
-                        "current_scene": scene_id,
-                        "message": (
-                            f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} "
-                            f"{score:.0f}%，邮件标识 {marker_score:.0f}%"
-                        ),
-                        "updated_at": time.time(),
-                    }
-                )
-            if elapsed >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise RuntimeError(f"{label} 超时，最后 {scene_text} {last_score:.0f}%，邮件标识 {last_marker_score:.0f}%")
-
-    def _ocr_lines(self, frame_data_url: str) -> list[dict[str, Any]]:
-        try:
-            response = _recognize_data_annotation_ocr_frame(frame_data_url)
-        except Exception as exc:
-            self._log("detail", f"OCR 失败：{exc}")
-            return []
-        return [line.model_dump() for line in response.lines]
-
-    def _ocr_lines_in_shapes(
-        self,
-        frame_data_url: str,
-        image: dict[str, Any],
-        shape_titles: tuple[str, ...] | list[str],
-        *,
-        padding: int = 16,
-    ) -> list[dict[str, Any]]:
-        crop = self._crop_frame_data_url_for_shapes(frame_data_url, image, shape_titles, padding=padding)
-        if crop is None:
-            return self._ocr_lines(frame_data_url)
-        crop_data_url, offset_x, offset_y = crop
-        lines = self._ocr_lines(crop_data_url)
-        for line in lines:
-            line["x"] = float(line.get("x") or 0) + offset_x
-            line["y"] = float(line.get("y") or 0) + offset_y
-        return lines
-
-    def _crop_frame_data_url_for_shapes(
-        self,
-        frame_data_url: str,
-        image: dict[str, Any],
-        shape_titles: tuple[str, ...] | list[str],
-        *,
-        padding: int = 16,
-    ) -> tuple[str, float, float] | None:
-        try:
-            header, encoded = frame_data_url.split(",", 1) if "," in frame_data_url else ("", frame_data_url)
-            raw = base64.b64decode(encoded)
-            from PIL import Image
-
-            with Image.open(io.BytesIO(raw)) as pil_image:
-                width, height = pil_image.size
-                boxes: list[dict[str, Any]] = []
-                for title in shape_titles:
-                    shape = self._find_shape(image, str(title))
-                    if shape:
-                        boxes.append(self._box(shape, image))
-                if not boxes:
-                    return None
-                left = max(0, int(min(float(box.get("x") or 0) for box in boxes) - padding))
-                top = max(0, int(min(float(box.get("y") or 0) for box in boxes) - padding))
-                right = min(width, int(max(float(box.get("x") or 0) + float(box.get("w") or 0) for box in boxes) + padding))
-                bottom = min(height, int(max(float(box.get("y") or 0) + float(box.get("h") or 0) for box in boxes) + padding))
-                if right <= left or bottom <= top:
-                    return None
-                cropped = pil_image.crop((left, top, right, bottom))
-                buffer = io.BytesIO()
-                cropped.save(buffer, format="PNG")
-                data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-                return data_url, float(left), float(top)
-        except Exception as exc:
-            self._log("detail", f"裁剪 OCR 区域失败，回退全图 OCR：{exc}")
-            return None
-
-    def _ocr_text(self, lines: list[dict[str, Any]]) -> str:
-        return "".join(_sanitize_ocr_text(line.get("text")) for line in lines)
-
-    def _text_in_shape(self, lines: list[dict[str, Any]], image: dict[str, Any] | None, shape_title: str) -> str:
-        shape = self._find_shape(image, shape_title) if image else None
-        if not shape or not image:
-            return ""
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        fragments: list[str] = []
-        for line in lines:
-            cx = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
-            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
-            if left <= cx <= right and top <= cy <= bottom:
-                fragments.append(_sanitize_ocr_text(line.get("text")))
-        return "".join(fragment for fragment in fragments if fragment)
-
-    def _ocr_centers_in_shape(
-        self,
-        lines: list[dict[str, Any]],
-        image: dict[str, Any] | None,
-        shape_title: str,
-        *,
-        include: tuple[str, ...],
-        exclude: tuple[str, ...] = (),
-    ) -> list[tuple[float, float, str]]:
-        shape = self._find_shape(image, shape_title) if image else None
-        if not shape or not image:
-            return []
-        box = self._box(shape, image)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        matches: list[tuple[float, float, str]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            if include and not all(fragment in text for fragment in include):
-                continue
-            if exclude and any(fragment in text for fragment in exclude):
-                continue
-            line_x = float(line.get("x") or 0)
-            line_w = float(line.get("w") or 0)
-            cx = line_x + line_w / 2
-            if include and line_w > 0 and text:
-                target_fragment = next((fragment for fragment in include if fragment in text), "")
-                if target_fragment:
-                    index = text.find(target_fragment)
-                    if index >= 0:
-                        cx = line_x + line_w * ((index + len(target_fragment) / 2) / max(1, len(text)))
-            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
-            if left <= cx <= right and top <= cy <= bottom:
-                matches.append((cx, cy, text))
-        return sorted(matches, key=lambda item: (item[1], item[0]))
-
-    def _parse_fraction(self, text: str) -> tuple[int, int] | None:
-        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        match = re.search(r"(\d{1,5})/(\d{1,5})", normalized)
-        if not match:
-            return None
-        current = int(match.group(1))
-        total = int(match.group(2))
-        return (current, total) if total > 0 else None
-
-    def _current_scene(self, ctx: dict[str, Any], keys: list[str] | None = None) -> tuple[str, float, str]:
-        frame = self._screencap(ctx)
-        key, score = self._identify_scene(ctx, frame, keys)
-        if key and self._scene_matches(key, score):
-            with self._lock:
-                self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-        return key, score, frame
-
-    def _current_scene_number(self, ctx: dict[str, Any], frame: str | None = None) -> tuple[int | None, float, str]:
-        frame_data_url = frame or self._screencap(ctx)
-        scene_id, score = self._identify_scene_number(ctx, frame_data_url)
-        if scene_id is not None:
-            with self._lock:
-                self._status.update({"current_scene": scene_id, "updated_at": time.time()})
-        return scene_id, score, frame_data_url
-
-    def _scene_jump_intermediate_confirm_shape(
-        self,
-        current_image: dict[str, Any] | None,
-        source_shape: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if current_image is None:
-            return None
-        source_title = str(source_shape.get("title") or "").strip()
-        if source_title not in {"离开", "返回", "关闭"}:
-            return None
-        scene_title = str(current_image.get("title") or "").strip()
-        if "离开" not in scene_title and "退出" not in scene_title:
-            return None
-        for shape in self._flatten_shapes(current_image.get("shapes")):
-            if str(shape.get("title") or "").strip() in {"确认", "确定"}:
-                return shape
-        return None
-
-    def _wait_scene_jump_result(
-        self,
-        ctx: dict[str, Any],
-        asset_tree_path: Path,
-        tree: list[dict[str, Any]],
-        *,
-        source_scene_id: int,
-        target_scene_id: int,
-        edge: dict[str, Any],
-        stop_event: threading.Event,
-    ):
-        shape = edge["shape"]
-        expected_ids = list(edge.get("target_ids") or [])
-        allows_self = source_scene_id in expected_ids
-        timeout_seconds = 30.0 if allows_self else 60.0
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        last_frame = ""
-        history: list[str] = []
-        left_source = False
-        handled_intermediate_scene_ids: set[int] = set()
-
-        while True:
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            elapsed = time.monotonic() - start
-
-            scene_id, score = self._identify_scene_number(ctx, frame)
-            last_scene_id, last_score, last_frame = scene_id, score, frame
-            if scene_id is not None and scene_id != source_scene_id:
-                left_source = True
-            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
-            scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
-            history.append(f"{elapsed:.1f}s {scene_text} {score:.0f}% expected={expected_score:.0f}% left={left_source}")
-            if scene_id is not None and scene_id in expected_ids:
-                if self._increment_scene_jump_target(shape, scene_id):
-                    self._write_asset_tree(asset_tree_path, tree)
-                    ctx["images"] = self._index_images(tree)
-                self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s")
-                return scene_id
-            if scene_id is not None and scene_id not in handled_intermediate_scene_ids:
-                current_image = (ctx.get("images") or {}).get(scene_id)
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
-                if confirm_shape is not None:
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    handled_intermediate_scene_ids.add(scene_id)
-                    with self._lock:
-                        self._status.update({
-                            "phase": "go_scene_confirm",
-                            "current_scene": scene_id,
-                            "message": f"跳转确认：#{source_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
-                            "updated_at": time.time(),
-                        })
-                    self._log("action", f"场景跳转确认：#{scene_id}，点击 {confirm_title}")
-                    self._click_shape(ctx, current_image, confirm_shape, frame)
-                    continue
-            with self._lock:
-                self._status.update({
-                    "phase": "go_scene_wait",
-                    "current_scene": scene_id,
-                    "message": f"跳转等待：#{source_scene_id} -> #{target_scene_id}，当前 {scene_text} {score:.0f}%",
-                    "updated_at": time.time(),
-                })
-
-            if elapsed < timeout_seconds:
-                continue
-
-            if allows_self and last_scene_id == source_scene_id:
-                if self._increment_scene_jump_target(shape, source_scene_id):
-                    self._write_asset_tree(asset_tree_path, tree)
-                    ctx["images"] = self._index_images(tree)
-                self._log("info", f"场景跳转：#{source_scene_id} -> #{source_scene_id}，30s 保底确认自身")
-                return source_scene_id
-
-            if last_scene_id is None:
-                return self._save_unknown_scene_frame(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    last_frame or frame,
-                    target_scene_id=target_scene_id,
-                    current_scene_id=source_scene_id,
-                    action_shape=shape,
-                    elapsed_seconds=elapsed,
-                    history=history,
-                )
-
-            if not left_source and last_scene_id == source_scene_id and not allows_self:
-                return self._save_unknown_scene_frame(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    last_frame or frame,
-                    target_scene_id=target_scene_id,
-                    current_scene_id=source_scene_id,
-                    action_shape=shape,
-                    elapsed_seconds=elapsed,
-                    history=history,
-                )
-
-            raise RuntimeError(
-                f"场景跳转实际到达 #{last_scene_id}，但该落点不在「{shape.get('title') or '未命名'}」的 sceneJumpTarget 中；"
-                "Runtime 已中断，请人工确认并修正标注后重试"
-            )
-
-    def _go_scene_task(
-        self,
-        ctx: dict[str, Any],
-        asset_tree_path: Path,
-        target_scene_id: int,
-        stop_event: threading.Event,
-    ):
-        tree = ctx.get("asset_tree")
-        if not isinstance(tree, list):
-            tree = self._load_asset_tree(asset_tree_path)
-            ctx["asset_tree"] = tree
-            ctx["images"] = self._index_images(tree)
-
-        for _step_index in range(24):
-            self._raise_if_stopped(stop_event)
-            route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-            frame = self._screencap(ctx)
-            current_scene_id, score = self._identify_scene_number(ctx, frame, route_candidate_ids)
-            if current_scene_id is None:
-                current_scene_id, score = self._identify_scene_number(ctx, frame)
-            if current_scene_id is None:
-                return self._save_unknown_scene_frame(
-                    ctx,
-                    asset_tree_path,
-                    tree,
-                    frame,
-                    target_scene_id=target_scene_id,
-                    current_scene_id=None,
-                    action_shape=None,
-                    elapsed_seconds=0.0,
-                    history=[f"起点识别 unknown {score:.0f}%"],
-                )
-            if current_scene_id == target_scene_id:
-                with self._lock:
-                    self._status.update({
-                        "current_scene": target_scene_id,
-                        "updated_at": time.time(),
-                    })
-                self._log("success", f"已在目标场景 #{target_scene_id}")
-                return "success"
-
-            route = self._find_scene_route(tree, current_scene_id, target_scene_id)
-            if route is None:
-                current_image = (ctx.get("images") or {}).get(current_scene_id)
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, {"title": "离开"})
-                if confirm_shape is not None:
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"场景移动确认：#{current_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
-                            phase="go_scene_confirm",
-                            current_scene=current_scene_id,
-                        )
-                    self._log("action", f"场景移动确认：#{current_scene_id} -> #{target_scene_id}，点击 {confirm_title}")
-                    self._click_shape(ctx, current_image, confirm_shape, frame)
-                    actual_scene_id = yield from self._wait_scene_jump_result(
-                        ctx,
-                        asset_tree_path,
-                        tree,
-                        source_scene_id=current_scene_id,
-                        target_scene_id=target_scene_id,
-                        edge={
-                            "source_id": current_scene_id,
-                            "image": current_image,
-                            "shape": confirm_shape,
-                            "target_ids": [target_scene_id],
-                        },
-                        stop_event=stop_event,
-                    )
-                    if actual_scene_id == target_scene_id:
-                        with self._lock:
-                            self._status.update({
-                                "current_scene": target_scene_id,
-                                "updated_at": time.time(),
-                            })
-                        self._log("success", f"到达目标场景 #{target_scene_id}")
-                        return "success"
-                    self._log("detail", f"场景移动：确认后实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
-                    continue
-                raise RuntimeError(f"没有从 #{current_scene_id} 到 #{target_scene_id} 的可规划场景跳转路径")
-            edge = route[0]
-            image = edge["image"]
-            shape = edge["shape"]
-            shape_title = str(shape.get("title") or "未命名")
-            with self._lock:
-                self._set_status_locked(
-                    "running",
-                    f"场景移动：#{current_scene_id} -> #{target_scene_id}，点击 {shape_title}",
-                    phase="go_scene",
-                    current_scene=current_scene_id,
-                )
-            self._log("action", f"场景移动：#{current_scene_id} -> #{target_scene_id}，点击 {shape_title}")
-            self._click_shape(ctx, image, shape, frame)
-            actual_scene_id = yield from self._wait_scene_jump_result(
-                ctx,
-                asset_tree_path,
-                tree,
-                source_scene_id=current_scene_id,
-                target_scene_id=target_scene_id,
-                edge=edge,
-                stop_event=stop_event,
-            )
-            if actual_scene_id == target_scene_id:
-                with self._lock:
-                    self._status.update({
-                        "current_scene": target_scene_id,
-                        "updated_at": time.time(),
-                    })
-                self._log("success", f"到达目标场景 #{target_scene_id}")
-                return "success"
-            self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
-
-        raise RuntimeError(f"场景移动超过最大重规划步数，未到达 #{target_scene_id}")
-
-    def _execute_hide_floating_window(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
-        image = self._image(ctx, "hide_floating")
-        icon = self._find_shape(image, "图标")
-        target = self._find_shape(image, "隐藏区")
-        if not image or not icon or not target:
-            raise RuntimeError("#58 缺少「图标」或「隐藏区」标注")
-        frame = self._screencap(ctx)
-        score = self._shape_score(ctx, image, icon, frame)
-        if score < self.scene_thresholds.get("hide_floating", 55):
-            self._log("info", f"浮动窗未明显出现，图标匹配 {score:.0f}%")
-            return
-        start_x, start_y = self._shape_center(icon, image, frame, ctx)
-        end_x, end_y = self._shape_center(target, image)
-        with self._lock:
-            self._set_status_locked("running", f"隐藏浮动窗：图标匹配 {score:.0f}%", phase="hide_floating", current_scene=58)
-        self._drag_frame_point(ctx, image, start_x, start_y, end_x, end_y, duration_ms=350)
-        time.sleep(0.8)
-
-    def _align_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
-        for attempt in range(12):
-            frame = self._screencap(ctx)
-            key, score = self._identify_scene(ctx, frame, ["settings", "gift", "duplicated", "reward", "world_menu", "world"])
-            matched = key if self._scene_matches(key, score) else ""
-            self._log("detail", f"对齐 #49：当前 {matched or 'unknown'} {score:.0f}%")
-            if matched:
-                with self._lock:
-                    scene_id = self.scene_ids.get(matched)
-                    self._status.update({"current_scene": scene_id, "updated_at": time.time()})
-            if matched == "settings":
-                return
-            if matched == "reward":
-                self._log("detail", "对齐 #49：检测到 #81 过渡奖励，等待回到设置页")
-                self._clear_tick_frame(ctx)
-                time.sleep(1.0)
-                continue
-            if matched in {"gift", "duplicated"}:
-                close_shape = self._find_shape(self._image(ctx, "gift"), "关闭窗口")
-                if close_shape is None:
-                    close_shape = self._find_shape(self._image(ctx, "gift"), "关闭", contains=True)
-                if close_shape:
-                    self._log("detail", f"对齐 #49：检测到 #{self.scene_ids.get(matched)}，点击关闭窗口")
-                    self._click_shape(ctx, self._image(ctx, "gift"), close_shape, frame)
-                    time.sleep(0.9)
-                    continue
-            if matched == "world_menu":
-                settings_shape = self._find_shape(self._image(ctx, "world_menu"), "设置")
-                if not settings_shape:
-                    raise RuntimeError("#35 缺少「设置」标注")
-                self._log("detail", "对齐 #49：确认 #35 后匹配点击浮动「设置」")
-                self._click_shape(ctx, self._image(ctx, "world_menu"), settings_shape, frame)
-                time.sleep(1.0)
-                continue
-            if matched == "world":
-                open_shape = self._find_shape(self._image(ctx, "world"), "打开下方菜单")
-                if not open_shape:
-                    raise RuntimeError("#34 缺少「打开下方菜单」标注")
-                self._log("detail", "对齐 #49：确认 #34 后点击打开下方菜单")
-                self._click_shape(ctx, self._image(ctx, "world"), open_shape, frame)
-                time.sleep(0.8)
-                continue
-            if attempt >= 3:
-                self._log("detail", "对齐 #49：未知场景，点击画面返回按钮兜底")
-                self._click_generic_back(ctx)
-                time.sleep(0.9)
-                continue
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            time.sleep(0.8)
-        raise RuntimeError("无法对齐到 #49 设置页")
-
-    def _open_gift(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
-        frame = self._screencap(ctx)
-        image = self._image(ctx, "settings")
-        shape = self._find_shape(image, "兑换礼包")
-        if not image or not shape:
-            raise RuntimeError("#49 缺少「兑换礼包」标注")
-        box = self._box(shape, image)
-        _width, height = self._frame_size(image)
-        self._click_frame_point(
-            ctx,
-            image,
-            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
-            float(box.get("y") or 0) - height * 0.02,
-        )
-        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["gift"], 6)
-        if key != "gift" or not self._scene_matches(key, score):
-            raise RuntimeError("点击兑换礼包后未进入 #78")
-
-    def _clear_and_type(self, ctx: dict[str, Any], code: str, stop_event: threading.Event) -> None:
-        image = self._image(ctx, "gift")
-        shape = self._find_shape(image, "输入兑换码")
-        if not image or not shape:
-            raise RuntimeError("#78 缺少「输入兑换码」标注")
-        self._click_shape(ctx, image, shape)
-        time.sleep(0.25)
-        self._keyevents(ctx, ["KEYCODE_MOVE_END", *["KEYCODE_DEL" for _ in range(40)]])
-        time.sleep(0.25)
-        self._raise_if_stopped(stop_event)
-        self._text(ctx, code)
-        time.sleep(0.35)
-
-    def _submit_code(self, ctx: dict[str, Any], code: str) -> None:
-        image = self._image(ctx, "gift")
-        shape = self._find_shape(image, "兑换")
-        if not image or not shape:
-            raise RuntimeError("#78 缺少「兑换」按钮标注")
-        self._click_shape(ctx, image, shape)
-        self._log("action", f"已提交：{code}")
-
-    def _settle_after_submit(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
-        deadline = time.time() + 16.0
-        plain_gift_since = 0.0
-        last_seen = ""
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
-            overlay = self._detect_overlay(ctx, frame)
-            if overlay == "duplicated":
-                if is_last:
-                    self._log("info", f"{code}：检测到 #82 已领取，关闭窗口")
-                    self._close_gift_to_settings(ctx, stop_event)
-                else:
-                    self._log("info", f"{code}：检测到 #82 已领取，继续下一个")
-                return
-            if overlay == "reward":
-                last_seen = "reward"
-                self._clear_tick_frame(ctx)
-                time.sleep(0.8)
-                continue
-
-            key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
-            if key == "settings" and self._scene_matches(key, score):
-                self._log("info", f"{code}：已回到 #49")
-                return
-            if key == "gift" and self._scene_matches(key, score):
-                last_seen = "gift"
-                if plain_gift_since <= 0:
-                    plain_gift_since = time.time()
-                if time.time() - plain_gift_since >= 4.0:
-                    if is_last:
-                        self._log("info", f"{code}：提交后停留 #78，关闭窗口")
-                        self._close_gift_to_settings(ctx, stop_event)
-                    else:
-                        self._log("info", f"{code}：提交后停留 #78，继续下一个")
-                    return
-            else:
-                plain_gift_since = 0.0
-                last_seen = key or last_seen
-            self._clear_tick_frame(ctx)
-            time.sleep(0.8)
-
-        if is_last:
-            self._log("info", f"{code}：等待结果超时，尝试对齐 #49")
-            self._align_settings(ctx, stop_event)
-        else:
-            self._log("info", f"{code}：等待结果超时，继续下一个（最后看到 {last_seen or 'unknown'}）")
-
-    def _detect_overlay(self, ctx: dict[str, Any], frame: str) -> str:
-        duplicated = self._image(ctx, "duplicated")
-        if duplicated:
-            for title in ("礼包已被领取", "已被领取"):
-                shape = self._find_shape(duplicated, title, contains=True)
-                if shape and self._shape_score(ctx, duplicated, shape, frame) >= self.overlay_threshold:
-                    return "duplicated"
-        reward = self._image(ctx, "reward")
-        if reward:
-            for title in ("恭喜获得", "点击继续", "奖品"):
-                shape = self._find_shape(reward, title, contains=True)
-                if shape and self._shape_score(ctx, reward, shape, frame) >= 65:
-                    return "reward"
-        return ""
-
-    def _process_code(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
-        frame = self._screencap(ctx)
-        key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
-        if key == "settings" and self._scene_matches(key, score):
-            with self._lock:
-                self._set_status_locked("running", f"进入 #78 填写：{code}", phase="open_gift", current_scene=49)
-            self._open_gift(ctx, stop_event)
-        elif key != "gift" or not self._scene_matches(key, score):
-            with self._lock:
-                self._set_status_locked("running", f"重新对齐后填写：{code}", phase="align_settings")
-            self._align_settings(ctx, stop_event)
-            self._open_gift(ctx, stop_event)
-        with self._lock:
-            self._set_status_locked("running", f"输入礼包码：{code}", phase="type_code", current_scene=78)
-        self._clear_and_type(ctx, code, stop_event)
-        with self._lock:
-            self._set_status_locked("running", f"提交礼包码：{code}", phase="submit_code")
-        self._submit_code(ctx, code)
-        with self._lock:
-            self._set_status_locked("running", f"等待兑换结果：{code}", phase="wait_result")
-        self._settle_after_submit(ctx, code, is_last, stop_event)
-
-    def _close_gift_to_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
-        image = self._image(ctx, "gift")
-        shape = self._find_shape(image, "关闭窗口")
-        if not image or not shape:
-            raise RuntimeError("#78 缺少「关闭窗口」标注")
-        self._click_shape(ctx, image, shape)
-        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["settings"], 2.5, interval=0.25)
-        if key == "settings" and self._scene_matches(key, score):
-            with self._lock:
-                self._status.update({"current_scene": 49, "updated_at": time.time()})
-
-    def _finish_from_settings(self, ctx: dict[str, Any], stop_event: threading.Event) -> None:
-        image = self._image(ctx, "settings")
-        shape = self._find_shape(image, "回退")
-        if not image or not shape:
-            raise RuntimeError("#49 缺少「回退」标注")
-        with self._lock:
-            self._status.update({"current_scene": 49, "updated_at": time.time()})
-        self._click_shape(ctx, image, shape)
-        key, score, _frame = self._wait_for_scene(ctx, stop_event, ["world", "world_menu", "settings"], 2.5, interval=0.25)
-        if key and self._scene_matches(key, score):
-            with self._lock:
-                self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-
-
-def _normalize_data_annotation_go_scene_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    target_scene_id = int(payload.get("target_scene_id") or payload.get("target") or 49)
-    return {**payload, "target_scene_id": target_scene_id}
-
-
-def _normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    # Agent-facing Runtime scratchpad. Keep this as a registered manual job so
-    # probes use the same resident loop, queue, timeout, stop flag, and logs as
-    # real behavior-tree work. Do not bypass this by calling runner internals
-    # from one-off scripts unless the user explicitly asks for a private probe.
-    payload = dict(payload or {})
-    code = str(payload.get("code") or payload.get("source") or "").strip()
-    if not code:
-        raise HTTPException(status_code=400, detail="debug_eval 需要 payload.code")
-    mode = str(payload.get("mode") or "readonly").strip().lower()
-    if mode not in {"readonly", "act"}:
-        raise HTTPException(status_code=400, detail="debug_eval mode 只支持 readonly/act")
-    return {
-        **payload,
-        "code": code,
-        "mode": mode,
-        "call_task": bool(payload.get("call_task", True)),
-        "max_output_chars": max(200, min(20000, int(payload.get("max_output_chars") or 4000))),
-        "timeout_seconds": max(30, min(3600, int(payload.get("timeout_seconds") or payload.get("max_runtime_seconds") or 120))),
-    }
-
-
-class _DataAnnotationRuntimeDebugContext:
-    """Stable facade injected as ``ctx`` for ``debug_eval`` manual jobs.
-
-    Typical payload:
-        {"task_type": "debug_eval", "payload": {
-            "mode": "readonly",
-            "code": "info = ctx.scene(); ctx.log(info); result = info",
-        }}
-
-    ``readonly`` is the default and blocks tap/drag. Use ``mode='act'`` only
-    when the temporary function is intentionally allowed to change game state.
-    """
-
-    def __init__(
-        self,
-        runner: _DataAnnotationRuntimeRunner,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        *,
-        readonly: bool = True,
-    ) -> None:
-        self._runner = runner
-        self._ctx = ctx
-        self._stop_event = stop_event
-        self.readonly = bool(readonly)
-        self.output: list[Any] = []
-
-    @property
-    def raw(self) -> dict[str, Any]:
-        return self._ctx
-
-    def check_stop(self) -> None:
-        self._runner._raise_if_stopped(self._stop_event)
-
-    def log(self, value: Any, *, kind: str = "detail") -> Any:
-        message = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
-        self.output.append(value)
-        self._runner._log(kind, str(message)[:1000])
-        return value
-
-    def table(self, rows: Any) -> Any:
-        return self.log(rows)
-
-    def status(self) -> dict[str, Any]:
-        return self._runner.status()
-
-    def frame(self) -> str:
-        self.check_stop()
-        return self._runner._screencap(self._ctx)
-
-    def scene(self, frame: str | None = None, preferred_scene_ids: list[int] | None = None) -> dict[str, Any]:
-        self.check_stop()
-        frame_data_url = frame or self.frame()
-        scene_id, score = self._runner._identify_scene_number(self._ctx, frame_data_url, preferred_scene_ids)
-        with self._runner._lock:
-            self._runner._status.update({
-                "phase": "debug_eval",
-                "current_scene": scene_id,
-                "message": f"debug_eval 场景识别：{('#' + str(scene_id)) if scene_id is not None else 'unknown'} {score:.0f}%",
-                "updated_at": time.time(),
-            })
-        return {"scene_id": scene_id, "score": score}
-
-    def ocr(self, frame: str | None = None) -> list[dict[str, Any]]:
-        self.check_stop()
-        return self._runner._ocr_lines(frame or self.frame())
-
-    def image(self, scene: int | str) -> dict[str, Any] | None:
-        images: dict[int, dict[str, Any]] = self._ctx.get("images") or {}
-        if isinstance(scene, int):
-            return images.get(scene)
-        text = str(scene or "").strip()
-        if text.isdigit():
-            return images.get(int(text))
-        if text in self._runner.scene_ids:
-            return images.get(self._runner.scene_ids[text])
-        for image in images.values():
-            if str(image.get("title") or "").strip() == text:
-                return image
-        return None
-
-    def shape(self, scene: int | str, title: str, *, contains: bool = False) -> dict[str, Any] | None:
-        return self._runner._find_shape(self.image(scene), title, contains=contains)
-
-    def _require_act(self) -> None:
-        if self.readonly:
-            raise RuntimeError("debug_eval 当前为 readonly，动作调用需要 payload.mode='act'")
-
-    def tap_shape(self, scene: int | str, title: str, *, contains: bool = False, frame: str | None = None) -> None:
-        self._require_act()
-        image = self.image(scene)
-        shape = self._runner._find_shape(image, title, contains=contains)
-        if not image or not shape:
-            raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
-        self._runner._click_shape(self._ctx, image, shape, frame_data_url=frame)
-
-    def tap(self, scene: int | str, x: float, y: float) -> None:
-        self._require_act()
-        image = self.image(scene)
-        if not image:
-            raise RuntimeError(f"找不到场景标注：{scene}")
-        self._runner._click_frame_point(self._ctx, image, x, y)
-
-    def drag(self, scene: int | str, start_x: float, start_y: float, end_x: float, end_y: float, duration_ms: int = 1000) -> None:
-        self._require_act()
-        image = self.image(scene)
-        if not image:
-            raise RuntimeError(f"找不到场景标注：{scene}")
-        self._runner._drag_frame_point(self._ctx, image, start_x, start_y, end_x, end_y, duration_ms=duration_ms)
-
-    def yield_tick(self):
-        self.check_stop()
-        yield BehaviorTreeStatus.RUNNING
-
-
-def _run_data_annotation_debug_eval(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> Any:
-    payload = _normalize_data_annotation_debug_eval_payload(payload)
-    debug_ctx = _DataAnnotationRuntimeDebugContext(runner, ctx, stop_event, readonly=payload["mode"] != "act")
-    namespace: dict[str, Any] = {
-        "ctx": debug_ctx,
-        "payload": payload,
-        "BehaviorTreeStatus": BehaviorTreeStatus,
-        "json": json,
-        "time": time,
-    }
-    stdout = io.StringIO()
-    with runner._lock:
-        runner._set_status_locked("running", f"debug_eval 执行中：{payload['mode']}", phase="debug_eval")
-    with contextlib.redirect_stdout(stdout):
-        exec(payload["code"], namespace, namespace)
-        result = None
-        task = namespace.get("task")
-        if payload.get("call_task") and callable(task):
-            result = task(debug_ctx)
-        elif "result" in namespace:
-            result = namespace["result"]
-    output = stdout.getvalue().strip()
-    max_chars = int(payload.get("max_output_chars") or 4000)
-    if output:
-        runner._log("detail", f"debug_eval stdout: {output[:max_chars]}")
-    if debug_ctx.output:
-        runner._log("detail", f"debug_eval output: {json.dumps(debug_ctx.output, ensure_ascii=False, default=str)[:max_chars]}")
-    if isinstance(result, GeneratorType):
-        return result
-    if result is not None:
-        runner._log("detail", f"debug_eval result: {json.dumps(result, ensure_ascii=False, default=str)[:max_chars]}")
-    return "success"
-
-
-@register_fanxiu_data_annotation_manual_job(
-    "debug_eval",
-    "调试代码",
-    scheduler_supported=False,
-    normalize_payload=_normalize_data_annotation_debug_eval_payload,
-)
-def _run_data_annotation_debug_eval_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> Any:
-    return _run_data_annotation_debug_eval(runner, ctx, payload, stop_event)
-
-
-@register_fanxiu_data_annotation_manual_job("detect_scene", "单步识别", scheduler_supported=False)
-def _run_data_annotation_detect_scene_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> str:
-    frame = runner._screencap(ctx)
-    key, score = runner._identify_scene(ctx, frame)
-    scene_id = runner.scene_ids.get(key) if runner._scene_matches(key, score) else None
-    with runner._lock:
-        runner._status.update({
-            "phase": "manual_tick",
-            "current_scene": scene_id,
-            "message": f"单步识别：{key if scene_id is not None else 'unknown'} {score:.0f}%",
-            "updated_at": time.time(),
-        })
-        runner._log_locked("detail", runner._status["message"])
-    return "success"
-
-
-@register_fanxiu_data_annotation_manual_job("manual_tick", "单步识别", scheduler_supported=False)
-def _run_data_annotation_manual_tick_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> str:
-    return _run_data_annotation_detect_scene_manual_job(runner, ctx, payload, stop_event)
-
-
-@register_fanxiu_data_annotation_manual_job("gift_code_redeem", "兑换礼包码", scheduler_supported=True)
-def _run_data_annotation_gift_code_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> str:
-    raw_codes = payload.get("codes")
-    codes = [str(item).strip() for item in raw_codes] if isinstance(raw_codes, list) else []
-    codes = [code for code in codes if code]
-    if not codes:
-        runner._log("skip", "礼包码为空，跳过")
-        return "skipped"
-    runner._execute_gift_code_task(ctx, codes, stop_event)
-    return "success"
-
-
-@register_fanxiu_data_annotation_manual_job(
-    "go_scene",
-    "到场景",
-    scheduler_supported=True,
-    normalize_payload=_normalize_data_annotation_go_scene_payload,
-)
-def _run_data_annotation_go_scene_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> Any:
-    target_scene_id = int(payload.get("target_scene_id") or 49)
-    with runner._lock:
-        runner._set_status_locked("running", f"场景移动到 #{target_scene_id}", phase="go_scene")
-    if target_scene_id == 49:
-        runner._align_settings(ctx, stop_event)
-        return "success"
-    asset_tree_path = ctx.get("asset_tree_path")
-    if not isinstance(asset_tree_path, Path):
-        raise RuntimeError("缺少场景移动资产树路径，当前只支持直接对齐 #49")
-    return runner._go_scene_task(ctx, asset_tree_path, target_scene_id, stop_event)
-
-
-@register_fanxiu_data_annotation_manual_job("hide_floating_window", "隐藏浮动窗", scheduler_supported=True)
-def _run_data_annotation_hide_floating_window_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> str:
-    runner._execute_hide_floating_window(ctx, stop_event)
-    return "success"
-
-
-@register_fanxiu_data_annotation_manual_job("daily_signup", "日常_报名", scheduler_supported=True)
-def _run_data_annotation_daily_signup_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> Any:
-    return runner._execute_daily_signup_task(ctx, stop_event)
-
-
-@register_fanxiu_data_annotation_manual_job("mail_claim_check", "邮件_领取检查", scheduler_supported=True)
-def _run_data_annotation_mail_claim_check_manual_job(
-    runner: _DataAnnotationRuntimeRunner,
-    ctx: dict[str, Any],
-    payload: dict[str, Any],
-    stop_event: threading.Event,
-) -> Any:
-    return runner._execute_mail_claim_check_task(ctx, stop_event, payload)
-
-
-_DATA_ANNOTATION_RUNTIME_RUNNER = _DataAnnotationRuntimeRunner()
+def _raise_fanxiu_runtime_http_error(exc: FanxiuRuntimeError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def _data_annotation_dir() -> Path:
-    return get_settings().data_dir / "fanxiu" / "data-annotation"
+    return _core_data_annotation_dir()
 
 
 def _data_annotation_runtime_dir() -> Path:
-    path = _data_annotation_dir() / "runtime"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return _core_data_annotation_runtime_dir()
 
 
 def _data_annotation_runtime_state_path() -> Path:
-    return _data_annotation_runtime_dir() / "runtime_state.json"
+    return _core_runtime_state_path()
 
 
 def _data_annotation_world_facts_path() -> Path:
-    return _data_annotation_runtime_dir() / "world_facts.json"
+    return _core_world_facts_path()
 
 
 def _data_annotation_scheduler_state_path() -> Path:
-    return _data_annotation_runtime_dir() / "scheduler_tasks.json"
+    return _core_scheduler_state_path()
 
 
 def _data_annotation_manual_job_state_path() -> Path:
-    return _data_annotation_runtime_dir() / "manual_jobs.json"
+    return _core_manual_job_state_path()
+
+
+def _data_annotation_job_group_isolation_path() -> Path:
+    return _core_job_group_isolation_path()
 
 
 def _data_annotation_mail_scan_state_path() -> Path:
-    return _data_annotation_runtime_dir() / "mail_scan_state.json"
+    return _core_mail_scan_state_path()
 
 
 def _read_data_annotation_world_facts() -> dict[str, Any]:
-    return read_data_annotation_world_facts(_data_annotation_world_facts_path())
+    return _runtime_control.read_world_facts(_data_annotation_world_facts_path())
 
 
 def _write_data_annotation_world_facts(facts: dict[str, Any]) -> None:
-    write_data_annotation_world_facts(_data_annotation_world_facts_path(), facts)
+    _runtime_control.write_world_facts(facts, _data_annotation_world_facts_path())
 
 
 def _record_data_annotation_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
-    record_data_annotation_scheduler_task_fact(_data_annotation_world_facts_path(), task, result)
+    _runtime_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
 
 
 def _persist_data_annotation_runtime_status(status: dict[str, Any]) -> None:
-    persist_data_annotation_runtime_status(
-        _data_annotation_runtime_state_path(),
-        _data_annotation_world_facts_path(),
+    _runtime_control.persist_runtime_status(
         status,
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
 def _read_data_annotation_runtime_status() -> dict[str, Any]:
-    return read_data_annotation_runtime_status(_data_annotation_runtime_state_path())
+    return _runtime_control.read_runtime_status(_data_annotation_runtime_state_path())
 
 
 def _is_data_annotation_runtime_live_empty(status: dict[str, Any]) -> bool:
@@ -8982,113 +3747,57 @@ def _is_data_annotation_runtime_live_empty(status: dict[str, Any]) -> bool:
 
 
 def _append_data_annotation_runtime_log_once(status: dict[str, Any], kind: str, message: str) -> None:
-    append_data_annotation_runtime_log_once(status, kind, message, time_text=datetime.now().strftime("%H:%M:%S"))
+    _runtime_control.append_runtime_log_once(status, kind, message)
 
 
 def _normalize_data_annotation_runtime_guard_items(status: dict[str, Any]) -> None:
-    normalize_data_annotation_runtime_guard_items(status, _DATA_ANNOTATION_RUNTIME_RUNNER.guard_definitions)
+    _sync_data_annotation_runtime_runner_to_core()
+    _runtime_control.normalize_runtime_guard_items(status)
 
 
 def _repair_orphaned_data_annotation_scheduler_runs(tasks: list[dict[str, Any]]) -> bool:
-    pending_scheduler_ids: set[str] = set()
-    for job in _read_data_annotation_manual_jobs():
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-        scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
-        if scheduler_task_id:
-            pending_scheduler_ids.add(scheduler_task_id)
-    if _DATA_ANNOTATION_RUNTIME_RUNNER.status().get("running"):
-        return False
-    changed = False
-    current_ts = time.time()
-    for task in tasks:
-        task_id = str(task.get("id") or "")
-        if not task_id or task_id in pending_scheduler_ids:
-            continue
-        if str(task.get("last_result") or "") not in {"queued", "running"}:
-            continue
-        last_run_ts = parse_data_annotation_task_time(task.get("last_run_at"))
-        if last_run_ts is not None and current_ts - last_run_ts < 60:
-            continue
-        task["last_result"] = "stopped"
-        task["retry_after"] = None
-        checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-        checkpoint["recovered_from_orphaned_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        task["checkpoint"] = checkpoint
-        changed = True
-    return changed
+    _sync_data_annotation_runtime_runner_to_core()
+    return _runtime_control.repair_orphaned_scheduler_runs(
+        tasks,
+        manual_job_path=_data_annotation_manual_job_state_path(),
+    )
 
 
 def _data_annotation_runtime_status() -> dict[str, Any]:
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    persisted = _read_data_annotation_runtime_status()
-    if persisted and _is_data_annotation_runtime_live_empty(status):
-        status.update(persisted)
-        status["running"] = False
-        status["guard_running"] = False
-        status["service_running"] = False
-        status["updated_at"] = time.time()
-        if persisted.get("running"):
-            status["status"] = "stopped"
-            status["phase"] = "stopped"
-            status["message"] = "后端已重载，运行状态已结束"
-            status["finished_at"] = status.get("finished_at") or time.time()
-            _append_data_annotation_runtime_log_once(status, "stop", "后端已重载，运行状态已结束")
-        elif persisted.get("guard_enabled") or persisted.get("guard_running"):
-            status["status"] = "idle"
-            status["message"] = "后端已重载，行为树服务待恢复"
-            _append_data_annotation_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
-    _normalize_data_annotation_runtime_guard_items(status)
-    status.pop("priority", None)
-    _persist_data_annotation_runtime_status(status)
-    return status
+    _sync_data_annotation_runtime_runner_to_core()
+    return _core_data_annotation_runtime_status(
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
 
 
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
-    raw = _read_data_annotation_json(_data_annotation_scheduler_state_path(), None)
-    tasks, changed = repair_data_annotation_scheduler_tasks(
-        raw,
-        _default_data_annotation_scheduler_tasks(),
-        _read_data_annotation_world_facts(),
-        task_supported=_data_annotation_task_supported,
+    return _runtime_control.read_scheduler_tasks(
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
         now=datetime.now(),
     )
-    if _repair_orphaned_data_annotation_scheduler_runs(tasks):
-        changed = True
-    if changed:
-        _write_data_annotation_scheduler_tasks(tasks)
-    return tasks
 
 
 def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
-    _write_data_annotation_json(
-        _data_annotation_scheduler_state_path(),
-        [_data_annotation_scheduler_task_state(task) for task in tasks],
-    )
+    _runtime_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
 
 
 def _read_data_annotation_manual_jobs() -> list[dict[str, Any]]:
-    raw = _read_data_annotation_json(_data_annotation_manual_job_state_path(), [])
-    return read_data_annotation_manual_jobs(raw)
+    return _runtime_control.read_manual_jobs(_data_annotation_manual_job_state_path())
 
 
 def _write_data_annotation_manual_jobs(jobs: list[dict[str, Any]]) -> None:
-    _write_data_annotation_json(_data_annotation_manual_job_state_path(), data_annotation_manual_jobs_state(jobs))
+    _runtime_control.write_manual_jobs(jobs, _data_annotation_manual_job_state_path())
 
 
 def _requeue_running_data_annotation_manual_jobs() -> int:
-    jobs = _read_data_annotation_manual_jobs()
-    updated, changed_count = requeue_running_data_annotation_manual_jobs(jobs)
-    if changed_count:
-        _write_data_annotation_manual_jobs(updated)
-    return changed_count
+    return _runtime_control.requeue_running_manual_jobs(_data_annotation_manual_job_state_path())
 
 
 def _remove_data_annotation_manual_job(job_id: str) -> None:
-    job_id = str(job_id or "")
-    if not job_id:
-        return
-    jobs = [job for job in _read_data_annotation_manual_jobs() if str(job.get("id") or "") != job_id]
-    _write_data_annotation_manual_jobs(jobs)
+    _runtime_control.remove_manual_job(job_id, _data_annotation_manual_job_state_path())
 
 
 def _enqueue_data_annotation_manual_job(
@@ -9098,21 +3807,13 @@ def _enqueue_data_annotation_manual_job(
     label: str = "",
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
-    task_type = str(task_type or "detect_scene").strip() or "detect_scene"
-    definition = _data_annotation_manual_job_definition(task_type)
-    job = create_data_annotation_manual_job(
+    return _runtime_control.enqueue_manual_job(
         task_type,
         payload,
         label=label,
         interruptible=interruptible,
-        definition=definition,
-        task_label=_DATA_ANNOTATION_RUNTIME_RUNNER._runtime_task_label,
-        now=time.time(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
     )
-    jobs = _read_data_annotation_manual_jobs()
-    jobs.append(job)
-    _write_data_annotation_manual_jobs(jobs)
-    return job
 
 
 def _queue_data_annotation_manual_job_status(
@@ -9124,33 +3825,19 @@ def _queue_data_annotation_manual_job_status(
     label: str = "",
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
-    asset_tree_path = _data_annotation_asset_tree_path(entry_id)
-    _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-    job = _enqueue_data_annotation_manual_job(
-        task_type,
-        payload,
+    _sync_data_annotation_runtime_runner_to_core()
+    return _runtime_control.queue_manual_job_status(
+        entry=entry,
+        entry_id=entry_id,
+        task_type=task_type,
+        payload=payload,
         label=label,
         interruptible=interruptible,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        manual_job_path=_data_annotation_manual_job_state_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
     )
-    _DATA_ANNOTATION_RUNTIME_RUNNER._service_wake_event.set()
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    status.update({
-        "entry_id": entry_id,
-        "phase": "manual_job_queued",
-        "message": f"手动作业已排队：{job.get('label') or job.get('task_type')}",
-        "updated_at": time.time(),
-    })
-    logs = list(status.get("logs") or [])
-    logs.append({
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "kind": "info",
-        "scope": "manual_job",
-        "item_id": "manual_job",
-        "message": f"[{job.get('id')}] {status['message']}",
-    })
-    status["logs"] = logs[-500:]
-    _persist_data_annotation_runtime_status(status)
-    return status
 
 
 def _submit_data_annotation_manual_job(
@@ -9162,96 +3849,77 @@ def _submit_data_annotation_manual_job(
     label: str = "",
     interruptible: bool | None = None,
 ) -> dict[str, Any]:
-    task_type = str(task_type or "detect_scene").strip() or "detect_scene"
-    definition = _data_annotation_manual_job_definition(task_type)
-    if definition is None:
-        raise HTTPException(status_code=400, detail=f"暂不支持的任务类型：{task_type}")
-    return _queue_data_annotation_manual_job_status(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=payload,
-        label=label,
-        interruptible=interruptible if interruptible is not None else definition.interruptible,
-    )
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        return _runtime_control.submit_manual_job(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=task_type,
+            payload=payload,
+            label=label,
+            interruptible=interruptible,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _pop_next_data_annotation_manual_job() -> dict[str, Any] | None:
-    jobs = _read_data_annotation_manual_jobs()
-    selected, claimed_jobs = pop_next_data_annotation_manual_job(jobs)
-    if selected is None:
-        return None
-    _write_data_annotation_manual_jobs(claimed_jobs)
-    return selected
+    return _runtime_control.pop_next_manual_job(_data_annotation_manual_job_state_path())
 
 
 def _start_next_data_annotation_manual_job_if_idle(entry: UserDevice, entry_id: str) -> dict[str, Any] | None:
-    if _DATA_ANNOTATION_RUNTIME_RUNNER.status().get("running"):
-        return None
-    task = _pop_next_data_annotation_manual_job()
-    if task is None:
-        return None
-    return _DATA_ANNOTATION_RUNTIME_RUNNER.start_manual_runtime_task(
+    _sync_data_annotation_runtime_runner_to_core()
+    return _runtime_control.start_next_manual_job_if_idle(
         entry=entry,
         entry_id=entry_id,
-        task=task,
+        manual_job_path=_data_annotation_manual_job_state_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
 
 
 def _next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
-    return _core_next_data_annotation_scheduler_time(task, now if now is not None else datetime.now())
+    return _runtime_control.next_scheduler_time(task, now)
 
 
 def _sync_data_annotation_scheduler_tasks_from_world_facts(tasks: list[dict[str, Any]]) -> bool:
-    return sync_data_annotation_scheduler_tasks_from_world_facts(
+    return _runtime_control.sync_scheduler_tasks_from_world_facts(
         tasks,
-        _read_data_annotation_world_facts(),
+        world_facts_path=_data_annotation_world_facts_path(),
         now=datetime.now(),
     )
 
 
 def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
-    definition = _data_annotation_manual_job_definition(str(task.get("task_type") or ""))
-    return bool(definition and definition.scheduler_supported)
+    return _runtime_control.task_supported(task)
 
 
 def _data_annotation_scheduler_task_view(task: dict[str, Any]) -> dict[str, Any]:
-    return {**task, "supported": _data_annotation_task_supported(task)}
+    return _runtime_control.scheduler_task_view(task)
 
 
 def _data_annotation_scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
-    return data_annotation_scheduler_task_plan_reason(
-        task,
-        due,
-        task_supported=_data_annotation_task_supported,
-        now_ts=time.time(),
-    )
+    return _runtime_control.scheduler_task_plan_reason(task, due)
 
 
 def _data_annotation_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
-    return data_annotation_world_facts_summary(facts)
+    return _runtime_control.world_facts_summary(facts)
 
 
 def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
-    return build_data_annotation_scheduler_plan(
-        _read_data_annotation_scheduler_tasks(),
-        _DATA_ANNOTATION_RUNTIME_RUNNER.status(),
-        _read_data_annotation_world_facts(),
-        _data_annotation_scheduler_state_path(),
-        task_supported=_data_annotation_task_supported,
-        task_due=_data_annotation_task_due,
-        now_ts=time.time(),
+    _sync_data_annotation_runtime_runner_to_core()
+    return _runtime_control.build_scheduler_plan(
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
     )
 
 
 def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
-    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-    return {
-        **payload,
-        "__scheduler_task_id": str(task.get("id") or ""),
-        "__scheduler_interruptible": bool(task.get("interruptible", True)),
-    }
+    return _runtime_control.task_payload_with_meta(task)
 
 
 def _data_annotation_scheduler_run_now_task(
@@ -9263,27 +3931,34 @@ def _data_annotation_scheduler_run_now_task(
 
 
 def _prepare_data_annotation_runtime_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    if not status.get("running"):
-        return None
-    task_id = str(task.get("id") or "")
-    task["last_result"] = "queued"
-    _record_data_annotation_scheduler_task_fact(task, "queued")
-    _write_data_annotation_scheduler_tasks(tasks)
-    message = f"当前有任务运行，{task_id or task.get('label') or task.get('task_type')} 已排队"
-    status.update({"message": message, "updated_at": time.time()})
-    _persist_data_annotation_runtime_status(status)
-    return status
+    _sync_data_annotation_runtime_runner_to_core()
+    return _runtime_control.prepare_runtime_for_scheduler_task(
+        task,
+        tasks,
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
 
 
 def _start_data_annotation_runtime_task(entry: UserDevice, req: FanxiuDataAnnotationRuntimeTaskRequest) -> dict[str, Any]:
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _submit_data_annotation_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=req.task_type,
-        payload=req.payload,
-    )
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        return _runtime_control.start_runtime_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=req.task_type,
+            payload=req.payload,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except FanxiuRuntimeError as exc:
+        _raise_fanxiu_runtime_http_error(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _serialize_fanxiu_pseudocode_card(card: FanxiuPseudoCodeCard) -> dict[str, Any]:
@@ -9960,8 +4635,7 @@ def screencap_fanxiu_game_window2_service(
 
 
 def _data_annotation_asset_tree_path(entry_id: str) -> Path:
-    safe_entry_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", entry_id).strip("._") or "default"
-    return _data_annotation_dir() / "asset-trees" / f"{safe_entry_id}.json"
+    return _core_data_annotation_asset_tree_path(entry_id)
 
 
 @status_router.get("/data-annotation/asset-tree")
@@ -10190,10 +4864,13 @@ def get_fanxiu_data_annotation_runtime_status(
     if entry_id:
         entry = _get_user_device_or_404(session, current_user, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(
+        _sync_data_annotation_runtime_runner_to_core()
+        _runtime_control.ensure_runtime_service(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
         )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
 
@@ -10210,10 +4887,13 @@ def get_fanxiu_data_annotation_runtime_service_status(
     if entry_id:
         entry = _get_service_user_device_or_404(session, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(
+        _sync_data_annotation_runtime_runner_to_core()
+        _runtime_control.ensure_runtime_service(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
         )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
 
@@ -10249,8 +4929,12 @@ def stop_fanxiu_data_annotation_runtime_task(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.stop_current_task(req.entry_id or "")
-    _persist_data_annotation_runtime_status(status)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.stop_current_task(
+        req.entry_id or "",
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10262,8 +4946,12 @@ def stop_fanxiu_data_annotation_runtime_task(
 def stop_fanxiu_data_annotation_runtime_service_task(
     req: FanxiuDataAnnotationRuntimeStopRequest,
 ):
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.stop_current_task(req.entry_id or "")
-    _persist_data_annotation_runtime_status(status)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.stop_current_task(
+        req.entry_id or "",
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10276,15 +4964,17 @@ def set_fanxiu_data_annotation_runtime_guard(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.set_guard(
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_runtime_guard(
         entry=entry,
         entry_id=entry_id,
         guard_id=req.guard_id,
         enabled=req.enabled,
         interval_seconds=req.interval_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
     )
-    _persist_data_annotation_runtime_status(status)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10299,15 +4989,17 @@ def set_fanxiu_data_annotation_runtime_service_guard(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.set_guard(
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_runtime_guard(
         entry=entry,
         entry_id=entry_id,
         guard_id=req.guard_id,
         enabled=req.enabled,
         interval_seconds=req.interval_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
     )
-    _persist_data_annotation_runtime_status(status)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10320,16 +5012,20 @@ def tick_fanxiu_data_annotation_runtime_task(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    task_type = req.task_type or "detect_scene"
-    if task_type == "manual_tick":
-        task_type = "detect_scene"
-    status = _submit_data_annotation_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=req.payload,
-        label="单步识别" if task_type == "detect_scene" else "",
-    )
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        status = _runtime_control.submit_tick_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=req.task_type,
+            payload=req.payload,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10344,16 +5040,20 @@ def tick_fanxiu_data_annotation_runtime_service_task(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    task_type = req.task_type or "detect_scene"
-    if task_type == "manual_tick":
-        task_type = "detect_scene"
-    status = _submit_data_annotation_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=task_type,
-        payload=req.payload,
-        label="单步识别" if task_type == "detect_scene" else "",
-    )
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        status = _runtime_control.submit_tick_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=req.task_type,
+            payload=req.payload,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10366,14 +5066,14 @@ def get_fanxiu_data_annotation_runtime_logs(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    status = _data_annotation_runtime_status()
-    log_items = [item for item in (status.get("logs") or []) if isinstance(item, dict)]
-    scope = str(scope or "").strip()
-    item_id = str(item_id or "").strip()
-    if scope:
-        log_items = [item for item in log_items if str(item.get("scope") or "") == scope]
-    if item_id:
-        log_items = [item for item in log_items if str(item.get("item_id") or "") == item_id]
+    _sync_data_annotation_runtime_runner_to_core()
+    log_items = _core_data_annotation_runtime_logs(
+        limit=limit,
+        scope=scope,
+        item_id=item_id,
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
     entries = [
         FanxiuDataAnnotationRuntimeLogEntry(
             id=f"runtime-{index}",
@@ -10384,7 +5084,7 @@ def get_fanxiu_data_annotation_runtime_logs(
             message=str(item.get("message") or ""),
             ts="",
         )
-        for index, item in enumerate(log_items[-limit:])
+        for index, item in enumerate(log_items)
     ]
     return FanxiuDataAnnotationRuntimeLogResponse(entries=entries, path=str(_data_annotation_runtime_state_path()))
 
@@ -10407,10 +5107,11 @@ def clear_fanxiu_data_annotation_runtime_logs(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    status["logs"] = []
-    _DATA_ANNOTATION_RUNTIME_RUNNER.replace_logs([])
-    _persist_data_annotation_runtime_status(status)
+    _sync_data_annotation_runtime_runner_to_core()
+    _core_clear_data_annotation_runtime_logs(
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
     return FanxiuDataAnnotationRuntimeLogResponse(entries=[], path=str(_data_annotation_runtime_state_path()))
 
 
@@ -10445,16 +5146,17 @@ def put_fanxiu_data_annotation_scheduler_tasks(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    payload = merge_data_annotation_scheduler_task_updates(
-        _read_data_annotation_scheduler_tasks(),
+    payload = _runtime_control.update_scheduler_tasks(
         [item.model_dump() for item in tasks],
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
         now=datetime.now(),
     )
-    _write_data_annotation_scheduler_tasks(payload)
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in _read_data_annotation_scheduler_tasks()
+            for item in payload
         ],
         path=str(_data_annotation_scheduler_state_path()),
     )
@@ -10469,27 +5171,23 @@ def run_now_fanxiu_data_annotation_scheduler_task(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    tasks = _read_data_annotation_scheduler_tasks()
-    state_task = next((item for item in tasks if item.get("id") == req.task_id), None)
-    run_task = _data_annotation_scheduler_run_now_task(tasks, req.task_id, req.payload)
-    if state_task is None or run_task is None:
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        status = _runtime_control.run_now_scheduler_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_id=req.task_id,
+            payload_override=req.payload,
+            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        )
+    except LookupError as exc:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not _data_annotation_task_supported(run_task):
-        raise HTTPException(status_code=400, detail="任务尚未纳入当前框架验收")
-    blocked_status = _prepare_data_annotation_runtime_for_scheduler_task(state_task, tasks)
-    if blocked_status is not None:
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(blocked_status)
-    state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state_task["last_result"] = "queued"
-    _write_data_annotation_scheduler_tasks(tasks)
-    status = _submit_data_annotation_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=str(run_task.get("task_type") or ""),
-        payload=_data_annotation_task_payload_with_meta(run_task),
-        label=f"手动任务：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
-        interruptible=bool(run_task.get("interruptible", True)),
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10504,27 +5202,23 @@ def run_now_fanxiu_data_annotation_scheduler_service_task(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    tasks = _read_data_annotation_scheduler_tasks()
-    state_task = next((item for item in tasks if item.get("id") == req.task_id), None)
-    run_task = _data_annotation_scheduler_run_now_task(tasks, req.task_id, req.payload)
-    if state_task is None or run_task is None:
+    _sync_data_annotation_runtime_runner_to_core()
+    try:
+        status = _runtime_control.run_now_scheduler_task(
+            entry=entry,
+            entry_id=entry_id,
+            task_id=req.task_id,
+            payload_override=req.payload,
+            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        )
+    except LookupError as exc:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if not _data_annotation_task_supported(run_task):
-        raise HTTPException(status_code=400, detail="任务尚未纳入当前框架验收")
-    blocked_status = _prepare_data_annotation_runtime_for_scheduler_task(state_task, tasks)
-    if blocked_status is not None:
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(blocked_status)
-    state_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state_task["last_result"] = "queued"
-    _write_data_annotation_scheduler_tasks(tasks)
-    status = _submit_data_annotation_manual_job(
-        entry=entry,
-        entry_id=entry_id,
-        task_type=str(run_task.get("task_type") or ""),
-        payload=_data_annotation_task_payload_with_meta(run_task),
-        label=f"手动任务：{run_task.get('label') or run_task.get('id') or run_task.get('task_type')}",
-        interruptible=bool(run_task.get("interruptible", True)),
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10537,36 +5231,16 @@ def run_due_fanxiu_data_annotation_scheduler_tasks(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    asset_tree_path = _data_annotation_asset_tree_path(entry_id)
-    _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-    tasks = _read_data_annotation_scheduler_tasks()
-    due_tasks = sorted(
-        [
-            item
-            for item in tasks
-            if str(item.get("schedule_kind") or "") != "manual"
-            and _data_annotation_task_due(item)
-            and _data_annotation_task_supported(item)
-        ],
-        key=data_annotation_scheduler_order_key,
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.run_due_scheduler_tasks(
+        entry=entry,
+        entry_id=entry_id,
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
-    if not due_tasks:
-        status = _data_annotation_runtime_status()
-        status.update({"message": "没有可执行的到期任务", "updated_at": time.time()})
-        _persist_data_annotation_runtime_status(status)
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
-    blocked_status = _prepare_data_annotation_runtime_for_scheduler_task(due_tasks[0], tasks)
-    if blocked_status is not None:
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(blocked_status)
-    _DATA_ANNOTATION_RUNTIME_RUNNER._service_wake_event.set()
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    status.update({
-        "entry_id": entry_id,
-        "phase": "scheduler_due_queued",
-        "message": f"已唤醒常驻行为树执行到期任务：{due_tasks[0].get('label') or due_tasks[0].get('id')}",
-        "updated_at": time.time(),
-    })
-    _persist_data_annotation_runtime_status(status)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
@@ -10581,36 +5255,16 @@ def run_due_fanxiu_data_annotation_scheduler_service_tasks(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    asset_tree_path = _data_annotation_asset_tree_path(entry_id)
-    _DATA_ANNOTATION_RUNTIME_RUNNER.ensure_service(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-    tasks = _read_data_annotation_scheduler_tasks()
-    due_tasks = sorted(
-        [
-            item
-            for item in tasks
-            if str(item.get("schedule_kind") or "") != "manual"
-            and _data_annotation_task_due(item)
-            and _data_annotation_task_supported(item)
-        ],
-        key=data_annotation_scheduler_order_key,
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.run_due_scheduler_tasks(
+        entry=entry,
+        entry_id=entry_id,
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
-    if not due_tasks:
-        status = _data_annotation_runtime_status()
-        status.update({"message": "没有可执行的到期任务", "updated_at": time.time()})
-        _persist_data_annotation_runtime_status(status)
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
-    blocked_status = _prepare_data_annotation_runtime_for_scheduler_task(due_tasks[0], tasks)
-    if blocked_status is not None:
-        return FanxiuDataAnnotationRuntimeStatus.model_validate(blocked_status)
-    _DATA_ANNOTATION_RUNTIME_RUNNER._service_wake_event.set()
-    status = _DATA_ANNOTATION_RUNTIME_RUNNER.status()
-    status.update({
-        "entry_id": entry_id,
-        "phase": "scheduler_due_queued",
-        "message": f"已唤醒常驻行为树执行到期任务：{due_tasks[0].get('label') or due_tasks[0].get('id')}",
-        "updated_at": time.time(),
-    })
-    _persist_data_annotation_runtime_status(status)
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 

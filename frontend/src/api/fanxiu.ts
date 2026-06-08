@@ -2275,7 +2275,17 @@ export interface FanxiuItemCard {
   effect_details?: FanxiuItemEffectDetail[];
   time_hints?: FanxiuTimelineHint[];
   first_time_hint?: FanxiuTimelineHint | null;
+  source_table?: string;
+  source_path?: string;
   source_row_key?: string | number;
+  icon_source_table?: string;
+  icon_source_field?: string;
+  icon_reuse_count?: number;
+  icon_quality_risk?: string;
+  icon_quality_note?: string;
+  small_icon_reuse_count?: number;
+  small_icon_quality_risk?: string;
+  small_icon_quality_note?: string;
   terms?: string[];
 }
 
@@ -2301,6 +2311,17 @@ export interface FanxiuItemSearchItem {
   effect_detail_preview?: string;
   progression_counts?: Record<string, number>;
   first_time_hint?: FanxiuTimelineHint | null;
+  source_table?: string;
+  source_path?: string;
+  source_row_key?: string | number;
+  icon_source_table?: string;
+  icon_source_field?: string;
+  icon_reuse_count?: number;
+  icon_quality_risk?: string;
+  icon_quality_note?: string;
+  small_icon_reuse_count?: number;
+  small_icon_quality_risk?: string;
+  small_icon_quality_note?: string;
   terms: string[];
   score: number;
 }
@@ -2326,11 +2347,158 @@ export interface FanxiuItemTypeOption {
   sub_type_name?: string;
 }
 
+export interface FanxiuItemIconQualityOption {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface FanxiuItemIconOption {
+  value: string;
+  label: string;
+  count: number;
+  type_summary?: string;
+  dominant_type?: string;
+  dominant_type_ratio?: number;
+  review_hint?: string;
+  review_priority?: string;
+  samples?: Array<{
+    id?: string | number;
+    name?: string;
+    resource_type?: string;
+    resource_href?: string;
+    type_name?: string;
+  }>;
+}
+
+export interface FanxiuItemIconQualityReviewRow {
+  field: string;
+  icon: string;
+  risk?: string;
+  count: string | number;
+  threshold?: string | number;
+  review_priority?: string;
+  review_hint?: string;
+  recommended_action?: string;
+  dominant_type?: string;
+  dominant_type_count?: string | number;
+  dominant_type_ratio?: string | number;
+  type_count?: string | number;
+  type_summary?: string;
+  sub_type_count?: string | number;
+  sub_type_summary?: string;
+  quality_summary?: string;
+  source_summary?: string;
+  name_prefix_count?: string | number;
+  name_prefix_summary?: string;
+  companion_field?: string;
+  companion_icon_count?: string | number;
+  companion_icon_summary?: string;
+  samples?: string;
+  samples_json?: string;
+  candidate_icon_count?: string | number;
+  candidate_icons_json?: string;
+  nearby_icon_count?: string | number;
+  nearby_icons_json?: string;
+  representative_samples?: Array<{
+    id?: string | number;
+    name?: string;
+    type_name?: string;
+    sub_type_name?: string;
+    type_sub_type_name?: string;
+    quality_name?: string;
+    icon?: string;
+    small_icon?: string;
+  }>;
+  candidate_icons?: Array<{
+    icon?: string;
+    score?: string | number;
+    reason?: string;
+  }>;
+  nearby_icons?: Array<{
+    icon?: string;
+    number_delta?: string | number;
+    reason?: string;
+  }>;
+}
+
+export interface FanxiuItemIconQualityReviewSummary {
+  catalog_path?: string;
+  output_dir?: string;
+  threshold?: number;
+  item_count?: number;
+  group_count?: number;
+  primary_group_count?: number;
+  small_group_count?: number;
+  high_priority_count?: number;
+  medium_priority_count?: number;
+  low_priority_count?: number;
+  candidate_group_count?: number;
+  candidate_icon_total?: number;
+  no_candidate_group_count?: number;
+  unresolved_no_candidate_group_count?: number;
+  no_candidate_review_status?: string;
+  nearby_context_group_count?: number;
+  nearby_context_icon_total?: number;
+  no_candidate_contact_sheet_path?: string;
+  no_candidate_groups?: Array<{
+    field?: string;
+    icon?: string;
+    count?: number;
+    review_priority?: string;
+    review_hint?: string;
+    type_summary?: string;
+    review_status?: string;
+    suggested_manual_action?: string;
+    recommended_action?: string;
+    remaining_risk?: string;
+    sample?: {
+      id?: string | number;
+      name?: string;
+      resource_type?: string;
+      resource_href?: string;
+      type_name?: string;
+      sub_type_name?: string;
+      type_sub_type_name?: string;
+      quality_name?: string;
+      icon?: string;
+      small_icon?: string;
+    };
+    nearby_icon_count?: number;
+    nearby_icons?: Array<{
+      icon?: string;
+      number_delta?: string | number;
+      reason?: string;
+    }>;
+  }>;
+  top_groups?: Array<{
+    field?: string;
+    icon?: string;
+    count?: number;
+    review_priority?: string;
+    review_hint?: string;
+    type_summary?: string;
+    candidate_icon_count?: number;
+    nearby_icon_count?: number;
+  }>;
+}
+
+export interface FanxiuItemIconQualityReviewResponse {
+  summary: FanxiuItemIconQualityReviewSummary;
+  items: FanxiuItemIconQualityReviewRow[];
+  total: number;
+  output_dir?: string;
+}
+
 export interface FanxiuItemSearchResponse {
   query: string;
   quality_name?: string;
   type_key?: string;
   sub_type_key?: string;
+  icon_quality?: string;
+  icon_name?: string;
+  small_icon_quality?: string;
+  small_icon_name?: string;
   sort_by?: string;
   sort_order?: string;
   limit: number;
@@ -2341,6 +2509,10 @@ export interface FanxiuItemSearchResponse {
   quality_options?: FanxiuItemQualityOption[];
   type_options?: FanxiuItemTypeOption[];
   sub_type_options?: FanxiuItemTypeOption[];
+  icon_quality_options?: FanxiuItemIconQualityOption[];
+  high_reuse_icon_options?: FanxiuItemIconOption[];
+  small_icon_quality_options?: FanxiuItemIconQualityOption[];
+  high_reuse_small_icon_options?: FanxiuItemIconOption[];
   facet_index?: FanxiuFacetIndex;
   items: FanxiuItemSearchItem[];
 }
@@ -4348,6 +4520,10 @@ export const searchFanxiuItemCards = (params: {
   quality_name?: string;
   type_key?: string;
   sub_type_key?: string;
+  icon_quality?: string;
+  icon_name?: string;
+  small_icon_quality?: string;
+  small_icon_name?: string;
   sort_by?: string;
   sort_order?: string;
   limit?: number;
@@ -4360,6 +4536,12 @@ export const searchFanxiuItemCards = (params: {
 export const getFanxiuItemCard = (itemId: string | number) => {
   return api
     .get<FanxiuItemCardResponse>('/fanxiu/resources/items/card', { params: { item_id: itemId } })
+    .then(res => res.data);
+};
+
+export const getFanxiuItemIconQualityReview = () => {
+  return api
+    .get<FanxiuItemIconQualityReviewResponse>('/fanxiu/resources/items/icon-quality-review')
     .then(res => res.data);
 };
 
@@ -4404,7 +4586,7 @@ export const getFanxiuPlayerProfiles = (params: { limit?: number } = {}) => {
 };
 
 export const getFanxiuMailRecords = (
-  params: { limit?: number; offset?: number; status?: string; action_policy?: string; source?: 'all' | 'packet' } = {},
+  params: { limit?: number; offset?: number; status?: string; action_policy?: string; source?: 'all' | 'packet' | 'packet_evidence' | 'packet_orphan' | 'packet+orphan' } = {},
 ) => {
   return api
     .get<FanxiuMailRecordListResponse>('/fanxiu/mail-records', { params, timeout: 120000 })

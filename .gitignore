@@ -53,6 +53,7 @@ backend/data/
 /.codex-runlogs/
 /.codex-logs/
 /.codex-dev-logs/
+/.codex-runtime-logs/
 /凡修/
 /.trae
 /tools/

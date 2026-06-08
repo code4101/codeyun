@@ -12,7 +12,12 @@ from backend.core.fanxiu_mail_store import (
     merge_duplicate_fanxiu_mail_records,
     upsert_fanxiu_mail_fact,
 )
-from backend.core.fanxiu_mail_policy import fanxiu_mail_action_policy_for_rewards
+from backend.core.fanxiu_mail_policy import (
+    fanxiu_mail_action_policy_for_record,
+    fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_rewards_unresolved,
+    fanxiu_mail_visible_group_action_policy,
+)
 from backend.core import fanxiu_mail_packet_sync
 from backend.core import fanxiu_packet_insight_worker
 from backend.api import fanxiu as fanxiu_api
@@ -584,6 +589,26 @@ def test_mail_policy_claims_four_ke_before_protected_resources_but_after_faze():
     ]) == ""
 
 
+def test_mail_visible_group_holds_ambiguous_same_title_time_candidates():
+    safe_record = FanxiuMailRecord(
+        mail_key="id:safe",
+        title="联盟天地弈局奖励",
+        normalized_title="联盟天地弈局奖励",
+        create_time_text="2026年06月07日23:59",
+        source="packet",
+        payload={"mail_rewards": [{"item_id": "1001", "item_name": "灵石", "item_type": "货币"}]},
+    )
+    protected_record = FanxiuMailRecord(
+        mail_key="id:protected",
+        title="联盟天地弈局奖励",
+        normalized_title="联盟天地弈局奖励",
+        create_time_text="2026年06月07日23:59",
+        source="packet",
+        payload={"mail_rewards": [{"item_id": "5030001", "item_name": "淬体精魄", "item_type": "丹药"}]},
+    )
+    assert fanxiu_mail_visible_group_action_policy([safe_record, protected_record]) == ""
+
+
 def test_mail_policy_holds_unknown_rewards():
     assert fanxiu_mail_action_policy_for_rewards([
         {"item_id": "999999", "item_name": "未知道具 #999999"},
@@ -665,6 +690,177 @@ def test_mail_packet_sync_reports_unknown_mail_protocol_frames(monkeypatch):
     assert result["unknown_mail_protocol_packets"] == 1
     assert result["unparsed_mail_protocol_packets"] == 1
     assert result["unknown_mail_protocol_samples"][0]["pro_id"] == 30404
+
+
+def test_mail_packet_gap_trace_reports_decoded_window_without_mail_protocol(monkeypatch, tmp_path):
+    session = _session()
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"pro_id": 20012, "name": "SM_SyncTime", "direction": "s2c", "parsed": {}},
+                    {"pro_id": 51004, "name": "SM_ActivitySync", "direction": "s2c", "parsed": {}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+    pcap = live_dir / "fanxiu_runtime_20260608_050019.pcap"
+    pcap.write_bytes(b"\xd4\xc3\xb2\xa1" + b"0" * 64)
+
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [
+            {
+                "decoded_path": decoded_path,
+                "created_at": "2026-06-08 05:01:27",
+                "pcap_name": pcap.name,
+                "source_kind": "record",
+            }
+        ],
+    )
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+
+    trace = fanxiu_mail_packet_sync.trace_fanxiu_mail_packet_gap(
+        session,
+        title="分身协助奖励",
+        time_text="2026年06月08日05:00",
+    )
+
+    assert trace["diagnosis"] == "decoded_window_has_no_mail_protocol"
+    assert trace["decoded_source_count"] == 1
+    assert trace["mail_protocol_frames"] == 0
+    assert trace["raw_pcap_count"] == 1
+
+
+def test_mail_packet_gap_trace_reports_unparsed_mail_protocol(monkeypatch, tmp_path):
+    session = _session()
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"pro_id": 30404, "name": "SM_NewMail", "direction": "s2c", "parsed": None},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [
+            {
+                "decoded_path": decoded_path,
+                "created_at": "2026-06-08 05:01:27",
+                "pcap_name": "capture.pcap",
+                "source_kind": "record",
+            }
+        ],
+    )
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+
+    trace = fanxiu_mail_packet_sync.trace_fanxiu_mail_packet_gap(
+        session,
+        title="分身协助奖励",
+        time_text="2026年06月08日05:00",
+    )
+
+    assert trace["diagnosis"] == "mail_protocol_unparsed_or_unmatched"
+    assert trace["decoded_mail_protocol_counts"] == {"SM_NewMail": 1}
+    assert trace["unparsed_mail_protocol_frames"] == 1
+
+
+def test_mail_packet_gap_trace_scans_raw_action_ids(monkeypatch, tmp_path):
+    session = _session()
+    decoded_path = tmp_path / "decoded.json"
+    mail_id = "24082878061629073"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"pro_id": 30406, "name": "SM_ReadMail", "direction": "s2c", "parsed": {"id": int(mail_id)}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+    pcap = live_dir / "fanxiu_runtime_20260608_045657.pcap"
+    pcap.write_bytes(b"prefix" + fanxiu_mail_packet_sync._encode_lusuo_zigzag_varint(int(mail_id)) + b"suffix")
+
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [
+            {
+                "decoded_path": decoded_path,
+                "created_at": "2026-06-08 04:58:00",
+                "pcap_name": pcap.name,
+                "source_kind": "record",
+            }
+        ],
+    )
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+
+    trace = fanxiu_mail_packet_sync.trace_fanxiu_mail_packet_gap(
+        session,
+        title="分身协助奖励",
+        time_text="2026年06月08日05:00",
+    )
+
+    assert trace["diagnosis"] == "decoded_window_has_mail_actions_but_no_source_fact"
+    assert trace["raw_action_id_hits"][0]["name"] == pcap.name
+    assert trace["raw_action_id_hits"][0]["mail_ids"] == [mail_id]
+    assert trace["raw_action_id_day_hits"][0]["mail_ids"] == [mail_id]
+
+
+def test_mail_packet_sync_reports_orphan_action_ids(monkeypatch, tmp_path):
+    session = _session()
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "name": "SM_ReadMail",
+                        "direction": "s2c",
+                        "parsed": {"id": 24082878061629073},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-08 04:58:00"}],
+    )
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+
+    result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
+
+    assert result["action_packets"] == 1
+    assert result["orphan_action_packets"] == 1
+    assert result["orphan_action_samples"][0]["mail_id"] == "24082878061629073"
+    row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "24082878061629073")).first()
+    assert row is not None
+    assert row.source == "packet_orphan_action"
+    assert row.status == "seen"
+    assert row.evidence["orphan_action"] is True
 
 
 def test_mail_decoder_uses_latest_message_text_assets_when_pinned_hash_missing(tmp_path):
@@ -1065,6 +1261,149 @@ def test_mail_packet_sync_renders_system_message_content_template(monkeypatch, t
     assert row.payload["mail_content_text"] == "恭喜道友在丹道问鼎中获得第5名，这是给道友的奖励，望再接再厉再创佳绩！"
 
 
+def test_mail_packet_sync_renders_system_message_time_and_rewards_placeholders(monkeypatch, tmp_path):
+    session = _session()
+    export_root = tmp_path / "exports"
+    system_message_dir = export_root / "parsed_configs" / "SystemMessage"
+    system_message_dir.mkdir(parents=True)
+    system_message_dir.joinpath("rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 41010,
+                    "text_plain": "所在灵脉：$NAME$ 本次聚灵时间：$TIME$ 本次聚灵收益：$L_REWARDS$",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        """
+{
+  "frames": [
+    {
+      "name": "SM_NewMail",
+      "parsed": {
+        "mailVo": {
+          "id": "mail-lingmai-template",
+          "type": 2201,
+          "title": "灵脉收益",
+          "content": "",
+          "createTime": 1780704000000,
+          "i18nParams": {
+            "items": [
+              {"_class": "I18nParam2Name", "value": "仙煌神脉", "_super": {"key": "NAME"}},
+              {"_class": "I18nParam2Num", "value": 10800000.0, "_super": {"key": "NUM"}},
+              {
+                "_class": "I18nParam2Reward",
+                "value": {"items": [{"type": 0, "code": 37, "amount": 301913}]},
+                "_super": {"key": "REWARD"}
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-06 20:00:00"}],
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "load_fanxiu_mail_envelope_titles",
+        lambda _export_root=None: {2201: {"title_plain": "灵脉收益", "contentId": 41010}},
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_normalize_mail_reward_item",
+        lambda reward, _export_root=None, _item_name_index=None: {
+            "item_name": "玄神灵液",
+            "amount": reward.get("amount"),
+        },
+    )
+
+    fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session, export_root=export_root)
+
+    row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "mail-lingmai-template")).first()
+    assert row is not None
+    assert row.payload["mail_content_text"] == "所在灵脉：仙煌神脉 本次聚灵时间：3小时 本次聚灵收益：玄神灵液 x301913"
+
+
+def test_mail_packet_sync_time_placeholder_consumes_matching_num_only(monkeypatch, tmp_path):
+    session = _session()
+    export_root = tmp_path / "exports"
+    system_message_dir = export_root / "parsed_configs" / "SystemMessage"
+    system_message_dir.mkdir(parents=True)
+    system_message_dir.joinpath("rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 35009,
+                    "text_plain": "吸收时间:$TIME$ 次数:$NUM$ 修为:$NUM$ 灵露:$NUM$ 体力:$NUM$ 答对:$NUM$",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(
+        """
+{
+  "frames": [
+    {
+      "name": "SM_NewMail",
+      "parsed": {
+        "mailVo": {
+          "id": "mail-lingquan-template",
+          "type": 1001014,
+          "title": "宗门灵泉活动收益",
+          "content": "",
+          "createTime": 1780704000000,
+          "i18nParams": {
+            "items": [
+              {"_class": "I18nParam2Num", "value": 720000.0, "_super": {"key": "NUM"}},
+              {"_class": "I18nParam2Num", "value": 80.0, "_super": {"key": "NUM"}},
+              {"_class": "I18nParam2Num", "value": 222000.0, "_super": {"key": "NUM"}},
+              {"_class": "I18nParam2Num", "value": 1.0, "_super": {"key": "NUM"}},
+              {"_class": "I18nParam2Num", "value": 80.0, "_super": {"key": "NUM"}},
+              {"_class": "I18nParam2Num", "value": 0.0, "_super": {"key": "NUM"}}
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_iter_fanxiu_tcp_decoded_sources",
+        lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-06 20:00:00"}],
+    )
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "load_fanxiu_mail_envelope_titles",
+        lambda _export_root=None: {1001014: {"title_plain": "宗门灵泉活动收益", "contentId": 35009}},
+    )
+
+    fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session, export_root=export_root)
+
+    row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "mail-lingquan-template")).first()
+    assert row is not None
+    assert row.payload["mail_content_text"] == "吸收时间:12分钟 次数:80 修为:222000 灵露:1 体力:80 答对:0"
+
+
 def test_mail_packet_sync_cleans_control_chars_in_i18n_param_keys(monkeypatch, tmp_path):
     session = _session()
     decoded_path = tmp_path / "decoded.json"
@@ -1187,6 +1526,60 @@ def test_merge_duplicate_mail_records_removes_weak_shadow_for_packet_record():
     assert rows[0].seen_count == 2
 
 
+def test_orphan_action_title_does_not_overwrite_visible_backfill():
+    session = _session()
+    record, _ = upsert_fanxiu_mail_fact(
+        session,
+        title="分身协助奖励",
+        mail_id="24082878061629073",
+        create_time_text="2026年06月08日05:00",
+        source="packet_orphan_action",
+        status="seen",
+        evidence={"visible_orphan_backfill": True},
+    )
+    session.add(record)
+    session.commit()
+
+    record, _ = upsert_fanxiu_mail_fact(
+        session,
+        title="未知邮件动作24082878061629073",
+        mail_id="24082878061629073",
+        create_time_text="",
+        source="packet_orphan_action",
+        status="seen",
+    )
+    session.add(record)
+    session.commit()
+
+    row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "24082878061629073")).first()
+    assert row is not None
+    assert row.title == "分身协助奖励"
+    assert row.create_time_text == "2026年06月08日05:00"
+
+
+def test_orphan_action_with_attachment_hint_has_no_runtime_action_policy():
+    record = FanxiuMailRecord(
+        mail_key="id:24082878061629073",
+        mail_id="24082878061629073",
+        title="分身协助奖励",
+        normalized_title="分身协助奖励",
+        create_time_text="2026年06月08日05:00",
+        source="packet_orphan_action",
+        status="seen",
+        payload={
+            "orphan_action_status": "seen",
+            "mail_rewards_unresolved": True,
+            "mail_rewards_unresolved_reason": "visible mail list proves an attachment, but decoded MailVo rewards are missing",
+            "has_attachment_hint": True,
+        },
+        evidence={"visible_orphan_backfill": True, "has_attachment_hint": True},
+    )
+
+    assert fanxiu_mail_rewards_unresolved(record.payload)
+    assert fanxiu_mail_action_policy_for_record(record) == ""
+    assert fanxiu_mail_visible_group_action_policy([record]) == ""
+
+
 def test_mail_records_endpoint_can_filter_packet_source(monkeypatch):
     session = _session()
     upsert_fanxiu_mail_fact(
@@ -1197,6 +1590,7 @@ def test_mail_records_endpoint_can_filter_packet_source(monkeypatch):
         create_time_text="2026年06月05日13:07",
         source="packet",
         status="seen",
+        payload={"mail_content_text": "分红发放正文"},
     )
     session.commit()
     monkeypatch.setattr(fanxiu_api, "ensure_fanxiu_write_permission", lambda *_args, **_kwargs: None)
@@ -1215,7 +1609,7 @@ def test_mail_records_endpoint_can_filter_packet_source(monkeypatch):
     assert response.records[0]["source"] == "packet"
 
 
-def test_mail_records_endpoint_defaults_to_packet_source_and_sorts_by_mail_time(monkeypatch):
+def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_time(monkeypatch):
     session = _session()
     packet, _ = upsert_fanxiu_mail_fact(
         session,
@@ -1225,6 +1619,7 @@ def test_mail_records_endpoint_defaults_to_packet_source_and_sorts_by_mail_time(
         create_time_text="2026年06月05日13:07",
         source="packet",
         status="seen",
+        payload={"mail_content_text": "分红发放正文"},
     )
     newer_packet, _ = upsert_fanxiu_mail_fact(
         session,
@@ -1234,13 +1629,25 @@ def test_mail_records_endpoint_defaults_to_packet_source_and_sorts_by_mail_time(
         create_time_text="2026年06月06日20:00",
         source="packet",
         status="seen",
+        payload={"mail_rewards": [{"item_id": "1", "item_name": "灵石", "icon": "icon_charge_0001"}]},
+    )
+    orphan, _ = upsert_fanxiu_mail_fact(
+        session,
+        title="未知邮件动作packet-3",
+        mail_id="packet-3",
+        create_time_text="2026年06月06日05:00",
+        source="packet_orphan_action",
+        status="seen",
     )
     packet.last_seen_at = 2000
     packet.updated_at = 2000
     newer_packet.last_seen_at = 1000
     newer_packet.updated_at = 1000
+    orphan.last_seen_at = 3000
+    orphan.updated_at = 3000
     session.add(packet)
     session.add(newer_packet)
+    session.add(orphan)
     session.commit()
     monkeypatch.setattr(fanxiu_api, "ensure_fanxiu_write_permission", lambda *_args, **_kwargs: None)
 
@@ -1258,6 +1665,79 @@ def test_mail_records_endpoint_defaults_to_packet_source_and_sorts_by_mail_time(
     assert [record["mail_id"] for record in response.records] == ["packet-2", "packet-1"]
     assert response.records[0]["create_time_text"] == "2026年06月06日20:00"
 
+    with_empty_actions = fanxiu_api.list_fanxiu_mail_records(
+        limit=2000,
+        offset=0,
+        status="",
+        action_policy="",
+        include_empty_actions=True,
+        current_user=object(),
+        session=session,
+    )
+    assert with_empty_actions.total == 3
+    assert [record["mail_id"] for record in with_empty_actions.records] == ["packet-2", "packet-3", "packet-1"]
+
+    packet_only = fanxiu_api.list_fanxiu_mail_records(
+        limit=2000,
+        offset=0,
+        status="",
+        action_policy="",
+        source="packet",
+        include_empty_actions=False,
+        current_user=object(),
+        session=session,
+    )
+    assert [record["mail_id"] for record in packet_only.records] == ["packet-2", "packet-1"]
+
+
+def test_mail_records_endpoint_hides_unresolved_orphan_attachment_evidence_by_default(monkeypatch):
+    session = _session()
+    orphan, _ = upsert_fanxiu_mail_fact(
+        session,
+        title="分身协助奖励",
+        mail_id="24082878061629073",
+        create_time_text="2026年06月08日05:00",
+        source="packet_orphan_action",
+        status="seen",
+        payload={
+            "mail_rewards_unresolved": True,
+            "has_attachment_hint": True,
+            "mail_rewards_unresolved_reason": "visible mail list proves an attachment, but decoded MailVo rewards are missing",
+        },
+        evidence={"visible_orphan_backfill": True, "has_attachment_hint": True},
+    )
+    orphan.last_seen_at = 1000
+    orphan.updated_at = 1000
+    session.add(orphan)
+    session.commit()
+    monkeypatch.setattr(fanxiu_api, "ensure_fanxiu_write_permission", lambda *_args, **_kwargs: None)
+
+    response = fanxiu_api.list_fanxiu_mail_records(
+        limit=2000,
+        offset=0,
+        status="",
+        action_policy="",
+        current_user=object(),
+        session=session,
+    )
+
+    assert response.count == 0
+    assert response.total == 0
+
+    response = fanxiu_api.list_fanxiu_mail_records(
+        limit=2000,
+        offset=0,
+        status="",
+        action_policy="",
+        include_empty_actions=True,
+        current_user=object(),
+        session=session,
+    )
+
+    assert response.count == 1
+    assert response.records[0]["source"] == "packet_orphan_action"
+    assert response.records[0]["payload"]["mail_rewards_unresolved"] is True
+
 
 def test_mail_records_endpoint_returns_offset_page_and_total(monkeypatch):
     session = _session()
@@ -1270,6 +1750,7 @@ def test_mail_records_endpoint_returns_offset_page_and_total(monkeypatch):
             create_time_text=f"2026年06月0{index + 1}日13:07",
             source="packet",
             status="seen",
+            payload={"mail_content_text": f"邮件{index}正文"},
         )
     session.commit()
     monkeypatch.setattr(fanxiu_api, "ensure_fanxiu_write_permission", lambda *_args, **_kwargs: None)

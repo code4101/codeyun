@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections import Counter
+from collections import Counter, deque
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from backend.core.fanxiu_mail_store import (
     format_fanxiu_mail_time_ms,
     mark_fanxiu_mail_action,
     mark_fanxiu_mail_locked,
+    normalize_fanxiu_mail_time_text,
+    normalize_fanxiu_mail_title,
     upsert_fanxiu_mail_fact,
 )
 from backend.core.fanxiu_resources import resolve_fanxiu_export_root
@@ -28,6 +31,7 @@ from backend.core.fanxiu_tcp_flow import (
     _iter_fanxiu_tcp_decoded_sources,
     _load_json_file,
     _strip_lua_rich_text,
+    resolve_fanxiu_tcp_live_capture_dir,
     resolve_fanxiu_tcp_store_root,
 )
 from backend.core.fanxiu_item_catalog import _item_type_meta, _text_value, load_fanxiu_item_runtime_index
@@ -48,6 +52,7 @@ MAIL_LOCK_PROTOCOLS = {
     "SM_LockMail",
 }
 MAIL_PROTOCOL_IDS = {30402, 30404, 30405, 30406, 30407, 30408, 30409, 30410}
+MAIL_ALL_PROTOCOLS = MAIL_SOURCE_PROTOCOLS | MAIL_ACTION_PROTOCOLS | MAIL_LOCK_PROTOCOLS
 
 
 MAIL_TYPE_TITLE_OVERRIDES = {
@@ -563,6 +568,55 @@ def _mail_i18n_param_values(
     return [value for value in values if value]
 
 
+def _mail_i18n_template_values(
+    mail_vo: dict[str, Any],
+    template: str,
+    *,
+    export_root: str | Path | None = None,
+    item_name_index: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    groups = _mail_i18n_param_groups(mail_vo, export_root=export_root, item_name_index=item_name_index)
+    queues: dict[str, deque[str]] = {key: deque(values) for key, values in groups.items()}
+    sequential_values = deque(
+        _mail_i18n_param_values(mail_vo, export_root=export_root, item_name_index=item_name_index)
+    )
+    raw_num_values: deque[Any] = deque()
+    for item in _iter_list_items(mail_vo.get("i18nParams")):
+        if not isinstance(item, dict):
+            continue
+        super_value = item.get("_super")
+        key = ""
+        if isinstance(super_value, dict):
+            key = _clean_mail_text(super_value.get("key")).upper()
+        if not key:
+            key = _clean_mail_text(item.get("key")).upper()
+        if key in {"NUM", "N"} and item.get("value") not in (None, ""):
+            raw_num_values.append(item.get("value"))
+
+    values: list[str] = []
+    for match in re.finditer(r"\$([^$]+)\$", template or ""):
+        placeholder = _clean_mail_text(match.group(1)).upper()
+        value = ""
+        if placeholder == "TIME":
+            raw_value = raw_num_values.popleft() if raw_num_values else None
+            value = _format_mail_duration_ms(raw_value)
+            if value and queues.get("NUM"):
+                queues["NUM"].popleft()
+            if not value and queues.get("NUM"):
+                value = str(queues["NUM"].popleft())
+        elif placeholder in {"L_REWARDS", "REWARDS", "REWARD"}:
+            if queues.get("REWARD"):
+                value = str(queues["REWARD"].popleft())
+        elif queues.get(placeholder):
+            value = str(queues[placeholder].popleft())
+        elif placeholder.startswith("L_") and queues.get(placeholder[2:]):
+            value = str(queues[placeholder[2:]].popleft())
+        elif sequential_values:
+            value = str(sequential_values.popleft())
+        values.append(value)
+    return values
+
+
 def _mail_i18n_param_text(
     mail_vo: dict[str, Any],
     *,
@@ -674,7 +728,12 @@ def _mail_content_from_system_message(
     template = str(message.get("text_plain") or message.get("text") or "").strip()
     if not template:
         return ""
-    values = _mail_i18n_param_values(mail_vo, export_root=export_root, item_name_index=item_name_index)
+    values = _mail_i18n_template_values(
+        mail_vo,
+        template,
+        export_root=export_root,
+        item_name_index=item_name_index,
+    )
     return _render_system_message_template(template, values)
 
 
@@ -814,6 +873,103 @@ def _mail_title_fallback(mail_vo: dict[str, Any]) -> str:
     return f"未知邮件类型{mail_type}" if mail_type else ""
 
 
+def _parse_mail_time_text(value: Any) -> datetime | None:
+    text = normalize_fanxiu_mail_time_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y年%m月%d日%H:%M")
+    except ValueError:
+        return None
+
+
+def _parse_capture_time(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _pcap_name_time(path: Path) -> datetime | None:
+    match = re.search(r"(\d{8})_(\d{6})", path.name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _encode_lusuo_zigzag_varint(value: int) -> bytes:
+    encoded = (int(value) << 1) ^ (int(value) >> 63)
+    output = bytearray()
+    while True:
+        item = encoded & 0x7F
+        encoded >>= 7
+        if encoded:
+            output.append(item | 0x80)
+        else:
+            output.append(item)
+            break
+    return bytes(output)
+
+
+def _mail_id_raw_patterns(mail_id: str) -> list[bytes]:
+    text = str(mail_id or "").strip()
+    if not text:
+        return []
+    patterns = [text.encode("ascii", errors="ignore")]
+    try:
+        patterns.append(_encode_lusuo_zigzag_varint(int(text)))
+    except ValueError:
+        pass
+    return [item for item in patterns if item]
+
+
+def _scan_raw_pcaps_for_mail_ids(
+    paths: list[Path],
+    mail_ids: list[str],
+    *,
+    max_hits: int = 40,
+) -> list[dict[str, Any]]:
+    patterns = {
+        mail_id: _mail_id_raw_patterns(mail_id)
+        for mail_id in dict.fromkeys(str(item or "").strip() for item in mail_ids)
+        if mail_id
+    }
+    if not patterns:
+        return []
+    hits: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            data = path.read_bytes()
+            stat = path.stat()
+        except OSError:
+            continue
+        matched_ids: list[str] = []
+        for mail_id, id_patterns in patterns.items():
+            if any(pattern and data.find(pattern) >= 0 for pattern in id_patterns):
+                matched_ids.append(mail_id)
+        if not matched_ids:
+            continue
+        hits.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "size": stat.st_size,
+                "mail_ids": matched_ids,
+            }
+        )
+        if len(hits) >= max_hits:
+            break
+    return hits
+
+
 def _iter_mail_vos(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     mail_vo = parsed.get("mailVo")
     if isinstance(mail_vo, dict):
@@ -832,6 +988,229 @@ def _packet_evidence(source: dict[str, Any], frame: dict[str, Any], index: int) 
         "record_id": source.get("record_id") or "",
         "pcap_name": source.get("pcap_name") or "",
         "source_path": str(source.get("decoded_path") or ""),
+    }
+
+
+def trace_fanxiu_mail_packet_gap(
+    session: Session,
+    *,
+    title: str,
+    time_text: str,
+    data_dir: str | Path | None = None,
+    window_minutes: int = 8,
+    max_sources: int = 24,
+) -> dict[str, Any]:
+    """Explain where a visible mail row disappears from the packet pipeline."""
+
+    ensure_fanxiu_mail_table()
+    normalized_title = normalize_fanxiu_mail_title(title)
+    normalized_time = normalize_fanxiu_mail_time_text(time_text)
+    target_dt = _parse_mail_time_text(normalized_time)
+    window = max(1, int(window_minutes or 8))
+    max_source_count = max(1, int(max_sources or 24))
+
+    exact = session.exec(
+        select(FanxiuMailRecord)
+        .where(
+            FanxiuMailRecord.source == "packet",
+            FanxiuMailRecord.normalized_title == normalized_title,
+            FanxiuMailRecord.create_time_text == normalized_time,
+        )
+        .limit(5)
+    ).all()
+    same_title = session.exec(
+        select(FanxiuMailRecord)
+        .where(FanxiuMailRecord.source == "packet", FanxiuMailRecord.normalized_title == normalized_title)
+        .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
+        .limit(5)
+    ).all()
+    same_time = session.exec(
+        select(FanxiuMailRecord)
+        .where(FanxiuMailRecord.source == "packet", FanxiuMailRecord.create_time_text == normalized_time)
+        .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
+        .limit(5)
+    ).all()
+
+    decoded_sources: list[dict[str, Any]] = []
+    decoded_protocol_counts: Counter[str] = Counter()
+    mail_protocol_frames = 0
+    mail_source_protocol_frames = 0
+    mail_action_protocol_frames = 0
+    mail_lock_protocol_frames = 0
+    unparsed_mail_protocol_frames = 0
+    unknown_mail_protocol_frames = 0
+    decoded_text_hits: list[dict[str, Any]] = []
+    decoded_mail_action_ids: list[dict[str, Any]] = []
+    if target_dt is not None:
+        start = target_dt - timedelta(minutes=window)
+        end = target_dt + timedelta(minutes=window)
+        for source in _iter_fanxiu_tcp_decoded_sources(data_dir):
+            captured_at = _parse_capture_time(source.get("created_at"))
+            if captured_at is None or captured_at < start or captured_at > end:
+                continue
+            decoded_path = Path(str(source.get("decoded_path") or ""))
+            data = _load_json_file(decoded_path) or {}
+            frames = data.get("frames") if isinstance(data, dict) else []
+            frame_count = len(frames) if isinstance(frames, list) else 0
+            source_mail_counts: Counter[str] = Counter()
+            source_unparsed = 0
+            source_unknown = 0
+            for frame in frames if isinstance(frames, list) else []:
+                if not isinstance(frame, dict):
+                    continue
+                name = str(frame.get("name") or "")
+                try:
+                    pro_id = int(frame.get("pro_id") or 0)
+                except (TypeError, ValueError):
+                    pro_id = 0
+                if name in MAIL_ALL_PROTOCOLS or pro_id in MAIL_PROTOCOL_IDS:
+                    mail_protocol_frames += 1
+                    if name in MAIL_SOURCE_PROTOCOLS:
+                        mail_source_protocol_frames += 1
+                    elif name in MAIL_ACTION_PROTOCOLS:
+                        mail_action_protocol_frames += 1
+                    elif name in MAIL_LOCK_PROTOCOLS:
+                        mail_lock_protocol_frames += 1
+                    key = name or str(pro_id)
+                    source_mail_counts[key] += 1
+                    decoded_protocol_counts[key] += 1
+                    if not isinstance(frame.get("parsed"), dict):
+                        source_unparsed += 1
+                        unparsed_mail_protocol_frames += 1
+                    if name in MAIL_ACTION_PROTOCOLS and isinstance(frame.get("parsed"), dict):
+                        for mail_id in _extract_mail_ids(frame.get("parsed") or {}):
+                            if len(decoded_mail_action_ids) < 20:
+                                decoded_mail_action_ids.append(
+                                    {
+                                        "id": mail_id,
+                                        "protocol": name,
+                                        "created_at": source.get("created_at") or "",
+                                        "pcap_name": source.get("pcap_name") or "",
+                                    }
+                                )
+                if pro_id in MAIL_PROTOCOL_IDS and not name:
+                    source_unknown += 1
+                    unknown_mail_protocol_frames += 1
+            hit_terms = []
+            if decoded_path.is_file():
+                try:
+                    text = decoded_path.read_text(encoding="utf-8", errors="ignore")
+                    hit_terms = [
+                        term
+                        for term in {normalized_title, title, normalized_time}
+                        if term and term in text
+                    ]
+                except OSError:
+                    hit_terms = []
+            if hit_terms and len(decoded_text_hits) < 8:
+                decoded_text_hits.append(
+                    {
+                        "created_at": source.get("created_at") or "",
+                        "pcap_name": source.get("pcap_name") or "",
+                        "decoded_path": str(decoded_path),
+                        "terms": hit_terms,
+                    }
+                )
+            if len(decoded_sources) < max_source_count:
+                decoded_sources.append(
+                    {
+                        "created_at": source.get("created_at") or "",
+                        "pcap_name": source.get("pcap_name") or "",
+                        "source_kind": source.get("source_kind") or "",
+                        "decoded_path": str(decoded_path),
+                        "frame_count": frame_count,
+                        "mail_protocol_counts": dict(source_mail_counts),
+                        "unparsed_mail_protocol_frames": source_unparsed,
+                        "unknown_mail_protocol_frames": source_unknown,
+                    }
+                )
+
+    raw_pcaps: list[dict[str, Any]] = []
+    raw_pcap_paths: list[Path] = []
+    raw_day_pcap_paths: list[Path] = []
+    if target_dt is not None:
+        start = target_dt - timedelta(minutes=window)
+        end = target_dt + timedelta(minutes=window)
+        live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
+        if live_dir.is_dir():
+            for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.name):
+                pcap_dt = _pcap_name_time(path)
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                mtime_dt = datetime.fromtimestamp(stat.st_mtime)
+                observed_dt = pcap_dt or mtime_dt
+                if observed_dt.date() == target_dt.date():
+                    raw_day_pcap_paths.append(path)
+                if observed_dt < start or observed_dt > end:
+                    continue
+                raw_pcap_paths.append(path)
+                if len(raw_pcaps) < max_source_count:
+                    raw_pcaps.append(
+                        {
+                            "name": path.name,
+                            "path": str(path),
+                            "size": stat.st_size,
+                            "mtime": mtime_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
+
+    action_mail_ids = [str(item.get("id") or "") for item in decoded_mail_action_ids if isinstance(item, dict)]
+    raw_action_id_hits = _scan_raw_pcaps_for_mail_ids(raw_pcap_paths, action_mail_ids)
+    raw_action_id_day_hits = _scan_raw_pcaps_for_mail_ids(raw_day_pcap_paths, action_mail_ids)
+
+    if exact:
+        diagnosis = "packet_fact_exists"
+    elif target_dt is None:
+        diagnosis = "invalid_visible_mail_time"
+    elif mail_source_protocol_frames:
+        diagnosis = "mail_protocol_unparsed_or_unmatched" if unparsed_mail_protocol_frames else "mail_protocol_present_but_unmatched"
+    elif mail_protocol_frames:
+        diagnosis = "decoded_window_has_mail_actions_but_no_source_fact"
+    elif decoded_sources:
+        diagnosis = "decoded_window_has_no_mail_protocol"
+    elif raw_pcaps:
+        diagnosis = "raw_pcap_window_not_decoded"
+    else:
+        diagnosis = "no_capture_window"
+
+    def _record_summary(record: FanxiuMailRecord) -> dict[str, Any]:
+        evidence = record.evidence if isinstance(record.evidence, dict) else {}
+        return {
+            "title": record.title,
+            "time_text": record.create_time_text,
+            "mail_id": record.mail_id,
+            "status": record.status,
+            "action_policy": record.action_policy,
+            "protocol": evidence.get("protocol") or "",
+            "pcap_name": evidence.get("pcap_name") or "",
+        }
+
+    return {
+        "title": title,
+        "normalized_title": normalized_title,
+        "time_text": normalized_time,
+        "window_minutes": window,
+        "diagnosis": diagnosis,
+        "exact_records": [_record_summary(record) for record in exact],
+        "same_title_records": [_record_summary(record) for record in same_title],
+        "same_time_records": [_record_summary(record) for record in same_time],
+        "decoded_source_count": len(decoded_sources),
+        "decoded_sources": decoded_sources,
+        "decoded_mail_protocol_counts": dict(decoded_protocol_counts),
+        "mail_protocol_frames": mail_protocol_frames,
+        "mail_source_protocol_frames": mail_source_protocol_frames,
+        "mail_action_protocol_frames": mail_action_protocol_frames,
+        "mail_lock_protocol_frames": mail_lock_protocol_frames,
+        "unparsed_mail_protocol_frames": unparsed_mail_protocol_frames,
+        "unknown_mail_protocol_frames": unknown_mail_protocol_frames,
+        "decoded_mail_action_ids": decoded_mail_action_ids,
+        "decoded_text_hits": decoded_text_hits,
+        "raw_pcap_count": len(raw_pcaps),
+        "raw_pcaps": raw_pcaps,
+        "raw_action_id_hits": raw_action_id_hits,
+        "raw_action_id_day_hits": raw_action_id_day_hits,
     }
 
 
@@ -856,6 +1235,8 @@ def sync_fanxiu_mail_packets(
     updated = 0
     source_packets = 0
     action_packets = 0
+    orphan_action_packets = 0
+    orphan_action_samples: list[dict[str, Any]] = []
     skipped_mail_vo = 0
     unknown_mail_protocol_packets = 0
     unparsed_mail_protocol_packets = 0
@@ -957,6 +1338,39 @@ def sync_fanxiu_mail_packets(
     for mail_id, events in status_events.items():
         record = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == mail_id)).first()
         if not record:
+            orphan_action_packets += len(events)
+            event = events[-1] if events else {}
+            status = str(event.get("status") or "seen").strip() or "seen"
+            evidence = dict(event.get("evidence") or {})
+            evidence["orphan_action"] = True
+            evidence["orphan_action_reason"] = "action packet observed before any decoded mail source fact"
+            evidence["mail_actions"] = [item.get("evidence") for item in events[-8:] if isinstance(item, dict)]
+            record, created = upsert_fanxiu_mail_fact(
+                session,
+                title=f"未知邮件动作{mail_id}",
+                mail_id=mail_id,
+                create_time_text="",
+                source="packet_orphan_action",
+                status=status,
+                action_policy="",
+                payload={
+                    "orphan_action_status": status,
+                    "mail_rewards_unresolved": True,
+                    "mail_rewards_unresolved_reason": "action packet observed before any decoded MailVo rewards",
+                },
+                evidence=evidence,
+                seen_capture_at=str(evidence.get("action_observed_at") or ""),
+            )
+            if created:
+                inserted += 1
+            else:
+                updated += 1
+            session.add(record)
+            if len(orphan_action_samples) < 12:
+                sample = dict(evidence)
+                sample["mail_id"] = mail_id
+                sample["status"] = status
+                orphan_action_samples.append(sample)
             continue
         final = ""
         for candidate in ("claimed", "deleted", "seen"):
@@ -1042,6 +1456,8 @@ def sync_fanxiu_mail_packets(
         "source_count": len(sources),
         "source_packets": source_packets,
         "action_packets": action_packets,
+        "orphan_action_packets": orphan_action_packets,
+        "orphan_action_samples": orphan_action_samples,
         "skipped_mail_vo": skipped_mail_vo,
         "unknown_mail_protocol_packets": unknown_mail_protocol_packets,
         "unparsed_mail_protocol_packets": unparsed_mail_protocol_packets,
