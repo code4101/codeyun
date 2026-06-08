@@ -220,6 +220,75 @@ def _write_tsv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) ->
         writer.writerows(rows)
 
 
+def _icon_reuse_risk_for_fields(fields: set[str]) -> str:
+    if fields == {"small_icon"}:
+        return "high_reuse_small_icon"
+    if fields == {"head_icon"}:
+        return "high_reuse_head_icon"
+    if "icon" in fields:
+        return "high_reuse_primary_icon"
+    return "high_reuse_mixed_icon"
+
+
+def _build_icon_quality_risk_rows(icon_to_uses: dict[str, list[IconUse]], *, primary_reuse_threshold: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    primary_fields = {"icon", "small_icon", "head_icon"}
+    for icon, icon_uses in sorted(icon_to_uses.items(), key=lambda item: (-len(item[1]), item[0])):
+        primary_uses = [use for use in icon_uses if use.field in primary_fields]
+        if len(primary_uses) < primary_reuse_threshold:
+            continue
+        samples = []
+        type_sources = {use.source for use in primary_uses}
+        fields = {use.field for use in primary_uses}
+        item_catalog_use_count = sum(1 for use in primary_uses if use.source == "item_catalog")
+        if type_sources == {"item_catalog"}:
+            source_scope = "item_catalog_only"
+        elif len(type_sources) == 1:
+            source_scope = "other_catalog_only"
+        else:
+            source_scope = "cross_catalog"
+        for use in primary_uses:
+            label = f"{use.item_id}:{use.item_name}".strip(":")
+            if label and label not in samples:
+                samples.append(label)
+            if len(samples) >= 12:
+                break
+        rows.append(
+            {
+                "icon": icon,
+                "primary_use_count": len(primary_uses),
+                "item_catalog_use_count": item_catalog_use_count,
+                "total_use_count": len(icon_uses),
+                "risk": _icon_reuse_risk_for_fields(fields),
+                "source_scope": source_scope,
+                "sources": ",".join(sorted(type_sources)),
+                "fields": ",".join(sorted(fields)),
+                "samples": " | ".join(samples),
+            }
+        )
+    return rows
+
+
+def _count_icon_quality_risks_by_type(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        risk = str(row.get("risk") or "").strip()
+        if not risk:
+            continue
+        counts[risk] = counts.get(risk, 0) + 1
+    return counts
+
+
+def _count_icon_quality_risks_by_scope(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        scope = str(row.get("source_scope") or "").strip()
+        if not scope:
+            continue
+        counts[scope] = counts.get(scope, 0) + 1
+    return counts
+
+
 async def _cdp_call(ws: Any, seq: int, method: str, params: dict[str, Any] | None = None) -> Any:
     await ws.send(json.dumps({"id": seq, "method": method, "params": params or {}}))
     while True:
@@ -278,8 +347,11 @@ async def _scan_page_broken_images(chrome_path: str, url: str, wait_ms: int) -> 
   return {
     title: document.title,
     imageCount: imgs.length,
+    lazyPending: imgs
+      .filter(img => img.loading === 'lazy' && !img.complete && (img.currentSrc || img.src))
+      .length,
     broken: imgs
-      .filter(img => !img.complete || img.naturalWidth === 0 || img.naturalHeight === 0)
+      .filter(img => img.complete && (img.naturalWidth === 0 || img.naturalHeight === 0))
       .map(img => ({
         src: img.currentSrc || img.src || '',
         alt: img.alt || '',
@@ -313,6 +385,12 @@ def main() -> int:
     parser.add_argument("--browser", action="store_true", help="Open wiki pages in headless Chrome and report broken images.")
     parser.add_argument("--chrome", default=DEFAULT_CHROME)
     parser.add_argument("--browser-wait-ms", type=int, default=8000)
+    parser.add_argument(
+        "--primary-reuse-risk-threshold",
+        type=int,
+        default=50,
+        help="Report primary item icons reused at least this many times as quality risks; quality frames are ignored.",
+    )
     args = parser.parse_args()
 
     export_root = resolve_fanxiu_export_root(args.export_root or None)
@@ -332,6 +410,55 @@ def main() -> int:
         icon_to_uses.setdefault(use.icon, []).append(use)
 
     icons = sorted(icon_to_uses)
+    usage_rows = []
+    for icon, icon_uses in sorted(icon_to_uses.items(), key=lambda item: (-len(item[1]), item[0])):
+        samples = []
+        sources = set()
+        fields = set()
+        for use in icon_uses:
+            sources.add(use.source)
+            fields.add(use.field)
+            label = f"{use.item_id}:{use.item_name}".strip(":")
+            if label and label not in samples:
+                samples.append(label)
+            if len(samples) >= 8:
+                break
+        usage_rows.append(
+            {
+                "icon": icon,
+                "use_count": len(icon_uses),
+                "sources": ",".join(sorted(sources)),
+                "fields": ",".join(sorted(fields)),
+                "samples": " | ".join(samples),
+            }
+        )
+    _write_tsv(
+        output_dir / "icon_usage_summary_latest.tsv",
+        usage_rows,
+        ["icon", "use_count", "sources", "fields", "samples"],
+    )
+    primary_reuse_risk_threshold = max(1, int(getattr(args, "primary_reuse_risk_threshold", 50) or 50))
+    quality_risk_rows = _build_icon_quality_risk_rows(
+        icon_to_uses,
+        primary_reuse_threshold=primary_reuse_risk_threshold,
+    )
+    quality_risk_counts_by_type = _count_icon_quality_risks_by_type(quality_risk_rows)
+    quality_risk_counts_by_scope = _count_icon_quality_risks_by_scope(quality_risk_rows)
+    _write_tsv(
+        output_dir / "icon_quality_risks_latest.tsv",
+        quality_risk_rows,
+        [
+            "icon",
+            "primary_use_count",
+            "item_catalog_use_count",
+            "total_use_count",
+            "risk",
+            "source_scope",
+            "sources",
+            "fields",
+            "samples",
+        ],
+    )
     if args.max_icons > 0:
         icons = icons[: args.max_icons]
     print(f"checking {len(icons)} / {len(icon_to_uses)} unique icons through HTTP icon endpoint", flush=True)
@@ -374,6 +501,7 @@ def main() -> int:
 
     browser_rows: list[dict[str, Any]] = []
     browser_hard_failure_rows: list[dict[str, Any]] = []
+    browser_lazy_pending_count = 0
     if args.browser:
         pages = [
             f"{args.frontend_base.rstrip('/')}/fanxiu/wiki?tab=item&id=30060000",
@@ -382,6 +510,7 @@ def main() -> int:
         ]
         for url in pages:
             scan = asyncio.run(_scan_page_broken_images(args.chrome, url, args.browser_wait_ms))
+            browser_lazy_pending_count += int(scan.get("lazyPending") or 0)
             for broken in scan.get("broken") or []:
                 row = {
                     "url": scan.get("url", url),
@@ -407,12 +536,23 @@ def main() -> int:
         )
 
     summary = {
+        "scan_full_items": bool(args.full_items),
+        "api_limit": args.api_limit,
+        "checked_icon_limit": args.max_icons,
         "unique_icons": len(icon_to_uses),
         "icon_uses": sum(len(v) for v in icon_to_uses.values()),
+        "max_icon_reuse_count": max((len(v) for v in icon_to_uses.values()), default=0),
+        "icon_usage_summary_path": str(output_dir / "icon_usage_summary_latest.tsv"),
+        "primary_icon_reuse_risk_threshold": primary_reuse_risk_threshold,
+        "primary_icon_reuse_risk_count": len(quality_risk_rows),
+        "icon_quality_risk_counts_by_type": quality_risk_counts_by_type,
+        "icon_quality_risk_counts_by_scope": quality_risk_counts_by_scope,
+        "icon_quality_risks_path": str(output_dir / "icon_quality_risks_latest.tsv"),
         "icon_endpoint_failures": len({row["icon"] for row in failures}),
         "api_endpoint_errors": len(endpoint_rows),
         "browser_broken_images_observed": len(browser_rows),
         "browser_broken_image_endpoint_failures": len(browser_hard_failure_rows),
+        "browser_lazy_pending_images_observed": browser_lazy_pending_count,
         "output_dir": str(output_dir),
     }
     (output_dir / "summary_latest.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

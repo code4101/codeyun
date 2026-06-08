@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from backend.api import fanxiu
+from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
+from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
+from backend.core.fanxiu_runtime_errors import FanxiuRuntimeError
 
 
 def _scheduler_state_path(tmp_path):
@@ -12,12 +15,19 @@ def _scheduler_state_path(tmp_path):
 
 
 def _patch_data_annotation_api_common(monkeypatch, tmp_path):
-    monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", fanxiu._DataAnnotationRuntimeRunner())
+    monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_fanxiu_runtime_runner())
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_job_group_isolation_path", lambda: tmp_path / "job_group_isolation.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_job_group_isolation_path", lambda: tmp_path / "job_group_isolation.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(fanxiu, "ensure_feature_access", lambda *args, **kwargs: None)
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda *args, **kwargs: object())
 
@@ -468,7 +478,9 @@ def test_data_annotation_world_facts_merges_runtime_guard_and_keeps_events(tmp_p
 def test_data_annotation_scheduler_task_result_writes_world_fact(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    runner = create_fanxiu_runtime_runner()
     task = {
         "id": "manual-gift",
         "task_type": "gift_code_redeem",
@@ -491,7 +503,7 @@ def test_data_annotation_scheduler_task_result_writes_world_fact(tmp_path, monke
 
 
 def test_data_annotation_runtime_indexes_nested_frame_tree_images_and_guard_candidates():
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     tree = [
         {
             "type": "folder",
@@ -873,7 +885,7 @@ def test_data_annotation_manual_job_registry_dispatches_custom_backend_logic(mon
         return "success"
 
     try:
-        runner = fanxiu._DataAnnotationRuntimeRunner()
+        runner = create_fanxiu_runtime_runner()
         ctx = {"marker": "ctx"}
         stop_event = fanxiu.threading.Event()
 
@@ -922,6 +934,8 @@ def test_data_annotation_manual_job_submit_is_queue_mediator(tmp_path, monkeypat
 
         assert status["running"] is False
         assert status["phase"] == "manual_job_queued"
+        assert status["queued_job"]["id"] == jobs[0]["id"]
+        assert status["queued_job"]["task_type"] == task_type
         assert jobs == [
             {
                 **jobs[0],
@@ -964,7 +978,7 @@ def test_data_annotation_run_now_gift_code_executes_through_runtime_thread(tmp_p
             "checkpoint": None,
         }
     ])
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     executed: list[list[str]] = []
 
     def fake_require_assets(ctx):
@@ -1193,7 +1207,7 @@ def test_data_annotation_runtime_status_corrects_stale_running_after_backend_rel
         "updated_at": 1,
     }
     fanxiu._write_data_annotation_json(tmp_path / "runtime_state.json", stale_status)
-    monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", fanxiu._DataAnnotationRuntimeRunner())
+    monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_fanxiu_runtime_runner())
 
     status = fanxiu._data_annotation_runtime_status()
     persisted = json.loads((tmp_path / "runtime_state.json").read_text(encoding="utf-8"))
@@ -1211,7 +1225,7 @@ def test_data_annotation_runtime_status_corrects_stale_running_after_backend_rel
 
 def test_data_annotation_runtime_stop_only_targets_current_task_not_resident_service(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     stop_event = fanxiu.threading.Event()
     fake_thread = type("AliveThread", (), {"is_alive": lambda self: True})()
     runner._service_thread = fake_thread
@@ -1245,7 +1259,7 @@ def test_data_annotation_runtime_stop_only_targets_current_task_not_resident_ser
 
 def test_data_annotation_direct_runtime_task_runs_inline_and_persists_status(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
     monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
     monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
@@ -1272,9 +1286,80 @@ def test_data_annotation_direct_runtime_task_runs_inline_and_persists_status(tmp
     assert facts["runtime"]["task_type"] == ""
 
 
+def test_local_runtime_task_isolates_job_group_and_releases_lock(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_runtime_guard_service_tick", lambda *_args, **_kwargs: fanxiu.BehaviorTreeStatus.SKIP)
+
+    def fake_execute(_ctx, task_type, payload, _stop_event):
+        assert task_type == "hide_floating_window"
+        assert payload["__local_run"] is True
+        assert runner._job_group_isolated() is True
+        return "success"
+
+    monkeypatch.setattr(runner, "_execute_runtime_task", fake_execute)
+
+    status = runner.start_local_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task_type="hide_floating_window",
+        payload={},
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert status["running"] is False
+    assert status["status"] == "success"
+    assert not (tmp_path / "job_group_isolation.json").exists()
+
+
+def test_local_runtime_task_phase_skips_close_popup_guard(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    with runner._lock:
+        runner._status["phase"] = "local_run"
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: (_ for _ in ()).throw(AssertionError("local_run should not run guard screencap")))
+
+    result = runner._runtime_guard_service_tick(
+        "close_popups",
+        {"images": {}},
+        tmp_path / "entry.json",
+        fanxiu.threading.Event(),
+    )
+
+    assert result == fanxiu.BehaviorTreeStatus.SKIP
+
+
+def test_due_scheduler_is_skipped_when_job_group_isolated(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "hide-floating",
+        "task_type": "hide_floating_window",
+        "label": "隐藏浮窗",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "interruptible": True,
+        "payload": {},
+        "schedule_times": ["00:00"],
+        "last_result": "",
+    }
+    fanxiu._write_data_annotation_scheduler_tasks([task])
+    runner._acquire_job_group_isolation(reason="test")
+
+    started = runner._start_due_scheduler_tasks_if_idle(
+        entry=object(),
+        entry_id="entry",
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert started is False
+
+
 def test_data_annotation_scheduler_tasks_run_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     task = {
         "id": "hide-floating",
         "task_type": "hide_floating_window",
@@ -1307,7 +1392,7 @@ def test_data_annotation_scheduler_tasks_run_inside_resident_service_without_wor
     assert not hasattr(runner, "_thread")
 
 
-class _DispatchRunner(fanxiu._DataAnnotationRuntimeRunner):
+class _DispatchRunner(get_fanxiu_runtime_runner_class()):
     def __init__(self):
         super().__init__()
         self.calls = []
@@ -1352,7 +1437,7 @@ def test_data_annotation_runtime_task_dispatch_uses_backend_tasks():
 
 
 def test_data_annotation_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp_path):
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     runner._guard_enabled = True
     ctx = {"entry": object()}
     calls = []
@@ -1398,7 +1483,7 @@ def test_data_annotation_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp
 
 
 def test_data_annotation_scene_jump_wait_does_not_accept_expected_match_when_global_scene_is_source(monkeypatch, tmp_path):
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     ctx = {"entry": object(), "images": {}}
     shape = {"title": "日程入口", "sceneJumpTarget": "66"}
     edge = {"shape": shape, "target_ids": [66]}
@@ -1434,7 +1519,7 @@ def test_data_annotation_scene_jump_wait_does_not_accept_expected_match_when_glo
 
 
 def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(monkeypatch):
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     ctx = {"images": {34: {"title": "#34"}, 66: {"title": "#66"}}}
 
     def fake_scene_score(_ctx, image, _frame):
@@ -1446,7 +1531,7 @@ def test_data_annotation_identify_scene_number_uses_best_preferred_candidate(mon
 
 
 def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatch):
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     accepted = []
 
     def fake_run_inline_runtime_task(**kwargs):
@@ -1486,9 +1571,9 @@ def test_data_annotation_runtime_start_accepts_first_batch_task_types(monkeypatc
 
 
 def test_data_annotation_runtime_start_rejects_unverified_task_types(monkeypatch):
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
 
-    with pytest.raises(fanxiu.HTTPException) as daily_exc:
+    with pytest.raises(FanxiuRuntimeError) as daily_exc:
         runner.start_runtime_task(
             entry=object(),
             entry_id="entry",
@@ -1499,9 +1584,36 @@ def test_data_annotation_runtime_start_rejects_unverified_task_types(monkeypatch
     assert daily_exc.value.status_code == 400
 
 
+def test_data_annotation_runtime_start_translates_core_runtime_error(monkeypatch, tmp_path):
+    entry = type("Entry", (), {"entry_id": "entry"})()
+
+    def fake_start_runtime_task(**_kwargs):
+        raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
+
+    monkeypatch.setattr(fanxiu._runtime_control, "start_runtime_task", fake_start_runtime_task)
+    monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+
+    with pytest.raises(fanxiu.HTTPException) as exc_info:
+        fanxiu._start_data_annotation_runtime_task(
+            entry,
+            fanxiu.FanxiuDataAnnotationRuntimeTaskRequest(
+                entry_id="entry",
+                task_type="go_scene",
+                payload={"target_scene_id": 121},
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "数据标注 Runtime 正在运行任务"
+
+
 def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_path, monkeypatch):
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
     fixed_now = datetime(2026, 6, 2, 6, 0, 0)
 
     class FixedDatetime(datetime):
@@ -1510,7 +1622,8 @@ def test_data_annotation_mark_scheduler_task_advances_daily_and_sets_retry(tmp_p
             return fixed_now
 
     monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    monkeypatch.setattr(runtime_runner_core, "datetime", FixedDatetime)
+    runner = create_fanxiu_runtime_runner()
     daily = {
         "id": "daily",
         "schedule_kind": "daily",
@@ -1541,6 +1654,8 @@ def test_data_annotation_mark_scheduler_task_error_defaults_to_ten_minute_retry(
     path = _scheduler_state_path(tmp_path)
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     fixed_now = datetime(2026, 6, 2, 6, 0, 0)
 
     class FixedDatetime(datetime):
@@ -1549,7 +1664,8 @@ def test_data_annotation_mark_scheduler_task_error_defaults_to_ten_minute_retry(
             return fixed_now
 
     monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    monkeypatch.setattr(runtime_runner_core, "datetime", FixedDatetime)
+    runner = create_fanxiu_runtime_runner()
     task = {
         "id": "manual-mail",
         "task_type": "mail_claim_check",
@@ -1653,7 +1769,7 @@ def test_data_annotation_scheduler_removes_obsolete_mail_full_scan_task(tmp_path
 
 
 def test_data_annotation_ocr_centers_in_shape_filters_signup_button_text():
-    runner = fanxiu._DataAnnotationRuntimeRunner()
+    runner = create_fanxiu_runtime_runner()
     image = {
         "width": 900,
         "height": 1600,
@@ -1676,3 +1792,4 @@ def test_data_annotation_ocr_centers_in_shape_filters_signup_button_text():
     centers = runner._ocr_centers_in_shape(lines, image, "报名", include=("报名",), exclude=("已报名",))
 
     assert centers == [(740.0, 486.0, "报名")]
+

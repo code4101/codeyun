@@ -54,6 +54,46 @@ def get_fanxiu_data_annotation_manual_job_definition(task_type: str) -> DataAnno
     return _DATA_ANNOTATION_MANUAL_JOB_REGISTRY.get(str(task_type or "").strip())
 
 
+def list_fanxiu_data_annotation_manual_job_definitions() -> list[DataAnnotationManualJobDefinition]:
+    return [
+        _DATA_ANNOTATION_MANUAL_JOB_REGISTRY[key]
+        for key in sorted(_DATA_ANNOTATION_MANUAL_JOB_REGISTRY)
+    ]
+
+
+def parse_data_annotation_scene_id(value: Any, *, default: int = 49) -> int:
+    text = str(value or "").strip()
+    if text.startswith("#"):
+        text = text[1:].strip()
+    if not text:
+        return int(default)
+    return int(text)
+
+
+def normalize_data_annotation_go_scene_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(payload or {})
+    target_scene_id = parse_data_annotation_scene_id(payload.get("target_scene_id") or payload.get("target") or 49)
+    return {**payload, "target_scene_id": target_scene_id}
+
+
+def normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(payload or {})
+    code = str(payload.get("code") or payload.get("source") or "").strip()
+    if not code:
+        raise ValueError("debug_eval 需要 payload.code")
+    mode = str(payload.get("mode") or "readonly").strip().lower()
+    if mode not in {"readonly", "act"}:
+        raise ValueError("debug_eval mode 只支持 readonly/act")
+    return {
+        **payload,
+        "code": code,
+        "mode": mode,
+        "call_task": bool(payload.get("call_task", True)),
+        "max_output_chars": max(200, min(20000, int(payload.get("max_output_chars") or 4000))),
+        "timeout_seconds": max(30, min(3600, int(payload.get("timeout_seconds") or payload.get("max_runtime_seconds") or 120))),
+    }
+
+
 def read_data_annotation_manual_jobs(raw: Any) -> list[dict[str, Any]]:
     source = raw if isinstance(raw, list) else []
     return [
@@ -81,12 +121,11 @@ def requeue_running_data_annotation_manual_jobs(
             updated.append(job)
             continue
         changed_count += 1
-        # Most manual jobs can perform non-idempotent actions, so replaying a
-        # claimed job after backend reload is riskier than requiring a fresh
-        # submission. Mail cleanup is different: it scans from the current game
-        # list and only deletes after UI confirmation, so restarting from the
-        # top is the safer way to survive dev/backend reloads.
-        if str(job.get("task_type") or "") == "mail_claim_check":
+        # Current non-mail manual jobs can perform non-idempotent actions, so
+        # do not replay them after a reload. Legacy running records may lack a
+        # group marker; keep requeueing those so older local state can recover.
+        task_type = str(job.get("task_type") or "")
+        if task_type in {"mail_claim_check", "detect_scene", "manual_tick"}:
             updated.append({
                 **job,
                 "status": "queued",
@@ -145,6 +184,5 @@ def pop_next_data_annotation_manual_job(jobs: list[dict[str, Any]]) -> tuple[dic
         if str(job.get("id") or "") == selected_id:
             job = {**job, "status": "running", "updated_at": current_time}
             selected = job
-            continue
         updated.append(job)
     return selected, updated

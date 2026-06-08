@@ -258,7 +258,17 @@ class ProxyTrafficAuditCollector:
     def run_loop(self, *, interval_seconds: float = 2.0, once: bool = False) -> None:
         while True:
             started_at = time.monotonic()
-            summary = self.sample_once()
+            try:
+                summary = self.sample_once()
+            except Exception as exc:  # Keep the audit alive across Mihomo reloads.
+                summary = {
+                    "sampled_at": _utc_now_text(),
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "connection_count": 0,
+                    "proxy_connection_count": 0,
+                    "proxy_delta_total": 0,
+                    "inserted_rows": 0,
+                }
             print(json.dumps(summary, ensure_ascii=False), flush=True)
             if once:
                 return

@@ -56,3 +56,32 @@ def test_capture_runtime_env_device_has_priority(monkeypatch):
     assert service.device_id == "10.0.0.8:5555"
     assert calls[0] == ("devices",)
     assert calls[1] == ("connect", "10.0.0.8:5555")
+
+
+def test_capture_runtime_idle_does_not_restart_tcpdump(monkeypatch):
+    service = FanxiuCaptureRuntimeService(idle_finalize_seconds=1)
+    service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
+    service._last_remote_pcap_size = 4096
+    service._last_remote_pcap_size_seen_at = 0.0
+
+    monkeypatch.setattr(service, "_remote_capture_size", lambda remote_path: 4096)
+
+    stop_calls = 0
+    start_calls = 0
+
+    def fake_stop_tcpdump_locked(*, queue_sync: bool = True) -> None:
+        nonlocal stop_calls
+        del queue_sync
+        stop_calls += 1
+
+    def fake_start_tcpdump_locked() -> None:
+        nonlocal start_calls
+        start_calls += 1
+
+    monkeypatch.setattr(service, "_stop_tcpdump_locked", fake_stop_tcpdump_locked)
+    monkeypatch.setattr(service, "_start_tcpdump_locked", fake_start_tcpdump_locked)
+
+    service._finalize_idle_capture_locked()
+
+    assert stop_calls == 0
+    assert start_calls == 0

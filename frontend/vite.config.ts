@@ -126,7 +126,8 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    // Bind IPv6 as well so localhost -> ::1 does not stall before falling back to IPv4 on Windows.
+    host: '::',
     port: 5173,
     allowedHosts: ['code4101.com'],
     proxy: {

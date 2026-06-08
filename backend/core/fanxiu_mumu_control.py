@@ -218,6 +218,15 @@ def _parse_adb_wm_size(value: str) -> tuple[int, int] | None:
     return int(match.group(1)), int(match.group(2))
 
 
+def _completed_text(process: subprocess.CompletedProcess[str]) -> str:
+    output = "\n".join(
+        part.strip()
+        for part in (process.stdout or "", process.stderr or "")
+        if part and part.strip()
+    )
+    return output.strip()
+
+
 def _map_frame_point_to_adb(
     x: int,
     y: int,

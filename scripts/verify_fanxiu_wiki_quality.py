@@ -299,6 +299,72 @@ def _require_at_least(failures: list[dict[str, Any]], step: str, data: dict[str,
         _append_failure(failures, step, "must_be_at_least", field, f">= {expected}", observed)
 
 
+def _require_icon_review_no_candidate_details(failures: list[dict[str, Any]], data: dict[str, Any]) -> None:
+    count = data.get("no_candidate_group_count")
+    if not isinstance(count, (int, float)) or count <= 0:
+        return
+    rows = data.get("no_candidate_groups")
+    expected_count = min(int(count), 12)
+    if not isinstance(rows, list) or len(rows) < expected_count:
+        _append_failure(failures, "item_icon_quality_report", "must_include_no_candidate_group_details", "no_candidate_groups", f">= {expected_count}", rows)
+        return
+    for index, row in enumerate(rows[:expected_count]):
+        if not isinstance(row, dict):
+            _append_failure(failures, "item_icon_quality_report", "invalid_no_candidate_group", f"no_candidate_groups[{index}]", "object", row)
+            continue
+        sample = row.get("sample")
+        missing_fields: list[str] = []
+        if not str(row.get("icon") or "").strip():
+            missing_fields.append("icon")
+        if not str(row.get("review_priority") or "").strip():
+            missing_fields.append("review_priority")
+        if not str(row.get("review_status") or "").strip():
+            missing_fields.append("review_status")
+        if not str(row.get("suggested_manual_action") or "").strip():
+            missing_fields.append("suggested_manual_action")
+        if not str(row.get("remaining_risk") or "").strip():
+            missing_fields.append("remaining_risk")
+        if not isinstance(sample, dict) or not str(sample.get("id") or "").strip():
+            missing_fields.append("sample.id")
+        if missing_fields:
+            _append_failure(
+                failures,
+                "item_icon_quality_report",
+                "incomplete_no_candidate_group",
+                f"no_candidate_groups[{index}]",
+                f"fields: {', '.join(missing_fields)}",
+                row,
+            )
+
+
+def _require_icon_review_contact_sheet(failures: list[dict[str, Any]], data: dict[str, Any]) -> None:
+    count = data.get("no_candidate_group_count")
+    if not isinstance(count, (int, float)) or count <= 0:
+        return
+    raw_path = str(data.get("no_candidate_contact_sheet_path") or "").strip()
+    if not raw_path:
+        _append_failure(failures, "item_icon_quality_report", "must_include_contact_sheet", "no_candidate_contact_sheet_path", "non-empty path", raw_path)
+        return
+    path = Path(raw_path)
+    if not path.is_file():
+        _append_failure(failures, "item_icon_quality_report", "contact_sheet_missing", "no_candidate_contact_sheet_path", "existing file", raw_path)
+        return
+    if path.stat().st_size <= 0:
+        _append_failure(failures, "item_icon_quality_report", "contact_sheet_empty", "no_candidate_contact_sheet_path", "non-empty file", raw_path)
+        return
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+            image.verify()
+    except Exception as exc:
+        _append_failure(failures, "item_icon_quality_report", "contact_sheet_unreadable", "no_candidate_contact_sheet_path", "readable image", f"{raw_path}: {exc}")
+        return
+    if width <= 1 or height <= 1:
+        _append_failure(failures, "item_icon_quality_report", "contact_sheet_too_small", "no_candidate_contact_sheet_path", "image larger than 1x1", {"path": raw_path, "width": width, "height": height})
+
+
 def _quality_summary_failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
 
@@ -357,6 +423,35 @@ def _quality_summary_failures(results: list[dict[str, Any]]) -> list[dict[str, A
         _require_equal_field(failures, "item_icons", item_icons, "ok", "unique_icon_count")
         _require_zero(failures, "item_icons", item_icons, "fail")
 
+    item_icon_quality_report = _json_summary_for_step(results, "item_icon_quality_report")
+    if (
+        _step_by_name(results, "item_icon_quality_report")
+        and item_icon_quality_report is None
+        and _step_by_name(results, "item_icon_quality_report").get("returncode") == 0
+    ):
+        failures.append({"step": "item_icon_quality_report", "kind": "json_summary_missing"})
+    elif item_icon_quality_report:
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "item_count")
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "group_count")
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "primary_group_count")
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "small_group_count")
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "candidate_group_count")
+        _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "candidate_icon_total")
+        no_candidate_count = item_icon_quality_report.get("no_candidate_group_count")
+        if isinstance(no_candidate_count, (int, float)) and no_candidate_count > 0:
+            _require_positive(failures, "item_icon_quality_report", item_icon_quality_report, "unresolved_no_candidate_group_count")
+            if not str(item_icon_quality_report.get("no_candidate_review_status") or "").strip():
+                _append_failure(
+                    failures,
+                    "item_icon_quality_report",
+                    "must_include_no_candidate_review_status",
+                    "no_candidate_review_status",
+                    "non-empty status",
+                    item_icon_quality_report.get("no_candidate_review_status"),
+                )
+        _require_icon_review_no_candidate_details(failures, item_icon_quality_report)
+        _require_icon_review_contact_sheet(failures, item_icon_quality_report)
+
     wiki_endpoints = _json_summary_for_step(results, "wiki_endpoints")
     if _step_by_name(results, "wiki_endpoints") and wiki_endpoints is None and _step_by_name(results, "wiki_endpoints").get("returncode") == 0:
         failures.append({"step": "wiki_endpoints", "kind": "json_summary_missing"})
@@ -385,10 +480,16 @@ def _quality_summary_failures(results: list[dict[str, Any]]) -> list[dict[str, A
         failures.append({"step": "resource_links", "kind": "json_summary_missing"})
     elif resource_links:
         _require_positive(failures, "resource_links", resource_links, "resource_count")
+        _require_at_least(failures, "resource_links", resource_links, "required_resource_count", 1)
+        _require_at_least(failures, "resource_links", resource_links, "mail_reward_resource_count", 8)
+        _require_at_least(failures, "resource_links", resource_links, "icon_review_resource_count", 8)
         _require_positive(failures, "resource_links", resource_links, "loaded_icon_count")
         _require_equal_field(failures, "resource_links", resource_links, "loaded_icon_count", "required_icon_count")
         for field in [
             "failure_count",
+            "required_resource_failure_count",
+            "mail_reward_resource_failure_count",
+            "icon_review_resource_failure_count",
             "title_mismatch_count",
             "icon_mismatch_count",
         ]:
@@ -400,12 +501,14 @@ def _quality_summary_failures(results: list[dict[str, Any]]) -> list[dict[str, A
     elif mail_browser:
         _require_positive(failures, "mail_browser", mail_browser, "mail_row_count")
         _require_positive(failures, "mail_browser", mail_browser, "mail_reward_image_count")
+        _require_at_least(failures, "mail_browser", mail_browser, "mail_required_content_check_count", 2)
         for field in [
             "request_failure_count",
             "mail_broken_visible_reward_image_count",
             "mail_missing_icon_slot_count",
             "mail_empty_alt_image_count",
             "mail_invalid_item_link_count",
+            "mail_required_content_failure_count",
         ]:
             _require_zero(failures, "mail_browser", mail_browser, field)
         _require_true(failures, "mail_browser", mail_browser, "mail_content_dialog_ok")
@@ -418,12 +521,16 @@ def _quality_summary_failures(results: list[dict[str, Any]]) -> list[dict[str, A
         _require_positive(failures, "item_browser", item_browser, "item_row_icon_count")
         _require_positive(failures, "item_browser", item_browser, "item_route_filter_count")
         _require_positive(failures, "item_browser", item_browser, "item_route_clear_count")
+        _require_positive(failures, "item_browser", item_browser, "item_icon_review_count")
+        _require_at_least(failures, "item_browser", item_browser, "item_icon_route_check_count", 2)
         for field in [
             "request_failure_count",
             "broken_visible_image_count",
             "hard_image_failure_count",
             "item_route_filter_failure_count",
             "item_route_clear_failure_count",
+            "item_icon_review_failure_count",
+            "item_icon_route_check_failure_count",
             "item_row_icon_missing_count",
             "item_row_icon_mismatch_count",
             "item_row_icon_wait_timeout_count",
@@ -489,6 +596,11 @@ def _quality_steps(args: argparse.Namespace) -> list[tuple[str, list[str], int]]
             180,
         ),
         (
+            "item_icon_quality_report",
+            _python_command("scripts/build_fanxiu_item_icon_quality_report.py", "--threshold", "50"),
+            120,
+        ),
+        (
             "card_catalogs",
             _python_command("scripts/verify_fanxiu_card_catalogs.py", "--api-timeout", str(args.api_timeout)),
             180,
@@ -503,6 +615,12 @@ def _quality_steps(args: argparse.Namespace) -> list[tuple[str, list[str], int]]
                 str(args.wait_ms),
                 "--samples-per-type",
                 str(args.resource_samples_per_type),
+                "--required-resource",
+                "item:3080008",
+                "--mail-reward-resource-samples",
+                "8",
+                "--icon-review-resource-samples",
+                "8",
             ),
             240,
         ),

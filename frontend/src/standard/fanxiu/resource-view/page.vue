@@ -125,12 +125,26 @@ const linkTargetGroups = computed(() => buildFanxiuLinkTargetGroups(linkTargets.
 const resourceMetaRows = computed(() => {
   const current = card.value as Record<string, unknown> | null
   if (!current) return []
+  const iconSourceTable = String(current.icon_source_table ?? '').trim()
+  const iconSourceField = String(current.icon_source_field ?? '').trim()
+  const iconSource = iconSourceTable && iconSourceField ? `${iconSourceTable}.${iconSourceField}` : iconSourceTable || iconSourceField
+  const iconReuseCount = Number(current.icon_reuse_count ?? 0)
+  const iconQuality = iconReuseCount > 1
+    ? String(current.icon_quality_note ?? '').trim() || `主图标共用 ${iconReuseCount} 项`
+    : ''
+  const smallIconReuseCount = Number(current.small_icon_reuse_count ?? 0)
+  const smallIconQuality = smallIconReuseCount > 1
+    ? String(current.small_icon_quality_note ?? '').trim() || `小图标共用 ${smallIconReuseCount} 项`
+    : ''
   const rows = [
     ['品质', current.quality_label || current.quality_name || current.quality],
     ['定位', current.positioning],
     ['技能', current.skill_name],
     ['时间', current.time_kind_name],
     ['来源', current.source_table],
+    ['图标来源', iconSource],
+    ['图标复用', iconQuality],
+    ['小图标复用', smallIconQuality],
     ['状态', current.presence_status],
   ]
   return rows

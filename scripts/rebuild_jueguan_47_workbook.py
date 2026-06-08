@@ -29,6 +29,7 @@ from backend.core.nianzhu_course_sheets import (  # noqa: E402
     video_config_url_from_lesson_id2,
 )
 from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer  # noqa: E402
+from backend.core.note_sheet_inline_links import with_inline_cell_link  # noqa: E402
 from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity  # noqa: E402
 from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases  # noqa: E402
 from backend.db import engine  # noqa: E402
@@ -623,14 +624,16 @@ def _link_summary_c4(session: Session, workbook: WorkbookDocument, attendance: S
     )
     if target_row < 0:
         return False
-    rows[target_row][online_col] = SUMMARY_ONLINE_SHEET_NAME
+    rows[target_row][online_col] = with_inline_cell_link(
+        SUMMARY_ONLINE_SHEET_NAME,
+        {"url": f"/workbook/{int(workbook.numeric_id or 0)}?sheet={int(attendance.numeric_id or 0)}"},
+    )
     cell_meta = dict(document.get("cell_meta") or {})
-    meta = dict(cell_meta.get(f"{target_row}:{online_col}") or {})
-    meta["link"] = {"url": f"/workbook/{int(workbook.numeric_id or 0)}?sheet={int(attendance.numeric_id or 0)}"}
-    cell_meta[f"{target_row}:{online_col}"] = meta
+    data_start = int(document.get("data_start_row") or 0)
+    cell_meta.pop(f"{target_row}:{online_col}", None)
+    cell_meta.pop(f"{data_start + target_row}:{online_col}", None)
     document["rows"] = rows
     document["cell_meta"] = cell_meta
-    data_start = int(document.get("data_start_row") or 0)
     document["grid_rows"] = list(document.get("grid_rows") or [])[:data_start] + rows
     summary.document_json = document
     summary.version = max(int(summary.version or 1), 1) + 1

@@ -57,6 +57,7 @@ import {
   getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
   getFanxiuGongfaSpecialFazeCatalog,
   getFanxiuItemCard,
+  getFanxiuItemIconQualityReview,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
   getFanxiuMailRecords,
@@ -68,6 +69,7 @@ import {
   getFanxiuStaticAssetPreviewManifest,
   getFanxiuResourceIconUrl,
   getFanxiuStaticVisualManifest,
+  getFanxiuWikiMediaUrl,
   getFanxiuWikiLinkIndex,
   getFanxiuWwiseMp3Manifest,
   listFanxiuTcpBusinessEntries,
@@ -155,6 +157,10 @@ import {
   type FanxiuGongfaSpecialFazeReason,
   type FanxiuGongfaSpecialFazeStage,
   type FanxiuItemCard,
+  type FanxiuItemIconQualityOption,
+  type FanxiuItemIconOption,
+  type FanxiuItemIconQualityReviewResponse,
+  type FanxiuItemIconQualityReviewRow,
   type FanxiuItemQualityOption,
   type FanxiuItemSearchItem,
   type FanxiuItemStats,
@@ -195,6 +201,14 @@ type StorageBagWorshipChartOption = ComposeOption<
   GridComponentOption | TooltipComponentOption | LineSeriesOption
 >
 
+type PlayerProfileSortKey =
+  | 'attack_desc'
+  | 'attack_asc'
+  | 'server_asc'
+  | 'name_asc'
+  | 'cultivation_asc'
+  | 'time_asc'
+
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
 const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
 const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
@@ -212,6 +226,7 @@ const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
 const MAIL_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const DEFAULT_MAIL_PAGE_SIZE = 20
+const DEFAULT_PLAYER_PROFILE_PAGE_SIZE = 50
 const STORAGE_BAG_PREVIEW_LIMIT = 100
 const STORAGE_BAG_WORSHIP_CHART_WIDTH = 640
 const STORAGE_BAG_WORSHIP_CHART_HEIGHT = 260
@@ -407,6 +422,10 @@ type PageConfig = {
   itemQualityFilter?: string
   itemTypeFilter?: string
   itemSubTypeFilter?: string
+  itemIconQualityFilter?: string
+  itemIconNameFilter?: string
+  itemSmallIconQualityFilter?: string
+  itemSmallIconNameFilter?: string
   activityKindFilter?: string
   activityTimeFilter?: string
   activityTypeFilter?: string
@@ -538,6 +557,10 @@ const gongfaSkillTypeFilter = ref('')
 const itemQualityFilter = ref('')
 const itemTypeFilter = ref('')
 const itemSubTypeFilter = ref('')
+const itemIconQualityFilter = ref('')
+const itemIconNameFilter = ref('')
+const itemSmallIconQualityFilter = ref('')
+const itemSmallIconNameFilter = ref('')
 const activityKindFilter = ref('')
 const activityTimeFilter = ref('')
 const activityTypeFilter = ref('')
@@ -607,7 +630,8 @@ const storageBagSubGroupMemory = ref<Record<string, string>>({})
 const storageBagSubGroupAllSelected = ref(false)
 const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'total_friendship'>('default')
 const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
-const playerProfileSortKey = ref<'default' | 'attack_desc' | 'attack_asc'>('default')
+const playerProfileSortKey = ref<PlayerProfileSortKey>('attack_desc')
+const playerProfilePage = ref(1)
 const selectedPlayerProfileAttackUnits = ref<string[]>([])
 const storageBagWorshipChartPlanes = ref<number[]>([...STORAGE_BAG_WORSHIP_CHART_DEFAULT_PLANES])
 const storageBagWorshipTableVisible = ref(false)
@@ -619,6 +643,12 @@ const gongfaSkillTypeOptions = ref<FanxiuGongfaSkillTypeOption[]>([])
 const itemQualityOptions = ref<FanxiuItemQualityOption[]>([])
 const itemTypeOptions = ref<FanxiuItemTypeOption[]>([])
 const itemSubTypeOptions = ref<FanxiuItemTypeOption[]>([])
+const itemIconQualityOptions = ref<FanxiuItemIconQualityOption[]>([])
+const itemHighReuseIconOptions = ref<FanxiuItemIconOption[]>([])
+const itemSmallIconQualityOptions = ref<FanxiuItemIconQualityOption[]>([])
+const itemHighReuseSmallIconOptions = ref<FanxiuItemIconOption[]>([])
+const itemIconQualityReview = ref<FanxiuItemIconQualityReviewResponse | null>(null)
+const loadingItemIconQualityReview = ref(false)
 const activityKindOptions = ref<FanxiuActivityOption[]>([])
 const activityTimeOptions = ref<FanxiuActivityOption[]>([])
 const activityTypeOptions = ref<FanxiuActivityOption[]>([])
@@ -747,6 +777,10 @@ function applyRouteState() {
   const routeItemQualityFilter = queryValue(route.query.quality_name)
   const routeItemTypeFilter = queryValue(route.query.type_key)
   const routeItemSubTypeFilter = queryValue(route.query.sub_type_key)
+  const routeItemIconQualityFilter = queryValue(route.query.icon_quality)
+  const routeItemIconNameFilter = queryValue(route.query.icon_name)
+  const routeItemSmallIconQualityFilter = queryValue(route.query.small_icon_quality)
+  const routeItemSmallIconNameFilter = queryValue(route.query.small_icon_name)
   let changed = false
   applyingRouteState = true
   try {
@@ -772,6 +806,22 @@ function applyRouteState() {
       }
       if (itemSubTypeFilter.value !== routeItemSubTypeFilter) {
         itemSubTypeFilter.value = routeItemSubTypeFilter
+        changed = true
+      }
+      if (itemIconQualityFilter.value !== routeItemIconQualityFilter) {
+        itemIconQualityFilter.value = routeItemIconQualityFilter
+        changed = true
+      }
+      if (itemIconNameFilter.value !== routeItemIconNameFilter) {
+        itemIconNameFilter.value = routeItemIconNameFilter
+        changed = true
+      }
+      if (itemSmallIconQualityFilter.value !== routeItemSmallIconQualityFilter) {
+        itemSmallIconQualityFilter.value = routeItemSmallIconQualityFilter
+        changed = true
+      }
+      if (itemSmallIconNameFilter.value !== routeItemSmallIconNameFilter) {
+        itemSmallIconNameFilter.value = routeItemSmallIconNameFilter
         changed = true
       }
     }
@@ -806,16 +856,28 @@ function syncRouteState() {
     setRouteQueryValue(nextQuery, 'quality_name', itemQualityFilter.value)
     setRouteQueryValue(nextQuery, 'type_key', itemTypeFilter.value)
     setRouteQueryValue(nextQuery, 'sub_type_key', itemSubTypeFilter.value)
+    setRouteQueryValue(nextQuery, 'icon_quality', itemIconQualityFilter.value)
+    setRouteQueryValue(nextQuery, 'icon_name', itemIconNameFilter.value)
+    setRouteQueryValue(nextQuery, 'small_icon_quality', itemSmallIconQualityFilter.value)
+    setRouteQueryValue(nextQuery, 'small_icon_name', itemSmallIconNameFilter.value)
   } else {
     delete nextQuery.quality_name
     delete nextQuery.type_key
     delete nextQuery.sub_type_key
+    delete nextQuery.icon_quality
+    delete nextQuery.icon_name
+    delete nextQuery.small_icon_quality
+    delete nextQuery.small_icon_name
   }
   const routeMatches = queryValue(route.query.tab) === activeTab.value
     && queryValue(route.query.id) === selectedId.value
     && queryValue(route.query.quality_name) === queryValue(nextQuery.quality_name)
     && queryValue(route.query.type_key) === queryValue(nextQuery.type_key)
     && queryValue(route.query.sub_type_key) === queryValue(nextQuery.sub_type_key)
+    && queryValue(route.query.icon_quality) === queryValue(nextQuery.icon_quality)
+    && queryValue(route.query.icon_name) === queryValue(nextQuery.icon_name)
+    && queryValue(route.query.small_icon_quality) === queryValue(nextQuery.small_icon_quality)
+    && queryValue(route.query.small_icon_name) === queryValue(nextQuery.small_icon_name)
   if (routeMatches) return
   void router.replace({ query: nextQuery }).catch(() => {})
 }
@@ -1062,8 +1124,8 @@ function persistStorageBagWorshipChartPlaneConfig() {
   }
 }
 
-function normalizePlayerProfileSortKey(value: unknown): typeof playerProfileSortKey.value {
-  return value === 'attack_desc' || value === 'attack_asc' ? value : 'default'
+function normalizePlayerProfileSortKey(_value: unknown): PlayerProfileSortKey {
+  return 'attack_desc'
 }
 
 function normalizePlayerProfileAttackUnits(value: unknown) {
@@ -1168,6 +1230,10 @@ function loadPageConfig() {
     itemQualityFilter.value = String(config.itemQualityFilter ?? '')
     itemTypeFilter.value = String(config.itemTypeFilter ?? '')
     itemSubTypeFilter.value = String(config.itemSubTypeFilter ?? '')
+    itemIconQualityFilter.value = String(config.itemIconQualityFilter ?? '')
+    itemIconNameFilter.value = String(config.itemIconNameFilter ?? '')
+    itemSmallIconQualityFilter.value = String(config.itemSmallIconQualityFilter ?? '')
+    itemSmallIconNameFilter.value = String(config.itemSmallIconNameFilter ?? '')
     activityKindFilter.value = String(config.activityKindFilter ?? '')
     activityTimeFilter.value = String(config.activityTimeFilter ?? '')
     activityTypeFilter.value = String(config.activityTypeFilter ?? '')
@@ -1209,6 +1275,10 @@ function persistPageConfig() {
       itemQualityFilter: itemQualityFilter.value,
       itemTypeFilter: itemTypeFilter.value,
       itemSubTypeFilter: itemSubTypeFilter.value,
+      itemIconQualityFilter: itemIconQualityFilter.value,
+      itemIconNameFilter: itemIconNameFilter.value,
+      itemSmallIconQualityFilter: itemSmallIconQualityFilter.value,
+      itemSmallIconNameFilter: itemSmallIconNameFilter.value,
       activityKindFilter: activityKindFilter.value,
       activityTimeFilter: activityTimeFilter.value,
       activityTypeFilter: activityTypeFilter.value,
@@ -1340,6 +1410,10 @@ const itemFacetFilters = computed<FacetFilterMap>(() => ({
   quality_name: itemQualityFilter.value,
   type_key: itemTypeFilter.value,
   sub_type_key: itemSubTypeFilter.value,
+  icon_quality: itemIconQualityFilter.value,
+  icon_name: itemIconNameFilter.value,
+  small_icon_quality: itemSmallIconQualityFilter.value,
+  small_icon_name: itemSmallIconNameFilter.value,
 }))
 
 const activityFacetFilters = computed<FacetFilterMap>(() => ({
@@ -1354,7 +1428,11 @@ const shouldLoadItemFacetIndex = computed(() => Boolean(
   || normalizeSearchQuery(query.value)
   || itemQualityFilter.value
   || itemTypeFilter.value
-  || itemSubTypeFilter.value,
+  || itemSubTypeFilter.value
+  || itemIconQualityFilter.value
+  || itemIconNameFilter.value
+  || itemSmallIconQualityFilter.value
+  || itemSmallIconNameFilter.value
 ))
 
 const shouldLoadActivityFacetIndex = computed(() => Boolean(
@@ -2863,6 +2941,65 @@ const itemSubTypeFacetOptions = computed(() => {
     'sub_type_key',
     itemFacetFilters.value,
   ).filter(option => option.count > 0 || itemSubTypeFilter.value === option.value)
+})
+
+const itemIconQualityFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    itemIconQualityOptions.value,
+    itemFacetIndex.value,
+    'icon_quality',
+    itemFacetFilters.value,
+  )
+})
+
+const itemHighReuseIconFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    itemHighReuseIconOptions.value,
+    itemFacetIndex.value,
+    'icon_name',
+    itemFacetFilters.value,
+  ).filter(option => option.count > 0 || itemIconNameFilter.value === option.value)
+})
+
+const itemSmallIconQualityFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    itemSmallIconQualityOptions.value,
+    itemFacetIndex.value,
+    'small_icon_quality',
+    itemFacetFilters.value,
+  )
+})
+
+const itemHighReuseSmallIconFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    itemHighReuseSmallIconOptions.value,
+    itemFacetIndex.value,
+    'small_icon_name',
+    itemFacetFilters.value,
+  ).filter(option => option.count > 0 || itemSmallIconNameFilter.value === option.value)
+})
+
+const itemIconQualityReviewSummary = computed(() => itemIconQualityReview.value?.summary ?? null)
+const itemIconQualityReviewTopRows = computed<FanxiuItemIconQualityReviewRow[]>(() => {
+  return (itemIconQualityReview.value?.items ?? [])
+    .filter(row => String(row.review_priority || '') === 'high')
+    .slice(0, 4)
+})
+const itemIconQualityReviewStatsText = computed(() => {
+  const summary = itemIconQualityReviewSummary.value
+  if (!summary?.group_count) return ''
+  const parts = [
+    `${summary.group_count} 组`,
+    `高优先 ${summary.high_priority_count ?? 0}`,
+    summary.no_candidate_group_count ? `无候选 ${summary.no_candidate_group_count}` : '',
+    summary.unresolved_no_candidate_group_count ? `待判定 ${summary.unresolved_no_candidate_group_count}` : '',
+    summary.nearby_context_icon_total ? `近邻 ${summary.nearby_context_icon_total}` : '',
+  ]
+  return parts.filter(Boolean).join(' · ')
+})
+const itemIconQualityReviewContactSheetUrl = computed(() => {
+  const path = String(itemIconQualityReviewSummary.value?.no_candidate_contact_sheet_path || '').trim()
+  return path ? getFanxiuWikiMediaUrl(path) : ''
 })
 
 const activityKindFacetOptions = computed(() => {
@@ -4637,6 +4774,80 @@ function getItemSubTypeDisplay(item: FanxiuItemCard | null | undefined) {
   return name || raw
 }
 
+function getItemIconSourceDisplay(item: FanxiuItemCard | null | undefined) {
+  const table = String(item?.icon_source_table || '').trim()
+  const field = String(item?.icon_source_field || '').trim()
+  if (table && field) return `${table}.${field}`
+  return table || field
+}
+
+function getItemIconQualityDisplay(item: FanxiuItemCard | null | undefined) {
+  const reuseCount = Number(item?.icon_reuse_count || 0)
+  if (reuseCount <= 1) return ''
+  return String(item?.icon_quality_note || '').trim() || `主图标共用 ${reuseCount} 项`
+}
+
+function getItemSmallIconQualityDisplay(item: FanxiuItemCard | null | undefined) {
+  const reuseCount = Number(item?.small_icon_reuse_count || 0)
+  if (reuseCount <= 1) return ''
+  return String(item?.small_icon_quality_note || '').trim() || `小图标共用 ${reuseCount} 项`
+}
+
+function getItemIconGroupTitle(option: FanxiuItemIconOption) {
+  const parts = [String(option.value || '')]
+  if (option.count) parts.push(`${option.count} 个道具`)
+  if (option.type_summary) parts.push(`类型：${option.type_summary}`)
+  if (option.review_hint) parts.push(`判断：${option.review_hint}`)
+  const sampleText = (option.samples || [])
+    .map(sample => `${sample.id ?? ''}:${sample.name ?? ''}`.replace(/^:/, '').trim())
+    .filter(Boolean)
+    .join(' | ')
+  if (sampleText) parts.push(`样本：${sampleText}`)
+  return parts.filter(Boolean).join('\n')
+}
+
+function getItemIconQualityReviewTitle(row: FanxiuItemIconQualityReviewRow) {
+  const parts = [String(row.icon || '')]
+  if (row.count) parts.push(`${row.count} 个道具`)
+  if (row.review_hint) parts.push(`判断：${row.review_hint}`)
+  if (row.type_summary) parts.push(`类型：${row.type_summary}`)
+  if (row.recommended_action) parts.push(`建议：${row.recommended_action}`)
+  const sampleText = (row.representative_samples ?? [])
+    .map(sample => `${sample.id ?? ''}:${sample.name ?? ''}`.replace(/^:/, '').trim())
+    .filter(Boolean)
+    .join(' | ')
+  if (sampleText) parts.push(`样本：${sampleText}`)
+  const candidateText = (row.candidate_icons ?? [])
+    .map(candidate => {
+      const icon = String(candidate.icon || '').trim()
+      if (!icon) return ''
+      const score = String(candidate.score ?? '').trim()
+      const reason = String(candidate.reason || '').trim()
+      const meta = [score ? `${score}分` : '', reason].filter(Boolean).join(' · ')
+      return meta ? `${icon} (${meta})` : icon
+    })
+    .filter(Boolean)
+    .join(' | ')
+  if (candidateText) parts.push(`候选：${candidateText}`)
+  const nearbyText = (row.nearby_icons ?? [])
+    .map(item => {
+      const icon = String(item.icon || '').trim()
+      if (!icon) return ''
+      const delta = String(item.number_delta ?? '').trim()
+      const reason = String(item.reason || '').trim()
+      const meta = [delta ? `差${delta}` : '', reason].filter(Boolean).join(' · ')
+      return meta ? `${icon} (${meta})` : icon
+    })
+    .filter(Boolean)
+    .join(' | ')
+  if (nearbyText) parts.push(`近邻：${nearbyText}`)
+  return parts.filter(Boolean).join('\n')
+}
+
+function getItemIconQualityReviewSampleId(row: FanxiuItemIconQualityReviewRow) {
+  return String(row.representative_samples?.[0]?.id ?? '').trim()
+}
+
 type TimelineCarrier = {
   time_hints?: FanxiuTimelineHint[];
   schedule_time_hints?: unknown[];
@@ -5296,6 +5507,24 @@ function mailRewardText(row: FanxiuMailRecord) {
   return mailRewardItems(row).map(mailRewardLabel).filter(Boolean).join('，')
 }
 
+function mailRewardsUnknown(row: FanxiuMailRecord) {
+  const source = String(row.source || '').trim()
+  const evidence = row.evidence || {}
+  if (source === 'packet_orphan_action') return true
+  return Boolean(evidence.orphan_action || evidence.visible_orphan_backfill)
+}
+
+function mailRewardsEmptyText(row: FanxiuMailRecord) {
+  return mailRewardsUnknown(row) ? '有附件待补包' : '-'
+}
+
+function mailRewardsUnknownTitle(row: FanxiuMailRecord) {
+  const evidence = row.evidence || {}
+  const pcapName = String(evidence.pcap_name || '').trim()
+  const reason = String(evidence.orphan_action_reason || '只捕获到读信动作，未捕获到 MailVo 附件字段；列表已证明有附件，但具体附件仍需补源包').trim()
+  return [reason, pcapName ? `证据：${pcapName}` : ''].filter(Boolean).join('\n')
+}
+
 function mailRewardLabel(item: Record<string, any>) {
   const itemId = String(item.item_id || '').trim()
   const card = mailRewardItemCard(item)
@@ -5422,6 +5651,7 @@ function mailSearchText(row: FanxiuMailRecord) {
     row.mail_type,
     row.create_time_text,
     mailRewardText(row),
+    mailRewardsUnknown(row) ? '附件未知' : '',
     mailContentText(row),
     mailStatusLabel(mailStatusKey(row)),
     row.last_action_error,
@@ -5625,6 +5855,41 @@ function comparePlayerProfileAttackAscOrder(left: Record<string, any>, right: Re
   )
 }
 
+function playerProfileCultivationOrderValue(row: Record<string, any>) {
+  const level = Number(row?.cultivation_level ?? row?.level)
+  return Number.isFinite(level) ? level : Number.MAX_SAFE_INTEGER
+}
+
+function comparePlayerProfileServerAscOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileServerOrderValue(left) - playerProfileServerOrderValue(right)
+    || playerProfileRegionOrderValue(left) - playerProfileRegionOrderValue(right)
+    || comparePlayerProfileAttackDescOrder(left, right)
+  )
+}
+
+function comparePlayerProfileNameAscOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    String(left?.name || '').localeCompare(String(right?.name || ''), 'zh-Hans-CN')
+    || comparePlayerProfileAttackDescOrder(left, right)
+  )
+}
+
+function comparePlayerProfileCultivationAscOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileCultivationOrderValue(left) - playerProfileCultivationOrderValue(right)
+    || String(playerProfileCultivationText(left)).localeCompare(String(playerProfileCultivationText(right)), 'zh-Hans-CN')
+    || comparePlayerProfileAttackDescOrder(left, right)
+  )
+}
+
+function comparePlayerProfileTimeAscOrder(left: Record<string, any>, right: Record<string, any>) {
+  return (
+    playerProfileTimestamp(left) - playerProfileTimestamp(right)
+    || comparePlayerProfileAttackDescOrder(left, right)
+  )
+}
+
 function playerProfileHasAttack(row: Record<string, any>) {
   return Boolean(playerProfileAttackAttr(row))
 }
@@ -5746,21 +6011,44 @@ const filteredPlayerProfileRows = computed(() => {
   return searchFilteredPlayerProfileRows.value.filter(row => selectedUnits.has(playerProfileAttackUnit(row)))
 })
 
-const sortedPlayerProfileRows = computed(() => {
-  if (playerProfileSortKey.value === 'attack_desc') {
-    return [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackDescOrder)
-  }
+const attackRankedPlayerProfileRows = computed(() => (
+  [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackDescOrder).map((row, index) => ({
+    ...row,
+    sort_index: index + 1,
+  }))
+))
+
+const sortedPlayerProfileRowsWithIndex = computed(() => {
   if (playerProfileSortKey.value === 'attack_asc') {
-    return [...filteredPlayerProfileRows.value].sort(comparePlayerProfileAttackAscOrder)
+    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileAttackAscOrder)
   }
-  return filteredPlayerProfileRows.value
+  if (playerProfileSortKey.value === 'server_asc') {
+    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileServerAscOrder)
+  }
+  if (playerProfileSortKey.value === 'name_asc') {
+    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileNameAscOrder)
+  }
+  if (playerProfileSortKey.value === 'cultivation_asc') {
+    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileCultivationAscOrder)
+  }
+  if (playerProfileSortKey.value === 'time_asc') {
+    return [...attackRankedPlayerProfileRows.value].sort(comparePlayerProfileTimeAscOrder)
+  }
+  return attackRankedPlayerProfileRows.value
 })
 
-const visiblePlayerProfileRows = computed(() => sortedPlayerProfileRows.value.slice(0, 80))
+const playerProfilePageCount = computed(() => Math.max(1, Math.ceil(sortedPlayerProfileRowsWithIndex.value.length / DEFAULT_PLAYER_PROFILE_PAGE_SIZE)))
+const playerProfilePageStart = computed(() => (playerProfilePage.value - 1) * DEFAULT_PLAYER_PROFILE_PAGE_SIZE)
+const visiblePlayerProfileRows = computed(() => (
+  sortedPlayerProfileRowsWithIndex.value.slice(
+    playerProfilePageStart.value,
+    playerProfilePageStart.value + DEFAULT_PLAYER_PROFILE_PAGE_SIZE,
+  )
+))
 const visiblePlayerProfileRegionGroups = computed(() => {
   const groups = new Map<string, { key: string; regionName: string; rows: Record<string, any>[] }>()
   for (const row of visiblePlayerProfileRows.value) {
-    const attackSorted = playerProfileSortKey.value !== 'default'
+    const attackSorted = true
     const regionName = attackSorted ? '全部区服' : (String(row?.region_name || '').trim() || '未知大区')
     const regionNumber = attackSorted ? '' : String(row?.region_number || '').trim()
     const key = attackSorted ? 'all' : (regionNumber ? `${regionNumber}:${regionName}` : regionName)
@@ -5773,6 +6061,14 @@ const visiblePlayerProfileRegionGroups = computed(() => {
   }
   return Array.from(groups.values())
 })
+
+function handlePlayerProfilePageChange(nextPage: number) {
+  playerProfilePage.value = Math.min(playerProfilePageCount.value, Math.max(1, normalizePage(nextPage, 1)))
+}
+
+function handlePlayerProfilePageStep(delta: number) {
+  handlePlayerProfilePageChange(playerProfilePage.value + delta)
+}
 const latestPlayerProfile = computed(() => (
   playerProfileLatestRows.value.reduce<Record<string, any> | null>((latest, row) => (
     !latest || playerProfileTimestamp(row) > playerProfileTimestamp(latest) ? row : latest
@@ -6506,17 +6802,24 @@ function sortStorageBagBy(key: 'num' | 'friendship' | 'total_friendship') {
 }
 
 function sortPlayerProfileByAttack() {
-  if (playerProfileSortKey.value === 'default') {
-    playerProfileSortKey.value = 'attack_desc'
-  } else if (playerProfileSortKey.value === 'attack_desc') {
+  if (playerProfileSortKey.value === 'attack_desc') {
     playerProfileSortKey.value = 'attack_asc'
   } else {
-    playerProfileSortKey.value = 'default'
+    playerProfileSortKey.value = 'attack_desc'
   }
 }
 
 function sortPlayerProfileByDefault() {
-  playerProfileSortKey.value = 'default'
+  playerProfileSortKey.value = 'attack_desc'
+}
+
+function sortPlayerProfileByField(key: PlayerProfileSortKey) {
+  playerProfileSortKey.value = key
+}
+
+function playerProfileSortIndicator(key: PlayerProfileSortKey) {
+  if (playerProfileSortKey.value !== key) return ''
+  return key.endsWith('_desc') ? ' ↓' : ' ↑'
 }
 
 function togglePlayerProfileAttackUnit(unit: string) {
@@ -6583,7 +6886,7 @@ async function loadMailRecords() {
   loadingList.value = true
   loadingDetail.value = false
   try {
-    const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet' })
+    const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet_evidence' })
     mailRecords.value = response.records || []
     total.value = mailRecords.value.length
     selectedId.value = ''
@@ -9512,12 +9815,17 @@ async function loadActivityWorldlineSchedule() {
 async function loadItemCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
+  void loadItemIconQualityReview()
   try {
     const response = await searchFanxiuItemCards({
       query: query.value,
       quality_name: itemQualityFilter.value,
       type_key: itemTypeFilter.value,
       sub_type_key: itemSubTypeFilter.value,
+      icon_quality: itemIconQualityFilter.value,
+      icon_name: itemIconNameFilter.value,
+      small_icon_quality: itemSmallIconQualityFilter.value,
+      small_icon_name: itemSmallIconNameFilter.value,
       ...objectSortParams.value,
       limit: pageSize.value,
       offset: (page.value - 1) * pageSize.value,
@@ -9529,6 +9837,10 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     itemQualityOptions.value = response.quality_options ?? []
     itemTypeOptions.value = response.type_options ?? []
     itemSubTypeOptions.value = response.sub_type_options ?? []
+    itemIconQualityOptions.value = response.icon_quality_options ?? []
+    itemHighReuseIconOptions.value = response.high_reuse_icon_options ?? []
+    itemSmallIconQualityOptions.value = response.small_icon_quality_options ?? []
+    itemHighReuseSmallIconOptions.value = response.high_reuse_small_icon_options ?? []
     itemFacetIndex.value = response.facet_index ?? null
     total.value = response.total
 
@@ -9582,6 +9894,18 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     if (requestSeq === listRequestSeq) {
       loadingList.value = false
     }
+  }
+}
+
+async function loadItemIconQualityReview() {
+  if (itemIconQualityReview.value || loadingItemIconQualityReview.value) return
+  loadingItemIconQualityReview.value = true
+  try {
+    itemIconQualityReview.value = await getFanxiuItemIconQualityReview()
+  } catch {
+    itemIconQualityReview.value = null
+  } finally {
+    loadingItemIconQualityReview.value = false
   }
 }
 
@@ -10874,6 +11198,10 @@ function openWikiObject(tab: WikiTab, objectId: string | number, options: { rese
         itemQualityFilter.value = ''
         itemTypeFilter.value = ''
         itemSubTypeFilter.value = ''
+        itemIconQualityFilter.value = ''
+        itemIconNameFilter.value = ''
+        itemSmallIconQualityFilter.value = ''
+        itemSmallIconNameFilter.value = ''
       } else if (tab === 'activity') {
         activityKindFilter.value = ''
         activityTimeFilter.value = ''
@@ -11047,10 +11375,10 @@ function selectObject(objectId: string | number) {
   return selectGongfa(objectId)
 }
 
-function reloadFromFirstPage() {
+function reloadFromFirstPage(options: { keepSelection?: boolean } = {}) {
   page.value = 1
   clearDetailCaches()
-  loadCurrentCards()
+  loadCurrentCards({ keepSelection: Boolean(options.keepSelection) })
 }
 
 function clearDetailCaches() {
@@ -11259,6 +11587,48 @@ function applyItemSubTypeFilter(value: string) {
   reloadFromFirstPage()
 }
 
+function applyItemIconQualityFilter(value: string) {
+  itemIconQualityFilter.value = value
+  if (value !== 'high_reuse') itemIconNameFilter.value = ''
+  reloadFromFirstPage()
+}
+
+function applyItemIconNameFilter(value: string) {
+  itemIconNameFilter.value = value
+  if (value) itemIconQualityFilter.value = 'high_reuse'
+  reloadFromFirstPage()
+}
+
+function applyItemSmallIconQualityFilter(value: string) {
+  itemSmallIconQualityFilter.value = value
+  if (value !== 'high_reuse') itemSmallIconNameFilter.value = ''
+  reloadFromFirstPage()
+}
+
+function applyItemSmallIconNameFilter(value: string) {
+  itemSmallIconNameFilter.value = value
+  if (value) itemSmallIconQualityFilter.value = 'high_reuse'
+  reloadFromFirstPage()
+}
+
+function applyItemIconQualityReviewRow(row: FanxiuItemIconQualityReviewRow) {
+  const icon = String(row.icon || '')
+  if (!icon) return
+  const sampleId = String(row.representative_samples?.[0]?.id ?? '').trim()
+  if (sampleId) {
+    selectedId.value = sampleId
+  }
+  if (row.field === 'small_icon') {
+    itemSmallIconNameFilter.value = icon
+    itemSmallIconQualityFilter.value = 'high_reuse'
+  } else {
+    itemIconNameFilter.value = icon
+    itemIconQualityFilter.value = 'high_reuse'
+  }
+  reloadFromFirstPage({ keepSelection: Boolean(sampleId) })
+  syncRouteState()
+}
+
 function applyActivityKindFilter(value: string) {
   activityKindFilter.value = value
   reloadFromFirstPage()
@@ -11337,6 +11707,10 @@ watch([
   itemQualityFilter,
   itemTypeFilter,
   itemSubTypeFilter,
+  itemIconQualityFilter,
+  itemIconNameFilter,
+  itemSmallIconQualityFilter,
+  itemSmallIconNameFilter,
   activityKindFilter,
   activityTimeFilter,
   activityTypeFilter,
@@ -11380,6 +11754,12 @@ watch([storageBagMainGroup, storageBagSubGroup], () => {
 })
 watch(storageBagWorshipChartPlanes, persistStorageBagWorshipChartPlaneConfig, { deep: true })
 watch([playerProfileSortKey, selectedPlayerProfileAttackUnits], persistPlayerProfilePreferences, { deep: true })
+watch([query, playerProfileSortKey, selectedPlayerProfileAttackUnits], () => {
+  if (activeTab.value === 'player_profile') playerProfilePage.value = 1
+}, { deep: true })
+watch(playerProfilePageCount, () => {
+  if (playerProfilePage.value > playerProfilePageCount.value) playerProfilePage.value = playerProfilePageCount.value
+})
 watch([query, selectedMailStatuses, mailSortKey, mailSortOrder], () => {
   if (activeTab.value === 'mail') mailPage.value = 1
 }, { deep: true })
@@ -11405,7 +11785,17 @@ watch(activeTab, tab => {
     loadingStaticAssetPreview.value = false
   }
 })
-watch([activeTab, selectedId, itemQualityFilter, itemTypeFilter, itemSubTypeFilter], syncRouteState)
+watch([
+  activeTab,
+  selectedId,
+  itemQualityFilter,
+  itemTypeFilter,
+  itemSubTypeFilter,
+  itemIconQualityFilter,
+  itemIconNameFilter,
+  itemSmallIconQualityFilter,
+  itemSmallIconNameFilter,
+], syncRouteState)
 watch([activeTab, activityViewMode], () => {
   if (activeTab.value === 'activity' && activityViewMode.value === 'period') {
     void nextTick(() => {
@@ -11456,6 +11846,10 @@ watch(
     route.query.quality_name,
     route.query.type_key,
     route.query.sub_type_key,
+    route.query.icon_quality,
+    route.query.icon_name,
+    route.query.small_icon_quality,
+    route.query.small_icon_name,
   ],
   () => {
     if (applyRouteState()) {
@@ -11944,6 +12338,144 @@ onBeforeUnmount(() => {
               type="button"
               @click="toggleFacetRow('item:quality')"
             >{{ getFacetToggleLabel('item:quality', itemQualityFacetOptions, itemQualityFilter) }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">图标</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !itemIconQualityFilter }"
+              type="button"
+              @click="applyItemIconQualityFilter('')"
+            >全部</button>
+            <button
+              v-for="option in itemIconQualityFacetOptions"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: itemIconQualityFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, itemIconQualityFilter)"
+              type="button"
+              @click="applyItemIconQualityFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+          </span>
+        </div>
+        <div v-if="itemIconQualityFilter === 'high_reuse' || itemIconNameFilter" class="facet-row">
+          <span class="facet-label">图标组</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !itemIconNameFilter }"
+              type="button"
+              @click="applyItemIconNameFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('item:icon-name', itemHighReuseIconFacetOptions, itemIconNameFilter)"
+              :key="option.value"
+              class="facet-option icon-facet-option"
+              :class="{ active: itemIconNameFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, itemIconNameFilter)"
+              :title="getItemIconGroupTitle(option)"
+              type="button"
+              @click="applyItemIconNameFilter(option.value)"
+            >
+              <img class="icon-facet-preview" :src="getFanxiuResourceIconUrl(option.value)" :alt="option.value" loading="lazy" />
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('item:icon-name', itemHighReuseIconFacetOptions, itemIconNameFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('item:icon-name')"
+            >{{ getFacetToggleLabel('item:icon-name', itemHighReuseIconFacetOptions, itemIconNameFilter) }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">小图标</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !itemSmallIconQualityFilter }"
+              type="button"
+              @click="applyItemSmallIconQualityFilter('')"
+            >全部</button>
+            <button
+              v-for="option in itemSmallIconQualityFacetOptions"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: itemSmallIconQualityFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, itemSmallIconQualityFilter)"
+              type="button"
+              @click="applyItemSmallIconQualityFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+          </span>
+        </div>
+        <div v-if="itemSmallIconQualityFilter === 'high_reuse' || itemSmallIconNameFilter" class="facet-row">
+          <span class="facet-label">小图标组</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !itemSmallIconNameFilter }"
+              type="button"
+              @click="applyItemSmallIconNameFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('item:small-icon-name', itemHighReuseSmallIconFacetOptions, itemSmallIconNameFilter)"
+              :key="option.value"
+              class="facet-option icon-facet-option"
+              :class="{ active: itemSmallIconNameFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, itemSmallIconNameFilter)"
+              :title="getItemIconGroupTitle(option)"
+              type="button"
+              @click="applyItemSmallIconNameFilter(option.value)"
+            >
+              <img class="icon-facet-preview" :src="getFanxiuResourceIconUrl(option.value)" :alt="option.value" loading="lazy" />
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('item:small-icon-name', itemHighReuseSmallIconFacetOptions, itemSmallIconNameFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('item:small-icon-name')"
+            >{{ getFacetToggleLabel('item:small-icon-name', itemHighReuseSmallIconFacetOptions, itemSmallIconNameFilter) }}</button>
+          </span>
+        </div>
+        <div v-if="itemIconQualityReviewStatsText" class="facet-row icon-review-row">
+          <span class="facet-label">治理</span>
+          <span class="facet-options icon-review-options">
+            <span class="icon-review-summary">{{ itemIconQualityReviewStatsText }}</span>
+            <a
+              v-if="itemIconQualityReviewContactSheetUrl"
+              class="facet-option icon-review-option"
+              :href="itemIconQualityReviewContactSheetUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="打开无候选图标复核图"
+            >
+              <span>复核图</span>
+              <small>{{ itemIconQualityReviewSummary?.no_candidate_group_count ?? 0 }}</small>
+            </a>
+            <button
+              v-for="row in itemIconQualityReviewTopRows"
+              :key="`${row.field}:${row.icon}`"
+              class="facet-option icon-review-option"
+              type="button"
+              :title="getItemIconQualityReviewTitle(row)"
+              :data-sample-id="getItemIconQualityReviewSampleId(row)"
+              @click="applyItemIconQualityReviewRow(row)"
+            >
+              <span class="review-priority-dot"></span>
+              <span>{{ row.icon }}</span>
+              <small>{{ row.count }}</small>
+            </button>
           </span>
         </div>
         <div class="facet-row">
@@ -12516,7 +13048,12 @@ onBeforeUnmount(() => {
                     </span>
                   </span>
                 </div>
-                <span v-else>-</span>
+                <span
+                  v-else
+                  class="mail-reward-empty"
+                  :class="{ unknown: mailRewardsUnknown(row) }"
+                  :title="mailRewardsUnknown(row) ? mailRewardsUnknownTitle(row) : ''"
+                >{{ mailRewardsEmptyText(row) }}</span>
               </td>
               <td class="mail-content-cell">
                 <el-button
@@ -12625,28 +13162,56 @@ onBeforeUnmount(() => {
                   <th class="numeric-head">
                     <button
                       class="storage-bag-sort-button player-profile-sort-button"
-                      :class="{ active: playerProfileSortKey === 'default' }"
+                      :class="{ active: playerProfileSortKey === 'attack_desc' }"
                       type="button"
                       @click="sortPlayerProfileByDefault"
                     >#</button>
                   </th>
-                  <th>区服</th>
-                  <th>玩家</th>
-                  <th>境界</th>
+                  <th>
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey === 'server_asc' }"
+                      type="button"
+                      @click="sortPlayerProfileByField('server_asc')"
+                    >区服{{ playerProfileSortIndicator('server_asc') }}</button>
+                  </th>
+                  <th>
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey === 'name_asc' }"
+                      type="button"
+                      @click="sortPlayerProfileByField('name_asc')"
+                    >玩家{{ playerProfileSortIndicator('name_asc') }}</button>
+                  </th>
+                  <th>
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey === 'cultivation_asc' }"
+                      type="button"
+                      @click="sortPlayerProfileByField('cultivation_asc')"
+                    >境界{{ playerProfileSortIndicator('cultivation_asc') }}</button>
+                  </th>
                   <th class="numeric-head">
                     <button
                       class="storage-bag-sort-button player-profile-sort-button"
-                      :class="{ active: playerProfileSortKey !== 'default' }"
+                      :class="{ active: playerProfileSortKey === 'attack_desc' || playerProfileSortKey === 'attack_asc' }"
                       type="button"
                       @click="sortPlayerProfileByAttack"
                     >攻击{{ playerProfileSortKey === 'attack_desc' ? ' ↓' : (playerProfileSortKey === 'attack_asc' ? ' ↑' : '') }}</button>
                   </th>
-                  <th>更新时间</th>
+                  <th>
+                    <button
+                      class="storage-bag-sort-button player-profile-sort-button"
+                      :class="{ active: playerProfileSortKey === 'time_asc' }"
+                      type="button"
+                      @click="sortPlayerProfileByField('time_asc')"
+                    >更新时间{{ playerProfileSortIndicator('time_asc') }}</button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(row, index) in group.rows" :key="`${row.role_id || row.name}-${row.captured_at}`">
-                  <td class="storage-bag-index-cell">{{ row.default_index || index + 1 }}</td>
+                  <td class="storage-bag-index-cell">{{ row.sort_index || playerProfilePageStart + index + 1 }}</td>
                   <td :style="playerProfileServerTextStyle(row)">{{ playerProfileServerText(row) || '-' }}</td>
                   <td>
                     <span class="player-profile-name" :style="playerProfileServerTextStyle(row)">{{ row.name || '-' }}</span>
@@ -12659,8 +13224,35 @@ onBeforeUnmount(() => {
             </table>
           </div>
         </section>
-        <div v-if="filteredPlayerProfileRows.length > visiblePlayerProfileRows.length" class="storage-bag-limit">
-          已显示前 {{ visiblePlayerProfileRows.length }} 条，继续搜索可缩小结果
+        <div v-if="sortedPlayerProfileRowsWithIndex.length" class="mail-pager">
+          <span class="pager-size-label">每页 {{ DEFAULT_PLAYER_PROFILE_PAGE_SIZE }} 条</span>
+          <div class="pager-nav">
+            <button
+              class="pager-arrow"
+              type="button"
+              :disabled="playerProfilePage <= 1"
+              title="上一页"
+              aria-label="上一页"
+              @click="handlePlayerProfilePageStep(-1)"
+            >
+              <ArrowLeft />
+            </button>
+            <span class="pager-status">
+              <b>{{ playerProfilePage }}</b>
+              <span>/</span>
+              {{ playerProfilePageCount }}
+            </span>
+            <button
+              class="pager-arrow"
+              type="button"
+              :disabled="playerProfilePage >= playerProfilePageCount"
+              title="下一页"
+              aria-label="下一页"
+              @click="handlePlayerProfilePageStep(1)"
+            >
+              <ArrowRight />
+            </button>
+          </div>
         </div>
         <div v-if="!filteredPlayerProfileRows.length" class="empty-state">没有匹配的玩家面板</div>
       </section>
@@ -15882,7 +16474,7 @@ onBeforeUnmount(() => {
           </section>
 
           <section
-            v-if="getItemTypeDisplay(selectedItem) || getItemSubTypeDisplay(selectedItem) || formatRawValue(selectedItem.effect_value) || selectedItem.can_use || selectedItem.backpack"
+            v-if="getItemTypeDisplay(selectedItem) || getItemSubTypeDisplay(selectedItem) || getItemIconSourceDisplay(selectedItem) || getItemIconQualityDisplay(selectedItem) || getItemSmallIconQualityDisplay(selectedItem) || formatRawValue(selectedItem.effect_value) || selectedItem.can_use || selectedItem.backpack"
             class="object-section item-field-section"
           >
             <h4>字段</h4>
@@ -15894,6 +16486,18 @@ onBeforeUnmount(() => {
               <template v-if="getItemSubTypeDisplay(selectedItem)">
                 <dt>子类</dt>
                 <dd>{{ getItemSubTypeDisplay(selectedItem) }}</dd>
+              </template>
+              <template v-if="getItemIconSourceDisplay(selectedItem)">
+                <dt>图标来源</dt>
+                <dd>{{ getItemIconSourceDisplay(selectedItem) }}</dd>
+              </template>
+              <template v-if="getItemIconQualityDisplay(selectedItem)">
+                <dt>图标复用</dt>
+                <dd>{{ getItemIconQualityDisplay(selectedItem) }}</dd>
+              </template>
+              <template v-if="getItemSmallIconQualityDisplay(selectedItem)">
+                <dt>小图标复用</dt>
+                <dd>{{ getItemSmallIconQualityDisplay(selectedItem) }}</dd>
               </template>
               <template v-if="formatRawValue(selectedItem.effect_value)">
                 <dt>effectValue</dt>
@@ -15917,6 +16521,8 @@ onBeforeUnmount(() => {
               <dd>{{ selectedItem.id }}</dd>
               <dt>配置行</dt>
               <dd>{{ selectedItem.source_row_key || '-' }}</dd>
+              <dt>配置表</dt>
+              <dd>{{ selectedItem.source_table || '-' }}</dd>
               <dt>目录</dt>
               <dd>{{ catalogPath }}</dd>
             </dl>
@@ -16243,6 +16849,56 @@ onBeforeUnmount(() => {
   color: #98a2b3;
   font-size: 12px;
   font-weight: 500;
+}
+
+.icon-facet-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: normal;
+}
+
+.icon-facet-preview {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.icon-review-row {
+  padding-top: 1px;
+}
+
+.icon-review-options {
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.icon-review-summary {
+  color: #475467;
+  font-size: 13px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+
+.icon-review-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #7a4b00;
+  background: rgba(255, 248, 230, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(174, 128, 38, 0.24);
+}
+
+.icon-review-option:hover {
+  background: rgba(255, 241, 204, 0.9);
+}
+
+.review-priority-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d97008;
 }
 
 .facet-select {
@@ -17202,6 +17858,15 @@ onBeforeUnmount(() => {
     1px 0 1px rgba(0, 0, 0, 0.72),
     -1px 0 1px rgba(0, 0, 0, 0.72);
   pointer-events: none;
+}
+
+.mail-reward-empty {
+  color: #98a2b3;
+}
+
+.mail-reward-empty.unknown {
+  color: #9a3412;
+  font-weight: 600;
 }
 
 .mail-content-cell {
@@ -18218,6 +18883,18 @@ onBeforeUnmount(() => {
 .pager-status b {
   color: #172033;
   font-weight: 750;
+}
+
+.mail-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.pager-size-label {
+  color: #667085;
+  font-size: 13px;
 }
 
 .page-size-select {

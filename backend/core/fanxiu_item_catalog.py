@@ -29,7 +29,7 @@ DEFAULT_QUALITY_ROWS = Path("parsed_configs/Quality/rows.json")
 DEFAULT_ITEM_CATALOG = Path("parsed_configs/item_catalog/item_catalog.json")
 DEFAULT_GONGFA_FEATURE_FAMILIES = Path("parsed_configs/gongfa_feature_probe/feature_families.tsv")
 DEFAULT_GONGFA_FEATURE_LINKS = Path("parsed_configs/gongfa_feature_probe/feature_links.tsv")
-ITEM_CATALOG_SCHEMA_VERSION = 47
+ITEM_CATALOG_SCHEMA_VERSION = 50
 _WHITESPACE_RE = re.compile(r"\s+")
 _BRACKET_TERM_RE = re.compile(r"【([^】]{1,30})】")
 _RICH_TAG_RE = re.compile(r"<[^>]+>")
@@ -6752,6 +6752,10 @@ def _compact_item_row(
         "sort": row.get("sort"),
         "progression_counts": progression_counts,
         "source_row_key": row.get("_row_key"),
+        "source_table": "Item",
+        "source_path": str(row.get("_source_path") or ""),
+        "icon_source_table": "Item" if row.get("icon") else "",
+        "icon_source_field": "icon" if row.get("icon") else "",
     }
     if optional_gift_rewards:
         card["optional_gift_group_id"] = optional_gift_group_id
@@ -6903,6 +6907,33 @@ def _item_sort_key(row: dict[str, Any]) -> tuple[int, int, str]:
         _sort_value(row.get("sort"), _sort_value(row.get("id"))),
         str(row.get("id") or row.get("_row_key") or ""),
     )
+
+
+def _annotate_item_icon_reuse(cards: list[dict[str, Any]], *, primary_reuse_risk_threshold: int = 50) -> None:
+    icon_counts: dict[str, int] = {}
+    small_icon_counts: dict[str, int] = {}
+    for card in cards:
+        icon = str(card.get("icon") or "").strip()
+        if icon:
+            icon_counts[icon] = icon_counts.get(icon, 0) + 1
+        small_icon = str(card.get("small_icon") or "").strip()
+        if small_icon:
+            small_icon_counts[small_icon] = small_icon_counts.get(small_icon, 0) + 1
+    for card in cards:
+        icon = str(card.get("icon") or "").strip()
+        if icon:
+            reuse_count = icon_counts.get(icon, 0)
+            card["icon_reuse_count"] = reuse_count
+            if reuse_count >= primary_reuse_risk_threshold:
+                card["icon_quality_risk"] = "high_reuse_primary_icon"
+                card["icon_quality_note"] = f"主图标被 {reuse_count} 个道具共用，可能是通用配置图标。"
+        small_icon = str(card.get("small_icon") or "").strip()
+        if small_icon:
+            small_reuse_count = small_icon_counts.get(small_icon, 0)
+            card["small_icon_reuse_count"] = small_reuse_count
+            if small_reuse_count >= primary_reuse_risk_threshold:
+                card["small_icon_quality_risk"] = "high_reuse_small_icon"
+                card["small_icon_quality_note"] = f"小图标被 {small_reuse_count} 个道具共用，可能是通用角标或小图标。"
 
 
 def _default_catalog_source_files(root: Path) -> list[Path]:
@@ -7124,6 +7155,7 @@ def _build_item_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
     item_id = _normalize_search_text(card.get("id"))
     name = _normalize_search_text(card.get("name"))
     icon = _normalize_search_text(card.get("icon"))
+    small_icon = _normalize_search_text(card.get("small_icon"))
     description = _normalize_search_text(card.get("description"))
     effect_description = _normalize_search_text(card.get("effect_description"))
     quality_texts = tuple(
@@ -7179,6 +7211,7 @@ def _build_item_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
         "item_id": item_id,
         "name": name,
         "icon": icon,
+        "small_icon": small_icon,
         "description": description,
         "effect_description": effect_description,
         "effect_detail_text": effect_detail_text,
@@ -7193,7 +7226,19 @@ def _build_item_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
         "quality_texts": quality_texts,
         "type_texts": type_texts,
         "combined": " ".join(
-            [item_id, name, icon, description, effect_description, effect_detail_text, progression_text, optional_gift_text, *quality_texts, *type_texts]
+            [
+                item_id,
+                name,
+                icon,
+                small_icon,
+                description,
+                effect_description,
+                effect_detail_text,
+                progression_text,
+                optional_gift_text,
+                *quality_texts,
+                *type_texts,
+            ]
         ),
     }
 
@@ -7209,6 +7254,10 @@ def _load_item_runtime_index_cached(path_text: str, mtime_ns: int, size: int, ex
         "quality_options": _build_item_quality_options(cards),
         "type_options": _build_item_type_options(cards),
         "sub_type_options": _build_item_sub_type_options(cards),
+        "icon_quality_options": _build_item_icon_quality_options(cards),
+        "high_reuse_icon_options": _build_item_high_reuse_icon_options(cards),
+        "small_icon_quality_options": _build_item_small_icon_quality_options(cards),
+        "high_reuse_small_icon_options": _build_item_high_reuse_small_icon_options(cards),
         "search_docs": tuple(_build_item_search_doc(card, index) for index, card in enumerate(cards)),
     }
 
@@ -7266,6 +7315,17 @@ def _format_item_search_item(card: dict[str, Any], score: int) -> dict[str, Any]
         "description_preview": _preview(card.get("description"), 140),
         "effect_preview": _preview(card.get("effect_description"), 160),
         "progression_counts": card.get("progression_counts") or {},
+        "source_table": card.get("source_table"),
+        "source_path": card.get("source_path"),
+        "source_row_key": card.get("source_row_key"),
+        "icon_source_table": card.get("icon_source_table"),
+        "icon_source_field": card.get("icon_source_field"),
+        "icon_reuse_count": card.get("icon_reuse_count"),
+        "icon_quality_risk": card.get("icon_quality_risk"),
+        "icon_quality_note": card.get("icon_quality_note"),
+        "small_icon_reuse_count": card.get("small_icon_reuse_count"),
+        "small_icon_quality_risk": card.get("small_icon_quality_risk"),
+        "small_icon_quality_note": card.get("small_icon_quality_note"),
         "terms": _card_terms(card),
         "score": score,
     }
@@ -7459,6 +7519,124 @@ def _build_item_sub_type_options(cards: list[dict[str, Any]]) -> list[dict[str, 
     )
 
 
+def _item_icon_quality_key(card: dict[str, Any]) -> str:
+    return "high_reuse" if card.get("icon_quality_risk") else "normal"
+
+
+def _item_small_icon_quality_key(card: dict[str, Any]) -> str:
+    return "high_reuse" if card.get("small_icon_quality_risk") else "normal"
+
+
+def _item_icon_quality_label(value: str) -> str:
+    if value == "high_reuse":
+        return "高复用"
+    return "普通"
+
+
+def _build_item_icon_quality_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = {"high_reuse": 0, "normal": 1}
+    grouped: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        value = _item_icon_quality_key(card)
+        item = grouped.setdefault(
+            value,
+            {
+                "value": value,
+                "label": _item_icon_quality_label(value),
+                "count": 0,
+            },
+        )
+        item["count"] += 1
+    return sorted(grouped.values(), key=lambda item: (order.get(str(item.get("value")), 99), str(item.get("label") or "")))
+
+
+def _build_item_small_icon_quality_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = {"high_reuse": 0, "normal": 1}
+    grouped: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        value = _item_small_icon_quality_key(card)
+        item = grouped.setdefault(
+            value,
+            {
+                "value": value,
+                "label": _item_icon_quality_label(value),
+                "count": 0,
+            },
+        )
+        item["count"] += 1
+    return sorted(grouped.values(), key=lambda item: (order.get(str(item.get("value")), 99), str(item.get("label") or "")))
+
+
+def _build_item_high_reuse_icon_group_options(
+    cards: list[dict[str, Any]],
+    *,
+    icon_field: str,
+    risk_field: str,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        if not card.get(risk_field):
+            continue
+        icon = str(card.get(icon_field) or "").strip()
+        if not icon:
+            continue
+        item = grouped.setdefault(
+            icon,
+            {
+                "value": icon,
+                "label": icon,
+                "count": 0,
+                "type_counts": {},
+                "samples": [],
+            },
+        )
+        item["count"] += 1
+        type_label = str(card.get("type_name") or card.get("type_key") or "类型未知").strip() or "类型未知"
+        item["type_counts"][type_label] = int(item["type_counts"].get(type_label) or 0) + 1
+        samples = item["samples"]
+        if len(samples) < 8:
+            samples.append(
+                {
+                    "id": card.get("id"),
+                    "name": card.get("name"),
+                    "type_name": card.get("type_name"),
+                }
+            )
+    options = []
+    for item in grouped.values():
+        type_counts = item.pop("type_counts")
+        total_count = int(item.get("count") or 0)
+        sorted_type_counts = sorted(type_counts.items(), key=lambda entry: (-int(entry[1]), str(entry[0])))
+        top_type_name, top_type_count = sorted_type_counts[0] if sorted_type_counts else ("类型未知", 0)
+        top_type_ratio = (int(top_type_count) / total_count) if total_count else 0.0
+        type_summary_parts = [
+            f"{name}{count}"
+            for name, count in sorted_type_counts[:6]
+        ]
+        item["type_summary"] = "；".join(type_summary_parts)
+        item["dominant_type"] = top_type_name
+        item["dominant_type_ratio"] = round(top_type_ratio, 4)
+        if top_type_ratio >= 0.95:
+            item["review_hint"] = "单一类型通用"
+            item["review_priority"] = "medium"
+        elif top_type_ratio >= 0.75:
+            item["review_hint"] = "主类型为主"
+            item["review_priority"] = "medium_high"
+        else:
+            item["review_hint"] = "跨类型混用"
+            item["review_priority"] = "high"
+        options.append(item)
+    return sorted(options, key=lambda item: (-int(item.get("count") or 0), str(item.get("value") or "")))
+
+
+def _build_item_high_reuse_icon_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _build_item_high_reuse_icon_group_options(cards, icon_field="icon", risk_field="icon_quality_risk")
+
+
+def _build_item_high_reuse_small_icon_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _build_item_high_reuse_icon_group_options(cards, icon_field="small_icon", risk_field="small_icon_quality_risk")
+
+
 def _matches_item_quality_filter(card: dict[str, Any], quality_name: str) -> bool:
     if not quality_name:
         return True
@@ -7486,6 +7664,8 @@ def _score_item_search_doc(doc: dict[str, Any], terms: tuple[str, ...]) -> int:
             score += 90
         if term in doc["icon"]:
             score += 28
+        if term in doc["small_icon"]:
+            score += 20
         if term in doc["description"]:
             score += 18
         if term in doc["effect_description"]:
@@ -7508,6 +7688,10 @@ def _build_item_facet_index(scored_rows: list[tuple[int, int, dict[str, Any], di
         "quality_name": {},
         "type_key": {},
         "sub_type_key": {},
+        "icon_quality": {},
+        "icon_name": {},
+        "small_icon_quality": {},
+        "small_icon_name": {},
     }
     object_ids: list[str] = []
     for _score, _index, card, doc in scored_rows:
@@ -7521,6 +7705,16 @@ def _build_item_facet_index(scored_rows: list[tuple[int, int, dict[str, Any], di
         sub_type_key = str(card.get("sub_type_key") or _item_sub_type_pair_key(type_key, _UNKNOWN_ITEM_CATEGORY_KEY))
         rows["type_key"].setdefault(type_key, []).append(object_id)
         rows["sub_type_key"].setdefault(sub_type_key, []).append(object_id)
+        icon_quality = _item_icon_quality_key(card)
+        rows["icon_quality"].setdefault(icon_quality, []).append(object_id)
+        icon_name = str(card.get("icon") or "").strip()
+        if icon_name:
+            rows["icon_name"].setdefault(icon_name, []).append(object_id)
+        small_icon_quality = _item_small_icon_quality_key(card)
+        rows["small_icon_quality"].setdefault(small_icon_quality, []).append(object_id)
+        small_icon_name = str(card.get("small_icon") or "").strip()
+        if small_icon_name:
+            rows["small_icon_name"].setdefault(small_icon_name, []).append(object_id)
     return {
         "object_ids": object_ids,
         "rows": rows,
@@ -7533,6 +7727,10 @@ def search_fanxiu_item_cards(
     quality_name: str = "",
     type_key: str = "",
     sub_type_key: str = "",
+    icon_quality: str = "",
+    icon_name: str = "",
+    small_icon_quality: str = "",
+    small_icon_name: str = "",
     sort_by: str = "default",
     sort_order: str = "asc",
     limit: int = 80,
@@ -7548,6 +7746,14 @@ def search_fanxiu_item_cards(
     quality_name = str(quality_name or "").strip()
     type_key = str(type_key or "").strip()
     sub_type_key = str(sub_type_key or "").strip()
+    icon_quality = str(icon_quality or "").strip()
+    icon_name = str(icon_name or "").strip()
+    small_icon_quality = str(small_icon_quality or "").strip()
+    small_icon_name = str(small_icon_name or "").strip()
+    if icon_quality not in {"", "high_reuse", "normal"}:
+        icon_quality = ""
+    if small_icon_quality not in {"", "high_reuse", "normal"}:
+        small_icon_quality = ""
     sort_by = str(sort_by or "default").strip()
     sort_order = str(sort_order or "asc").strip().lower()
     if sort_by not in {"default", "time"}:
@@ -7569,6 +7775,14 @@ def search_fanxiu_item_cards(
         if type_key and type_key not in doc["type_values"]:
             continue
         if sub_type_key and sub_type_key not in doc["sub_type_values"]:
+            continue
+        if icon_quality and _item_icon_quality_key(card) != icon_quality:
+            continue
+        if icon_name and str(card.get("icon") or "").strip() != icon_name:
+            continue
+        if small_icon_quality and _item_small_icon_quality_key(card) != small_icon_quality:
+            continue
+        if small_icon_name and str(card.get("small_icon") or "").strip() != small_icon_name:
             continue
         scored_rows.append((score, index, card))
     if sort_by == "time":
@@ -7600,6 +7814,10 @@ def search_fanxiu_item_cards(
         "quality_name": quality_name,
         "type_key": type_key,
         "sub_type_key": sub_type_key,
+        "icon_quality": icon_quality,
+        "icon_name": icon_name,
+        "small_icon_quality": small_icon_quality,
+        "small_icon_name": small_icon_name,
         "sort_by": sort_by,
         "sort_order": sort_order,
         "limit": limit,
@@ -7610,6 +7828,10 @@ def search_fanxiu_item_cards(
         "quality_options": runtime_index["quality_options"],
         "type_options": runtime_index["type_options"],
         "sub_type_options": runtime_index["sub_type_options"],
+        "icon_quality_options": runtime_index["icon_quality_options"],
+        "high_reuse_icon_options": runtime_index["high_reuse_icon_options"],
+        "small_icon_quality_options": runtime_index["small_icon_quality_options"],
+        "high_reuse_small_icon_options": runtime_index["high_reuse_small_icon_options"],
         "items": [_format_item_search_item(card, score) for score, _index, card in page_rows],
     }
     if include_facets:
@@ -7655,6 +7877,8 @@ def build_fanxiu_item_catalog(
     quality_path = root / DEFAULT_QUALITY_ROWS
 
     item_rows = _load_json_rows(item_path)
+    for row in item_rows:
+        row.setdefault("_source_path", str(item_path))
     quality_rows = _load_optional_json_rows(quality_path)
     quality_by_id = {
         quality_id: _compact_quality_row(row)
@@ -7748,6 +7972,7 @@ def build_fanxiu_item_catalog(
         )
         for row in sorted(item_rows, key=_item_sort_key)
     ]
+    _annotate_item_icon_reuse(cards)
     out_dir = root / "parsed_configs" / "item_catalog"
     out_dir.mkdir(parents=True, exist_ok=True)
     catalog_path = out_dir / "item_catalog.json"
@@ -7764,6 +7989,8 @@ def build_fanxiu_item_catalog(
         "optional_gift_reward_count": sum(len(items) for items in optional_gift_rewards_by_group.values()),
         "item_with_optional_gift_count": sum(1 for card in cards if card.get("optional_gift_rewards")),
         "item_with_effect_detail_count": sum(1 for card in cards if card.get("effect_details")),
+        "primary_icon_reuse_risk_count": sum(1 for card in cards if card.get("icon_quality_risk")),
+        "small_icon_reuse_risk_count": sum(1 for card in cards if card.get("small_icon_quality_risk")),
         "item_with_optional_gift_detail_count": sum(
             1
             for card in cards

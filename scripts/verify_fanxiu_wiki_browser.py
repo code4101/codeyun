@@ -34,6 +34,34 @@ AUTH_TOKEN_ENV = "CODEYUN_AUTH_TOKEN"
 REFRESH_TOKEN_ENV = "CODEYUN_REFRESH_TOKEN"
 CORE_WIKI_TABS = {"gongfa", "activity", "lingjie", "digitdoor", "doupotd"}
 CORE_WIKI_TABS_REQUIRING_VISIBLE_IMAGES = {"gongfa", "lingjie", "digitdoor", "doupotd"}
+REQUIRED_MAIL_CONTENT_CHECKS = [
+    {
+        "title": "灵脉收益",
+        "expected": ["所在灵脉", "本次聚灵时间：3小时", "本次聚灵收益"],
+        "forbidden": ["10800000"],
+    },
+    {
+        "title": "宗门灵泉活动收益",
+        "expected": ["本次吸收灵气时间", "12分钟", "本次吸收灵气次数", "80 次", "本次活动提升修为"],
+        "forbidden": ["720000"],
+    },
+]
+REQUIRED_ITEM_ICON_ROUTE_CHECKS = [
+    {
+        "name": "primary_high_reuse",
+        "params": {"tab": "item", "icon_quality": "high_reuse", "icon_name": "icon_item_zw_0153"},
+        "expected_total_text": "1010 个对象",
+        "expected_group": "icon_item_zw_0153",
+        "expected_quality_label": "高复用",
+    },
+    {
+        "name": "small_high_reuse",
+        "params": {"tab": "item", "small_icon_quality": "high_reuse", "small_icon_name": "mainui_icon_zw_1020"},
+        "expected_total_text": "279 个对象",
+        "expected_group": "mainui_icon_zw_1020",
+        "expected_quality_label": "高复用",
+    },
+]
 
 
 def _create_local_access_token(username: str) -> str:
@@ -581,6 +609,376 @@ async def _collect_mail_rows_across_pages(
     return rows
 
 
+async def _probe_required_mail_content_checks(
+    ws: Any,
+    seq_ref: list[int],
+    *,
+    tab: str,
+    url: str,
+    wait_ms: int,
+    page_limit: int,
+) -> list[dict[str, Any]]:
+    if tab != "mail":
+        return []
+    seq = seq_ref[0]
+    seq_ref[0] += 1
+    await _cdp_call(ws, seq, "Page.navigate", {"url": url})
+    await _wait_after_navigation(ws, seq_ref, wait_ms)
+
+    results: list[dict[str, Any]] = []
+    for check in REQUIRED_MAIL_CONTENT_CHECKS:
+        title = str(check["title"])
+        expected = [str(value) for value in check["expected"]]
+        forbidden = [str(value) for value in check["forbidden"]]
+        probe = await _evaluate_json_await(
+            ws,
+            seq_ref,
+            f"""
+(async () => {{
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const targetTitle = {json.dumps(title, ensure_ascii=False)};
+  const expected = {json.dumps(expected, ensure_ascii=False)};
+  const forbidden = {json.dumps(forbidden, ensure_ascii=False)};
+  const maxPages = {max(1, page_limit)};
+  const waitMs = {max(1000, wait_ms)};
+  const statusText = () => (document.querySelector('.mail-pagination .pager-status')?.innerText || '').trim().replace(/\\s+/g, ' ');
+  const bodyText = () => Array.from(document.querySelectorAll('.mail-table tbody tr')).map(row => row.innerText || '').join('\\n').slice(0, 2000);
+  const openCurrentPageRow = async (pageIndex) => {{
+    const rows = Array.from(document.querySelectorAll('.mail-table tbody tr'));
+    for (const row of rows) {{
+      const cells = Array.from(row.querySelectorAll('td'));
+      const rowTitle = (cells[1]?.innerText || '').trim().replace(/\\s+/g, ' ');
+      if (rowTitle !== targetTitle) continue;
+      const button = row.querySelector('.mail-content-cell button');
+      if (!button) {{
+        return {{ found: true, opened: false, page_index: pageIndex, page_status: statusText(), title: rowTitle, reason: 'content_button_missing', content_text: '' }};
+      }}
+      button.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
+      const deadline = Date.now() + waitMs;
+      let contentText = '';
+      let dialogTitle = '';
+      while (Date.now() < deadline) {{
+        await sleep(150);
+        contentText = (document.querySelector('.mail-content-body')?.innerText || '').trim();
+        dialogTitle = (document.querySelector('.mail-content-dialog .el-dialog__title')?.innerText || '').trim();
+        if (contentText) break;
+      }}
+      const close = document.querySelector('.mail-content-dialog .el-dialog__headerbtn');
+      if (close) close.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
+      await sleep(200);
+      return {{
+        found: true,
+        opened: Boolean(contentText),
+        page_index: pageIndex,
+        page_status: statusText(),
+        title: rowTitle,
+        dialog_title: dialogTitle,
+        content_text: contentText,
+        expected_missing: expected.filter(value => !contentText.includes(value)),
+        forbidden_present: forbidden.filter(value => contentText.includes(value)),
+      }};
+    }}
+    return null;
+  }};
+  for (let pageIndex = 1; pageIndex <= maxPages; pageIndex += 1) {{
+    const match = await openCurrentPageRow(pageIndex);
+    if (match) return match;
+    const button = document.querySelector('.mail-pagination button[aria-label="下一页"]');
+    if (!button) return {{ found: false, opened: false, page_index: pageIndex, page_status: statusText(), reason: 'next_button_missing', content_text: '' }};
+    if (button.disabled) return {{ found: false, opened: false, page_index: pageIndex, page_status: statusText(), reason: 'target_not_found', content_text: '' }};
+    const beforeStatus = statusText();
+    const beforeBody = bodyText();
+    button.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
+    const deadline = Date.now() + waitMs;
+    let advanced = false;
+    while (Date.now() < deadline) {{
+      await sleep(200);
+      const loading = Boolean(document.querySelector('.el-loading-mask:not([style*="display: none"])'));
+      if (!loading && (statusText() !== beforeStatus || bodyText() !== beforeBody)) {{
+        advanced = true;
+        break;
+      }}
+    }}
+    if (!advanced) return {{ found: false, opened: false, page_index: pageIndex, page_status: statusText(), reason: 'page_advance_timeout', content_text: '' }};
+  }}
+  return {{ found: false, opened: false, page_index: maxPages, page_status: statusText(), reason: 'page_limit_reached', content_text: '' }};
+}})()
+""",
+        ) or {}
+        text = str(probe.get("content_text") or "")
+        missing = [value for value in expected if value not in text]
+        present = [value for value in forbidden if value in text]
+        results.append(
+            {
+                "tab": tab,
+                "target_title": title,
+                "found": bool(probe.get("found")),
+                "opened": bool(probe.get("opened")),
+                "page_index": probe.get("page_index", ""),
+                "page_status": probe.get("page_status", ""),
+                "dialog_title": probe.get("dialog_title", ""),
+                "content_text": text,
+                "expected": " | ".join(expected),
+                "expected_missing": " | ".join(probe.get("expected_missing") or missing),
+                "forbidden": " | ".join(forbidden),
+                "forbidden_present": " | ".join(probe.get("forbidden_present") or present),
+                "reason": probe.get("reason", ""),
+            }
+        )
+    return results
+
+
+async def _probe_required_item_icon_route_checks(
+    ws: Any,
+    seq_ref: list[int],
+    *,
+    tab: str,
+    frontend_base: str,
+    wait_ms: int,
+) -> list[dict[str, Any]]:
+    if tab != "item":
+        return []
+    results: list[dict[str, Any]] = []
+    for check in REQUIRED_ITEM_ICON_ROUTE_CHECKS:
+        params = dict(check["params"])
+        url = f"{frontend_base.rstrip('/')}/fanxiu/wiki?{urllib.parse.urlencode(params)}"
+        seq = seq_ref[0]
+        seq_ref[0] += 1
+        await _cdp_call(ws, seq, "Page.navigate", {"url": url})
+        await _wait_after_navigation(ws, seq_ref, wait_ms)
+        probe = await _evaluate_json_await(
+            ws,
+            seq_ref,
+            f"""
+(async () => {{
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const expectedGroup = {json.dumps(check["expected_group"], ensure_ascii=False)};
+  const expectedTotalText = {json.dumps(check["expected_total_text"], ensure_ascii=False)};
+  const expectedQualityLabel = {json.dumps(check["expected_quality_label"], ensure_ascii=False)};
+  const waitMs = {max(1000, wait_ms)};
+  const started = Date.now();
+  let state = {{}};
+  while (Date.now() - started < waitMs) {{
+    await sleep(200);
+    const bodyText = document.body?.innerText || '';
+    const loading = Boolean(document.querySelector('.el-loading-mask:not([style*="display: none"])'));
+    const rows = Array.from(document.querySelectorAll('[data-item-id]')).slice(0, 20).map(row => ({{
+      id: row.getAttribute('data-item-id') || '',
+      title: row.querySelector('.object-row-title')?.innerText || '',
+      icon: row.getAttribute('data-item-icon') || '',
+    }}));
+    const activeLabels = Array.from(document.querySelectorAll('.facet-option.active'))
+      .map(el => (el.innerText || '').trim().replace(/\\s+/g, ' '))
+      .filter(Boolean);
+    const groupButtons = Array.from(document.querySelectorAll('.icon-facet-option')).map(button => {{
+      const img = button.querySelector('img');
+      return {{
+        text: (button.innerText || '').trim().replace(/\\s+/g, ' '),
+        title: button.getAttribute('title') || '',
+        src: img ? (img.currentSrc || img.src || '') : '',
+        complete: img ? Boolean(img.complete) : false,
+        naturalWidth: img ? (img.naturalWidth || 0) : 0,
+        naturalHeight: img ? (img.naturalHeight || 0) : 0,
+      }};
+    }});
+    state = {{
+      href: location.href,
+      loading,
+      has_expected_total: bodyText.includes(expectedTotalText),
+      has_expected_group: bodyText.includes(expectedGroup),
+      has_expected_quality_label: activeLabels.some(label => label.includes(expectedQualityLabel)),
+      active_labels: activeLabels,
+      row_count: rows.length,
+      rows,
+      group_button_count: groupButtons.length,
+      group_buttons: groupButtons,
+    }};
+    const matchingGroup = groupButtons.find(button => button.text.includes(expectedGroup) || button.title.includes(expectedGroup));
+    if (!loading && rows.length > 0 && state.has_expected_total && state.has_expected_group && matchingGroup && matchingGroup.complete && matchingGroup.naturalWidth > 0 && matchingGroup.naturalHeight > 0) {{
+      break;
+    }}
+  }}
+  return state;
+}})()
+""",
+        ) or {}
+        group_buttons = probe.get("group_buttons") or []
+        matching_group = next(
+            (
+                button for button in group_buttons
+                if str(check["expected_group"]) in str(button.get("text") or "") or str(check["expected_group"]) in str(button.get("title") or "")
+            ),
+            {},
+        )
+        failures: list[str] = []
+        href = urllib.parse.unquote(str(probe.get("href") or ""))
+        for key, value in params.items():
+            if key == "tab":
+                continue
+            if f"{key}={value}" not in href:
+                failures.append(f"href_missing_{key}")
+        if not probe.get("has_expected_total"):
+            failures.append("total_text_missing")
+        if not probe.get("has_expected_group"):
+            failures.append("group_text_missing")
+        if not probe.get("has_expected_quality_label"):
+            failures.append("quality_label_missing")
+        if int(probe.get("row_count") or 0) <= 0:
+            failures.append("rows_missing")
+        if not matching_group:
+            failures.append("group_button_missing")
+        elif not matching_group.get("complete") or not matching_group.get("naturalWidth") or not matching_group.get("naturalHeight"):
+            failures.append("group_icon_not_loaded")
+        results.append(
+            {
+                "tab": tab,
+                "name": check["name"],
+                "url": url,
+                "href": probe.get("href", ""),
+                "expected_group": check["expected_group"],
+                "expected_total_text": check["expected_total_text"],
+                "row_count": int(probe.get("row_count") or 0),
+                "group_button_count": int(probe.get("group_button_count") or 0),
+                "active_labels": " | ".join(str(label) for label in probe.get("active_labels") or []),
+                "matching_group": json.dumps(matching_group, ensure_ascii=False),
+                "failures": " | ".join(failures),
+                "observed": json.dumps(probe, ensure_ascii=False)[:1600],
+            }
+        )
+    return results
+
+
+async def _probe_item_icon_review_workbench(ws: Any, seq_ref: list[int], *, tab: str, wait_ms: int) -> list[dict[str, Any]]:
+    if tab != "item":
+        return []
+    probe = await _evaluate_json_await(
+        ws,
+        seq_ref,
+        f"""
+(async () => {{
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const waitMs = {max(1000, wait_ms)};
+  const started = Date.now();
+  let state = {{}};
+  while (Date.now() - started < waitMs) {{
+    await sleep(200);
+    const row = Array.from(document.querySelectorAll('.facet-row')).find(item => (item.querySelector('.facet-label')?.innerText || '').trim() === '治理');
+    const buttons = row ? Array.from(row.querySelectorAll('.icon-review-option')).map(button => ({{
+      text: (button.innerText || '').trim().replace(/\\s+/g, ' '),
+      title: button.getAttribute('title') || '',
+      sample_id: button.getAttribute('data-sample-id') || '',
+      href: button.getAttribute('href') || '',
+    }})) : [];
+    const contactLink = row ? Array.from(row.querySelectorAll('a.icon-review-option')).find(link => (link.innerText || '').includes('复核图')) : null;
+    const summary = (row?.querySelector('.icon-review-summary')?.innerText || '').trim().replace(/\\s+/g, ' ');
+    state = {{
+      href: location.href,
+      has_row: Boolean(row),
+      summary,
+      button_count: buttons.length,
+      contact_href: contactLink?.getAttribute('href') || '',
+      contact_text: (contactLink?.innerText || '').trim().replace(/\\s+/g, ' '),
+      buttons,
+      body_has_governance: Boolean(document.body?.innerText?.includes('治理')),
+      loading: Boolean(document.querySelector('.el-loading-mask:not([style*="display: none"])')),
+    }};
+    if (state.has_row && state.button_count > 0 && summary.includes('高优先')) break;
+  }}
+  return state;
+}})()
+""",
+    ) or {}
+    sample_probe = await _evaluate_json_await(
+        ws,
+        seq_ref,
+        f"""
+(async () => {{
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const button = document.querySelector('.icon-review-option[data-sample-id]');
+  const sampleId = button?.getAttribute('data-sample-id') || '';
+  if (!button || !sampleId) {{
+    return {{
+      clicked: false,
+      sample_id: sampleId,
+      href: location.href,
+      detail_title: '',
+      detail_has_sample_id: false,
+    }};
+  }}
+  button.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
+  const started = Date.now();
+  let detailTitle = '';
+  let detailMeta = '';
+  let detailImageLoaded = false;
+  while (Date.now() - started < {max(1000, wait_ms)}) {{
+    await sleep(200);
+    detailTitle = (document.querySelector('.detail-title h3')?.innerText || '').trim();
+    detailMeta = (document.querySelector('.detail-meta')?.innerText || '').trim();
+    const detailImage = document.querySelector('.detail-head .object-icon img');
+    detailImageLoaded = Boolean(detailImage && detailImage.complete && detailImage.naturalWidth > 0 && detailImage.naturalHeight > 0);
+    if (location.href.includes(`id=${{sampleId}}`) && detailMeta.includes(`ID ${{sampleId}}`) && detailTitle && detailImageLoaded) break;
+  }}
+  return {{
+    clicked: true,
+    sample_id: sampleId,
+    href: location.href,
+    detail_title: detailTitle,
+    detail_meta: detailMeta,
+    detail_has_sample_id: location.href.includes(`id=${{sampleId}}`) && detailMeta.includes(`ID ${{sampleId}}`),
+    detail_image_loaded: detailImageLoaded,
+  }};
+}})()
+""",
+    ) or {}
+    buttons = probe.get("buttons") or []
+    failures: list[str] = []
+    summary = str(probe.get("summary") or "")
+    if not probe.get("has_row"):
+        failures.append("review_row_missing")
+    if "组" not in summary or "高优先" not in summary:
+        failures.append("summary_missing_counts")
+    if "无候选" in summary and "待判定" not in summary:
+        failures.append("summary_missing_pending_decision")
+    if int(probe.get("button_count") or 0) <= 0:
+        failures.append("review_buttons_missing")
+    if buttons and not any(str(button.get("title") or "").strip() for button in buttons):
+        failures.append("review_button_titles_missing")
+    if buttons and not any("样本：" in str(button.get("title") or "") for button in buttons):
+        failures.append("review_button_samples_missing")
+    if buttons and not any("候选：" in str(button.get("title") or "") for button in buttons):
+        failures.append("review_button_candidates_missing")
+    if buttons and not any(str(button.get("sample_id") or "").strip() for button in buttons):
+        failures.append("review_button_sample_ids_missing")
+    if not str(probe.get("contact_href") or "").strip():
+        failures.append("review_contact_sheet_link_missing")
+    elif "/api/fanxiu/resources/wiki/media" not in str(probe.get("contact_href") or ""):
+        failures.append("review_contact_sheet_link_invalid")
+    if buttons and not any("mainui_icon_zw_1020" in str(button.get("text") or "") for button in buttons):
+        failures.append("top_small_icon_candidate_missing")
+    if (
+        not sample_probe.get("clicked")
+        or not sample_probe.get("detail_has_sample_id")
+        or not str(sample_probe.get("detail_title") or "").strip()
+        or not sample_probe.get("detail_image_loaded")
+    ):
+        failures.append("review_sample_selection_failed")
+    return [
+        {
+            "tab": tab,
+            "href": probe.get("href", ""),
+            "summary": summary,
+            "button_count": int(probe.get("button_count") or 0),
+            "sample_id": sample_probe.get("sample_id", ""),
+            "sample_href": sample_probe.get("href", ""),
+            "sample_detail_title": sample_probe.get("detail_title", ""),
+            "contact_href": probe.get("contact_href", ""),
+            "first_buttons": json.dumps(buttons[:8], ensure_ascii=False),
+            "failures": " | ".join(failures),
+            "observed": json.dumps({"workbench": probe, "sample_selection": sample_probe}, ensure_ascii=False)[:1600],
+        }
+    ]
+
+
 async def _probe_mail_interactions(ws: Any, seq_ref: list[int], tab: str) -> dict[str, Any]:
     if tab != "mail":
         return {}
@@ -744,6 +1142,21 @@ async def _scan_tab(
     mail_rows = (
         await _collect_mail_rows_across_pages(ws, seq_ref, tab=tab, wait_ms=wait_ms, page_limit=mail_page_limit)
         if tab == "mail"
+        else []
+    )
+    mail_content_checks = (
+        await _probe_required_mail_content_checks(ws, seq_ref, tab=tab, url=url, wait_ms=wait_ms, page_limit=mail_page_limit)
+        if tab == "mail"
+        else []
+    )
+    item_icon_route_checks = (
+        await _probe_required_item_icon_route_checks(ws, seq_ref, tab=tab, frontend_base=frontend_base, wait_ms=wait_ms)
+        if tab == "item" and not item_type_label
+        else []
+    )
+    item_icon_review_rows = (
+        await _probe_item_icon_review_workbench(ws, seq_ref, tab=tab, wait_ms=wait_ms)
+        if tab == "item" and not item_type_label
         else []
     )
     for step in range(max(1, scroll_steps)):
@@ -912,6 +1325,30 @@ async def _scan_tab(
                         "kind": f"item_route_clear_{failure}",
                         "detail": "item tab URL without filter parameters must clear stale persisted item filters",
                         "observed": json.dumps(item_route_clear, ensure_ascii=False)[:1600],
+                    }
+                )
+            for route_check in item_icon_route_checks:
+                failures = str(route_check.get("failures") or "").strip()
+                if not failures:
+                    continue
+                request_failures.append(
+                    {
+                        "tab": tab,
+                        "kind": "item_icon_route_check_failed",
+                        "detail": f"item icon quality route {route_check.get('name')} must reproduce filters and load group thumbnail",
+                        "observed": json.dumps(route_check, ensure_ascii=False)[:1600],
+                    }
+                )
+            for review_row in item_icon_review_rows:
+                failures = str(review_row.get("failures") or "").strip()
+                if not failures:
+                    continue
+                request_failures.append(
+                    {
+                        "tab": tab,
+                        "kind": "item_icon_review_workbench_failed",
+                        "detail": "item tab must expose high-reuse icon governance candidates with actionable titles",
+                        "observed": json.dumps(review_row, ensure_ascii=False)[:1600],
                     }
                 )
         if item_type_label:
@@ -1143,6 +1580,21 @@ async def _scan_tab(
                     "observed": json.dumps(page_advance_errors[:3], ensure_ascii=False)[:1600],
                 }
             )
+        for row in mail_content_checks:
+            if (
+                not row.get("found")
+                or not row.get("opened")
+                or str(row.get("expected_missing") or "").strip()
+                or str(row.get("forbidden_present") or "").strip()
+            ):
+                request_failures.append(
+                    {
+                        "tab": tab,
+                        "kind": "mail_required_content_check_failed",
+                        "detail": "required packet mail body must render expected template text in the browser",
+                        "observed": json.dumps(row, ensure_ascii=False)[:1600],
+                    }
+                )
 
     screenshot_path = ""
     if screenshot:
@@ -1183,8 +1635,11 @@ async def _scan_tab(
         "item_filter": item_filter_result,
         "item_route_filter": item_route_filter,
         "item_route_clear": item_route_clear,
+        "item_icon_route_checks": item_icon_route_checks,
+        "item_icon_review_rows": item_icon_review_rows,
         "item_row_icons": item_row_icon_rows,
         "mail_rows": mail_rows,
+        "mail_content_checks": mail_content_checks,
         "mail_interactions": mail_interactions,
         "api_requests": [{"tab": tab, **row} for row in api_requests],
         "request_failures": request_failures,
@@ -1307,7 +1762,18 @@ async def run_browser_audit(args: argparse.Namespace) -> dict[str, Any]:
         for result in results
         if result.get("item_route_clear")
     ]
+    item_icon_route_check_rows = [
+        row
+        for result in results
+        for row in result.get("item_icon_route_checks", [])
+    ]
+    item_icon_review_rows = [
+        row
+        for result in results
+        for row in result.get("item_icon_review_rows", [])
+    ]
     mail_rows = [row for result in results for row in result.get("mail_rows", [])]
+    mail_content_check_rows = [row for result in results for row in result.get("mail_content_checks", [])]
     mail_interaction_rows = [
         {"tab": result["tab"], **result.get("mail_interactions", {})}
         for result in results
@@ -1400,6 +1866,43 @@ async def run_browser_audit(args: argparse.Namespace) -> dict[str, Any]:
             item_route_clear_rows,
             ["tab", "href", "active_labels", "row_count", "request_rows"],
         )
+    if item_icon_route_check_rows:
+        _write_tsv(
+            output_dir / "browser_item_icon_route_checks_latest.tsv",
+            item_icon_route_check_rows,
+            [
+                "tab",
+                "name",
+                "url",
+                "href",
+                "expected_group",
+                "expected_total_text",
+                "row_count",
+                "group_button_count",
+                "active_labels",
+                "matching_group",
+                "failures",
+                "observed",
+            ],
+        )
+    if item_icon_review_rows:
+        _write_tsv(
+            output_dir / "browser_item_icon_review_latest.tsv",
+            item_icon_review_rows,
+            [
+                "tab",
+                "href",
+                "summary",
+                "button_count",
+                "sample_id",
+                "sample_href",
+                "sample_detail_title",
+                "contact_href",
+                "first_buttons",
+                "failures",
+                "observed",
+            ],
+        )
     if mail_rows:
         _write_tsv(
             output_dir / "browser_mail_latest.tsv",
@@ -1424,6 +1927,26 @@ async def run_browser_audit(args: argparse.Namespace) -> dict[str, Any]:
                 "page_size_text",
                 "page_advance_error",
                 "samples_json",
+            ],
+        )
+    if mail_content_check_rows:
+        _write_tsv(
+            output_dir / "browser_mail_content_checks_latest.tsv",
+            mail_content_check_rows,
+            [
+                "tab",
+                "target_title",
+                "found",
+                "opened",
+                "page_index",
+                "page_status",
+                "dialog_title",
+                "content_text",
+                "expected",
+                "expected_missing",
+                "forbidden",
+                "forbidden_present",
+                "reason",
             ],
         )
     if mail_interaction_rows:
@@ -1482,6 +2005,10 @@ async def run_browser_audit(args: argparse.Namespace) -> dict[str, Any]:
             1 for row in request_failure_rows
             if str(row.get("kind") or "").startswith("item_route_clear_")
         ),
+        "item_icon_route_check_count": len(item_icon_route_check_rows),
+        "item_icon_route_check_failure_count": sum(1 for row in item_icon_route_check_rows if str(row.get("failures") or "").strip()),
+        "item_icon_review_count": len(item_icon_review_rows),
+        "item_icon_review_failure_count": sum(1 for row in item_icon_review_rows if str(row.get("failures") or "").strip()),
         "item_row_icon_missing_count": sum(
             1 for row in item_icon_rows
             if row.get("row_visible") and (
@@ -1521,6 +2048,16 @@ async def run_browser_audit(args: argparse.Namespace) -> dict[str, Any]:
         "mail_invalid_item_link_count": sum(int(row.get("invalid_item_link_count") or 0) for row in mail_rows),
         "mail_item_link_count": sum(int(row.get("item_link_count") or 0) for row in mail_rows),
         "mail_content_button_count": sum(int(row.get("content_button_count") or 0) for row in mail_rows),
+        "mail_required_content_check_count": len(mail_content_check_rows),
+        "mail_required_content_failure_count": sum(
+            1 for row in mail_content_check_rows
+            if (
+                not row.get("found")
+                or not row.get("opened")
+                or str(row.get("expected_missing") or "").strip()
+                or str(row.get("forbidden_present") or "").strip()
+            )
+        ),
         "mail_content_dialog_ok": all(row.get("content_clicked") and str(row.get("content_text") or "").strip() for row in mail_interaction_rows) if mail_interaction_rows else False,
         "mail_item_link_navigation_ok": all(row.get("item_link_clicked") and str(row.get("item_route_path") or "").startswith("/fanxiu-resource/item/") and row.get("item_route_has_name") for row in mail_interaction_rows) if mail_interaction_rows else False,
         "login_state_observed": any(row.get("state") == "login" for row in observation_rows),

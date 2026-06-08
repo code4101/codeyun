@@ -53,6 +53,7 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     finished_at: float = 0
     error: str = ""
     logs: list[dict[str, Any]] = Field(default_factory=list)
+    queued_job: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuDataAnnotationRuntimeTaskRequest(BaseModel):

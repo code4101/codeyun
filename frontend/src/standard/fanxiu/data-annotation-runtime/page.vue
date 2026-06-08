@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { QuestionFilled } from '@element-plus/icons-vue';
+import { QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
   getFanxiuDataAnnotationRuntimeLogs,
@@ -42,6 +42,11 @@ const devices = computed(() => taskStore.devices);
 const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
 const machineName = 'codepc_mf';
+const serviceRunning = computed(() => Boolean(runtimeStatus.value?.service_running));
+const serviceStateText = computed(() => {
+  if (!runtimeStatus.value) return '未连接';
+  return serviceRunning.value ? '常驻' : '待恢复';
+});
 const currentSceneText = computed(() => {
   const scene = runtimeStatus.value?.current_scene;
   return typeof scene === 'number' ? `#${scene}` : '-';
@@ -244,6 +249,11 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
   }
 };
 
+const recoverRuntimeService = () => runAction('service', async () => {
+  await refreshStatus();
+  return runtimeStatus.value || undefined;
+});
+
 const startPolling = () => {
   if (pollTimer !== null) return;
   pollTimer = window.setInterval(() => {
@@ -404,9 +414,21 @@ onUnmounted(() => {
       <section class="runtime-section">
         <div class="section-title">
           <h3>运行状态</h3>
-          <span>{{ schedulerPlan?.message || machineName }}</span>
+          <div class="section-actions">
+            <span>{{ schedulerPlan?.message || machineName }}</span>
+            <el-button
+              v-if="runtimeStatus && !serviceRunning"
+              size="small"
+              :icon="RefreshRight"
+              :loading="actionLoading === 'service'"
+              @click="recoverRuntimeService"
+            >
+              恢复
+            </el-button>
+          </div>
         </div>
         <div class="runtime-facts">
+          <span>服务 {{ serviceStateText }}</span>
           <span>{{ runtimeStateText }}</span>
           <span>场景 {{ currentSceneText }}</span>
           <span>阶段 {{ runtimePhaseText }}</span>
@@ -511,6 +533,12 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
+}
+
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .section-title h3 {

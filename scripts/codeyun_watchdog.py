@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -40,19 +41,23 @@ def _now() -> str:
 
 
 def _default_log_path() -> Path:
-    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-watchdog.log"
+    return _temp_runtime_dir() / "codeyun-watchdog.log"
 
 
 def _default_dev_stdout_path() -> Path:
-    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-dev.out.log"
+    return _temp_runtime_dir() / "codeyun-dev.out.log"
 
 
 def _default_dev_stderr_path() -> Path:
-    return PROJECT_ROOT / ".codex-run-logs" / "codeyun-dev.err.log"
+    return _temp_runtime_dir() / "codeyun-dev.err.log"
 
 
 def _default_lock_path() -> Path:
-    return PROJECT_ROOT / ".codex-run" / "codeyun-watchdog.pid"
+    return _temp_runtime_dir() / "codeyun-watchdog.pid"
+
+
+def _temp_runtime_dir() -> Path:
+    return Path(tempfile.gettempdir()) / "codeyun" / "codeyun-watchdog"
 
 
 def _log(path: Path, message: str) -> None:
@@ -175,6 +180,65 @@ def list_watchdog_processes() -> list[dict[str, Any]]:
             )
         )
     return [asdict(item) for item in sorted(items, key=lambda item: (item.started_at or 0, item.pid))]
+
+
+def _read_lock_pid(lock_path: Path) -> int | None:
+    try:
+        pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        return None
+    if pid <= 0 or not _pid_alive(pid):
+        return None
+    return pid
+
+
+def _watchdog_ancestor_pids(pid: int | None) -> set[int]:
+    if psutil is None or not pid:
+        return set()
+    try:
+        return {int(proc.pid) for proc in psutil.Process(pid).parents()}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return set()
+
+
+def terminate_stale_watchdog_processes(lock_path: Path, log_path: Path, timeout: float = 2.0) -> list[int]:
+    if psutil is None:
+        return []
+
+    current_pid = os.getpid()
+    active_pid = _read_lock_pid(lock_path) or current_pid
+    ancestor_pids = _watchdog_ancestor_pids(current_pid)
+    targets: list[Any] = []
+    for proc in _iter_processes():
+        try:
+            pid = int(proc.pid)
+        except (TypeError, ValueError):
+            continue
+        if pid in {current_pid, active_pid} or pid in ancestor_pids:
+            continue
+        if not _matches_watchdog(proc):
+            continue
+        targets.append(proc)
+
+    stopped: list[int] = []
+    for proc in targets:
+        try:
+            stopped.append(int(proc.pid))
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            pass
+    if targets:
+        _gone, alive = psutil.wait_procs(targets, timeout=max(0.1, float(timeout)))
+        for proc in alive:
+            try:
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                pass
+        if alive:
+            psutil.wait_procs(alive, timeout=1)
+    if stopped:
+        _log(log_path, f"Stopped stale CodeYun watchdog processes: {', '.join(str(pid) for pid in stopped)}")
+    return stopped
 
 
 def list_dev_processes() -> list[dict[str, Any]]:
@@ -352,6 +416,7 @@ def run_loop(args: argparse.Namespace) -> int:
     if not acquire_lock(lock_path, log_path):
         return 0
     _log(log_path, f"CodeYun watchdog loop started. interval={args.interval}s")
+    terminate_stale_watchdog_processes(lock_path, log_path)
     try:
         while True:
             run_once(args)
@@ -381,7 +446,27 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.status:
-        print({"watchdog_processes": list_watchdog_processes(), "dev_processes": list_dev_processes()})
+        lock_path = Path(args.lock_path).resolve(strict=False)
+        active_pid = _read_lock_pid(lock_path)
+        launcher_pids = _watchdog_ancestor_pids(active_pid)
+        watchdog_processes = list_watchdog_processes()
+        print(
+            {
+                "watchdog": {
+                    "active_pid": active_pid,
+                    "launcher_pids": [
+                        item["pid"] for item in watchdog_processes if item.get("pid") in launcher_pids
+                    ],
+                    "stale_pids": [
+                        item["pid"]
+                        for item in watchdog_processes
+                        if item.get("pid") != active_pid and item.get("pid") not in launcher_pids
+                    ],
+                    "processes": watchdog_processes,
+                },
+                "dev_processes": list_dev_processes(),
+            }
+        )
         return 0
     if args.loop:
         return run_loop(args)

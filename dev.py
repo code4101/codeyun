@@ -1032,7 +1032,7 @@ def main():
         frontend_proc = start_frontend(frontend_dir, env, npm_exec)
         process_guard.register(frontend_proc)
 
-        log(f"Backend:  http://localhost:{backend_port}/docs")
+        log(f"Backend:  http://127.0.0.1:{backend_port}/docs")
         log("Frontend: http://localhost:5173")
         log("Press Ctrl+C once to stop.")
 
