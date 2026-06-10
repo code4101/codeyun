@@ -95,6 +95,8 @@ def fanxiu_mail_desired_status_for_rewards(rewards: list[dict[str, Any]]) -> str
 
 
 def fanxiu_mail_action_policy_for_rewards(rewards: list[dict[str, Any]]) -> str:
+    if not rewards:
+        return "delete"
     return "claim" if fanxiu_mail_desired_status_for_rewards(rewards) == "可领" else ""
 
 
@@ -122,6 +124,12 @@ def fanxiu_mail_desired_status_for_record(record: Any | None) -> str:
 def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
     if record is None:
         return ""
+    status = str(record.status or "").strip().lower()
+    if status in FINAL_MAIL_STATUSES or status in REQUESTED_MAIL_STATUSES:
+        return ""
+    action_policy = str(getattr(record, "action_policy", "") or "").strip()
+    if action_policy in {"claim", "delete"}:
+        return action_policy
     return "claim" if fanxiu_mail_desired_status_for_record(record) == "可领" else ""
 
 

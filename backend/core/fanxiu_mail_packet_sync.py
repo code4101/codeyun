@@ -427,15 +427,10 @@ def _normalize_mail_rewards(
     rewards = mail_vo.get("rewards")
     items = _iter_list_items(rewards)
     normalized: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
     for item in items:
         reward = _normalize_mail_reward_item(item, export_root, item_name_index)
         if not reward:
             continue
-        key = (str(reward.get("item_id") or ""), str(reward.get("amount") or ""), str(reward.get("text") or ""))
-        if key in seen:
-            continue
-        seen.add(key)
         normalized.append(reward)
     return normalized
 

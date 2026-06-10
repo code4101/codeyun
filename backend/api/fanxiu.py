@@ -352,7 +352,12 @@ from backend.core.fanxiu_mail_policy import (
     fanxiu_mail_rewards_from_payload,
     fanxiu_mail_rewards_unresolved,
 )
-from backend.core.fanxiu_mail_packet_sync import sync_fanxiu_mail_packets, trace_fanxiu_mail_packet_gap
+from backend.core.fanxiu_mail_packet_sync import (
+    _mail_rewards_summary,
+    _normalize_mail_rewards,
+    sync_fanxiu_mail_packets,
+    trace_fanxiu_mail_packet_gap,
+)
 from backend.core.fanxiu_packet_insight_worker import (
     fanxiu_packet_insight_worker,
     sync_fanxiu_capture_paths,
@@ -2495,6 +2500,61 @@ def _fanxiu_mail_record_has_display_payload(row: FanxiuMailRecord) -> bool:
     return False
 
 
+def _fanxiu_mail_reward_existing_index(rewards: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(rewards, list):
+        return {}
+    indexed: dict[str, dict[str, Any]] = {}
+    for reward in rewards:
+        if not isinstance(reward, dict):
+            continue
+        item_id = str(reward.get("item_id") or reward.get("id") or "").strip()
+        if item_id and item_id not in indexed:
+            indexed[item_id] = reward
+    return indexed
+
+
+def _fanxiu_mail_enrich_recomputed_rewards(
+    recomputed: list[dict[str, Any]],
+    existing_rewards: Any,
+) -> list[dict[str, Any]]:
+    existing_by_id = _fanxiu_mail_reward_existing_index(existing_rewards)
+    if not existing_by_id:
+        return recomputed
+    enriched: list[dict[str, Any]] = []
+    for reward in recomputed:
+        item_id = str(reward.get("item_id") or "").strip()
+        existing = existing_by_id.get(item_id) or {}
+        merged = dict(reward)
+        for key in ("item_name", "item_type", "quality", "icon", "small_icon", "description", "name_source"):
+            if not merged.get(key) and existing.get(key):
+                merged[key] = existing[key]
+        enriched.append(merged)
+    return enriched
+
+
+def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, Any]:
+    data = row.model_dump()
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return data
+    packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
+    mail_vo = payload.get("mailVo") if isinstance(payload.get("mailVo"), dict) else packet.get("mailVo")
+    if not isinstance(mail_vo, dict):
+        return data
+    existing_rewards = payload.get("mail_rewards")
+    if not isinstance(existing_rewards, list):
+        existing_rewards = packet.get("mail_rewards")
+    recomputed_rewards = _normalize_mail_rewards(mail_vo)
+    if not recomputed_rewards or len(recomputed_rewards) <= (len(existing_rewards) if isinstance(existing_rewards, list) else 0):
+        return data
+    enriched_rewards = _fanxiu_mail_enrich_recomputed_rewards(recomputed_rewards, existing_rewards)
+    patched_payload = dict(payload)
+    patched_payload["mail_rewards"] = enriched_rewards
+    patched_payload["mail_rewards_summary"] = _mail_rewards_summary(enriched_rewards)
+    data["payload"] = patched_payload
+    return data
+
+
 @status_router.get("/mail-records", response_model=FanxiuMailRecordListResponse)
 def list_fanxiu_mail_records(
     limit: int = Query(2000, ge=1, le=10000),
@@ -2527,7 +2587,7 @@ def list_fanxiu_mail_records(
     rows = sorted(rows, key=_fanxiu_mail_record_sort_key, reverse=True)
     total_count = len(rows)
     rows = rows[offset:offset + limit]
-    records = [row.model_dump() for row in rows]
+    records = [_fanxiu_mail_record_dump_for_response(row) for row in rows]
     return FanxiuMailRecordListResponse(
         ok=True,
         count=len(records),

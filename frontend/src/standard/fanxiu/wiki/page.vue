@@ -13130,7 +13130,6 @@ onBeforeUnmount(() => {
           <thead>
             <tr>
               <th>邮件名 / 初规则分布</th>
-              <th class="numeric-cell">封数</th>
               <th>平均附件</th>
             </tr>
           </thead>
@@ -13154,7 +13153,6 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
               </td>
-              <td class="numeric-cell">{{ row.count }}</td>
               <td class="mail-rewards-cell">
                 <div v-if="row.averageRewards.length" class="mail-reward-list">
                   <span
@@ -18021,11 +18019,6 @@ onBeforeUnmount(() => {
 .mail-summary-table th:nth-child(1),
 .mail-summary-table td:nth-child(1) {
   width: 300px;
-}
-
-.mail-summary-table th:nth-child(2),
-.mail-summary-table td:nth-child(2) {
-  width: 72px;
 }
 
 .mail-summary-title-cell {
