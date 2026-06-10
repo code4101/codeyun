@@ -58,7 +58,7 @@ def _fanxiu_capture_runtime_service_enabled() -> bool:
         return configured
     services_text = os.getenv("FX_RUNTIME_SERVICES")
     if services_text is None:
-        return False
+        return True
     services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
     return bool(services & {"*", "all", "fanxiu", "fanxiu-capture-runtime", "fanxiu_capture_runtime", "capture_runtime", "capture", "凡修抓包"})
 

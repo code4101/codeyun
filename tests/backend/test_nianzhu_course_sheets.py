@@ -61,6 +61,26 @@ def _sheet_document(columns: list[str], rows: list[list[object]]) -> dict:
     }
 
 
+def test_video_rule_system_boundaries_are_explicit() -> None:
+    assert nianzhu_course_sheets._resolve_video_rule_system(
+        course_name="修道班7期5阶",
+        lesson_name="第1周=佛教史1",
+    ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_ZEN_STAGE
+    assert nianzhu_course_sheets._resolve_video_rule_system(
+        course_name="d250106念住闯关",
+        lesson_name="第01课",
+    ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_CHALLENGE
+    assert nianzhu_course_sheets._resolve_video_rule_system(
+        course_name="d260601第47届觉观",
+        lesson_name="第01课",
+    ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR
+    assert nianzhu_course_sheets._resolve_video_rule_system(
+        course_name="修道班7期5阶",
+        lesson_name="第2届答疑",
+        is_qa_item=True,
+    ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR
+
+
 def _create_nianzhu_workbook(session: Session) -> None:
     workbook = WorkbookDocument(
         id="7",
@@ -664,8 +684,8 @@ def test_rebuild_nianzhu_attendance_uses_course_sheets_as_source(session: Sessio
     rows = attendance.document_json["rows"]
     assert rows[0][8] == "1遍/100%"
     assert rows[0][3] == 2
-    assert rows[0][4] == 2
-    assert rows[0][5] == 40
+    assert rows[0][4] == '=COUNTIF(I2:J2,"*遍*")'
+    assert rows[0][5] == '=COUNTIF(I2:J2,"*遍*")*20'
     assert rows[0][6] == 150
     assert rows[0][7] == 10
     assert rows[1][8] == "1遍/100%"
@@ -1032,10 +1052,10 @@ def test_rebuild_nianzhu_attendance_updates_refund_tracking_totals(session: Sess
     assert first_row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(K4:L4,"*遍*")*20'
     assert first_row[rebuilt_columns.index("打卡应返款")] == "=SWITCH(TRUE,J4>=15,100,J4>=10,60,J4>=5,30,0)"
     assert first_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D4+E4+H4-IF($H$3>0,$H$3,H4),0),H4)"
-    assert first_row[rebuilt_columns.index("当前应返款")] == "=(H4>0)*MAX(0,F4-G4)"
+    assert first_row[rebuilt_columns.index("当前应返款")] == "=(H4>0)*(F4-G4)"
     second_row = rows[1]
     assert second_row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(D5+E5+H5-IF($H$3>0,$H$3,H5),0),H5)"
-    assert second_row[rebuilt_columns.index("当前应返款")] == "=(H5>0)*MAX(0,F5-G5)"
+    assert second_row[rebuilt_columns.index("当前应返款")] == "=(H5>0)*(F5-G5)"
 
 
 def test_rebuild_nianzhu_attendance_uses_clockin_note_rules_for_color(session: Session) -> None:
@@ -1165,7 +1185,7 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert row[rebuilt_columns.index("打卡应返款")] == '=SWITCH(TRUE,N4>=15,200,N4>=10,150,N4>=5,100,0)'
     assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
     assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),L4)"
-    assert row[rebuilt_columns.index("当前应返款")] == "=(L4>0)*MAX(0,J4-K4)"
+    assert row[rebuilt_columns.index("当前应返款")] == "=(L4>0)*(J4-K4)"
 
 
 def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Session) -> None:
@@ -1219,7 +1239,7 @@ def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Sess
     row = document["rows"][0]
     lesson_column = columns.index("第01课")
     assert row[lesson_column] == "准时完成"
-    assert row[columns.index("完成视频数")] == 1
+    assert row[columns.index("完成视频数")] == '=COUNTIF(I2,"*完成*")+COUNTIF(I2,"*回放*")'
     assert row[columns.index("视频应返款")] == 20
     document_row = document["data_start_row"]
     assert document["cell_meta"][f"{document_row}:{lesson_column}"]["style"]["background_color"]
@@ -1509,8 +1529,8 @@ def test_rebuild_nianzhu_attendance_merges_linked_user_ids(session: Session) -> 
     columns = attendance.document_json["columns"]
     row = attendance.document_json["rows"][0]
     assert row[columns.index("第01课")] == "2遍/180%"
-    assert row[columns.index("完成视频数")] == 1
-    assert row[columns.index("视频应返款")] == 20
+    assert row[columns.index("完成视频数")] == '=COUNTIF(H2,"*遍*")'
+    assert row[columns.index("视频应返款")] == '=COUNTIF(H2,"*遍*")*20'
     assert row[columns.index("打卡数")] == 2
 
 

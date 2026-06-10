@@ -2871,7 +2871,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
 
         assert final is not None
         assert final["status"] == "completed"
-        assert final["updated_count"] == 3
+        assert final["updated_count"] == 5
         registration_updated = final["sheet"]["document_json"]["rows"][0]
         assert registration_updated[registration_columns.index("商户订单号")] == "M20260521"
         assert registration_updated[registration_columns.index("用户ID")] == "u_new"
@@ -2889,7 +2889,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_updated_rows[1][attendance_columns.index("昵称")] == "赵玉博"
         assert attendance_updated_rows[1][attendance_columns.index("商户订单号")] == "M20260521"
         assert attendance_updated_rows[1][attendance_columns.index("用户ID")] == "u_new"
-        assert attendance_updated_rows[1][attendance_columns.index("禅客")] == "=AND(J3>=11,Q3>=7)*1"
+        assert attendance_updated_rows[1][attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
         assert attendance_updated_rows[1][attendance_columns.index("打卡应返款")] == "0"
         assert attendance_updated_rows[1][attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-$N$1,0),N3)'
         assert attendance_updated_rows[1][attendance_columns.index("已返款")] == "0"
@@ -3037,10 +3037,10 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
 
     assert summary["inserted_count"] == 0
-    assert summary["repaired_count"] == 1
+    assert summary["repaired_count"] == 3
     repaired_row = next_doc["rows"][1]
     assert repaired_row[attendance_columns.index("报名日期")] == "2026-05-21 09:46"
-    assert repaired_row[attendance_columns.index("禅客")] == "=AND(J3>=11,Q3>=7)*1"
+    assert repaired_row[attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
     assert repaired_row[attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-$N$1,0),N3)'
     assert repaired_row[attendance_columns.index("已返款")] == "0"
     assert repaired_row[attendance_columns.index("订单金额")] == "620"

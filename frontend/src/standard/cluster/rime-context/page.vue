@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Delete, Minus, Plus, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue';
+import StandardPagination from '@/components/StandardPagination.vue';
 import {
   adjustRimeContextWeightCompare,
   compareRimeContextWeights,
@@ -2628,26 +2629,17 @@ onBeforeUnmount(() => {
 
         <article v-else class="rime-history-article" aria-label="输入历史文章">
           <header v-if="historyPagination && !historyEditing" class="history-pager">
-            <el-button
-              size="small"
-              :disabled="!historyPagination.has_prev || loadingHistory"
-              @click="changeHistoryPage(historyPagination.page - 1)"
-            >
-              上一页
-            </el-button>
-            <span>
-              第 {{ formatNumber(historyPagination.page) }} / {{ formatNumber(historyPagination.total_pages) }} 页
-            </span>
+            <StandardPagination
+              :page="historyPagination.page"
+              :page-size="historyPagination.page_size"
+              :page-count="historyPagination.total_pages"
+              :show-page-size="false"
+              :disabled="loadingHistory"
+              @page-change="changeHistoryPage"
+            />
             <span>
               {{ formatNumber(historyPagination.start_index) }}-{{ formatNumber(historyPagination.end_index) }} / {{ formatNumber(historyPagination.total) }}
             </span>
-            <el-button
-              size="small"
-              :disabled="!historyPagination.has_next || loadingHistory"
-              @click="changeHistoryPage(historyPagination.page + 1)"
-            >
-              下一页
-            </el-button>
           </header>
           <header v-else-if="historySummary.truncated" class="history-note">
             仅显示最近 {{ formatNumber(historySummary.limit) }} 条输入事件。
@@ -2844,16 +2836,14 @@ onBeforeUnmount(() => {
             v-loading="loadingArticleContent"
           >
             <header v-if="articleContentPagination" class="history-pager">
-              <el-button
-                size="small"
-                :disabled="!articleContentPagination.has_prev || loadingArticleContent"
-                @click="changeArticleContentPage(articleContentPagination.page - 1)"
-              >
-                上一页
-              </el-button>
-              <span>
-                第 {{ formatNumber(articleContentPagination.page) }} / {{ formatNumber(articleContentPagination.total_pages) }} 页
-              </span>
+              <StandardPagination
+                :page="articleContentPagination.page"
+                :page-size="articleContentPagination.page_size"
+                :page-count="articleContentPagination.total_pages"
+                :show-page-size="false"
+                :disabled="loadingArticleContent"
+                @page-change="changeArticleContentPage"
+              />
               <span>
                 {{ formatNumber(articleContentPagination.start_index) }}-{{ formatNumber(articleContentPagination.end_index) }} / {{ formatNumber(articleContentPagination.total) }}
               </span>
@@ -2864,13 +2854,6 @@ onBeforeUnmount(() => {
               >
                 {{ articleContentSaveLabel }}
               </span>
-              <el-button
-                size="small"
-                :disabled="!articleContentPagination.has_next || loadingArticleContent"
-                @click="changeArticleContentPage(articleContentPagination.page + 1)"
-              >
-                下一页
-              </el-button>
             </header>
             <section v-if="articleContentState && !articleContentState.available" class="rime-unavailable">
               <p>{{ articleContentState.message || '这份语料暂时没有可展示内容。' }}</p>

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Download, Refresh, Search } from '@element-plus/icons-vue'
+import StandardPagination from '@/components/StandardPagination.vue'
 
 import {
   downloadWeChatDbMedia,
@@ -997,16 +998,13 @@ onBeforeUnmount(() => {
         <div v-if="!chats.length" class="empty-state">暂无会话</div>
       </div>
       <div class="conversation-footer">
-        <el-pagination
-          v-model:current-page="currentChatPage"
+        <StandardPagination
+          v-model:page="currentChatPage"
           v-model:page-size="chatPageSize"
-          background
-          small
-          layout="prev, pager, next"
-          :page-sizes="CHAT_PAGE_SIZE_OPTIONS"
+          :page-size-options="CHAT_PAGE_SIZE_OPTIONS"
           :total="totalChats"
-          @current-change="loadChatPage"
-          @size-change="reloadChats"
+          @page-change="loadChatPage"
+          @page-size-change="reloadChats"
         />
       </div>
     </aside>
@@ -1137,16 +1135,13 @@ onBeforeUnmount(() => {
 
       <footer class="chat-footer">
         <span>第 {{ currentPage }} 页 · {{ formatNumber(totalMessages) }} 条</span>
-        <el-pagination
-          v-model:current-page="currentPage"
+        <StandardPagination
+          v-model:page="currentPage"
           v-model:page-size="pageSize"
-          background
-          small
-          layout="sizes, prev, pager, next"
-          :page-sizes="MESSAGE_PAGE_SIZE_OPTIONS"
+          :page-size-options="MESSAGE_PAGE_SIZE_OPTIONS"
           :total="totalMessages"
-          @current-change="handleMessagePageChange"
-          @size-change="handleMessagePageSizeChange"
+          @page-change="handleMessagePageChange"
+          @page-size-change="handleMessagePageSizeChange"
         />
       </footer>
     </section>

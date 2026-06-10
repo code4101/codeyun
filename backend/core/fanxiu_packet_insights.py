@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pyxllib.file.packetstream import LuaPacketSchemaIndex, VarintBinaryReader, extract_tcp_stream_payloads_with_tshark, maybe_zlib_decompress
+from pyxllib.file.packetstream import LuaPacketSchemaIndex, VarintBinaryReader, maybe_zlib_decompress
 
 from backend.core.fanxiu_activity_packet_sync import get_fanxiu_activity_rank_records, sync_fanxiu_activity_packets
 from backend.core.fanxiu_item_catalog import load_fanxiu_item_runtime_index
@@ -26,6 +26,7 @@ from backend.core.fanxiu_tcp_flow import (
     _iter_fanxiu_tcp_decoded_sources,
     _patch_fanxiu_schema_long_list,
     decode_fanxiu_tcp_pcap,
+    extract_tcp_stream_payloads_with_tshark,
     list_tcp_streams_with_tshark,
     resolve_fanxiu_tcp_store_root,
 )
@@ -59,6 +60,9 @@ PACKET_RUNTIME_INSIGHT_PROTOCOLS = {
     "SM_WorldLevelRankWorship",
 }
 PLAYER_PROFILE_PROTOCOLS = {"SM_ShowOther", "SM_SyncPlayer"}
+SELF_PROFILE_ATTRIBUTE_PROTOCOLS = {"SM_RoleChangedAttrs", "SM_ChangedPlayerAttribute"}
+PLAYER_PROFILE_IDENTITY_PROTOCOLS = {"SM_Login", "SM_ActivityRankSync"}
+PLAYER_PROFILE_SOURCE_PROTOCOLS = PLAYER_PROFILE_PROTOCOLS | SELF_PROFILE_ATTRIBUTE_PROTOCOLS | PLAYER_PROFILE_IDENTITY_PROTOCOLS
 ACTIVITY_PACKET_PROTOCOLS = {"SM_WorldLineActivitySync", "SM_ActivityRankSync"}
 FANXIU_STORAGE_BAG_OWNER_ROLE_ID = "24082878061086206"
 FANXIU_STORAGE_BAG_OWNER_NAME_KEYWORD = "羊驼"
@@ -286,6 +290,22 @@ def _full_parsed_from_packet(entry: dict[str, Any], packet_name: str, export_roo
     if not candidates and target_sn is None and target_pro_id is None:
         candidates = [frame for frame in frames if frame.get("name") == packet_name and isinstance(frame.get("parsed"), dict)]
     return candidates[-1].get("parsed") if candidates else None
+
+
+def _is_running_snapshot_capture(entry: dict[str, Any]) -> bool:
+    texts = [
+        str(entry.get("pcap_name") or ""),
+        str(entry.get("source_pcap") or ""),
+        str(entry.get("stored_pcap") or ""),
+    ]
+    return any("fanxiu_runtime_snapshot_" in text for text in texts)
+
+
+def _should_redecode_profile_pcap(entry: dict[str, Any]) -> bool:
+    # Running snapshots are intentionally copied while tcpdump is still writing.
+    # They can contain truncated packets; realtime ingestion must not block while
+    # trying to reconstruct a long profile list from them.
+    return not _is_running_snapshot_capture(entry)
 
 
 def _iter_stream_packet_payloads(data: bytes) -> list[dict[str, Any]]:
@@ -855,7 +875,7 @@ def _extract_show_other_profile(
 ) -> dict[str, Any] | None:
     role_vo = parsed.get("otherRoleVO")
     if not isinstance(role_vo, dict):
-        if not allow_pcap_redecode:
+        if not allow_pcap_redecode or not _should_redecode_profile_pcap(entry):
             return None
         recovered = _recover_show_other_parsed_from_packet(entry, export_root=export_root)
         recovered_role_vo = recovered.get("otherRoleVO") if isinstance(recovered, dict) else None
@@ -874,7 +894,7 @@ def _extract_show_other_profile(
                 row["decoded_partial"] = True
         return row
     attr_map = role_vo.get("attrMap")
-    if allow_pcap_redecode and _has_truncated_items(attr_map):
+    if allow_pcap_redecode and _should_redecode_profile_pcap(entry) and _has_truncated_items(attr_map):
         full_parsed = _recover_show_other_parsed_from_packet(entry, export_root=export_root)
         full_role_vo = full_parsed.get("otherRoleVO") if isinstance(full_parsed, dict) else None
         full_attr_map = full_role_vo.get("attrMap") if isinstance(full_role_vo, dict) else None
@@ -939,7 +959,7 @@ def _extract_sync_player_profile(
         return None
     visible_vo = _super(player_vo)
     attr_map = visible_vo.get("attrMap")
-    if allow_pcap_redecode and _has_truncated_items(attr_map):
+    if allow_pcap_redecode and _should_redecode_profile_pcap(entry) and _has_truncated_items(attr_map):
         full_parsed = _full_sync_player_parsed_from_packet(entry, export_root=export_root)
         full_player_vo = full_parsed.get("playerVO") if isinstance(full_parsed, dict) else None
         full_visible_vo = _super(full_player_vo) if isinstance(full_player_vo, dict) else {}
@@ -1608,10 +1628,101 @@ def _self_profile_rows_from_attribute_changes(
     return rows
 
 
+def _identity_from_profile_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    identity = {
+        "role_id": row.get("role_id") or row.get("role_id_text"),
+        "name": row.get("name") or "",
+        "level": row.get("level") or row.get("cultivation_level"),
+        "vip_level": row.get("vip_level"),
+        "server": row.get("server"),
+        "battle_score": row.get("battle_score"),
+        "captured_at": row.get("captured_at") or "",
+        "evidence": row.get("evidence") if isinstance(row.get("evidence"), dict) else {},
+    }
+    return identity if _valid_configured_self_profile_identity(identity) else None
+
+
+def _latest_self_profile_identity_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    account = snapshot.get("account") if isinstance(snapshot.get("account"), dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for key in ("latest_login", "latest_identity"):
+        value = account.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    identity_candidates = account.get("identity_candidates")
+    if isinstance(identity_candidates, list):
+        candidates.extend(row for row in identity_candidates if isinstance(row, dict))
+    latest_account = _latest_configured_self_profile_identity(candidates, [])
+    if latest_account:
+        return latest_account
+
+    player_profiles = snapshot.get("player_profiles") if isinstance(snapshot.get("player_profiles"), dict) else {}
+    profile_rows = []
+    for key in ("daily_records", "records"):
+        rows = player_profiles.get(key)
+        if isinstance(rows, list):
+            profile_rows.extend(row for row in rows if isinstance(row, dict))
+    own_rows = [
+        row
+        for row in profile_rows
+        if str(row.get("role_id_text") or row.get("role_id") or "") == FANXIU_STORAGE_BAG_OWNER_ROLE_ID
+        or FANXIU_STORAGE_BAG_OWNER_NAME_KEYWORD in str(row.get("name") or "")
+    ]
+    profile_identities = [identity for row in own_rows for identity in [_identity_from_profile_row(row)] if identity]
+    return _latest(profile_identities)
+
+
+def _latest_self_profile_identity_from_database() -> dict[str, Any] | None:
+    try:
+        from sqlmodel import Session, select
+        from backend.db import engine
+        from backend.models import FanxiuPlayerProfileRecord
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(FanxiuPlayerProfileRecord)
+                .where(FanxiuPlayerProfileRecord.role_id_text == FANXIU_STORAGE_BAG_OWNER_ROLE_ID)
+                .order_by(FanxiuPlayerProfileRecord.captured_at.desc(), FanxiuPlayerProfileRecord.created_at.desc())
+                .limit(5)
+            ).all()
+    except Exception:
+        return None
+    identities = [
+        _identity_from_profile_row(
+            {
+                "role_id": row.role_id,
+                "role_id_text": row.role_id_text,
+                "name": row.name,
+                "server": row.server,
+                "region_number": row.region_number,
+                "region_name": row.region_name,
+                "server_order": row.server_order,
+                "server_name": row.server_name,
+                "cultivation_level": row.cultivation_level,
+                "battle_score": row.battle_score,
+                "captured_at": row.captured_at,
+                "evidence": row.evidence or {},
+            }
+        )
+        for row in rows
+    ]
+    return _latest([identity for identity in identities if identity])
+
+
 def _valid_self_profile_identity(row: dict[str, Any]) -> bool:
     role_id = str(row.get("role_id") or "").strip()
     name = str(row.get("name") or "").strip()
     return bool(name) and len(role_id) >= 12
+
+
+def _valid_configured_self_profile_identity(row: dict[str, Any]) -> bool:
+    if not _valid_self_profile_identity(row):
+        return False
+    role_id = str(row.get("role_id") or "").strip()
+    name = str(row.get("name") or "").strip()
+    return role_id == FANXIU_STORAGE_BAG_OWNER_ROLE_ID or FANXIU_STORAGE_BAG_OWNER_NAME_KEYWORD in name
 
 
 def _latest_self_profile_identity(login_rows: list[dict[str, Any]], self_identity_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1624,7 +1735,22 @@ def _latest_self_profile_identity(login_rows: list[dict[str, Any]], self_identit
     return None
 
 
-def _player_profile_rows_from_decoded_source(source: dict[str, Any], export_root: str | Path | None = None) -> list[dict[str, Any]]:
+def _latest_configured_self_profile_identity(login_rows: list[dict[str, Any]], self_identity_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    login_candidates = [row for row in login_rows if _valid_configured_self_profile_identity(row)]
+    if login_candidates:
+        return _latest(login_candidates)
+    identity_candidates = [row for row in self_identity_rows if _valid_configured_self_profile_identity(row)]
+    if identity_candidates:
+        return _latest(identity_candidates)
+    return None
+
+
+def _player_profile_rows_from_decoded_source(
+    source: dict[str, Any],
+    export_root: str | Path | None = None,
+    *,
+    fallback_self_identity: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     decoded_path = Path(str(source.get("decoded_path") or ""))
     data = _load_json(decoded_path, {})
     frames = data.get("frames") if isinstance(data, dict) else None
@@ -1636,12 +1762,15 @@ def _player_profile_rows_from_decoded_source(source: dict[str, Any], export_root
     record_id = str(source.get("record_id") or data.get("record_id") or "") if isinstance(data, dict) else str(source.get("record_id") or "")
     pcap_name = str(source.get("pcap_name") or Path(str(data.get("pcap") or decoded_path.name)).name) if isinstance(data, dict) else str(source.get("pcap_name") or decoded_path.name)
     rows: list[dict[str, Any]] = []
+    login_rows: list[dict[str, Any]] = []
+    self_identity_rows: list[dict[str, Any]] = []
+    attr_rows: list[dict[str, Any]] = []
     for index, frame in enumerate(frames):
         if not isinstance(frame, dict):
             continue
         parsed = frame.get("parsed")
         name = str(frame.get("name") or (parsed.get("_class") if isinstance(parsed, dict) else "") or "")
-        if name not in PLAYER_PROFILE_PROTOCOLS:
+        if name not in PLAYER_PROFILE_SOURCE_PROTOCOLS:
             continue
         if not isinstance(parsed, dict):
             parsed = {"_class": name, "_parse_error": frame.get("parse_error") or frame.get("decode_error") or ""}
@@ -1669,12 +1798,32 @@ def _player_profile_rows_from_decoded_source(source: dict[str, Any], export_root
             "frame_index": index,
             "content": parsed,
         }
+        if name == "SM_Login":
+            row = _extract_login_account(parsed, entry)
+            if row:
+                login_rows.append(row)
+            continue
+        if name == "SM_ActivityRankSync":
+            row = _extract_self_rank_identity(parsed, entry)
+            if row:
+                self_identity_rows.append(row)
+            continue
+        if name in SELF_PROFILE_ATTRIBUTE_PROTOCOLS:
+            row = _extract_attr_changes(parsed, entry)
+            if row:
+                attr_rows.append(row)
+            continue
         if name == "SM_ShowOther":
             row = _extract_show_other_profile(parsed, entry, export_root=export_root)
         else:
             row = _extract_sync_player_profile(parsed, entry, export_root=export_root)
         if row:
             rows.append(row)
+    safe_fallback_self_identity = (
+        fallback_self_identity if isinstance(fallback_self_identity, dict) and _valid_configured_self_profile_identity(fallback_self_identity) else None
+    )
+    self_identity = _latest_configured_self_profile_identity(login_rows, self_identity_rows) or safe_fallback_self_identity
+    rows.extend(_self_profile_rows_from_attribute_changes(attr_rows, self_identity))
     return rows
 
 
@@ -1957,11 +2106,18 @@ def sync_fanxiu_packet_player_profiles(
         if isinstance(item, dict)
     }
     rows: list[dict[str, Any]] = []
+    fallback_self_identity = _latest_self_profile_identity_from_snapshot(snapshot) or _latest_self_profile_identity_from_database()
     for source in _iter_fanxiu_tcp_decoded_sources(data_dir):
         decoded_path = str(source.get("decoded_path") or "")
         if not force and seen_paths and decoded_path in seen_paths:
             continue
-        rows.extend(_player_profile_rows_from_decoded_source(source, export_root=export_root))
+        rows.extend(
+            _player_profile_rows_from_decoded_source(
+                source,
+                export_root=export_root,
+                fallback_self_identity=fallback_self_identity,
+            )
+        )
 
     db_sync = _persist_player_profile_rows_to_database(rows)
     snapshot = _merge_player_profile_rows(snapshot, rows)
@@ -2235,8 +2391,8 @@ def sync_fanxiu_packet_runtime_insights_for_decode_result(
                 "activity_packet_sync": activity_sync,
             }
         return None
-    profile_names = names.intersection(PLAYER_PROFILE_PROTOCOLS)
-    non_profile_names = names.intersection(PACKET_RUNTIME_INSIGHT_PROTOCOLS - PLAYER_PROFILE_PROTOCOLS)
+    profile_names = names.intersection(PLAYER_PROFILE_SOURCE_PROTOCOLS)
+    non_profile_names = names.intersection(PACKET_RUNTIME_INSIGHT_PROTOCOLS - PLAYER_PROFILE_SOURCE_PROTOCOLS)
     if profile_names:
         decoded_path_text = str(result.get("stored_decoded_path") or result.get("output_path") or "")
         if not decoded_path_text:
@@ -2258,7 +2414,12 @@ def sync_fanxiu_packet_runtime_insights_for_decode_result(
         snapshot = _load_json(_snapshot_path(data_dir), {})
         if not isinstance(snapshot, dict):
             snapshot = {}
-        rows = _player_profile_rows_from_decoded_source(source, export_root=export_root)
+        fallback_self_identity = _latest_self_profile_identity_from_snapshot(snapshot) or _latest_self_profile_identity_from_database()
+        rows = _player_profile_rows_from_decoded_source(
+            source,
+            export_root=export_root,
+            fallback_self_identity=fallback_self_identity,
+        )
         db_sync = _persist_player_profile_rows_to_database(rows)
         snapshot = _merge_player_profile_rows(snapshot, rows)
         signature = _source_signature(data_dir)

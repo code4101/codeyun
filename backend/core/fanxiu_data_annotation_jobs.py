@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import threading
-import time
-import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from pyxllib.prog import create_job_record, job_queue_state, pop_next_job, read_job_queue, requeue_running_jobs
 
 from backend.core.fanxiu_data_annotation_state import normalize_data_annotation_manual_job
 
@@ -95,17 +95,11 @@ def normalize_data_annotation_debug_eval_payload(payload: dict[str, Any]) -> dic
 
 
 def read_data_annotation_manual_jobs(raw: Any) -> list[dict[str, Any]]:
-    source = raw if isinstance(raw, list) else []
-    return [
-        job
-        for item in source
-        if (job := normalize_data_annotation_manual_job(item))
-        and job.get("status") in {"pending", "running", "queued"}
-    ][-100:]
+    return read_job_queue(raw, normalizer=normalize_data_annotation_manual_job)
 
 
 def data_annotation_manual_jobs_state(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return jobs[-100:]
+    return job_queue_state(jobs)
 
 
 def requeue_running_data_annotation_manual_jobs(
@@ -113,26 +107,13 @@ def requeue_running_data_annotation_manual_jobs(
     *,
     now: float | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    current_time = time.time() if now is None else now
-    updated: list[dict[str, Any]] = []
-    changed_count = 0
-    for job in jobs:
-        if str(job.get("status") or "") != "running":
-            updated.append(job)
-            continue
-        changed_count += 1
+    def should_requeue(job: dict[str, Any]) -> bool:
         # Current non-mail manual jobs can perform non-idempotent actions, so
         # do not replay them after a reload. Legacy running records may lack a
         # group marker; keep requeueing those so older local state can recover.
-        task_type = str(job.get("task_type") or "")
-        if task_type in {"mail_claim_check", "detect_scene", "manual_tick"}:
-            updated.append({
-                **job,
-                "status": "queued",
-                "updated_at": current_time,
-                "last_requeue_reason": "backend_reload",
-            })
-    return updated, changed_count
+        return str(job.get("task_type") or "") in {"mail_claim_check", "detect_scene", "manual_tick"}
+
+    return requeue_running_jobs(jobs, keep_running_job=should_requeue, now=now)
 
 
 def create_data_annotation_manual_job(
@@ -145,7 +126,6 @@ def create_data_annotation_manual_job(
     task_label: Callable[[str, dict[str, Any]], str] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    current_time = time.time() if now is None else now
     task_type = str(task_type or "detect_scene").strip() or "detect_scene"
     normalized_payload = dict(payload or {})
     if definition is not None and definition.normalize_payload is not None:
@@ -153,36 +133,17 @@ def create_data_annotation_manual_job(
     resolved_label = label
     if not resolved_label and task_label is not None:
         resolved_label = task_label(task_type, normalized_payload)
-    return {
-        "id": f"manual-{int(current_time * 1000)}-{uuid.uuid4().hex[:8]}",
-        "task_type": task_type,
-        "label": resolved_label or task_type,
-        "group": "manual_job",
-        "status": "pending",
-        "interruptible": bool(interruptible if interruptible is not None else (definition.interruptible if definition is not None else True)),
-        "payload": normalized_payload,
-        "created_at": current_time,
-        "updated_at": current_time,
-    }
+    return create_job_record(
+        task_type,
+        normalized_payload,
+        label=resolved_label or task_type,
+        group="manual_job",
+        status="pending",
+        interruptible=bool(interruptible if interruptible is not None else (definition.interruptible if definition is not None else True)),
+        id_prefix="manual",
+        now=now,
+    )
 
 
 def pop_next_data_annotation_manual_job(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    runnable = [job for job in jobs if str(job.get("status") or "") in {"pending", "queued"}]
-    if not runnable:
-        return None, jobs
-    runnable.sort(
-        key=lambda item: (
-            _DATA_ANNOTATION_JOB_GROUP_ORDER.get(str(item.get("group") or "manual_job"), 1000),
-            float(item.get("created_at") or 0),
-        )
-    )
-    selected_id = str(runnable[0].get("id") or "")
-    updated: list[dict[str, Any]] = []
-    selected: dict[str, Any] | None = None
-    current_time = time.time()
-    for job in jobs:
-        if str(job.get("id") or "") == selected_id:
-            job = {**job, "status": "running", "updated_at": current_time}
-            selected = job
-        updated.append(job)
-    return selected, updated
+    return pop_next_job(jobs, group_order=_DATA_ANNOTATION_JOB_GROUP_ORDER)

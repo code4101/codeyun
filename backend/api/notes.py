@@ -2667,26 +2667,27 @@ def _draft_codex_diary_blocks_in_batches(
         try:
             drafted_blocks.extend(draft_batch_with_split_retry(batch, batch_index=batch_index, total_batches=total_batches))
         except Exception as exc:
+            error_message = str(getattr(exc, "detail", None) or exc)
             if run is not None:
                 _touch_codex_diary_run(
                     session,
                     run,
                     status="running",
                     stage="drafting_fallback",
-                    stage_label=f"AI 草案失败，停止写入 {batch_index}/{total_batches}",
+                    stage_label=f"AI 草案失败，使用规则摘要 {batch_index}/{total_batches}",
                 )
                 fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
                 fallback_events.append(
                     {
                         "batch_index": batch_index,
                         "total_batches": total_batches,
-                        "error": str(getattr(exc, "detail", None) or exc),
+                        "error": error_message,
                     }
                 )
                 run.result_json = {**(run.result_json or {}), "draft_fallback_events": fallback_events}
                 session.add(run)
                 session.commit()
-            raise ValueError(f"AI 日记草案失败，已停止写入：{getattr(exc, 'detail', None) or exc}") from exc
+            drafted_blocks.extend(_draft_codex_diary_blocks_without_ai(batch))
     return drafted_blocks
 
 
@@ -3118,11 +3119,18 @@ def _run_codex_diary_import_worker(
 
             _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
             created_note_ids: list[str] = list(run.created_note_ids or [])
+            draft_fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
+            draft_generator = (
+                "deepseek-json-v1+deterministic-fallback-v1"
+                if draft_fallback_events
+                else "deepseek-json-v1"
+            )
             run.result_json = {
                 "prompt_version": CODEX_DIARY_PROMPT_VERSION,
-                "draft_generator": "deepseek-json-v1",
+                "draft_generator": draft_generator,
                 "draft_provider": str(draft_runtime.get("provider") or ""),
                 "draft_model": str(draft_runtime.get("model") or ""),
+                "draft_fallback_events": draft_fallback_events,
                 "source": _build_codex_diary_source_result(run, source),
                 "blocks": _build_codex_diary_blocks_result(blocks),
             }

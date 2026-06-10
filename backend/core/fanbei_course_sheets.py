@@ -19,6 +19,7 @@ from backend.core.course_data_sheet_storage import (
     attendance_row_user_ids,
     build_registration_identity_map,
     build_registration_user_alias_map,
+    document_field_row_index,
     document_dict_rows,
     get_sheet,
     has_course_storage_sheets,
@@ -27,7 +28,9 @@ from backend.core.course_data_sheet_storage import (
     materialize_course_sheets,
     normalize_row,
     normalize_text,
+    set_grid_cell_inline_link,
     update_course_sheet_document,
+    video_lesson_url_from_lesson_id2,
 )
 
 
@@ -182,8 +185,48 @@ def _parse_datetime_cell(value: Any) -> datetime | None:
 
 
 def _extract_lesson_number(value: Any) -> int | None:
-    match = re.search(r"第\s*0*(\d+)\s*课", normalize_text(value))
+    text = normalize_text(value)
+    match = re.search(r"第\s*0*(\d+)\s*课", text)
+    if match is None:
+        match = re.search(r"堂\s*0*(\d+)(?!\d)", text)
     return int(match.group(1)) if match else None
+
+
+def _video_config_url(row: dict[str, Any]) -> str:
+    return normalize_text(row.get("url")) or video_lesson_url_from_lesson_id2(row.get("lesson_id2"))
+
+
+def _sorted_video_config_rows(video_config_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sort_key(row: dict[str, Any]) -> tuple[float, datetime, str]:
+        lesson_id = _to_float(row.get("lesson_id"))
+        start_date = _parse_datetime_cell(row.get("start_date")) or datetime.max
+        return (lesson_id if lesson_id > 0 else 999999.0, start_date, normalize_text(row.get("lesson_name")))
+
+    return sorted(video_config_rows, key=sort_key)
+
+
+def _build_lesson_bindings(video_config_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bindings: list[dict[str, Any]] = []
+    used_numbers: set[int] = set()
+    for ordinal, row in enumerate(_sorted_video_config_rows(video_config_rows), start=1):
+        lesson_id = normalize_text(row.get("lesson_id"))
+        if not lesson_id:
+            continue
+        lesson_number = _extract_lesson_number(row.get("lesson_name")) or ordinal
+        if lesson_number in used_numbers:
+            lesson_number = ordinal
+        used_numbers.add(lesson_number)
+        bindings.append(
+            {
+                "lesson_number": lesson_number,
+                "lesson_id": lesson_id,
+                "lesson_name": normalize_text(row.get("lesson_name")),
+                "output_column": f"第{lesson_number:02d}课",
+                "url": _video_config_url(row),
+                "config_row": row,
+            }
+        )
+    return bindings
 
 
 def _find_column_index(columns: list[str], header: str) -> int | None:
@@ -476,20 +519,12 @@ def _lesson_result_and_keep_row(lesson: dict[str, Any], source_rows: list[dict[s
     return f"第{delta_d}天回放/{max_progress}%", first_finished_item
 
 
-def _lesson_output_column(lesson_name: Any) -> str:
-    lesson_number = _extract_lesson_number(lesson_name)
-    if lesson_number is not None:
-        return f"第{lesson_number:02d}课"
-    text = normalize_text(lesson_name)
-    return re.sub(r"^d\d{6}[^-－—–_:：]*[\s\-－—–_:：]*", "", text).lstrip("-").strip() or text
-
-
 def _build_video_progress(
     video_config_rows: list[dict[str, Any]],
     video_data_rows: list[dict[str, Any]],
     *,
     user_alias_map: dict[str, str] | None = None,
-) -> tuple[list[str], dict[tuple[str, str], str], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str], str], list[dict[str, Any]]]:
     alias_map = _normalize_user_alias_map(user_alias_map)
     data_by_lesson_user: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in video_data_rows:
@@ -501,16 +536,15 @@ def _build_video_progress(
             row = {**row, "user_id2": user_id}
         data_by_lesson_user.setdefault((lesson_id, user_id), []).append(row)
 
-    output_columns: list[str] = []
+    lesson_bindings = _build_lesson_bindings(video_config_rows)
     output: dict[tuple[str, str], str] = {}
     compacted_rows: list[dict[str, Any]] = []
-    for lesson in sorted(video_config_rows, key=lambda row: (_extract_lesson_number(row.get("lesson_name")) or 9999, _to_float(row.get("lesson_id")))):
-        lesson_id = normalize_text(lesson.get("lesson_id"))
+    for binding in lesson_bindings:
+        lesson_id = normalize_text(binding.get("lesson_id"))
         if not lesson_id:
             continue
-        output_column = _lesson_output_column(lesson.get("lesson_name"))
-        if output_column not in output_columns:
-            output_columns.append(output_column)
+        output_column = normalize_text(binding.get("output_column"))
+        lesson = dict(binding.get("config_row") or {})
         for (data_lesson_id, user_id), rows in data_by_lesson_user.items():
             if data_lesson_id != lesson_id:
                 continue
@@ -521,7 +555,7 @@ def _build_video_progress(
 
     for index, row in enumerate(compacted_rows, start=1):
         row["lesson_data_id"] = index
-    return output_columns, output, compacted_rows
+    return lesson_bindings, output, compacted_rows
 
 
 def _parse_publish_date(value: Any) -> str:
@@ -632,11 +666,12 @@ def build_fanbei_attendance_step2_data_from_course_sheets(
         **_normalize_user_alias_map(user_alias_map),
     }
 
-    lesson_columns, video_progress, compacted_video_rows = _build_video_progress(
+    lesson_bindings, video_progress, compacted_video_rows = _build_video_progress(
         video_config_rows,
         video_data_rows,
         user_alias_map=effective_user_alias_map,
     )
+    lesson_columns = [normalize_text(binding.get("output_column")) for binding in lesson_bindings]
     clockin_counts = _build_clockin_counts(
         clockin_data_rows,
         titles=clockin_titles or DEFAULT_CLOCKIN_TITLES,
@@ -661,27 +696,95 @@ def build_fanbei_attendance_step2_data_from_course_sheets(
         "video_data_compacted_rows": len(compacted_video_rows),
         "clockin_data_rows": len(clockin_data_rows),
         "clockin_titles": clockin_titles or DEFAULT_CLOCKIN_TITLES,
+        "lesson_bindings": [
+            {
+                "lesson_number": binding.get("lesson_number"),
+                "lesson_id": binding.get("lesson_id"),
+                "lesson_name": binding.get("lesson_name"),
+                "output_column": binding.get("output_column"),
+                "url": binding.get("url"),
+            }
+            for binding in lesson_bindings
+        ],
     }
 
 
-def _build_step2_column_map(sheet_columns: list[str], data_columns: list[str]) -> dict[int, int]:
+def _build_step2_column_map(
+    sheet_columns: list[str],
+    data_columns: list[str],
+    *,
+    lesson_bindings: list[dict[str, Any]] | None = None,
+) -> dict[int, int]:
     lesson_column_by_number = {
         number: index
         for index, column in enumerate(sheet_columns)
         if (number := _extract_lesson_number(column)) is not None
     }
+    data_lesson_number_by_index: dict[int, int] = {}
+    for binding in lesson_bindings or []:
+        lesson_number = binding.get("lesson_number")
+        try:
+            normalized_lesson_number = int(lesson_number)
+        except (TypeError, ValueError):
+            continue
+        output_column = normalize_text(binding.get("output_column"))
+        for data_index, data_column in enumerate(data_columns):
+            if normalize_text(data_column) == output_column:
+                data_lesson_number_by_index[data_index] = normalized_lesson_number
+                break
+
     mapping: dict[int, int] = {}
     for data_index, data_column in enumerate(data_columns):
         if data_index == 0 or normalize_text(data_column) == "user_id2":
             continue
         sheet_index = _find_column_index(sheet_columns, data_column)
         if sheet_index is None:
-            lesson_number = _extract_lesson_number(data_column)
+            lesson_number = data_lesson_number_by_index.get(data_index) or _extract_lesson_number(data_column)
             if lesson_number is not None:
                 sheet_index = lesson_column_by_number.get(lesson_number)
         if sheet_index is not None:
             mapping[data_index] = sheet_index
     return mapping
+
+
+def _apply_fanbei_attendance_header_links(
+    document: dict[str, Any],
+    *,
+    video_config_rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], int]:
+    columns = _normalize_document_columns(document)
+    if not columns:
+        return document, 0
+
+    lesson_column_by_number = {
+        number: index
+        for index, column in enumerate(columns)
+        if (number := _extract_lesson_number(column)) is not None
+    }
+    if not lesson_column_by_number:
+        return document, 0
+
+    header_row_index = document_field_row_index(document)
+    next_document = document
+    changed_count = 0
+    for binding in _build_lesson_bindings(video_config_rows):
+        try:
+            lesson_number = int(binding.get("lesson_number") or 0)
+        except (TypeError, ValueError):
+            continue
+        column_index = lesson_column_by_number.get(lesson_number)
+        url = normalize_text(binding.get("url"))
+        if column_index is None or not url:
+            continue
+        next_document, changed = set_grid_cell_inline_link(
+            next_document,
+            row_index=header_row_index,
+            column_index=column_index,
+            url=url,
+        )
+        if changed:
+            changed_count += 1
+    return next_document, changed_count
 
 
 def rebuild_fanbei_attendance_from_course_sheets(
@@ -708,7 +811,11 @@ def rebuild_fanbei_attendance_from_course_sheets(
     if len(data_rows) != len(rows):
         raise RuntimeError(f"step2 返回行数不匹配：sheet={len(rows)} storage={len(data_rows)}")
 
-    column_map = _build_step2_column_map(columns, data_columns)
+    column_map = _build_step2_column_map(
+        columns,
+        data_columns,
+        lesson_bindings=list(step2_data.get("lesson_bindings") or []),
+    )
     if not column_map:
         raise RuntimeError("step2 存储字段无法映射到考勤表列")
 
@@ -733,6 +840,12 @@ def rebuild_fanbei_attendance_from_course_sheets(
         next_rows.append(next_row)
 
     next_document = _replace_document_data_rows(dict(current_document), next_rows)
+    next_document, header_link_count = _apply_fanbei_attendance_header_links(
+        next_document,
+        video_config_rows=document_dict_rows(
+            dict(_load_fanbei_course_sheet_bundle(session, attendance=attendance)[VIDEO_CONFIG_SHEET_KEY].document_json or {})
+        ),
+    )
     if next_document != current_document:
         attendance.document_json = next_document
         attendance.version = max(int(attendance.version or 1), 1) + 1
@@ -746,6 +859,7 @@ def rebuild_fanbei_attendance_from_course_sheets(
         "updated_rows": updated_rows,
         "updated_cells": updated_cells,
         "mapped_columns": len(column_map),
+        "header_links": header_link_count,
         **{key: step2_data[key] for key in [
             "video_config_rows",
             "video_data_rows",
@@ -753,6 +867,26 @@ def rebuild_fanbei_attendance_from_course_sheets(
             "clockin_data_rows",
         ]},
     }
+
+
+def apply_course_attendance_header_links_for_response(
+    session: Session,
+    *,
+    attendance: Any,
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    if normalize_text(getattr(attendance, "sheet_key", "")) != "attendance":
+        return document_json, 0
+
+    try:
+        bundle = _load_fanbei_course_sheet_bundle(session, attendance=attendance)
+    except RuntimeError:
+        return document_json, 0
+
+    return _apply_fanbei_attendance_header_links(
+        document_json,
+        video_config_rows=document_dict_rows(dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {})),
+    )
 
 
 def list_fanbei_course_storage_sheets(

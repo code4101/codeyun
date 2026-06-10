@@ -414,6 +414,7 @@ def create_auto_git_commit_run(
             session.get_bind(),
             run.id,
             metadata={"run_id": run.id, "trigger_reason": trigger_reason},
+            raise_on_failure=True,
         )
         run.queue_task_id = queue_task_id
         run.updated_at = time.time()
@@ -820,11 +821,13 @@ def run_auto_git_commit_worker(
     inspect_func: Callable[[str], dict[str, Any]] = inspect_git_repository,
     draft_generator: Callable[..., dict[str, Any]] = generate_ai_git_commit_draft_hierarchical,
     commit_func: Callable[..., dict[str, Any]] = create_git_commit,
+    raise_on_failure: bool = False,
 ) -> None:
     with Session(db_bind) as session:
         run = session.get(AutoGitCommitRun, run_id)
         if run is None:
             return
+        failure_to_raise: str | None = None
         now_ts = time.time()
         run.status = "running"
         run.stage = "selecting_repos"
@@ -919,6 +922,8 @@ def run_auto_git_commit_worker(
             run.updated_at = run.finished_at
             session.add(run)
             session.commit()
+            if raise_on_failure and run.status == "failed":
+                failure_to_raise = run.error_message or run.stage_label or "自动提交失败"
         except Exception as exc:  # pragma: no cover - fatal bookkeeping guard.
             run.status = "failed"
             run.stage = "failed"
@@ -929,6 +934,10 @@ def run_auto_git_commit_worker(
             run.updated_at = run.finished_at
             session.add(run)
             session.commit()
+            if raise_on_failure:
+                failure_to_raise = str(exc)
+        if failure_to_raise:
+            raise RuntimeError(failure_to_raise)
 
 
 def maybe_create_due_auto_git_commit_run(

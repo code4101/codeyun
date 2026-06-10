@@ -12,7 +12,11 @@ from typing import Any
 from sqlmodel import Session, select
 
 from backend.core.fanxiu_lua_config import _find_default_lang_path, parse_fanxiu_generated_lua_config
-from backend.core.fanxiu_mail_policy import fanxiu_mail_action_policy_for_record, fanxiu_mail_action_policy_for_rewards
+from backend.core.fanxiu_mail_policy import (
+    fanxiu_mail_action_policy_for_record,
+    fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_desired_status_for_rewards,
+)
 from backend.core.fanxiu_mail_store import (
     clear_fanxiu_mail_records,
     ensure_fanxiu_mail_table,
@@ -1311,7 +1315,7 @@ def sync_fanxiu_mail_packets(
                         create_time_ms=int(create_time_ms),
                         source="packet",
                         action_policy=fanxiu_mail_action_policy_for_rewards(rewards),
-                        status=_mail_status_from_vo(mail_vo),
+                        status=fanxiu_mail_desired_status_for_rewards(rewards),
                         locked=(mail_id in lock_ids) if name == "SM_MailBox" else None,
                         payload=payload,
                         evidence=_packet_evidence(source, frame, index),
@@ -1415,6 +1419,15 @@ def sync_fanxiu_mail_packets(
         runtime_action = str(evidence.get("runtime_action") or "")
         runtime_requested_action = str(evidence.get("runtime_requested_action") or "")
         record_status = str(record.status or "").strip().lower()
+        if record_status in {"锁定", "留存", "可领"}:
+            policy = fanxiu_mail_action_policy_for_record(record)
+            if str(record.action_policy or "") == policy:
+                continue
+            record.action_policy = policy
+            record.locked = record_status == "锁定"
+            session.add(record)
+            policy_updated += 1
+            continue
         if runtime_action == "missing_from_list" and record_status not in {"claimed", "deleted", "missing_from_list"}:
             record.status = "missing_from_list"
             session.add(record)

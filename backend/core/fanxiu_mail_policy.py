@@ -5,6 +5,7 @@ from typing import Any
 
 FINAL_MAIL_STATUSES = {"claimed", "deleted", "missing_from_list"}
 REQUESTED_MAIL_STATUSES = {"claim_requested", "delete_requested"}
+MAIL_DESIRED_STATUSES = {"锁定", "留存", "可领"}
 
 MAIL_PROTECTED_RESOURCE_NAMES_BY_CATEGORY: dict[str, set[str]] = {
     "炼丹": {"炼丹灵草匣", "神品灵草匣", "炼丹灵草宝匣"},
@@ -20,7 +21,7 @@ MAIL_PROTECTED_RESOURCE_NAMES = {
     for name in names
 }
 
-MAIL_ALWAYS_CLAIM_RESOURCE_NAMES = {"潜修心得·四刻"}
+MAIL_ALWAYS_CLAIM_RESOURCE_KEYWORDS = {"潜修心得"}
 
 
 def fanxiu_mail_rewards_from_payload(payload: Any) -> list[dict[str, Any]]:
@@ -68,7 +69,8 @@ def fanxiu_mail_reward_protected_resource_category(reward: dict[str, Any]) -> st
 
 
 def fanxiu_mail_reward_is_always_claim(reward: dict[str, Any]) -> bool:
-    return _mail_reward_text(reward, "item_name") in MAIL_ALWAYS_CLAIM_RESOURCE_NAMES
+    item_name = _mail_reward_text(reward, "item_name")
+    return bool(item_name and any(keyword in item_name for keyword in MAIL_ALWAYS_CLAIM_RESOURCE_KEYWORDS))
 
 
 def fanxiu_mail_reward_name_known(reward: dict[str, Any]) -> bool:
@@ -76,49 +78,57 @@ def fanxiu_mail_reward_name_known(reward: dict[str, Any]) -> bool:
     return bool(item_name and not item_name.startswith("未知道具"))
 
 
-def fanxiu_mail_action_policy_for_rewards(rewards: list[dict[str, Any]]) -> str:
+def fanxiu_mail_desired_status_for_rewards(rewards: list[dict[str, Any]]) -> str:
     if not rewards:
-        return "delete"
+        return "可领"
     for reward in rewards:
         if not fanxiu_mail_reward_name_known(reward):
-            return ""
+            return "锁定"
         if fanxiu_mail_reward_is_faze(reward):
-            return ""
+            return "锁定"
     if any(fanxiu_mail_reward_is_always_claim(reward) for reward in rewards):
-        return "claim"
+        return "可领"
     for reward in rewards:
         if fanxiu_mail_reward_protected_resource_category(reward):
-            return ""
-    return "claim"
+            return "留存"
+    return "可领"
+
+
+def fanxiu_mail_action_policy_for_rewards(rewards: list[dict[str, Any]]) -> str:
+    return "claim" if fanxiu_mail_desired_status_for_rewards(rewards) == "可领" else ""
+
+
+def fanxiu_mail_desired_status_for_record(record: Any | None) -> str:
+    if record is None:
+        return ""
+    status = str(record.status or "").strip()
+    if status in MAIL_DESIRED_STATUSES:
+        return status
+    if bool(record.locked):
+        return "锁定"
+    if fanxiu_mail_rewards_unresolved(record.payload):
+        return "锁定"
+    action_policy = str(getattr(record, "action_policy", "") or "").strip()
+    legacy_status = status.lower()
+    if legacy_status in {"deleted", "claimed", "missing_from_list", "claim_requested", "delete_requested"}:
+        return "可领"
+    if action_policy in {"claim", "delete"}:
+        return "可领"
+    if legacy_status == "seen":
+        return "留存"
+    return fanxiu_mail_desired_status_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
 
 
 def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
     if record is None:
         return ""
-    if bool(record.locked):
-        return ""
-    if str(record.status or "").strip().lower() in FINAL_MAIL_STATUSES | REQUESTED_MAIL_STATUSES:
-        return ""
-    if fanxiu_mail_rewards_unresolved(record.payload):
-        return ""
-    return fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
+    return "claim" if fanxiu_mail_desired_status_for_record(record) == "可领" else ""
 
 
 def fanxiu_mail_visible_group_action_policy(records: list[Any]) -> str:
     if not records:
         return ""
-    policies: set[str] = set()
     for record in records:
-        if bool(record.locked):
+        if fanxiu_mail_desired_status_for_record(record) != "可领":
             return ""
-        if fanxiu_mail_rewards_unresolved(record.payload):
-            return ""
-        policy = fanxiu_mail_action_policy_for_rewards(fanxiu_mail_rewards_from_payload(record.payload))
-        if policy not in {"claim", "delete"}:
-            return ""
-        policies.add(policy)
-    if "claim" in policies:
-        return "claim"
-    if policies == {"delete"}:
-        return "delete"
-    return ""
+    return "claim"

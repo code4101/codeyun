@@ -357,31 +357,35 @@ def test_codex_diary_ai_draft_retries_failed_batch_by_splitting(session: Session
     assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(4)]
 
 
-def test_codex_diary_ai_draft_failure_stops_without_rule_fallback(session: Session, auth_user, monkeypatch):
+def test_codex_diary_ai_draft_failure_uses_rule_fallback(session: Session, auth_user, monkeypatch):
     def failing_draft(source, blocks, *, current_user, session):
-        raise ValueError("bad draft")
+        raise ValueError("Codex CLI 调用失败：in `service_tier`")
 
     monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", failing_draft)
     blocks = [
         {
             "block_key": "block-1",
-            "records": [{"assistant_result": "done"}],
+            "records": [
+                {
+                    "thread_title": "统计汇总修复",
+                    "user_request": "检查统计汇总缺失。",
+                    "assistant_result": "已定位并修复导入失败路径。",
+                }
+            ],
         }
     ]
 
-    try:
-        _draft_codex_diary_blocks_in_batches(
-            {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
-            blocks,
-            current_user=auth_user,
-            session=session,
-        )
-    except ValueError as exc:
-        assert "AI 日记草案失败，已停止写入" in str(exc)
-    else:
-        raise AssertionError("expected AI draft failure to stop import")
+    drafted = _draft_codex_diary_blocks_in_batches(
+        {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
+        blocks,
+        current_user=auth_user,
+        session=session,
+    )
 
-    assert "title" not in blocks[0]
+    assert len(drafted) == 1
+    assert drafted[0]["title"]
+    assert drafted[0]["summary_items"] == ["已定位并修复导入失败路径"]
+    assert drafted[0]["lifecycle_stage"] == "done"
 
 
 def test_codex_diary_import_worker_heartbeats_while_drafting(session: Session, engine, auth_user, monkeypatch):

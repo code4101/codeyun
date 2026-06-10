@@ -153,6 +153,34 @@ DEFAULT_TIMED_VIDEO_RULES: dict[str, dict[str, int]] = {
 }
 DEFAULT_CLOCKIN_RULE = "5=100;10=150;15=200"
 
+VIDEO_RULE_SYSTEM_REGULAR = "regular"
+VIDEO_RULE_SYSTEM_ZEN_STAGE = "zen_stage"
+VIDEO_RULE_SYSTEM_CHALLENGE = "challenge"
+
+
+@dataclass(frozen=True)
+class VideoRuleStrategy:
+    system: str
+    allows_timed_text_override: bool = False
+    uses_zen_stage_refund: bool = False
+    uses_challenge_refund: bool = False
+
+
+VIDEO_RULE_STRATEGIES: dict[str, VideoRuleStrategy] = {
+    VIDEO_RULE_SYSTEM_REGULAR: VideoRuleStrategy(
+        system=VIDEO_RULE_SYSTEM_REGULAR,
+        allows_timed_text_override=True,
+    ),
+    VIDEO_RULE_SYSTEM_ZEN_STAGE: VideoRuleStrategy(
+        system=VIDEO_RULE_SYSTEM_ZEN_STAGE,
+        uses_zen_stage_refund=True,
+    ),
+    VIDEO_RULE_SYSTEM_CHALLENGE: VideoRuleStrategy(
+        system=VIDEO_RULE_SYSTEM_CHALLENGE,
+        uses_challenge_refund=True,
+    ),
+}
+
 
 @dataclass(frozen=True)
 class CourseSheetSpec:
@@ -169,6 +197,7 @@ class VideoConfigItem:
     lesson_name: str
     item_type: str
     lesson_number: int | None
+    rule_system: str
     participates_refund: bool
     participates_score: bool
     rules_by_version: dict[str, list[PercentageRefundRule]]
@@ -340,8 +369,8 @@ def _highlight_video_refund_for_item(
         _rules_for_version(item.rules_by_version, rule_version),
         value,
     )
-    if _legacy_video_algorithm_kind(item) == "b" and _is_legacy_delayed_completed_video_text(value):
-        return refund_amount, ZERO_REFUND_COMPLETED_BACKGROUND
+    if _is_zen_stage_video_item(item) and _is_legacy_delayed_completed_video_text(value):
+        return 0, ZERO_REFUND_COMPLETED_BACKGROUND
     return refund_amount, color
 
 
@@ -1020,6 +1049,21 @@ def _attendance_video_refund_rules_override(document: dict[str, Any], columns: l
     return _parse_attendance_video_refund_rules(note_value)
 
 
+def _attendance_legacy_zen_video_refund_amount(document: dict[str, Any], columns: list[str]) -> float:
+    refund_index = _find_column_index(columns, "视频应返款")
+    if refund_index is None:
+        return 0.0
+    note_value = _grid_cell_value(
+        document,
+        max(_normalize_document_data_start_row(document) - 1, 0),
+        refund_index,
+    )
+    match = re.search(r"\*\s*(\d+(?:\.\d+)?)\s*元", _normalize_text(note_value))
+    if not match:
+        return 0.0
+    return _to_float(match.group(1))
+
+
 def _parse_clockin_rule_from_formula(value: Any) -> str:
     text = _normalize_text(value)
     pairs = [
@@ -1680,6 +1724,37 @@ def _compute_next_lesson_update(
 def _is_zen_stage_course_text(text: str) -> bool:
     normalized = _normalize_text(text)
     return "禅宗" in normalized or "修道班" in normalized
+
+
+def _resolve_video_rule_system(*, course_name: Any, lesson_name: Any, is_qa_item: bool = False) -> str:
+    if is_qa_item:
+        return VIDEO_RULE_SYSTEM_REGULAR
+    text = f"{_normalize_text(course_name)} {_normalize_text(lesson_name)}"
+    if "念住闯关" in text:
+        return VIDEO_RULE_SYSTEM_CHALLENGE
+    if _is_zen_stage_course_text(text):
+        return VIDEO_RULE_SYSTEM_ZEN_STAGE
+    return VIDEO_RULE_SYSTEM_REGULAR
+
+
+def _resolve_video_rule_strategy(*, course_name: Any, lesson_name: Any, is_qa_item: bool = False) -> VideoRuleStrategy:
+    return VIDEO_RULE_STRATEGIES[_resolve_video_rule_system(
+        course_name=course_name,
+        lesson_name=lesson_name,
+        is_qa_item=is_qa_item,
+    )]
+
+
+def _is_zen_stage_video_item(item: VideoConfigItem) -> bool:
+    return item.rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE
+
+
+def _is_challenge_video_item(item: VideoConfigItem) -> bool:
+    return item.rule_system == VIDEO_RULE_SYSTEM_CHALLENGE
+
+
+def _is_regular_video_item(item: VideoConfigItem) -> bool:
+    return item.rule_system == VIDEO_RULE_SYSTEM_REGULAR
 
 
 def _read_export_table(file: str | Path):
@@ -2430,13 +2505,14 @@ def _load_video_config(
             continue
         lesson_number = _extract_lesson_number(lesson_name)
         is_qa_item = course_key.startswith("qa:")
-        is_zen_stage_video = _is_zen_stage_course_text(f"{course_name} {lesson_name}") and not is_qa_item
-        item_type = "课次" if lesson_number is not None or is_zen_stage_video else ("答疑" if is_qa_item else "视频")
-        participates_refund = lesson_number is not None or is_zen_stage_video
+        rule_strategy = _resolve_video_rule_strategy(course_name=course_name, lesson_name=lesson_name, is_qa_item=is_qa_item)
+        rule_system = rule_strategy.system
+        item_type = "课次" if lesson_number is not None or rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE else ("答疑" if is_qa_item else "视频")
+        participates_refund = lesson_number is not None or rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE
         refund_rule_mode = _normalize_text(source_meta.get("video_refund_rule_mode"))
-        if "念住闯关" in course_name:
+        if rule_strategy.uses_challenge_refund:
             refund_rule_mode = ""
-        if timed_video_rules_override and "念住闯关" not in course_name:
+        if timed_video_rules_override and rule_strategy.allows_timed_text_override:
             refund_rule_mode = "timed_text"
         rules_by_version: dict[str, list[PercentageRefundRule]] = {
             CURRENT_RULE: _parse_percentage_rules(
@@ -2473,6 +2549,7 @@ def _load_video_config(
             lesson_name=lesson_name,
             item_type=item_type,
             lesson_number=lesson_number,
+            rule_system=rule_system,
             participates_refund=participates_refund,
             participates_score=bool(lesson_number is not None and lesson_number >= 12),
             rules_by_version=rules_by_version,
@@ -2509,16 +2586,11 @@ def _challenge_progress_text_from_percent(progress: int | float) -> str:
 
 
 def _legacy_video_algorithm_kind(lesson: VideoConfigItem) -> str:
-    text = f"{lesson.course_name} {lesson.lesson_name}"
-    if _is_zen_stage_course_text(text):
+    if lesson.rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE:
         return "b"
-    if "念住闯关" in text:
+    if lesson.rule_system == VIDEO_RULE_SYSTEM_CHALLENGE:
         return "c"
     return "a"
-
-
-def _is_challenge_video_item(item: VideoConfigItem) -> bool:
-    return _legacy_video_algorithm_kind(item) == "c"
 
 
 def _custom_fillna_like_kq5034(df: Any, default_fill_value: Any = 0, numeric_fill_value: Any = 0) -> None:
@@ -3225,6 +3297,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         video_config_document,
         timed_video_rules_override=_attendance_video_refund_rules_override(current_document, columns),
     )
+    legacy_zen_video_refund_amount = _attendance_legacy_zen_video_refund_amount(current_document, columns)
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
@@ -3405,16 +3478,12 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             row_number=row_number,
             rule_version=rule_version,
         )
-        video_refund_formula = _build_challenge_video_refund_formula(
+        video_refund_formula = _build_video_refund_formula(
             video_config,
             video_column_indexes,
             row_number=row_number,
             rule_version=rule_version,
-        ) or _build_timed_video_refund_formula(
-            video_config,
-            video_column_indexes,
-            row_number=row_number,
-            rule_version=rule_version,
+            legacy_zen_refund_amount=legacy_zen_video_refund_amount,
         )
         clockin_refund_formula = (
             _build_clockin_refund_formula(
@@ -3689,7 +3758,8 @@ def _build_completed_video_count_formula(
             and column_index is not None
             and (
                 _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
-                or _legacy_video_algorithm_kind(item) == "a"
+                or _is_regular_video_item(item)
+                or _is_zen_stage_video_item(item)
             )
         )
     ]
@@ -3705,6 +3775,61 @@ def _build_completed_video_count_formula(
         for range_ref in ranges
     )
     return "=" + "+".join(parts)
+
+
+def _build_legacy_zen_video_refund_formula(
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+    *,
+    row_number: int,
+    refund_amount: float,
+) -> str | None:
+    if refund_amount <= 0:
+        return None
+    column_indexes = [
+        column_index
+        for item in video_config
+        for column_index in [video_column_indexes.get(item.lesson_id)]
+        if item.participates_refund
+        and column_index is not None
+        and _is_zen_stage_video_item(item)
+    ]
+    ranges = _formula_row_ranges(column_indexes, row_number)
+    if not ranges:
+        return None
+    amount_text = _format_numeric_cell(refund_amount)
+    return "=" + "+".join(f'COUNTIF({range_ref},"准时完成")*{amount_text}' for range_ref in ranges)
+
+
+def _build_video_refund_formula(
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+    *,
+    row_number: int,
+    rule_version: str,
+    legacy_zen_refund_amount: float,
+) -> str | None:
+    systems = {item.rule_system for item in video_config if item.participates_refund}
+    if VIDEO_RULE_SYSTEM_CHALLENGE in systems:
+        return _build_challenge_video_refund_formula(
+            video_config,
+            video_column_indexes,
+            row_number=row_number,
+            rule_version=rule_version,
+        )
+    if VIDEO_RULE_SYSTEM_ZEN_STAGE in systems:
+        return _build_legacy_zen_video_refund_formula(
+            video_config,
+            video_column_indexes,
+            row_number=row_number,
+            refund_amount=legacy_zen_refund_amount,
+        )
+    return _build_timed_video_refund_formula(
+        video_config,
+        video_column_indexes,
+        row_number=row_number,
+        rule_version=rule_version,
+    )
 
 
 def _build_challenge_video_refund_formula(
@@ -3880,7 +4005,7 @@ def _build_current_refund_formula(columns: list[str], *, row_number: int) -> str
     total_ref = _formula_cell_ref(total_index, row_number)
     refunded_ref = _formula_cell_ref(refunded_index, row_number)
     order_ref = _formula_cell_ref(order_amount_index, row_number)
-    return f"=({order_ref}>0)*MAX(0,{total_ref}-{refunded_ref})"
+    return f"=({order_ref}>0)*({total_ref}-{refunded_ref})"
 
 
 def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:

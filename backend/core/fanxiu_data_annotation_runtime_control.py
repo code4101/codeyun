@@ -5,6 +5,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pyxllib.prog import (
+    append_status_log,
+    filter_status_logs,
+    job_payload_values,
+    remove_job_by_id,
+    repair_orphaned_scheduled_runs,
+    scheduled_task_payload_with_meta,
+    select_due_scheduled_tasks,
+)
+
 from backend.core.fanxiu_behavior_tree import (
     data_annotation_asset_tree_path,
     ensure_fanxiu_behavior_tree_service,
@@ -33,7 +43,6 @@ from backend.core.fanxiu_data_annotation_jobs import (
 )
 from backend.core.fanxiu_data_annotation_scheduler import (
     build_data_annotation_scheduler_plan,
-    data_annotation_scheduler_order_key,
     merge_data_annotation_scheduler_task_updates,
     data_annotation_scheduler_run_now_task,
     data_annotation_scheduler_task_plan_reason,
@@ -49,7 +58,6 @@ from backend.core.fanxiu_data_annotation_state import (
     is_data_annotation_runtime_live_empty,
     next_data_annotation_scheduler_time,
     normalize_data_annotation_runtime_guard_items,
-    parse_data_annotation_task_time,
     persist_data_annotation_runtime_status,
     read_data_annotation_json,
     read_data_annotation_runtime_status,
@@ -123,8 +131,7 @@ def remove_manual_job(job_id: str, path: Path | None = None) -> None:
     job_id = str(job_id or "")
     if not job_id:
         return
-    jobs = [job for job in read_manual_jobs(path) if str(job.get("id") or "") != job_id]
-    write_manual_jobs(jobs, path)
+    write_manual_jobs(remove_job_by_id(read_manual_jobs(path), job_id), path)
 
 
 def enqueue_manual_job(
@@ -169,32 +176,17 @@ def repair_orphaned_scheduler_runs(
     now_ts: float | None = None,
     running: bool | None = None,
 ) -> bool:
-    pending_scheduler_ids: set[str] = set()
-    for job in read_manual_jobs(manual_job_path):
-        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-        scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
-        if scheduler_task_id:
-            pending_scheduler_ids.add(scheduler_task_id)
+    pending_scheduler_ids = job_payload_values(read_manual_jobs(manual_job_path), "__scheduler_task_id")
     if fanxiu_runtime_runner_running() if running is None else running:
         return False
-    changed = False
     current_ts = time.time() if now_ts is None else now_ts
-    for task in tasks:
-        task_id = str(task.get("id") or "")
-        if not task_id or task_id in pending_scheduler_ids:
-            continue
-        if str(task.get("last_result") or "") not in {"queued", "running"}:
-            continue
-        last_run_ts = parse_data_annotation_task_time(task.get("last_run_at"))
-        if last_run_ts is not None and current_ts - last_run_ts < 60:
-            continue
-        task["last_result"] = "stopped"
-        task["retry_after"] = None
-        checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-        checkpoint["recovered_from_orphaned_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        task["checkpoint"] = checkpoint
-        changed = True
-    return changed
+    return repair_orphaned_scheduled_runs(
+        tasks,
+        pending_task_ids=pending_scheduler_ids,
+        now=current_ts,
+        min_age_seconds=60,
+        recovered_at_text=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 
 def task_supported(task: dict[str, Any]) -> bool:
@@ -401,14 +393,7 @@ def runtime_logs(
     world_facts_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
-    log_items = [item for item in (status.get("logs") or []) if isinstance(item, dict)]
-    resolved_scope = str(scope or "").strip()
-    resolved_item_id = str(item_id or "").strip()
-    if resolved_scope:
-        log_items = [item for item in log_items if str(item.get("scope") or "") == resolved_scope]
-    if resolved_item_id:
-        log_items = [item for item in log_items if str(item.get("item_id") or "") == resolved_item_id]
-    return log_items[-max(1, int(limit)) :]
+    return filter_status_logs(status, limit=limit, scope=scope, item_id=item_id)
 
 
 def clear_runtime_logs(
@@ -453,15 +438,15 @@ def queue_manual_job_status(
         },
         "updated_at": time.time(),
     })
-    logs = list(status.get("logs") or [])
-    logs.append({
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "kind": "info",
-        "scope": "manual_job",
-        "item_id": "manual_job",
-        "message": f"[{job.get('id')}] {status['message']}",
-    })
-    status["logs"] = logs[-500:]
+    append_status_log(
+        status,
+        "info",
+        f"[{job.get('id')}] {status['message']}",
+        scope="manual_job",
+        item_id="manual_job",
+        time_text=datetime.now().strftime("%H:%M:%S"),
+        update_timestamp=False,
+    )
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 
@@ -569,12 +554,7 @@ def build_scheduler_plan(
 
 
 def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
-    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-    return {
-        **payload,
-        "__scheduler_task_id": str(task.get("id") or ""),
-        "__scheduler_interruptible": bool(task.get("interruptible", True)),
-    }
+    return scheduled_task_payload_with_meta(task)
 
 
 def next_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
@@ -667,15 +647,10 @@ def run_due_scheduler_tasks(
         world_facts_path=world_facts_path,
         manual_job_path=manual_job_path,
     )
-    due_tasks = sorted(
-        [
-            item
-            for item in tasks
-            if str(item.get("schedule_kind") or "") != "manual"
-            and data_annotation_task_due(item)
-            and task_supported(item)
-        ],
-        key=data_annotation_scheduler_order_key,
+    due_tasks = select_due_scheduled_tasks(
+        tasks,
+        task_due=data_annotation_task_due,
+        task_supported=task_supported,
     )
     if not due_tasks:
         status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)

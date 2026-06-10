@@ -165,14 +165,12 @@
             </button>
           </div>
           <div v-if="directoryEntries.length > DEFAULT_DIRECTORY_PAGE_SIZE" class="directory-pagination">
-            <el-pagination
-              small
-              background
-              :current-page="currentDirectoryPage"
+            <StandardPagination
+              :page="currentDirectoryPage"
               :page-size="DEFAULT_DIRECTORY_PAGE_SIZE"
-              :total="directoryEntries.length"
-              layout="prev, pager, next"
-              @current-change="handleDirectoryPageChange"
+              :page-count="directoryPageCount"
+              :show-page-size="false"
+              @page-change="handleDirectoryPageChange"
             />
           </div>
           <div v-if="!directoryEntries.length" class="directory-empty-state">
@@ -206,14 +204,12 @@
           </div>
 
           <div v-if="filteredItems.length > FILE_LIST_PAGE_SIZE" class="annotation-file-pagination">
-            <el-pagination
-              small
-              background
-              :current-page="currentFileListPage"
+            <StandardPagination
+              :page="currentFileListPage"
               :page-size="FILE_LIST_PAGE_SIZE"
-              :total="filteredItems.length"
-              layout="total, prev, pager, next"
-              @current-change="handleFileListPageChange"
+              :page-count="fileListPageCount"
+              :show-page-size="false"
+              @page-change="handleFileListPageChange"
             />
           </div>
         </div>
@@ -706,6 +702,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Close, FolderOpened, Plus, QuestionFilled } from '@element-plus/icons-vue';
+import StandardPagination from '@/components/StandardPagination.vue';
 
 import {
   fetchDeviceDirectoryItems,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -11,6 +10,20 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
+
+from pyxllib.prog import (
+    acquire_json_lease,
+    clear_job_queue,
+    clear_stale_json_lease,
+    filter_status_logs,
+    is_json_lease_active,
+    owner_active_for_other_process,
+    read_json_lease,
+    read_json_object_status,
+    release_json_lease,
+    should_enqueue_local_run,
+    write_json_command,
+)
 
 from backend.core.fanxiu_data_annotation_state import (
     append_data_annotation_runtime_log_once,
@@ -144,26 +157,7 @@ def fanxiu_job_group_isolation_path() -> Path:
 
 def read_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
     isolation_path = path or fanxiu_job_group_isolation_path()
-    try:
-        payload = json.loads(isolation_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"exists": False, "active": False, "stale": False, "path": str(isolation_path)}
-    except Exception as exc:
-        return {"exists": True, "active": False, "stale": True, "path": str(isolation_path), "error": str(exc)}
-    if not isinstance(payload, dict):
-        return {"exists": True, "active": False, "stale": True, "path": str(isolation_path), "error": "isolation 文件不是 JSON object"}
-    updated_at = float(payload.get("updated_at") or 0.0)
-    ttl_seconds = max(5.0, float(payload.get("ttl_seconds") or 300.0))
-    age_seconds = time.time() - updated_at if updated_at > 0 else None
-    stale = updated_at <= 0 or (age_seconds is not None and age_seconds > ttl_seconds)
-    return {
-        **payload,
-        "exists": True,
-        "active": not stale,
-        "stale": stale,
-        "age_seconds": age_seconds,
-        "path": str(isolation_path),
-    }
+    return read_json_lease(isolation_path, invalid_message="isolation 文件不是 JSON object")
 
 
 def fanxiu_behavior_tree_service_owner_path() -> Path:
@@ -181,16 +175,14 @@ def request_fanxiu_behavior_tree_stop(
     path: Path | None = None,
 ) -> dict[str, Any]:
     control_path = path or fanxiu_behavior_tree_control_path()
-    request = {
-        "id": uuid.uuid4().hex,
-        "command": "stop_current_task",
-        "entry_id": str(entry_id or ""),
-        "reason": str(reason or "local_cli"),
-        "created_at": time.time(),
-    }
-    control_path.parent.mkdir(parents=True, exist_ok=True)
-    control_path.write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {**request, "path": str(control_path)}
+    return write_json_command(
+        control_path,
+        command="stop_current_task",
+        request_id=uuid.uuid4().hex,
+        created_at=time.time(),
+        entry_id=str(entry_id or ""),
+        reason=str(reason or "local_cli"),
+    )
 
 
 def read_fanxiu_behavior_tree_service_owner(
@@ -199,54 +191,21 @@ def read_fanxiu_behavior_tree_service_owner(
     stale_after_seconds: float = 30.0,
 ) -> dict[str, Any]:
     owner_path = path or fanxiu_behavior_tree_service_owner_path()
-    try:
-        owner = json.loads(owner_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {"exists": False, "active": False, "stale": False, "path": str(owner_path)}
-    except Exception as exc:
-        return {"exists": True, "active": False, "stale": True, "path": str(owner_path), "error": str(exc)}
-    if not isinstance(owner, dict):
-        return {"exists": True, "active": False, "stale": True, "path": str(owner_path), "error": "owner 文件不是 JSON object"}
-    updated_at = float(owner.get("updated_at") or 0.0)
-    age_seconds = time.time() - updated_at if updated_at > 0 else None
-    stale = updated_at <= 0 or (age_seconds is not None and age_seconds > max(1.0, float(stale_after_seconds or 30.0)))
-    return {
-        **owner,
-        "exists": True,
-        "active": not stale,
-        "stale": stale,
-        "age_seconds": age_seconds,
-        "path": str(owner_path),
-    }
+    return read_json_object_status(
+        owner_path,
+        stale_after_seconds=stale_after_seconds,
+        invalid_message="owner 文件不是 JSON object",
+    )
 
 
 def fanxiu_job_group_isolated(path: Path | None = None) -> bool:
     isolation_path = path or fanxiu_job_group_isolation_path()
-    status = read_fanxiu_job_group_isolation(isolation_path)
-    if not bool(status.get("active")):
-        if bool(status.get("stale")):
-            try:
-                isolation_path.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception:
-                pass
-        return False
-    return True
+    return is_json_lease_active(isolation_path)
 
 
 def clear_stale_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
     isolation_path = path or fanxiu_job_group_isolation_path()
-    status = read_fanxiu_job_group_isolation(isolation_path)
-    if not bool(status.get("stale")):
-        return {"cleared": False, **status}
-    try:
-        isolation_path.unlink()
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        return {"cleared": False, **status, "error": str(exc)}
-    return {"cleared": True, **status}
+    return clear_stale_json_lease(isolation_path)
 
 
 def acquire_fanxiu_job_group_isolation(
@@ -256,35 +215,19 @@ def acquire_fanxiu_job_group_isolation(
     path: Path | None = None,
 ) -> str:
     isolation_path = path or fanxiu_job_group_isolation_path()
-    token = uuid.uuid4().hex
-    payload = {
-        "pid": os.getpid(),
-        "token": token,
-        "reason": str(reason or "local_run"),
-        "ttl_seconds": max(5.0, float(ttl_seconds or 300.0)),
-        "updated_at": time.time(),
-    }
-    isolation_path.parent.mkdir(parents=True, exist_ok=True)
-    isolation_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return token
+    return acquire_json_lease(
+        isolation_path,
+        reason=str(reason or "local_run"),
+        ttl_seconds=max(5.0, float(ttl_seconds or 300.0)),
+        token=uuid.uuid4().hex,
+        now=time.time(),
+        extra={"pid": os.getpid()},
+    )
 
 
 def release_fanxiu_job_group_isolation(token: str, path: Path | None = None) -> None:
-    token = str(token or "")
     isolation_path = path or fanxiu_job_group_isolation_path()
-    try:
-        payload = json.loads(isolation_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return
-    except Exception:
-        payload = {}
-    if not isinstance(payload, dict) or str(payload.get("token") or "") == token:
-        try:
-            isolation_path.unlink()
-        except FileNotFoundError:
-            pass
-        except Exception:
-            pass
+    release_json_lease(isolation_path, str(token or ""))
 
 
 @contextmanager
@@ -480,14 +423,7 @@ def fanxiu_data_annotation_runtime_logs(
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
-    log_items = [item for item in (status.get("logs") or []) if isinstance(item, dict)]
-    resolved_scope = str(scope or "").strip()
-    resolved_item_id = str(item_id or "").strip()
-    if resolved_scope:
-        log_items = [item for item in log_items if str(item.get("scope") or "") == resolved_scope]
-    if resolved_item_id:
-        log_items = [item for item in log_items if str(item.get("item_id") or "") == resolved_item_id]
-    return log_items[-max(1, int(limit)) :]
+    return filter_status_logs(status, limit=limit, scope=scope, item_id=item_id)
 
 
 def clear_fanxiu_data_annotation_runtime_logs(
@@ -524,10 +460,7 @@ def cancel_fanxiu_local_manual_job(job_id: str, *, force: bool = False) -> dict[
         return {"cancelled": False, "reason": "not_found", "job_id": resolved_job_id, "remaining": len(jobs)}
     if str(target.get("status") or "") == "running" and not force:
         return {"cancelled": False, "reason": "running", "job_id": resolved_job_id, "remaining": len(jobs)}
-    runtime_control.write_manual_jobs(
-        [job for job in jobs if str(job.get("id") or "") != resolved_job_id],
-        path,
-    )
+    runtime_control.remove_manual_job(resolved_job_id, path)
     return {"cancelled": True, "job_id": resolved_job_id, "remaining": len(jobs) - 1}
 
 
@@ -536,8 +469,10 @@ def clear_fanxiu_local_manual_jobs(*, force: bool = False) -> dict[str, Any]:
 
     path = fanxiu_data_annotation_manual_job_state_path()
     jobs = runtime_control.read_manual_jobs(path)
-    kept = [job for job in jobs if str(job.get("status") or "") == "running" and not force]
-    removed = len(jobs) - len(kept)
+    kept, removed = clear_job_queue(
+        jobs,
+        keep_job=lambda job: str(job.get("status") or "") == "running" and not force,
+    )
     runtime_control.write_manual_jobs(kept, path)
     return {"removed": removed, "remaining": len(kept)}
 
@@ -691,25 +626,17 @@ def enqueue_fanxiu_local_manual_job(request: FanxiuLocalEnqueueRequest) -> dict[
 
 
 def fanxiu_resident_owner_active_for_other_process() -> bool:
-    owner = read_fanxiu_behavior_tree_service_owner()
-    if not bool(owner.get("active")):
-        return False
-    try:
-        owner_pid = int(owner.get("pid") or 0)
-    except (TypeError, ValueError):
-        return True
-    return owner_pid != os.getpid()
+    return owner_active_for_other_process(read_fanxiu_behavior_tree_service_owner(), current_pid=os.getpid())
 
 
 def fanxiu_local_task_should_enqueue(run_mode: str = "auto") -> bool:
-    mode = str(run_mode or "auto").strip().lower()
-    if mode == "enqueue":
-        return True
-    if mode == "direct":
-        return False
-    if mode != "auto":
-        raise ValueError("run_mode 只支持 auto/direct/enqueue")
-    return fanxiu_resident_owner_active_for_other_process()
+    try:
+        return should_enqueue_local_run(
+            run_mode,
+            owner_active_elsewhere=fanxiu_resident_owner_active_for_other_process(),
+        )
+    except ValueError as exc:
+        raise ValueError("run_mode 只支持 auto/direct/enqueue") from exc
 
 
 def run_fanxiu_local_task(request: FanxiuLocalRunRequest) -> dict[str, Any]:

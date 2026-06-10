@@ -145,6 +145,8 @@ from backend.core.fanxiu_status_models import (
     FanxiuMailPacketSyncRequest,
     FanxiuMailPacketSyncResponse,
     FanxiuMailRecordListResponse,
+    FanxiuMailRecordUpdateRequest,
+    FanxiuMailRecordUpdateResponse,
     FanxiuPacketActivityFlow,
     FanxiuPacketActivityHistoryResponse,
     FanxiuPacketActivityPayloadEvent,
@@ -234,6 +236,8 @@ from backend.core.fanxiu_game_window_models import (
     FanxiuDataAnnotationOcrFrameLine,
     FanxiuDataAnnotationOcrFrameRequest,
     FanxiuDataAnnotationOcrFrameResponse,
+    FanxiuDataAnnotationRemoveBackgroundRequest,
+    FanxiuDataAnnotationRemoveBackgroundResponse,
     FanxiuPseudoCodeCardCreateRequest,
     FanxiuPseudoCodeCardListResponse,
     FanxiuPseudoCodeCardRead,
@@ -339,6 +343,7 @@ from backend.core.fanxiu_mail_store import (
     mark_fanxiu_mail_action,
     normalize_fanxiu_mail_time_text,
     normalize_fanxiu_mail_title,
+    update_fanxiu_mail_desired_status,
 )
 from backend.core.fanxiu_mail_policy import (
     fanxiu_mail_action_policy_for_record,
@@ -447,6 +452,7 @@ from backend.core.fanxiu_game_macro_annotation import (
     _recognize_data_annotation_ocr_frame,
     _summarize_game_macro_ocr_document,
 )
+from backend.core.fanxiu_data_annotation_rembg import remove_fanxiu_data_annotation_background
 from backend.core.fanxiu_behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
@@ -2530,6 +2536,25 @@ def list_fanxiu_mail_records(
         limit=limit,
         records=records,
     )
+
+
+@status_router.patch("/mail-records/{mail_key}", response_model=FanxiuMailRecordUpdateResponse)
+def update_fanxiu_mail_record_status(
+    mail_key: str,
+    payload: FanxiuMailRecordUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        record = update_fanxiu_mail_desired_status(session, mail_key, desired_status=payload.status)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="邮件状态只能是：锁定、留存、可领")
+    if record is None:
+        raise HTTPException(status_code=404, detail="邮件记录不存在")
+    session.commit()
+    session.refresh(record)
+    return FanxiuMailRecordUpdateResponse(ok=True, record=record.model_dump())
 
 
 @status_router.post("/mail-records/sync-packets", response_model=FanxiuMailPacketSyncResponse)
@@ -5277,6 +5302,24 @@ def recognize_fanxiu_data_annotation_ocr_frame(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     try:
         return _recognize_data_annotation_ocr_frame(req.image_data_url)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@status_router.post("/data-annotation/remove-background", response_model=FanxiuDataAnnotationRemoveBackgroundResponse)
+def remove_fanxiu_data_annotation_background_api(
+    req: FanxiuDataAnnotationRemoveBackgroundRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    try:
+        return remove_fanxiu_data_annotation_background(
+            req.image_data_url,
+            model=req.model,
+            alpha_matting=req.alpha_matting,
+            post_process_mask=req.post_process_mask,
+        )
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

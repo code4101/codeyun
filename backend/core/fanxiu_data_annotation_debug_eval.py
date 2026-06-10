@@ -8,7 +8,7 @@ import time
 from types import GeneratorType
 from typing import Any
 
-from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
+from pyxllib.prog import BehaviorTreeStatus
 
 from backend.core.fanxiu_data_annotation_jobs import (
     get_fanxiu_data_annotation_manual_job_definition,

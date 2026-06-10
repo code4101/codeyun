@@ -14,6 +14,7 @@ from backend.api.note_sheets import (
     _normalize_document_columns,
 )
 from backend.core.attendance_progress_style import sheet_text
+from backend.core import note_sheet_inline_links
 from backend.core.sheet_identity import allocate_new_sheet_identity
 from backend.core.sheet_refs import (
     load_sheets_by_refs,
@@ -42,6 +43,76 @@ def normalize_row(row: Any, column_count: int) -> list[Any]:
     if isinstance(row, dict):
         return [row.get(str(index), "") for index in range(column_count)]
     return [""] * column_count
+
+
+def video_lesson_url_from_lesson_id2(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    if text.startswith("l_"):
+        return f"https://admin.xiaoe-tech.com/t/live_management#/userOperation?id={text}&tabName=UserManage"
+    return ""
+
+
+def document_field_row_index(document: dict[str, Any]) -> int:
+    try:
+        field_row_index = int(document.get("field_row_index") or 0)
+    except (TypeError, ValueError):
+        try:
+            field_row_index = int(document.get("data_start_row") or 1) - 1
+        except (TypeError, ValueError):
+            field_row_index = 0
+    return max(field_row_index, 0)
+
+
+def set_grid_cell_inline_link(
+    document: dict[str, Any],
+    *,
+    row_index: int,
+    column_index: int,
+    url: str,
+) -> tuple[dict[str, Any], bool]:
+    normalized_url = normalize_text(url)
+    if not normalized_url:
+        return document, False
+
+    columns = _normalize_document_columns(document)
+    if column_index < 0 or column_index >= len(columns):
+        return document, False
+
+    source_grid_rows = document.get("grid_rows")
+    if not isinstance(source_grid_rows, list) or row_index < 0:
+        return document, False
+
+    grid_rows = [normalize_row(row, len(columns)) for row in source_grid_rows]
+    while len(grid_rows) <= row_index:
+        grid_rows.append([""] * len(columns))
+
+    next_document = dict(document)
+    changed = False
+
+    old_value = grid_rows[row_index][column_index]
+    new_value = note_sheet_inline_links.with_inline_cell_link(old_value, {"url": normalized_url})
+    if new_value != old_value:
+        grid_rows[row_index][column_index] = new_value
+        next_document["grid_rows"] = grid_rows
+        changed = True
+
+    cell_meta = dict(next_document.get("cell_meta")) if isinstance(next_document.get("cell_meta"), dict) else {}
+    meta_key = f"{row_index}:{column_index}"
+    previous_meta = cell_meta.get(meta_key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    previous_link = next_meta.get("link")
+    previous_url = normalize_text(previous_link.get("url")) if isinstance(previous_link, dict) else ""
+    if previous_url != normalized_url:
+        next_meta["link"] = {"url": normalized_url}
+        cell_meta[meta_key] = next_meta
+        next_document["cell_meta"] = cell_meta
+        changed = True
+
+    return next_document, changed
 
 
 def json_safe_value(value: Any) -> Any:

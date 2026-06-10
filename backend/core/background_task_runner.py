@@ -159,7 +159,7 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
     if task_key == "auto_git_commit":
-        return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=10)
+        return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=30)
     if task_key == "note_metadata_feedback_optimization":
         return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
@@ -485,7 +485,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         category="Git",
         description="凌晨检查 pyxllib、xlproject、codeyun；默认使用 DeepSeek v4-flash 生成提交信息，codeyun 只用轻量状态摘要，大变更自动 checkpoint。",
         schedule_label=f"每天 {AUTO_GIT_COMMIT_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
+        retry_label="失败后 30 分钟重试",
         action=_enqueue_auto_git,
         manual_warning="会使用 DeepSeek v4-flash 生成提交信息，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 超过阈值会直接 checkpoint。",
     ),

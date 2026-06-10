@@ -409,6 +409,22 @@ class FanxiuDataAnnotationOcrFrameResponse(BaseModel):
     lines: list[FanxiuDataAnnotationOcrFrameLine] = Field(default_factory=list)
 
 
+class FanxiuDataAnnotationRemoveBackgroundRequest(BaseModel):
+    image_data_url: str
+    model: str = Field("isnet-general-use", min_length=1, max_length=80)
+    alpha_matting: bool = False
+    post_process_mask: bool = True
+
+
+class FanxiuDataAnnotationRemoveBackgroundResponse(BaseModel):
+    ok: bool = True
+    model: str = ""
+    width: int = 0
+    height: int = 0
+    alpha_mask_data_url: str = ""
+    result_data_url: str = ""
+
+
 class FanxiuDataAnnotationMacroPoint(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)

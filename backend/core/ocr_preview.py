@@ -5,6 +5,7 @@ import os
 import sys
 import gc
 import time
+import site
 from pathlib import Path
 from dataclasses import dataclass
 from threading import Condition, Event, RLock, Thread
@@ -19,6 +20,9 @@ OcrShapeType = Literal["polygon", "rectangle"]
 
 class OcrPreviewError(RuntimeError):
     pass
+
+
+_OCR_DLL_DIRECTORY_HANDLES: list[Any] = []
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +224,80 @@ def _apply_ocr_runtime_environment(*, device: str) -> None:
         # PaddleOCR may silently fall back from GPU to CPU on Windows. Keep the
         # CPU fallback on the safer non-MKLDNN path unless explicitly overridden.
         os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
+        if str(device or "").strip().lower().startswith("gpu"):
+            _add_windows_nvidia_dll_directories()
+
+
+def _iter_site_package_dirs() -> list[Path]:
+    candidates = [Path(sys.prefix) / "Lib" / "site-packages"]
+    try:
+        candidates.extend(Path(item) for item in site.getsitepackages())
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(site.getusersitepackages()))
+    except Exception:
+        pass
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in candidates:
+        resolved = path.resolve(strict=False)
+        key = os.fspath(resolved).lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(resolved)
+    return result
+
+
+def _nvidia_dll_directories() -> list[Path]:
+    result: list[Path] = []
+    for site_packages in _iter_site_package_dirs():
+        nvidia_root = site_packages / "nvidia"
+        if not nvidia_root.exists():
+            continue
+        for package_dir in nvidia_root.iterdir():
+            bin_dir = package_dir / "bin"
+            if bin_dir.is_dir():
+                result.append(bin_dir.resolve(strict=False))
+    return result
+
+
+def _add_windows_nvidia_dll_directories() -> None:
+    global _OCR_DLL_DIRECTORY_HANDLES
+    dll_dirs = _nvidia_dll_directories()
+    if not dll_dirs:
+        return
+    current_path = os.environ.get("PATH") or ""
+    current_parts = {part.lower() for part in current_path.split(os.pathsep) if part}
+    missing_parts: list[str] = []
+    for dll_dir in dll_dirs:
+        dll_dir_text = os.fspath(dll_dir)
+        if dll_dir_text.lower() not in current_parts:
+            missing_parts.append(dll_dir_text)
+        if hasattr(os, "add_dll_directory"):
+            try:
+                handle = os.add_dll_directory(dll_dir_text)
+            except OSError:
+                continue
+            _OCR_DLL_DIRECTORY_HANDLES.append(handle)
+    if missing_parts:
+        os.environ["PATH"] = os.pathsep.join([*missing_parts, current_path]) if current_path else os.pathsep.join(missing_parts)
+
+
+def _assert_gpu_runtime_available() -> None:
+    try:
+        import paddle
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        raise OcrPreviewError("OCR 配置为 GPU，但 Paddle 不可用") from exc
+    try:
+        compiled_with_cuda = bool(paddle.device.is_compiled_with_cuda())
+        cuda_count = int(paddle.device.cuda.device_count())
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        raise OcrPreviewError(f"OCR GPU 运行环境检查失败：{exc}") from exc
+    if not compiled_with_cuda:
+        raise OcrPreviewError("OCR 配置为 GPU，但当前安装的是非 CUDA 版 Paddle，请安装 paddlepaddle-gpu")
+    if cuda_count <= 0:
+        raise OcrPreviewError("OCR 配置为 GPU，但 Paddle 未检测到可用 CUDA 设备")
 
 
 def _coerce_bool_option(value: Any, default: bool) -> bool:
@@ -263,6 +341,8 @@ def _build_runtime_config(options: dict[str, Any] | None = None) -> PaddleOcrRun
 
 def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
     _apply_ocr_runtime_environment(device=config.device)
+    if str(config.device or "").strip().lower().startswith("gpu"):
+        _assert_gpu_runtime_available()
     try:
         from paddleocr import PaddleOCR
     except Exception as exc:  # pragma: no cover - depends on runtime env
@@ -275,6 +355,37 @@ def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
         use_doc_unwarping=config.use_doc_unwarping,
         use_textline_orientation=config.use_textline_orientation,
     )
+
+
+def get_ocr_runtime_diagnostics(device: str | None = None) -> dict[str, Any]:
+    resolved_device = str(device or get_settings().ocr_device or "").strip().lower()
+    if resolved_device.startswith("gpu"):
+        _apply_ocr_runtime_environment(device=resolved_device)
+    diagnostics: dict[str, Any] = {
+        "device": resolved_device,
+        "nvidia_dll_dirs": [os.fspath(path) for path in _nvidia_dll_directories()] if sys.platform.startswith("win") else [],
+    }
+    try:
+        import paddle
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        diagnostics.update({
+            "paddle_available": False,
+            "error": str(exc),
+        })
+        return diagnostics
+    diagnostics.update({
+        "paddle_available": True,
+        "paddle_version": getattr(paddle, "__version__", ""),
+    })
+    try:
+        diagnostics.update({
+            "compiled_with_cuda": bool(paddle.device.is_compiled_with_cuda()),
+            "cuda_device_count": int(paddle.device.cuda.device_count()),
+            "current_device": str(paddle.device.get_device()),
+        })
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        diagnostics["error"] = str(exc)
+    return diagnostics
 
 
 def _get_ocr_instance(config: PaddleOcrRuntimeConfig | None = None) -> Any:
@@ -552,6 +663,7 @@ class PaddleOcrServiceManager:
                 "last_loaded_at": self._last_loaded_at,
                 "last_used_at": self._last_used_at,
                 "last_error": self._last_error,
+                "runtime": get_ocr_runtime_diagnostics(settings.ocr_device),
                 "options": {
                     "use_doc_orientation_classify": settings.ocr_use_doc_orientation_classify,
                     "use_doc_unwarping": settings.ocr_use_doc_unwarping,

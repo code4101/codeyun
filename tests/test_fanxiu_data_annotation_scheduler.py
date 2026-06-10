@@ -1445,13 +1445,12 @@ def test_data_annotation_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
 
-    def fake_guard_step(runtime_ctx, asset_tree_path, frame):
-        calls.append((runtime_ctx, asset_tree_path, frame))
+    def fake_guard_step(runtime):
+        calls.append((runtime.ctx, runtime.asset_tree_path, runtime.cur_frame()))
         return guard_results.pop(0) if guard_results else False
 
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", fake_guard_step)
     monkeypatch.setattr(runner, "_persist_status", lambda: calls.append("persist"))
-    monkeypatch.setattr(runner, "_clear_tick_frame", lambda runtime_ctx: calls.append(("clear", runtime_ctx)))
 
     status = runner._runtime_guard_service_tick(
         "close_popups",
@@ -1463,7 +1462,6 @@ def test_data_annotation_runtime_guard_tick_does_not_starve_job(monkeypatch, tmp
     assert status == fanxiu.BehaviorTreeStatus.RUNNING
     assert calls[0] == (ctx, tmp_path / "entry.json", "frame")
     assert "persist" in calls
-    assert ("clear", ctx) in calls
 
     calls.clear()
     guard_results[:] = [True, False]

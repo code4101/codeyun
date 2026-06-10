@@ -53,7 +53,6 @@ declare module 'vue' {
     ElMenu: typeof import('element-plus/es')['ElMenu']
     ElMenuItem: typeof import('element-plus/es')['ElMenuItem']
     ElOption: typeof import('element-plus/es')['ElOption']
-    ElPagination: typeof import('element-plus/es')['ElPagination']
     ElPopover: typeof import('element-plus/es')['ElPopover']
     ElProgress: typeof import('element-plus/es')['ElProgress']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
@@ -98,6 +97,7 @@ declare module 'vue' {
     SharedNoteEditor: typeof import('./components/SharedNoteEditor.vue')['default']
     SmartTimeInput: typeof import('./components/SmartTimeInput.vue')['default']
     SortableOrderHandle: typeof import('./components/SortableOrderHandle.vue')['default']
+    StandardPagination: typeof import('./components/StandardPagination.vue')['default']
     UniversalNoteEditor: typeof import('./components/UniversalNoteEditor.vue')['default']
   }
   export interface GlobalDirectives {

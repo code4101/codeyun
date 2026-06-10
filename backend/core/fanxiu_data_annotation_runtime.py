@@ -7,13 +7,13 @@ from pathlib import Path
 from types import GeneratorType
 from typing import Any, Callable
 
-from pyxllib.prog.behavior_tree import (
+from pyxllib.prog import (
     Action,
     BehaviorTreeRunner,
+    BehaviorTreeStatus,
     Every,
     Node,
     Root,
-    Status as BehaviorTreeStatus,
     WithServices,
 )
 

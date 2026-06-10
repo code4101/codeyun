@@ -535,6 +535,46 @@ def test_auto_git_commit_worker_marks_run_failed_when_any_repo_fails(session, au
     assert "?? feature.txt" in _run_git(failed_repo, "status", "--short")
 
 
+def test_auto_git_commit_worker_raises_for_queue_retry_when_repo_fails(session, auth_user, tmp_path, monkeypatch):
+    dirty_repo = tmp_path / "dirty-queue-retry-repo"
+    _init_git_repo(dirty_repo)
+    (dirty_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    monkeypatch.setattr(
+        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        lambda **_: ("ollama", None, None, ()),
+    )
+
+    def failing_draft_generator(**kwargs):
+        raise AiGitCommitError("模型额度不足")
+
+    try:
+        run_auto_git_commit_worker(
+            session.get_bind(),
+            run.id,
+            draft_generator=failing_draft_generator,
+            raise_on_failure=True,
+        )
+    except RuntimeError as exc:
+        assert "1 个仓库自动提交失败" in str(exc)
+    else:
+        raise AssertionError("expected failed auto git worker to raise for queue retry")
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    assert updated.status == "failed"
+    assert updated.stage == "failed"
+    assert updated.failed_repo_count == 1
+
+
 def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committing(session, auth_user, tmp_path, monkeypatch):
     dirty_repo = tmp_path / "dirty-failure-repo"
     _init_git_repo(dirty_repo)

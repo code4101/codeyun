@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ChatDotRound, QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
 import api from '@/api';
+import StandardPagination from '@/components/StandardPagination.vue';
 import {
   fetchCodexOverviewForEntry,
   fetchCodexThreadDetailForEntry,
@@ -2892,15 +2893,13 @@ watch(
           </header>
           <div v-if="totalThreadCount" class="codex-thread-pagination">
             <span class="codex-thread-pagination-text">{{ threadPaginationText }}</span>
-            <el-pagination
-              v-model:current-page="currentThreadPage"
-              small
-              :pager-count="5"
+            <StandardPagination
+              v-model:page="currentThreadPage"
               :page-size="THREAD_PAGE_SIZE"
               :total="totalThreadCount"
-              layout="prev, pager, next"
+              :show-page-size="false"
               :disabled="isLoadingOverview"
-              @current-change="handleThreadPageChange"
+              @page-change="handleThreadPageChange"
             />
           </div>
           <el-scrollbar class="codex-pane-scroll">
@@ -3571,7 +3570,7 @@ watch(
   font-size: 12px;
 }
 
-.codex-thread-pagination :deep(.el-pagination) {
+.codex-thread-pagination :deep(.standard-pagination) {
   flex-shrink: 0;
   margin-left: auto;
 }
