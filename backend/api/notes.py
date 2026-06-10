@@ -2357,13 +2357,14 @@ def _extract_codex_diary_ai_json(raw_content: Any) -> dict[str, Any]:
         fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if fence_match:
             content = fence_match.group(1).strip()
+    repaired_content = re.sub(r",\s*([}\]])", r"\1", content)
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(repaired_content)
     except json.JSONDecodeError:
-        match = re.search(r"(\{.*\})", content, re.DOTALL)
+        match = re.search(r"(\{.*\})", repaired_content, re.DOTALL)
         if not match:
             raise ValueError("Codex CLI 没有返回 JSON 对象")
-        parsed = json.loads(match.group(1))
+        parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", match.group(1)))
     if not isinstance(parsed, dict):
         raise ValueError("AI 日记草案不是 JSON 对象")
     return parsed

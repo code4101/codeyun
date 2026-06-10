@@ -18,6 +18,7 @@ from backend.api.notes import (
     _create_codex_diary_note,
     _create_codex_diary_import_run_record,
     _draft_codex_diary_blocks_in_batches,
+    _extract_codex_diary_ai_json,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
@@ -386,6 +387,14 @@ def test_codex_diary_ai_draft_failure_uses_rule_fallback(session: Session, auth_
     assert drafted[0]["title"]
     assert drafted[0]["summary_items"] == ["已定位并修复导入失败路径"]
     assert drafted[0]["lifecycle_stage"] == "done"
+
+
+def test_codex_diary_ai_json_allows_trailing_commas():
+    payload = _extract_codex_diary_ai_json(
+        '{"blocks":[{"block_key":"a","title":"邮件标识场景标注","summary_items":["完成"],},],}'
+    )
+
+    assert payload["blocks"][0]["title"] == "邮件标识场景标注"
 
 
 def test_codex_diary_import_worker_heartbeats_while_drafting(session: Session, engine, auth_user, monkeypatch):
