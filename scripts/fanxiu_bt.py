@@ -59,7 +59,7 @@ def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
                 "max_actions": int(args.max_actions or 0),
             }
         )
-        return "mail_claim_check", payload
+        return "mail_cleanup", payload
     if args.command == "task":
         return str(args.task_type), payload
     raise SystemExit(f"未知命令：{args.command}")
@@ -192,7 +192,7 @@ def main() -> int:
     go_scene.add_argument("scene_id")
     _add_task_run_options(go_scene)
 
-    mail_check = subparsers.add_parser("mail-check", help="运行邮件_领取检查")
+    mail_check = subparsers.add_parser("mail-check", help="运行邮件_清理")
     mail_check.add_argument("--observe-only", action="store_true")
     mail_check.add_argument("--scan-mode", default="incremental")
     mail_check.add_argument("--skip-capture", action="store_true")
@@ -382,6 +382,8 @@ def main() -> int:
             isolate_jobs=not bool(args.no_isolate_jobs),
         ))
         _print_status(status)
+        if bool(args.wait):
+            return _wait_and_print_queued_job(status, float(args.wait_timeout_seconds or 300.0))
         return 0 if str(status.get("status") or "") not in {"error"} else 1
     status = run_fanxiu_local_task(FanxiuLocalRunRequest(
         task_type=task_type,

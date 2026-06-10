@@ -279,11 +279,11 @@ def test_batch_business_sync_passes_non_profile_runtime_protocols(monkeypatch):
         },
     )
 
-    def fake_runtime_sync(result, **_kwargs):
+    def fake_business_sync(result, **_kwargs):
         seen_names.extend(str(frame.get("name") or "") for frame in result.get("frames") or [])
         return {"ok": True, "changed": True}
 
-    monkeypatch.setattr(worker, "sync_fanxiu_packet_runtime_insights_for_decode_result", fake_runtime_sync)
+    monkeypatch.setattr(worker, "sync_fanxiu_packet_business_for_decode_result", fake_business_sync)
 
     class FakeSession:
         def __init__(self, _engine):

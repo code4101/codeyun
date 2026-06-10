@@ -27,6 +27,7 @@ from backend.api.fanxiu import (
 )
 from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
 from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
+from backend.core.fanxiu_data_annotation_scheduler import repair_data_annotation_scheduler_tasks
 from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
 from backend.core.fanxiu_mumu_control import _compare_frame_crops
 from backend.models import FanxiuMailRecord, UserDevice
@@ -197,11 +198,28 @@ def test_compare_frame_crops_resizes_current_crop_without_mask():
     assert score == 1.0
 
 
-def test_mumu_adb_serial_candidates_use_local_ports_before_proxy_devices(monkeypatch):
+def test_mumu_adb_serial_candidates_use_local_ports_without_proxy_devices_by_default(monkeypatch):
     for key in mumu_control.MUMU_ADB_SERIAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
     mumu_control._MUMU_ADB_SESSION.clear()
     monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
+
+    assert mumu_control._mumu_adb_serial_candidates() == [
+        "127.0.0.1:7555",
+        "127.0.0.1:16416",
+        "127.0.0.1:5555",
+    ]
+
+
+def test_mumu_adb_serial_candidates_allow_proxy_devices_when_explicit(monkeypatch):
+    for key in mumu_control.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, "1")
+    mumu_control._MUMU_ADB_SESSION.clear()
+    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
         "127.0.0.1:7555",
@@ -214,13 +232,31 @@ def test_mumu_adb_serial_candidates_use_local_ports_before_proxy_devices(monkeyp
 def test_mumu_adb_serial_candidates_keep_default_ports_only_without_devices(monkeypatch):
     for key in mumu_control.MUMU_ADB_SERIAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
     mumu_control._MUMU_ADB_SESSION.clear()
     monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
         "127.0.0.1:7555",
         "127.0.0.1:16416",
         "127.0.0.1:5555",
+    ]
+
+
+def test_mumu_adb_serial_candidates_include_mumu_manager_devices_by_default(monkeypatch):
+    for key in mumu_control.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
+    mumu_control._MUMU_ADB_SESSION.clear()
+    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+
+    assert mumu_control._mumu_adb_serial_candidates() == [
+        "127.0.0.1:7555",
+        "127.0.0.1:16416",
+        "127.0.0.1:5555",
+        "192.168.31.181:5555",
     ]
 
 
@@ -1697,14 +1733,140 @@ def test_daily_signup_scheduler_task_is_runtime_daily_task():
     assert _data_annotation_task_supported(task)
 
 
-def test_mail_claim_check_is_manual_runtime_task():
-    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "mail-claim-check")
+def test_mail_cleanup_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup")
 
-    assert task["task_type"] == "mail_claim_check"
-    assert task["label"] == "邮件_领取检查"
-    assert task["schedule_kind"] == "manual"
-    assert task["enabled"] is False
+    assert task["task_type"] == "mail_cleanup"
+    assert task["label"] == "邮件_清理"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["00:05"]
+    assert task["enabled"] is True
+    assert task["cooldown_seconds"] == 600
     assert _data_annotation_task_supported(task)
+
+
+def test_xianfu_visit_partner_is_dynamic_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "xianfu-visit-partner")
+
+    assert task["task_type"] == "xianfu_visit_partner"
+    assert task["label"] == "仙府_寻访仙侣"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "dynamic"
+    assert task["schedule_times"] == []
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_xianfu_learn_skill_is_dynamic_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "xianfu-learn-skill")
+
+    assert task["task_type"] == "xianfu_learn_skill"
+    assert task["label"] == "仙府_领悟绝技"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "dynamic"
+    assert task["schedule_times"] == []
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_legacy_mail_claim_check_scheduler_task_is_merged_into_mail_cleanup():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "mail-claim-check",
+            "task_type": "mail_claim_check",
+            "label": "邮件_领取检查",
+            "source": "manual",
+            "schedule_kind": "manual",
+            "enabled": False,
+            "payload": {"__scheduler_definition_task_type": "mail_claim_check"},
+        },
+        next(item for item in defaults if item["id"] == "mail-cleanup"),
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    mail_tasks = [item for item in tasks if str(item.get("task_type") or "").startswith("mail_")]
+
+    assert changed is True
+    assert [(item["id"], item["task_type"], item["label"]) for item in mail_tasks] == [
+        ("mail-cleanup", "mail_cleanup", "邮件_清理")
+    ]
+
+
+def test_legacy_xianfu_visit_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-dynamic-xianfu-visit",
+            "task_type": "legacy_dynamic_task",
+            "label": "仙府 寻访仙侣",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "dynamic",
+            "legacy_name": "仙府_寻访仙侣",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "仙府_寻访仙侣"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"xianfu-visit-partner": {"discovered_next_time": "2026-06-11 04:16:13"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "xianfu-visit-partner")
+
+    assert changed is True
+    assert task["task_type"] == "xianfu_visit_partner"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "dynamic"
+    assert task["label"] == "仙府_寻访仙侣"
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 04:16:13"
+
+
+def test_legacy_xianfu_skill_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-dynamic-xianfu-skill",
+            "task_type": "legacy_dynamic_task",
+            "label": "仙府 领悟绝技",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "dynamic",
+            "legacy_name": "仙府_领悟绝技",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "仙府_领悟绝技"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"xianfu-learn-skill": {"discovered_next_time": "2026-06-11 04:16:13"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "xianfu-learn-skill")
+
+    assert changed is True
+    assert task["task_type"] == "xianfu_learn_skill"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "dynamic"
+    assert task["label"] == "仙府_领悟绝技"
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 04:16:13"
 
 
 def test_mail_full_scan_is_not_a_default_scheduler_task():
@@ -1736,7 +1898,7 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
     monkeypatch.setattr(runner, "_scan_mail_scene", fake_scan)
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_claim_check_task(ctx, FakeStopEvent(), {"observe_only": True}),
+        lambda: runner._execute_mail_legacy_scan_task(ctx, FakeStopEvent(), {"observe_only": True}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -1745,7 +1907,7 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
     assert received == {"action_enabled": False}
 
 
-def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
+def test_mail_world_menu_ocr_click_uses_mail_shape_lower_point_when_available():
     runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
@@ -1759,7 +1921,7 @@ def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
     x, y = runner._mail_world_menu_icon_click_point(image35, 360.0, 1548.0)
 
     assert 495 <= x <= 500
-    assert 1510 <= y <= 1515
+    assert 1540 <= y <= 1545
 
 
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
@@ -1978,7 +2140,7 @@ def test_packet_no_attachment_policy_skips_read_mail(monkeypatch):
     assert row["time_text"] == "2026年06月02日16:17"
 
 
-def test_packet_claim_policy_can_rescue_read_mail_by_title(monkeypatch):
+def test_packet_claim_policy_does_not_rescue_read_mail_by_title(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     row = {"title": "灵脉收益", "time_text": "2026年06月09日16:11", "is_read": True}
     record = FanxiuMailRecord(
@@ -1996,12 +2158,12 @@ def test_packet_claim_policy_can_rescue_read_mail_by_title(monkeypatch):
     runner._prepare_mail_row_policy(row, action_policies={"claim"})
 
     assert row["status"] == "已阅"
-    assert row["packet_match"] == "title_only"
-    assert row["mail_key"] == "id:lingmai-history"
-    assert row["policy"] == "claim"
+    assert row["packet_match"] == "ui_skipped"
+    assert row["mail_key"] == ""
+    assert row["policy"] == ""
 
 
-def test_packet_claim_policy_can_rescue_locked_mail_by_title(monkeypatch):
+def test_packet_claim_policy_does_not_rescue_locked_mail_by_title(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     row = {"title": "香车馈赠", "time_text": "2026年06月09日13:48", "list_has_lock": True}
     record = FanxiuMailRecord(
@@ -2019,8 +2181,9 @@ def test_packet_claim_policy_can_rescue_locked_mail_by_title(monkeypatch):
     runner._prepare_mail_row_policy(row, action_policies={"claim"})
 
     assert row["status"] == "锁定"
-    assert row["mail_key"] == "id:xiangche-latest"
-    assert row["policy"] == "claim"
+    assert row["mail_key"] == ""
+    assert row["policy"] == ""
+    assert row["packet_match"] == "ui_skipped"
 
 
 def test_mail_rows_use_template_status_lock_text():
@@ -2231,6 +2394,38 @@ def test_visible_mail_row_title_only_claims_when_all_candidates_safe(monkeypatch
 
     assert row["packet_match"] == "title_only"
     assert row["mail_key"] == "id:title-only-safe"
+    assert row["policy"] == "claim"
+
+
+def test_visible_mail_row_title_only_uses_initial_reward_rule_not_user_status(monkeypatch):
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(runtime_runner_core, "_default_engine", engine)
+    with Session(engine) as session:
+        session.add(
+            FanxiuMailRecord(
+                mail_key="id:title-only-user-locked",
+                mail_id="title-only-user-locked",
+                title="节日馈赠",
+                normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
+                create_time_text="2026年06月07日12:00",
+                source="packet",
+                status="锁定",
+                payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
+            )
+        )
+        session.commit()
+    runner = create_fanxiu_runtime_runner()
+    row = {"title": "节日馈赠", "time_text": "2026年06月08日12:00"}
+
+    runner._prepare_mail_row_policy(row, action_policies={"claim"})
+
+    assert row["packet_match"] == "title_only"
+    assert row["mail_key"] == "id:title-only-user-locked"
     assert row["policy"] == "claim"
 
 
@@ -2622,8 +2817,8 @@ def test_running_mail_manual_job_requeues_after_backend_reload():
     jobs = [
         {
             "id": "manual-mail",
-            "task_type": "mail_claim_check",
-            "label": "邮件_领取检查",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
             "group": "manual_job",
             "status": "running",
             "interruptible": True,
@@ -3192,6 +3387,108 @@ def test_scheduler_success_fact_clears_stale_retry_after(tmp_path, monkeypatch):
     assert fact["last_result"] == "success"
     assert fact["next_time"] == "2026-06-05 05:00:00"
     assert fact["retry_after"] is None
+
+
+def test_xianfu_visit_partner_cd_parser():
+    assert runtime_runner_core._parse_xianfu_visit_cd_seconds("06:33:27后可免费抽取") == 23607
+    assert runtime_runner_core._parse_xianfu_visit_cd_seconds("12分05秒后可免费抽取") == 725
+    assert runtime_runner_core._parse_xianfu_visit_cd_seconds("免费抽取") == 0
+    assert runtime_runner_core._parse_xianfu_visit_cd_seconds("无法识别") is None
+
+
+def test_xianfu_learn_skill_cd_parser_reuses_free_draw_cd_text():
+    assert runtime_runner_core._parse_xianfu_skill_cd_seconds("06:33:27后可免费抽取") == 23607
+    assert runtime_runner_core._parse_xianfu_skill_cd_seconds("12分05秒后可免费抽取") == 725
+    assert runtime_runner_core._parse_xianfu_skill_cd_seconds("免费抽取") == 0
+    assert runtime_runner_core._parse_xianfu_skill_cd_seconds("无法识别") is None
+
+
+def test_xianfu_learn_skill_skips_when_skill_page_annotation_missing(tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_xianfu_learn_skill_task({"asset_tree_path": path, "images": {}}, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "skipped"
+    assert any("缺少 #176" in log["message"] for log in runner.status()["logs"])
+
+
+def test_xianfu_learn_skill_skips_when_price_is_not_free_without_cd(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image176 = _image("绝技", "0176.png", [
+        {"id": "status", "kind": "rect", "title": "状态", "x": 0.1, "y": 0.78, "w": 0.4, "h": 0.06},
+        {"id": "price", "kind": "rect", "title": "价格", "x": 0.2, "y": 0.7, "w": 0.2, "h": 0.05},
+    ])
+    ctx = {"asset_tree_path": path, "images": {176: image176}}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _preferred: (176, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "200领悟一次"}])
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_xianfu_learn_skill_task(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "skipped"
+    assert any("未识别到免费领悟或倒计时" in log["message"] for log in runner.status()["logs"])
+
+
+def test_scheduler_success_uses_discovered_dynamic_next_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "xianfu-visit-partner",
+        "task_type": "xianfu_visit_partner",
+        "label": "仙府_寻访仙侣",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "dynamic",
+        "enabled": False,
+        "interruptible": True,
+        "next_time": None,
+        "schedule_times": [],
+        "window": None,
+        "last_run_at": "2026-06-10 21:00:00",
+        "last_result": "running",
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "payload": {"__scheduler_definition_task_type": "xianfu_visit_partner"},
+        "checkpoint": None,
+    }
+    fanxiu_api._write_data_annotation_scheduler_tasks([task])
+    runner._record_scheduler_task_discovered_next_time(
+        "xianfu-visit-partner",
+        "2026-06-11 04:33:27",
+        task_type="xianfu_visit_partner",
+        label="仙府_寻访仙侣",
+    )
+    runner._mark_scheduler_task([dict(task)], "xianfu-visit-partner", "success")
+
+    saved = fanxiu_api._read_data_annotation_scheduler_tasks()[0]
+    assert saved["last_result"] == "success"
+    assert saved["next_time"] == "2026-06-11 04:33:27"
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["xianfu-visit-partner"]
+    assert fact["discovered_next_time"] == "2026-06-11 04:33:27"
+    assert fact["next_time"] == "2026-06-11 04:33:27"
 
 
 def test_unknown_scene_frame_reports_missing_annotation_without_writing_asset_tree(tmp_path, monkeypatch):

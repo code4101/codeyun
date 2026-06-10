@@ -7898,6 +7898,26 @@ const setShapeNodeExpanded = (id: string, expanded: boolean) => {
   expandedShapeNodeIds.value = setExpandedNodeId(expandedShapeNodeIds.value, id, expanded);
 };
 
+let assetTreeExpansionSyncQueued = false;
+const queueAssetTreeExpansionSync = () => {
+  if (assetTreeExpansionSyncQueued) return;
+  assetTreeExpansionSyncQueued = true;
+  void nextTick(async () => {
+    assetTreeExpansionSyncQueued = false;
+    await syncAssetTreeExpansionFromState();
+  });
+};
+
+let shapeTreeExpansionSyncQueued = false;
+const queueShapeTreeExpansionSync = () => {
+  if (shapeTreeExpansionSyncQueued) return;
+  shapeTreeExpansionSyncQueued = true;
+  void nextTick(async () => {
+    shapeTreeExpansionSyncQueued = false;
+    await syncShapeTreeExpansionFromState();
+  });
+};
+
 const scrollCurrentTreeNodeIntoView = (treeClass: string) => {
   document
     .querySelector(`.${treeClass} .el-tree-node.is-current`)
@@ -8395,6 +8415,7 @@ watch(assetTree, (value) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(DATA_ANNOTATION_STORAGE_KEY, JSON.stringify(value));
   expandedAssetNodeIds.value = filterExistingAssetNodeIds(expandedAssetNodeIds.value);
+  queueAssetTreeExpansionSync();
   scheduleAssetTreeBackendSave();
 }, { deep: true });
 
@@ -8426,6 +8447,7 @@ watch(selectedImageNode, (node) => {
   selectedShapeIds.value = [];
   shapeSelectionAnchorId.value = selectedShapeId.value;
   expandedShapeNodeIds.value = filterExistingShapeNodeIds(expandedShapeNodeIds.value);
+  queueShapeTreeExpansionSync();
   shapeDetectResults.value = {};
   shapeDetectLiveBoxes.value = [];
   drawOverlay();
@@ -8447,6 +8469,10 @@ watch(
   persistDataAnnotationUiState,
   { deep: true },
 );
+
+watch(expandedAssetNodeIds, queueAssetTreeExpansionSync, { deep: true });
+
+watch(expandedShapeNodeIds, queueShapeTreeExpansionSync, { deep: true });
 
 watch(runtimeLogs, () => {
   if (runtimeLogPage.value > runtimeLogPageCount.value) goRuntimeLogLastPage();
@@ -9144,8 +9170,10 @@ const toggleAssetFolderNode = (id: string) => {
     return;
   }
   if (treeNode.expanded) {
+    setAssetNodeExpanded(id, false);
     treeNode.collapse?.();
   } else {
+    setAssetNodeExpanded(id, true);
     treeNode.expand?.();
   }
 };

@@ -66,6 +66,7 @@ from backend.core.fanxiu_data_annotation_state import (
 from backend.core.fanxiu_mail_policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
+    fanxiu_mail_desired_status_for_rewards,
     fanxiu_mail_desired_status_for_record,
     fanxiu_mail_rewards_from_payload,
     fanxiu_mail_rewards_unresolved,
@@ -107,6 +108,46 @@ from pyxllib.autogui import (
 
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
 _default_engine: Any | None = None
+
+
+def _parse_xianfu_visit_cd_seconds(text: Any) -> int | None:
+    normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    if not normalized:
+        return None
+    normalized = normalized.replace("：", ":").replace("O", "0").replace("o", "0")
+    match = re.search(r"(\d{1,2}):(\d{1,2}):(\d{1,2})", normalized)
+    if match:
+        hours, minutes, seconds = (int(match.group(index)) for index in range(1, 4))
+        return hours * 3600 + minutes * 60 + seconds
+    match = re.search(r"(\d{1,2}):(\d{1,2})", normalized)
+    if match:
+        minutes, seconds = (int(match.group(index)) for index in range(1, 3))
+        return minutes * 60 + seconds
+    hours = minutes = seconds = 0
+    matched = False
+    for value, unit in re.findall(r"(\d{1,3})(时|小时|分|分钟|秒)", normalized):
+        matched = True
+        if unit in {"时", "小时"}:
+            hours = int(value)
+        elif unit in {"分", "分钟"}:
+            minutes = int(value)
+        elif unit == "秒":
+            seconds = int(value)
+    if matched:
+        return hours * 3600 + minutes * 60 + seconds
+    if "免费" in normalized and not re.search(r"\d", normalized):
+        return 0
+    return None
+
+
+def _parse_xianfu_skill_cd_seconds(text: Any) -> int | None:
+    return _parse_xianfu_visit_cd_seconds(text)
+
+
+def _parse_first_int(text: Any) -> int | None:
+    normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    match = re.search(r"\d+", normalized)
+    return int(match.group(0)) if match else None
 
 
 @dataclass(frozen=True)
@@ -327,13 +368,25 @@ class FanxiuRuntime(Runtime):
         self.last_clicked_shape = shape
         match_result = self._shape_match_results.get(id(shape.raw))
         frame = self.cur_frame() if match_result is not None or self.runner._shape_click_needs_frame(shape.raw) else None
-        return self.runner._click_shape(
-            self.ctx,
-            view.raw,
-            shape.raw,
-            frame,
-            match_result=match_result,
-        )
+        try:
+            result = self.runner._click_shape(
+                self.ctx,
+                view.raw,
+                shape.raw,
+                frame,
+                match_result=match_result,
+            )
+        except RuntimeError as exc:
+            if not self.runner._scene_route_fixed_click_fallback_allowed(view.raw, shape.raw, exc):
+                raise
+            x, y = ActionPlanner().shape_center(view.raw, shape.raw)
+            self.runner._log(
+                "info",
+                f"Runtime View：#{self.runner._image_number(view.raw) or '?'}「{shape.raw.get('title') or shape.raw.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
+            )
+            result = self.runner._click_frame_point(self.ctx, view.raw, x, y)
+        self.clear_frame()
+        return result
 
     def on_wait_click_poll(self, view: View, shape: Shape, matched: bool) -> None:
         result = self._shape_match_results.get(id(shape.raw))
@@ -570,6 +623,14 @@ def _record_data_annotation_scheduler_task_fact(task: dict[str, Any], result: st
     record_data_annotation_scheduler_task_fact(_data_annotation_world_facts_path(), task, result)
 
 
+def _read_data_annotation_world_facts() -> dict[str, Any]:
+    return _read_data_annotation_json(_data_annotation_world_facts_path(), {})
+
+
+def _write_data_annotation_world_facts(facts: dict[str, Any]) -> None:
+    _write_data_annotation_json(_data_annotation_world_facts_path(), facts)
+
+
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
     return list(_read_data_annotation_json(_data_annotation_scheduler_state_path(), []) or [])
 
@@ -634,7 +695,10 @@ def _next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | N
 
 
 def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
-    definition = _data_annotation_manual_job_definition(str(task.get("task_type") or ""))
+    task_type = str(task.get("task_type") or "")
+    if task_type == "mail_claim_check":
+        task_type = "mail_cleanup"
+    definition = _data_annotation_manual_job_definition(task_type)
     return bool(definition and definition.scheduler_supported)
 
 
@@ -1280,7 +1344,7 @@ class DataAnnotationRuntimeRunner:
         payload: dict[str, Any],
         asset_tree_path: Path,
     ) -> dict[str, Any]:
-        task_type = str(task_type or "").strip()
+        task_type = self._canonical_runtime_task_type(task_type)
         payload = dict(payload or {})
         ensure_fanxiu_runtime_jobs_registered()
         definition = _data_annotation_manual_job_definition(task_type)
@@ -1306,7 +1370,7 @@ class DataAnnotationRuntimeRunner:
         asset_tree_path: Path,
         isolate_jobs: bool = True,
     ) -> dict[str, Any]:
-        task_type = str(task_type or "").strip()
+        task_type = self._canonical_runtime_task_type(task_type)
         payload = dict(payload or {})
         ensure_fanxiu_runtime_jobs_registered()
         definition = _data_annotation_manual_job_definition(task_type)
@@ -1485,6 +1549,12 @@ class DataAnnotationRuntimeRunner:
             "interruptible": True,
         })
 
+    def _canonical_runtime_task_type(self, task_type: str) -> str:
+        task_type = str(task_type or "").strip()
+        if task_type == "mail_claim_check":
+            return "mail_cleanup"
+        return task_type
+
     def _set_log_context(self, scope: str, item_id: str) -> tuple[str, str]:
         with self._lock:
             previous = (self._log_scope, self._log_item_id)
@@ -1524,14 +1594,15 @@ class DataAnnotationRuntimeRunner:
             pass
 
     def _runtime_task_label(self, task_type: str, payload: dict[str, Any] | None = None) -> str:
+        task_type = self._canonical_runtime_task_type(task_type)
         definition = _data_annotation_manual_job_definition(task_type)
         label = definition.label if definition is not None else task_type
         if task_type == "go_scene":
             target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
             if target:
                 label = f"到场景 #{target}"
-        if task_type == "mail_claim_check" and (payload or {}).get("observe_only"):
-            label = "邮件_全量遍历"
+        if task_type == "mail_cleanup" and (payload or {}).get("observe_only"):
+            label = "邮件_清理"
         return label
 
     def _fanxiu_runtime(
@@ -1862,7 +1933,7 @@ class DataAnnotationRuntimeRunner:
                 item["retry_after"] = None
             elif result in {"success", "skipped", "unsupported"}:
                 item["retry_after"] = None
-                item["next_time"] = _next_data_annotation_scheduler_time(item)
+                item["next_time"] = _next_data_annotation_scheduler_time(item) or self._scheduler_task_fact_next_time(str(item.get("id") or ""))
             elif result == "error":
                 cooldown_seconds = int(item.get("cooldown_seconds") or 600)
                 item["retry_after"] = (_now() + timedelta(seconds=cooldown_seconds)).strftime("%Y-%m-%d %H:%M:%S")
@@ -1873,16 +1944,63 @@ class DataAnnotationRuntimeRunner:
             _write_data_annotation_scheduler_tasks(tasks)
             _record_data_annotation_scheduler_task_fact(item, result)
 
+    def _scheduler_task_fact_next_time(self, task_id: str) -> str | None:
+        if not task_id:
+            return None
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+        task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+        fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        for key in ("discovered_next_time", "next_time"):
+            value = str(fact.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    def _record_scheduler_task_discovered_next_time(
+        self,
+        task_id: str,
+        next_time_text: str,
+        *,
+        task_type: str,
+        label: str,
+    ) -> None:
+        task_id = str(task_id or "").strip()
+        next_time_text = str(next_time_text or "").strip()
+        if not task_id or not next_time_text:
+            return
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries")
+        if not isinstance(discoveries, dict):
+            discoveries = {}
+            facts["discoveries"] = discoveries
+        task_facts = discoveries.get("task")
+        if not isinstance(task_facts, dict):
+            task_facts = {}
+            discoveries["task"] = task_facts
+        existing = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        task_facts[task_id] = {
+            **existing,
+            "id": task_id,
+            "task_type": str(task_type or ""),
+            "label": str(label or task_id),
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "discovered_next_time": next_time_text,
+            "updated_at": time.time(),
+        }
+        _write_data_annotation_world_facts(facts)
+
     def _mark_matching_scheduler_tasks_for_manual_success(self, task_type: str, payload: dict[str, Any]) -> None:
         if str(payload.get("__scheduler_task_id") or ""):
             return
-        normalized_task_type = str(task_type or "").strip()
+        normalized_task_type = self._canonical_runtime_task_type(task_type)
         if not normalized_task_type:
             return
         tasks = _read_data_annotation_scheduler_tasks()
         matched = False
         for item in tasks:
-            if str(item.get("task_type") or "") != normalized_task_type:
+            if self._canonical_runtime_task_type(str(item.get("task_type") or "")) != normalized_task_type:
                 continue
             if not _data_annotation_task_supported(item):
                 continue
@@ -1895,6 +2013,7 @@ class DataAnnotationRuntimeRunner:
             self._log("detail", f"手动作业成功后已同步清理同类 Scheduler 重试：{normalized_task_type}")
 
     def _execute_runtime_task(self, ctx: dict[str, Any], task_type: str, payload: dict[str, Any], stop_event: threading.Event) -> str:
+        task_type = self._canonical_runtime_task_type(task_type)
         if task_type in {"legacy_daily_task", "legacy_dynamic_task"}:
             legacy_name = str(payload.get("legacy_name") or task_type)
             self._log("skip", f"旧版任务「{legacy_name}」尚未迁移，已跳过")
@@ -1910,7 +2029,7 @@ class DataAnnotationRuntimeRunner:
             return result
         return str(result or "success")
 
-    def _execute_mail_claim_check_task(
+    def _execute_mail_legacy_scan_task(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
@@ -1944,7 +2063,7 @@ class DataAnnotationRuntimeRunner:
         capture_reason = f"mail-full-scan:{'observe' if observe_only else 'action'}"
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少邮件_领取检查资产树路径，无法执行邮件作业")
+            raise RuntimeError("缺少邮件_历史扫描资产树路径，无法执行邮件作业")
         try:
             if capture_enabled:
                 fanxiu_capture_runtime_service.ensure_running(capture_reason)
@@ -1953,7 +2072,7 @@ class DataAnnotationRuntimeRunner:
                 self._refresh_recent_mail_packets_for_runtime_log("启动抓包后", flush_capture=False)
             else:
                 with self._lock:
-                    self._log_locked("info", "邮件_领取检查：本轮跳过抓包协作，仅使用当前页与既有邮件事实")
+                    self._log_locked("info", "邮件_历史扫描：本轮跳过抓包协作，仅使用当前页与既有邮件事实")
         except Exception as exc:
             with self._lock:
                 self._log_locked("error", f"邮件_抓包：启动抓包服务失败：{exc}")
@@ -1964,7 +2083,7 @@ class DataAnnotationRuntimeRunner:
                     self._log_locked("info", "邮件_全量遍历：只观察并滚动加载邮件，不领取、不删除")
             elif game_first:
                 with self._lock:
-                    self._log_locked("info", "邮件_领取检查：游戏画面优先模式，缺 packet 的可见邮件按详情页按钮处理")
+                    self._log_locked("info", "邮件_历史扫描：游戏画面优先模式，缺 packet 的可见邮件按详情页按钮处理")
             scene_id, score, frame = self._current_scene_number(ctx)
             force_reopen_mail = observe_only or scan_mode in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}
             if scene_id == 121 and not use_current_page and (force_reopen_mail or (not observe_only and self._pending_packet_mail_action_count() > 0)):
@@ -1975,17 +2094,17 @@ class DataAnnotationRuntimeRunner:
                     with self._lock:
                         self._set_status_locked(
                             "running",
-                            f"邮件_领取检查：退出邮件页以{reason}",
+                            f"邮件_历史扫描：退出邮件页以{reason}",
                             phase="mail_claim_reset_mail_list",
                             current_scene=121,
                         )
-                        self._log_locked("action", f"邮件_领取检查：点击 #121「空白-返回」，重新从顶部进入邮件，{reason}")
+                        self._log_locked("action", f"邮件_历史扫描：点击 #121「空白-返回」，重新从顶部进入邮件，{reason}")
                     self._click_shape(ctx, image121, back_shape, frame)
-                    yield from self._wait_scene_id(ctx, stop_event, 34, timeout=12.0, label="邮件_领取检查：返回世界 #34")
+                    yield from self._wait_scene_id(ctx, stop_event, 34, timeout=12.0, label="邮件_历史扫描：返回世界 #34")
                     scene_id = 34
                 else:
                     with self._lock:
-                        self._log_locked("error", "邮件_领取检查：缺少 #121「空白-返回」标注，保留当前位置扫描")
+                        self._log_locked("error", "邮件_历史扫描：缺少 #121「空白-返回」标注，保留当前位置扫描")
             if scene_id != 121:
                 open_result = self._open_mail_scene(ctx, stop_event, asset_tree_path, entry_mode=entry_mode)
                 result = (yield from open_result) if isinstance(open_result, GeneratorType) else open_result
@@ -1997,11 +2116,11 @@ class DataAnnotationRuntimeRunner:
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"邮件_领取检查：当前已在邮件 #121 {score:.0f}%",
+                        f"邮件_历史扫描：当前已在邮件 #121 {score:.0f}%",
                         phase="mail_claim_resume_mail_scene",
                         current_scene=121,
                     )
-                    self._log_locked("info", f"邮件_领取检查：当前已在邮件 #121 {score:.0f}%，直接扫描")
+                    self._log_locked("info", f"邮件_历史扫描：当前已在邮件 #121 {score:.0f}%，直接扫描")
             scan_result = self._scan_mail_scene(
                 ctx,
                 stop_event,
@@ -2026,7 +2145,7 @@ class DataAnnotationRuntimeRunner:
                     with self._lock:
                         self._log_locked("error", f"邮件_抓包：释放抓包服务失败：{exc}")
 
-    def _execute_mail_claim_check_v2_task(
+    def _execute_mail_cleanup_task(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
@@ -2036,15 +2155,15 @@ class DataAnnotationRuntimeRunner:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
-            raise RuntimeError("缺少邮件_清理新版资产树路径，无法执行邮件作业")
+            raise RuntimeError("缺少邮件_清理资产树路径，无法执行邮件作业")
         max_actions = max(1, int(payload.get("max_actions") or 20))
-        max_scrolls = max(1, int(payload.get("max_scrolls") or 40))
+        max_scrolls = max(1, int(payload.get("max_scrolls") or 120))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
 
         with self._lock:
-            self._set_status_locked("running", "邮件_清理新版：进入邮件 #121", phase="mail_claim_v2_go_mail")
-            self._log_locked("action", "邮件_清理新版：按 #34/#68/#35 入口进入 #121")
-        yield from self._open_mail_claim_check_v2_entry(runtime)
+            self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
+            self._log_locked("action", "邮件_清理：按 #34/#68/#35 入口进入 #121")
+        yield from self._open_mail_cleanup_entry(runtime)
         image121 = ctx.get("images", {}).get(121)
         if not isinstance(image121, dict):
             raise RuntimeError("缺少 #121 邮件帧标注，无法清理邮件")
@@ -2056,6 +2175,7 @@ class DataAnnotationRuntimeRunner:
         processed_count = 0
         seen_count = 0
         scroll_count = 0
+        scanned_to_end = False
         while processed_count < max_actions and scroll_count <= max_scrolls:
             self._raise_if_stopped(stop_event)
             frame = runtime.cur_frame(update=True)
@@ -2073,14 +2193,14 @@ class DataAnnotationRuntimeRunner:
                 action_started_at = time.monotonic()
                 actual_policy = yield from self._claim_runtime_mail_row(runtime, action_row)
                 action_elapsed = time.monotonic() - action_started_at
-                self._log("detail", f"邮件_清理新版：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
+                self._log("detail", f"邮件_清理：处理「{action_row.title}」耗时 {action_elapsed:.1f}s，动作 {actual_policy}")
                 self._update_packet_mail_action_for_row(
                     action_row.raw,
                     status=f"{actual_policy}_requested",
                     evidence={
                         "runtime_requested_action": actual_policy,
                         "runtime_action_requested_at": _now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "runtime_action_source": "mail_claim_check_v2",
+                        "runtime_action_source": "mail_cleanup",
                     },
                 )
                 processed_count += 1
@@ -2089,31 +2209,351 @@ class DataAnnotationRuntimeRunner:
             scroll_started_at = time.monotonic()
             yield from list_shape.load(runtime)
             scroll_elapsed = time.monotonic() - scroll_started_at
-            self._log("detail", f"邮件_清理新版：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
+            self._log("detail", f"邮件_清理：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
             if not runtime.attrs.get("load_new"):
+                scanned_to_end = True
                 break
             scroll_count += 1
+
+        reached_scroll_limit = not scanned_to_end and processed_count < max_actions
+        if reached_scroll_limit:
+            self._log("info", f"邮件_清理：达到 max_scrolls={max_scrolls} 仍未确认到底，继续一键删除已阅")
+
+        if scanned_to_end or reached_scroll_limit:
+            delete_read_shape = view121.get_shape("一键删除")
+            if delete_read_shape is not None:
+                with self._lock:
+                    self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
+                    self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
+                delete_read_shape.click(runtime)
+                yield from runtime.wait_view(121, timeout=8.0, label="邮件_清理：一键删除后返回 #121")
+            else:
+                self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
+        elif processed_count >= max_actions:
+            self._log("info", f"邮件_清理：达到 max_actions={max_actions}，跳过一键删除已阅")
 
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理新版：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次",
-                phase="mail_claim_v2_done",
+                f"邮件_清理：完成，见到 {seen_count} 封，领取 {processed_count} 封，滚动 {scroll_count} 次",
+                phase="mail_cleanup_done",
                 current_scene=121,
             )
             self._log_locked("success", self._status["message"])
         return "success"
 
-    def _open_mail_claim_check_v2_entry(self, runtime: FanxiuRuntime):
-        """按新版伪代码进入邮件页：#34 -> #68 或 #34 -> #35。"""
+    def _execute_xianfu_visit_partner_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少仙府_寻访仙侣资产树路径，无法执行作业")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        frame = self._screencap(ctx)
+        scene_id, score = self._identify_scene_number(ctx, frame, [175, 174, 173, 172, 171, 34])
+        if scene_id is not None:
+            with self._lock:
+                self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+
+        if scene_id == 175:
+            yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=int(payload.get("max_continue") or 20))
+            scene_id = 174
+
+        if scene_id != 174:
+            if scene_id not in {171, 172, 173}:
+                with self._lock:
+                    self._set_status_locked("running", "仙府_寻访仙侣：进入仙府主页 #171", phase="xianfu_visit_go_home")
+                    self._log_locked("action", "仙府_寻访仙侣：按场景图跳转到 #171")
+                yield from runtime.goto_view(171)
+                scene_id = 171
+            if scene_id == 171:
+                view171 = runtime.get_view(171)
+                shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
+                if shape is None:
+                    raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
+                with self._lock:
+                    self._set_status_locked("running", "仙府_寻访仙侣：点击寻仙台", phase="xianfu_visit_open_platform", current_scene=171)
+                    self._log_locked("action", "仙府_寻访仙侣：点击 #171「寻仙台」")
+                shape.click(runtime)
+                yield from runtime.wait_view(172, timeout=18.0, label="仙府_寻访仙侣：等待寻仙台 #172")
+                scene_id = 172
+            if scene_id == 172:
+                view172 = runtime.get_view(172)
+                shape = view172.get_shape("寻访") if isinstance(view172, View) else None
+                if shape is None:
+                    raise RuntimeError("缺少 #172「寻访」标注，无法进入仙侣寻访")
+                with self._lock:
+                    self._set_status_locked("running", "仙府_寻访仙侣：进入寻访", phase="xianfu_visit_open_visit", current_scene=172)
+                    self._log_locked("action", "仙府_寻访仙侣：点击 #172「寻访」")
+                shape.click(runtime)
+                view = yield from runtime.wait_view(173, 174, timeout=18.0, label="仙府_寻访仙侣：等待寻访页")
+                scene_id = view.id if isinstance(view, View) else None
+            if scene_id == 173:
+                view173 = runtime.get_view(173)
+                shape = view173.get_shape("绝品仙侣") if isinstance(view173, View) else None
+                if shape is None:
+                    raise RuntimeError("缺少 #173「绝品仙侣」标注，无法切换绝品页")
+                with self._lock:
+                    self._set_status_locked("running", "仙府_寻访仙侣：切换绝品仙侣", phase="xianfu_visit_open_juepin", current_scene=173)
+                    self._log_locked("action", "仙府_寻访仙侣：点击 #173「绝品仙侣」")
+                shape.click(runtime)
+                yield from runtime.wait_view(174, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
+
+        image174 = ctx.get("images", {}).get(174)
+        if not isinstance(image174, dict):
+            raise RuntimeError("缺少 #174 绝品仙侣标注，无法读取寻访状态")
+        frame = runtime.cur_frame(update=True)
+        lines = self._ocr_lines_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
+        status_text = self._ocr_text(lines)
+        cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
+        if cd_seconds is None:
+            raise RuntimeError(f"仙府_寻访仙侣：无法识别免费寻访倒计时：{status_text or '空'}")
+        if cd_seconds > 0:
+            next_time = (_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
+            self._record_scheduler_task_discovered_next_time(
+                scheduler_task_id,
+                next_time,
+                task_type="xianfu_visit_partner",
+                label="仙府_寻访仙侣",
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"仙府_寻访仙侣：未到免费时间，{status_text}，下次 {next_time}",
+                    phase="xianfu_visit_wait_cd",
+                    current_scene=174,
+                )
+                self._log_locked("success", self._status["message"])
+            return "success"
+
+        image175 = ctx.get("images", {}).get(175)
+        if not isinstance(image175, dict):
+            self._log("skip", "仙府_寻访仙侣：当前可免费寻访，但缺少 #175「继续寻访」弹窗标注，暂不自动点击")
+            return "skipped"
+        view174 = runtime.get_view(174)
+        visit_shape = view174.get_shape("寻访") if isinstance(view174, View) else None
+        if visit_shape is None:
+            raise RuntimeError("缺少 #174「寻访」标注，无法执行免费寻访")
+        with self._lock:
+            self._set_status_locked("running", "仙府_寻访仙侣：免费寻访一次", phase="xianfu_visit_free_draw", current_scene=174)
+            self._log_locked("action", "仙府_寻访仙侣：点击 #174「寻访」")
+        visit_shape.click(runtime)
+        yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=int(payload.get("max_continue") or 20))
+        frame = runtime.cur_frame(update=True)
+        lines = self._ocr_lines_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
+        status_text = self._ocr_text(lines)
+        cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
+        if cd_seconds and cd_seconds > 0:
+            next_time = (_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
+            self._record_scheduler_task_discovered_next_time(
+                scheduler_task_id,
+                next_time,
+                task_type="xianfu_visit_partner",
+                label="仙府_寻访仙侣",
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"仙府_寻访仙侣：寻访后读取 CD {status_text}，下次 {next_time}",
+                    phase="xianfu_visit_done",
+                    current_scene=174,
+                )
+                self._log_locked("success", self._status["message"])
+            return "success"
+        self._log("skip", f"仙府_寻访仙侣：寻访后未读到有效 CD：{status_text or '空'}")
+        return "skipped"
+
+    def _handle_xianfu_continue_visit_popup(self, runtime: FanxiuRuntime, *, max_continue: int = 20):
+        view175 = runtime.get_view(175)
+        if not isinstance(view175, View):
+            raise RuntimeError("缺少 #175「继续寻访」标注，无法处理寻访结果弹窗")
+        continue_count = 0
+        max_continue_count = max(0, int(max_continue))
+        while True:
+            yield from runtime.wait_view(175, timeout=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
+            frame = runtime.cur_frame(update=True)
+            half_lines = self._ocr_lines_in_shapes(frame, view175.raw, ("半价",), padding=24)
+            half_text = self._ocr_text(half_lines)
+            half_value = _parse_first_int(half_text)
+            if half_value is not None and half_value < 100 and continue_count < max_continue_count:
+                continue_shape = view175.get_shape("继续")
+                if continue_shape is None:
+                    raise RuntimeError("缺少 #175「继续」标注，无法执行半价继续寻访")
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"仙府_寻访仙侣：半价 {half_value}，继续寻访",
+                        phase="xianfu_visit_continue",
+                        current_scene=175,
+                    )
+                    self._log_locked("action", f"仙府_寻访仙侣：点击 #175「继续」，半价={half_value}")
+                continue_shape.click(runtime)
+                continue_count += 1
+                continue
+            break
+        close_shape = view175.get_shape("关闭")
+        if close_shape is None:
+            raise RuntimeError("缺少 #175「关闭」标注，无法关闭寻访结果弹窗")
+        with self._lock:
+            self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
+            self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
+        close_shape.click(runtime)
+        yield from runtime.wait_view(174, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
+        return "success"
+
+    def _execute_xianfu_learn_skill_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少仙府_领悟绝技资产树路径，无法执行作业")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        if not isinstance(images.get(176), dict):
+            self._log("skip", "仙府_领悟绝技：缺少 #176「绝技」页面标注，暂不自动点击")
+            return "skipped"
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        preferred = [177, 176, 172, 171, 34]
+        frame = self._screencap(ctx)
+        scene_id, score = self._identify_scene_number(ctx, frame, preferred)
+        if scene_id is not None:
+            with self._lock:
+                self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+
+        if scene_id == 177:
+            yield from self._handle_xianfu_learn_skill_result_popup(runtime)
+            scene_id = 176
+
+        if scene_id != 176:
+            if scene_id not in {171, 172}:
+                with self._lock:
+                    self._set_status_locked("running", "仙府_领悟绝技：进入仙府主页 #171", phase="xianfu_skill_go_home")
+                    self._log_locked("action", "仙府_领悟绝技：按场景图跳转到 #171")
+                yield from runtime.goto_view(171)
+                scene_id = 171
+            if scene_id == 171:
+                view171 = runtime.get_view(171)
+                platform_shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
+                if platform_shape is None:
+                    raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
+                with self._lock:
+                    self._set_status_locked("running", "仙府_领悟绝技：点击寻仙台", phase="xianfu_skill_open_platform", current_scene=171)
+                    self._log_locked("action", "仙府_领悟绝技：点击 #171「寻仙台」")
+                platform_shape.click(runtime)
+                yield from runtime.wait_view(172, timeout=18.0, label="仙府_领悟绝技：等待寻仙台 #172")
+                scene_id = 172
+            if scene_id == 172:
+                view172 = runtime.get_view(172)
+                skill_shape = view172.get_shape("领悟绝技") if isinstance(view172, View) else None
+                if skill_shape is None:
+                    raise RuntimeError("缺少 #172「领悟绝技」标注，无法进入绝技页")
+                with self._lock:
+                    self._set_status_locked("running", "仙府_领悟绝技：进入绝技页", phase="xianfu_skill_open_page", current_scene=172)
+                    self._log_locked("action", "仙府_领悟绝技：点击 #172「领悟绝技」")
+                skill_shape.click(runtime)
+                yield from runtime.wait_view(176, timeout=18.0, label="仙府_领悟绝技：等待绝技 #176")
+
+        image176 = images.get(176)
+        if not isinstance(image176, dict):
+            raise RuntimeError("缺少 #176 绝技标注，无法读取领悟状态")
+        frame = runtime.cur_frame(update=True)
+        status_lines = self._ocr_lines_in_shapes(frame, image176, ("状态", "价格"), padding=16)
+        status_text = self._ocr_text(status_lines)
+        cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
+        if cd_seconds is None:
+            self._log("skip", f"仙府_领悟绝技：未识别到免费领悟或倒计时，当前文本：{status_text or '空'}")
+            return "skipped"
+        if cd_seconds > 0:
+            next_time = (_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
+            self._record_scheduler_task_discovered_next_time(
+                scheduler_task_id,
+                next_time,
+                task_type="xianfu_learn_skill",
+                label="仙府_领悟绝技",
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"仙府_领悟绝技：未到免费时间，{status_text}，下次 {next_time}",
+                    phase="xianfu_skill_wait_cd",
+                    current_scene=176,
+                )
+                self._log_locked("success", self._status["message"])
+            return "success"
+
+        if not isinstance(images.get(177), dict):
+            self._log("skip", "仙府_领悟绝技：当前可免费领悟，但缺少 #177「领悟绝技」结果弹窗标注，暂不自动点击")
+            return "skipped"
+        view176 = runtime.get_view(176)
+        learn_shape = view176.get_shape("领悟一次") if isinstance(view176, View) else None
+        if learn_shape is None:
+            raise RuntimeError("缺少 #176「领悟一次」标注，无法执行免费领悟")
+        with self._lock:
+            self._set_status_locked("running", "仙府_领悟绝技：免费领悟一次", phase="xianfu_skill_free_draw", current_scene=176)
+            self._log_locked("action", "仙府_领悟绝技：点击 #176「领悟一次」")
+        learn_shape.click(runtime)
+        yield from self._handle_xianfu_learn_skill_result_popup(runtime)
+
+        frame = runtime.cur_frame(update=True)
+        status_lines = self._ocr_lines_in_shapes(frame, image176, ("状态", "价格"), padding=16)
+        status_text = self._ocr_text(status_lines)
+        cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
+        if cd_seconds and cd_seconds > 0:
+            next_time = (_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
+            self._record_scheduler_task_discovered_next_time(
+                scheduler_task_id,
+                next_time,
+                task_type="xianfu_learn_skill",
+                label="仙府_领悟绝技",
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"仙府_领悟绝技：领悟后读取 CD {status_text}，下次 {next_time}",
+                    phase="xianfu_skill_done",
+                    current_scene=176,
+                )
+                self._log_locked("success", self._status["message"])
+            return "success"
+        self._log("skip", f"仙府_领悟绝技：领悟后未读到有效 CD：{status_text or '空'}")
+        return "skipped"
+
+    def _handle_xianfu_learn_skill_result_popup(self, runtime: FanxiuRuntime):
+        view177 = runtime.get_view(177)
+        if not isinstance(view177, View):
+            raise RuntimeError("缺少 #177「领悟绝技」结果弹窗标注，无法继续")
+        yield from runtime.wait_view(177, timeout=18.0, label="仙府_领悟绝技：等待结果弹窗 #177")
+        continue_shape = view177.get_shape("继续")
+        if continue_shape is None:
+            raise RuntimeError("缺少 #177「继续」标注，无法关闭领悟结果")
+        with self._lock:
+            self._set_status_locked("running", "仙府_领悟绝技：关闭结果弹窗", phase="xianfu_skill_continue", current_scene=177)
+            self._log_locked("action", "仙府_领悟绝技：点击 #177「继续」")
+        continue_shape.click(runtime)
+        yield from runtime.wait_view(176, timeout=18.0, label="仙府_领悟绝技：返回绝技 #176")
+        return "success"
+
+    def _open_mail_cleanup_entry(self, runtime: FanxiuRuntime):
+        """按清理邮件伪代码进入邮件页：#34 -> #68 或 #34 -> #35。"""
 
         yield from runtime.goto_view(34)
         view68 = runtime.get_view(68)
         mail68 = view68.get_shape("邮件") if isinstance(view68, View) else None
         if mail68 is not None and mail68.is_match(runtime):
             with self._lock:
-                self._set_status_locked("running", "邮件_清理新版：点击 #68 邮件入口", phase="mail_claim_v2_open_68", current_scene=68)
-                self._log_locked("action", "邮件_清理新版：#68「邮件」已匹配，点击进入 #121")
+                self._set_status_locked("running", "邮件_清理：点击 #68 邮件入口", phase="mail_cleanup_open_68", current_scene=68)
+                self._log_locked("action", "邮件_清理：#68「邮件」已匹配，点击进入 #121")
             mail68.click(runtime)
         else:
             view34 = runtime.get_view(34)
@@ -2121,32 +2561,29 @@ class DataAnnotationRuntimeRunner:
             if open_shape is None:
                 raise RuntimeError("缺少 #34「打开下方菜单」标注，无法进入邮件")
             with self._lock:
-                self._set_status_locked("running", "邮件_清理新版：打开 #35 下方菜单", phase="mail_claim_v2_open_35", current_scene=34)
-                self._log_locked("action", "邮件_清理新版：#68 不可用，点击 #34「打开下方菜单」")
-            if hasattr(runtime.ctx.get("entry"), "mode"):
-                self._click_scene_route_shape(runtime.ctx, view34.raw, open_shape.raw, runtime.cur_frame())
-            else:
-                open_shape.click(runtime)
-            deadline = time.time() + 1.5
-            while time.time() < deadline:
-                yield BehaviorTreeStatus.RUNNING
+                self._set_status_locked("running", "邮件_清理：打开 #35 下方菜单", phase="mail_cleanup_open_35", current_scene=34)
+                self._log_locked("action", "邮件_清理：#68 不可用，点击 #34「打开下方菜单」")
+            open_shape.click(runtime)
 
             view35 = runtime.get_view(35)
             mail35 = view35.get_shape("邮件") if isinstance(view35, View) else None
             if mail35 is None:
                 raise RuntimeError("缺少 #35「邮件」标注，无法进入邮件")
             with self._lock:
-                self._set_status_locked("running", "邮件_清理新版：点击 #35 邮件入口", phase="mail_claim_v2_click_35_mail", current_scene=35)
-                self._log_locked("action", "邮件_清理新版：点击 #35「邮件」进入 #121")
-            if hasattr(runtime.ctx.get("entry"), "mode"):
-                mail35_box = self._box(mail35.raw, view35.raw)
-                mail35_x = float(mail35_box.get("x") or 0) + float(mail35_box.get("w") or 0) / 2
-                mail35_y = float(mail35_box.get("y") or 0) + float(mail35_box.get("h") or 0) / 2
-                self._click_frame_point(runtime.ctx, view35.raw, mail35_x, mail35_y)
-            else:
-                mail35.click(runtime)
+                self._set_status_locked("running", "邮件_清理：等待并点击 #35 邮件入口", phase="mail_cleanup_click_35_mail", current_scene=35)
+                self._log_locked("action", "邮件_清理：等待 #35「邮件」命中后进入 #121")
+            try:
+                yield from mail35.wait_click(runtime, timeout=8.0)
+            except TimeoutError:
+                x, y = self._mail_world_menu_icon_click_point(view35.raw, 0, 0)
+                self._log(
+                    "info",
+                    f"邮件_清理：#35「邮件」OCR 未命中，改按固定标注点击 ({x:.0f},{y:.0f})",
+                )
+                self._click_frame_point(runtime.ctx, view35.raw, x, y)
+                runtime.clear_frame()
 
-        yield from runtime.wait_view(121, timeout=18.0, label="邮件_清理新版：等待邮件 #121")
+        yield from runtime.wait_view(121, timeout=18.0, label="邮件_清理：等待邮件 #121")
         return "success"
 
     def _runtime_mail_rows_from_frame(self, runtime: FanxiuRuntime, view121: View, frame: str) -> list[_RuntimeMailRow]:
@@ -2186,13 +2623,13 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理新版：打开「{mail.title}」",
-                phase="mail_claim_v2_open_row",
+                f"邮件_清理：打开「{mail.title}」",
+                phase="mail_cleanup_open_row",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_清理新版：点击标题「{mail.title}」")
+            self._log_locked("action", f"邮件_清理：点击标题「{mail.title}」")
         mail.title_shape.click(runtime)
-        detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_清理新版：等待「{mail.title}」详情")
+        detail_view = yield from runtime.wait_view(122, 123, timeout=12.0, label=f"邮件_清理：等待「{mail.title}」详情")
         if not isinstance(detail_view, View) or detail_view.id not in {122, 123}:
             return "claim"
         actual_policy = "claim" if detail_view.id == 122 else "delete"
@@ -2205,20 +2642,20 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_清理新版：{action_title}「{mail.title}」",
-                phase="mail_claim_v2_claim",
+                f"邮件_清理：{action_title}「{mail.title}」",
+                phase="mail_cleanup_claim",
                 current_scene=detail_view.id,
             )
-            self._log_locked("action", f"邮件_清理新版：点击 #{detail_view.id}「{action_shape.title}」")
+            self._log_locked("action", f"邮件_清理：点击 #{detail_view.id}「{action_shape.title}」")
         action_shape.click(runtime)
-        yield from runtime.wait_view(121, timeout=18.0, label="邮件_清理新版：返回邮件 #121")
+        yield from runtime.wait_view(121, timeout=18.0, label="邮件_清理：返回邮件 #121")
         return actual_policy
 
     def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
         try:
             pcap_paths: list[str] = []
             if flush_capture:
-                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-claim-check:{label}", restart=False)
+                flush = fanxiu_capture_runtime_service.flush_recent_capture(f"mail-cleanup:{label}", restart=False)
                 pcap_path = str(flush.get("pcap_path") or "").strip() if isinstance(flush, dict) else ""
                 if pcap_path and bool(flush.get("flushed")):
                     pcap_paths.append(pcap_path)
@@ -2265,8 +2702,8 @@ class DataAnnotationRuntimeRunner:
             if opened_from_menu == "success":
                 return "success"
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：确认世界 #34", phase="mail_claim_go_world")
-            self._log_locked("action", "邮件_领取检查：先确认进入世界 #34")
+            self._set_status_locked("running", "邮件_历史扫描：确认世界 #34", phase="mail_claim_go_world")
+            self._log_locked("action", "邮件_历史扫描：先确认进入世界 #34")
         go_scene_result = self._go_scene_task(ctx, asset_tree_path, 34, stop_event)
         result = (yield from go_scene_result) if isinstance(go_scene_result, GeneratorType) else go_scene_result
         if result != "success":
@@ -2290,25 +2727,25 @@ class DataAnnotationRuntimeRunner:
             image68 = self._find_child_image_by_number(image34, 68)
         mail_shape = self._find_shape(image68, "邮件") if isinstance(image68, dict) else None
         if not isinstance(image68, dict) or not mail_shape:
-            self._log("detail", "邮件_领取检查：#68 动态邮件入口标注缺失，尝试稳定入口")
+            self._log("detail", "邮件_历史扫描：#68 动态邮件入口标注缺失，尝试稳定入口")
             return "missing"
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：检测 #68 邮件入口", phase="mail_claim_check_mail", current_scene=34)
-            self._log_locked("action", "邮件_领取检查：检测 #68「邮件」")
+            self._set_status_locked("running", "邮件_历史扫描：检测 #68 邮件入口", phase="mail_claim_check_mail", current_scene=34)
+            self._log_locked("action", "邮件_历史扫描：检测 #68「邮件」")
         frame = self._screencap(ctx)
         result = self._match_shape(ctx, image68, mail_shape, frame)
         similarity = float(result.get("similarity") or 0)
         matched = bool(result.get("matched"))
         if not matched:
             with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：#68 未命中，改走 #35 稳定入口", phase="mail_claim_dynamic_missing", current_scene=34)
-                self._log_locked("info", f"邮件_领取检查：未发现 #68「邮件」{similarity:.0f}%，改走稳定入口")
+                self._set_status_locked("running", "邮件_历史扫描：#68 未命中，改走 #35 稳定入口", phase="mail_claim_dynamic_missing", current_scene=34)
+                self._log_locked("info", f"邮件_历史扫描：未发现 #68「邮件」{similarity:.0f}%，改走稳定入口")
             return "missing"
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：打开 #68 邮件入口", phase="mail_claim_open_mail", current_scene=34)
-            self._log_locked("action", f"邮件_领取检查：识别到 #68「邮件」{similarity:.0f}%，点击打开")
+            self._set_status_locked("running", "邮件_历史扫描：打开 #68 邮件入口", phase="mail_claim_open_mail", current_scene=34)
+            self._log_locked("action", f"邮件_历史扫描：识别到 #68「邮件」{similarity:.0f}%，点击打开")
         self._click_shape(ctx, image68, mail_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
+        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
         return "success"
 
     def _open_mail_stable_entry(self, ctx: dict[str, Any], stop_event: threading.Event, asset_tree_path: Path) -> str:
@@ -2317,8 +2754,8 @@ class DataAnnotationRuntimeRunner:
         if not isinstance(image34, dict) or not open_shape:
             raise RuntimeError("缺少 #34「打开下方菜单」标注，无法走稳定邮件入口")
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：打开下方菜单 #35", phase="mail_claim_open_world_menu", current_scene=34)
-            self._log_locked("action", "邮件_领取检查：#68 不可用，尝试 #34 -> #35 稳定入口")
+            self._set_status_locked("running", "邮件_历史扫描：打开下方菜单 #35", phase="mail_claim_open_world_menu", current_scene=34)
+            self._log_locked("action", "邮件_历史扫描：#68 不可用，尝试 #34 -> #35 稳定入口")
         frame = self._screencap(ctx)
         try:
             self._click_shape(ctx, image34, open_shape, frame)
@@ -2330,10 +2767,10 @@ class DataAnnotationRuntimeRunner:
             x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
             y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
             with self._lock:
-                self._log_locked("info", f"邮件_领取检查：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
+                self._log_locked("info", f"邮件_历史扫描：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
             self._click_frame_point(ctx, image34, x, y)
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
+            self._set_status_locked("running", "邮件_历史扫描：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
         deadline = time.time() + 1.0
         while time.time() < deadline:
             self._raise_if_stopped(stop_event)
@@ -2352,7 +2789,7 @@ class DataAnnotationRuntimeRunner:
             raise RuntimeError("缺少 #35「邮件」或「菜单」标注，无法走稳定邮件入口")
         self._raise_if_stopped(stop_event)
         with self._lock:
-            self._set_status_locked("running", "邮件_领取检查：等待 #35 邮件命中", phase="mail_claim_wait_world_menu_mail", current_scene=35)
+            self._set_status_locked("running", "邮件_历史扫描：等待 #35 邮件命中", phase="mail_claim_wait_world_menu_mail", current_scene=35)
         if mail_shape and not menu_shape:
             wait_result = self._wait_shape_match(
                 ctx,
@@ -2360,14 +2797,14 @@ class DataAnnotationRuntimeRunner:
                 image35,
                 mail_shape,
                 timeout=8.0,
-                label="邮件_领取检查：等待 #35「邮件」",
+                label="邮件_历史扫描：等待 #35「邮件」",
             )
             frame, match_result = (yield from wait_result) if isinstance(wait_result, GeneratorType) else wait_result
             with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                self._log_locked("action", "邮件_领取检查：按 #35「邮件」标注点击")
+                self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                self._log_locked("action", "邮件_历史扫描：按 #35「邮件」标注点击")
             self._click_shape(ctx, image35, mail_shape, frame, match_result=match_result)
-            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
+            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
             return "success"
         deadline = time.time() + 8.0
         last_score = 0.0
@@ -2383,10 +2820,10 @@ class DataAnnotationRuntimeRunner:
                     x = float(mail_box.get("x") or 0) + float(mail_box.get("w") or 0) / 2
                     y = float(mail_box.get("y") or 0) + float(mail_box.get("h") or 0) / 2
                     with self._lock:
-                        self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                        self._log_locked("action", f"邮件_领取检查：#35「邮件」标注命中 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
+                        self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35「邮件」标注命中 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
                     self._click_frame_point(ctx, image35, x, y)
-                    yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
+                    yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                     return "success"
 
             ocr_lines = self._ocr_lines(frame)
@@ -2396,27 +2833,27 @@ class DataAnnotationRuntimeRunner:
                 x, y, text = menu_matches[0]
                 x, y = self._mail_world_menu_icon_click_point(image35, x, y)
                 with self._lock:
-                    self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                    self._log_locked("action", f"邮件_领取检查：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
+                    self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                    self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
                 self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
+                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
 
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_领取检查：等待 #35 邮件入口 {last_score:.0f}%",
+                    f"邮件_历史扫描：等待 #35 邮件入口 {last_score:.0f}%",
                     phase="mail_claim_wait_world_menu_mail",
                     current_scene=35,
                 )
             yield BehaviorTreeStatus.RUNNING
-        raise RuntimeError(f"邮件_领取检查：等待 #35 邮件入口超时，最后 {last_score:.0f}% OCR={last_ocr}")
+        raise RuntimeError(f"邮件_历史扫描：等待 #35 邮件入口超时，最后 {last_score:.0f}% OCR={last_ocr}")
 
     def _mail_world_menu_icon_click_point(self, image35: dict[str, Any], x: float, y: float) -> tuple[float, float]:
         mail_shape = self._find_shape(image35, "邮件")
         if mail_shape:
             box = self._box(mail_shape, image35)
-            return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+            return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) * 0.78
         return x, y
 
     def _try_open_mail_from_visible_world_menu(
@@ -2446,13 +2883,13 @@ class DataAnnotationRuntimeRunner:
                 x, y, text = menu_matches[0]
                 x, y = self._mail_world_menu_icon_click_point(image35, x, y)
                 with self._lock:
-                    self._set_status_locked("running", "邮件_领取检查：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                    self._log_locked("action", f"邮件_领取检查：#35 无「邮件」shape，点击菜单 OCR「{text}」({x:.0f},{y:.0f})")
+                    self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                    self._log_locked("action", f"邮件_历史扫描：#35 无「邮件」shape，点击菜单 OCR「{text}」({x:.0f},{y:.0f})")
                 self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_领取检查：等待邮件 #121")
+                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
             with self._lock:
-                self._set_status_locked("running", "邮件_领取检查：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
+                self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
             yield BehaviorTreeStatus.RUNNING
         return "missing"
 
@@ -2516,24 +2953,24 @@ class DataAnnotationRuntimeRunner:
         packet_missing_traces: list[dict[str, Any]] = []
         if action_enabled:
             with self._lock:
-                self._log_locked("info", f"邮件_领取检查：packet 待处理邮件 {pending_actions} 封")
+                self._log_locked("info", f"邮件_历史扫描：packet 待处理邮件 {pending_actions} 封")
                 if target_requested:
                     target_parts = []
                     if target_title:
                         target_parts.append(f"标题={target_title}")
                     if target_time_text:
                         target_parts.append(f"时间={target_time_text}")
-                    self._log_locked("info", f"邮件_领取检查：本轮只处理目标邮件：{'，'.join(target_parts)}")
+                    self._log_locked("info", f"邮件_历史扫描：本轮只处理目标邮件：{'，'.join(target_parts)}")
             if pending_actions <= 0 and not full_scan and not target_requested:
                 with self._lock:
-                    self._log_locked("success", "邮件_领取检查：packet 无待处理邮件，跳过动作扫描")
+                    self._log_locked("success", "邮件_历史扫描：packet 无待处理邮件，跳过动作扫描")
                 return "success"
         if watermark_time:
             with self._lock:
-                self._log_locked("info", f"邮件_领取检查：增量扫描水位 {watermark_time}，需扫到更早时间才可停止")
+                self._log_locked("info", f"邮件_历史扫描：增量扫描水位 {watermark_time}，需扫到更早时间才可停止")
         else:
             with self._lock:
-                self._log_locked("info", "邮件_领取检查：未建立增量水位，本轮按深扫建立水位")
+                self._log_locked("info", "邮件_历史扫描：未建立增量水位，本轮按深扫建立水位")
         while scroll_count <= max_scrolls and processed_count < max_actions:
             self._raise_if_stopped(stop_event)
             if max_scan_seconds > 0 and time.monotonic() - scan_started_at >= max_scan_seconds:
@@ -2541,7 +2978,7 @@ class DataAnnotationRuntimeRunner:
                 with self._lock:
                     self._log_locked(
                         "info",
-                        f"邮件_领取检查：动作扫描达到内部时间预算 {max_scan_seconds:.0f}s，提前收尾",
+                        f"邮件_历史扫描：动作扫描达到内部时间预算 {max_scan_seconds:.0f}s，提前收尾",
                     )
                 break
             frame = self._screencap(ctx)
@@ -2583,7 +3020,7 @@ class DataAnnotationRuntimeRunner:
                     for row in rows[:6]
                 )
                 with self._lock:
-                    self._log_locked("detail", f"邮件_领取检查：当前页重新 OCR 识别 {len(rows)} 行：{row_summary}")
+                    self._log_locked("detail", f"邮件_历史扫描：当前页重新 OCR 识别 {len(rows)} 行：{row_summary}")
             if action_candidate is not None:
                 action_status = self._process_mail_row(ctx, stop_event, image121, action_candidate)
                 status = (yield from action_status) if isinstance(action_status, GeneratorType) else action_status
@@ -2593,7 +3030,7 @@ class DataAnnotationRuntimeRunner:
                         break
                     if not full_scan and self._pending_packet_mail_action_count(allowed_policies=allowed_policies) <= 0:
                         with self._lock:
-                            self._log_locked("success", "邮件_领取检查：packet 待处理邮件已清零，停止扫描")
+                            self._log_locked("success", "邮件_历史扫描：packet 待处理邮件已清零，停止扫描")
                         break
                     continue
             if game_first_candidate is not None:
@@ -2615,7 +3052,7 @@ class DataAnnotationRuntimeRunner:
 
             if watermark_time and crossed_watermark:
                 with self._lock:
-                    self._log_locked("success", f"邮件_领取检查：已扫到早于水位 {watermark_time} 的邮件，增量段完整接回")
+                    self._log_locked("success", f"邮件_历史扫描：已扫到早于水位 {watermark_time} 的邮件，增量段完整接回")
                 break
 
             signature = self._mail_rows_signature(rows)
@@ -2636,35 +3073,35 @@ class DataAnnotationRuntimeRunner:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_领取检查：邮件清单向下滚动 {scroll_count}",
+                    f"邮件_历史扫描：邮件清单向下滚动 {scroll_count}",
                     phase="mail_claim_scroll_list",
                     current_scene=121,
                 )
-                self._log_locked("action", f"邮件_领取检查：当前页无可处理邮件，滚动邮件清单2 {scroll_count}")
+                self._log_locked("action", f"邮件_历史扫描：当前页无可处理邮件，滚动邮件清单2 {scroll_count}")
             self._scroll_shape_content(ctx, image121, list_shape)
             yield from self._wait_scroll_settle(ctx, stop_event)
 
         if processed_count >= max_actions and not configured_max_actions:
-            raise RuntimeError(f"邮件_领取检查：达到单轮处理上限 {max_actions}，为避免异常循环已停止")
+            raise RuntimeError(f"邮件_历史扫描：达到单轮处理上限 {max_actions}，为避免异常循环已停止")
         if configured_max_actions and processed_count >= max_actions:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_领取检查：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封",
+                    f"邮件_历史扫描：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封",
                     phase="mail_claim_done",
                     current_scene=121,
                 )
-                self._log_locked("success", f"邮件_领取检查：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封")
+                self._log_locked("success", f"邮件_历史扫描：达到本轮指定处理数 {max_actions}，见到 {seen_count} 封，处理 {processed_count} 封")
             return "success"
         if target_requested and processed_count > 0:
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"邮件_领取检查：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封",
+                    f"邮件_历史扫描：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封",
                     phase="mail_claim_done",
                     current_scene=121,
                 )
-                self._log_locked("success", f"邮件_领取检查：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封")
+                self._log_locked("success", f"邮件_历史扫描：目标邮件处理完成，见到 {seen_count} 封，处理 {processed_count} 封")
             return "success"
         pending_after_scan = self._pending_packet_mail_action_count(allowed_policies=allowed_policies) if action_enabled else 0
         if action_enabled and full_scan and pending_after_scan > 0 and not scan_truncated:
@@ -2675,13 +3112,13 @@ class DataAnnotationRuntimeRunner:
             with self._lock:
                 self._log_locked(
                     "info",
-                    f"邮件_领取检查：完整扫描未见 {marked_count} 封待处理邮件，标记为 missing_from_list",
+                    f"邮件_历史扫描：完整扫描未见 {marked_count} 封待处理邮件，标记为 missing_from_list",
                 )
         elif action_enabled and full_scan and pending_after_scan > 0 and scan_truncated:
             with self._lock:
                 self._log_locked(
                     "info",
-                    f"邮件_领取检查：本轮扫描被时间预算截断，仍有 {pending_after_scan} 封待处理邮件，不标记 missing_from_list",
+                    f"邮件_历史扫描：本轮扫描被时间预算截断，仍有 {pending_after_scan} 封待处理邮件，不标记 missing_from_list",
                 )
         if action_enabled and full_scan and packet_missing_rows:
             sample_text = "；".join(
@@ -2707,12 +3144,12 @@ class DataAnnotationRuntimeRunner:
                 self._log_locked(
                     "error" if fail_on_packet_gap else "info",
                     (
-                        f"邮件_领取检查：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，"
+                        f"邮件_历史扫描：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，"
                         f"{'本轮不能证明已清干净' if fail_on_packet_gap else '已按游戏画面优先策略记录并继续'}：{sample_text}"
                     ),
                 )
             if fail_on_packet_gap:
-                raise RuntimeError(f"邮件_领取检查：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，请先修复抓包/解析缺口：{sample_text}")
+                raise RuntimeError(f"邮件_历史扫描：发现 {len(packet_missing_rows)} 个可见邮件缺 packet 事实，请先修复抓包/解析缺口：{sample_text}")
         if watermark_time and not crossed_watermark:
             self._write_mail_scan_state(
                 {
@@ -2725,7 +3162,7 @@ class DataAnnotationRuntimeRunner:
                     "message": f"未接回增量水位 {watermark_time}",
                 }
             )
-            raise RuntimeError(f"邮件_领取检查：未接回增量水位 {watermark_time}，可能存在中间遗漏，请继续遍历或用 full_scan/observe_only 补洞")
+            raise RuntimeError(f"邮件_历史扫描：未接回增量水位 {watermark_time}，可能存在中间遗漏，请继续遍历或用 full_scan/observe_only 补洞")
         if top_time:
             self._write_mail_scan_state(
                 {
@@ -2743,11 +3180,11 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封",
+                f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封",
                 phase="mail_claim_done",
                 current_scene=121,
             )
-            self._log_locked("success", f"邮件_领取检查：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封")
+            self._log_locked("success", f"邮件_历史扫描：完成，见到 {seen_count} 封，处理 {processed_count} 封，packet缺失 {len(packet_missing_rows)} 封")
         return "success"
 
     def _trace_mail_packet_gap(self, row: dict[str, str]) -> dict[str, Any]:
@@ -2780,7 +3217,7 @@ class DataAnnotationRuntimeRunner:
         rows = self._merge_visible_mail_rows_by_position(first_rows, list_rows)
         self._annotate_mail_rows_list_state(ctx, image121, frame, rows)
         elapsed = time.monotonic() - started_at
-        self._log("detail", f"邮件_领取检查：当前页 OCR+行解析耗时 {elapsed:.1f}s，识别 {len(rows)} 行")
+        self._log("detail", f"邮件_历史扫描：当前页 OCR+行解析耗时 {elapsed:.1f}s，识别 {len(rows)} 行")
         return rows
 
     def _read_mail_scan_state(self) -> dict[str, Any]:
@@ -2887,6 +3324,12 @@ class DataAnnotationRuntimeRunner:
         if bool(row.get("list_has_lock")):
             ui_status = "锁定"
         row["status"] = ui_status or "无"
+        if ui_status in {"已阅", "锁定"}:
+            row["mail_key"] = ""
+            row["policy"] = ""
+            row["packet_match"] = "ui_skipped"
+            row["packet_missing_reason"] = ""
+            return
         if not self._is_valid_mail_time_text(time_text):
             row["time_text"] = ""
             row["mail_key"] = ""
@@ -2905,15 +3348,10 @@ class DataAnnotationRuntimeRunner:
             policy = self._mail_row_packet_action_policy(title, time_text)
             allowed_policies = (set(action_policies or {"claim"}) & {"claim"}) or {"claim"}
             row["policy"] = policy if policy in allowed_policies else ""
-        if ui_status in {"已阅", "锁定"} and row.get("policy") != "claim":
-            row["mail_key"] = ""
-            row["policy"] = ""
-            row["packet_match"] = "ui_skipped"
-            row["packet_missing_reason"] = ""
 
     def _mail_row_packet_action_policy(self, title: str, time_text: str) -> str:
         records = self._find_packet_mail_records_for_visible_row(title, time_text)
-        return self._visible_packet_mail_group_action_policy(records)
+        return self._visible_packet_mail_group_action_policy(records, time_text=time_text)
 
     def _mail_row_packet_missing_reason(self, title: str, time_text: str) -> str:
         normalized_title = normalize_fanxiu_mail_title(title)
@@ -2930,13 +3368,25 @@ class DataAnnotationRuntimeRunner:
             return f"same_time_without_title:{titles}"
         return "no_packet_fact"
 
-    def _visible_packet_mail_group_action_policy(self, records: list[Any]) -> str:
+    def _visible_packet_mail_group_action_policy(self, records: list[Any], *, time_text: str = "") -> str:
         if not records:
             return ""
+        has_visible_time_match = bool(time_text) and any(self._mail_record_matches_visible_time(record, time_text) for record in records)
         for record in records:
-            if fanxiu_mail_desired_status_for_record(record) != "可领":
+            if has_visible_time_match:
+                claimable = fanxiu_mail_desired_status_for_record(record) == "可领"
+            else:
+                claimable = self._packet_mail_record_initially_claimable(record)
+            if not claimable:
                 return ""
         return "claim"
+
+    def _packet_mail_record_initially_claimable(self, record: Any | None) -> bool:
+        if record is None:
+            return False
+        if fanxiu_mail_rewards_unresolved(getattr(record, "payload", None)):
+            return False
+        return fanxiu_mail_desired_status_for_rewards(fanxiu_mail_rewards_from_payload(getattr(record, "payload", None))) == "可领"
 
     def _find_packet_mail_records_for_visible_row(self, title: str, time_text: str) -> list[Any]:
         normalized_title = normalize_fanxiu_mail_title(title)
@@ -3067,7 +3517,6 @@ class DataAnnotationRuntimeRunner:
         observed_key = self._mail_title_similarity_key(observed_title)
         if len(observed_key) < 3:
             return None
-        allowed_policies = (set(action_policies or {"claim", "delete"}) & {"claim", "delete"}) or {"claim", "delete"}
         scored: list[tuple[float, Any, str]] = []
         for candidate in candidates:
             candidate_title = str(candidate.title or candidate.normalized_title or "")
@@ -3080,11 +3529,20 @@ class DataAnnotationRuntimeRunner:
         scored.sort(key=lambda item: (item[0], float(item[1].last_seen_at or item[1].updated_at or 0)), reverse=True)
         best_score, best_record, best_policy = scored[0]
         threshold = 0.58 if len(observed_key) >= 5 else 0.72
-        if best_score < threshold or best_policy not in allowed_policies:
+        if best_score < threshold:
             return None
+        if action_policies is not None:
+            allowed_policies = (set(action_policies or set()) & {"claim", "delete"}) or {"claim", "delete"}
+            if best_policy not in allowed_policies:
+                return None
+            close_candidates = [item for item in scored if item[0] >= best_score - 0.06]
+            close_policies = {policy for _, _, policy in close_candidates}
+            if close_policies != {best_policy}:
+                return None
+            return best_record
         close_candidates = [item for item in scored if item[0] >= best_score - 0.06]
-        close_policies = {policy for _, _, policy in close_candidates}
-        if close_policies != {best_policy}:
+        close_titles = {self._mail_title_similarity_key(str(record.title or record.normalized_title or "")) for _, record, _ in close_candidates}
+        if len(close_titles) > 1:
             return None
         return best_record
 
@@ -3138,22 +3596,22 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：打开「{title}」按详情页判断",
+                f"邮件_历史扫描：打开「{title}」按详情页判断",
                 phase="mail_claim_open_game_first",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_领取检查：缺 packet，打开「{title}」按详情页判断")
+            self._log_locked("action", f"邮件_历史扫描：缺 packet，打开「{title}」按详情页判断")
         self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
-        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_领取检查：等待「{title}」详情")
+        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
         scene_id, _score = yield from scene_result
         if scene_id == 121:
             return "seen"
         if scene_id not in {122, 123}:
-            raise RuntimeError(f"邮件_领取检查：打开「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
+            raise RuntimeError(f"邮件_历史扫描：打开「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
         actual_policy = "claim" if scene_id == 122 else "delete"
         if actual_policy not in allowed_policies:
             with self._lock:
-                self._log_locked("detail", f"邮件_领取检查：「{title}」详情为 {actual_policy}，不在本轮允许动作内，返回列表")
+                self._log_locked("detail", f"邮件_历史扫描：「{title}」详情为 {actual_policy}，不在本轮允许动作内，返回列表")
             yield from self._return_mail_detail_to_list(ctx, stop_event, scene_id)
             return "seen"
         detail_image = ctx.get("images", {}).get(scene_id)
@@ -3163,22 +3621,22 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：按详情页{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
+                f"邮件_历史扫描：按详情页{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
                 phase=f"mail_claim_do_{actual_policy}",
                 current_scene=scene_id,
             )
-            self._log_locked("action", f"邮件_领取检查：详情页确认 #{scene_id}，点击「{'领取' if actual_policy == 'claim' else '删除'}」：{title}")
+            self._log_locked("action", f"邮件_历史扫描：详情页确认 #{scene_id}，点击「{'领取' if actual_policy == 'claim' else '删除'}」：{title}")
         match_result = yield from self._wait_shape_match(
             ctx,
             stop_event,
             detail_image,
             action_shape,
             timeout=8.0,
-            label=f"邮件_领取检查：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
+            label=f"邮件_历史扫描：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
         )
         frame, action_match = match_result
         self._click_shape(ctx, detail_image, action_shape, frame, match_result=action_match)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
+        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
@@ -3205,25 +3663,25 @@ class DataAnnotationRuntimeRunner:
             action_label = "处理"
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：打开「{title}」准备{action_label}",
+                f"邮件_历史扫描：打开「{title}」准备{action_label}",
                 phase=f"mail_claim_open_{policy}",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_领取检查：打开「{title}」准备{action_label}")
+            self._log_locked("action", f"邮件_历史扫描：打开「{title}」准备{action_label}")
         self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
-        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_领取检查：等待「{title}」详情")
+        scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
         scene_id, _score = yield from scene_result
         if scene_id == 121:
             return "seen"
         if scene_id not in {122, 123}:
-            raise RuntimeError(f"邮件_领取检查：打开「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
+            raise RuntimeError(f"邮件_历史扫描：打开「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
         target_scene_id = scene_id
         actual_policy = "claim" if target_scene_id == 122 else "delete"
         if actual_policy != policy:
             with self._lock:
                 self._log_locked(
                     "detail",
-                    f"邮件_领取检查：「{title}」列表策略={policy}，详情实际为 #{target_scene_id} {actual_policy}，按详情按钮处理",
+                    f"邮件_历史扫描：「{title}」列表策略={policy}，详情实际为 #{target_scene_id} {actual_policy}，按详情按钮处理",
                 )
         detail_image = ctx.get("images", {}).get(target_scene_id)
         action_shape = self._find_shape(detail_image, "领取" if actual_policy == "claim" else "删除") if isinstance(detail_image, dict) else None
@@ -3232,22 +3690,22 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
+                f"邮件_历史扫描：{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
                 phase=f"mail_claim_do_{actual_policy}",
                 current_scene=target_scene_id,
             )
-            self._log_locked("action", f"邮件_领取检查：等待并点击 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」")
+            self._log_locked("action", f"邮件_历史扫描：等待并点击 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」")
         match_result = yield from self._wait_shape_match(
             ctx,
             stop_event,
             detail_image,
             action_shape,
             timeout=8.0,
-            label=f"邮件_领取检查：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
+            label=f"邮件_历史扫描：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
         )
         frame, action_match = match_result
         self._click_shape(ctx, detail_image, action_shape, frame, match_result=action_match)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
+        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
             status=f"{actual_policy}_requested",
@@ -3270,22 +3728,22 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：探测「{title}」是否可删除",
+                f"邮件_历史扫描：探测「{title}」是否可删除",
                 phase="mail_claim_probe_delete",
                 current_scene=121,
             )
-            self._log_locked("action", f"邮件_领取检查：打开「{title}」探测无附件删除")
+            self._log_locked("action", f"邮件_历史扫描：打开「{title}」探测无附件删除")
         self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
-        scene_id, score = yield from self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_领取检查：探测「{title}」详情")
+        scene_id, score = yield from self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：探测「{title}」详情")
         if scene_id == 121:
             return "seen"
         if scene_id == 122:
             with self._lock:
-                self._log_locked("detail", f"邮件_领取检查：探测「{title}」进入 #122，视为有附件/可领取，返回不处理")
+                self._log_locked("detail", f"邮件_历史扫描：探测「{title}」进入 #122，视为有附件/可领取，返回不处理")
             yield from self._return_mail_detail_to_list(ctx, stop_event, 122)
             return "seen"
         if scene_id != 123:
-            raise RuntimeError(f"邮件_领取检查：探测「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
+            raise RuntimeError(f"邮件_历史扫描：探测「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
         detail_image = ctx.get("images", {}).get(123)
         action_shape = self._find_shape(detail_image, "删除") if isinstance(detail_image, dict) else None
         if not isinstance(detail_image, dict) or not action_shape:
@@ -3294,13 +3752,13 @@ class DataAnnotationRuntimeRunner:
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_领取检查：UI确认无附件，删除「{title}」",
+                f"邮件_历史扫描：UI确认无附件，删除「{title}」",
                 phase="mail_claim_do_delete",
                 current_scene=123,
             )
-            self._log_locked("action", f"邮件_领取检查：UI确认 #123，点击「删除」：{title}")
+            self._log_locked("action", f"邮件_历史扫描：UI确认 #123，点击「删除」：{title}")
         self._click_shape(ctx, detail_image, action_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
+        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
             status="delete_requested",
@@ -3324,7 +3782,7 @@ class DataAnnotationRuntimeRunner:
             raise RuntimeError(f"缺少 #{scene_id}「空白-返回」标注，无法从邮件详情返回")
         frame = self._screencap(ctx)
         self._click_shape(ctx, detail_image, back_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_领取检查：返回邮件 #121")
+        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
 
     def _wait_mail_detail_or_list_scene(
         self,
@@ -4801,7 +5259,13 @@ class DataAnnotationRuntimeRunner:
         return ShapeMatchPlanner().runtime_match_payload_flags(shape, condition=condition)
 
     def _shape_match_conditions(self, shape: dict[str, Any]) -> list[str]:
-        return ShapeMatchPlanner().match_conditions(shape)
+        first = "ocr" if self._shape_prefers_ocr_first(shape) else "image"
+        return ShapeMatchPlanner().match_conditions(shape, first=first)
+
+    def _shape_prefers_ocr_first(self, shape: dict[str, Any]) -> bool:
+        title = str(shape.get("title") or "")
+        jump_target = str(shape.get("sceneJumpTarget") or "")
+        return bool(title == "邮件" and jump_target.startswith("121") and str(shape.get("ocrText") or "").strip())
 
     def _match_shape(
         self,
@@ -4852,8 +5316,9 @@ class DataAnnotationRuntimeRunner:
         except Exception as exc:
             raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
         similarity = float(result.get("similarity") or 0)
-        matched = similarity >= float(self.scene_threshold)
-        if ocr_enabled:
+        result_ocr_matched = bool(ocr_enabled and self._shape_match_result_ocr_matches(shape, result))
+        matched = result_ocr_matched or similarity >= float(self.scene_threshold)
+        if ocr_enabled and not result_ocr_matched:
             matched = matched and bool(result.get("matches"))
         if matched:
             fixed_box = result.get("fixed_box")
@@ -4873,6 +5338,23 @@ class DataAnnotationRuntimeRunner:
         result["matched"] = matched
         result["flags"] = flags
         return result
+
+    def _shape_match_result_ocr_matches(self, shape: dict[str, Any], result: dict[str, Any]) -> bool:
+        target = _sanitize_ocr_text(shape.get("ocrText"))
+        if not target:
+            return False
+        mode = str(shape.get("ocrMatchMode") or "contains")
+        raw_matches = result.get("matches")
+        if not isinstance(raw_matches, list):
+            return False
+        for item in raw_matches:
+            if not isinstance(item, dict):
+                continue
+            text = _sanitize_ocr_text(item.get("text") or item.get("ocr_text"))
+            if text and self._ocr_text_matches(text, target, mode):
+                result["ocr_text"] = text
+                return True
+        return False
 
     def _shape_full_frame_ocr_matches(
         self,

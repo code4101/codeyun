@@ -96,6 +96,42 @@ def repair_data_annotation_scheduler_tasks(
     tasks = [task for item in source if (task := normalize_data_annotation_scheduler_task(item))]
     if not tasks:
         tasks = default_tasks
+    legacy_mail_cleanup_task: dict[str, Any] | None = None
+    legacy_xianfu_visit_task: dict[str, Any] | None = None
+    legacy_xianfu_skill_task: dict[str, Any] | None = None
+    for task in tasks:
+        if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
+            legacy_mail_cleanup_task = task
+            task["id"] = "mail-cleanup"
+            task["task_type"] = "mail_cleanup"
+            task["label"] = "邮件_清理"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            payload["__scheduler_definition_task_type"] = "mail_cleanup"
+            task["payload"] = payload
+        elif str(task.get("id") or "") == "mail-cleanup" and str(task.get("task_type") or "") == "mail_cleanup":
+            if str(task.get("label") or "") != "邮件_清理":
+                task["label"] = "邮件_清理"
+                legacy_mail_cleanup_task = task
+        elif str(task.get("id") or "") == "legacy-dynamic-xianfu-visit":
+            legacy_xianfu_visit_task = task
+            task["id"] = "xianfu-visit-partner"
+            task["task_type"] = "xianfu_visit_partner"
+            task["label"] = "仙府_寻访仙侣"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "dynamic"
+            task["legacy_name"] = "仙府_寻访仙侣"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-dynamic-xianfu-skill":
+            legacy_xianfu_skill_task = task
+            task["id"] = "xianfu-learn-skill"
+            task["task_type"] = "xianfu_learn_skill"
+            task["label"] = "仙府_领悟绝技"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "dynamic"
+            task["legacy_name"] = "仙府_领悟绝技"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
     obsolete_task_ids = {"gift-code-real-test", "gift-code-test-real", "real-test-gift-code", "mail-full-scan"}
     obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历"}
     before_cleanup_count = len(tasks)
@@ -106,6 +142,12 @@ def repair_data_annotation_scheduler_tasks(
         and str(task.get("label") or "").strip() not in obsolete_task_labels
     ]
     changed = len(tasks) != before_cleanup_count
+    if legacy_mail_cleanup_task is not None:
+        changed = True
+    if legacy_xianfu_visit_task is not None:
+        changed = True
+    if legacy_xianfu_skill_task is not None:
+        changed = True
     defaults_by_id = {
         str(task.get("id") or ""): task
         for task in default_tasks
@@ -135,7 +177,31 @@ def repair_data_annotation_scheduler_tasks(
             task_payload = {}
         task["payload"] = {**default_payload, **task_payload}
         task["payload"][definition_marker] = default_task_type
+        if (
+            str(task.get("id") or "") in {"xianfu-visit-partner", "xianfu-learn-skill"}
+            and task.get("cooldown_seconds") != default_task.get("cooldown_seconds")
+        ):
+            task["cooldown_seconds"] = default_task.get("cooldown_seconds")
+            changed = True
     by_id = {str(task.get("id") or ""): task for task in tasks}
+    if len(by_id) != len(tasks):
+        deduped: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            task_id = str(task.get("id") or "")
+            if not task_id:
+                continue
+            existing = deduped.get(task_id)
+            if existing is None:
+                deduped[task_id] = task
+                continue
+            if existing.get("enabled") is False and task.get("enabled"):
+                existing["enabled"] = True
+            for key in ("last_run_at", "last_result", "retry_after", "checkpoint"):
+                if not existing.get(key) and task.get(key):
+                    existing[key] = task.get(key)
+        tasks = list(deduped.values())
+        by_id = {str(task.get("id") or ""): task for task in tasks}
+        changed = True
     for default_task in defaults_by_id.values():
         task_id = str(default_task.get("id") or "")
         if task_id and task_id not in by_id:

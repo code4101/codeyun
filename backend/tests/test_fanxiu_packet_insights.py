@@ -100,6 +100,81 @@ def test_decode_result_with_worldline_activity_triggers_activity_sync(monkeypatc
     }
 
 
+def test_decode_result_business_ingestor_persists_incremental_rows(monkeypatch) -> None:
+    business_rows = []
+    profile_rows = []
+
+    monkeypatch.setattr(insights, "_load_item_index", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        insights,
+        "_extract_wallet",
+        lambda _parsed, _entry, _item_index: {
+            "captured_at": "2026-06-10 14:00:00",
+            "resources": [{"type": 1, "code": 2, "id": 2, "name": "仙玉", "amount": 3}],
+            "evidence": {
+                "packet_id": "wallet-record|s2c|10|30001|1",
+                "protocol": "SM_Wallet",
+                "pcap_name": "fanxiu_runtime_20260610_140000.pcap",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        insights,
+        "_extract_sync_player_profile",
+        lambda _parsed, _entry, **_kwargs: {
+            "captured_at": "2026-06-10 14:00:01",
+            "role_id_text": "24082878061086206",
+            "name": "止清ღ羊驼",
+            "combat_attributes": [{"key": 2001, "value": 1, "text": "1"}],
+            "evidence": {
+                "packet_id": "profile-record|s2c|20|30002|2",
+                "protocol": "SM_SyncPlayer",
+                "record_id": "profile-record",
+                "pcap_name": "fanxiu_runtime_20260610_140000.pcap",
+            },
+        },
+    )
+
+    class FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("sqlmodel.Session", FakeSession)
+    monkeypatch.setattr(
+        insights,
+        "upsert_fanxiu_packet_business_records",
+        lambda _session, rows: business_rows.extend(rows) or {"created": len(rows), "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0},
+    )
+    monkeypatch.setattr(
+        insights,
+        "upsert_fanxiu_player_profile_rows",
+        lambda _session, rows: profile_rows.extend(rows) or {"created": len(rows), "skipped_invalid": 0, "skipped_duplicate": 0},
+    )
+
+    result = insights.sync_fanxiu_packet_business_for_decode_result(
+        {
+            "record_id": "decoded-record",
+            "pcap_name": "fanxiu_runtime_20260610_140000.pcap",
+            "frames": [
+                {"name": "SM_Wallet", "parsed": {"_class": "SM_Wallet"}, "direction": "s2c", "offset": 10, "pro_id": 30001, "sn": 1},
+                {"name": "SM_SyncPlayer", "parsed": {"_class": "SM_SyncPlayer"}, "direction": "s2c", "offset": 20, "pro_id": 30002, "sn": 2},
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert [row["domain"] for row in business_rows] == ["wallet_resource"]
+    assert len(profile_rows) == 1
+    assert profile_rows[0]["evidence"]["protocol"] == "SM_SyncPlayer"
+
+
 def test_self_attribute_change_uses_fallback_identity_for_player_profile(tmp_path) -> None:
     decoded_path = tmp_path / "decoded.json"
     _write_self_attr_decoded(decoded_path)

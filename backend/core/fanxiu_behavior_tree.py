@@ -746,7 +746,7 @@ def go_fanxiu_scene(
     )
 
 
-def run_fanxiu_mail_claim_check(
+def run_fanxiu_mail_cleanup(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
     observe_only: bool = False,
@@ -769,7 +769,61 @@ def run_fanxiu_mail_claim_check(
     if timeout_seconds:
         payload["timeout_seconds"] = float(timeout_seconds)
     return submit_fanxiu_task(
-        "mail_claim_check",
+        "mail_cleanup",
+        payload,
+        entry_id=entry_id,
+        run_mode=run_mode,
+        isolate_jobs=isolate_jobs,
+        wait=wait,
+        wait_timeout_seconds=wait_timeout_seconds,
+        wait_poll_seconds=wait_poll_seconds,
+    )
+
+
+def run_fanxiu_mail_claim_check(**kwargs: Any) -> dict[str, Any]:
+    return run_fanxiu_mail_cleanup(**kwargs)
+
+
+def run_fanxiu_xianfu_visit_partner(
+    *,
+    entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
+    run_mode: str = "auto",
+    isolate_jobs: bool = True,
+    timeout_seconds: float = 0.0,
+    wait: bool = False,
+    wait_timeout_seconds: float = 300.0,
+    wait_poll_seconds: float = 0.5,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if timeout_seconds:
+        payload["timeout_seconds"] = float(timeout_seconds)
+    return submit_fanxiu_task(
+        "xianfu_visit_partner",
+        payload,
+        entry_id=entry_id,
+        run_mode=run_mode,
+        isolate_jobs=isolate_jobs,
+        wait=wait,
+        wait_timeout_seconds=wait_timeout_seconds,
+        wait_poll_seconds=wait_poll_seconds,
+    )
+
+
+def run_fanxiu_xianfu_learn_skill(
+    *,
+    entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
+    run_mode: str = "auto",
+    isolate_jobs: bool = True,
+    timeout_seconds: float = 0.0,
+    wait: bool = False,
+    wait_timeout_seconds: float = 300.0,
+    wait_poll_seconds: float = 0.5,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if timeout_seconds:
+        payload["timeout_seconds"] = float(timeout_seconds)
+    return submit_fanxiu_task(
+        "xianfu_learn_skill",
         payload,
         entry_id=entry_id,
         run_mode=run_mode,

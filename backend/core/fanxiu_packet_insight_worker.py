@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing as mp
+import os
+import queue
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
 from backend.core.fanxiu_activity_packet_sync import sync_fanxiu_activity_packets
 from backend.core.fanxiu_packet_insights import (
     decode_and_sync_fanxiu_runtime_capture,
+    sync_fanxiu_packet_business_for_decode_result,
     sync_fanxiu_packet_player_profiles,
     sync_fanxiu_packet_runtime_insights,
-    sync_fanxiu_packet_runtime_insights_for_decode_result,
 )
 from backend.core.fanxiu_packet_decoded_store import sync_fanxiu_decoded_record_backlog
 from backend.core.fanxiu_tcp_flow import (
@@ -75,6 +79,10 @@ def _maintenance_state_path(data_dir: str | Path | None = None) -> Path:
 
 def _mail_business_backlog_state_path(data_dir: str | Path | None = None) -> Path:
     return resolve_fanxiu_tcp_store_root(data_dir).parent / "packet-insights" / "mail_business_backlog_state.json"
+
+
+def _decoded_business_backlog_state_path(data_dir: str | Path | None = None) -> Path:
+    return resolve_fanxiu_tcp_store_root(data_dir).parent / "packet-insights" / "decoded_business_backlog_state.json"
 
 
 def _decoded_source_key(source: dict[str, Any]) -> str:
@@ -381,10 +389,9 @@ def _sync_business_after_decoded(
             continue
         runtime_sync["source_count"] += 1
         try:
-            sync_result = sync_fanxiu_packet_runtime_insights_for_decode_result(
+            sync_result = sync_fanxiu_packet_business_for_decode_result(
                 result,
                 data_dir=data_dir,
-                force=False,
             )
             if sync_result is not None:
                 runtime_sync["sync_count"] += 1
@@ -417,22 +424,67 @@ def _sync_business_after_decoded(
     return runtime_sync, mail_sync
 
 
-def _decode_runtime_capture_with_timeout(
+def _decode_runtime_capture_direct(
     path: Path,
     *,
     data_dir: str | Path | None = None,
     max_streams: int,
-    timeout_seconds: float = DEFAULT_DECODE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    return decode_and_sync_fanxiu_runtime_capture(
+        path,
+        data_dir=data_dir,
+        max_streams=max(1, int(max_streams)),
+        sync_business=False,
+    )
+
+
+def _decode_runtime_capture_process_entry(
+    path_text: str,
+    data_dir_text: str,
+    max_streams: int,
+    result_queue: Any,
+) -> None:
+    try:
+        result = _decode_runtime_capture_direct(
+            Path(path_text),
+            data_dir=Path(data_dir_text) if data_dir_text else None,
+            max_streams=max_streams,
+        )
+    except BaseException as exc:  # noqa: BLE001 - send child failures back to parent.
+        result_queue.put(
+            {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(limit=20),
+            }
+        )
+        return
+    result_queue.put({"ok": True, "result": result})
+
+
+def _decode_timeout_uses_process() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    mode = os.getenv("FX_PACKET_DECODE_TIMEOUT_MODE", "process").strip().lower()
+    return mode not in {"thread", "threads", "legacy"}
+
+
+def _decode_runtime_capture_with_thread_timeout(
+    path: Path,
+    *,
+    data_dir: str | Path | None = None,
+    max_streams: int,
+    timeout_seconds: float,
 ) -> dict[str, Any]:
     box: dict[str, Any] = {}
 
     def _target() -> None:
         try:
-            box["result"] = decode_and_sync_fanxiu_runtime_capture(
+            box["result"] = _decode_runtime_capture_direct(
                 path,
                 data_dir=data_dir,
-                max_streams=max(1, int(max_streams)),
-                sync_business=False,
+                max_streams=max_streams,
             )
         except BaseException as exc:  # noqa: BLE001 - propagate through worker state.
             box["error"] = exc
@@ -450,11 +502,67 @@ def _decode_runtime_capture_with_timeout(
     return result
 
 
+def _decode_runtime_capture_with_process_timeout(
+    path: Path,
+    *,
+    data_dir: str | Path | None = None,
+    max_streams: int,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    context = mp.get_context("spawn")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_decode_runtime_capture_process_entry,
+        args=(str(path), str(data_dir or ""), max(1, int(max_streams)), result_queue),
+        daemon=True,
+    )
+    process.start()
+    process.join(timeout=max(1.0, float(timeout_seconds)))
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=2.0)
+        raise TimeoutError(f"pcap 解码超时 {timeout_seconds:.0f}s：{path}")
+    try:
+        payload = result_queue.get_nowait()
+    except queue.Empty:
+        raise RuntimeError(f"pcap 解码子进程未返回有效结果：{path}，exitcode={process.exitcode}")
+    if isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("result"), dict):
+        return payload["result"]
+    if isinstance(payload, dict):
+        error = str(payload.get("error") or "")
+        error_type = str(payload.get("error_type") or "RuntimeError")
+        raise RuntimeError(f"pcap 解码失败：{path}：{error_type}: {error}")
+    raise RuntimeError(f"pcap 解码未返回有效结果：{path}")
+
+
+def _decode_runtime_capture_with_timeout(
+    path: Path,
+    *,
+    data_dir: str | Path | None = None,
+    max_streams: int,
+    timeout_seconds: float = DEFAULT_DECODE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    if _decode_timeout_uses_process():
+        return _decode_runtime_capture_with_process_timeout(
+            path,
+            data_dir=data_dir,
+            max_streams=max_streams,
+            timeout_seconds=timeout_seconds,
+        )
+    return _decode_runtime_capture_with_thread_timeout(
+        path,
+        data_dir=data_dir,
+        max_streams=max_streams,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _sync_historical_business_backlog(
     *,
     data_dir: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     runtime_sync: dict[str, Any] = {"ok": True, "mode": "historical_business_backlog"}
+    decoded_business_sync = sync_fanxiu_decoded_business_backlog(data_dir=data_dir)
     try:
         packet_runtime_sync = sync_fanxiu_packet_runtime_insights(data_dir=data_dir, force=False)
     except Exception as exc:
@@ -463,25 +571,31 @@ def _sync_historical_business_backlog(
         player_profile_sync = sync_fanxiu_packet_player_profiles(data_dir=data_dir, force=False)
     except Exception as exc:
         player_profile_sync = {"ok": False, "error": str(exc)}
+    runtime_sync["decoded_business_sync"] = decoded_business_sync
     runtime_sync["packet_runtime_sync"] = packet_runtime_sync
     runtime_sync["player_profile_sync"] = player_profile_sync
-    runtime_sync["ok"] = bool(packet_runtime_sync.get("ok", True) and player_profile_sync.get("ok", True))
-    runtime_sync["changed"] = bool(packet_runtime_sync.get("changed") or player_profile_sync.get("changed"))
+    runtime_sync["ok"] = bool(
+        decoded_business_sync.get("ok", True)
+        and packet_runtime_sync.get("ok", True)
+        and player_profile_sync.get("ok", True)
+    )
+    runtime_sync["changed"] = bool(
+        decoded_business_sync.get("changed")
+        or packet_runtime_sync.get("changed")
+        or player_profile_sync.get("changed")
+    )
 
     mail_sync = sync_fanxiu_mail_business_backlog(data_dir=data_dir)
     return runtime_sync, mail_sync
 
 
-def sync_fanxiu_mail_business_backlog(
+def _select_backlog_sources(
+    sources: list[dict[str, Any]],
+    state: dict[str, Any],
     *,
-    data_dir: str | Path | None = None,
-    latest_limit: int = 32,
-    historical_limit: int = 64,
-) -> dict[str, Any]:
-    """Incrementally backfill decoded mail facts without rescanning every decoded JSON."""
-    sources = _iter_fanxiu_tcp_decoded_sources(data_dir)
-    state_path = _mail_business_backlog_state_path(data_dir)
-    state = _load_json(state_path, {})
+    latest_limit: int,
+    historical_limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     recent_done = {
         str(item)
         for item in (state.get("recent_processed_source_keys") or [])
@@ -507,6 +621,99 @@ def sync_fanxiu_mail_business_backlog(
     if start_index >= len(oldest_sources):
         start_index = 0
     historical_sources = oldest_sources[start_index: start_index + max(0, int(historical_limit))]
+    return latest_sources, historical_sources
+
+
+def sync_fanxiu_decoded_business_backlog(
+    *,
+    data_dir: str | Path | None = None,
+    latest_limit: int = 64,
+    historical_limit: int = 128,
+) -> dict[str, Any]:
+    """Incrementally backfill decoded business facts through the primary ingestor."""
+    sources = _iter_fanxiu_tcp_decoded_sources(data_dir)
+    state_path = _decoded_business_backlog_state_path(data_dir)
+    state = _load_json(state_path, {})
+    if not isinstance(state, dict):
+        state = {}
+    latest_sources, historical_sources = _select_backlog_sources(
+        sources,
+        state,
+        latest_limit=latest_limit,
+        historical_limit=historical_limit,
+    )
+    selected_sources = latest_sources + historical_sources
+    processed_keys: list[str] = []
+    sync_count = 0
+    changed = False
+    errors: list[dict[str, Any]] = []
+    domain_counts: dict[str, int] = {}
+    for source in selected_sources:
+        key = _decoded_source_key(source)
+        result = _decode_result_from_source(source)
+        if result is None:
+            processed_keys.append(key)
+            continue
+        try:
+            sync_result = sync_fanxiu_packet_business_for_decode_result(result, data_dir=data_dir)
+        except Exception as exc:
+            errors.append({"source_key": key, "decoded_path": str(source.get("decoded_path") or ""), "error": str(exc)})
+            continue
+        processed_keys.append(key)
+        if sync_result is None:
+            continue
+        sync_count += 1
+        changed = bool(changed or sync_result.get("changed"))
+        for protocol in sync_result.get("protocols") or []:
+            protocol_text = str(protocol or "")
+            if protocol_text:
+                domain_counts[protocol_text] = domain_counts.get(protocol_text, 0) + 1
+
+    recent_processed = list(dict.fromkeys(processed_keys + [
+        str(item)
+        for item in (state.get("recent_processed_source_keys") or [])
+        if str(item or "").strip()
+    ]))[:1000]
+    historical_cursor = _decoded_source_key(historical_sources[-1]) if historical_sources else str(state.get("historical_cursor_source_key") or "")
+    payload = {
+        "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+        "ok": not errors,
+        "updated_at": _now_text(),
+        "source_count": len(sources),
+        "selected_count": len(selected_sources),
+        "latest_selected_count": len(latest_sources),
+        "historical_selected_count": len(historical_sources),
+        "processed_count": len(processed_keys),
+        "sync_count": sync_count,
+        "changed": changed,
+        "protocol_counts": domain_counts,
+        "error_count": len(errors),
+        "errors": errors[:20],
+        "recent_processed_source_keys": recent_processed,
+        "historical_cursor_source_key": historical_cursor,
+    }
+    _write_json(state_path, payload)
+    return {key: value for key, value in payload.items() if key not in {"recent_processed_source_keys"}}
+
+
+def sync_fanxiu_mail_business_backlog(
+    *,
+    data_dir: str | Path | None = None,
+    latest_limit: int = 32,
+    historical_limit: int = 64,
+) -> dict[str, Any]:
+    """Incrementally backfill decoded mail facts without rescanning every decoded JSON."""
+    sources = _iter_fanxiu_tcp_decoded_sources(data_dir)
+    state_path = _mail_business_backlog_state_path(data_dir)
+    state = _load_json(state_path, {})
+    if not isinstance(state, dict):
+        state = {}
+    latest_sources, historical_sources = _select_backlog_sources(
+        sources,
+        state,
+        latest_limit=latest_limit,
+        historical_limit=historical_limit,
+    )
 
     selected: list[dict[str, Any]] = []
     selected_keys: set[str] = set()
@@ -548,10 +755,17 @@ def sync_fanxiu_mail_business_backlog(
     except Exception as exc:
         mail_sync = {"ok": False, "error": str(exc)}
 
-    historical_cursor_source_key = cursor_key
-    if historical_sources:
-        historical_cursor_source_key = _decoded_source_key(historical_sources[-1])
-    recent_processed = list(dict.fromkeys([*[_decoded_source_key(source) for source in latest_sources], *list(recent_done)]))[:2000]
+    historical_cursor_source_key = (
+        _decoded_source_key(historical_sources[-1])
+        if historical_sources
+        else str(state.get("historical_cursor_source_key") or "")
+    )
+    previous_recent = [
+        str(item)
+        for item in (state.get("recent_processed_source_keys") or [])
+        if str(item or "").strip()
+    ]
+    recent_processed = list(dict.fromkeys([*[_decoded_source_key(source) for source in latest_sources], *previous_recent]))[:2000]
     payload = {
         "ok": bool(mail_sync.get("ok", True)),
         "mode": "mail_business_backlog",
@@ -560,7 +774,7 @@ def sync_fanxiu_mail_business_backlog(
         "latest_selected_count": len(latest_sources),
         "historical_selected_count": len(historical_sources),
         "historical_cursor_source_key": historical_cursor_source_key,
-        "historical_cursor_index": start_index + len(historical_sources),
+        "historical_cursor_index": len(historical_sources),
         "recent_processed_source_keys": recent_processed,
         "mail_packet_sync": mail_sync,
         "mail_source_probe": _mail_source_protocol_probe(selected),

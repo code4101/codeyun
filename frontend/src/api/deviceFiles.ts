@@ -128,6 +128,11 @@ const DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS = 10_000;
 const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
 const DEVICE_MEDIA_LIST_FAST_PATH_SCAN_LIMIT = 2_000;
 const DEVICE_MEDIA_LIST_FAST_PATH_LIMIT = 100;
+const DEVICE_DIRECTORY_LIST_TIMEOUT_MS = 10_000;
+const DEVICE_DIRECTORY_LIST_FALLBACK_TIMEOUT_MS = 30_000;
+const DEVICE_DIRECTORY_LIST_FALLBACK_SORT_PROGRAM: DeviceDirectorySortProgram = {
+  rules: [{ field: 'name', direction: 'asc', nulls: 'last' }],
+};
 
 const usesDuplicateClusterSort = (payload: DeviceMediaListRequest) =>
   Array.isArray(payload.sort_program?.rules)
@@ -534,13 +539,33 @@ export const fetchDeviceDirectoryItems = async (
   entryId: string,
   payload: DeviceDirectoryListRequest
 ): Promise<DeviceDirectoryListing> => {
-  const response = await api.post(getDeviceEntryPath(entryId, '/files/list_dir'), payload);
-  return {
-    root: response.data.root ?? null,
-    current_path: response.data.current_path ?? '',
-    absolute_path: response.data.absolute_path ?? '',
-    items: response.data.items ?? [],
-  };
+  const normalizeDirectoryListing = (data: any): DeviceDirectoryListing => ({
+    root: data.root ?? null,
+    current_path: data.current_path ?? '',
+    absolute_path: data.absolute_path ?? '',
+    items: data.items ?? [],
+  });
+
+  try {
+    const response = await api.post(getDeviceEntryPath(entryId, '/files/list_dir'), payload, {
+      timeout: DEVICE_DIRECTORY_LIST_TIMEOUT_MS,
+    });
+    return normalizeDirectoryListing(response.data);
+  } catch (error) {
+    if (!isTimeoutError(error)) {
+      throw error;
+    }
+
+    const fallbackResponse = await api.post(
+      getDeviceEntryPath(entryId, '/files/list_dir'),
+      {
+        ...payload,
+        sort_program: DEVICE_DIRECTORY_LIST_FALLBACK_SORT_PROGRAM,
+      },
+      { timeout: DEVICE_DIRECTORY_LIST_FALLBACK_TIMEOUT_MS }
+    );
+    return normalizeDirectoryListing(fallbackResponse.data);
+  }
 };
 
 export const fetchDeviceDuplicateFiles = async (

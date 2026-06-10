@@ -14,7 +14,7 @@
 
 - 凡修 data-annotation 页面默认选择 `codepc_mf`，不要再优先选择 `mi15`。
 - 后端 Runtime、Scheduler、守护和调试验证都应使用 `codepc_mf` 入口。
-- Runtime/守护截图与点击默认只使用本机 MuMu ADB 端口，例如 `127.0.0.1:7555/16416/5555`；抓包或 Android proxy 服务发现的远端设备（如 `192.168.*:5555`）不是凡修 Runtime 的默认截图/点击目标。抓包服务可以使用 ADB 做代理配置或设备发现，但它发现到的设备不能自动进入 Runtime 截图/点击候选。确需调试远端设备时必须显式设置环境变量，不得由抓包服务自动混入。
+- Runtime/守护截图与点击默认只使用本机 MuMu ADB 通道：优先尝试常规本机端口，例如 `127.0.0.1:7555/16416/5555`，也允许 `MuMuManager.exe info --vmindex all` 返回的当前本机实例 `adb_host_ip:adb_port`。抓包或 Android proxy 服务从普通 `adb devices` 发现的远端设备（如非 MuMuManager 返回的 `192.168.*:5555`）不是凡修 Runtime 的默认截图/点击目标。抓包服务可以使用 ADB 做代理配置或设备发现，但它发现到的设备不能自动进入 Runtime 截图/点击候选。确需调试远端设备时必须显式设置环境变量，不得由抓包服务自动混入。
 - ADB 是 Runtime 的主通道；桌面窗口捕获只允许作为显式调试兜底，目标也必须是本机 `MuMu` 窗口，不再使用向日葵窗口标题或向日葵投屏通道。
 - 当前 Runtime 底层模块边界：
   - `backend/core/fanxiu_mumu_control.py`：MuMu ADB、MuMu 窗口捕获兜底、截图匹配、点击/拖拽/输入。

@@ -152,6 +152,66 @@ def _is_local_mumu_adb_serial(serial: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"} and port in MUMU_ADB_PORTS
 
 
+def _mumu_adb_proxy_devices_allowed() -> bool:
+    return _is_truthy_env(os.environ.get(MUMU_ADB_ALLOW_PROXY_DEVICES_ENV))
+
+
+def _mumu_manager_path() -> Path | None:
+    try:
+        adb_path = fanxiu_android_proxy_service.adb_path()
+    except Exception:
+        return None
+    candidates = [
+        adb_path.parents[3] / "nx_main" / "MuMuManager.exe" if len(adb_path.parents) >= 4 else None,
+        adb_path.parents[2] / "nx_main" / "MuMuManager.exe" if len(adb_path.parents) >= 3 else None,
+        Path(r"D:\TapTap\Support\android_emulator\engine\nx_main\MuMuManager.exe"),
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
+def _mumu_manager_adb_serial_candidates() -> list[str]:
+    manager_path = _mumu_manager_path()
+    if manager_path is None:
+        return []
+    try:
+        process = subprocess.run(
+            [str(manager_path), "info", "--vmindex", "all"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        return []
+    if process.returncode != 0 or not process.stdout.strip():
+        return []
+    try:
+        info = json.loads(process.stdout)
+    except Exception:
+        return []
+    candidates: list[str] = []
+    players = info.values() if isinstance(info, dict) else []
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        if not bool(player.get("is_process_started")):
+            continue
+        host = str(player.get("adb_host_ip") or "").strip()
+        port = player.get("adb_port")
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError):
+            continue
+        if host and port_int > 0:
+            candidates.append(f"{host}:{port_int}")
+    return _dedupe_mumu_adb_serials(candidates)
+
+
 def _mumu_adb_serial_candidates() -> list[str]:
     env_candidates: list[str] = []
     for key in MUMU_ADB_SERIAL_ENV_KEYS:
@@ -164,13 +224,15 @@ def _mumu_adb_serial_candidates() -> list[str]:
 
     candidates: list[str] = []
     cached_serial = _MUMU_ADB_SESSION.get("serial")
-    if cached_serial:
+    if cached_serial and (_is_local_mumu_adb_serial(str(cached_serial)) or _mumu_adb_proxy_devices_allowed()):
         candidates.append(str(cached_serial))
     candidates.extend(f"127.0.0.1:{port}" for port in MUMU_ADB_PORTS)
-    try:
-        candidates.extend(fanxiu_android_proxy_service.devices())
-    except Exception:
-        pass
+    candidates.extend(_mumu_manager_adb_serial_candidates())
+    if _mumu_adb_proxy_devices_allowed():
+        try:
+            candidates.extend(fanxiu_android_proxy_service.devices())
+        except Exception:
+            pass
     return _dedupe_mumu_adb_serials(candidates)
 
 
@@ -401,6 +463,13 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
         cached_device = _MUMU_ADB_SESSION.get("device")
         cached_port = _MUMU_ADB_SESSION.get("port")
         cached_serial = str(_MUMU_ADB_SESSION.get("serial") or "")
+        candidate_serials = _mumu_adb_serial_candidates()
+        candidate_serial_set = set(candidate_serials)
+        if cached_serial and cached_serial not in candidate_serial_set:
+            _close_mumu_adb_session()
+            cached_device = None
+            cached_port = None
+            cached_serial = ""
         if cached_device is not None and cached_port is not None and cached_serial:
             try:
                 data = cached_device.shell(command, transport_timeout_s=timeout_s, read_timeout_s=timeout_s, decode=False)
@@ -409,7 +478,7 @@ def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[
                 errors.append(f"{cached_serial}: {exc}")
                 _close_mumu_adb_session()
 
-        for serial in _mumu_adb_serial_candidates():
+        for serial in candidate_serials:
             parsed = _parse_adb_serial_host_port(serial)
             if parsed is None:
                 continue
