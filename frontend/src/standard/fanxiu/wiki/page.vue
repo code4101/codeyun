@@ -5490,26 +5490,8 @@ function mailRewardItems(row: FanxiuMailRecord): Record<string, any>[] {
   const packet = payload.packet && typeof payload.packet === 'object' && Array.isArray(payload.packet.mail_rewards)
     ? payload.packet.mail_rewards
     : []
-  return dedupeMailRewardItems([...direct, ...packet].filter(item => item && typeof item === 'object'))
-}
-
-function mailRewardDedupKey(item: Record<string, any>) {
-  const itemId = String(item.item_id ?? item.id ?? '').trim()
-  const amount = item.amount ?? item.num ?? item.count ?? ''
-  const text = String(item.text ?? '').trim()
-  return `${itemId}|${amount}|${text}`
-}
-
-function dedupeMailRewardItems(items: Record<string, any>[]) {
-  const seen = new Set<string>()
-  const deduped: Record<string, any>[] = []
-  for (const item of items) {
-    const key = mailRewardDedupKey(item)
-    if (seen.has(key)) continue
-    seen.add(key)
-    deduped.push(item)
-  }
-  return deduped
+  const sourceItems = direct.length ? direct : packet
+  return sourceItems.filter(item => item && typeof item === 'object')
 }
 
 function mailRewardText(row: FanxiuMailRecord) {
