@@ -759,6 +759,48 @@ def test_fanxiu_bt_go_scene_accepts_hash_scene_id(monkeypatch):
     assert calls[0].entry_id == "entry"
 
 
+def test_fanxiu_bt_auto_queued_task_waits_when_requested(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    waits = []
+
+    def fake_enqueue(request):
+        return {
+            "status": "idle",
+            "phase": "manual_job_queued",
+            "queued_job": {"id": "manual-1", "task_type": request.task_type},
+        }
+
+    def fake_wait(status, timeout_seconds):
+        waits.append((status, timeout_seconds))
+        return 0
+
+    monkeypatch.setattr(fanxiu_bt, "fanxiu_local_task_should_enqueue", lambda mode: True)
+    monkeypatch.setattr(fanxiu_bt, "enqueue_fanxiu_local_manual_job", fake_enqueue)
+    monkeypatch.setattr(fanxiu_bt, "_wait_and_print_queued_job", fake_wait)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "--entry-id",
+            "entry",
+            "--wait",
+            "--wait-timeout-seconds",
+            "42",
+            "task",
+            "xianfu_visit_partner",
+            "--run-mode",
+            "auto",
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert len(waits) == 1
+    assert waits[0][0]["queued_job"]["id"] == "manual-1"
+    assert waits[0][1] == 42.0
+
+
 def test_runtime_management_does_not_import_fanxiu_api_directly():
     source = Path("backend/core/runtime_management.py").read_text(encoding="utf-8")
 

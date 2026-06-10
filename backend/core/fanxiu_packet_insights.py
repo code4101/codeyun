@@ -2028,6 +2028,238 @@ def _runtime_player_profile_rows(snapshot: dict[str, Any]) -> list[dict[str, Any
     return rows
 
 
+def _decoded_entries_from_decode_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    frames = result.get("frames") if isinstance(result, dict) else None
+    if not isinstance(frames, list):
+        return []
+    decoded_path = Path(str(result.get("stored_decoded_path") or result.get("output_path") or ""))
+    meta = _load_json(Path(str(result.get("meta_path") or "")), {}) if result.get("meta_path") else {}
+    decoded_at = str(result.get("created_at") or meta.get("created_at") or "").strip()
+    if not decoded_at and decoded_path.is_file():
+        decoded_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(decoded_path.stat().st_mtime))
+    record_id = str(result.get("record_id") or meta.get("record_id") or "")
+    pcap_name = str(
+        result.get("pcap_name")
+        or meta.get("pcap_name")
+        or Path(str(result.get("pcap") or decoded_path.name or "")).name
+    )
+    entries: list[dict[str, Any]] = []
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            continue
+        parsed = frame.get("parsed")
+        name = str(frame.get("name") or (parsed.get("_class") if isinstance(parsed, dict) else "") or "")
+        if not name:
+            continue
+        if not isinstance(parsed, dict):
+            parsed = {"_class": name, "_parse_error": frame.get("parse_error") or frame.get("decode_error") or ""}
+        entries.append(
+            {
+                "id": "|".join(
+                    [
+                        str(record_id or decoded_path or ""),
+                        str(frame.get("direction") or ""),
+                        str(frame.get("offset") or index),
+                        str(frame.get("pro_id") or ""),
+                        str(frame.get("sn") or ""),
+                    ]
+                ),
+                "decoded_at": decoded_at,
+                "record_id": record_id,
+                "pcap_name": pcap_name,
+                "source_path": str(decoded_path),
+                "source_pcap": result.get("source_pcap") or meta.get("source_pcap") or result.get("pcap") or "",
+                "stored_pcap": result.get("stored_pcap") or meta.get("stored_pcap") or "",
+                "stream": int(result.get("stream") or meta.get("stream") or 0),
+                "direction": frame.get("direction") or "",
+                "name": name,
+                "pro_id": int(frame.get("pro_id") or 0),
+                "sn": int(frame.get("sn") or 0),
+                "frame_index": index,
+                "content": parsed,
+            }
+        )
+    return entries
+
+
+def _business_snapshot_from_decoded_entries(
+    entries: list[dict[str, Any]],
+    *,
+    export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    item_index = _load_item_index(export_root=export_root)
+    login_rows: list[dict[str, Any]] = []
+    self_identity_rows: list[dict[str, Any]] = []
+    player_profile_rows: list[dict[str, Any]] = []
+    wallet_rows: list[dict[str, Any]] = []
+    bag_rows: list[dict[str, Any]] = []
+    equipment_rows: list[dict[str, Any]] = []
+    energy_rows: list[dict[str, Any]] = []
+    medicine_rows: list[dict[str, Any]] = []
+    attr_rows: list[dict[str, Any]] = []
+    worship_record_rows: list[dict[str, Any]] = []
+    worship_packet_rows: list[dict[str, Any]] = []
+    current_login_identity: dict[str, Any] | None = None
+
+    for entry in entries:
+        parsed = entry.get("content")
+        if not isinstance(parsed, dict):
+            continue
+        name = str(entry.get("name") or parsed.get("_class") or "")
+        if name == "SM_Login":
+            row = _extract_login_account(parsed, entry)
+            if row:
+                login_rows.append(row)
+                current_login_identity = row
+        if name == "SM_ActivityRankSync":
+            row = _extract_self_rank_identity(parsed, entry)
+            if row:
+                self_identity_rows.append(row)
+        if name == "SM_Wallet":
+            row = _extract_wallet(parsed, entry, item_index)
+            if row:
+                wallet_rows.append(row)
+        if name == "SM_AllBagSyncInfo":
+            row = _extract_bag(parsed, entry, item_index, owner_identity=current_login_identity, export_root=export_root)
+            if row:
+                bag_rows.append(row)
+        if name == "SM_ShowOther":
+            row = _extract_show_other_profile(parsed, entry, export_root=export_root)
+            if row:
+                player_profile_rows.append(row)
+        if name == "SM_SyncPlayer":
+            row = _extract_sync_player_profile(parsed, entry, export_root=export_root)
+            if row:
+                player_profile_rows.append(row)
+        if name == "SM_SyncAllEquipment":
+            row = _extract_equipment(parsed, entry, item_index)
+            if row:
+                equipment_rows.append(row)
+        if name == "SM_BlueStarSeaEnergyChange":
+            row = _extract_blue_star_energy(parsed, entry)
+            if row:
+                energy_rows.append(row)
+        if name == "SM_TakeMedicineSync":
+            row = _extract_medicine(parsed, entry)
+            if row:
+                medicine_rows.append(row)
+        if name in SELF_PROFILE_ATTRIBUTE_PROTOCOLS:
+            row = _extract_attr_changes(parsed, entry)
+            if row:
+                attr_rows.append(row)
+        if "Worship" in name:
+            rows = _extract_worship_records(parsed, entry) if name.startswith("SM_") else []
+            if rows:
+                worship_record_rows.extend(rows)
+            worship_packet_rows.append(_worship_packet_observation(parsed, entry, rows))
+
+    self_identity = _latest_configured_self_profile_identity(login_rows, self_identity_rows) or _latest_self_profile_identity_from_database()
+    player_profile_rows.extend(_self_profile_rows_from_attribute_changes(attr_rows, self_identity))
+    latest_bag_by_owner = _latest_bag_by_owner(bag_rows)
+    return {
+        "account": {
+            "latest_login": _latest(login_rows),
+            "latest_identity": _latest(self_identity_rows) or _latest(login_rows),
+        },
+        "player_profiles": {
+            "daily_records": _dedupe_player_profile_daily_rows(player_profile_rows),
+            "records": player_profile_rows,
+        },
+        "wallet": _latest(wallet_rows),
+        "bag_records": list(latest_bag_by_owner.values()),
+        "equipment": _latest(equipment_rows),
+        "worship": {
+            "records": _dedupe_worship_records([row for row in worship_record_rows if row.get("protocol") != "SM_WorshipRank"]),
+            "rank_records": [row for row in worship_record_rows if row.get("protocol") == "SM_WorshipRank"],
+            "packets": worship_packet_rows,
+        },
+        "gameplay": {
+            "blue_star_energy": _latest(energy_rows),
+            "medicine": _latest(medicine_rows),
+            "recent_attribute_changes": attr_rows,
+        },
+    }
+
+
+def sync_fanxiu_packet_business_for_decode_result(
+    result: dict[str, Any],
+    *,
+    data_dir: str | Path | None = None,
+    export_root: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Persist recognized business facts from one decoded TCP result.
+
+    This is the primary decoded -> database ingestor. Runtime insight rebuilds and
+    maintenance scans should call the same reducer/upsert path instead of owning
+    separate write logic.
+    """
+    entries = _decoded_entries_from_decode_result(result)
+    if not entries:
+        return None
+    names = {str(entry.get("name") or "") for entry in entries}
+    activity_sync = None
+    if names.intersection(ACTIVITY_PACKET_PROTOCOLS):
+        activity_sync = sync_fanxiu_activity_packets(data_dir=data_dir, export_root=export_root, force=False)
+    if not names.intersection(PACKET_RUNTIME_INSIGHT_PROTOCOLS):
+        if activity_sync is None:
+            return None
+        return {"ok": True, "changed": bool(activity_sync), "activity_packet_sync": activity_sync}
+
+    snapshot = _business_snapshot_from_decoded_entries(entries, export_root=export_root)
+    business_rows = _runtime_business_record_rows(snapshot)
+    player_profile_rows = _runtime_player_profile_rows(snapshot)
+    empty_business_sync = {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+    empty_profile_sync = {"created": 0, "skipped_invalid": 0, "skipped_duplicate": 0}
+    try:
+        from sqlmodel import Session
+        from backend.db import engine
+
+        with Session(engine) as session:
+            business_sync = (
+                upsert_fanxiu_packet_business_records(session, business_rows)
+                if business_rows
+                else empty_business_sync
+            )
+            profile_sync = (
+                upsert_fanxiu_player_profile_rows(session, player_profile_rows)
+                if player_profile_rows
+                else empty_profile_sync
+            )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "changed": False,
+            "mode": "decoded_business_ingest",
+            "error": str(exc),
+            "business_database_sync": empty_business_sync,
+            "player_profile_database_sync": empty_profile_sync,
+            "activity_packet_sync": activity_sync,
+        }
+    changed = bool(
+        business_sync.get("created")
+        or business_sync.get("updated")
+        or profile_sync.get("created")
+        or (activity_sync and (
+            activity_sync.get("inserted")
+            or activity_sync.get("updated")
+            or activity_sync.get("rank_inserted")
+            or activity_sync.get("rank_updated")
+        ))
+    )
+    return {
+        "ok": True,
+        "changed": changed,
+        "mode": "decoded_business_ingest",
+        "source_count": 1,
+        "protocols": sorted(name for name in names if name),
+        "business_row_count": len(business_rows),
+        "player_profile_row_count": len(player_profile_rows),
+        "business_database_sync": business_sync,
+        "player_profile_database_sync": profile_sync,
+        "activity_packet_sync": activity_sync,
+    }
+
+
 def _persist_runtime_business_records_to_database(snapshot: dict[str, Any]) -> dict[str, Any]:
     rows = _runtime_business_record_rows(snapshot)
     player_profile_rows = _runtime_player_profile_rows(snapshot)

@@ -874,6 +874,28 @@ def ensure_data_annotation_behavior_tree_service_on_startup() -> dict[str, Any] 
         return ensure_data_annotation_behavior_tree_service(session)
 
 
+def _local_builtin_service_autostart_enabled(env_name: str) -> bool:
+    configured = _env_enabled(os.getenv(env_name))
+    return True if configured is None else configured
+
+
+def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    if _local_builtin_service_autostart_enabled("CODEYUN_WATCHDOG_AUTOSTART"):
+        try:
+            results[CODEYUN_WATCHDOG_SERVICE_KEY] = start_codeyun_watchdog()
+        except CodeYunWatchdogError as exc:
+            results[CODEYUN_WATCHDOG_SERVICE_KEY] = {"status": "error", "error": str(exc)}
+
+    if _local_builtin_service_autostart_enabled("CODEYUN_PROXY_TRAFFIC_AUDIT_AUTOSTART"):
+        try:
+            results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = start_proxy_traffic_audit()
+        except ProxyTrafficAuditError as exc:
+            results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = {"status": "error", "error": str(exc)}
+
+    return results
+
+
 def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:
     del replace_existing
     with Session(engine) as session:

@@ -1916,13 +1916,12 @@ def _sync_fanxiu_packet_runtime_insights_after_decode(
     export_root: str | Path | None = None,
 ) -> None:
     try:
-        from backend.core.fanxiu_packet_insights import sync_fanxiu_packet_runtime_insights_for_decode_result
+        from backend.core.fanxiu_packet_insights import sync_fanxiu_packet_business_for_decode_result
 
-        sync_fanxiu_packet_runtime_insights_for_decode_result(
+        sync_fanxiu_packet_business_for_decode_result(
             result,
             data_dir=data_dir,
             export_root=export_root,
-            force=False,
         )
     except Exception:
         return

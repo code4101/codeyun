@@ -140,7 +140,7 @@ def test_packet_mail_seen_does_not_downgrade_missing_from_list():
         create_time_text="2026年06月06日11:30",
         source="packet",
         status="seen",
-        action_policy="delete",
+        action_policy="claim",
         payload={"mail_rewards": []},
     )
     session.commit()
@@ -150,7 +150,7 @@ def test_packet_mail_seen_does_not_downgrade_missing_from_list():
     assert created_again is False
     assert record.id == again.id
     assert row.status == "missing_from_list"
-    assert row.action_policy == "delete"
+    assert row.action_policy == "claim"
 
 
 def test_packet_mail_seen_does_not_downgrade_requested_action():
@@ -494,8 +494,8 @@ def test_mail_sync_applies_action_policy_from_packet_attachments(monkeypatch):
     rows = {row.mail_id: row for row in session.exec(select(FanxiuMailRecord)).all()}
 
     assert result["inserted"] == 3
-    assert rows["mail-a"].action_policy == "delete"
-    assert rows["mail-b"].action_policy == "delete"
+    assert rows["mail-a"].action_policy == "claim"
+    assert rows["mail-b"].action_policy == "claim"
     assert rows["mail-c"].action_policy == "claim"
     assert len([row for row in rows.values() if row.normalized_title == "香车馈赠"]) == 2
 
@@ -549,8 +549,8 @@ def test_mail_sync_reports_real_action_policy_counts(monkeypatch):
 
     result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
 
-    assert result["claim_policy_count"] == 1
-    assert result["delete_policy_count"] == 1
+    assert result["claim_policy_count"] == 2
+    assert result["delete_policy_count"] == 0
 
 
 def test_mail_policy_claims_known_safe_rewards():

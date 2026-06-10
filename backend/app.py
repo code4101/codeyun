@@ -26,7 +26,10 @@ from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
 from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
 from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
-from backend.core.runtime_management import ensure_data_annotation_behavior_tree_service_on_startup
+from backend.core.runtime_management import (
+    ensure_data_annotation_behavior_tree_service_on_startup,
+    ensure_local_builtin_services_on_startup,
+)
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -80,6 +83,11 @@ async def lifespan(app: FastAPI):
     if not settings.is_test:
         start_system_metrics_monitor()
     init_background_task_runner()
+    if not settings.is_test:
+        local_service_results = ensure_local_builtin_services_on_startup()
+        for service_key, result in local_service_results.items():
+            if isinstance(result, dict) and result.get("status") == "error":
+                logger.warning("Skipping local builtin service startup %s: %s", service_key, result.get("error"))
     if not settings.is_test:
         fanxiu_packet_insight_worker.start()
     if not settings.is_test and _fanxiu_capture_runtime_service_enabled():

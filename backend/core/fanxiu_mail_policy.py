@@ -95,8 +95,6 @@ def fanxiu_mail_desired_status_for_rewards(rewards: list[dict[str, Any]]) -> str
 
 
 def fanxiu_mail_action_policy_for_rewards(rewards: list[dict[str, Any]]) -> str:
-    if not rewards:
-        return "delete"
     return "claim" if fanxiu_mail_desired_status_for_rewards(rewards) == "可领" else ""
 
 

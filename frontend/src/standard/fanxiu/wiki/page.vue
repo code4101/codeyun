@@ -214,6 +214,8 @@ const STORAGE_BAG_FILTER_STORAGE_KEY = 'fanxiu:wiki:storage-bag-filter'
 const STORAGE_BAG_WORSHIP_CHART_PLANES_STORAGE_KEY = 'fanxiu:wiki:storage-bag-worship-chart-planes'
 const PLAYER_PROFILE_PREF_STORAGE_KEY = 'fanxiu:wiki:player-profile-preferences'
 const MAIL_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-status-filter'
+const MAIL_RECORD_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-record-status-filter'
+const MAIL_SUMMARY_STATUS_FILTER_STORAGE_KEY = 'fanxiu:wiki:mail-summary-status-filter'
 const ACTIVITY_PERIOD_PANE_HEIGHT_STORAGE_KEY = 'fanxiu:wiki:activity-period-pane-height'
 const ACTIVITY_NOTE_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-binding'
 const ACTIVITY_NOTE_INDEX_QUERY_TAB_ID = 'fanxiu-wiki-activity-note-index'
@@ -625,7 +627,8 @@ const packetRuntimeInsightsLoading = ref(false)
 const mailRecords = ref<FanxiuMailRecord[]>([])
 const mailRewardItemCardCache = ref<Record<string, FanxiuItemCard | null>>({})
 const mailRewardItemCardLoading = new Set<string>()
-const selectedMailStatuses = ref<MailStatusFilter[]>(MAIL_STATUS_OPTIONS.map(option => option.key))
+const mailRecordSelectedStatuses = ref<MailStatusFilter[]>(MAIL_STATUS_OPTIONS.map(option => option.key))
+const mailSummarySelectedStatuses = ref<MailStatusFilter[]>(MAIL_STATUS_OPTIONS.map(option => option.key))
 const mailSortKey = ref<MailSortKey>('time')
 const mailSortOrder = ref<SortOrder>('desc')
 const mailPage = ref(1)
@@ -1208,17 +1211,23 @@ function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
 function loadMailStatusFilterPreference() {
   if (!canUseLocalStorage()) return
   try {
-    selectedMailStatuses.value = normalizeMailStatusFilters(window.localStorage.getItem(MAIL_STATUS_FILTER_STORAGE_KEY))
+    const legacy = window.localStorage.getItem(MAIL_STATUS_FILTER_STORAGE_KEY)
+    mailRecordSelectedStatuses.value = normalizeMailStatusFilters(window.localStorage.getItem(MAIL_RECORD_STATUS_FILTER_STORAGE_KEY) ?? legacy)
+    mailSummarySelectedStatuses.value = normalizeMailStatusFilters(window.localStorage.getItem(MAIL_SUMMARY_STATUS_FILTER_STORAGE_KEY) ?? legacy)
   } catch (error) {
     console.warn('Failed to load Fanxiu mail status filter preference:', error)
     window.localStorage.removeItem(MAIL_STATUS_FILTER_STORAGE_KEY)
+    window.localStorage.removeItem(MAIL_RECORD_STATUS_FILTER_STORAGE_KEY)
+    window.localStorage.removeItem(MAIL_SUMMARY_STATUS_FILTER_STORAGE_KEY)
   }
 }
 
-function persistMailStatusFilterPreference() {
+function persistMailStatusFilterPreference(tab: MailSubTab = mailSubTab.value) {
   if (!canUseLocalStorage()) return
   try {
-    window.localStorage.setItem(MAIL_STATUS_FILTER_STORAGE_KEY, JSON.stringify(selectedMailStatuses.value))
+    const key = tab === 'summary' ? MAIL_SUMMARY_STATUS_FILTER_STORAGE_KEY : MAIL_RECORD_STATUS_FILTER_STORAGE_KEY
+    const value = tab === 'summary' ? mailSummarySelectedStatuses.value : mailRecordSelectedStatuses.value
+    window.localStorage.setItem(key, JSON.stringify(value))
   } catch (error) {
     console.warn('Failed to persist Fanxiu mail status filter preference:', error)
   }
@@ -5379,15 +5388,21 @@ function cycleMailStatus(row: FanxiuMailRecord) {
   if (option) void setMailStatus(row, option.status)
 }
 
+const activeMailSelectedStatuses = computed(() => (
+  mailSubTab.value === 'summary' ? mailSummarySelectedStatuses.value : mailRecordSelectedStatuses.value
+))
+
 function toggleMailStatusFilter(value: MailStatusFilter) {
-  const selected = new Set(selectedMailStatuses.value)
+  const target = mailSubTab.value === 'summary' ? mailSummarySelectedStatuses : mailRecordSelectedStatuses
+  const selected = new Set(target.value)
   if (selected.has(value)) {
     selected.delete(value)
   } else {
     selected.add(value)
   }
-  selectedMailStatuses.value = MAIL_STATUS_OPTIONS.map(option => option.key).filter(key => selected.has(key))
-  persistMailStatusFilterPreference()
+  if (!selected.size) selected.add(value)
+  target.value = MAIL_STATUS_OPTIONS.map(option => option.key).filter(key => selected.has(key))
+  persistMailStatusFilterPreference(mailSubTab.value)
 }
 
 function formatMailTimestamp(value?: number) {
@@ -5661,7 +5676,18 @@ function mailSearchText(row: FanxiuMailRecord) {
 
 const filteredMailRecords = computed(() => {
   const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
-  const selectedStatuses = new Set(selectedMailStatuses.value)
+  const selectedStatuses = new Set(mailRecordSelectedStatuses.value)
+  return mailRecords.value.filter(row => {
+    if (!selectedStatuses.has(mailStatusKey(row))) return false
+    if (!tokens.length) return true
+    const haystack = mailSearchText(row)
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const filteredMailSummaryRecords = computed(() => {
+  const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
+  const selectedStatuses = new Set(mailSummarySelectedStatuses.value)
   return mailRecords.value.filter(row => {
     if (!selectedStatuses.has(mailStatusKey(row))) return false
     if (!tokens.length) return true
@@ -5690,7 +5716,7 @@ const mailTitleSummaries = computed(() => {
     initialStatusCounts: Record<MailDesiredStatus, number>;
     rewards: Map<string, { key: string; item: Record<string, any>; count: number }>;
   }>()
-  for (const row of filteredMailRecords.value) {
+  for (const row of filteredMailSummaryRecords.value) {
     const title = String(row.title || row.normalized_title || '未命名邮件').trim()
     const key = title || '未命名邮件'
     let group = groups.get(key)
@@ -11864,7 +11890,7 @@ watch([query, playerProfileSortKey, selectedPlayerProfileAttackUnits], () => {
 watch(playerProfilePageCount, () => {
   if (playerProfilePage.value > playerProfilePageCount.value) playerProfilePage.value = playerProfilePageCount.value
 })
-watch([query, selectedMailStatuses, mailSortKey, mailSortOrder], () => {
+watch([query, mailRecordSelectedStatuses, mailSummarySelectedStatuses, mailSortKey, mailSortOrder], () => {
   if (activeTab.value === 'mail') {
     mailPage.value = 1
     mailSummaryPage.value = 1
@@ -13017,7 +13043,7 @@ onBeforeUnmount(() => {
             v-for="option in MAIL_STATUS_OPTIONS"
             :key="option.key"
             class="facet-option"
-            :class="[`mail-status-filter-${option.key}`, { active: selectedMailStatuses.includes(option.key) }]"
+            :class="[`mail-status-filter-${option.key}`, { active: activeMailSelectedStatuses.includes(option.key) }]"
             type="button"
             @click="toggleMailStatusFilter(option.key)"
           >

@@ -136,3 +136,42 @@ def test_mumu_adb_recovery_does_not_use_proxy_device_by_default(monkeypatch):
         raise AssertionError("expected adb unavailable")
 
     assert (str(Path("D:/adb.exe")), "connect", "192.168.31.181:5555") not in calls
+
+
+def test_mumu_adb_session_ignores_cached_proxy_device_by_default(monkeypatch):
+    for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
+    mumu._MUMU_ADB_SESSION.clear()
+    mumu._clear_mumu_adb_failure_cache()
+    mumu._MUMU_ADB_SESSION.update({"device": object(), "host": "192.168.31.181", "port": 5555, "serial": "192.168.31.181:5555"})
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
+
+    attempted = []
+
+    class FakeDevice:
+        def __init__(self, host, port, **_kwargs):
+            self.host = host
+            self.port = port
+            attempted.append(f"{host}:{port}")
+
+        def connect(self, **_kwargs):
+            if self.host != "127.0.0.1" or self.port != 7555:
+                raise RuntimeError("unexpected serial")
+
+        def shell(self, *_args, **_kwargs):
+            return b"\x89PNG\r\n\x1a\nfake"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mumu, "AdbDeviceTcp", None, raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "adb_shell.adb_device", SimpleNamespace(AdbDeviceTcp=FakeDevice))
+
+    data, meta = mumu._mumu_adb_session_shell_bytes("screencap -p")
+
+    assert data.startswith(b"\x89PNG")
+    assert attempted[0] == "127.0.0.1:7555"
+    assert meta["adb_serial"] == "127.0.0.1:7555"

@@ -68,6 +68,13 @@ from backend.core.fanxiu_data_annotation_state import (
 )
 
 
+def _canonical_runtime_task_type(task_type: str) -> str:
+    task_type = str(task_type or "").strip()
+    if task_type == "mail_claim_check":
+        return "mail_cleanup"
+    return task_type
+
+
 def read_world_facts(path: Path | None = None) -> dict[str, Any]:
     return read_data_annotation_world_facts(path or fanxiu_data_annotation_world_facts_path())
 
@@ -142,7 +149,7 @@ def enqueue_manual_job(
     interruptible: bool | None = None,
     manual_job_path: Path | None = None,
 ) -> dict[str, Any]:
-    task_type = str(task_type or "detect_scene").strip() or "detect_scene"
+    task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
     ensure_fanxiu_runtime_jobs_registered()
     definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
     job = create_data_annotation_manual_job(
@@ -191,7 +198,7 @@ def repair_orphaned_scheduler_runs(
 
 def task_supported(task: dict[str, Any]) -> bool:
     ensure_fanxiu_runtime_jobs_registered()
-    definition = get_fanxiu_data_annotation_manual_job_definition(str(task.get("task_type") or ""))
+    definition = get_fanxiu_data_annotation_manual_job_definition(_canonical_runtime_task_type(str(task.get("task_type") or "")))
     return bool(definition and definition.scheduler_supported)
 
 
@@ -464,7 +471,7 @@ def submit_manual_job(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    task_type = str(task_type or "detect_scene").strip() or "detect_scene"
+    task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
     definition = get_fanxiu_data_annotation_manual_job_definition(task_type)
     if definition is None:
         raise ValueError(f"暂不支持的任务类型：{task_type}")

@@ -1,9 +1,13 @@
+import threading
+
 import pytest
 
-from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner, ensure_fanxiu_runtime_jobs_registered
+from backend.core.fanxiu_data_annotation_runtime_runner import FanxiuRuntime
 from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import (
     MatchRole,
+    Shape,
     View,
     flatten_shapes,
     image_number,
@@ -141,6 +145,8 @@ def test_fanxiu_runtime_shape_load_uses_existing_drag_action(monkeypatch):
     }
     shape = View(image).get_shape("邮件清单2")
     dragged = []
+    sleeps = []
+    monkeypatch.setattr("pyxllib.autogui.runtime.time.sleep", lambda seconds: sleeps.append(seconds))
 
     monkeypatch.setattr(
         runner,
@@ -153,6 +159,7 @@ def test_fanxiu_runtime_shape_load_uses_existing_drag_action(monkeypatch):
     assert shape is not None
     assert list(shape.load(runtime, ratio=0.5, duration=1.5)) == [1]
     assert dragged == [("邮件", 30.0, 115.0, 30.0, 65.0, 1500)]
+    assert sleeps == [2.0]
     assert runtime.attrs["load_new"] is True
 
 
@@ -278,7 +285,7 @@ def test_fanxiu_runtime_find_view_empty_group_uses_top_level_identity_only(monke
     assert runtime.find_view("").raw is image35
 
 
-def test_mail_claim_check_v2_entry_prefers_view68_mail(monkeypatch, tmp_path):
+def test_mail_cleanup_entry_prefers_view68_mail(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -321,7 +328,7 @@ def test_mail_claim_check_v2_entry_prefers_view68_mail(monkeypatch, tmp_path):
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_claim_check_v2_entry(runtime),
+        lambda: runner._open_mail_cleanup_entry(runtime),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -330,7 +337,7 @@ def test_mail_claim_check_v2_entry_prefers_view68_mail(monkeypatch, tmp_path):
     assert clicked == [("世界-下方动态", "邮件")]
 
 
-def test_mail_claim_check_v2_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
+def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image34 = {
         "type": "image",
@@ -354,7 +361,23 @@ def test_mail_claim_check_v2_entry_falls_back_to_view35_mail(monkeypatch, tmp_pa
         "filename": "0035.png",
         "width": 900,
         "height": 1600,
-        "shapes": [{"id": "mail35", "kind": "rect", "title": "邮件", "x": 0.5, "y": 0.8, "w": 0.1, "h": 0.08}],
+        "shapes": [
+            {
+                "id": "mail35",
+                "kind": "rect",
+                "title": "邮件",
+                "floating": True,
+                "imageMatchRole": "optional",
+                "ocrEnabled": True,
+                "ocrText": "邮",
+                "ocrMatchRole": "optional",
+                "ocrMatchMode": "contains",
+                "x": 0.5,
+                "y": 0.8,
+                "w": 0.1,
+                "h": 0.08,
+            }
+        ],
     }
     image121 = {
         "type": "image",
@@ -385,13 +408,207 @@ def test_mail_claim_check_v2_entry_falls_back_to_view35_mail(monkeypatch, tmp_pa
 
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
-        lambda: runner._open_mail_claim_check_v2_entry(runtime),
+        lambda: runner._open_mail_cleanup_entry(runtime),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
 
     assert result == "success"
     assert clicked == [("世界", "打开下方菜单"), ("世界下方菜单", "邮件")]
+
+
+def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = {
+        "type": "image",
+        "title": "世界",
+        "filename": "0034.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.8, "y": 0.9, "w": 0.1, "h": 0.05}],
+    }
+    image68 = {
+        "type": "image",
+        "title": "世界-下方动态",
+        "filename": "0068.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "mail68", "kind": "rect", "title": "邮件", "x": 0.3, "y": 0.8, "w": 0.1, "h": 0.05}],
+    }
+    image35 = {
+        "type": "image",
+        "title": "世界下方菜单",
+        "filename": "0035.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "id": "mail35",
+                "kind": "rect",
+                "title": "邮件",
+                "floating": True,
+                "imageMatchRole": "optional",
+                "ocrEnabled": True,
+                "ocrText": "邮",
+                "ocrMatchRole": "optional",
+                "ocrMatchMode": "contains",
+                "x": 0.5,
+                "y": 0.8,
+                "w": 0.1,
+                "h": 0.08,
+            }
+        ],
+    }
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "identity", "kind": "rect", "title": "邮件标识", "sceneIdentityRole": "decisive"}],
+    }
+    ctx = {"entry": object(), "asset_tree_path": tmp_path / "asset_tree.json", "images": {34: image34, 68: image68, 35: image35, 121: image121}}
+    frames = []
+
+    monkeypatch.setattr(runner, "_go_scene_task", lambda _ctx, _path, scene_id, _stop: "success" if scene_id == 34 else "unexpected")
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: f"frame{len(frames)}")
+
+    def match_shape(_ctx, _image, shape, frame, *, condition="auto"):
+        frames.append((shape.get("title"), frame, condition))
+        return {
+            "matched": shape.get("title") == "邮件" and frame != "frame0" and condition == "ocr",
+            "similarity": 100 if frame != "frame0" and condition == "ocr" else 0,
+            "matches": [{"text": "邮"}] if frame != "frame0" and condition == "ocr" else [],
+            "fixed_box": {"name": shape.get("title"), "x": 450, "y": 1450, "w": 90, "h": 110},
+            "resolved_box": {"name": shape.get("title"), "x": 450, "y": 1450, "w": 90, "h": 110},
+        }
+
+    monkeypatch.setattr(runner, "_match_shape", match_shape)
+    monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_cleanup_entry(runtime),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert any(title == "邮件" and frame != "frame0" for title, frame, _condition in frames)
+
+
+def test_mail_cleanup_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = {
+        "type": "image",
+        "title": "世界",
+        "filename": "0034.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.8, "y": 0.9, "w": 0.1, "h": 0.05}],
+    }
+    image68 = {"type": "image", "title": "世界-下方动态", "filename": "0068.png", "width": 900, "height": 1600, "shapes": []}
+    image35 = {
+        "type": "image",
+        "title": "世界下方菜单",
+        "filename": "0035.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "id": "mail35",
+                "kind": "rect",
+                "title": "邮件",
+                "floating": True,
+                "sceneJumpTarget": "121(1)",
+                "imageMatchRole": "optional",
+                "ocrEnabled": True,
+                "ocrText": "邮",
+                "ocrMatchRole": "optional",
+                "ocrMatchMode": "contains",
+                "x": 0.5,
+                "y": 0.9,
+                "w": 0.1,
+                "h": 0.08,
+            }
+        ],
+    }
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "identity", "kind": "rect", "title": "邮件标识", "sceneIdentityRole": "decisive"}],
+    }
+    ctx = {"entry": object(), "asset_tree_path": tmp_path / "asset_tree.json", "images": {34: image34, 68: image68, 35: image35, 121: image121}}
+    fixed_clicks = []
+
+    def timeout_wait_click(self, view, shape, *, timeout=None, interval_action=1):
+        assert timeout == 8.0
+        raise TimeoutError("等待点击超时：邮件")
+        yield
+
+    monkeypatch.setattr(FanxiuRuntime, "wait_click_shape", timeout_wait_click)
+    monkeypatch.setattr(runner, "_go_scene_task", lambda _ctx, _path, scene_id, _stop: "success" if scene_id == 34 else "unexpected")
+    monkeypatch.setattr(runner, "_match_shape", lambda *_args, **_kwargs: {"matched": False, "similarity": 0, "matches": []})
+    monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: fixed_clicks.append((image["title"], x, y)))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_cleanup_entry(runtime),
+        stop_event=FakeStopEvent(),
+        max_runtime_seconds=5,
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert fixed_clicks == [("世界下方菜单", 495.0, 1539.84)]
+    assert any("#35「邮件」OCR 未命中" in log["message"] for log in runner.status()["logs"])
+
+
+def test_runtime_view_open_world_menu_falls_back_to_fixed_click(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = {
+        "type": "image",
+        "title": "世界",
+        "filename": "0034.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.8, "y": 0.9, "w": 0.1, "h": 0.05}],
+    }
+    clicked = []
+
+    def click_shape(*_args, **_kwargs):
+        raise RuntimeError("未能按图像定位浮动按钮「打开下方菜单」")
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], x, y)))
+
+    runtime = runner._fanxiu_runtime({"entry": type("Entry", (), {"mode": "local"})(), "images": {34: image34}})
+    View(image34).get_shape("打开下方菜单").click(runtime)
+
+    assert clicked == [("世界", 765.0, 1480.0)]
+    assert runtime.cur_frame() == "frame"
 
 
 def test_fanxiu_runtime_wait_click_tries_ocr_after_image_miss(monkeypatch):
@@ -458,6 +675,64 @@ def test_fanxiu_runtime_wait_click_tries_ocr_after_image_miss(monkeypatch):
     assert clicked[0][2]["ocr_text"] == "邮"
 
 
+def test_mail_entry_wait_click_prefers_ocr_before_image(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = {
+        "type": "image",
+        "title": "世界下方菜单",
+        "filename": "0035.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "id": "mail35",
+                "kind": "rect",
+                "title": "邮件",
+                "floating": True,
+                "sceneJumpTarget": "121(1)",
+                "imageMatchRole": "optional",
+                "ocrEnabled": True,
+                "ocrText": "邮",
+                "ocrMatchRole": "optional",
+                "ocrMatchMode": "contains",
+                "x": 0.5,
+                "y": 0.9,
+                "w": 0.1,
+                "h": 0.08,
+            }
+        ],
+    }
+    shape = View(image35).get_shape("邮件")
+    ctx = {"entry": type("Entry", (), {"mode": "local"})(), "images": {35: image35}}
+    calls = []
+    clicked = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+
+    def match_shape(_ctx, _image, _shape, _frame, *, condition="auto"):
+        calls.append(condition)
+        return {
+            "matched": condition == "ocr",
+            "similarity": 100 if condition == "ocr" else 90,
+            "ocr_text": "邮" if condition == "ocr" else "",
+            "matches": [{"text": "邮"}] if condition == "ocr" else [],
+            "fixed_box": {"name": "ocr", "x": 320, "y": 1380, "w": 80, "h": 50},
+            "resolved_box": {"name": "ocr", "x": 320, "y": 1380, "w": 80, "h": 50},
+        }
+
+    monkeypatch.setattr(runner, "_match_shape", match_shape)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame, **kwargs: clicked.append((image["title"], shape["title"], kwargs.get("match_result"))))
+
+    runtime = runner._fanxiu_runtime(ctx)
+    waiter = shape.wait_click(runtime)
+
+    with pytest.raises(StopIteration):
+        next(waiter)
+
+    assert calls == ["ocr"]
+    assert clicked[0][2]["ocr_text"] == "邮"
+
+
 def test_shape_match_uses_full_frame_ocr_overlap_after_crop_ocr_miss(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image35 = {
@@ -504,7 +779,50 @@ def test_shape_match_uses_full_frame_ocr_overlap_after_crop_ocr_miss(monkeypatch
     assert result["ocr_text"] == "止清羊驼仙缘邮件设置"
 
 
-def test_mail_claim_check_v2_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
+def test_shape_match_accepts_ocr_contains_even_when_similarity_is_low(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = {
+        "type": "image",
+        "title": "世界下方菜单",
+        "filename": "0035.png",
+        "width": 900,
+        "height": 1600,
+    }
+    shape = {
+        "id": "mail35",
+        "kind": "rect",
+        "title": "邮件",
+        "floating": True,
+        "imageMatchRole": "optional",
+        "ocrEnabled": True,
+        "ocrText": "邮",
+        "ocrMatchRole": "optional",
+        "ocrMatchMode": "contains",
+        "x": 0.499,
+        "y": 0.908,
+        "w": 0.1,
+        "h": 0.069,
+    }
+    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+
+    def run_match(_ctx, _image, _shape, _frame, *, scan=False, match_strategy="auto", ocr_enabled=False):
+        assert ocr_enabled is True
+        return {
+            "similarity": 63,
+            "matches": [{"text": "邮传", "x": 459, "y": 1527, "w": 57, "h": 30}],
+            "fixed_box": {"name": "ocr", "x": 459, "y": 1527, "w": 57, "h": 30},
+        }
+
+    monkeypatch.setattr(runner, "_run_match", run_match)
+
+    result = runner._match_shape(ctx, image35, shape, "frame", condition="ocr")
+
+    assert result["matched"] is True
+    assert result["ocr_text"] == "邮传"
+    assert result["resolved_box"] == {"name": "ocr", "x": 459, "y": 1527, "w": 57, "h": 30}
+
+
+def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     image121 = {
         "type": "image",
@@ -540,7 +858,7 @@ def test_mail_claim_check_v2_uses_runtime_view_shape_flow(monkeypatch, tmp_path)
             yield None
         return "success"
 
-    monkeypatch.setattr(runner, "_open_mail_claim_check_v2_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(identify_results))
     monkeypatch.setattr(
@@ -560,7 +878,7 @@ def test_mail_claim_check_v2_uses_runtime_view_shape_flow(monkeypatch, tmp_path)
             return False
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._execute_mail_claim_check_v2_task(ctx, FakeStopEvent(), {"max_actions": 1}),
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 1}),
         stop_event=FakeStopEvent(),
         tick_seconds=0.01,
     )
@@ -568,3 +886,202 @@ def test_mail_claim_check_v2_uses_runtime_view_shape_flow(monkeypatch, tmp_path)
     assert result == "success"
     assert clicked == [("邮件", "潜修心得"), ("邮件详情", "领取")]
     assert updates == [("潜修心得", "claim_requested")]
+
+
+def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
+        ],
+    }
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {121: image121},
+    }
+    clicked = []
+
+    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+
+    def fake_open_entry(_runtime):
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
+
+    def fake_load(_shape, runtime, *_args, **_kwargs):
+        runtime.attrs["load_new"] = False
+        if False:
+            yield None
+
+    monkeypatch.setattr(Shape, "load", fake_load)
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [("邮件", "一键删除")]
+
+
+def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
+        ],
+    }
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {121: image121},
+    }
+    clicked = []
+
+    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+
+    def fake_open_entry(_runtime):
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
+
+    def fake_load(_shape, runtime, *_args, **_kwargs):
+        runtime.attrs["load_new"] = True
+        if False:
+            yield None
+
+    monkeypatch.setattr(Shape, "load", fake_load)
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5, "max_scrolls": 1}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [("邮件", "一键删除")]
+    assert any("仍未确认到底，继续一键删除已阅" in log["message"] for log in runner.status()["logs"])
+
+
+def test_legacy_mail_claim_check_task_type_runs_mail_cleanup(monkeypatch, tmp_path):
+    ensure_fanxiu_runtime_jobs_registered()
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6}],
+    }
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {121: image121},
+    }
+    called = []
+
+    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr(runner, "_execute_mail_cleanup_task", lambda *_args, **_kwargs: called.append("cleanup") or "success")
+
+    result = runner._execute_runtime_task(ctx, "mail_claim_check", {}, threading.Event())
+
+    assert result == "success"
+    assert called == ["cleanup"]
+
+
+def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image175 = {
+        "type": "image",
+        "title": "继续寻访",
+        "filename": "0175.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "close", "kind": "shape", "title": "关闭", "x": 0.2, "y": 0.8, "w": 0.1, "h": 0.03},
+            {"id": "half", "kind": "shape", "title": "半价", "x": 0.5, "y": 0.75, "w": 0.1, "h": 0.03},
+            {"id": "continue", "kind": "shape", "title": "继续", "x": 0.6, "y": 0.8, "w": 0.1, "h": 0.03},
+        ],
+    }
+    image174 = {"type": "image", "title": "绝品仙侣", "filename": "0174.png", "width": 900, "height": 1600, "shapes": []}
+    clicked: list[str] = []
+    ocr_values = iter(["50半价", "100半价"])
+
+    class FakeRuntime:
+        def get_view(self, view_id):
+            if view_id == 175:
+                return View(image175)
+            if view_id == 174:
+                return View(image174)
+            return None
+
+        def wait_view(self, *views, timeout=None, label=""):
+            del timeout, label
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return self.get_view(int(views[0]))
+
+        def cur_frame(self, update=False):
+            del update
+            return "frame"
+
+        def click_shape(self, _view, shape):
+            clicked.append(shape.title)
+
+    def fake_ocr_lines_in_shapes(_frame, _image, shape_titles, **_kwargs):
+        if tuple(shape_titles) == ("半价",):
+            return [{"text": next(ocr_values), "x": 0, "y": 0, "w": 10, "h": 10}]
+        return []
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", fake_ocr_lines_in_shapes)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_xianfu_continue_visit_popup(FakeRuntime(), max_continue=20),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["继续", "关闭"]

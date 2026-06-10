@@ -111,7 +111,7 @@ def requeue_running_data_annotation_manual_jobs(
         # Current non-mail manual jobs can perform non-idempotent actions, so
         # do not replay them after a reload. Legacy running records may lack a
         # group marker; keep requeueing those so older local state can recover.
-        return str(job.get("task_type") or "") in {"mail_claim_check", "detect_scene", "manual_tick"}
+        return str(job.get("task_type") or "") in {"mail_cleanup", "mail_claim_check", "detect_scene", "manual_tick"}
 
     return requeue_running_jobs(jobs, keep_running_job=should_requeue, now=now)
 

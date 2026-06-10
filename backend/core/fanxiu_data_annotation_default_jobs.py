@@ -19,7 +19,9 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "go_scene",
     "hide_floating_window",
     "daily_signup",
-    "mail_claim_check",
+    "mail_cleanup",
+    "xianfu_visit_partner",
+    "xianfu_learn_skill",
 )
 
 
@@ -117,11 +119,29 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         del payload
         return runner._execute_daily_signup_task(ctx, stop_event)
 
-    @register_fanxiu_data_annotation_manual_job("mail_claim_check", "邮件_领取检查", scheduler_supported=True)
-    def _run_data_annotation_mail_claim_check_manual_job(
+    @register_fanxiu_data_annotation_manual_job("mail_cleanup", "邮件_清理", scheduler_supported=True)
+    def _run_data_annotation_mail_cleanup_manual_job(
         runner: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_mail_claim_check_v2_task(ctx, stop_event, payload)
+        return runner._execute_mail_cleanup_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("xianfu_visit_partner", "仙府_寻访仙侣", scheduler_supported=True)
+    def _run_data_annotation_xianfu_visit_partner_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_xianfu_visit_partner_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("xianfu_learn_skill", "仙府_领悟绝技", scheduler_supported=True)
+    def _run_data_annotation_xianfu_learn_skill_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_xianfu_learn_skill_task(ctx, stop_event, payload)

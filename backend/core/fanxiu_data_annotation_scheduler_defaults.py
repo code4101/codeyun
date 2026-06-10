@@ -111,6 +111,35 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
             "checkpoint": None,
         }
 
+    def runtime_dynamic_task(
+        task_id: str,
+        task_type: str,
+        label: str,
+        *,
+        interruptible: bool = True,
+        cooldown_seconds: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "id": task_id,
+            "task_type": task_type,
+            "label": label,
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "legacy_name": label,
+            "enabled": False,
+            "interruptible": interruptible,
+            "next_time": None,
+            "schedule_times": [],
+            "window": None,
+            "last_run_at": None,
+            "last_result": "",
+            "retry_after": None,
+            "cooldown_seconds": cooldown_seconds,
+            "payload": payload or {},
+            "checkpoint": None,
+        }
+
     return [
         {
             "id": "gift-code-weekly",
@@ -133,10 +162,10 @@ def default_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
         },
         manual_task("go-settings", "go_scene", "到设置页 #49", payload={"target_scene_id": 49}),
         manual_task("hide-floating-window", "hide_floating_window", "隐藏浮动窗"),
-        manual_task("mail-claim-check", "mail_claim_check", "邮件_领取检查"),
+        runtime_daily_task("mail-cleanup", "mail_cleanup", "邮件_清理", "00:05", cooldown_seconds=600),
         legacy_dynamic_task("legacy-dynamic-daily-boss", "日常_首领"),
-        legacy_dynamic_task("legacy-dynamic-xianfu-visit", "仙府_寻访仙侣"),
-        legacy_dynamic_task("legacy-dynamic-xianfu-skill", "仙府_领悟绝技"),
+        runtime_dynamic_task("xianfu-visit-partner", "xianfu_visit_partner", "仙府_寻访仙侣", cooldown_seconds=600),
+        runtime_dynamic_task("xianfu-learn-skill", "xianfu_learn_skill", "仙府_领悟绝技", cooldown_seconds=600),
         legacy_dynamic_task("legacy-dynamic-xianlv-lilian", "日常_仙侣历练", fallback_minutes=60),
         legacy_daily_task("legacy-daily-mozu", "日常_魔祖", "12:29", window=("12:29", "12:35")),
         legacy_daily_task("legacy-daily-lingquan", "日常_灵泉", "20:29", window=("20:29", "20:35")),
