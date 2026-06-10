@@ -11865,10 +11865,16 @@ watch(playerProfilePageCount, () => {
   if (playerProfilePage.value > playerProfilePageCount.value) playerProfilePage.value = playerProfilePageCount.value
 })
 watch([query, selectedMailStatuses, mailSortKey, mailSortOrder], () => {
-  if (activeTab.value === 'mail') mailPage.value = 1
+  if (activeTab.value === 'mail') {
+    mailPage.value = 1
+    mailSummaryPage.value = 1
+  }
 }, { deep: true })
 watch([mailPageCount, mailPageSize], () => {
   if (mailPage.value > mailPageCount.value) mailPage.value = mailPageCount.value
+})
+watch([mailSummaryPageCount, mailSummaryPageSize], () => {
+  if (mailSummaryPage.value > mailSummaryPageCount.value) mailSummaryPage.value = mailSummaryPageCount.value
 })
 watch([activeTab, activeMailRewardItemIds], ([tab, itemIds]) => {
   if (tab === 'mail') {
@@ -13160,9 +13166,12 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in mailTitleSummaries" :key="row.title">
+            <tr v-for="(row, index) in visibleMailTitleSummaries" :key="row.title">
               <td class="mail-summary-title-cell">
-                <div class="mail-title-cell">{{ row.title }}</div>
+                <div class="mail-summary-title-line">
+                  <span class="mail-summary-index">{{ mailSummaryRowNumber(index) }}</span>
+                  <span class="mail-title-cell">{{ row.title }}</span>
+                </div>
                 <div class="mail-summary-status-line">
                   <span v-if="!mailStatusDistributionParts(row.initialStatusCounts).length" class="mail-reward-empty">-</span>
                   <span v-else class="mail-status-distribution">
@@ -13232,6 +13241,16 @@ onBeforeUnmount(() => {
             </tr>
           </tbody>
         </table>
+        <StandardPagination
+          v-if="mailTitleSummaries.length > mailSummaryPageSize"
+          class="object-pagination mail-pagination"
+          :page="mailSummaryPage"
+          :page-size="mailSummaryPageSize"
+          :page-count="mailSummaryPageCount"
+          :page-size-options="MAIL_PAGE_SIZE_OPTIONS"
+          @page-change="handleMailSummaryPageChange"
+          @page-size-change="handleMailSummaryPageSizeChange"
+        />
         <div v-if="!mailTitleSummaries.length" class="empty-state">没有匹配的邮件汇总</div>
       </section>
       <div v-if="!mailRecords.length" class="empty-state">还没有邮件记录；执行邮件检查后会写入这里。</div>
@@ -18051,8 +18070,23 @@ onBeforeUnmount(() => {
   line-height: 1.4;
 }
 
+.mail-summary-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mail-summary-index {
+  min-width: 18px;
+  color: #667085;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .mail-summary-status-line {
   margin-top: 8px;
+  padding-left: 26px;
 }
 
 .mail-table .storage-bag-sort-button::after {
