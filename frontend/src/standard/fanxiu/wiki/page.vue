@@ -453,6 +453,8 @@ type PageConfig = {
   pageSize?: number
   mailPage?: number
   mailPageSize?: number
+  mailSummaryPage?: number
+  mailSummaryPageSize?: number
   selectedId?: string
   expandedFacetRows?: Record<string, boolean>
 }
@@ -628,6 +630,8 @@ const mailSortKey = ref<MailSortKey>('time')
 const mailSortOrder = ref<SortOrder>('desc')
 const mailPage = ref(1)
 const mailPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
+const mailSummaryPage = ref(1)
+const mailSummaryPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
 const mailSubTab = ref<MailSubTab>('records')
 const updatingMailKeys = ref<string[]>([])
 const mailContentDialogVisible = ref(false)
@@ -1261,6 +1265,8 @@ function loadPageConfig() {
     pageSize.value = normalizePageSize(config.pageSize, 50)
     mailPage.value = normalizePage(config.mailPage, 1)
     mailPageSize.value = normalizeMailPageSize(config.mailPageSize)
+    mailSummaryPage.value = normalizePage(config.mailSummaryPage, 1)
+    mailSummaryPageSize.value = normalizeMailPageSize(config.mailSummaryPageSize)
     selectedId.value = String(config.selectedId ?? '')
     expandedFacetRows.value = config.expandedFacetRows && typeof config.expandedFacetRows === 'object'
       ? { ...config.expandedFacetRows }
@@ -1306,6 +1312,8 @@ function persistPageConfig() {
       pageSize: pageSize.value,
       mailPage: mailPage.value,
       mailPageSize: mailPageSize.value,
+      mailSummaryPage: mailSummaryPage.value,
+      mailSummaryPageSize: mailSummaryPageSize.value,
       selectedId: selectedId.value,
       expandedFacetRows: expandedFacetRows.value,
     }))
@@ -5725,11 +5733,14 @@ const mailTitleSummaries = computed(() => {
     })
     .sort((a, b) => b.count - a.count || mailStatusRank(b.initialStatus) - mailStatusRank(a.initialStatus) || a.title.localeCompare(b.title, 'zh-Hans-CN'))
 })
+const mailSummaryPageCount = computed(() => Math.max(1, Math.ceil(mailTitleSummaries.value.length / Math.max(mailSummaryPageSize.value, 1))))
+const mailSummaryPageStart = computed(() => (mailSummaryPage.value - 1) * mailSummaryPageSize.value)
+const visibleMailTitleSummaries = computed(() => mailTitleSummaries.value.slice(mailSummaryPageStart.value, mailSummaryPageStart.value + mailSummaryPageSize.value))
 
 const activeMailRewardItemIds = computed(() => {
   const itemIds = new Set<string>()
   const rewards = mailSubTab.value === 'summary'
-    ? mailTitleSummaries.value.flatMap(row => row.averageRewards)
+    ? visibleMailTitleSummaries.value.flatMap(row => row.averageRewards)
     : visibleMailRecords.value.flatMap(row => mailRewardItems(row))
   for (const item of rewards) {
     const itemId = String(item.item_id || '').trim()
@@ -5756,6 +5767,10 @@ function mailRowNumber(index: number) {
   return mailPageStart.value + index + 1
 }
 
+function mailSummaryRowNumber(index: number) {
+  return mailSummaryPageStart.value + index + 1
+}
+
 function handleMailPageChange(nextPage: number) {
   mailPage.value = Math.min(mailPageCount.value, Math.max(1, normalizePage(nextPage, 1)))
 }
@@ -5767,6 +5782,15 @@ function handleMailPageStep(delta: number) {
 function handleMailPageSizeChange(nextPageSize: number) {
   mailPageSize.value = normalizeMailPageSize(nextPageSize)
   mailPage.value = 1
+}
+
+function handleMailSummaryPageChange(nextPage: number) {
+  mailSummaryPage.value = Math.min(mailSummaryPageCount.value, Math.max(1, normalizePage(nextPage, 1)))
+}
+
+function handleMailSummaryPageSizeChange(nextPageSize: number) {
+  mailSummaryPageSize.value = normalizeMailPageSize(nextPageSize)
+  mailSummaryPage.value = 1
 }
 const playerProfileSnapshot = computed<Record<string, any>>(() => packetInsightSnapshot.value.player_profiles ?? {})
 const playerProfileRawRows = computed<Record<string, any>[]>(() => {
@@ -11807,6 +11831,8 @@ watch([
   pageSize,
   mailPage,
   mailPageSize,
+  mailSummaryPage,
+  mailSummaryPageSize,
   selectedId,
 ], persistPageConfig)
 watch(storageBagSubGroupOptions, options => {
