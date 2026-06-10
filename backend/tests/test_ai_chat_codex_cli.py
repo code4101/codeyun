@@ -139,6 +139,7 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     assert Path(command[0]).name.lower() in {"codex", "codex.cmd", "codex.exe", "codex.ps1"}
     assert command[1:4] == ["-p", "myprofile", "exec"]
     assert "--ignore-user-config" in command
+    assert command[command.index("--disable") + 1] == "image_generation"
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert "--skip-git-repo-check" in command
     assert "--json" in command
