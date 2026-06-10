@@ -250,25 +250,41 @@ CODEX_DIARY_DIALOGUE_PREFIXES = (
     "你确定",
     "是不是",
     "是的",
+    "你说得对",
+    "你说的对",
     "可以",
     "好的",
     "对",
     "没错",
     "已改完",
+    "已改",
+    "已改好",
+    "已修",
     "已经改完",
     "已经删了",
     "已删除",
+    "修好了",
+    "读到了",
+    "查到了",
 )
 CODEX_DIARY_TITLE_BAD_VALUES = {
     "是的",
+    "你说得对",
+    "你说的对",
     "可以",
     "好的",
     "对",
     "没错",
     "已改完",
+    "已改",
+    "已改好",
+    "已修",
     "已经改完",
     "已经删了",
     "已删除",
+    "修好了",
+    "读到了",
+    "查到了",
 }
 CODEX_DIARY_TITLE_KEYWORDS = (
     "接口",
@@ -2271,10 +2287,11 @@ def _build_codex_diary_record_summary(records: list[dict[str, Any]]) -> str:
 def _build_codex_diary_entry_title(records: list[dict[str, Any]], summary: str) -> str:
     phrase = re.split(r"[。！？!?；;，,]", _clean_codex_diary_summary_text(summary), maxsplit=1)[0]
     phrase = phrase.strip(" ：:，,；;。")
-    if phrase and not _is_codex_diary_dialogue_sentence(phrase, [str(record.get("user_request") or "") for record in records]):
-        return _truncate_codex_diary_text(phrase, 32, suffix="")
+    candidate = _normalize_codex_diary_ai_title(phrase)
+    if candidate and not _is_codex_diary_dialogue_sentence(candidate, [str(record.get("user_request") or "") for record in records]):
+        return _truncate_codex_diary_text(candidate, 32, suffix="")
     for record in records:
-        candidate = _clean_codex_diary_summary_text(record.get("thread_title"))
+        candidate = _normalize_codex_diary_ai_title(record.get("thread_title"))
         if candidate and not _is_codex_diary_dialogue_sentence(candidate, [str(record.get("user_request") or "")]):
             return _truncate_codex_diary_text(candidate, 32, suffix="")
     return "Codex 事项"
@@ -2363,7 +2380,7 @@ def _strip_codex_diary_title_noise(value: Any) -> str:
         for prefix in sorted(CODEX_DIARY_TITLE_BAD_VALUES, key=len, reverse=True):
             if text == prefix:
                 return ""
-            for separator in ("，", ",", "。", "；", ";", "：", ":"):
+            for separator in ("，", ",", "。", "；", ";", "：", ":", "、"):
                 marker = f"{prefix}{separator}"
                 if text.startswith(marker):
                     text = text[len(marker):].strip(" ：:，,；;。")
@@ -2372,7 +2389,24 @@ def _strip_codex_diary_title_noise(value: Any) -> str:
             if changed:
                 break
     text = re.sub(r"^(你这个反馈是对的|这个反馈是对的)[，,；;。]*", "", text).strip(" ：:，,；;。")
+    text = re.sub(r"^(问题确实是|问题是|原因是|这次是|这次不是)[：:，,；;。]*", "", text).strip(" ：:，,；;。")
+    text = re.sub(r"^(先按你说的|按你说的)[“\"'：:，,；;。]*", "", text).strip(" ：:，,；;。”\"'")
+    text = re.sub(r"^(小模块先修处理了|已修这块|已经修好|已修好|修复了|处理了)[：:，,；;。]*", "", text).strip(" ：:，,；;。")
     return text
+
+
+def _is_codex_diary_low_information_title(value: Any) -> bool:
+    text = _strip_codex_diary_title_noise(value)
+    if not text:
+        return True
+    if "?" in text or "？" in text:
+        return True
+    normalized = re.sub(r"[\s：:，,；;。.!！、]+", "", text)
+    if not normalized:
+        return True
+    if normalized in CODEX_DIARY_TITLE_BAD_VALUES:
+        return True
+    return False
 
 
 def _choose_primary_codex_diary_title_clause(value: str) -> str:
@@ -2385,8 +2419,13 @@ def _choose_primary_codex_diary_title_clause(value: str) -> str:
     if len(parts) <= 1:
         return text
     for part in parts:
-        if part and part not in CODEX_DIARY_TITLE_BAD_VALUES:
-            return part
+        stripped = _strip_codex_diary_title_noise(part)
+        if (
+            stripped
+            and stripped not in CODEX_DIARY_TITLE_BAD_VALUES
+            and (len(stripped) > 2 or any(keyword.lower() in stripped.lower() for keyword in CODEX_DIARY_TITLE_KEYWORDS))
+        ):
+            return stripped
     return parts[0] if parts else text
 
 
@@ -2395,7 +2434,7 @@ def _normalize_codex_diary_ai_title(value: Any) -> str:
     text = re.sub(r"^(综合|杂项|多项整合|多项处理|多项事项|general|CodeYun/笔记|codeyun|Codex)[：:\s]*", "", text, flags=re.IGNORECASE)
     text = _choose_primary_codex_diary_title_clause(text)
     text = text.rstrip(".…")
-    if not text or text in CODEX_DIARY_TITLE_BAD_VALUES:
+    if not text or _is_codex_diary_low_information_title(text):
         return ""
     if len(text) <= 2 and not any(keyword.lower() in text.lower() for keyword in CODEX_DIARY_TITLE_KEYWORDS):
         return ""
