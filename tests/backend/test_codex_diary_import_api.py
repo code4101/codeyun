@@ -1813,7 +1813,14 @@ def test_codex_diary_general_fallback_does_not_merge_unrelated_threads(
 def test_codex_diary_ai_title_rejects_low_information_prefixes():
     assert _normalize_codex_diary_ai_title("可以") == ""
     assert _normalize_codex_diary_ai_title("已改完") == ""
+    assert _normalize_codex_diary_ai_title("修好了") == ""
+    assert _normalize_codex_diary_ai_title("读到了") == ""
+    assert _normalize_codex_diary_ai_title("你说得对") == ""
+    assert _normalize_codex_diary_ai_title("任务树?") == ""
     assert _normalize_codex_diary_ai_title("是的，会话列表全量时间线分页加载") == "会话列表全量时间线分页加载"
+    assert _normalize_codex_diary_ai_title("读到了：邮件标识场景标注") == "邮件标识场景标注"
+    assert _normalize_codex_diary_ai_title("你说得对、日程条文字排版修复") == "日程条文字排版修复"
+    assert _normalize_codex_diary_ai_title("已改、已改好：活动视图里的档期") == "活动视图里的档期"
     assert _normalize_codex_diary_ai_title("综合修复事项") == "修复事项"
 
 
@@ -1844,6 +1851,22 @@ def test_codex_diary_fallback_title_does_not_join_two_topics():
     }
 
     assert _build_codex_diary_title(block) == "考勤表链路已修复"
+
+
+def test_codex_diary_fallback_title_skips_low_information_result_phrase():
+    block = {
+        "records": [
+            {
+                "thread_title": "凡修邮件前端数量问题",
+                "user_request": "小模块先修邮件前端数量。",
+                "assistant_result": "读到了；先按你说的小模块先修处理了邮件前端数量问题。",
+                "start_at": _ts(2026, 5, 1, 9, 0),
+                "end_at": _ts(2026, 5, 1, 9, 20),
+            }
+        ]
+    }
+
+    assert _build_codex_diary_title(block) == "邮件前端数量问题"
 
 
 def test_codex_diary_ai_summary_items_strip_number_prefixes():
