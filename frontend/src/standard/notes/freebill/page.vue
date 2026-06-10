@@ -12,6 +12,7 @@ import {
 import * as echarts from 'echarts/core'
 import type { ComposeOption, ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
+import StandardPagination from '@/components/StandardPagination.vue'
 
 import {
   cloneFreebillProgramChannel,
@@ -3008,14 +3009,12 @@ onUnmounted(() => {
             v-if="selectedCategoryDetailState && selectedCategoryDetailState.total > selectedCategoryDetailState.pageSize"
             class="category-detail-pagination"
           >
-            <el-pagination
-              small
-              background
-              layout="prev, pager, next"
-              :current-page="selectedCategoryDetailState.page"
+            <StandardPagination
+              :page="selectedCategoryDetailState.page"
               :page-size="selectedCategoryDetailState.pageSize"
               :total="selectedCategoryDetailState.total"
-              @current-change="changeCategoryDetailPage"
+              :show-page-size="false"
+              @page-change="changeCategoryDetailPage"
             />
           </div>
         </div>

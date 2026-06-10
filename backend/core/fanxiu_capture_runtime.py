@@ -19,8 +19,11 @@ DEFAULT_FANXIU_DEVICE_ID = "127.0.0.1:7555"
 FANXIU_DEVICE_ID_ENV_KEYS = ("FANXIU_CAPTURE_DEVICE_ID", "FANXIU_ADB_DEVICE_ID")
 DEFAULT_FANXIU_PACKAGE_NAME = "com.frxxcrjpwssc3.ggws"
 DEFAULT_REMOTE_CAPTURE_DIR = "/data/local/tmp"
-DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 6.0
+DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS = 30.0
+DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS = 30.0
+DEFAULT_CAPTURE_SNAPSHOT_INTERVAL_SECONDS = 10.0
 DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
+DEFAULT_CAPTURE_STREAM_TO_LOCAL = False
 MIN_CAPTURE_PCAP_BYTES = 24
 
 
@@ -44,11 +47,13 @@ class FanxiuCaptureRuntimeService:
         package_name: str = DEFAULT_FANXIU_PACKAGE_NAME,
         supervisor_interval: float = 5.0,
         idle_finalize_seconds: float = DEFAULT_CAPTURE_IDLE_FINALIZE_SECONDS,
+        max_segment_seconds: float = DEFAULT_CAPTURE_MAX_SEGMENT_SECONDS,
     ) -> None:
         self.device_id = self._configured_device_id() or str(device_id or DEFAULT_FANXIU_DEVICE_ID).strip()
         self.package_name = package_name
         self.supervisor_interval = supervisor_interval
         self.idle_finalize_seconds = max(1.0, float(idle_finalize_seconds))
+        self.max_segment_seconds = max(10.0, float(max_segment_seconds))
         self._lock = threading.RLock()
         self._active_reasons: set[str] = set()
         self._state = "stopped"
@@ -61,11 +66,18 @@ class FanxiuCaptureRuntimeService:
         self._tcpdump_ready = False
         self._tcpdump_process: subprocess.Popen[str] | None = None
         self._tcpdump_started_at = ""
+        self._tcpdump_started_monotonic = 0.0
+        self._capture_stream_to_local = DEFAULT_CAPTURE_STREAM_TO_LOCAL
+        self._capture_mode = ""
+        self._stream_writer_thread: threading.Thread | None = None
+        self._stream_writer_error = ""
         self._current_remote_pcap_path = ""
         self._current_pcap_path = ""
         self._current_pcap_size = 0
         self._last_remote_pcap_size = 0
         self._last_remote_pcap_size_seen_at = 0.0
+        self._last_snapshot_remote_pcap_size = 0
+        self._last_snapshot_at = 0.0
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._watchdog_stop_event = threading.Event()
@@ -177,6 +189,9 @@ class FanxiuCaptureRuntimeService:
                 "current_pcap_path": self._current_pcap_path,
                 "current_pcap_size": self._current_pcap_size,
                 "current_remote_pcap_path": self._current_remote_pcap_path,
+                "capture_mode": self._capture_mode,
+                "stream_writer_alive": bool(self._stream_writer_thread and self._stream_writer_thread.is_alive()),
+                "stream_writer_error": self._stream_writer_error,
                 "started_at": self._started_at,
                 "last_error": self._last_error,
                 "last_recover_at": self._last_recover_at,
@@ -397,10 +412,17 @@ class FanxiuCaptureRuntimeService:
         return ready
 
     def _start_tcpdump_locked(self) -> None:
+        self._cleanup_stale_codeyun_tcpdump_locked()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         capture_dir = resolve_fanxiu_tcp_live_capture_dir()
         local_path = capture_dir / f"fanxiu_runtime_{timestamp}.pcap"
         remote_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_fanxiu_runtime_{timestamp}.pcap"
+        if self._capture_stream_to_local:
+            try:
+                self._start_local_stream_tcpdump_locked(local_path)
+                return
+            except Exception as exc:
+                self._log(f"local stream tcpdump failed; fallback remote file: {exc}")
         command = [
             str(self._adb_path()),
             "-s",
@@ -431,14 +453,55 @@ class FanxiuCaptureRuntimeService:
         )
         self._current_remote_pcap_path = remote_path
         self._current_pcap_path = str(local_path)
+        self._capture_mode = "remote-file"
+        self._stream_writer_thread = None
+        self._stream_writer_error = ""
         self._current_pcap_size = 0
         self._last_remote_pcap_size = 0
         self._last_remote_pcap_size_seen_at = time.monotonic()
+        self._last_snapshot_remote_pcap_size = 0
+        self._last_snapshot_at = 0.0
         self._tcpdump_started_at = _now_label()
+        self._tcpdump_started_monotonic = time.monotonic()
         self._state = "running"
         self._last_error = ""
         self._log(f"tcpdump started: {remote_path} -> {local_path}")
         self._verify_remote_capture_file(remote_path)
+
+    def _start_local_stream_tcpdump_locked(self, local_path: Path) -> None:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        shell_command = "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555 2>/dev/null"
+        command = [str(self._adb_path()), "-s", self.device_id, "shell", "-T", shell_command]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+        )
+        self._tcpdump_process = process
+        self._current_remote_pcap_path = ""
+        self._current_pcap_path = str(local_path)
+        self._capture_mode = "local-stream"
+        self._stream_writer_error = ""
+        self._current_pcap_size = 0
+        self._last_remote_pcap_size = 0
+        self._last_remote_pcap_size_seen_at = time.monotonic()
+        self._last_snapshot_remote_pcap_size = 0
+        self._last_snapshot_at = 0.0
+        self._tcpdump_started_at = _now_label()
+        self._tcpdump_started_monotonic = time.monotonic()
+        self._state = "running"
+        self._last_error = ""
+        self._stream_writer_thread = threading.Thread(
+            target=self._write_tcpdump_stream_to_file,
+            args=(process, local_path),
+            name="fanxiu-capture-local-stream-writer",
+            daemon=True,
+        )
+        self._stream_writer_thread.start()
+        self._log(f"tcpdump local stream started: {local_path}")
+        self._verify_local_stream_capture(local_path)
 
     def _verify_remote_capture_file(self, remote_path: str) -> None:
         deadline = time.time() + 2.5
@@ -456,16 +519,62 @@ class FanxiuCaptureRuntimeService:
                 output = str(exc)
         raise RuntimeError(f"tcpdump 启动后立即退出：{remote_path}；{self._compact_output(output)}")
 
+    def _verify_local_stream_capture(self, local_path: Path) -> None:
+        deadline = time.time() + 2.5
+        while time.time() < deadline:
+            if self._tcpdump_process and self._tcpdump_process.poll() is not None:
+                break
+            if local_path.exists() and local_path.stat().st_size > 0:
+                return
+            time.sleep(0.1)
+        proc = self._tcpdump_process
+        if proc and proc.poll() is None:
+            return
+        output = ""
+        if proc is not None:
+            try:
+                stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                output = stderr
+            except Exception as exc:
+                output = str(exc)
+        raise RuntimeError(f"tcpdump 本机流启动后立即退出：{local_path}；{self._compact_output(output)}")
+
+    def _write_tcpdump_stream_to_file(self, process: subprocess.Popen[bytes], local_path: Path) -> None:
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            with local_path.open("wb") as file:
+                stdout = process.stdout
+                if stdout is None:
+                    raise RuntimeError("tcpdump stdout 不可用")
+                fd = stdout.fileno()
+                while True:
+                    chunk = os.read(fd, 64 * 1024)
+                    if not chunk:
+                        break
+                    file.write(chunk)
+                    file.flush()
+        except Exception as exc:
+            self._stream_writer_error = str(exc)
+            self._log(f"local stream writer failed: {exc}")
+
     def _stop_tcpdump_locked(self, *, queue_sync: bool = True) -> None:
         remote_path = self._current_remote_pcap_path
         local_path = self._current_pcap_path
         proc = self._tcpdump_process
+        writer_thread = self._stream_writer_thread
+        capture_mode = self._capture_mode
         self._tcpdump_process = None
+        self._stream_writer_thread = None
         if remote_path:
             try:
                 self._run_adb(["-s", self.device_id, "shell", "pkill", "-INT", "tcpdump"], timeout=5)
             except Exception as exc:
                 self._log(f"pkill tcpdump failed: {exc}")
+        elif capture_mode == "local-stream":
+            try:
+                self._run_adb(["-s", self.device_id, "shell", "pkill", "-INT", "tcpdump"], timeout=5)
+            except Exception as exc:
+                self._log(f"pkill stream tcpdump failed: {exc}")
         if proc and proc.poll() is None:
             try:
                 proc.terminate()
@@ -475,7 +584,15 @@ class FanxiuCaptureRuntimeService:
                     proc.kill()
                 except Exception:
                     pass
-        if remote_path and local_path:
+        if writer_thread and writer_thread.is_alive():
+            writer_thread.join(timeout=5.0)
+        self._cleanup_stale_local_tcpdump_adb_locked()
+        if capture_mode == "local-stream" and local_path:
+            self._current_pcap_size = Path(local_path).stat().st_size if Path(local_path).exists() else 0
+            self._log(f"local stream pcap sealed: {local_path} ({self._current_pcap_size} bytes)")
+            if queue_sync and self._current_pcap_size > 0:
+                self._start_runtime_packet_sync_thread(local_path)
+        elif remote_path and local_path:
             try:
                 self._run_adb(["-s", self.device_id, "pull", remote_path, local_path], timeout=60)
                 self._run_adb(["-s", self.device_id, "shell", "rm", "-f", remote_path], timeout=5)
@@ -486,8 +603,76 @@ class FanxiuCaptureRuntimeService:
             except Exception as exc:
                 self._log(f"pcap pull failed: {exc}")
         self._tcpdump_started_at = ""
+        self._tcpdump_started_monotonic = 0.0
+        self._capture_mode = ""
         self._last_remote_pcap_size = 0
         self._last_remote_pcap_size_seen_at = 0.0
+        self._last_snapshot_remote_pcap_size = 0
+        self._last_snapshot_at = 0.0
+
+    def _cleanup_stale_codeyun_tcpdump_locked(self) -> None:
+        """Recover the global singleton after backend reloads leave adb shells alive."""
+        self._cleanup_stale_remote_tcpdump_locked()
+        self._cleanup_stale_local_tcpdump_adb_locked()
+
+    def _cleanup_stale_remote_tcpdump_locked(self) -> None:
+        try:
+            self._run_adb(
+                [
+                    "-s",
+                    self.device_id,
+                    "shell",
+                    "sh",
+                    "-c",
+                    "pkill -INT tcpdump 2>/dev/null || true",
+                ],
+                timeout=5,
+            )
+        except Exception as exc:
+            self._log(f"stale remote tcpdump cleanup failed: {exc}")
+
+    def _cleanup_stale_local_tcpdump_adb_locked(self) -> None:
+        if os.name != "nt":
+            return
+        escaped_device = self.device_id.replace("'", "''")
+        script = (
+            "$ErrorActionPreference='SilentlyContinue'; "
+            "$current=$PID; "
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { "
+            "$_.ProcessId -ne $current -and "
+            "$_.Name -ieq 'adb.exe' -and "
+            "$_.CommandLine -and "
+            "$_.CommandLine -like '*shell tcpdump*' -and "
+            "($_.CommandLine -like '*codeyun_fanxiu_runtime_*' -or "
+            "$_.CommandLine -like '*shell -T tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555*' -or "
+            "$_.CommandLine -like '*shell tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555*') -and "
+            f"$_.CommandLine -like '*{escaped_device}*' "
+            "} | ForEach-Object { "
+            "Stop-Process -Id $_.ProcessId -Force; "
+            "Write-Output $_.ProcessId "
+            "}"
+        )
+        try:
+            process = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            self._log(f"stale local adb tcpdump cleanup failed: {exc}")
+            return
+        killed = [line.strip() for line in process.stdout.splitlines() if line.strip().isdigit()]
+        if killed:
+            self._log(f"stale local adb tcpdump cleaned: {', '.join(killed[:20])}")
+        if process.returncode != 0:
+            detail = self._compact_output(_completed_text(process))
+            if detail:
+                self._log(f"stale local adb tcpdump cleanup warning: {detail}")
 
     def _start_runtime_packet_sync_thread(self, local_path: str) -> None:
         thread = threading.Thread(
@@ -505,11 +690,18 @@ class FanxiuCaptureRuntimeService:
 
             result = sync_fanxiu_capture_paths([local_path], max_streams=4)
             mail_sync = result.get("mail_packet_sync") or {}
+            runtime_changed = False
+            for item in result.get("decoded") or []:
+                if isinstance(item, dict):
+                    sync_result = item.get("batch_packet_runtime_sync")
+                    if isinstance(sync_result, dict):
+                        runtime_changed = bool(runtime_changed or sync_result.get("changed"))
             self._log(
                 "runtime packet sync done: "
                 f"decoded={result.get('decoded_count') or 0}, "
                 f"skipped={result.get('skipped_count') or 0}, "
                 f"errors={result.get('error_count') or 0}, "
+                f"runtime_changed={runtime_changed}, "
                 f"mail_records={mail_sync.get('record_count') or 0}, "
                 f"mail_inserted={mail_sync.get('inserted') or 0}, "
                 f"mail_updated={mail_sync.get('updated') or 0}"
@@ -539,18 +731,69 @@ class FanxiuCaptureRuntimeService:
         return bool(self._tcpdump_process and self._tcpdump_process.poll() is None)
 
     def _finalize_idle_capture_locked(self) -> None:
-        remote_path = self._current_remote_pcap_path
-        if not remote_path:
+        if self._capture_mode == "local-stream":
+            path = Path(self._current_pcap_path) if self._current_pcap_path else None
+            size = path.stat().st_size if path and path.exists() else 0
+            now = time.monotonic()
+            if size != self._last_remote_pcap_size:
+                self._last_remote_pcap_size = size
+                self._last_remote_pcap_size_seen_at = now
+        else:
+            remote_path = self._current_remote_pcap_path
+            if not remote_path:
+                return
+            size = self._remote_capture_size(remote_path)
+            now = time.monotonic()
+            if size != self._last_remote_pcap_size:
+                self._last_remote_pcap_size = size
+                self._last_remote_pcap_size_seen_at = now
+            self._snapshot_running_capture_locked(remote_path, size=size, now=now)
+        if self._stream_writer_error:
+            raise RuntimeError(f"本机抓包流写入失败：{self._stream_writer_error}")
+        if self._tcpdump_process and self._tcpdump_process.poll() is not None:
+            raise RuntimeError("tcpdump 本机抓包进程已退出")
+        if size <= MIN_CAPTURE_PCAP_BYTES:
             return
-        size = self._remote_capture_size(remote_path)
-        now = time.monotonic()
-        if size != self._last_remote_pcap_size:
-            self._last_remote_pcap_size = size
-            self._last_remote_pcap_size_seen_at = now
-        # Do not auto-finalize an idle capture. Stopping and restarting tcpdump
-        # creates a short blind window, which is exactly where one-shot pushes
-        # such as SM_NewMail can be lost. Explicit flush/stop calls still seal
-        # the segment when a runtime job needs fresh facts.
+        segment_age = now - self._tcpdump_started_monotonic if self._tcpdump_started_monotonic else 0.0
+        if segment_age >= self.max_segment_seconds:
+            self._log(f"timed pcap seal: age {segment_age:.1f}s, {size} bytes")
+            self._stop_tcpdump_locked(queue_sync=True)
+            if self._active_reasons:
+                self._start_tcpdump_locked()
+            return
+        idle_for = now - self._last_remote_pcap_size_seen_at if self._last_remote_pcap_size_seen_at else 0.0
+        if idle_for < self.idle_finalize_seconds:
+            return
+        self._log(f"idle pcap seal: stable {idle_for:.1f}s, {size} bytes")
+        self._stop_tcpdump_locked(queue_sync=True)
+        if self._active_reasons:
+            self._start_tcpdump_locked()
+
+    def _snapshot_running_capture_locked(self, remote_path: str, *, size: int, now: float) -> None:
+        if size <= MIN_CAPTURE_PCAP_BYTES:
+            return
+        if size <= self._last_snapshot_remote_pcap_size:
+            return
+        if self._last_snapshot_at and now - self._last_snapshot_at < DEFAULT_CAPTURE_SNAPSHOT_INTERVAL_SECONDS:
+            return
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        local_path = resolve_fanxiu_tcp_live_capture_dir() / f"fanxiu_runtime_snapshot_{timestamp}_{size}.pcap"
+        remote_snapshot_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_fanxiu_runtime_snapshot_{timestamp}_{size}.pcap"
+        try:
+            self._run_adb(["-s", self.device_id, "shell", "cp", remote_path, remote_snapshot_path], timeout=10)
+            self._run_adb(["-s", self.device_id, "pull", remote_snapshot_path, str(local_path)], timeout=60)
+            self._run_adb(["-s", self.device_id, "shell", "rm", "-f", remote_snapshot_path], timeout=5)
+            local_size = local_path.stat().st_size if local_path.exists() else 0
+        except Exception as exc:
+            self._log(f"running pcap snapshot failed: {exc}")
+            return
+        if local_size <= MIN_CAPTURE_PCAP_BYTES:
+            self._log(f"running pcap snapshot skipped: too small {local_path} ({local_size} bytes)")
+            return
+        self._last_snapshot_remote_pcap_size = size
+        self._last_snapshot_at = now
+        self._log(f"running pcap snapshot pulled: {local_path} ({local_size} bytes)")
+        self._start_runtime_packet_sync_thread(str(local_path))
 
     def _remote_capture_size(self, remote_path: str) -> int:
         output = self._run_adb(

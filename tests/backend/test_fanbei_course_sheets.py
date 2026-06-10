@@ -88,6 +88,69 @@ def _row_from_dict(columns: list[str], row: dict[str, object]) -> list[object]:
     return [row.get(column, "") for column in columns]
 
 
+def test_fanbei_step2_column_map_accepts_real_lesson_title_prefix() -> None:
+    sheet_columns = ["打卡数", "19:30~20:32 第01课", "19:30~20:03 第02课"]
+    data_columns = [
+        "user_id2",
+        "打卡数",
+        "2606堂1-梵呗的概念与历史",
+        "2606堂2-梵呗的知识及《炉香赞》教学",
+    ]
+
+    assert fanbei_course_sheets._build_step2_column_map(sheet_columns, data_columns) == {
+        1: 0,
+        2: 1,
+        3: 2,
+    }
+
+
+def test_fanbei_lesson_bindings_use_ordered_config_for_attendance_headers() -> None:
+    sheet_columns = ["打卡数", "19:30~20:32 第01课", "19:30~20:03 第02课"]
+    video_config_rows = [
+        {
+            "lesson_id": 21,
+            "lesson_id2": "l_testLesson01",
+            "lesson_name": "2606堂1-梵呗的概念与历史",
+        },
+        {
+            "lesson_id": 22,
+            "lesson_id2": "https://example.com/lesson-02",
+            "lesson_name": "2606堂2-梵呗的知识及《炉香赞》教学",
+        },
+    ]
+    bindings = fanbei_course_sheets._build_lesson_bindings(video_config_rows)
+    data_columns = ["user_id2", "打卡数", *(binding["output_column"] for binding in bindings)]
+
+    assert fanbei_course_sheets._build_step2_column_map(
+        sheet_columns,
+        data_columns,
+        lesson_bindings=bindings,
+    ) == {
+        1: 0,
+        2: 1,
+        3: 2,
+    }
+
+    document, changed_count = fanbei_course_sheets._apply_fanbei_attendance_header_links(
+        {
+            "columns": sheet_columns,
+            "rows": [],
+            "grid_rows": [sheet_columns],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "cell_meta": {},
+        },
+        video_config_rows=video_config_rows,
+    )
+
+    assert changed_count == 2
+    assert (
+        document["grid_rows"][0][1]["link"]["url"]
+        == "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=l_testLesson01&tabName=UserManage"
+    )
+    assert document["grid_rows"][0][2]["link"]["url"] == "https://example.com/lesson-02"
+
+
 def test_materialize_fanbei_course_sheets_creates_storage_sheets(session: Session, monkeypatch) -> None:
     _create_fanbei_workbook(session)
     monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], "skip lesson"))

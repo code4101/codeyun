@@ -142,14 +142,11 @@
             </el-table-column>
           </el-table>
           <div class="list-pagination-bar">
-            <el-pagination
-              v-model:current-page="currentPage"
+            <StandardPagination
+              v-model:page="currentPage"
               v-model:page-size="pageSize"
-              :page-sizes="PAGE_SIZE_OPTIONS"
+              :page-size-options="PAGE_SIZE_OPTIONS"
               :total="filteredNotes.length"
-              layout="total, sizes, prev, pager, next"
-              small
-              background
             />
           </div>
         </div>
@@ -194,6 +191,7 @@ import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import BatchNoteEditDialog from '@/components/BatchNoteEditDialog.vue';
+import StandardPagination from '@/components/StandardPagination.vue';
 import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
@@ -226,7 +224,7 @@ const loading = ref(false);
 const tableRef = ref<any>(null);
 const selectedNoteIds = ref<string[]>([]);
 const batchEditVisible = ref(false);
-const PAGE_SIZE_OPTIONS = [50, 100, 200, 500];
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 const currentPage = ref(1);
 const pageSize = ref(100);
 const isActive = computed(() => props.active !== false);

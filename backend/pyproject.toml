@@ -31,6 +31,7 @@ dependencies = [
     "jieba>=0.42.1",
     "futu-api>=10.5.6508",
     "adb-shell>=0.4.4",
+    "rembg[cpu]>=2.0.69",
 ]
 
 [project.optional-dependencies]

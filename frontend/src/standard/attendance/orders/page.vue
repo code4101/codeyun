@@ -6,6 +6,7 @@ import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 import type { CellProperties, ColumnSettings } from 'handsontable/settings'
 import { useRoute, useRouter } from 'vue-router'
+import StandardPagination from '@/components/StandardPagination.vue'
 import { useUserStore } from '@/store/userStore'
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate'
 import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
@@ -78,7 +79,7 @@ const HOT_TABLE_ROW_HEIGHT = 28
 const HOT_TABLE_MAX_VISIBLE_ROWS = 12
 const INPUT_TABLE_MIN_VISIBLE_ROWS = 6
 const QUERY_TABLE_MIN_VISIBLE_ROWS = 4
-const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50]
+const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 
 const loading = ref(false)
 const querying = ref(false)
@@ -1532,15 +1533,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="refundHistoryTotal > 0" class="history-pagination-row">
-          <el-pagination
-            background
-            layout="total, sizes, prev, pager, next"
-            :current-page="refundHistoryPage"
+          <StandardPagination
+            :page="refundHistoryPage"
             :page-size="refundHistoryPageSize"
-            :page-sizes="REFUND_HISTORY_PAGE_SIZE_OPTIONS"
             :total="refundHistoryTotal"
-            @current-change="handleRefundHistoryPageChange"
-            @size-change="handleRefundHistoryPageSizeChange"
+            :page-size-options="REFUND_HISTORY_PAGE_SIZE_OPTIONS"
+            @page-change="handleRefundHistoryPageChange"
+            @page-size-change="handleRefundHistoryPageSizeChange"
           />
         </div>
       </section>

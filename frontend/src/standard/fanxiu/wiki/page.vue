@@ -12,8 +12,9 @@ import type { ComposeOption, ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowRight, Close, Search, TopRight } from '@element-plus/icons-vue'
+import { Close, Search, TopRight } from '@element-plus/icons-vue'
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue'
+import StandardPagination from '@/components/StandardPagination.vue'
 import { noteKey, type NoteNode, useNoteStore } from '@/api/notes'
 import type { EditableNotePatch } from '@/utils/noteAutoSave'
 import {
@@ -57,7 +58,6 @@ import {
   getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
   getFanxiuGongfaSpecialFazeCatalog,
   getFanxiuItemCard,
-  getFanxiuItemIconQualityReview,
   getFanxiuLingjieFeatureCard,
   getFanxiuLatestWorldlineActivitySchedule,
   getFanxiuMailRecords,
@@ -83,6 +83,7 @@ import {
   searchFanxiuGongfaCards,
   searchFanxiuItemCards,
   searchFanxiuLingjieFeatureCards,
+  updateFanxiuMailRecordStatus,
   type FanxiuActivityCard,
   type FanxiuActivityChallengeLevel,
   type FanxiuActivityChallengeRarityStat,
@@ -159,8 +160,6 @@ import {
   type FanxiuItemCard,
   type FanxiuItemIconQualityOption,
   type FanxiuItemIconOption,
-  type FanxiuItemIconQualityReviewResponse,
-  type FanxiuItemIconQualityReviewRow,
   type FanxiuItemQualityOption,
   type FanxiuItemSearchItem,
   type FanxiuItemStats,
@@ -223,7 +222,7 @@ const ACTIVITY_NOTE_FIELD_ACTIVITY_ID = '__fanxiu_activity_id'
 const ACTIVITY_NOTE_FIELD_ACTIVITY_NAME = '__fanxiu_activity_name'
 const FACET_OPTION_DISPLAY_LIMIT = 100
 const SEARCH_HISTORY_LIMIT = 12
-const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const MAIL_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const DEFAULT_MAIL_PAGE_SIZE = 20
 const DEFAULT_PLAYER_PROFILE_PAGE_SIZE = 50
@@ -274,6 +273,7 @@ const WIKI_TABS = [
 ] as const
 
 type WikiTab = typeof WIKI_TABS[number]['key']
+const PACKET_BACKED_WIKI_TABS = new Set<WikiTab>(['storage_bag', 'mail', 'player_profile', 'packet'])
 
 const AUXILIARY_TOP_TAB_KEY = 'reverse'
 const AUXILIARY_WIKI_TABS: Array<{ key: WikiTab; label: string }> = [
@@ -312,6 +312,8 @@ type ActivityViewMode = 'list' | 'document' | 'period'
 type StaticAssetCatalogView = 'semantic'
 type MailSortKey = 'index' | 'title' | 'time' | 'status'
 type MailStatusFilter = typeof MAIL_STATUS_OPTIONS[number]['key']
+type MailDesiredStatus = typeof MAIL_STATUS_OPTIONS[number]['status']
+type MailSubTab = 'records' | 'summary'
 type SortOrder = 'asc' | 'desc'
 const ACTIVITY_VIEW_MODE_OPTIONS: Array<{ value: ActivityViewMode, label: string }> = [
   { value: 'list', label: '列表' },
@@ -324,10 +326,15 @@ const ACTIVITY_PERIOD_LABEL_MIN_DAYS = 2.4
 const ACTIVITY_PERIOD_LABEL_MAX_DAYS = 4.8
 const ACTIVITY_PERIOD_LANE_HEIGHT = 42
 const MAIL_STATUS_OPTIONS = [
-  { key: 'locked', label: '锁定' },
-  { key: 'seen', label: '留存' },
-  { key: 'deleted', label: '已删' },
+  { key: 'locked', label: '锁定', status: '锁定' },
+  { key: 'seen', label: '留存', status: '留存' },
+  { key: 'claimable', label: '可领', status: '可领' },
 ] as const
+const MAIL_STATUS_CYCLE: MailStatusFilter[] = ['locked', 'seen', 'claimable']
+const MAIL_SUB_TABS: Array<{ key: MailSubTab, label: string }> = [
+  { key: 'records', label: '邮件清单' },
+  { key: 'summary', label: '标题汇总' },
+]
 const SORT_MODE_ORDER: SortMode[] = ['default', 'time_asc', 'time_desc']
 const SORT_MODE_LABELS: Record<SortMode, string> = {
   default: '默认',
@@ -621,6 +628,8 @@ const mailSortKey = ref<MailSortKey>('time')
 const mailSortOrder = ref<SortOrder>('desc')
 const mailPage = ref(1)
 const mailPageSize = ref(DEFAULT_MAIL_PAGE_SIZE)
+const mailSubTab = ref<MailSubTab>('records')
+const updatingMailKeys = ref<string[]>([])
 const mailContentDialogVisible = ref(false)
 const selectedMailContentTitle = ref('')
 const selectedMailContentText = ref('')
@@ -647,8 +656,6 @@ const itemIconQualityOptions = ref<FanxiuItemIconQualityOption[]>([])
 const itemHighReuseIconOptions = ref<FanxiuItemIconOption[]>([])
 const itemSmallIconQualityOptions = ref<FanxiuItemIconQualityOption[]>([])
 const itemHighReuseSmallIconOptions = ref<FanxiuItemIconOption[]>([])
-const itemIconQualityReview = ref<FanxiuItemIconQualityReviewResponse | null>(null)
-const loadingItemIconQualityReview = ref(false)
 const activityKindOptions = ref<FanxiuActivityOption[]>([])
 const activityTimeOptions = ref<FanxiuActivityOption[]>([])
 const activityTypeOptions = ref<FanxiuActivityOption[]>([])
@@ -738,6 +745,7 @@ let applyingRouteState = false
 let internalTabNavigation = false
 let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
 let storageBagRefreshTimer: ReturnType<typeof setInterval> | null = null
+let packetBackedRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 function isAuxiliaryWikiTab(tab: WikiTab) {
   return AUXILIARY_WIKI_TAB_KEYS.has(tab)
@@ -1172,8 +1180,8 @@ function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
   if (Array.isArray(value)) {
     const expanded = value.flatMap((item) => {
       if (item === 'seen') return ['seen']
-      if (item === 'deleted') return ['deleted']
-      if (item === 'claimed' || item === 'missing' || item === 'pending') return ['deleted']
+      if (item === 'deleted' || item === 'claimable') return ['claimable']
+      if (item === 'claimed' || item === 'missing' || item === 'pending') return ['claimable']
       return [item]
     })
     const selected = expanded.filter((item): item is MailStatusFilter => valid.includes(item as MailStatusFilter))
@@ -1182,7 +1190,7 @@ function normalizeMailStatusFilters(value: unknown): MailStatusFilter[] {
   const text = String(value ?? '').trim()
   if (!text || text === 'all') return valid
   if (text === 'seen') return ['seen']
-  if (text === 'deleted' || text === 'claimed' || text === 'missing' || text === 'pending') return ['deleted']
+  if (text === 'deleted' || text === 'claimed' || text === 'missing' || text === 'pending' || text === 'claimable') return ['claimable']
   if (valid.includes(text as MailStatusFilter)) return [text as MailStatusFilter]
   try {
     const parsed = JSON.parse(text)
@@ -2977,29 +2985,6 @@ const itemHighReuseSmallIconFacetOptions = computed(() => {
     'small_icon_name',
     itemFacetFilters.value,
   ).filter(option => option.count > 0 || itemSmallIconNameFilter.value === option.value)
-})
-
-const itemIconQualityReviewSummary = computed(() => itemIconQualityReview.value?.summary ?? null)
-const itemIconQualityReviewTopRows = computed<FanxiuItemIconQualityReviewRow[]>(() => {
-  return (itemIconQualityReview.value?.items ?? [])
-    .filter(row => String(row.review_priority || '') === 'high')
-    .slice(0, 4)
-})
-const itemIconQualityReviewStatsText = computed(() => {
-  const summary = itemIconQualityReviewSummary.value
-  if (!summary?.group_count) return ''
-  const parts = [
-    `${summary.group_count} 组`,
-    `高优先 ${summary.high_priority_count ?? 0}`,
-    summary.no_candidate_group_count ? `无候选 ${summary.no_candidate_group_count}` : '',
-    summary.unresolved_no_candidate_group_count ? `待判定 ${summary.unresolved_no_candidate_group_count}` : '',
-    summary.nearby_context_icon_total ? `近邻 ${summary.nearby_context_icon_total}` : '',
-  ]
-  return parts.filter(Boolean).join(' · ')
-})
-const itemIconQualityReviewContactSheetUrl = computed(() => {
-  const path = String(itemIconQualityReviewSummary.value?.no_candidate_contact_sheet_path || '').trim()
-  return path ? getFanxiuWikiMediaUrl(path) : ''
 })
 
 const activityKindFacetOptions = computed(() => {
@@ -4806,48 +4791,6 @@ function getItemIconGroupTitle(option: FanxiuItemIconOption) {
   return parts.filter(Boolean).join('\n')
 }
 
-function getItemIconQualityReviewTitle(row: FanxiuItemIconQualityReviewRow) {
-  const parts = [String(row.icon || '')]
-  if (row.count) parts.push(`${row.count} 个道具`)
-  if (row.review_hint) parts.push(`判断：${row.review_hint}`)
-  if (row.type_summary) parts.push(`类型：${row.type_summary}`)
-  if (row.recommended_action) parts.push(`建议：${row.recommended_action}`)
-  const sampleText = (row.representative_samples ?? [])
-    .map(sample => `${sample.id ?? ''}:${sample.name ?? ''}`.replace(/^:/, '').trim())
-    .filter(Boolean)
-    .join(' | ')
-  if (sampleText) parts.push(`样本：${sampleText}`)
-  const candidateText = (row.candidate_icons ?? [])
-    .map(candidate => {
-      const icon = String(candidate.icon || '').trim()
-      if (!icon) return ''
-      const score = String(candidate.score ?? '').trim()
-      const reason = String(candidate.reason || '').trim()
-      const meta = [score ? `${score}分` : '', reason].filter(Boolean).join(' · ')
-      return meta ? `${icon} (${meta})` : icon
-    })
-    .filter(Boolean)
-    .join(' | ')
-  if (candidateText) parts.push(`候选：${candidateText}`)
-  const nearbyText = (row.nearby_icons ?? [])
-    .map(item => {
-      const icon = String(item.icon || '').trim()
-      if (!icon) return ''
-      const delta = String(item.number_delta ?? '').trim()
-      const reason = String(item.reason || '').trim()
-      const meta = [delta ? `差${delta}` : '', reason].filter(Boolean).join(' · ')
-      return meta ? `${icon} (${meta})` : icon
-    })
-    .filter(Boolean)
-    .join(' | ')
-  if (nearbyText) parts.push(`近邻：${nearbyText}`)
-  return parts.filter(Boolean).join('\n')
-}
-
-function getItemIconQualityReviewSampleId(row: FanxiuItemIconQualityReviewRow) {
-  return String(row.representative_samples?.[0]?.id ?? '').trim()
-}
-
 type TimelineCarrier = {
   time_hints?: FanxiuTimelineHint[];
   schedule_time_hints?: unknown[];
@@ -5353,13 +5296,79 @@ const packetInsightPersonalRanks = computed(() => Array.isArray(packetInsightSna
 const packetInsightRankRecords = computed(() => Array.isArray(packetInsightSnapshot.value.activity_ranks?.records) ? packetInsightSnapshot.value.activity_ranks.records : [])
 function mailStatusKey(row: FanxiuMailRecord) {
   const status = String(row.status || '').trim()
-  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list' || status === 'claim_requested' || status === 'delete_requested') return 'deleted'
+  if (status === '锁定') return 'locked'
+  if (status === '留存') return 'seen'
+  if (status === '可领') return 'claimable'
   if (row.locked) return 'locked'
+  if (status === 'deleted' || status === 'claimed' || status === 'missing_from_list' || status === 'claim_requested' || status === 'delete_requested') return 'claimable'
+  if (String(row.action_policy || '').trim() === 'claim' || String(row.action_policy || '').trim() === 'delete') return 'claimable'
   return 'seen'
 }
 
 function mailStatusLabel(value: string) {
   return MAIL_STATUS_OPTIONS.find(option => option.key === value)?.label || value || '-'
+}
+
+function mailDesiredStatus(row: FanxiuMailRecord): MailDesiredStatus {
+  return MAIL_STATUS_OPTIONS.find(option => option.key === mailStatusKey(row))?.status || '留存'
+}
+
+function mailStatusRank(status: MailDesiredStatus) {
+  if (status === '锁定') return 3
+  if (status === '留存') return 2
+  return 1
+}
+
+function mailInitialStatus(row: FanxiuMailRecord): MailDesiredStatus {
+  if (mailRewardsUnknown(row)) return '锁定'
+  const items = mailRewardItems(row)
+  if (!items.length) return '可领'
+  for (const item of items) {
+    const name = mailRewardName(item)
+    if (!name || name.startsWith('未知道具') || name.includes('法则')) return '锁定'
+  }
+  if (items.some(item => mailRewardName(item).includes('潜修心得'))) return '可领'
+  if (items.some(item => mailProtectedResourceCategory(mailRewardName(item)))) return '留存'
+  return '可领'
+}
+
+function mailProtectedResourceCategory(name: string) {
+  if (['炼丹灵草匣', '神品灵草匣', '炼丹灵草宝匣'].includes(name)) return '炼丹'
+  if (name === '淬体精魄') return '淬体'
+  if (name === '珍品饲灵丸') return '灵兽'
+  if (name === '洗灵奇石') return '洗灵'
+  if (name === '瑶池玉莲' || name === '造化青莲') return '仙花'
+  return ''
+}
+
+function isMailStatusUpdating(row: FanxiuMailRecord) {
+  const key = String(row.mail_key || '').trim()
+  return Boolean(key && updatingMailKeys.value.includes(key))
+}
+
+async function setMailStatus(row: FanxiuMailRecord, status: MailDesiredStatus) {
+  const mailKey = String(row.mail_key || '').trim()
+  if (!mailKey || isMailStatusUpdating(row) || mailDesiredStatus(row) === status) return
+  updatingMailKeys.value = [...updatingMailKeys.value, mailKey]
+  try {
+    const response = await updateFanxiuMailRecordStatus(mailKey, status)
+    const index = mailRecords.value.findIndex(item => item.mail_key === mailKey)
+    if (index >= 0) {
+      mailRecords.value.splice(index, 1, response.record)
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '更新邮件状态失败')
+  } finally {
+    updatingMailKeys.value = updatingMailKeys.value.filter(key => key !== mailKey)
+  }
+}
+
+function cycleMailStatus(row: FanxiuMailRecord) {
+  const current = mailStatusKey(row)
+  const index = MAIL_STATUS_CYCLE.indexOf(current)
+  const nextKey = MAIL_STATUS_CYCLE[(index + 1) % MAIL_STATUS_CYCLE.length]
+  const option = MAIL_STATUS_OPTIONS.find(item => item.key === nextKey)
+  if (option) void setMailStatus(row, option.status)
 }
 
 function toggleMailStatusFilter(value: MailStatusFilter) {
@@ -5675,16 +5684,6 @@ const sortedMailRecords = computed(() => [...filteredMailRecords.value].sort(com
 const mailPageCount = computed(() => Math.max(1, Math.ceil(sortedMailRecords.value.length / Math.max(mailPageSize.value, 1))))
 const mailPageStart = computed(() => (mailPage.value - 1) * mailPageSize.value)
 const visibleMailRecords = computed(() => sortedMailRecords.value.slice(mailPageStart.value, mailPageStart.value + mailPageSize.value))
-const visibleMailRewardItemIds = computed(() => {
-  const itemIds = new Set<string>()
-  for (const row of visibleMailRecords.value) {
-    for (const item of mailRewardItems(row)) {
-      const itemId = String(item.item_id || '').trim()
-      if (itemId) itemIds.add(itemId)
-    }
-  }
-  return [...itemIds]
-})
 const mailStatusCounts = computed(() => {
   const counts: Record<string, number> = { all: mailRecords.value.length }
   for (const row of mailRecords.value) {
@@ -5693,6 +5692,83 @@ const mailStatusCounts = computed(() => {
   }
   return counts
 })
+
+const mailTitleSummaries = computed(() => {
+  const groups = new Map<string, {
+    title: string;
+    count: number;
+    initialStatusCounts: Record<MailDesiredStatus, number>;
+    rewards: Map<string, { key: string; item: Record<string, any>; count: number }>;
+  }>()
+  for (const row of filteredMailRecords.value) {
+    const title = String(row.title || row.normalized_title || '未命名邮件').trim()
+    const key = title || '未命名邮件'
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        title: key,
+        count: 0,
+        initialStatusCounts: { 锁定: 0, 留存: 0, 可领: 0 },
+        rewards: new Map(),
+      }
+      groups.set(key, group)
+    }
+    group.count += 1
+    group.initialStatusCounts[mailInitialStatus(row)] += 1
+    for (const item of mailRewardItems(row)) {
+      const name = mailRewardName(item) || '未知附件'
+      const itemId = String(item.item_id || '').trim()
+      const rewardKey = itemId || name
+      const current = group.rewards.get(rewardKey) || { key: rewardKey, item: { ...item, item_name: name }, count: 0 }
+      current.count += Number(item.amount ?? item.num ?? item.count ?? 1) || 1
+      group.rewards.set(rewardKey, current)
+    }
+  }
+  return Array.from(groups.values())
+    .map(group => {
+      const initialStatus = (['锁定', '留存', '可领'] as MailDesiredStatus[])
+        .filter(status => group.initialStatusCounts[status] > 0)
+        .sort((a, b) => mailStatusRank(b) - mailStatusRank(a))[0] || '可领'
+      return {
+        ...group,
+        initialStatus,
+        averageRewards: Array.from(group.rewards.values())
+          .sort((a, b) => b.count - a.count || mailRewardName(a.item).localeCompare(mailRewardName(b.item), 'zh-Hans-CN'))
+          .map(item => ({
+            ...item.item,
+            amount: item.count / Math.max(group.count, 1),
+            average_amount: item.count / Math.max(group.count, 1),
+          })),
+      }
+    })
+    .sort((a, b) => b.count - a.count || mailStatusRank(b.initialStatus) - mailStatusRank(a.initialStatus) || a.title.localeCompare(b.title, 'zh-Hans-CN'))
+})
+
+const activeMailRewardItemIds = computed(() => {
+  const itemIds = new Set<string>()
+  const rewards = mailSubTab.value === 'summary'
+    ? mailTitleSummaries.value.flatMap(row => row.averageRewards)
+    : visibleMailRecords.value.flatMap(row => mailRewardItems(row))
+  for (const item of rewards) {
+    const itemId = String(item.item_id || '').trim()
+    if (itemId) itemIds.add(itemId)
+  }
+  return [...itemIds]
+})
+
+function mailStatusDistributionParts(counts: Record<MailDesiredStatus, number>) {
+  return (['锁定', '留存', '可领'] as MailDesiredStatus[])
+    .filter(status => counts[status] > 0)
+    .map(status => ({ status, text: `${status}${counts[status]}` }))
+}
+
+function mailAverageRewardAmountText(item: Record<string, any>) {
+  const value = Number(item.average_amount ?? item.amount ?? item.num ?? item.count ?? 0)
+  if (!Number.isFinite(value)) return '0.00'
+  if (Math.abs(value) < 1) return value.toFixed(2)
+  const rounded = Math.round(value)
+  return formatFanxiuGameNumber(rounded) || String(rounded)
+}
 
 function mailRowNumber(index: number) {
   return mailPageStart.value + index + 1
@@ -6840,22 +6916,30 @@ function packetInsightRankTitle(row: Record<string, any>) {
   return [activityId, name, rank].filter(Boolean).join(' · ')
 }
 
-async function loadPacketRuntimeInsights() {
+async function loadPacketRuntimeInsights(options: { silent?: boolean } = {}) {
   if (activeTab.value !== 'packet') return
-  packetRuntimeInsightsLoading.value = true
+  const silent = Boolean(options.silent)
+  if (!silent) {
+    packetRuntimeInsightsLoading.value = true
+  }
   try {
     const response = await getFanxiuPacketRuntimeInsights({ auto_sync: false })
     packetRuntimeInsights.value = response.snapshot ?? {}
   } catch (error: any) {
     console.warn('Failed to load Fanxiu packet runtime insights:', error)
   } finally {
-    packetRuntimeInsightsLoading.value = false
+    if (!silent) {
+      packetRuntimeInsightsLoading.value = false
+    }
   }
 }
 
-async function loadPlayerProfileSnapshots() {
-  loadingList.value = true
-  loadingDetail.value = false
+async function loadPlayerProfileSnapshots(options: { silent?: boolean } = {}) {
+  const silent = Boolean(options.silent)
+  if (!silent) {
+    loadingList.value = true
+    loadingDetail.value = false
+  }
   try {
     const response = await getFanxiuPlayerProfiles()
     packetRuntimeInsights.value = {
@@ -6876,15 +6960,22 @@ async function loadPlayerProfileSnapshots() {
     selectedDoupoTDReward.value = null
     clearHomeMakeStaticDetail()
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '读取玩家面板快照失败')
+    if (!silent) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取玩家面板快照失败')
+    }
   } finally {
-    loadingList.value = false
+    if (!silent) {
+      loadingList.value = false
+    }
   }
 }
 
-async function loadMailRecords() {
-  loadingList.value = true
-  loadingDetail.value = false
+async function loadMailRecords(options: { silent?: boolean } = {}) {
+  const silent = Boolean(options.silent)
+  if (!silent) {
+    loadingList.value = true
+    loadingDetail.value = false
+  }
   try {
     const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet_evidence' })
     mailRecords.value = response.records || []
@@ -6898,9 +6989,14 @@ async function loadMailRecords() {
     selectedDoupoTDReward.value = null
     clearHomeMakeStaticDetail()
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '读取邮件记录失败')
+    const message = error?.response?.data?.detail || error?.message || '读取邮件记录失败'
+    if (!silent) {
+      ElMessage.error(message)
+    }
   } finally {
-    loadingList.value = false
+    if (!silent) {
+      loadingList.value = false
+    }
   }
 }
 
@@ -6950,6 +7046,37 @@ function startStorageBagAutoRefresh() {
       void loadStorageBagSnapshot({ silent: true })
     }
   }, 15000)
+}
+
+function refreshActivePacketBackedTab() {
+  if (activeTab.value === 'storage_bag' && !loadingList.value) {
+    void loadStorageBagSnapshot({ silent: true })
+    return
+  }
+  if (activeTab.value === 'mail' && !loadingList.value) {
+    void loadMailRecords({ silent: true })
+    return
+  }
+  if (activeTab.value === 'player_profile' && !loadingList.value) {
+    void loadPlayerProfileSnapshots({ silent: true })
+    return
+  }
+  if (activeTab.value === 'packet' && !packetRuntimeInsightsLoading.value) {
+    void loadPacketRuntimeInsights({ silent: true })
+  }
+}
+
+function stopPacketBackedAutoRefresh() {
+  if (packetBackedRefreshTimer !== null) {
+    window.clearInterval(packetBackedRefreshTimer)
+    packetBackedRefreshTimer = null
+  }
+}
+
+function startPacketBackedAutoRefresh() {
+  stopPacketBackedAutoRefresh()
+  if (!PACKET_BACKED_WIKI_TABS.has(activeTab.value)) return
+  packetBackedRefreshTimer = window.setInterval(refreshActivePacketBackedTab, 15000)
 }
 
 function formatTcpBusinessTime(value: string) {
@@ -9815,7 +9942,6 @@ async function loadActivityWorldlineSchedule() {
 async function loadItemCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
-  void loadItemIconQualityReview()
   try {
     const response = await searchFanxiuItemCards({
       query: query.value,
@@ -9894,18 +10020,6 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     if (requestSeq === listRequestSeq) {
       loadingList.value = false
     }
-  }
-}
-
-async function loadItemIconQualityReview() {
-  if (itemIconQualityReview.value || loadingItemIconQualityReview.value) return
-  loadingItemIconQualityReview.value = true
-  try {
-    itemIconQualityReview.value = await getFanxiuItemIconQualityReview()
-  } catch {
-    itemIconQualityReview.value = null
-  } finally {
-    loadingItemIconQualityReview.value = false
   }
 }
 
@@ -11611,24 +11725,6 @@ function applyItemSmallIconNameFilter(value: string) {
   reloadFromFirstPage()
 }
 
-function applyItemIconQualityReviewRow(row: FanxiuItemIconQualityReviewRow) {
-  const icon = String(row.icon || '')
-  if (!icon) return
-  const sampleId = String(row.representative_samples?.[0]?.id ?? '').trim()
-  if (sampleId) {
-    selectedId.value = sampleId
-  }
-  if (row.field === 'small_icon') {
-    itemSmallIconNameFilter.value = icon
-    itemSmallIconQualityFilter.value = 'high_reuse'
-  } else {
-    itemIconNameFilter.value = icon
-    itemIconQualityFilter.value = 'high_reuse'
-  }
-  reloadFromFirstPage({ keepSelection: Boolean(sampleId) })
-  syncRouteState()
-}
-
 function applyActivityKindFilter(value: string) {
   activityKindFilter.value = value
   reloadFromFirstPage()
@@ -11766,7 +11862,7 @@ watch([query, selectedMailStatuses, mailSortKey, mailSortOrder], () => {
 watch([mailPageCount, mailPageSize], () => {
   if (mailPage.value > mailPageCount.value) mailPage.value = mailPageCount.value
 })
-watch([activeTab, visibleMailRewardItemIds], ([tab, itemIds]) => {
+watch([activeTab, activeMailRewardItemIds], ([tab, itemIds]) => {
   if (tab === 'mail') {
     void loadMailRewardItemCards(itemIds)
   }
@@ -11775,10 +11871,11 @@ watch(activeTab, tab => {
   if (isAuxiliaryWikiTab(tab)) {
     selectedAuxiliaryTab.value = tab
   }
-  if (tab === 'storage_bag') {
-    startStorageBagAutoRefresh()
+  stopStorageBagAutoRefresh()
+  if (PACKET_BACKED_WIKI_TABS.has(tab)) {
+    startPacketBackedAutoRefresh()
   } else {
-    stopStorageBagAutoRefresh()
+    stopPacketBackedAutoRefresh()
   }
   if (tab !== 'asset') {
     staticAssetPreviewManifest.value = null
@@ -11886,12 +11983,13 @@ onMounted(() => {
   }
   void loadWikiLinkIndex()
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
-  startStorageBagAutoRefresh()
+  startPacketBackedAutoRefresh()
   scheduleStorageBagWorshipChartRender()
 })
 
 onBeforeUnmount(() => {
   stopStorageBagAutoRefresh()
+  stopPacketBackedAutoRefresh()
   disposeStorageBagWorshipCharts()
   stopActivityPeriodPaneResizing()
   cancelActivityPeriodResizeFrame()
@@ -12448,36 +12546,6 @@ onBeforeUnmount(() => {
             >{{ getFacetToggleLabel('item:small-icon-name', itemHighReuseSmallIconFacetOptions, itemSmallIconNameFilter) }}</button>
           </span>
         </div>
-        <div v-if="itemIconQualityReviewStatsText" class="facet-row icon-review-row">
-          <span class="facet-label">治理</span>
-          <span class="facet-options icon-review-options">
-            <span class="icon-review-summary">{{ itemIconQualityReviewStatsText }}</span>
-            <a
-              v-if="itemIconQualityReviewContactSheetUrl"
-              class="facet-option icon-review-option"
-              :href="itemIconQualityReviewContactSheetUrl"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="打开无候选图标复核图"
-            >
-              <span>复核图</span>
-              <small>{{ itemIconQualityReviewSummary?.no_candidate_group_count ?? 0 }}</small>
-            </a>
-            <button
-              v-for="row in itemIconQualityReviewTopRows"
-              :key="`${row.field}:${row.icon}`"
-              class="facet-option icon-review-option"
-              type="button"
-              :title="getItemIconQualityReviewTitle(row)"
-              :data-sample-id="getItemIconQualityReviewSampleId(row)"
-              @click="applyItemIconQualityReviewRow(row)"
-            >
-              <span class="review-priority-dot"></span>
-              <span>{{ row.icon }}</span>
-              <small>{{ row.count }}</small>
-            </button>
-          </span>
-        </div>
         <div class="facet-row">
           <span class="facet-label">类型</span>
           <span class="facet-options">
@@ -12903,10 +12971,10 @@ onBeforeUnmount(() => {
             当前选择位面没有近一年个人榜单记录。
           </div>
           <div v-if="!storageBagWorshipRecords.length && storageBagWorshipPackets.length" class="storage-bag-reference-empty">
-            已捕获拜谒请求，但还没有捕获到{{ storageBagWorshipTargetLabel }}历史记录的服务端下行响应；后续抓到下行包会自动增量同步到这里。
+            数据库里已有拜谒请求，但还没有{{ storageBagWorshipTargetLabel }}历史记录的服务端下行事实；后台采集到增量后会同步到这里。
           </div>
           <div v-else-if="!storageBagWorshipRecords.length" class="storage-bag-reference-empty">
-            还没有捕获到{{ storageBagWorshipTargetLabel }}历史记录的服务端下行响应；打开游戏里的拜谒记录时保持抓包运行，后续会自动增量同步到这里。
+            数据库里还没有{{ storageBagWorshipTargetLabel }}历史记录的服务端下行事实，后台采集到增量后会同步到这里。
           </div>
         </section>
         <div v-if="!filteredStorageBagItems.length" class="empty-state">没有匹配的储物袋物品</div>
@@ -12914,35 +12982,20 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="activeTab === 'mail'" class="mail-workspace" v-loading="loadingList">
-      <section class="storage-bag-summary">
-        <div>
-          <h3>邮件</h3>
-        </div>
-      </section>
-      <section class="mail-policy-panel">
-        <div class="mail-policy-head">
-          <h4>领取检查策略</h4>
-          <span>packet 附件事实优先，旧邮件名白名单已废弃</span>
-        </div>
-        <div class="mail-policy-grid">
-          <div>
-            <b>1. 法则保护</b>
-            <p>附件名称或类别带“法则”时，永远不能自动领取，后续按锁定流程人工处理。</p>
-          </div>
-          <div>
-            <b>2. 四刻例外</b>
-            <p>附件带“潜修心得·四刻”时可以自动领取；该规则优先于保护资源判断，但仍低于法则保护。</p>
-          </div>
-          <div>
-            <b>3. 保护资源</b>
-            <p>附件含保护资源时不能自动领取：炼丹：炼丹灵草匣、神品灵草匣、炼丹灵草宝匣；淬体：淬体精魄；灵兽：珍品饲灵丸；洗灵：洗灵奇石；仙花：瑶池玉莲、造化青莲。</p>
-          </div>
-          <div>
-            <b>4. 其余领取</b>
-            <p>packet 附件事实已解析，且不命中以上规则时，单封自动领取；无附件邮件直接删除。</p>
-          </div>
-        </div>
-      </section>
+      <div v-if="mailRecords.length" class="mail-sub-tabs" role="tablist" aria-label="邮件视图">
+        <button
+          v-for="tab in MAIL_SUB_TABS"
+          :key="tab.key"
+          class="mail-sub-tab"
+          :class="{ active: mailSubTab === tab.key }"
+          type="button"
+          role="tab"
+          :aria-selected="mailSubTab === tab.key"
+          @click="mailSubTab = tab.key"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
       <section v-if="mailRecords.length" class="storage-bag-groups mail-groups">
         <div class="storage-bag-group-row">
           <span class="facet-label">状态</span>
@@ -12959,51 +13012,71 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </section>
-      <section v-if="mailRecords.length" class="storage-bag-table-wrap mail-table-wrap">
+      <section v-if="mailRecords.length && mailSubTab === 'records'" class="storage-bag-table-wrap mail-table-wrap">
         <table class="storage-bag-table mail-table">
           <thead>
             <tr>
-              <th class="numeric-head">
-                <button
-                  class="storage-bag-sort-button"
-                  :class="{ active: mailSortKey === 'index' }"
-                  type="button"
-                  @click="toggleMailSort('index')"
-                >{{ mailSortLabel('index', '#') }}</button>
+              <th class="mail-index-status-head">
+                <span class="mail-index-status-head-inner">
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: mailSortKey === 'index' }"
+                    type="button"
+                    @click="toggleMailSort('index')"
+                  >{{ mailSortLabel('index', '#') }}</button>
+                  <span class="mail-title-time-separator">/</span>
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: mailSortKey === 'status' }"
+                    type="button"
+                    @click="toggleMailSort('status')"
+                  >{{ mailSortLabel('status', '状态') }}</button>
+                </span>
               </th>
               <th>
-                <button
-                  class="storage-bag-sort-button"
-                  :class="{ active: mailSortKey === 'title' }"
-                  type="button"
-                  @click="toggleMailSort('title')"
-                >{{ mailSortLabel('title', '邮件名') }}</button>
-              </th>
-              <th>
-                <button
-                  class="storage-bag-sort-button"
-                  :class="{ active: mailSortKey === 'time' }"
-                  type="button"
-                  @click="toggleMailSort('time')"
-                >{{ mailSortLabel('time', '时间') }}</button>
+                <span class="mail-title-time-head">
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: mailSortKey === 'title' }"
+                    type="button"
+                    @click="toggleMailSort('title')"
+                  >{{ mailSortLabel('title', '邮件名') }}</button>
+                  <span class="mail-title-time-separator">/</span>
+                  <button
+                    class="storage-bag-sort-button"
+                    :class="{ active: mailSortKey === 'time' }"
+                    type="button"
+                    @click="toggleMailSort('time')"
+                  >{{ mailSortLabel('time', '时间') }}</button>
+                </span>
               </th>
               <th>附件</th>
-              <th>正文</th>
-              <th>
-                <button
-                  class="storage-bag-sort-button"
-                  :class="{ active: mailSortKey === 'status' }"
-                  type="button"
-                  @click="toggleMailSort('status')"
-                >{{ mailSortLabel('status', '状态') }}</button>
-              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(row, index) in visibleMailRecords" :key="row.mail_key || row.id">
-              <td class="storage-bag-index-cell">{{ mailRowNumber(index) }}</td>
-              <td class="mail-title-cell">{{ row.title || row.normalized_title || '-' }}</td>
-              <td>{{ mailTimeText(row) }}</td>
+              <td class="mail-index-status-cell">
+                <span class="storage-bag-index-cell">{{ mailRowNumber(index) }}</span>
+                <button
+                  class="mail-status-button"
+                  :class="[`status-${mailStatusKey(row)}`, { updating: isMailStatusUpdating(row) }]"
+                  type="button"
+                  :disabled="isMailStatusUpdating(row)"
+                  @click="cycleMailStatus(row)"
+                >
+                  {{ mailStatusLabel(mailStatusKey(row)) }}
+                </button>
+              </td>
+              <td class="mail-title-time-cell">
+                <button
+                  v-if="mailContentText(row)"
+                  class="mail-title-link"
+                  type="button"
+                  @click="openMailContentDialog(row)"
+                >{{ row.title || row.normalized_title || '-' }}</button>
+                <div v-else class="mail-title-cell">{{ row.title || row.normalized_title || '-' }}</div>
+                <div class="mail-time-cell">{{ mailTimeText(row) }}</div>
+              </td>
               <td class="mail-rewards-cell">
                 <div v-if="mailRewardItems(row).length" class="mail-reward-list">
                   <span
@@ -13055,62 +13128,107 @@ onBeforeUnmount(() => {
                   :title="mailRewardsUnknown(row) ? mailRewardsUnknownTitle(row) : ''"
                 >{{ mailRewardsEmptyText(row) }}</span>
               </td>
-              <td class="mail-content-cell">
-                <el-button
-                  v-if="mailContentText(row)"
-                  link
-                  type="primary"
-                  size="small"
-                  @click="openMailContentDialog(row)"
-                >查看</el-button>
-                <span v-else>-</span>
+            </tr>
+          </tbody>
+        </table>
+        <StandardPagination
+          v-if="filteredMailRecords.length > mailPageSize"
+          class="object-pagination mail-pagination"
+          :page="mailPage"
+          :page-size="mailPageSize"
+          :page-count="mailPageCount"
+          :page-size-options="MAIL_PAGE_SIZE_OPTIONS"
+          @page-change="handleMailPageChange"
+          @page-size-change="handleMailPageSizeChange"
+        />
+        <div v-if="!filteredMailRecords.length" class="empty-state">没有匹配的邮件记录</div>
+      </section>
+      <section v-if="mailRecords.length && mailSubTab === 'summary'" class="storage-bag-table-wrap mail-table-wrap">
+        <table class="storage-bag-table mail-summary-table">
+          <thead>
+            <tr>
+              <th>邮件名 / 初规则分布</th>
+              <th class="numeric-cell">封数</th>
+              <th>平均附件</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in mailTitleSummaries" :key="row.title">
+              <td class="mail-summary-title-cell">
+                <div class="mail-title-cell">{{ row.title }}</div>
+                <div class="mail-summary-status-line">
+                  <span v-if="!mailStatusDistributionParts(row.initialStatusCounts).length" class="mail-reward-empty">-</span>
+                  <span v-else class="mail-status-distribution">
+                    <template v-for="(part, partIndex) in mailStatusDistributionParts(row.initialStatusCounts)" :key="`${row.title}-${part.status}`">
+                      <span
+                        class="mail-status-pill"
+                        :class="[
+                          `status-${MAIL_STATUS_OPTIONS.find(option => option.status === part.status)?.key || 'seen'}`,
+                          { muted: part.status !== row.initialStatus },
+                        ]"
+                      >{{ part.text }}</span>
+                      <span v-if="partIndex < mailStatusDistributionParts(row.initialStatusCounts).length - 1" class="mail-status-separator">/</span>
+                    </template>
+                  </span>
+                </div>
               </td>
-              <td>
-                <span class="mail-status-pill" :class="`status-${mailStatusKey(row)}`">{{ mailStatusLabel(mailStatusKey(row)) }}</span>
+              <td class="numeric-cell">{{ row.count }}</td>
+              <td class="mail-rewards-cell">
+                <div v-if="row.averageRewards.length" class="mail-reward-list">
+                  <span
+                    v-for="(item, rewardIndex) in row.averageRewards"
+                    :key="`${row.title}-average-reward-${rewardIndex}`"
+                    class="mail-reward-slot-wrap"
+                  >
+                    <a
+                      v-if="mailRewardItemHref(item)"
+                      class="mail-reward-slot"
+                      :href="mailRewardItemHref(item)"
+                      :aria-label="`${mailRewardLabel(item)}，平均 ${mailAverageRewardAmountText(item)}`"
+                    >
+                      <span class="mail-reward-icon-frame">
+                        <img
+                          v-if="mailRewardIconUrl(item)"
+                          :src="mailRewardIconUrl(item)"
+                          :alt="mailRewardName(item)"
+                          loading="eager"
+                          decoding="async"
+                          @load="showLoadedMailRewardIcon"
+                          @error="hideBrokenMailRewardIcon"
+                        >
+                        <span v-else class="mail-reward-icon-missing">?</span>
+                      </span>
+                      <span class="mail-reward-count">{{ mailAverageRewardAmountText(item) }}</span>
+                    </a>
+                    <span
+                      v-else
+                      class="mail-reward-slot"
+                      :aria-label="`${mailRewardLabel(item)}，平均 ${mailAverageRewardAmountText(item)}`"
+                    >
+                      <span class="mail-reward-icon-frame">
+                        <img
+                          v-if="mailRewardIconUrl(item)"
+                          :src="mailRewardIconUrl(item)"
+                          :alt="mailRewardName(item)"
+                          loading="eager"
+                          decoding="async"
+                          @load="showLoadedMailRewardIcon"
+                          @error="hideBrokenMailRewardIcon"
+                        >
+                        <span v-else class="mail-reward-icon-missing">?</span>
+                      </span>
+                      <span class="mail-reward-count">{{ mailAverageRewardAmountText(item) }}</span>
+                    </span>
+                  </span>
+                </div>
+                <span v-else class="mail-reward-empty">-</span>
               </td>
             </tr>
           </tbody>
         </table>
-        <div v-if="filteredMailRecords.length > mailPageSize" class="object-pagination mail-pagination">
-          <el-select
-            v-model="mailPageSize"
-            class="page-size-select"
-            size="small"
-            @change="value => handleMailPageSizeChange(Number(value))"
-          >
-            <el-option v-for="size in MAIL_PAGE_SIZE_OPTIONS" :key="size" :value="size" :label="`${size}条/页`" />
-          </el-select>
-          <div class="pager-nav">
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="mailPage <= 1"
-              title="上一页"
-              aria-label="上一页"
-              @click="handleMailPageStep(-1)"
-            >
-              <ArrowLeft />
-            </button>
-            <span class="pager-status">
-              <b>{{ mailPage }}</b>
-              <span>/</span>
-              {{ mailPageCount }}
-            </span>
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="mailPage >= mailPageCount"
-              title="下一页"
-              aria-label="下一页"
-              @click="handleMailPageStep(1)"
-            >
-              <ArrowRight />
-            </button>
-          </div>
-        </div>
-        <div v-if="!filteredMailRecords.length" class="empty-state">没有匹配的邮件记录</div>
+        <div v-if="!mailTitleSummaries.length" class="empty-state">没有匹配的邮件汇总</div>
       </section>
-      <div v-else class="empty-state">还没有邮件记录；执行邮件检查后会写入这里。</div>
+      <div v-if="!mailRecords.length" class="empty-state">还没有邮件记录；执行邮件检查后会写入这里。</div>
     </div>
 
     <el-dialog
@@ -13224,39 +13342,18 @@ onBeforeUnmount(() => {
             </table>
           </div>
         </section>
-        <div v-if="sortedPlayerProfileRowsWithIndex.length" class="mail-pager">
-          <span class="pager-size-label">每页 {{ DEFAULT_PLAYER_PROFILE_PAGE_SIZE }} 条</span>
-          <div class="pager-nav">
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="playerProfilePage <= 1"
-              title="上一页"
-              aria-label="上一页"
-              @click="handlePlayerProfilePageStep(-1)"
-            >
-              <ArrowLeft />
-            </button>
-            <span class="pager-status">
-              <b>{{ playerProfilePage }}</b>
-              <span>/</span>
-              {{ playerProfilePageCount }}
-            </span>
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="playerProfilePage >= playerProfilePageCount"
-              title="下一页"
-              aria-label="下一页"
-              @click="handlePlayerProfilePageStep(1)"
-            >
-              <ArrowRight />
-            </button>
-          </div>
-        </div>
+        <StandardPagination
+          v-if="sortedPlayerProfileRowsWithIndex.length"
+          class="mail-pager"
+          :page="playerProfilePage"
+          :page-size="DEFAULT_PLAYER_PROFILE_PAGE_SIZE"
+          :page-count="playerProfilePageCount"
+          :show-page-size="false"
+          @page-change="handlePlayerProfilePageChange"
+        />
         <div v-if="!filteredPlayerProfileRows.length" class="empty-state">没有匹配的玩家面板</div>
       </section>
-      <div v-else class="empty-state">历史抓包里还没有解析出玩家面板；打开他人面板并保持抓包运行后会自动进入这里。</div>
+      <div v-else class="empty-state">数据库里还没有解析出的玩家面板记录，后台采集到增量后会自动进入这里。</div>
     </div>
 
     <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
@@ -13938,43 +14035,16 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')" class="object-pagination">
-          <el-select
-            v-model="pageSize"
-            class="page-size-select"
-            size="small"
-            @change="value => handlePageSizeChange(Number(value))"
-          >
-            <el-option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size" :label="`${size}条/页`" />
-          </el-select>
-          <div class="pager-nav">
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="page <= 1"
-              title="上一页"
-              aria-label="上一页"
-              @click="handlePageStep(-1)"
-            >
-              <ArrowLeft />
-            </button>
-            <span class="pager-status">
-              <b>{{ page }}</b>
-              <span>/</span>
-              {{ pageCount }}
-            </span>
-            <button
-              class="pager-arrow"
-              type="button"
-              :disabled="page >= pageCount"
-              title="下一页"
-              aria-label="下一页"
-              @click="handlePageStep(1)"
-            >
-              <ArrowRight />
-            </button>
-          </div>
-        </div>
+        <StandardPagination
+          v-if="total > 0 && activeTab !== 'storage_bag' && activeTab !== 'mail' && activeTab !== 'player_profile' && activeTab !== 'protocol' && !(activeTab === 'activity' && activityViewMode !== 'list')"
+          class="object-pagination"
+          :page="page"
+          :page-size="pageSize"
+          :page-count="pageCount"
+          :page-size-options="PAGE_SIZE_OPTIONS"
+          @page-change="handlePageChange"
+          @page-size-change="handlePageSizeChange"
+        />
       </aside>
 
       <div
@@ -16865,42 +16935,6 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
-.icon-review-row {
-  padding-top: 1px;
-}
-
-.icon-review-options {
-  align-items: center;
-  gap: 4px 10px;
-}
-
-.icon-review-summary {
-  color: #475467;
-  font-size: 13px;
-  line-height: 28px;
-  white-space: nowrap;
-}
-
-.icon-review-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #7a4b00;
-  background: rgba(255, 248, 230, 0.72);
-  box-shadow: inset 0 0 0 1px rgba(174, 128, 38, 0.24);
-}
-
-.icon-review-option:hover {
-  background: rgba(255, 241, 204, 0.9);
-}
-
-.review-priority-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #d97008;
-}
-
 .facet-select {
   width: auto;
   min-width: 168px;
@@ -17466,6 +17500,34 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.mail-sub-tabs {
+  display: inline-flex;
+  justify-self: start;
+  padding: 2px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.mail-sub-tab {
+  min-width: 76px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #475467;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mail-sub-tab.active {
+  background: #fff;
+  color: #101828;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+}
+
 .storage-bag-summary {
   display: flex;
   align-items: flex-start;
@@ -17564,61 +17626,6 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.mail-policy-panel {
-  display: grid;
-  gap: 10px;
-  width: min(100%, 1040px);
-  padding: 12px 14px;
-  border: 1px solid #e4e7ec;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.mail-policy-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.mail-policy-head h4 {
-  margin: 0;
-  color: #101828;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.mail-policy-head span {
-  color: #667085;
-  font-size: 12px;
-}
-
-.mail-policy-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.mail-policy-grid div {
-  min-width: 0;
-  padding-left: 10px;
-  border-left: 2px solid #d0d5dd;
-}
-
-.mail-policy-grid b {
-  display: block;
-  color: #344054;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.mail-policy-grid p {
-  margin: 3px 0 0;
-  color: #667085;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 .mail-groups .facet-option .facet-option-label,
 .mail-groups .facet-option small {
   color: var(--mail-status-color, #475467);
@@ -17649,9 +17656,9 @@ onBeforeUnmount(() => {
   --mail-status-color: #b54708;
 }
 
-.mail-status-filter-deleted {
-  --mail-status-bg: #f2f4f7;
-  --mail-status-color: #667085;
+.mail-status-filter-claimable {
+  --mail-status-bg: #eaf2ff;
+  --mail-status-color: #175cd3;
 }
 
 .storage-bag-table-wrap {
@@ -17719,39 +17726,82 @@ onBeforeUnmount(() => {
 
 .mail-table th,
 .mail-table td {
+  padding-top: 5px;
+  padding-bottom: 5px;
   white-space: normal;
   vertical-align: top;
 }
 
 .mail-table th:nth-child(1),
 .mail-table td:nth-child(1) {
-  width: 44px;
+  width: 62px;
 }
 
 .mail-table th:nth-child(2),
 .mail-table td:nth-child(2) {
-  width: 240px;
+  width: 220px;
 }
 
-.mail-table th:nth-child(3),
-.mail-table td:nth-child(3) {
-  width: 96px;
+.mail-index-status-head {
+  white-space: normal;
 }
 
-.mail-table th:nth-child(5),
-.mail-table td:nth-child(5) {
-  width: 72px;
+.mail-index-status-head-inner,
+.mail-title-time-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
-.mail-table th:nth-child(6),
-.mail-table td:nth-child(6) {
-  width: 84px;
+.mail-title-time-separator {
+  color: #98a2b3;
+  font-weight: 500;
+}
+
+.mail-title-time-cell {
+  line-height: 1.4;
+}
+
+.mail-index-status-cell {
+  text-align: center;
+}
+
+.mail-index-status-cell .storage-bag-index-cell {
+  display: block;
+  margin-bottom: 3px;
+  color: #475467;
+  line-height: 16px;
+  text-align: center;
 }
 
 .mail-title-cell {
   color: #101828;
   font-weight: 600;
   line-height: 1.45;
+}
+
+.mail-title-link {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #101828;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mail-title-link:hover {
+  color: #1677ff;
+}
+
+.mail-time-cell {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
 }
 
 .mail-rewards-cell {
@@ -17869,11 +17919,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
-.mail-content-cell {
-  width: 72px;
-  color: #667085;
-}
-
 .mail-content-body {
   max-height: 60vh;
   margin: 0;
@@ -17903,6 +17948,24 @@ onBeforeUnmount(() => {
   font-weight: 650;
 }
 
+.mail-status-pill.muted {
+  background: #f8fafc;
+  color: #667085;
+  font-weight: 500;
+}
+
+.mail-status-distribution {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.mail-status-separator {
+  color: #98a2b3;
+  font-size: 12px;
+}
+
 .mail-status-pill.status-seen {
   background: #ecfdf3;
   color: #027a48;
@@ -17913,14 +17976,82 @@ onBeforeUnmount(() => {
   color: #b54708;
 }
 
-.mail-status-pill.status-deleted {
-  background: #f2f4f7;
-  color: #667085;
+.mail-status-pill.status-claimable {
+  background: #eaf2ff;
+  color: #175cd3;
 }
 
 .mail-status-pill.status-locked {
   background: #fff1f3;
   color: #c01048;
+}
+
+.mail-status-button {
+  min-width: 42px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid #d0d5dd;
+  border-radius: 5px;
+  background: #fff;
+  color: #475467;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.mail-status-button.updating {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.mail-status-button.status-seen {
+  border-color: #abefc6;
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.mail-status-button.status-claimable {
+  border-color: #b2ccff;
+  background: #eaf2ff;
+  color: #175cd3;
+}
+
+.mail-status-button.status-locked {
+  border-color: #fecdd6;
+  background: #fff1f3;
+  color: #c01048;
+}
+
+.mail-summary-table {
+  width: 100%;
+  min-width: 920px;
+  table-layout: fixed;
+}
+
+.mail-summary-table th,
+.mail-summary-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.mail-summary-table th:nth-child(1),
+.mail-summary-table td:nth-child(1) {
+  width: 300px;
+}
+
+.mail-summary-table th:nth-child(2),
+.mail-summary-table td:nth-child(2) {
+  width: 72px;
+}
+
+.mail-summary-title-cell {
+  line-height: 1.4;
+}
+
+.mail-summary-status-line {
+  margin-top: 8px;
 }
 
 .mail-table .storage-bag-sort-button::after {
@@ -18595,8 +18726,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 12px;
   padding: 8px 10px;
   border-top: 1px solid #e5e7eb;
   background: #fffdfa;
@@ -18832,73 +18963,8 @@ onBeforeUnmount(() => {
   line-height: 1.15;
 }
 
-.pager-arrow:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.pager-nav {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pager-arrow {
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(166, 128, 54, 0.26);
-  border-radius: 4px;
-  color: #7d6a46;
-  background: #fff;
-  cursor: pointer;
-}
-
-.pager-arrow:hover:not(:disabled) {
-  color: #0f62c9;
-  border-color: rgba(22, 119, 255, 0.36);
-  background: #f7fbff;
-}
-
-.pager-arrow:disabled {
-  color: #c4c9d2;
-  background: #f4f5f7;
-  cursor: default;
-}
-
-.pager-arrow svg {
-  width: 14px;
-  height: 14px;
-}
-
-.pager-status {
-  min-width: 54px;
-  color: #667085;
-  font-size: 13px;
-  text-align: center;
-}
-
-.pager-status b {
-  color: #172033;
-  font-weight: 750;
-}
-
 .mail-pager {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   margin-top: 10px;
-}
-
-.pager-size-label {
-  color: #667085;
-  font-size: 13px;
-}
-
-.page-size-select {
-  width: 92px;
 }
 
 .object-detail {
@@ -21409,10 +21475,6 @@ onBeforeUnmount(() => {
     grid-template-columns: clamp(300px, 32%, 380px) minmax(0, 1fr);
   }
 
-  .mail-policy-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .object-detail {
     padding: 22px 24px 34px;
   }
@@ -21458,10 +21520,6 @@ onBeforeUnmount(() => {
   }
 
   .homemake-overview-list {
-    grid-template-columns: 1fr;
-  }
-
-  .mail-policy-grid {
     grid-template-columns: 1fr;
   }
 

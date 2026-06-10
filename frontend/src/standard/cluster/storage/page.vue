@@ -456,26 +456,14 @@
         </section>
 
         <section class="duplicate-pagination">
-          <el-button
-            :icon="ArrowLeft"
-            :disabled="duplicateLoading || !duplicateListing?.has_previous"
-            @click="loadDuplicatePage((duplicateListing?.page ?? 1) - 1)"
-          >
-            上一页
-          </el-button>
-          <span class="duplicate-page-label">
-            第 {{ duplicateListing?.page ?? 1 }} 页
-            <template v-if="duplicateListing">
-              / {{ duplicateTotalPages }} 页
-            </template>
-          </span>
-          <el-button
-            :icon="ArrowRight"
-            :disabled="duplicateLoading || !duplicateListing?.has_next"
-            @click="loadDuplicatePage((duplicateListing?.page ?? 1) + 1)"
-          >
-            下一页
-          </el-button>
+          <StandardPagination
+            :page="duplicateListing?.page ?? 1"
+            :page-size="duplicateListing?.page_size ?? 1"
+            :page-count="duplicateTotalPages"
+            :show-page-size="false"
+            :disabled="duplicateLoading"
+            @page-change="loadDuplicatePage"
+          />
         </section>
       </template>
     </template>
@@ -553,8 +541,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  ArrowLeft,
-  ArrowRight,
   Delete,
   Document,
   FolderOpened,
@@ -564,6 +550,7 @@ import {
   Search,
 } from '@element-plus/icons-vue';
 import { useRoute } from 'vue-router';
+import StandardPagination from '@/components/StandardPagination.vue';
 
 import {
   fetchDeviceEntryDeleteTask,

@@ -1459,6 +1459,194 @@ def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: 
     assert not any("link" in entry for entry in sheet.document_json.get("cell_meta", {}).values() if isinstance(entry, dict))
 
 
+def test_attendance_wjx_sheet_sync_only_updates_entry_process_status(session):
+    entry = AttendanceWjxDataEntry(
+        activity_id="codeyun-attendance-feedback",
+        seq=680,
+        submitted_at_text="2026/06/08 15:11:07",
+        source="采集系统",
+        course_name="20260412禅宗11期二阶",
+        student_id_text="2-12",
+        student_name="旧姓名",
+        correction_request="旧问题",
+        extra_note="旧补充",
+        process_status="",
+        process_note="",
+        raw_row_json={"1、所属课程": "20260412禅宗11期二阶"},
+        synced_at=1713426373.0,
+        created_at=1713426373.0,
+        updated_at=1713426373.0,
+    )
+    session.add(entry)
+    session.commit()
+
+    document_json = attendance_api._create_default_attendance_wjx_sheet_document()
+    document_json["rows"] = [[
+        "680",
+        "2026/06/08 15:11:07",
+        "采集系统",
+        {"value": "第47届觉观", "link": {"url": "/workbook/11?sheet=54623"}},
+        "白玄度",
+        "1-09",
+        "李杰",
+        "阿含经诵读打卡已完成四次",
+        "",
+        "已处理",
+    ]]
+
+    updated_count = attendance_api._sync_attendance_wjx_entries_from_sheet_document(session, document_json)
+
+    assert updated_count == 1
+    refreshed = session.exec(select(AttendanceWjxDataEntry).where(AttendanceWjxDataEntry.seq == 680)).one()
+    assert refreshed.course_name == "20260412禅宗11期二阶"
+    assert refreshed.student_id_text == "2-12"
+    assert refreshed.student_name == "旧姓名"
+    assert refreshed.correction_request == "旧问题"
+    assert refreshed.process_status == "已处理"
+    assert refreshed.process_note == "已处理"
+    assert refreshed.raw_row_json["1、所属课程"] == "20260412禅宗11期二阶"
+
+
+def test_attendance_feedback_submission_keeps_explicit_course_when_context_differs(client: TestClient, session):
+    workbook = WorkbookDocument(
+        numeric_id=11,
+        title="20260412禅宗11期二阶",
+    )
+    sheet = SheetDocument(
+        numeric_id=54623,
+        scope="notes",
+        owner_type="course_session",
+        owner_key="zen-11-stage-2",
+        sheet_key="attendance",
+        title="考勤表",
+        document_json={"schema_version": 1, "columns": [], "rows": []},
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.add(WorkbookSheetLink(workbook_id="11", sheet_id="54623", order_index=1))
+    session.commit()
+
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "第47届觉观",
+            "student_id_text": "2-12",
+            "student_name": "袁铭苒",
+            "correction_request": "第2课有完成当堂学习",
+            "extra_note": "",
+            "workbook_id": 11,
+            "sheet_id": 54623,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["course_name"] == "第47届觉观"
+    entry = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id == "codeyun-attendance-feedback")
+        .where(AttendanceWjxDataEntry.seq == payload["seq"])
+    ).one()
+    assert entry.course_name == "第47届觉观"
+    assert entry.raw_row_json["1、所属课程"] == "第47届觉观"
+
+
+def test_attendance_feedback_submission_infers_course_from_course_sheet_before_workbook(client: TestClient, session):
+    jueguan_workbook = WorkbookDocument(
+        numeric_id=11,
+        title="第47届觉观",
+    )
+    wrong_workbook = WorkbookDocument(
+        numeric_id=12,
+        title="20260412禅宗11期二阶",
+    )
+    sheet = SheetDocument(
+        numeric_id=54623,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260601-jueguan-47",
+        sheet_key="attendance",
+        title="考勤表",
+        document_json={"schema_version": 1, "columns": [], "rows": []},
+    )
+    session.add(jueguan_workbook)
+    session.add(wrong_workbook)
+    session.add(sheet)
+    session.commit()
+    session.add(WorkbookSheetLink(workbook_id="11", sheet_id="54623", order_index=1))
+    session.commit()
+
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "考勤表",
+            "student_id_text": "2-12",
+            "student_name": "袁铭苒",
+            "correction_request": "第2课有完成当堂学习",
+            "extra_note": "",
+            "workbook_id": 12,
+            "sheet_id": 54623,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["course_name"] == "第47届觉观"
+    entry = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id == "codeyun-attendance-feedback")
+        .where(AttendanceWjxDataEntry.seq == payload["seq"])
+    ).one()
+    assert entry.course_name == "第47届觉观"
+    assert entry.raw_row_json["1、所属课程"] == "第47届觉观"
+
+
+def test_attendance_feedback_submission_strong_sheet_context_overrides_conflicting_course(client: TestClient, session):
+    workbook = WorkbookDocument(
+        numeric_id=11,
+        title="第47届觉观",
+    )
+    sheet = SheetDocument(
+        numeric_id=54623,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260601-jueguan-47",
+        sheet_key="attendance",
+        title="考勤表",
+        document_json={"schema_version": 1, "columns": [], "rows": []},
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.add(WorkbookSheetLink(workbook_id="11", sheet_id="54623", order_index=1))
+    session.commit()
+
+    response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "20260412禅宗11期二阶",
+            "student_id_text": "2-12",
+            "student_name": "袁铭苒",
+            "correction_request": "第2课有完成当堂学习",
+            "extra_note": "",
+            "workbook_id": 11,
+            "sheet_id": 54623,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["course_name"] == "第47届觉观"
+    entry = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id == "codeyun-attendance-feedback")
+        .where(AttendanceWjxDataEntry.seq == payload["seq"])
+    ).one()
+    assert entry.course_name == "第47届觉观"
+    assert entry.raw_row_json["1、所属课程"] == "第47届觉观"
+
+
 def test_attendance_feedback_submission_persists_and_keeps_existing_rows(client: TestClient, session):
     existing_entry = AttendanceWjxDataEntry(
         activity_id="264266843",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -90,6 +91,140 @@ def test_maintenance_once_runs_bounded_mail_backlog_without_full_historical_sync
     assert calls[0]["include_mail_business_backlog"] is True
 
 
+def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_live_backlog(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", fake_live_backlog)
+
+    service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
+    result = service.scan_once()
+
+    assert result["ok"] is True
+    assert calls
+    assert calls[0]["stable_seconds"] == 1
+    assert calls[0]["use_cursor"] is True
+    assert calls[0]["newest_first"] is True
+    assert calls[0]["limit"] == 2
+    assert result["decoded_record_db_sync"]["skipped"] is True
+    assert result["activity_packet_sync"]["skipped"] is True
+
+
+def test_realtime_loop_scans_before_wait(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(scan_interval_seconds=60, stable_seconds=1)
+    calls = 0
+
+    def fake_scan_once():
+        nonlocal calls
+        calls += 1
+        service._stop_event.set()
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "scan_once", fake_scan_once)
+
+    service._run_loop()
+
+    assert calls == 1
+
+
+def test_realtime_scan_runs_latest_mail_business_backlog(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(maintenance_interval_seconds=60, stable_seconds=1)
+    calls: list[dict[str, int]] = []
+
+    monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", lambda **_kwargs: {"ok": True})
+
+    def fake_mail_backlog(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "selected_count": 1}
+
+    monkeypatch.setattr(worker, "sync_fanxiu_mail_business_backlog", fake_mail_backlog)
+
+    result = service.scan_once()
+
+    assert calls == [{"latest_limit": 16, "historical_limit": 0}]
+    assert result["mail_business_backlog_sync"] == {"ok": True, "selected_count": 1}
+
+
+def test_mail_source_protocol_probe_distinguishes_source_and_action_packets(tmp_path):
+    mailbox_path = tmp_path / "mailbox.json"
+    mailbox_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {"name": "SM_MailBox"},
+                    {"name": "CM_DeleteMail"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    action_path = tmp_path / "action.json"
+    action_path.write_text(json.dumps({"frames": [{"name": "SM_DeleteMail"}]}), encoding="utf-8")
+
+    probe = worker._mail_source_protocol_probe(
+        [
+            {"decoded_path": str(mailbox_path), "record_id": "mailbox-record", "pcap_name": "mailbox.pcap"},
+            {"decoded_path": str(action_path), "record_id": "action-record", "pcap_name": "action.pcap"},
+        ]
+    )
+
+    assert probe["has_mailbox_source"] is True
+    assert probe["has_any_mail_source"] is True
+    assert probe["has_mail_action"] is True
+    assert probe["protocol_counts"] == {"SM_MailBox": 1, "CM_DeleteMail": 1, "SM_DeleteMail": 1}
+    assert probe["source_samples"][0]["protocol"] == "SM_MailBox"
+    assert probe["action_samples"][0]["protocol"] == "CM_DeleteMail"
+
+
+def test_mail_business_backlog_records_mail_source_probe(monkeypatch, tmp_path):
+    decoded_path = tmp_path / "decoded.json"
+    decoded_path.write_text(json.dumps({"frames": [{"name": "SM_DeleteMail"}]}), encoding="utf-8")
+    sources = [{"decoded_path": str(decoded_path), "record_id": "r1", "stream": 0}]
+    state_path = tmp_path / "mail_business_backlog_state.json"
+
+    monkeypatch.setattr(worker, "_iter_fanxiu_tcp_decoded_sources", lambda _data_dir=None: sources)
+    monkeypatch.setattr(worker, "_mail_business_backlog_state_path", lambda _data_dir=None: state_path)
+
+    class FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("sqlmodel.Session", FakeSession)
+    monkeypatch.setattr("backend.core.fanxiu_mail_packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
+
+    result = worker.sync_fanxiu_mail_business_backlog(latest_limit=1, historical_limit=0)
+
+    assert result["mail_source_probe"]["has_any_mail_source"] is False
+    assert result["mail_source_probe"]["has_mail_action"] is True
+    assert result["mail_source_probe"]["protocol_counts"] == {"SM_DeleteMail": 1}
+
+
+def test_maintenance_loop_scans_before_wait(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(maintenance_interval_seconds=60, stable_seconds=1)
+    calls = 0
+
+    def fake_maintenance_once():
+        nonlocal calls
+        calls += 1
+        service._maintenance_stop_event.set()
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "maintenance_once", fake_maintenance_once)
+
+    service._maintenance_loop()
+
+    assert calls == 1
+
+
 def test_mail_business_backlog_processes_bounded_latest_and_historical_sources(monkeypatch, tmp_path):
     sources = [
         {
@@ -130,6 +265,48 @@ def test_mail_business_backlog_processes_bounded_latest_and_historical_sources(m
     assert len(selected_keys) == 5
     assert worker._decoded_source_key(sources[0]) in selected_keys
     assert worker._decoded_source_key(sources[-1]) in selected_keys
+
+
+def test_batch_business_sync_passes_non_profile_runtime_protocols(monkeypatch):
+    seen_names: list[str] = []
+
+    monkeypatch.setattr(
+        worker,
+        "_decode_result_from_source",
+        lambda _source: {
+            "record_id": "wallet-record",
+            "frames": [{"name": "SM_Wallet", "content": {"items": []}}],
+        },
+    )
+
+    def fake_runtime_sync(result, **_kwargs):
+        seen_names.extend(str(frame.get("name") or "") for frame in result.get("frames") or [])
+        return {"ok": True, "changed": True}
+
+    monkeypatch.setattr(worker, "sync_fanxiu_packet_runtime_insights_for_decode_result", fake_runtime_sync)
+
+    class FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("sqlmodel.Session", FakeSession)
+    monkeypatch.setattr("backend.core.fanxiu_mail_packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
+
+    runtime_sync, mail_sync = worker._sync_business_after_decoded(
+        [{"decoded_sources": [{"decoded_path": "decoded.json", "record_id": "wallet-record", "stream": 0}]}]
+    )
+
+    assert seen_names == ["SM_Wallet"]
+    assert runtime_sync["source_count"] == 1
+    assert runtime_sync["sync_count"] == 1
+    assert runtime_sync["changed"] is True
+    assert mail_sync["ok"] is True
 
 
 def test_live_capture_backlog_caps_single_pass_scan_window(monkeypatch, tmp_path):
@@ -199,6 +376,55 @@ def test_live_capture_backlog_skips_pcaps_without_target_stream(monkeypatch, tmp
     assert decode_calls == []
     assert result["decoded_count"] == 0
     assert result["skipped"][0]["reason"] == "no_target_stream"
+
+
+def test_iter_stable_live_pcaps_skips_current_runtime_capture(monkeypatch, tmp_path):
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+    active = live_dir / "fanxiu_runtime_active.pcap"
+    sealed = live_dir / "fanxiu_runtime_sealed.pcap"
+    active.write_bytes(b"x" * 128)
+    sealed.write_bytes(b"x" * 128)
+    old_time = time.time() - 10
+    os.utime(active, (old_time, old_time))
+    os.utime(sealed, (old_time, old_time))
+
+    monkeypatch.setattr(worker, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+    monkeypatch.setattr(worker, "_current_runtime_capture_path", lambda: active)
+
+    rows = worker._iter_stable_live_pcaps(stable_seconds=1, max_age_seconds=None)
+
+    assert rows == [sealed]
+
+
+def test_live_capture_backlog_skips_locked_active_capture(monkeypatch, tmp_path):
+    live_dir = tmp_path / "live-captures"
+    live_dir.mkdir()
+    pcap = live_dir / "fanxiu_runtime_locked.pcap"
+    pcap.write_bytes(b"x" * 128)
+    old_time = time.time() - 10
+    os.utime(pcap, (old_time, old_time))
+
+    monkeypatch.setattr(worker, "resolve_fanxiu_tcp_live_capture_dir", lambda _data_dir=None: live_dir)
+    monkeypatch.setattr(worker, "resolve_fanxiu_tcp_store_root", lambda _data_dir=None: tmp_path / "tcp-flow")
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_decoded_capture_sources_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_sha256_file", lambda _path: (_ for _ in ()).throw(OSError(32, "另一个程序正在使用此文件")))
+    monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
+
+    result = worker.sync_fanxiu_live_capture_backlog(
+        data_dir=tmp_path,
+        stable_seconds=1,
+        retry_failed_after_seconds=0,
+        max_capture_age_seconds=None,
+        use_cursor=False,
+        limit=1,
+    )
+
+    assert result["ok"] is True
+    assert result["error_count"] == 0
+    assert result["skipped"][0]["reason"] == "locked_active_capture"
 
 
 def test_decode_runtime_capture_with_timeout_raises_quickly(monkeypatch, tmp_path):

@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import os
 import socket
 import subprocess
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import psutil
+from pyxllib.prog import (
+    build_background_popen_kwargs,
+    local_service_enabled,
+    process_candidates_by_name,
+    read_json_state_dict,
+    root_process_records,
+    seconds_since,
+    tail_text,
+    terminate_process_tree,
+    write_json_state,
+)
 
-from backend.core.device import build_background_popen_kwargs, process_candidates_by_name
 from backend.core.ocr_service_runtime import get_ocr_service_base_url, get_ocr_service_status, start_ocr_service
 from backend.core.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
@@ -115,33 +123,22 @@ def _resolve_fanxiu_ocr_device(settings: Any | None = None) -> str:
 
 
 def is_fanxiu_behavior_tree_service_enabled() -> bool:
-    services_text = os.getenv("FX_RUNTIME_SERVICES")
-    if services_text is not None:
-        services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
-        return bool(
-            services
-            & {
-                "*",
-                "all",
-                "fanxiu",
-                FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
-                "fanxiu_behavior_tree",
-                "behavior_tree",
-                "凡修行为树",
-            }
-        )
-
-    configured = os.getenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED")
-    if configured is not None:
-        return configured.strip().lower() not in {"0", "false", "no", "off", "disabled"}
-
-    hosts_text = os.getenv("FX_BEHAVIOR_TREE_SERVICE_HOSTS")
-    hosts = (
-        {item.strip().lower() for item in hosts_text.split(",") if item.strip()}
-        if hosts_text
-        else DEFAULT_FANXIU_SERVICE_HOSTS
+    return local_service_enabled(
+        service_names={
+            "*",
+            "all",
+            "fanxiu",
+            FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
+            "fanxiu_behavior_tree",
+            "behavior_tree",
+            "凡修行为树",
+        },
+        runtime_services_text=os.getenv("FX_RUNTIME_SERVICES"),
+        enabled_text=os.getenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED"),
+        hosts_text=os.getenv("FX_BEHAVIOR_TREE_SERVICE_HOSTS"),
+        default_hosts=DEFAULT_FANXIU_SERVICE_HOSTS,
+        current_hostname=_current_hostname(),
     )
-    return _current_hostname().strip().lower() in hosts
 
 
 def get_fanxiu_mainwin_root() -> Path:
@@ -179,34 +176,11 @@ def _now_text() -> str:
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_json_state_dict(path)
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    last_error: PermissionError | None = None
-    for attempt in range(6):
-        temp_path = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp_path.write_text(text, encoding="utf-8")
-            temp_path.replace(path)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            time.sleep(0.05 * (attempt + 1))
-    if last_error is not None:
-        raise last_error
+    write_json_state(path, payload, permission_retries=6)
 
 
 def _is_behavior_tree_process(item: dict[str, Any]) -> bool:
@@ -253,41 +227,14 @@ def list_behavior_tree_processes() -> list[dict[str, Any]]:
     return items
 
 
-def _root_behavior_tree_processes(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    process_pids = {int(item["pid"]) for item in processes if item.get("pid") is not None}
-    return [item for item in processes if int(item.get("parent_pid") or -1) not in process_pids]
-
-
-def _terminate_process_tree(pid: int, timeout: float) -> None:
-    try:
-        root = psutil.Process(pid)
-        targets = [*root.children(recursive=True), root]
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-        return
-
-    for target in reversed(targets):
-        try:
-            target.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            pass
-    _, alive = psutil.wait_procs(targets, timeout=timeout)
-    for target in alive:
-        try:
-            target.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            pass
-    if alive:
-        psutil.wait_procs(alive, timeout=timeout)
-
-
 def terminate_behavior_tree_processes(timeout: float = 5.0) -> dict[str, Any]:
     matched = list_behavior_tree_processes()
-    root_items = _root_behavior_tree_processes(matched)
+    root_items = root_process_records(matched)
     errors: list[dict[str, Any]] = []
     terminated: list[dict[str, Any]] = []
     for item in root_items:
         try:
-            _terminate_process_tree(int(item["pid"]), timeout)
+            terminate_process_tree(int(item["pid"]), timeout=timeout)
             terminated.append(item)
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
             errors.append({"pid": item.get("pid"), "error": str(exc)})
@@ -298,25 +245,6 @@ def terminate_behavior_tree_processes(timeout: float = 5.0) -> dict[str, Any]:
         "remaining": list_behavior_tree_processes(),
         "errors": errors,
     }
-
-
-def _parse_time(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(text[:19], fmt)
-        except ValueError:
-            pass
-    return None
-
-
-def _seconds_since(value: Any) -> int | None:
-    parsed = _parse_time(value)
-    if not parsed:
-        return None
-    return max(0, int((datetime.now() - parsed).total_seconds()))
 
 
 def _resolve_ocr_token() -> str:
@@ -347,11 +275,11 @@ def _status_paths() -> dict[str, str]:
 def get_behavior_tree_status() -> dict[str, Any]:
     registry = _read_json_file(get_registry_path())
     processes = list_behavior_tree_processes()
-    root_processes = _root_behavior_tree_processes(processes)
+    root_processes = root_process_records(processes)
     process_pids = {int(item["pid"]) for item in processes if item.get("pid") is not None}
     registry_pid = registry.get("pid")
     registry_pid_alive = isinstance(registry_pid, int) and registry_pid in process_pids
-    heartbeat_age = _seconds_since(registry.get("heartbeat_at"))
+    heartbeat_age = seconds_since(registry.get("heartbeat_at"))
 
     if processes:
         state = "running"
@@ -525,21 +453,6 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
     }
 
 
-def _tail_text(path: Path, *, lines: int = 80, max_bytes: int = 512 * 1024) -> list[str]:
-    if not path.exists():
-        return [f"{path} 不存在"]
-    try:
-        size = path.stat().st_size
-        with path.open("rb") as file:
-            file.seek(max(0, size - max_bytes))
-            data = file.read()
-    except OSError as exc:
-        return [f"读取 {path} 失败：{exc}"]
-    text = data.decode("utf-8", errors="replace")
-    rows = [row.rstrip() for row in text.splitlines() if row.strip()]
-    return rows[-lines:] if lines > 0 else rows
-
-
 def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
     status = get_behavior_tree_status()
     registry = status.get("registry") if isinstance(status.get("registry"), dict) else {}
@@ -576,7 +489,7 @@ def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
 
     tail_limit = max(20, min(120, limit // 2 if limit else 80))
     lines.extend(["", "服务启动日志："])
-    lines.extend(_tail_text(Path(status["service_log_path"]), lines=tail_limit))
+    lines.extend(tail_text(Path(status["service_log_path"]), lines=tail_limit))
     lines.extend(["", "behavior_tree.log 尾部："])
-    lines.extend(_tail_text(Path(status["behavior_tree_log_path"]), lines=tail_limit))
+    lines.extend(tail_text(Path(status["behavior_tree_log_path"]), lines=tail_limit))
     return lines[: max(1, limit)]

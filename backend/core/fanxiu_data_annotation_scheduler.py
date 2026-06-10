@@ -5,10 +5,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from pyxllib.prog import (
+    build_scheduled_task_plan,
+    first_valid_schedule_time_text,
+    merge_scheduled_task_updates,
+    schedule_kind_rank,
+    schedule_task_due_timestamp,
+    schedule_task_order_key,
+    scheduled_task_plan_reason,
+    scheduled_task_run_copy,
+    sync_scheduled_tasks_from_facts,
+)
+
 from backend.core.fanxiu_data_annotation_state import (
     next_data_annotation_scheduler_time,
     normalize_data_annotation_scheduler_task,
-    parse_data_annotation_task_time,
 )
 
 
@@ -17,49 +28,19 @@ TaskDue = Callable[[dict[str, Any]], bool]
 
 
 def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = fact.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text and parse_data_annotation_task_time(text) is not None:
-            return text
-    return None
+    return first_valid_schedule_time_text(fact, *keys)
 
 
 def data_annotation_scheduler_group_rank(task: dict[str, Any]) -> int:
-    schedule_kind = str(task.get("schedule_kind") or "").strip()
-    return {
-        "daily": 10,
-        "dynamic": 20,
-        "manual": 30,
-    }.get(schedule_kind, 90)
+    return schedule_kind_rank(task)
 
 
 def data_annotation_scheduler_due_timestamp(task: dict[str, Any]) -> float:
-    retry_at = parse_data_annotation_task_time(task.get("retry_after"))
-    if retry_at is not None:
-        return retry_at
-    next_at = parse_data_annotation_task_time(task.get("next_time"))
-    if next_at is not None:
-        return next_at
-    clocks = [
-        value
-        for value in task.get("schedule_times", [])
-        if str(value or "").strip()
-    ] if isinstance(task.get("schedule_times"), list) else []
-    if clocks:
-        parsed = sorted(str(value) for value in clocks)
-        return parse_data_annotation_task_time(f"1970-01-01 {parsed[0]}") or 0.0
-    return 0.0
+    return schedule_task_due_timestamp(task)
 
 
 def data_annotation_scheduler_order_key(task: dict[str, Any]) -> tuple[int, float, str]:
-    return (
-        data_annotation_scheduler_group_rank(task),
-        data_annotation_scheduler_due_timestamp(task),
-        str(task.get("id") or ""),
-    )
+    return schedule_task_order_key(task)
 
 
 def sync_data_annotation_scheduler_tasks_from_world_facts(
@@ -72,40 +53,20 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
     task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
     if not isinstance(task_facts, dict) or not task_facts:
         return False
-    changed = False
     sync_time = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-    for task in tasks:
-        task_id = str(task.get("id") or "")
-        fact = task_facts.get(task_id)
-        if not isinstance(fact, dict):
-            continue
-        task_changed = False
-        next_time = data_annotation_fact_time_text(fact, "discovered_next_time", "next_time")
-        if next_time and task.get("next_time") != next_time:
-            task["next_time"] = next_time
-            task_changed = True
-            changed = True
-        retry_after = data_annotation_fact_time_text(fact, "discovered_retry_after", "retry_after")
-        if retry_after and task.get("retry_after") != retry_after:
-            task["retry_after"] = retry_after
-            task_changed = True
-            changed = True
-        last_run_at = data_annotation_fact_time_text(fact, "last_run_at")
-        if last_run_at and task.get("last_run_at") != last_run_at:
-            task["last_run_at"] = last_run_at
-            task_changed = True
-            changed = True
-        last_result = str(fact.get("last_result") or "").strip()
-        if last_result and str(task.get("last_result") or "") != last_result:
-            task["last_result"] = last_result
-            task_changed = True
-            changed = True
-        if task_changed:
-            checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
-            checkpoint["world_fact_synced_at"] = sync_time
-            checkpoint["world_fact_updated_at"] = fact.get("updated_at")
-            task["checkpoint"] = checkpoint
-    return changed
+    return sync_scheduled_tasks_from_facts(
+        tasks,
+        task_facts,
+        time_field_sources={
+            "next_time": ("discovered_next_time", "next_time"),
+            "retry_after": ("discovered_retry_after", "retry_after"),
+            "last_run_at": ("last_run_at",),
+        },
+        text_field_sources={"last_result": ("last_result",)},
+        synced_at_key="world_fact_synced_at",
+        fact_updated_at_key="world_fact_updated_at",
+        synced_at_text=sync_time,
+    )
 
 
 def merge_data_annotation_scheduler_task_updates(
@@ -114,29 +75,13 @@ def merge_data_annotation_scheduler_task_updates(
     *,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    current_by_id = {str(task.get("id") or ""): task for task in current_tasks if str(task.get("id") or "")}
-    merged: list[dict[str, Any]] = []
-    runtime_keys = {"last_run_at", "last_result", "retry_after", "next_time", "checkpoint"}
-    current_time = now or datetime.now()
-    for incoming in incoming_tasks:
-        normalized = normalize_data_annotation_scheduler_task(incoming)
-        if normalized is None:
-            continue
-        current = current_by_id.get(str(normalized.get("id") or ""))
-        if current is None:
-            merged.append(normalized)
-            continue
-        was_enabled = bool(current.get("enabled"))
-        task = {**normalized}
-        for key in runtime_keys:
-            task[key] = current.get(key)
-        if bool(task.get("enabled")) and not was_enabled and not task.get("retry_after"):
-            task["next_time"] = next_data_annotation_scheduler_time(task, current_time)
-        elif not bool(task.get("enabled")):
-            task["retry_after"] = None
-            task["next_time"] = None
-        merged.append(task)
-    return merged
+    return merge_scheduled_task_updates(
+        current_tasks,
+        incoming_tasks,
+        normalizer=normalize_data_annotation_scheduler_task,
+        next_time_resolver=lambda task, base_time: next_data_annotation_scheduler_time(task, base_time),
+        base_time=now or datetime.now(),
+    )
 
 
 def repair_data_annotation_scheduler_tasks(
@@ -230,20 +175,12 @@ def data_annotation_scheduler_task_plan_reason(
     task_supported: TaskSupported,
     now_ts: float | None = None,
 ) -> str:
-    if not task.get("enabled"):
-        return "未启用"
-    current_ts = time.time() if now_ts is None else now_ts
-    retry_at = parse_data_annotation_task_time(task.get("retry_after"))
-    next_at = parse_data_annotation_task_time(task.get("next_time"))
-    if retry_at is not None and retry_at > current_ts:
-        return f"等待重试：{task.get('retry_after')}"
-    if next_at is not None and next_at > current_ts:
-        return f"未到时间：{task.get('next_time')}"
-    if not task_supported(task):
-        return "尚未纳入当前框架验收"
-    if due:
-        return "已到期"
-    return "可手动执行"
+    return scheduled_task_plan_reason(
+        task,
+        due,
+        task_supported=task_supported,
+        now=now_ts,
+    )
 
 
 def data_annotation_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
@@ -279,59 +216,19 @@ def build_data_annotation_scheduler_plan(
     discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
     task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
     runtime_running = bool(runtime.get("running"))
-    plan_items: list[dict[str, Any]] = []
     current_ts = time.time() if now_ts is None else now_ts
-    for task in tasks:
-        task_id = str(task.get("id") or "")
-        due = task_due(task)
-        task_type = str(task.get("task_type") or "")
-        unsupported = not task_supported(task)
-        runnable = bool(task.get("enabled")) and due and not unsupported
-        if runtime_running:
-            runnable = False
-        item = {
-            "id": task_id,
-            "task_type": task_type,
-            "label": str(task.get("label") or task_id),
-            "supported": not unsupported,
-            "enabled": bool(task.get("enabled")),
-            "due": due,
-            "runnable": runnable,
-            "reason": data_annotation_scheduler_task_plan_reason(
-                task,
-                due,
-                task_supported=task_supported,
-                now_ts=current_ts,
-            ),
-            "next_time": task.get("next_time") if task.get("next_time") else None,
-            "retry_after": task.get("retry_after") if task.get("retry_after") else None,
-            "last_result": str(task.get("last_result") or ""),
-            "fact": task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {},
-        }
-        plan_items.append(item)
-    plan_items.sort(
-        key=lambda item: (
-            not item["due"],
-            data_annotation_scheduler_order_key(item),
-        )
+    plan = build_scheduled_task_plan(
+        tasks,
+        runtime_running=runtime_running,
+        runtime_task=str(runtime.get("current_task") or runtime.get("task_type") or ""),
+        task_supported=task_supported,
+        task_due=task_due,
+        task_facts=task_facts,
+        now=current_ts,
     )
-    due_tasks = [item for item in plan_items if item["due"] and item["enabled"]]
-    runnable_tasks = [item for item in due_tasks if item["runnable"]]
-    if runtime_running:
-        next_action = "wait"
-        message = f"Runtime 正在运行：{runtime.get('current_task') or runtime.get('task_type') or '任务'}"
-    elif runnable_tasks:
-        next_action = "run_due"
-        message = f"建议执行到期任务：{runnable_tasks[0]['label']}"
-    elif due_tasks:
-        next_action = "blocked"
-        message = "存在到期任务，但当前均不可执行"
-    else:
-        next_action = "idle"
-        message = "没有到期任务"
     return {
-        "next_action": next_action,
-        "message": message,
+        "next_action": plan["next_action"],
+        "message": plan["message"],
         "runtime": {
             "running": runtime_running,
             "status": runtime.get("status") or "",
@@ -343,8 +240,8 @@ def build_data_annotation_scheduler_plan(
             "interruptible": bool(runtime.get("interruptible", True)),
         },
         "facts_summary": data_annotation_world_facts_summary(facts),
-        "due_tasks": due_tasks,
-        "tasks": plan_items,
+        "due_tasks": plan["due_tasks"],
+        "tasks": plan["tasks"],
         "path": str(scheduler_state_path),
     }
 
@@ -354,11 +251,4 @@ def data_annotation_scheduler_run_now_task(
     task_id: str,
     payload_override: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    task = next((item for item in tasks if item.get("id") == task_id), None)
-    if task is None:
-        return None
-    override = payload_override if isinstance(payload_override, dict) else {}
-    if not override:
-        return task
-    original_payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-    return {**task, "payload": {**original_payload, **override}}
+    return scheduled_task_run_copy(tasks, task_id, payload_override)

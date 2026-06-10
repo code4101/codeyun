@@ -167,14 +167,12 @@
                 </button>
               </div>
               <div v-if="directoryEntries.length > DEFAULT_DIRECTORY_PAGE_SIZE" class="directory-pagination">
-                <el-pagination
-                  small
-                  background
-                  :current-page="currentDirectoryPage"
+                <StandardPagination
+                  :page="currentDirectoryPage"
                   :page-size="DEFAULT_DIRECTORY_PAGE_SIZE"
-                  :total="directoryEntries.length"
-                  layout="prev, pager, next"
-                  @current-change="handleDirectoryPageChange"
+                  :page-count="directoryPageCount"
+                  :show-page-size="false"
+                  @page-change="handleDirectoryPageChange"
                 />
               </div>
               <div v-if="!directoryEntries.length" class="directory-empty-state">
@@ -238,17 +236,14 @@
               </div>
 
               <div v-if="mediaTotalCount > 0" class="media-pagination-inline media-pagination-inline-top">
-                <el-pagination
-                  small
-                  background
-                  :current-page="currentMediaPage"
+                <StandardPagination
+                  :page="currentMediaPage"
                   :page-size="mediaPageSize"
-                  :page-sizes="MEDIA_PAGE_SIZE_OPTIONS"
                   :total="mediaTotalCount"
-                  layout="total, sizes, prev, pager, next, jumper"
                   :disabled="isLoadingListing || isLoadingMediaPage"
-                  @current-change="handleMediaPageChange"
-                  @size-change="handleMediaPageSizeChange"
+                  :page-size-options="MEDIA_PAGE_SIZE_OPTIONS"
+                  @page-change="handleMediaPageChange"
+                  @page-size-change="handleMediaPageSizeChange"
                 />
               </div>
 
@@ -288,17 +283,14 @@
         </ImageGalleryWorkspace>
 
         <div v-if="mediaTotalCount > 0" class="media-pagination-bar">
-          <el-pagination
-            small
-            background
-            :current-page="currentMediaPage"
+          <StandardPagination
+            :page="currentMediaPage"
             :page-size="mediaPageSize"
-            :page-sizes="MEDIA_PAGE_SIZE_OPTIONS"
             :total="mediaTotalCount"
-            layout="total, sizes, prev, pager, next, jumper"
             :disabled="isLoadingListing || isLoadingMediaPage"
-            @current-change="handleMediaPageChange"
-            @size-change="handleMediaPageSizeChange"
+            :page-size-options="MEDIA_PAGE_SIZE_OPTIONS"
+            @page-change="handleMediaPageChange"
+            @page-size-change="handleMediaPageSizeChange"
           />
         </div>
       </section>
@@ -460,6 +452,7 @@ import {
 import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
 import GallerySortProgramBar from '@/components/GallerySortProgramBar.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
+import StandardPagination from '@/components/StandardPagination.vue';
 import { taskStore } from '@/store/taskStore';
 import {
   cloneGallerySortProgram,
@@ -506,7 +499,7 @@ const THUMBNAIL_MAX_EDGE = 360;
 const MAX_CACHED_FULL_MEDIA = 8;
 const DEFAULT_DEVICE_MEDIA_PAGE_SIZE = 50;
 const DEFAULT_DIRECTORY_PAGE_SIZE = 20;
-const MEDIA_PAGE_SIZE_OPTIONS = [50, 100, 200];
+const MEDIA_PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 const DEFAULT_DEVICE_MEDIA_SCAN_LIMIT = 2000;
 const MIN_DEVICE_MEDIA_SCAN_LIMIT = 100;
 const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;

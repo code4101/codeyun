@@ -159,6 +159,7 @@ def test_core_default_runtime_jobs_register_without_api(monkeypatch):
         "mail_claim_check",
     ):
         assert get_fanxiu_data_annotation_manual_job_definition(task_type) is not None
+    assert get_fanxiu_data_annotation_manual_job_definition("mail_claim_check_v2") is None
     go_scene = get_fanxiu_data_annotation_manual_job_definition("go_scene")
     assert go_scene is not None
     assert go_scene.normalize_payload is normalize_data_annotation_go_scene_payload
@@ -177,6 +178,24 @@ def test_core_manual_job_catalog_initializes_default_jobs(monkeypatch):
     assert by_type["go_scene"]["label"]
     assert by_type["go_scene"]["has_payload_normalizer"] is True
     assert by_type["mail_claim_check"]["scheduler_supported"] is True
+    assert "mail_claim_check_v2" not in by_type
+
+
+def test_core_mail_claim_check_job_uses_latest_runtime_impl(monkeypatch):
+    monkeypatch.setattr("backend.core.fanxiu_data_annotation_jobs._DATA_ANNOTATION_MANUAL_JOB_REGISTRY", {})
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_manual_job_definition("mail_claim_check")
+    calls = []
+
+    class FakeRunner:
+        def _execute_mail_claim_check_v2_task(self, ctx, stop_event, payload):
+            calls.append((ctx, stop_event, payload))
+            return "success"
+
+    stop_event = object()
+    assert definition is not None
+    assert definition.handler(FakeRunner(), {"ctx": True}, {"max_actions": 1}, stop_event) == "success"
+    assert calls == [({"ctx": True}, stop_event, {"max_actions": 1})]
 
 
 def test_local_behavior_tree_entrypoint_initializes_default_jobs(tmp_path, monkeypatch):

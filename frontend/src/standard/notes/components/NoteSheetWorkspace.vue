@@ -6,6 +6,7 @@ import { User } from '@element-plus/icons-vue'
 import type Handsontable from 'handsontable/base'
 
 import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
+import StandardPagination from '@/components/StandardPagination.vue'
 import NoteSheetAccessDialog from './NoteSheetAccessDialog.vue'
 import {
   fetchAttendanceFeedbackHistory,
@@ -200,6 +201,7 @@ const SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = 'registration_composite_
 const SHEET_CELL_ACTION_ATTENDANCE_EXPORT = 'attendance_export'
 const SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = 'clockin_link_detect'
 const SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA = 'attendance_course_update_data'
+const SHEET_CELL_ACTION_ATTENDANCE_VIDEO_REVISION = 'attendance_video_revision'
 const ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY = 'codeyun.noteSheet.rowDetailDialog.size.v1'
 const ROW_DETAIL_DIALOG_DEFAULT_WIDTH = 760
 const ROW_DETAIL_DIALOG_DEFAULT_HEIGHT = 760
@@ -215,6 +217,7 @@ const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_ATTENDANCE_EXPORT]: '导出excel',
   [SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]: '自动检测打卡链接',
   [SHEET_CELL_ACTION_ATTENDANCE_COURSE_UPDATE_DATA]: '更新数据',
+  [SHEET_CELL_ACTION_ATTENDANCE_VIDEO_REVISION]: '修订视频数据',
 } as const
 const EXCEL_IMPORT_ACTION_LABEL = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]
 const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据'
@@ -2632,14 +2635,14 @@ function normalizeStudentLookupFeedbackCourseName(value: unknown) {
 }
 
 const studentLookupFeedbackCourseName = computed(() => {
-  const workbookTitle = normalizeStudentLookupFeedbackCourseName(currentWorkbookTitle.value)
-  if (workbookTitle) {
-    return workbookTitle
-  }
-
   const optionCourse = normalizeStudentLookupFeedbackCourseName(selectedStudentLookupOption.value?.course)
   if (optionCourse) {
     return optionCourse
+  }
+
+  const workbookTitle = normalizeStudentLookupFeedbackCourseName(currentWorkbookTitle.value)
+  if (workbookTitle) {
+    return workbookTitle
   }
 
   return normalizeStudentLookupFeedbackCourseName(sheetTitle.value)
@@ -4742,6 +4745,9 @@ const contextMenu = {
     column_sort: {
       name: '排序',
       hidden: () => !hasSingleColumnHeaderSelection(),
+      callback: () => {
+        void handleSelectedColumnSort('asc')
+      },
       submenu: {
         items: [
           {
@@ -4890,12 +4896,13 @@ const contextMenu = {
     revise_attendance_video: {
       name: '修订',
       hidden: () => !canRunAttendanceVideoRevisionFromSelection() || !canRunSheetActions.value || !canEditData.value,
-      disabled: () => workspaceLoading.value,
+      disabled: () => isAttendanceVideoRevisionRunning(),
       submenu: {
         items: ATTENDANCE_VIDEO_REVISION_LABELS.map((label) => ({
           key: `revise_attendance_video:${label}`,
           name: label,
           hidden: () => !canRunAttendanceVideoRevisionLabelFromSelection(label),
+          disabled: () => isAttendanceVideoRevisionRunning(),
           callback: () => {
             void handleAttendanceVideoRevisionFromSelection(label)
           },
@@ -5029,6 +5036,9 @@ const contextMenu = {
     open_cell_link: {
       name: '打开超链接',
       hidden: () => !shouldShowLinkContextMenuGroup(),
+      callback: () => {
+        openSelectedCellLinkDefault()
+      },
       submenu: {
         items: [
           {
@@ -5069,8 +5079,72 @@ const contextMenu = {
   },
 }
 
+type SheetContextMenuConfig = typeof contextMenu
+type SheetContextMenuItemConfig = Record<string, any>
+
+function resolveContextMenuItemName(name: unknown, thisArg: unknown, args: unknown[]) {
+  if (typeof name === 'function') {
+    return String(name.apply(thisArg, args))
+  }
+  return String(name ?? '')
+}
+
+function isContextMenuItemHidden(item: SheetContextMenuItemConfig) {
+  return typeof item.hidden === 'function' ? !!item.hidden() : !!item.hidden
+}
+
+function isContextMenuItemDisabled(item: SheetContextMenuItemConfig) {
+  return typeof item.disabled === 'function' ? !!item.disabled() : !!item.disabled
+}
+
+function createTouchTreeContextMenu(baseMenu: SheetContextMenuConfig) {
+  const items: SheetContextMenuItemConfig = {}
+  Object.entries(baseMenu.items).forEach(([key, item]) => {
+    const submenuItems = Array.isArray(item.submenu?.items) ? item.submenu.items : null
+    if (!submenuItems?.length) {
+      items[key] = item
+      return
+    }
+
+    const hidden = () => isContextMenuItemHidden(item)
+      || submenuItems.every((child: SheetContextMenuItemConfig) => isContextMenuItemHidden(child))
+    if (typeof item.callback === 'function') {
+      const { submenu: _submenu, ...parentItem } = item
+      items[key] = {
+        ...parentItem,
+        hidden,
+        disabled: () => isContextMenuItemDisabled(item),
+      }
+    } else {
+      items[`${key}__group`] = {
+        name: item.name,
+        disabled: true,
+        isCommand: false,
+        hidden,
+      }
+    }
+
+    submenuItems.forEach((child: SheetContextMenuItemConfig, index: number) => {
+      const childKey = typeof child.key === 'string' && child.key ? child.key : `${key}__child_${index}`
+      items[childKey] = {
+        ...child,
+        name(this: unknown, ...args: unknown[]) {
+          return `\u00A0\u00A0${resolveContextMenuItemName(child.name, this, args)}`
+        },
+        hidden: () => isContextMenuItemHidden(item) || isContextMenuItemHidden(child),
+      }
+    })
+  })
+  return {
+    ...baseMenu,
+    items,
+  }
+}
+
 const sheetHotRenderContextMenu = computed(() => (
-  shouldUseEnhancedSheetRenderSettings.value ? contextMenu : false
+  shouldUseEnhancedSheetRenderSettings.value
+    ? (shouldEnableTouchContextMenuFallback() ? createTouchTreeContextMenu(contextMenu) : contextMenu)
+    : false
 ))
 
 function getCurrentSheetHotRenderSettings() {
@@ -16926,8 +17000,12 @@ function canRunAttendanceVideoRevisionFromSelection() {
   return getAttendanceVideoRevisionLabelsFromSelection().length > 0
 }
 
+function isAttendanceVideoRevisionRunning() {
+  return sheetCellActionRunning.value === SHEET_CELL_ACTION_ATTENDANCE_VIDEO_REVISION
+}
+
 async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string) {
-  if (props.sheetId == null || workspaceLoading.value) {
+  if (props.sheetId == null || sheetCellActionRunning.value) {
     return
   }
   if (!ensureCanRunSheetActions()) {
@@ -16956,9 +17034,10 @@ async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string)
     return
   }
 
-  workspaceLoading.value = true
+  sheetCellActionRunning.value = SHEET_CELL_ACTION_ATTENDANCE_VIDEO_REVISION
   try {
     const scrollPosition = captureSheetScrollPosition()
+    commitPendingSheetGridEdit()
     await flushRemoteSave()
     const result = await applyAttendanceVideoRevision(props.sheetId, {
       base_version: Number(sheetVersion.value || 1),
@@ -16980,7 +17059,7 @@ async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string)
       ElMessage.error('修订失败')
     }
   } finally {
-    workspaceLoading.value = false
+    sheetCellActionRunning.value = null
   }
 }
 
@@ -26741,16 +26820,14 @@ defineExpose({
 
     <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
       <div class="sheet-pagination-status">{{ pageStatusText }}</div>
-      <el-pagination
+      <StandardPagination
         v-if="effectivePaginationEnabled"
-        size="small"
-        background
-        layout="prev, pager, next"
-        :current-page="currentPage"
+        :page="currentPage"
         :page-size="pageSize"
         :page-count="pageCount"
+        :show-page-size="false"
         :disabled="workspaceLoading || saveInFlight"
-        @current-change="handlePageChange"
+        @page-change="handlePageChange"
       />
     </div>
 

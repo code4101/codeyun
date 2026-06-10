@@ -290,6 +290,7 @@ class AttendanceFeedbackSubmitRequest(BaseModel):
 class AttendanceFeedbackResolvedCourse(BaseModel):
     name: str = ""
     link_url: str = ""
+    strong_context: bool = False
 
 
 class AttendanceWjxDataUpdateRequest(BaseModel):
@@ -2573,6 +2574,14 @@ def _normalize_feedback_workbook_course_title(value: Any) -> str:
     return text
 
 
+def _is_feedback_course_attendance_sheet(sheet: SheetDocument | None) -> bool:
+    return bool(
+        sheet is not None
+        and sheet.owner_type == "course_workbook"
+        and sheet.sheet_key == "attendance"
+    )
+
+
 def _build_feedback_workbook_url(workbook: WorkbookDocument, sheet: SheetDocument | None = None) -> str:
     workbook_id = workbook.numeric_id
     if workbook_id is None:
@@ -2586,42 +2595,51 @@ def _resolve_feedback_course_from_context(
     session: Session,
     payload: AttendanceFeedbackSubmitRequest,
 ) -> AttendanceFeedbackResolvedCourse:
-    if payload.workbook_id is not None:
+    sheet = None
+    if payload.sheet_id is not None:
+        sheet = session.exec(
+            select(SheetDocument).where(SheetDocument.numeric_id == int(payload.sheet_id))
+        ).first()
+
+    if _is_feedback_course_attendance_sheet(sheet):
+        assert sheet is not None
+        sheet_refs = sheet_ref_aliases(sheet)
+        links = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
+            .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+        ).all()
+        workbook_map = load_workbooks_by_refs(session, [link.workbook_id for link in links])
+        if payload.workbook_id is not None:
+            for workbook in workbook_map.values():
+                if workbook.numeric_id == int(payload.workbook_id):
+                    title = _normalize_feedback_workbook_course_title(workbook.title)
+                    if title:
+                        return AttendanceFeedbackResolvedCourse(
+                            name=title,
+                            link_url=_build_feedback_workbook_url(workbook, sheet),
+                            strong_context=True,
+                        )
+        for link in links:
+            workbook = workbook_map.get(str(link.workbook_id))
+            title = _normalize_feedback_workbook_course_title(workbook.title if workbook is not None else "")
+            if title:
+                return AttendanceFeedbackResolvedCourse(
+                    name=title,
+                    link_url=_build_feedback_workbook_url(workbook, sheet),
+                    strong_context=True,
+                )
+
+    if payload.workbook_id is not None and sheet is None:
         workbook = session.exec(
             select(WorkbookDocument).where(WorkbookDocument.numeric_id == int(payload.workbook_id))
         ).first()
         title = _normalize_feedback_workbook_course_title(workbook.title if workbook is not None else "")
         if title:
-            sheet = None
-            if payload.sheet_id is not None:
-                sheet = session.exec(
-                    select(SheetDocument).where(SheetDocument.numeric_id == int(payload.sheet_id))
-                ).first()
             return AttendanceFeedbackResolvedCourse(
                 name=title,
                 link_url=_build_feedback_workbook_url(workbook, sheet),
             )
-
-    if payload.sheet_id is not None:
-        sheet = session.exec(
-            select(SheetDocument).where(SheetDocument.numeric_id == int(payload.sheet_id))
-        ).first()
-        if sheet is not None:
-            sheet_refs = sheet_ref_aliases(sheet)
-            links = session.exec(
-                select(WorkbookSheetLink)
-                .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
-                .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
-            ).all()
-            workbook_map = load_workbooks_by_refs(session, [link.workbook_id for link in links])
-            for link in links:
-                workbook = workbook_map.get(str(link.workbook_id))
-                title = _normalize_feedback_workbook_course_title(workbook.title if workbook is not None else "")
-                if title:
-                    return AttendanceFeedbackResolvedCourse(
-                        name=title,
-                        link_url=_build_feedback_workbook_url(workbook, sheet),
-                    )
 
     return AttendanceFeedbackResolvedCourse()
 
@@ -2725,11 +2743,14 @@ def _persist_attendance_feedback_submission(
     resolved_course = AttendanceFeedbackResolvedCourse()
     if _is_generic_feedback_course_name(course_name) or payload.workbook_id is not None or payload.sheet_id is not None:
         resolved_course = _resolve_feedback_course_from_context(session, payload)
+    has_conflicting_strong_context = (
+        resolved_course.strong_context
+        and resolved_course.name
+        and _normalize_feedback_history_match_text(course_name) != _normalize_feedback_history_match_text(resolved_course.name)
+    )
+    if _is_generic_feedback_course_name(course_name) or has_conflicting_strong_context:
+        course_name = resolved_course.name
         course_link_url = resolved_course.link_url
-    if _is_generic_feedback_course_name(course_name):
-        course_name = resolved_course.name
-    elif resolved_course.name:
-        course_name = resolved_course.name
     if not course_name:
         raise HTTPException(status_code=400, detail="所属课程不能是考勤表，请从课程或工作簿名称提交")
     student_id_text = _normalize_required_feedback_text(payload.student_id_text, field_name="学号")

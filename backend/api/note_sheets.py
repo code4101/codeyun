@@ -6682,6 +6682,27 @@ def _build_attendance_total_refund_formula(
     return f"=IFERROR({video_ref}+{clockin_ref}+{order_ref}-{standard_amount_ref},0)"
 
 
+def _build_attendance_zen_guest_formula(columns: list[str], *, row_number: int) -> str | None:
+    completed_video_index = _get_column_index(columns, "完成视频数")
+    clockin_index = _get_column_index(columns, "打卡数")
+    if completed_video_index < 0 or clockin_index < 0:
+        return None
+    completed_video_ref = f"{_excel_column_label(completed_video_index)}{row_number}"
+    clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
+    return f'=IF(AND({completed_video_ref}>=11,{clockin_ref}>=7),"是","")'
+
+
+def _is_legacy_nianzhu_zen_guest_formula(value: Any) -> bool:
+    text = _normalize_sheet_text(value)
+    if not _is_formula_expression(text):
+        return False
+    compact = re.sub(r"\s+", "", text).upper()
+    return ">=11" in compact and ">=7" in compact and (
+        compact.startswith("=AND(")
+        or compact.startswith("=IF(AND(")
+    )
+
+
 def _find_attendance_standard_order_amount(rows: list[list[Any]], columns: list[str]) -> str:
     order_amount_index = _get_column_index(columns, "订单金额")
     if order_amount_index < 0:
@@ -6866,12 +6887,14 @@ def _normalize_attendance_dual_clockin_refund_formulas(
     normalized, note_changed_count = _normalize_attendance_current_refund_config_note(normalized, columns)
     refund_index = _get_column_index(columns, "打卡应返款")
     total_index = _get_column_index(columns, "总应返款")
-    if refund_index < 0 or _get_column_index(columns, "共学打卡") < 0 or _get_column_index(columns, "共修打卡") < 0:
-        if note_changed_count:
-            return normalized, note_changed_count
-        return document_json, 0
-
-    normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
+    has_dual_clockin_refund = (
+        refund_index >= 0
+        and _get_column_index(columns, "共学打卡") >= 0
+        and _get_column_index(columns, "共修打卡") >= 0
+    )
+    config_row_changed_count = 0
+    if has_dual_clockin_refund:
+        normalized, config_row_changed_count = _normalize_attendance_refund_config_row(normalized, columns)
 
     rows = [
         _normalize_sheet_row(row, len(columns))
@@ -6880,10 +6903,17 @@ def _normalize_attendance_dual_clockin_refund_formulas(
     changed_formula_cells: list[tuple[int, int]] = []
     row_reference_offset = _get_formula_reference_row_offset(normalized)
     standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
+    zen_guest_index = _get_column_index(columns, "禅客")
     for row_index, row in enumerate(rows):
         row_number = row_reference_offset + row_index + 1
-        current_formula = row[refund_index]
-        if _is_formula_expression(current_formula):
+        if zen_guest_index >= 0 and _is_legacy_nianzhu_zen_guest_formula(row[zen_guest_index]):
+            next_zen_guest_formula = _build_attendance_zen_guest_formula(columns, row_number=row_number)
+            if next_zen_guest_formula and next_zen_guest_formula != row[zen_guest_index]:
+                row[zen_guest_index] = next_zen_guest_formula
+                changed_formula_cells.append((row_index, zen_guest_index))
+
+        current_formula = row[refund_index] if has_dual_clockin_refund else ""
+        if has_dual_clockin_refund and _is_formula_expression(current_formula):
             next_formula = _build_attendance_dual_clockin_refund_formula(
                 columns,
                 row_number=row_number,
@@ -6893,7 +6923,7 @@ def _normalize_attendance_dual_clockin_refund_formulas(
                 row[refund_index] = next_formula
                 changed_formula_cells.append((row_index, refund_index))
 
-        if total_index >= 0 and _is_formula_expression(row[total_index]):
+        if has_dual_clockin_refund and total_index >= 0 and _is_formula_expression(row[total_index]):
             next_total_formula = _build_attendance_total_refund_formula(
                 columns,
                 row_number=row_number,
@@ -6917,8 +6947,9 @@ def _normalize_attendance_dual_clockin_refund_formulas(
             )
         changed_count += len(changed_formula_cells)
 
-    next_document, next_config_row_changed_count = _normalize_attendance_refund_config_row(next_document, columns)
-    changed_count += next_config_row_changed_count
+    if has_dual_clockin_refund:
+        next_document, next_config_row_changed_count = _normalize_attendance_refund_config_row(next_document, columns)
+        changed_count += next_config_row_changed_count
 
     if changed_count <= 0:
         return document_json, 0
@@ -7551,15 +7582,33 @@ def _apply_course_attendance_header_links_for_response(
     document: SheetDocument,
     document_json: dict[str, Any],
 ) -> tuple[dict[str, Any], int]:
+    next_document = document_json
+    total_count = 0
     try:
-        from backend.core.nianzhu_course_sheets import apply_course_attendance_header_links_for_response
+        from backend.core.nianzhu_course_sheets import apply_course_attendance_header_links_for_response as apply_nianzhu_links
     except Exception:
-        return document_json, 0
-    return apply_course_attendance_header_links_for_response(
-        session,
-        attendance=document,
-        document_json=document_json,
-    )
+        apply_nianzhu_links = None
+    if apply_nianzhu_links is not None:
+        next_document, count = apply_nianzhu_links(
+            session,
+            attendance=document,
+            document_json=next_document,
+        )
+        total_count += count
+
+    try:
+        from backend.core.fanbei_course_sheets import apply_course_attendance_header_links_for_response as apply_fanbei_links
+    except Exception:
+        apply_fanbei_links = None
+    if apply_fanbei_links is not None:
+        next_document, count = apply_fanbei_links(
+            session,
+            attendance=document,
+            document_json=next_document,
+        )
+        total_count += count
+
+    return next_document, total_count
 
 
 def _cell_meta_has_style(meta: Any) -> bool:

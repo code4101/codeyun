@@ -314,6 +314,15 @@ class FanxiuMailRecordListResponse(BaseModel):
     records: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class FanxiuMailRecordUpdateRequest(BaseModel):
+    status: str
+
+
+class FanxiuMailRecordUpdateResponse(BaseModel):
+    ok: bool = True
+    record: dict[str, Any] = Field(default_factory=dict)
+
+
 class FanxiuMailPacketSyncRequest(BaseModel):
     clear_existing: bool = False
 

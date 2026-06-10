@@ -124,4 +124,4 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_mail_claim_check_task(ctx, stop_event, payload)
+        return runner._execute_mail_claim_check_v2_task(ctx, stop_event, payload)

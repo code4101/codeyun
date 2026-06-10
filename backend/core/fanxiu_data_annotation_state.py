@@ -1,43 +1,38 @@
 from __future__ import annotations
 
-import json
-import os
 import time
-import uuid
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time
 from pathlib import Path
 from typing import Any
 
+from pyxllib.prog import (
+    append_fact_event,
+    append_status_log,
+    append_status_log_once,
+    ensure_mapping_bucket,
+    fact_key,
+    next_daily_time,
+    normalize_guard_items,
+    normalize_job_record,
+    normalize_scheduled_task_record,
+    parse_daily_clock,
+    parse_schedule_time,
+    read_json_state,
+    read_json_state_dict,
+    scheduled_task_state,
+    schedule_task_due,
+    status_live_empty,
+    trim_fact_events,
+    write_json_state,
+)
+
 
 def write_data_annotation_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        for attempt in range(8):
-            try:
-                tmp.replace(path)
-                return
-            except PermissionError:
-                if attempt >= 7:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    write_json_state(path, payload)
 
 
 def read_data_annotation_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
+    return read_json_state(path, default)
 
 
 def initial_data_annotation_world_facts() -> dict[str, Any]:
@@ -111,22 +106,16 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
 def write_data_annotation_world_facts(path: Path, facts: dict[str, Any]) -> None:
     facts["version"] = 1
     facts["updated_at"] = time.time()
-    events = facts.get("events")
-    if isinstance(events, list):
-        facts["events"] = [item for item in events if isinstance(item, dict)][-200:]
+    trim_fact_events(facts)
     write_data_annotation_json(path, facts)
 
 
 def data_annotation_fact_key(prefix: str, *parts: Any) -> str:
-    text = ":".join(str(part or "").strip() for part in parts if str(part or "").strip())
-    return f"{prefix}:{text}" if text else prefix
+    return fact_key(prefix, *parts)
 
 
 def append_data_annotation_world_fact_event(facts: dict[str, Any], kind: str, payload: dict[str, Any]) -> None:
-    event = {**payload, "time": time.time(), "kind": kind}
-    events = facts.setdefault("events", [])
-    if isinstance(events, list):
-        events.append(event)
+    append_fact_event(facts, kind, payload)
 
 
 def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any], result: str) -> None:
@@ -134,14 +123,7 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
     if not task_id:
         return
     facts = read_data_annotation_world_facts(path)
-    discoveries = facts.setdefault("discoveries", {})
-    if not isinstance(discoveries, dict):
-        discoveries = {}
-        facts["discoveries"] = discoveries
-    task_facts = discoveries.setdefault("task", {})
-    if not isinstance(task_facts, dict):
-        task_facts = {}
-        discoveries["task"] = task_facts
+    task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
     existing_fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
     task_facts[task_id] = {
         **existing_fact,
@@ -176,10 +158,7 @@ def persist_data_annotation_runtime_status(
     write_data_annotation_json(runtime_state_path, status)
     now = time.time()
     facts = read_data_annotation_world_facts(world_facts_path)
-    runtime = facts.setdefault("runtime", {})
-    if not isinstance(runtime, dict):
-        runtime = {}
-        facts["runtime"] = runtime
+    runtime = ensure_mapping_bucket(facts, "runtime")
     runtime.update({
         "entry_id": status.get("entry_id") or "",
         "current_scene": status.get("current_scene"),
@@ -194,10 +173,7 @@ def persist_data_annotation_runtime_status(
         "updated_at": now,
     })
 
-    guard = facts.setdefault("guard", {})
-    if not isinstance(guard, dict):
-        guard = {}
-        facts["guard"] = guard
+    guard = ensure_mapping_bucket(facts, "guard")
     last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
     guard.update({
         "enabled": bool(status.get("guard_enabled")),
@@ -207,37 +183,31 @@ def persist_data_annotation_runtime_status(
         "updated_at": now,
     })
 
-    discoveries = facts.setdefault("discoveries", {})
-    if not isinstance(discoveries, dict):
-        discoveries = {}
-        facts["discoveries"] = discoveries
     scene_id = status.get("current_scene")
     if scene_id is not None:
-        scene_facts = discoveries.setdefault("scene", {})
-        if isinstance(scene_facts, dict):
-            scene_facts[str(scene_id)] = {
-                "scene": scene_id,
-                "entry_id": status.get("entry_id") or status.get("guard_entry_id") or "",
-                "task_type": status.get("task_type") or "",
-                "phase": status.get("phase") or "",
-                "message": status.get("message") or "",
-                "seen_at": now,
-            }
+        scene_facts = ensure_mapping_bucket(facts, "discoveries", "scene")
+        scene_facts[str(scene_id)] = {
+            "scene": scene_id,
+            "entry_id": status.get("entry_id") or status.get("guard_entry_id") or "",
+            "task_type": status.get("task_type") or "",
+            "phase": status.get("phase") or "",
+            "message": status.get("message") or "",
+            "seen_at": now,
+        }
     if last_guard_event:
         guard_kind = str(last_guard_event.get("kind") or "popup")
         bucket_key = "occlusion" if guard_kind == "occlusion" else "popup"
-        bucket = discoveries.setdefault(bucket_key, {})
-        if isinstance(bucket, dict):
-            fact_key = data_annotation_fact_key(
-                bucket_key,
-                last_guard_event.get("image"),
-                last_guard_event.get("title"),
-                last_guard_event.get("folder_path"),
-            )
-            bucket[fact_key] = {
-                **last_guard_event,
-                "updated_at": now,
-            }
+        bucket = ensure_mapping_bucket(facts, "discoveries", bucket_key)
+        popup_fact_key = data_annotation_fact_key(
+            bucket_key,
+            last_guard_event.get("image"),
+            last_guard_event.get("title"),
+            last_guard_event.get("folder_path"),
+        )
+        bucket[popup_fact_key] = {
+            **last_guard_event,
+            "updated_at": now,
+        }
         append_data_annotation_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
     write_data_annotation_world_facts(world_facts_path, facts)
 
@@ -245,8 +215,7 @@ def persist_data_annotation_runtime_status(
 def read_data_annotation_runtime_status(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
-    payload = read_data_annotation_json(path, {})
-    return payload if isinstance(payload, dict) else {}
+    return read_json_state_dict(path)
 
 
 def initial_data_annotation_runtime_status() -> dict[str, Any]:
@@ -281,14 +250,7 @@ def initial_data_annotation_runtime_status() -> dict[str, Any]:
 
 
 def is_data_annotation_runtime_live_empty(status: dict[str, Any]) -> bool:
-    return (
-        not bool(status.get("running"))
-        and str(status.get("status") or "idle") == "idle"
-        and not str(status.get("task_type") or "")
-        and not str(status.get("current_task") or "")
-        and not status.get("logs")
-        and not status.get("started_at")
-    )
+    return status_live_empty(status)
 
 
 def append_data_annotation_runtime_status_log(
@@ -301,16 +263,15 @@ def append_data_annotation_runtime_status_log(
     time_text: str | None = None,
     updated_at: float | None = None,
 ) -> None:
-    logs = list(status.get("logs") or [])
-    logs.append({
-        "time": time_text or datetime.now().strftime("%H:%M:%S"),
-        "kind": kind,
-        "scope": scope,
-        "item_id": item_id,
-        "message": message,
-    })
-    status["logs"] = logs[-500:]
-    status["updated_at"] = time.time() if updated_at is None else updated_at
+    append_status_log(
+        status,
+        kind,
+        message,
+        scope=scope,
+        item_id=item_id,
+        time_text=time_text,
+        updated_at=updated_at,
+    )
 
 
 def append_data_annotation_runtime_log_once(
@@ -320,156 +281,53 @@ def append_data_annotation_runtime_log_once(
     *,
     time_text: str | None = None,
 ) -> None:
-    logs = status.get("logs")
-    if not isinstance(logs, list):
-        logs = []
-    if not any(isinstance(item, dict) and item.get("kind") == kind and item.get("message") == message for item in logs):
-        logs.append({"time": time_text or datetime.now().strftime("%H:%M:%S"), "kind": kind, "message": message})
-    status["logs"] = logs[-500:]
+    append_status_log_once(status, kind, message, time_text=time_text)
 
 
 def normalize_data_annotation_runtime_guard_items(
     status: dict[str, Any],
     guard_definitions: dict[str, dict[str, Any]],
 ) -> None:
-    raw_items = status.get("guard_items")
-    if not isinstance(raw_items, dict):
-        raw_items = {}
-    normalized: dict[str, dict[str, Any]] = {}
-    for guard_id, definition in guard_definitions.items():
-        raw_item = raw_items.get(guard_id)
-        if not isinstance(raw_item, dict):
-            raw_item = {}
-        enabled = bool(raw_item.get("enabled"))
-        running = bool(raw_item.get("running"))
-        entry_id = str(raw_item.get("entry_id") or "")
-        message = str(raw_item.get("message") or definition.get("message") or "")
-        if guard_id == "close_popups":
-            enabled = bool(status.get("guard_enabled"))
-            running = bool(status.get("guard_running"))
-            entry_id = str(status.get("guard_entry_id") or "")
-            last_guard_event = status.get("last_guard_event")
-            if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
-                message = str(last_guard_event.get("title") or "")
-        normalized[guard_id] = {
-            **definition,
-            "enabled": enabled,
-            "running": running,
-            "entry_id": entry_id,
-            "updated_at": float(raw_item.get("updated_at") or 0),
-            "message": message,
-        }
-    status["guard_items"] = normalized
+    close_popups_override: dict[str, Any] = {
+        "enabled": bool(status.get("guard_enabled")),
+        "running": bool(status.get("guard_running")),
+        "entry_id": str(status.get("guard_entry_id") or ""),
+    }
+    last_guard_event = status.get("last_guard_event")
+    if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
+        close_popups_override["message"] = str(last_guard_event.get("title") or "")
+    status["guard_items"] = normalize_guard_items(
+        guard_definitions,
+        status.get("guard_items"),
+        overrides={"close_popups": close_popups_override},
+    )
 
 
 def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        return None
-    task_id = str(item.get("id") or "").strip()
-    task_type = str(item.get("task_type") or "").strip()
-    if not task_id or not task_type:
-        return None
-    return {
-        "id": task_id,
-        "task_type": task_type,
-        "label": str(item.get("label") or task_id),
-        "source": str(item.get("source") or "manual"),
-        "schedule_kind": str(item.get("schedule_kind") or "manual"),
-        "legacy_name": str(item.get("legacy_name") or ""),
-        "enabled": bool(item.get("enabled")),
-        "interruptible": bool(item.get("interruptible", True)),
-        "next_time": item.get("next_time") if item.get("next_time") else None,
-        "schedule_times": [str(value) for value in item.get("schedule_times", [])] if isinstance(item.get("schedule_times"), list) else [],
-        "window": [str(value) for value in item.get("window", [])[:2]] if isinstance(item.get("window"), list) else None,
-        "last_run_at": item.get("last_run_at") if item.get("last_run_at") else None,
-        "last_result": str(item.get("last_result") or ""),
-        "retry_after": item.get("retry_after") if item.get("retry_after") else None,
-        "cooldown_seconds": int(item.get("cooldown_seconds") or 0),
-        "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
-        "checkpoint": item.get("checkpoint") if isinstance(item.get("checkpoint"), dict) else None,
-    }
+    return normalize_scheduled_task_record(item, default_source="manual", default_schedule_kind="manual")
 
 
 def data_annotation_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in task.items() if key not in {"supported"}}
+    return scheduled_task_state(task)
 
 
 def normalize_data_annotation_manual_job(item: Any) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        return None
-    task_type = str(item.get("task_type") or "").strip()
-    if not task_type:
-        return None
-    created_at = float(item.get("created_at") or time.time())
-    task_id = str(item.get("id") or f"manual-{uuid.uuid4().hex}")
-    return {
-        "id": task_id,
-        "task_type": task_type,
-        "label": str(item.get("label") or task_type),
-        "group": "manual_job",
-        "status": str(item.get("status") or "pending"),
-        "interruptible": bool(item.get("interruptible", True)),
-        "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
-        "created_at": created_at,
-        "updated_at": float(item.get("updated_at") or created_at),
-    }
+    return normalize_job_record(item, default_group="manual_job")
 
 
 def parse_data_annotation_task_time(value: Any) -> float | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(text[:19], fmt).timestamp()
-        except ValueError:
-            pass
-    return None
+    return parse_schedule_time(value)
 
 
 def parse_data_annotation_daily_clock(value: Any) -> dt_time | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.strptime(text, fmt).time()
-        except ValueError:
-            pass
-    return None
+    return parse_daily_clock(value)
 
 
 def next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
     if str(task.get("schedule_kind") or "") != "daily":
         return None
-    clocks = [
-        clock
-        for value in task.get("schedule_times", [])
-        if (clock := parse_data_annotation_daily_clock(value)) is not None
-    ]
-    if not clocks:
-        return None
-    base = now or datetime.now()
-    candidates: list[datetime] = []
-    for day_offset in (0, 1):
-        current_date = base.date() + timedelta(days=day_offset)
-        for clock in clocks:
-            candidate = datetime.combine(current_date, clock)
-            if candidate > base:
-                candidates.append(candidate)
-    if not candidates:
-        return None
-    return min(candidates).strftime("%Y-%m-%d %H:%M:%S")
+    return next_daily_time(task.get("schedule_times", []), base_time=now)
 
 
 def data_annotation_task_due(task: dict[str, Any]) -> bool:
-    if not task.get("enabled"):
-        return False
-    next_at = parse_data_annotation_task_time(task.get("next_time"))
-    retry_at = parse_data_annotation_task_time(task.get("retry_after"))
-    due_at = retry_at if retry_at is not None else next_at
-    return due_at is None or due_at <= time.time()
+    return schedule_task_due(task, now=time.time())

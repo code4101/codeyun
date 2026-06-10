@@ -1,9 +1,9 @@
-"""基于 20260409 梵呗增益业务表，生成 20260609 梵呗增益 CodeYun 工作簿。
+"""基于 20260509 梵呗初阶业务表，整理 20260609 梵呗初阶 CodeYun 工作簿。
 
-业务层沿用 4 月梵呗增益：
-- 考勤表列结构、22 课进度列、返款提示和公式口径来自 4 月模板；
-- 不迁移 4 月学员数据、订单数据、视频数据和打卡数据；
-- 不复用 4 月小鹅通课次链接，避免 6 月工作簿误指向旧课程。
+业务层沿用 5 月梵呗初阶：
+- 11 课进度列、每课 40 元、打卡 3/6/11 次返 30/60/110 元；
+- 不迁移 5 月学员数据、订单数据、视频数据和打卡数据；
+- 不复用 5 月小鹅通课次链接，避免 6 月工作簿误指向旧课程。
 
 技术层对齐 41 念住 / 47 觉观：
 - 工作簿下创建/更新 考勤表、报名表、视频配置、视频数据、打卡配置、打卡数据；
@@ -49,11 +49,13 @@ from scripts.import_legacy_attendance_workbook import _attendance_document, _reg
 DEFAULT_TEMPLATE_PATH = Path(r"C:\Users\kzche\Downloads\20260409梵呗增益.xlsx")
 TEMPLATE_COURSE_START_DATE = date(2026, 4, 9)
 COURSE_START_DATE = date(2026, 6, 9)
-COURSE_NAME = "d260609梵呗增益"
-WORKBOOK_TITLE = "20260609梵呗增益"
-SUMMARY_ONLINE_SHEET_NAME = "20260609梵呗增益"
-OWNER_KEY = "20260609-fanbei-zengyi"
-OFFICIAL_LESSON_COUNT = 22
+COURSE_NAME = "d260609梵呗初阶"
+WORKBOOK_TITLE = "20260609梵呗初阶"
+SUMMARY_ONLINE_SHEET_NAME = "20260609梵呗初阶"
+OWNER_KEY = "20260609-fanbei-chujie"
+LEGACY_WORKBOOK_TITLE = "20260609梵呗增益"
+LEGACY_SUMMARY_ONLINE_SHEET_NAME = "20260609梵呗增益"
+OFFICIAL_LESSON_COUNT = 11
 SHOP_ID = 1
 
 
@@ -98,7 +100,7 @@ def _shift_template_dates(text: str) -> str:
     )
     return (
         text.replace("20260409梵呗增益", SUMMARY_ONLINE_SHEET_NAME)
-        .replace("4月梵呗增益", "6月梵呗增益")
+        .replace("4月梵呗增益", "6月梵呗初阶")
         .replace("d260409梵呗增益", COURSE_NAME)
     )
 
@@ -161,7 +163,19 @@ def _remove_document_column(document: dict[str, Any], column_index: int) -> None
     if not 0 <= column_index < len(columns):
         return
     removed_column = columns[column_index]
+    removed_column_id: str | None = None
+    entity_columns = list(document.get("entity_columns") or [])
+    if len(entity_columns) > column_index:
+        entity_column = entity_columns[column_index]
+        if isinstance(entity_column, dict):
+            removed_column_id = _text(entity_column.get("id")) or None
+        document["entity_columns"] = entity_columns[:column_index] + entity_columns[column_index + 1:]
     document["columns"] = columns[:column_index] + columns[column_index + 1:]
+    column_ids = list(document.get("column_ids") or [])
+    if len(column_ids) > column_index:
+        if removed_column_id is None:
+            removed_column_id = _text(column_ids[column_index]) or None
+        document["column_ids"] = column_ids[:column_index] + column_ids[column_index + 1:]
     for key in ("rows", "grid_rows"):
         document[key] = [
             list(row)[:column_index] + list(row)[column_index + 1:]
@@ -174,6 +188,17 @@ def _remove_document_column(document: dict[str, Any], column_index: int) -> None
     configs = dict(document.get("column_configs") or {})
     configs.pop(removed_column, None)
     document["column_configs"] = configs
+    if removed_column_id:
+        entity_cells = dict(document.get("entity_cells") or {})
+        next_entity_cells: dict[str, Any] = {}
+        for row_id, row_cells in entity_cells.items():
+            if not isinstance(row_cells, dict):
+                next_entity_cells[row_id] = row_cells
+                continue
+            next_row_cells = dict(row_cells)
+            next_row_cells.pop(removed_column_id, None)
+            next_entity_cells[row_id] = next_row_cells
+        document["entity_cells"] = next_entity_cells
 
     adjusted_meta: dict[str, Any] = {}
     for key, value in dict(document.get("cell_meta") or {}).items():
@@ -211,16 +236,13 @@ def _normalize_refund_layout(document: dict[str, Any]) -> None:
         return
 
     refund_start = columns.index("完成视频数")
-    refund_end = columns.index("总应返款")
-    operation_start = columns.index("已返款") if "已返款" in columns else columns.index("订单金额")
-    operation_end = columns.index("当前应返款")
+    refund_end = columns.index("当前应返款")
     clockin_index = columns.index("打卡数")
     grid_rows = [list(row) for row in document.get("grid_rows") or [] if isinstance(row, list)]
     if grid_rows:
         for col in range(refund_start, min(clockin_index + 1, len(grid_rows[0]))):
             grid_rows[0][col] = ""
         grid_rows[0][refund_start] = "返款总计（数据仅在每天早上更新一次，不是实时更新！）"
-        grid_rows[0][operation_start] = "返款操作"
         grid_rows[0][clockin_index] = "打卡"
         document["grid_rows"] = grid_rows
 
@@ -233,7 +255,6 @@ def _normalize_refund_layout(document: dict[str, Any]) -> None:
             continue
         merged.append(item)
     merged.append({"row": 0, "col": refund_start, "rowspan": 1, "colspan": refund_end - refund_start + 1})
-    merged.append({"row": 0, "col": operation_start, "rowspan": 1, "colspan": operation_end - operation_start + 1})
     document["merged_cells"] = merged
 
 
@@ -243,19 +264,19 @@ def _attendance_defined_names() -> list[dict[str, str]]:
         {
             "name": "返款周期",
             "formula": f"=INT(TODAY()-DATE({anchor.year},{anchor.month},{anchor.day}))",
-            "comment": "当前梵呗增益返款周期天数，按开课前一天到今天计算。",
+            "comment": "当前梵呗初阶返款周期天数，按开课前一天到今天计算。",
             "scope": "worksheet",
         },
         {
             "name": "返款说明",
-            "formula": '="6月梵呗增益第"&返款周期&"天返款"',
+            "formula": '="6月梵呗初阶第"&返款周期&"天返款"',
             "comment": "返款操作说明文本。",
             "scope": "worksheet",
         },
         {
             "name": "返款ID后缀",
             "formula": '="_daya"&返款周期',
-            "comment": "梵呗增益返款批次 ID 后缀。",
+            "comment": "梵呗初阶返款批次 ID 后缀。",
             "scope": "worksheet",
         },
     ]
@@ -287,10 +308,26 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
     if "返款配置" in columns:
         _remove_document_column(doc, columns.index("返款配置"))
     columns = list(doc.get("columns") or [])
+    if "商户订单号" in columns:
+        _remove_document_column(doc, columns.index("商户订单号"))
+    columns = list(doc.get("columns") or [])
     grid_rows = [list(row) for row in doc.get("grid_rows") or [] if isinstance(row, list)]
     if len(grid_rows) < 3:
         raise RuntimeError("考勤表模板需要至少 3 行表头")
 
+    lesson_columns = [
+        (index, number)
+        for index, column in enumerate(columns)
+        if (number := _parse_lesson_number(column)) is not None
+    ]
+    for column_index, _lesson_number in sorted(
+        [item for item in lesson_columns if item[1] > OFFICIAL_LESSON_COUNT],
+        reverse=True,
+    ):
+        _remove_document_column(doc, column_index)
+
+    columns = list(doc.get("columns") or [])
+    grid_rows = [list(row) for row in doc.get("grid_rows") or [] if isinstance(row, list)]
     lesson_columns = [
         (index, number)
         for index, column in enumerate(columns)
@@ -307,10 +344,18 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
             _set_cell_link(doc, 1, columns.index(column_name), None)
     if "完成视频数" in columns:
         grid_rows[2][columns.index("完成视频数")] = ""
+    if "视频应返款" in columns:
+        grid_rows[2][columns.index("视频应返款")] = (
+            '11课*40元=440元\n'
+            '视频在"当堂(直播)/第1天(24小时内)/第2天/第3天/第4天/第5天"看完，'
+            '对应返回"40/32/24/16/8/0"元'
+        )
+    if "打卡应返款" in columns:
+        grid_rows[2][columns.index("打卡应返款")] = '日志打卡达到"3/6/11"次，累计返回"30/60/110"元'
     if "已返款" in columns:
         grid_rows[2][columns.index("已返款")] = '="第"&返款周期&"天"'
     if "订单金额" in columns:
-        grid_rows[2][columns.index("订单金额")] = 500
+        grid_rows[2][columns.index("订单金额")] = 550
     if "当前应返款" in columns:
         grid_rows[2][columns.index("当前应返款")] = "待首次同步"
 
@@ -321,8 +366,8 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
         **dict(doc.get("source_meta") or {}),
         "course_name": COURSE_NAME,
         "workbook_title": WORKBOOK_TITLE,
-        "business_template": "20260409梵呗增益",
-        "business_structure": "fanbei_zengyi_20260409",
+        "business_template": "20260509梵呗初阶",
+        "business_structure": "fanbei_chujie_20260509",
         "official_lesson_count": OFFICIAL_LESSON_COUNT,
         "video_refund_rule_mode": "timed_text",
         "columns": len(columns),
@@ -331,6 +376,24 @@ def _adapt_attendance_document(document: dict[str, Any]) -> dict[str, Any]:
     if "考勤返款常见问题解答" in grid_rows[2]:
         faq_col = grid_rows[2].index("考勤返款常见问题解答")
         _set_cell_style(doc, 2, faq_col, {"font_size": 16, "text_color": "#FF0000", "text_align": "center"})
+    for column_name in ("总应返款", "已返款", "订单金额"):
+        if column_name in columns:
+            _set_cell_style(doc, 2, columns.index(column_name), {
+                "background_color": "#D9D9D9",
+                "text_color": "#555555",
+                "text_align": "center",
+                "vertical_align": "middle",
+            })
+    if "当前应返款" in columns:
+        _set_cell_style(doc, 2, columns.index("当前应返款"), {
+            "background_color": "#D8D8D8",
+            "text_color": "#FF0000",
+        })
+    if "打卡数" in columns:
+        _set_cell_style(doc, 1, columns.index("打卡数"), {
+            "background_color": "#E2F0D9",
+            "text_color": "#0000FF",
+        })
     return doc
 
 
@@ -339,8 +402,8 @@ def _adapt_registration_document(document: dict[str, Any]) -> dict[str, Any]:
     doc["source_meta"] = {
         **dict(doc.get("source_meta") or {}),
         "course_name": COURSE_NAME,
-        "business_template": "20260409梵呗增益",
-        "business_structure": "fanbei_zengyi_registration",
+        "business_template": "20260509梵呗初阶",
+        "business_structure": "fanbei_chujie_registration",
         "columns": len(doc.get("columns") or []),
     }
     return doc
@@ -401,11 +464,11 @@ def _course_storage_documents(attendance_document: dict[str, Any]) -> dict[str, 
     source_meta = {
         "course_name": COURSE_NAME,
         "workbook_title": WORKBOOK_TITLE,
-        "business_template": "20260409梵呗增益",
-        "business_structure": "fanbei_zengyi_20260409",
+        "business_template": "20260509梵呗初阶",
+        "business_structure": "fanbei_chujie_20260509",
         "official_lesson_count": OFFICIAL_LESSON_COUNT,
         "video_refund_rule_mode": "timed_text",
-        "video_config_note": "lesson_id2 需要在 6 月真实课次创建后补齐；不要复用 4 月模板链接。",
+        "video_config_note": "lesson_id2 需要从小鹅通 2606堂 11 个真实课次补齐；不要复用 5 月模板链接。",
     }
     return {
         VIDEO_CONFIG_SHEET_KEY: _simple_document(
@@ -441,6 +504,11 @@ def _load_documents(template_path: Path) -> tuple[dict[str, Any], dict[str, Any]
 def _find_or_create_workbook(session: Session, owner_user_id: int) -> WorkbookDocument:
     workbook = session.exec(
         select(WorkbookDocument).where(WorkbookDocument.title == WORKBOOK_TITLE)
+    ).first()
+    if workbook is not None:
+        return workbook
+    workbook = session.exec(
+        select(WorkbookDocument).where(WorkbookDocument.title == LEGACY_WORKBOOK_TITLE)
     ).first()
     if workbook is not None:
         return workbook
@@ -541,7 +609,8 @@ def _link_summary_row(session: Session, workbook: WorkbookDocument, attendance: 
         (
             index
             for index, row in enumerate(rows)
-            if online_col < len(row) and _cell_text(row[online_col]) == SUMMARY_ONLINE_SHEET_NAME
+            if online_col < len(row)
+            and _cell_text(row[online_col]) in {SUMMARY_ONLINE_SHEET_NAME, LEGACY_SUMMARY_ONLINE_SHEET_NAME}
         ),
         -1,
     )
@@ -616,7 +685,7 @@ def run(*, apply: bool, template_path: Path, owner_user_id: int = 2) -> dict[str
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="重建 20260609 梵呗增益为 CodeYun 课程工作簿。")
+    parser = argparse.ArgumentParser(description="重建 20260609 梵呗初阶为 CodeYun 课程工作簿。")
     parser.add_argument("--apply", action="store_true", help="实际写入数据库；默认 dry-run。")
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE_PATH)
     parser.add_argument("--owner-user-id", type=int, default=2)

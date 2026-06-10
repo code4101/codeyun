@@ -578,6 +578,22 @@ export interface FanxiuDataAnnotationOcrFrameResponse {
   lines: FanxiuDataAnnotationOcrFrameLine[];
 }
 
+export interface FanxiuDataAnnotationRemoveBackgroundPayload {
+  image_data_url: string;
+  model?: string;
+  alpha_matting?: boolean;
+  post_process_mask?: boolean;
+}
+
+export interface FanxiuDataAnnotationRemoveBackgroundResponse {
+  ok: boolean;
+  model: string;
+  width: number;
+  height: number;
+  alpha_mask_data_url: string;
+  result_data_url: string;
+}
+
 export interface FanxiuDataAnnotationMacroPoint {
   x: number;
   y: number;
@@ -2938,6 +2954,49 @@ export interface FanxiuMailRecordListResponse {
   records: FanxiuMailRecord[];
 }
 
+export interface FanxiuMailRecordUpdateResponse {
+  ok: boolean;
+  record: FanxiuMailRecord;
+}
+
+export interface FanxiuPacketWorkerStatus {
+  ok?: boolean;
+  updated_at?: string;
+  realtime_running?: boolean;
+  maintenance_running?: boolean;
+  realtime_interval_seconds?: number;
+  maintenance_interval_seconds?: number;
+  realtime?: Record<string, any>;
+  maintenance?: Record<string, any>;
+  error?: string;
+  [key: string]: any;
+}
+
+export interface FanxiuCaptureRuntimeStatus {
+  state?: string;
+  running?: boolean;
+  game_running?: boolean;
+  adb_connected?: boolean;
+  root_ready?: boolean;
+  tcpdump_ready?: boolean;
+  active_reasons?: string[];
+  current_pcap_path?: string;
+  current_pcap_size?: number;
+  current_remote_pcap_path?: string;
+  started_at?: string;
+  last_error?: string;
+  tcpdump_started_at?: string;
+  device_id?: string;
+  package_name?: string;
+  watchdog_running?: boolean;
+  watchdog_started_at?: string;
+  watchdog_interval_seconds?: number;
+  watchdog_last_check_at?: string;
+  watchdog_last_action?: string;
+  watchdog_last_error?: string;
+  [key: string]: any;
+}
+
 export interface FanxiuPacketStorageBagResponse {
   ok: boolean;
   changed: boolean;
@@ -4593,6 +4652,24 @@ export const getFanxiuMailRecords = (
     .then(res => res.data);
 };
 
+export const updateFanxiuMailRecordStatus = (mailKey: string, status: '锁定' | '留存' | '可领') => {
+  return api
+    .patch<FanxiuMailRecordUpdateResponse>(`/fanxiu/mail-records/${encodeURIComponent(mailKey)}`, { status }, { timeout: 30000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuPacketWorkerStatus = () => {
+  return api
+    .get<FanxiuPacketWorkerStatus>('/fanxiu/packet-capture/tcp/worker/status', { timeout: 30000 })
+    .then(res => res.data);
+};
+
+export const getFanxiuCaptureRuntimeStatus = () => {
+  return api
+    .get<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/status', { timeout: 30000 })
+    .then(res => res.data);
+};
+
 export const getFanxiuPacketStorageBag = () => {
   return api
     .get<FanxiuPacketStorageBagResponse>('/fanxiu/packet-capture/tcp/storage-bag', { timeout: 120000 })
@@ -4938,6 +5015,14 @@ export const recognizeFanxiuDataAnnotationOcrFrame = (imageDataUrl: string) => {
   return api
     .post<FanxiuDataAnnotationOcrFrameResponse>('/fanxiu/data-annotation/ocr-frame', { image_data_url: imageDataUrl }, {
       timeout: 180000,
+    })
+    .then(res => res.data);
+};
+
+export const removeFanxiuDataAnnotationBackground = (payload: FanxiuDataAnnotationRemoveBackgroundPayload) => {
+  return api
+    .post<FanxiuDataAnnotationRemoveBackgroundResponse>('/fanxiu/data-annotation/remove-background', payload, {
+      timeout: 300000,
     })
     .then(res => res.data);
 };

@@ -9,7 +9,6 @@ from typing import Any
 
 from backend.core.fanxiu_activity_packet_sync import sync_fanxiu_activity_packets
 from backend.core.fanxiu_packet_insights import (
-    PLAYER_PROFILE_PROTOCOLS,
     decode_and_sync_fanxiu_runtime_capture,
     sync_fanxiu_packet_player_profiles,
     sync_fanxiu_packet_runtime_insights,
@@ -36,6 +35,8 @@ DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER = 40
 DEFAULT_DECODE_TIMEOUT_SECONDS = 30.0
 MIN_PCAP_BYTES = 24
 PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
+MAIL_SOURCE_PROTOCOL_NAMES = {"SM_MailBox", "SM_NewMail"}
+MAIL_ACTION_PROTOCOL_NAMES = {"CM_ReadMail", "SM_ReadMail", "CM_GetMailReward", "SM_GetMailReward", "CM_DeleteMail", "SM_DeleteMail"}
 
 
 def _now_text() -> str:
@@ -199,6 +200,73 @@ def _decode_result_from_source(source: dict[str, Any]) -> dict[str, Any] | None:
     return decoded
 
 
+def _mail_source_protocol_probe(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    protocol_counts: dict[str, int] = {}
+    source_samples: list[dict[str, Any]] = []
+    action_samples: list[dict[str, Any]] = []
+    for source in sources:
+        decoded_path = Path(str(source.get("decoded_path") or ""))
+        decoded = _load_json(decoded_path, {})
+        frames = decoded.get("frames") if isinstance(decoded, dict) else None
+        if not isinstance(frames, list):
+            continue
+        for index, frame in enumerate(frames):
+            if not isinstance(frame, dict):
+                continue
+            name = str(frame.get("name") or "")
+            if name not in MAIL_SOURCE_PROTOCOL_NAMES and name not in MAIL_ACTION_PROTOCOL_NAMES:
+                continue
+            protocol_counts[name] = protocol_counts.get(name, 0) + 1
+            sample = {
+                "protocol": name,
+                "decoded_path": str(decoded_path),
+                "record_id": source.get("record_id") or decoded.get("record_id") or "",
+                "pcap_name": source.get("pcap_name") or decoded.get("pcap_name") or "",
+                "frame_index": index,
+            }
+            if name in MAIL_SOURCE_PROTOCOL_NAMES and len(source_samples) < 8:
+                source_samples.append(sample)
+            elif name in MAIL_ACTION_PROTOCOL_NAMES and len(action_samples) < 8:
+                action_samples.append(sample)
+    return {
+        "source_count": len(sources),
+        "protocol_counts": protocol_counts,
+        "has_mailbox_source": bool(protocol_counts.get("SM_MailBox")),
+        "has_new_mail_source": bool(protocol_counts.get("SM_NewMail")),
+        "has_any_mail_source": any(protocol_counts.get(name) for name in MAIL_SOURCE_PROTOCOL_NAMES),
+        "has_mail_action": any(protocol_counts.get(name) for name in MAIL_ACTION_PROTOCOL_NAMES),
+        "source_samples": source_samples,
+        "action_samples": action_samples,
+    }
+
+
+def _current_runtime_capture_path() -> Path | None:
+    try:
+        from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
+
+        status = fanxiu_capture_runtime_service.status()
+    except Exception:
+        return None
+    path = str(status.get("current_pcap_path") or "").strip()
+    if not path:
+        return None
+    return Path(path)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return str(left) == str(right)
+
+
+def _is_transient_capture_access_error(exc: BaseException) -> bool:
+    if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 32:
+        return True
+    text = str(exc)
+    return "[WinError 32]" in text or "另一个程序正在使用此文件" in text
+
+
 def _iter_stable_live_pcaps(
     *,
     data_dir: str | Path | None = None,
@@ -212,8 +280,11 @@ def _iter_stable_live_pcaps(
     if not live_dir.is_dir():
         return []
     now_value = time.time() if now is None else now
+    active_capture_path = _current_runtime_capture_path()
     rows: list[Path] = []
     for path in sorted(live_dir.glob("*.pcap"), key=lambda item: item.stat().st_mtime, reverse=bool(newest_first)):
+        if active_capture_path and _same_path(path, active_capture_path):
+            continue
         try:
             stat = path.stat()
         except OSError:
@@ -308,15 +379,6 @@ def _sync_business_after_decoded(
         result = _decode_result_from_source(source)
         if result is None:
             continue
-        frames = result.get("frames") if isinstance(result.get("frames"), list) else []
-        profile_frames = [
-            frame
-            for frame in frames
-            if isinstance(frame, dict) and str(frame.get("name") or "") in PLAYER_PROFILE_PROTOCOLS
-        ]
-        if not profile_frames:
-            continue
-        result = {**result, "frames": profile_frames}
         runtime_sync["source_count"] += 1
         try:
             sync_result = sync_fanxiu_packet_runtime_insights_for_decode_result(
@@ -464,6 +526,7 @@ def sync_fanxiu_mail_business_backlog(
             "latest_selected_count": 0,
             "historical_selected_count": 0,
             "mail_packet_sync": {"ok": True, "skipped": True, "reason": "no_decoded_sources"},
+            "mail_source_probe": _mail_source_protocol_probe([]),
             "updated_at": _now_text(),
         }
         _write_json(state_path, {**(state if isinstance(state, dict) else {}), **payload})
@@ -500,6 +563,7 @@ def sync_fanxiu_mail_business_backlog(
         "historical_cursor_index": start_index + len(historical_sources),
         "recent_processed_source_keys": recent_processed,
         "mail_packet_sync": mail_sync,
+        "mail_source_probe": _mail_source_protocol_probe(selected),
         "updated_at": _now_text(),
     }
     _write_json(state_path, payload)
@@ -679,6 +743,13 @@ def sync_fanxiu_live_capture_backlog(
         try:
             digest = _sha256_file(path)
         except OSError as exc:
+            if _is_transient_capture_access_error(exc):
+                skipped_item = {"path": str(path), "reason": "locked_active_capture", "error": str(exc)}
+                skipped.append(skipped_item)
+                pcap_state_updates.append(
+                    _pcap_state_item(path, "", status="skipped", reason="locked_active_capture", extra=skipped_item)
+                )
+                continue
             errors.append({"path": str(path), "error": str(exc)})
             pcap_state_updates.append(_pcap_state_item(path, "", status="failed", reason="hash_error", extra={"error": str(exc)}))
             cursor_blocked = True
@@ -789,6 +860,13 @@ def sync_fanxiu_live_capture_backlog(
                 confirmed_cursor_mtime = max(path_mtime, confirmed_cursor_mtime)
                 confirmed_cursor_pcap = str(path)
         except Exception as exc:
+            if _is_transient_capture_access_error(exc):
+                skipped_item = {"path": str(path), "reason": "locked_active_capture", "error": str(exc)}
+                skipped.append(skipped_item)
+                pcap_state_updates.append(
+                    _pcap_state_item(path, digest, status="skipped", reason="locked_active_capture", extra=skipped_item)
+                )
+                continue
             attempts = int((previous_error or {}).get("attempts") or 0) + 1
             error_item = {
                 "path": str(path),
@@ -990,11 +1068,24 @@ class FanxiuPacketInsightWorker:
     def scan_once(self) -> dict[str, Any]:
         result = sync_fanxiu_live_capture_backlog(
             stable_seconds=self.stable_seconds,
-            use_cursor=False,
+            use_cursor=True,
             newest_first=True,
+            limit=2,
         )
-        result["decoded_record_db_sync"] = sync_fanxiu_decoded_record_backlog(limit=16)
-        result["activity_packet_sync"] = sync_fanxiu_activity_packets(force=False)
+        result["mail_business_backlog_sync"] = sync_fanxiu_mail_business_backlog(
+            latest_limit=16,
+            historical_limit=0,
+        )
+        result["decoded_record_db_sync"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "realtime_scan_only_handles_recent_live_capture",
+        }
+        result["activity_packet_sync"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "realtime_scan_only_handles_recent_live_capture",
+        }
         with self._lock:
             self._last_realtime_result = result
         return result
@@ -1010,20 +1101,22 @@ class FanxiuPacketInsightWorker:
         return result
 
     def _run_loop(self) -> None:
-        while not self._stop_event.wait(self.scan_interval_seconds):
+        while not self._stop_event.is_set():
             try:
                 self.scan_once()
             except Exception as exc:
                 with self._lock:
                     self._last_realtime_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+            self._stop_event.wait(self.scan_interval_seconds)
 
     def _maintenance_loop(self) -> None:
-        while not self._maintenance_stop_event.wait(self.maintenance_interval_seconds):
+        while not self._maintenance_stop_event.is_set():
             try:
                 self.maintenance_once()
             except Exception as exc:
                 with self._lock:
                     self._last_maintenance_result = {"ok": False, "updated_at": _now_text(), "error": str(exc)}
+            self._maintenance_stop_event.wait(self.maintenance_interval_seconds)
 
 
 fanxiu_packet_insight_worker = FanxiuPacketInsightWorker()

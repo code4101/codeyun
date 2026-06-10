@@ -189,6 +189,15 @@
               <div class="annotation-panel-head">
                 <span>帧树</span>
                 <div class="annotation-panel-actions">
+                  <el-input
+                    v-model="assetFrameSearchText"
+                    class="asset-frame-search"
+                    size="small"
+                    placeholder="编号"
+                    clearable
+                    :prefix-icon="Search"
+                    @keyup.enter="searchAssetFrameById"
+                  />
                   <el-button size="small" :icon="Plus" title="新建目录" aria-label="新建目录" @click="addAssetFolder" />
                   <el-button
                     size="small"
@@ -367,6 +376,7 @@
 
                 <div class="shape-tree-scroll" :style="annotationPanelStyle">
                   <el-tree
+                    ref="shapeTreeRef"
                     class="shape-tree"
                     :data="selectedImageShapes"
                     :props="shapeTreeProps"
@@ -635,14 +645,12 @@
         <div v-if="!burstItems.length" class="burst-empty">暂无连拍缓存</div>
       </div>
       <div class="burst-pager">
-        <span>第 {{ burstPage }} / {{ burstPageCount }} 页</span>
-        <el-pagination
-          background
-          layout="prev, pager, next"
-          :current-page="burstPage"
+        <StandardPagination
+          :page="burstPage"
           :page-size="burstPageSize"
-          :total="burstTotal"
-          @current-change="handleBurstPageChange"
+          :page-count="burstPageCount"
+          :show-page-size="false"
+          @page-change="handleBurstPageChange"
         />
       </div>
     </el-dialog>
@@ -785,13 +793,20 @@
             <el-select v-model="shapeMaskAlgorithm" class="shape-mask-select is-algorithm" size="small" @change="pauseShapeMaskSampling">
               <el-option label="差异抠图" value="difference" />
               <el-option label="连通抠图" value="background" />
+              <el-option label="AI抠图" value="ai" />
             </el-select>
             <el-button size="small" @click="resetShapeMaskSampling">重置</el-button>
             <span class="shape-mask-frame-count">已取 {{ shapeMaskFrameCount }} 帧</span>
           </div>
           <div class="shape-mask-control-row">
-            <el-button size="small" :type="shapeMaskRunning ? 'default' : 'primary'" plain @click="runSelectedShapeMaskMode">
-              {{ shapeMaskRunning ? '暂停' : (shapeMaskCaptureMode === 'burst' ? '开始' : '执行') }}
+            <el-button
+              size="small"
+              :type="shapeMaskRunning ? 'default' : 'primary'"
+              :loading="shapeMaskAiRunning"
+              plain
+              @click="runSelectedShapeMaskMode"
+            >
+              {{ shapeMaskRunning ? '暂停' : (shapeMaskAlgorithm === 'ai' || shapeMaskCaptureMode === 'single' ? '执行' : '开始') }}
             </el-button>
             <el-button size="small" @click="toggleShapeMaskManualEditor">
               手动编辑
@@ -1073,12 +1088,11 @@
       <div v-else class="runtime-log-empty">暂无日志</div>
       <div v-if="runtimeLogs.length" class="runtime-log-pager">
         <span>{{ runtimeLogPageStart }}-{{ runtimeLogPageEnd }} / {{ runtimeLogs.length }}</span>
-        <el-pagination
-          v-model:current-page="runtimeLogPage"
-          size="small"
-          layout="prev, pager, next"
-                :page-size="RUNTIME_LOG_PAGE_SIZE"
+        <StandardPagination
+          v-model:page="runtimeLogPage"
+          :page-size="RUNTIME_LOG_PAGE_SIZE"
           :total="runtimeLogs.length"
+          :show-page-size="false"
         />
       </div>
       <template #footer>
@@ -1124,17 +1138,17 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Compon
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
-  ArrowLeft,
-  ArrowRight,
   Delete,
   Folder,
   Picture,
   Plus,
+  Search,
   Setting,
   VideoPause,
   VideoPlay,
 } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
+import StandardPagination from '@/components/StandardPagination.vue';
 import {
   annotateFanxiuDataAnnotationMacroShape,
   clearFanxiuGameWindow2BurstFrames,
@@ -1164,6 +1178,7 @@ import {
   listFanxiuGameWindow2Screenshots,
   matchFanxiuGameWindow2Screenshot,
   recognizeFanxiuDataAnnotationOcrFrame,
+  removeFanxiuDataAnnotationBackground,
   runFanxiuVisualScript,
   saveFanxiuGameWindow2BurstFrame,
   saveFanxiuGameWindow2Frame,
@@ -6715,6 +6730,7 @@ const selectedAssetId = ref<string | null>(null);
 const selectedShapeId = ref<string | null>(null);
 const selectedShapeIds = ref<string[]>([]);
 const shapeSelectionAnchorId = ref<string | null>(null);
+const assetFrameSearchText = ref('');
 const globalOcclusionMaskEnabled = ref(false);
 const copiedShapes = ref<DataAnnotationShape[]>([]);
 const expandedAssetNodeIds = ref<string[]>([]);
@@ -6911,7 +6927,7 @@ const shapeMaskDialogVisible = ref(false);
 const shapeMaskFrameCount = ref(0);
 const shapeMaskThreshold = ref(36);
 type ShapeMaskCaptureMode = 'single' | 'burst';
-type ShapeMaskAlgorithm = 'difference' | 'background';
+type ShapeMaskAlgorithm = 'difference' | 'background' | 'ai';
 type ShapeMaskManualTool = 'erase' | 'restore';
 const shapeMaskCaptureMode = ref<ShapeMaskCaptureMode>('single');
 const shapeMaskAlgorithm = ref<ShapeMaskAlgorithm>('difference');
@@ -6919,6 +6935,7 @@ const shapeMaskLivePreviewUrl = ref('');
 const shapeMaskResultPreviewUrl = ref('');
 const shapeMaskAlphaDataUrl = ref('');
 const shapeMaskRunning = ref(false);
+const shapeMaskAiRunning = ref(false);
 const shapeMaskResetToEmpty = ref(false);
 const shapeMaskManualVisible = ref(false);
 const shapeMaskManualTool = ref<ShapeMaskManualTool>('erase');
@@ -6996,7 +7013,17 @@ const assetContextMenu = ref({
   y: 0,
   nodeId: '',
 });
-const assetTreeRef = ref<({ getNode: (key: string) => { expanded?: boolean; expand?: () => void; collapse?: () => void } | null }) | null>(null);
+type AnnotationTreeNodeHandle = {
+  expanded?: boolean;
+  expand?: () => void;
+  collapse?: () => void;
+};
+type AnnotationTreeRef = {
+  getNode: (key: string) => AnnotationTreeNodeHandle | null;
+  setCurrentKey?: (key: string | null) => void;
+};
+const assetTreeRef = ref<AnnotationTreeRef | null>(null);
+const shapeTreeRef = ref<AnnotationTreeRef | null>(null);
 const shapeContextMenu = ref({
   visible: false,
   x: 0,
@@ -7679,6 +7706,21 @@ const findAssetImageByNumericId = (nodes: DataAnnotationAssetNode[], id: number 
   return null;
 };
 
+const findAssetAncestorFolderIds = (
+  nodes: DataAnnotationAssetNode[],
+  id: string | null,
+  ancestors: string[] = [],
+): string[] | null => {
+  if (!id) return null;
+  for (const node of nodes) {
+    if (node.id === id) return ancestors;
+    const nextAncestors = node.type === 'folder' ? [...ancestors, node.id] : ancestors;
+    const found = findAssetAncestorFolderIds(node.children ?? [], id, nextAncestors);
+    if (found) return found;
+  }
+  return null;
+};
+
 const firstSceneJumpNumericTarget = (value: string | number | null | undefined) => {
   const firstToken = parseSceneJumpEntries(value)[0]?.label ?? '';
   const numeric = Number(firstToken.replace(/^#/, ''));
@@ -7807,6 +7849,22 @@ const collectExpandableShapeIds = (shapes: DataAnnotationShape[]): string[] => s
   ...collectExpandableShapeIds(shape.children ?? []),
 ]);
 
+const syncShapeTreeExpansionFromState = async () => {
+  await nextTick();
+  const tree = shapeTreeRef.value;
+  if (!tree) return;
+  const expandedIds = new Set(expandedShapeNodeIds.value);
+  for (const id of collectExpandableShapeIds(selectedImageShapes.value)) {
+    const treeNode = tree.getNode(id);
+    if (!treeNode) continue;
+    if (expandedIds.has(id)) {
+      treeNode.expand?.();
+    } else {
+      treeNode.collapse?.();
+    }
+  }
+};
+
 const restoreDataAnnotationUiState = () => {
   const state = loadDataAnnotationUiState();
   const savedAssetId = typeof state.selectedAssetId === 'string' ? state.selectedAssetId : null;
@@ -7838,6 +7896,42 @@ const setAssetNodeExpanded = (id: string, expanded: boolean) => {
 
 const setShapeNodeExpanded = (id: string, expanded: boolean) => {
   expandedShapeNodeIds.value = setExpandedNodeId(expandedShapeNodeIds.value, id, expanded);
+};
+
+const scrollCurrentTreeNodeIntoView = (treeClass: string) => {
+  document
+    .querySelector(`.${treeClass} .el-tree-node.is-current`)
+    ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+};
+
+const searchAssetFrameById = async () => {
+  const text = assetFrameSearchText.value.trim().replace(/^#/, '');
+  const numericId = text ? Number(text) : NaN;
+  if (!Number.isInteger(numericId) || numericId < 0) {
+    ElMessage.warning('请输入帧编号');
+    return;
+  }
+  const image = findAssetImageByNumericId(assetTree.value, numericId);
+  if (!image) {
+    ElMessage.warning(`未找到 #${numericId}`);
+    return;
+  }
+
+  const ancestorFolderIds = findAssetAncestorFolderIds(assetTree.value, image.id) ?? [];
+  expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...ancestorFolderIds]));
+  selectedAssetId.value = image.id;
+  assetTreeRef.value?.setCurrentKey?.(image.id);
+  await syncAssetTreeExpansionFromState();
+  await nextTick();
+  scrollCurrentTreeNodeIntoView('asset-tree');
+
+  expandedShapeNodeIds.value = collectExpandableShapeIds(image.shapes ?? []);
+  selectedShapeId.value = flattenShapes(image.shapes ?? [])[0]?.id ?? null;
+  selectedShapeIds.value = [];
+  shapeSelectionAnchorId.value = selectedShapeId.value;
+  await syncShapeTreeExpansionFromState();
+  await nextTick();
+  scrollCurrentTreeNodeIntoView('shape-tree');
 };
 
 const findShapeParentChildren = (shapes: DataAnnotationShape[], id: string | null): DataAnnotationShape[] | null => {
@@ -9659,7 +9753,12 @@ const cropLiveImageDataByShape = (shape: DataAnnotationShape, width: number, hei
 
 const loadShapeAlphaMask = async (shape: DataAnnotationShape, width: number, height: number) => {
   if (!shape.maskEnabled || !shape.alphaMask?.dataUrl) return null;
-  const image = await loadMaskImage(shape.alphaMask.dataUrl);
+  return loadAlphaMaskDataUrl(shape.alphaMask.dataUrl, width, height);
+};
+
+const loadAlphaMaskDataUrl = async (dataUrl: string, width: number, height: number) => {
+  if (!dataUrl) return null;
+  const image = await loadMaskImage(dataUrl);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -10430,6 +10529,10 @@ const runShapeMaskSingleFrame = async () => {
   if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
   const stats = shapeMaskStats.value;
   if (!stats) return;
+  if (shapeMaskAlgorithm.value === 'ai') {
+    await runShapeMaskAi();
+    return;
+  }
   if (shapeMaskAlgorithm.value === 'background') {
     cleanShapeMaskAlpha();
     return;
@@ -10440,9 +10543,42 @@ const runShapeMaskSingleFrame = async () => {
   updateShapeMaskStats(frame);
 };
 
+const runShapeMaskAi = async () => {
+  if (shapeMaskAiRunning.value) return;
+  if (!shapeMaskStats.value) await initializeShapeMaskSampling(true);
+  const stats = shapeMaskStats.value;
+  if (!stats?.reference) return;
+  pauseShapeMaskSampling();
+  shapeMaskAiRunning.value = true;
+  try {
+    const referenceDataUrl = imageDataToDataUrl(stats.reference);
+    shapeMaskLivePreviewUrl.value = referenceDataUrl;
+    const response = await removeFanxiuDataAnnotationBackground({
+      image_data_url: referenceDataUrl,
+      model: 'isnet-general-use',
+      alpha_matting: false,
+      post_process_mask: true,
+    });
+    const alpha = await loadAlphaMaskDataUrl(response.alpha_mask_data_url, stats.width, stats.height);
+    if (!alpha) throw new Error('AI 抠图没有返回有效 alpha');
+    commitShapeMaskManualAlpha(alpha);
+    if (response.result_data_url) {
+      shapeMaskResultPreviewUrl.value = response.result_data_url;
+    }
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    shapeMaskAiRunning.value = false;
+  }
+};
+
 const runSelectedShapeMaskMode = async () => {
   if (shapeMaskRunning.value) {
     pauseShapeMaskSampling();
+    return;
+  }
+  if (shapeMaskAlgorithm.value === 'ai') {
+    await runShapeMaskAi();
     return;
   }
   if (shapeMaskCaptureMode.value === 'single') {
@@ -10977,6 +11113,7 @@ const showShapeMaskHelp = () => {
       lines: [
         '单帧/连拍只决定取几帧；差异抠图/连通抠图只决定怎么生成 alpha。',
         '差异抠图按参考图和当前帧差异、连拍波动来扣动态背景；阈值越小，扣除越严格。',
+        'AI抠图调用后端 rembg 模型生成 alpha，适合颜色复杂但主体相对明确的图标。',
       ],
     },
     {
@@ -13394,6 +13531,14 @@ const finishShapeDrag = () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.asset-frame-search {
+  width: 96px;
+}
+
+.asset-frame-search :deep(.el-input__inner) {
+  font-variant-numeric: tabular-nums;
 }
 
 .annotation-title-tools {

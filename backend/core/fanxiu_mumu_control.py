@@ -53,7 +53,7 @@ DEFAULT_PREVIEW_TITLE = "codeyun-mumu-window"
 DEFAULT_FPS = "15"
 DEFAULT_CROP = "0,49,4,4"
 DEFAULT_TRIM_BORDER = "0,0,0,0"
-DEFAULT_ROTATE = "90"
+DEFAULT_ROTATE = "0"
 DEFAULT_FIXED_WIDTH = "0"
 DEFAULT_FIXED_HEIGHT = "0"
 SCREENSHOT_FRAME_DIRNAME = "截图"
@@ -70,10 +70,11 @@ _LATEST_FRAME_MAX_AGE_SECONDS = 3.0
 _SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.(?:jpe?g|png)$", re.IGNORECASE)
 _SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 MUMU_ADB_PORTS = (7555, 16416, 5555)
-MUMU_ADB_SERIAL_ENV_KEYS = ("FANXIU_MUMU_ADB_SERIAL", "FANXIU_ADB_DEVICE_ID", "FANXIU_CAPTURE_DEVICE_ID")
+MUMU_ADB_SERIAL_ENV_KEYS = ("FANXIU_MUMU_ADB_SERIAL",)
 MUMU_ADB_ALLOW_PROXY_DEVICES_ENV = "FANXIU_MUMU_ADB_ALLOW_PROXY_DEVICES"
 _MUMU_ADB_FAILURE_CACHE_TTL = 3.0
 _MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
+_MUMU_ADB_RECOVERY_LOCK = threading.Lock()
 _mumu_adb_failure_cache: tuple[float, str] | None = None
 
 
@@ -163,14 +164,13 @@ def _mumu_adb_serial_candidates() -> list[str]:
 
     candidates: list[str] = []
     cached_serial = _MUMU_ADB_SESSION.get("serial")
-    if cached_serial and _is_local_mumu_adb_serial(str(cached_serial)):
+    if cached_serial:
         candidates.append(str(cached_serial))
     candidates.extend(f"127.0.0.1:{port}" for port in MUMU_ADB_PORTS)
-    if _is_truthy_env(os.environ.get(MUMU_ADB_ALLOW_PROXY_DEVICES_ENV)):
-        try:
-            candidates.extend(fanxiu_android_proxy_service.devices())
-        except Exception:
-            pass
+    try:
+        candidates.extend(fanxiu_android_proxy_service.devices())
+    except Exception:
+        pass
     return _dedupe_mumu_adb_serials(candidates)
 
 
@@ -188,7 +188,7 @@ def _mumu_adb_meta(serial: str, *, input_name: str, adb_size: str = "") -> dict[
 
 def _ensure_mumu_adb_port_available() -> None:
     cached_error = _get_mumu_adb_failure_cache()
-    if cached_error:
+    if cached_error and not _recover_mumu_adb_ports():
         raise RuntimeError(cached_error)
     errors: list[str] = []
     for serial in _mumu_adb_serial_candidates():
@@ -202,9 +202,76 @@ def _ensure_mumu_adb_port_available() -> None:
         except OSError as exc:
             errors.append(f"{serial}: {exc}")
             continue
+    if errors and _recover_mumu_adb_ports():
+        for serial in _mumu_adb_serial_candidates():
+            parsed = _parse_adb_serial_host_port(serial)
+            if parsed is None:
+                continue
+            host, port = parsed
+            try:
+                with socket.create_connection((host, port), timeout=0.15):
+                    _clear_mumu_adb_failure_cache()
+                    return
+            except OSError:
+                continue
     message = "ADB 端口不可用：" + ("; ".join(errors) if errors else "没有可用 ADB serial")
     _set_mumu_adb_failure_cache(message)
     raise RuntimeError(message)
+
+
+def _recover_mumu_adb_ports() -> bool:
+    """Try to make local MuMu ADB ports reachable again.
+
+    This only recovers local MuMu ports. Remote/proxy devices are deliberately
+    not treated as a Runtime target unless explicitly configured elsewhere.
+    """
+
+    with _MUMU_ADB_RECOVERY_LOCK:
+        _close_mumu_adb_session()
+        try:
+            adb_path = fanxiu_android_proxy_service.adb_path()
+        except Exception:
+            return False
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        for command in (["kill-server"], ["start-server"]):
+            try:
+                subprocess.run(
+                    [str(adb_path), *command],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                    creationflags=creationflags,
+                )
+            except Exception:
+                pass
+        for serial in _mumu_adb_serial_candidates():
+            parsed = _parse_adb_serial_host_port(serial)
+            if parsed is None:
+                continue
+            if not _is_local_mumu_adb_serial(serial):
+                continue
+            try:
+                subprocess.run(
+                    [str(adb_path), "connect", serial],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                    creationflags=creationflags,
+                )
+            except Exception:
+                continue
+            host, port = parsed
+            try:
+                with socket.create_connection((host, port), timeout=0.3):
+                    _clear_mumu_adb_failure_cache()
+                    return True
+            except OSError:
+                continue
+        return False
 
 
 def _is_mumu_target(*values: str | None) -> bool:
@@ -576,6 +643,48 @@ def _swipe_mumu_adb(
         "adb_end_x": adb_end_x,
         "adb_end_y": adb_end_y,
     }
+
+
+def _processed_window_target(
+    *,
+    normalized_title: str,
+    title_match: str,
+    area: str | None,
+    mode: str | None,
+    crop: str | None,
+    trim_border: str | None,
+    rotate: str | None,
+    resolved_fixed_width: int,
+    resolved_fixed_height: int,
+) -> tuple[Any, Any, Any, Any, str, str, Any, Any, str]:
+    ensure_windows_runtime()
+    set_dpi_awareness()
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(
+        trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
+    )
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
+
+    target = find_window(normalized_title, title_match)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
+    raw_frame = capturer.capture()
+    if raw_frame is None:
+        raise RuntimeError("输入前截图失败，无法确认窗口坐标")
+
+    frame = process_frame(
+        raw_frame,
+        resolved_crop,
+        resolved_trim_border,
+        resolved_rotate,
+        max_width=0,
+        max_height=0,
+        scale=1.0,
+        fixed_width=resolved_fixed_width,
+        fixed_height=resolved_fixed_height,
+    )
+    return target, capturer, raw_frame, frame, resolved_area, resolved_mode, resolved_crop, resolved_trim_border, resolved_rotate
 
 
 @dataclass(frozen=True)
@@ -2599,48 +2708,41 @@ def click_mumu_window_processed_point(
     frame_x = int(round(x))
     frame_y = int(round(y))
     normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    adb_input_error = ""
     if normalized_input_backend == "adb":
-        input_result = _tap_mumu_adb(
-            frame_x,
-            frame_y,
-            frame_width=frame_width or resolved_fixed_width or None,
-            frame_height=frame_height or resolved_fixed_height or None,
+        try:
+            input_result = _tap_mumu_adb(
+                frame_x,
+                frame_y,
+                frame_width=frame_width or resolved_fixed_width or None,
+                frame_height=frame_height or resolved_fixed_height or None,
+            )
+            return {
+                "ok": True,
+                "title": normalized_title,
+                **input_result,
+                "frame_x": frame_x,
+                "frame_y": frame_y,
+                "frame_width": frame_width,
+                "frame_height": frame_height,
+            }
+        except Exception as exc:
+            if not _is_mumu_adb_unavailable_error(str(exc)):
+                raise
+            adb_input_error = str(exc)
+
+    target, capturer, raw_frame, frame, resolved_area, resolved_mode, resolved_crop, resolved_trim_border, resolved_rotate = (
+        _processed_window_target(
+            normalized_title=normalized_title,
+            title_match=title_match,
+            area=area,
+            mode=mode,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            resolved_fixed_width=resolved_fixed_width,
+            resolved_fixed_height=resolved_fixed_height,
         )
-        return {
-            "ok": True,
-            "title": normalized_title,
-            **input_result,
-            "frame_x": frame_x,
-            "frame_y": frame_y,
-            "frame_width": frame_width,
-            "frame_height": frame_height,
-        }
-    ensure_windows_runtime()
-    set_dpi_awareness()
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
-    resolved_trim_border = parse_crop(
-        trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
-    )
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
-
-    target = find_window(normalized_title, title_match)
-    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
-    raw_frame = capturer.capture()
-    if raw_frame is None:
-        raise RuntimeError("点击前截图失败，无法确认窗口坐标")
-
-    frame = process_frame(
-        raw_frame,
-        resolved_crop,
-        resolved_trim_border,
-        resolved_rotate,
-        max_width=0,
-        max_height=0,
-        scale=1.0,
-        fixed_width=resolved_fixed_width,
-        fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
     if not (0 <= frame_x < frame_width and 0 <= frame_y < frame_height):
@@ -2659,10 +2761,12 @@ def click_mumu_window_processed_point(
         raise RuntimeError("点击坐标无法映射到原始窗口坐标")
 
     input_result: dict[str, Any] = {"input": "window"}
+    if adb_input_error:
+        input_result["adb_input_error"] = adb_input_error
     try:
         click_window_raw_point(capturer.hwnd, resolved_area, raw_point)
     except Exception as exc:
-        if normalized_input_backend == "desktop" or (
+        if adb_input_error or normalized_input_backend == "desktop" or (
             "mumu" not in normalized_title.lower() and "mumu" not in target.title.lower()
         ):
             raise
@@ -2745,54 +2849,47 @@ def drag_mumu_window_processed_points(
     frame_end_x = int(round(end_x))
     frame_end_y = int(round(end_y))
     normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    adb_input_error = ""
     if normalized_input_backend == "adb":
-        input_result = _swipe_mumu_adb(
-            frame_start_x,
-            frame_start_y,
-            frame_end_x,
-            frame_end_y,
-            duration_ms=duration_ms,
-            frame_width=frame_width or resolved_fixed_width or None,
-            frame_height=frame_height or resolved_fixed_height or None,
+        try:
+            input_result = _swipe_mumu_adb(
+                frame_start_x,
+                frame_start_y,
+                frame_end_x,
+                frame_end_y,
+                duration_ms=duration_ms,
+                frame_width=frame_width or resolved_fixed_width or None,
+                frame_height=frame_height or resolved_fixed_height or None,
+            )
+            return {
+                "ok": True,
+                "title": normalized_title,
+                **input_result,
+                "frame_start_x": frame_start_x,
+                "frame_start_y": frame_start_y,
+                "frame_end_x": frame_end_x,
+                "frame_end_y": frame_end_y,
+                "frame_width": frame_width,
+                "frame_height": frame_height,
+                "duration_ms": duration_ms,
+            }
+        except Exception as exc:
+            if not _is_mumu_adb_unavailable_error(str(exc)):
+                raise
+            adb_input_error = str(exc)
+
+    target, capturer, raw_frame, frame, resolved_area, resolved_mode, resolved_crop, resolved_trim_border, resolved_rotate = (
+        _processed_window_target(
+            normalized_title=normalized_title,
+            title_match=title_match,
+            area=area,
+            mode=mode,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            resolved_fixed_width=resolved_fixed_width,
+            resolved_fixed_height=resolved_fixed_height,
         )
-        return {
-            "ok": True,
-            "title": normalized_title,
-            **input_result,
-            "frame_start_x": frame_start_x,
-            "frame_start_y": frame_start_y,
-            "frame_end_x": frame_end_x,
-            "frame_end_y": frame_end_y,
-            "frame_width": frame_width,
-            "frame_height": frame_height,
-            "duration_ms": duration_ms,
-        }
-    ensure_windows_runtime()
-    set_dpi_awareness()
-    resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
-    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
-    resolved_trim_border = parse_crop(
-        trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
-    )
-    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
-
-    target = find_window(normalized_title, title_match)
-    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
-    raw_frame = capturer.capture()
-    if raw_frame is None:
-        raise RuntimeError("拖拽前截图失败，无法确认窗口坐标")
-
-    frame = process_frame(
-        raw_frame,
-        resolved_crop,
-        resolved_trim_border,
-        resolved_rotate,
-        max_width=0,
-        max_height=0,
-        scale=1.0,
-        fixed_width=resolved_fixed_width,
-        fixed_height=resolved_fixed_height,
     )
     frame_height, frame_width = frame.shape[:2]
     for label, point_x, point_y in (
@@ -2824,10 +2921,12 @@ def drag_mumu_window_processed_points(
         raise RuntimeError("拖拽坐标无法映射到原始窗口坐标")
 
     input_result: dict[str, Any] = {"input": "window"}
+    if adb_input_error:
+        input_result["adb_input_error"] = adb_input_error
     try:
         drag_window_raw_points(capturer.hwnd, resolved_area, start_raw_point, end_raw_point, duration_ms=duration_ms)
     except Exception as exc:
-        if normalized_input_backend == "desktop" or not _is_mumu_target(normalized_title, target.title):
+        if adb_input_error or normalized_input_backend == "desktop" or not _is_mumu_target(normalized_title, target.title):
             raise
         input_result = _swipe_mumu_adb(
             frame_start_x,

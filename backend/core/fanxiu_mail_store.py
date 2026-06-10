@@ -74,7 +74,14 @@ def _mail_source_rank(value: Any) -> int:
 
 
 def _mail_status_rank(value: Any) -> int:
-    status = str(value or "").strip().lower()
+    raw_status = str(value or "").strip()
+    if raw_status == "锁定":
+        return 3
+    if raw_status == "留存":
+        return 2
+    if raw_status == "可领":
+        return 2
+    status = raw_status.lower()
     if status == "claimed":
         return 5
     if status == "deleted":
@@ -174,7 +181,12 @@ def _merge_mail_record_fields(
         record.action_policy = str(action_policy or "")
     elif action_policy:
         record.action_policy = action_policy
-    if status and _mail_status_rank(status) >= _mail_status_rank(record.status):
+    incoming_status = str(status or "").strip()
+    current_status = str(record.status or "").strip()
+    if incoming_status in {"锁定", "留存", "可领"}:
+        if current_status not in {"锁定", "留存", "可领"}:
+            record.status = incoming_status
+    elif incoming_status and current_status not in {"锁定", "留存", "可领"} and _mail_status_rank(incoming_status) >= _mail_status_rank(record.status):
         record.status = status
     if locked is not None:
         record.locked = bool(locked)
@@ -282,7 +294,7 @@ def upsert_fanxiu_mail_fact(
         create_time_text=str(normalized_create_time_text or ""),
         create_time_ms=create_time_ms,
         source=str(source or ""),
-        status=str(status or "seen"),
+        status=str(status or "留存"),
         locked=bool(locked) if locked is not None else False,
         action_policy=str(action_policy or ""),
         seen_count=1,
@@ -320,6 +332,28 @@ def mark_fanxiu_mail_action(
     record.updated_at = time.time()
     session.add(record)
     return True
+
+
+def update_fanxiu_mail_desired_status(
+    session: Session,
+    mail_key: str,
+    *,
+    desired_status: str,
+) -> FanxiuMailRecord | None:
+    ensure_fanxiu_mail_table()
+    status_text = str(desired_status or "").strip()
+    if status_text not in {"锁定", "留存", "可领"}:
+        raise ValueError("invalid_mail_desired_status")
+    record = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_key == mail_key)).first()
+    if not record:
+        return None
+    record.status = status_text
+    record.locked = status_text == "锁定"
+    record.action_policy = "claim" if status_text == "可领" else ""
+    record.last_action_error = ""
+    record.updated_at = time.time()
+    session.add(record)
+    return record
 
 
 def mark_fanxiu_mail_locked(

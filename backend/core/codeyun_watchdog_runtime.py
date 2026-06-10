@@ -108,7 +108,11 @@ def _ancestor_pids(pid: int | None) -> set[int]:
 def _matches_watchdog_process(proc: psutil.Process) -> bool:
     cmdline = " ".join(_safe_cmdline(proc)).lower().replace("/", "\\")
     script = str(WATCHDOG_SCRIPT).lower().replace("/", "\\")
-    return script in cmdline and "--loop" in cmdline
+    return (
+        "--loop" in cmdline
+        and "codeyun_watchdog.py" in cmdline
+        and (script in cmdline or "scripts\\codeyun_watchdog.py" in cmdline)
+    )
 
 
 def list_codeyun_watchdog_processes() -> list[dict[str, Any]]:
