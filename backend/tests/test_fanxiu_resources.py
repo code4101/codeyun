@@ -86,6 +86,7 @@ from backend.core.fanxiu_il2cpp_metadata import (
 )
 from backend.core.fanxiu_download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
 from backend.core.fanxiu_item_catalog import _annotate_item_icon_reuse, build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
+from backend.core.fanxiu_item_catalog import _item_stone_value
 from backend.core.fanxiu_doupotd_catalog import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
@@ -1399,7 +1400,7 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
 
     result = build_fanxiu_item_catalog(export_root=export_root)
     catalog = json.loads(Path(result["files"]["catalog"]).read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == 50
+    assert catalog["schema_version"] == 51
     assert catalog["cards"][0]["quality_name"] == "红色品质"
     assert catalog["cards"][0]["type_name"] == "材料"
     assert catalog["cards"][0]["sub_type_key"] == "5:2"
@@ -1466,6 +1467,12 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
     assert detail["card"]["progression"]["lingjie_jie"][1]["consume_items"][0]["name"] == "赤书玄鸟卷"
     assert detail["card"]["progression"]["lingjie_jie"][1]["feature_link"]["timelines"] == "TimeLine357601014"
     assert detail["card"]["progression"]["lingjie_jie"][2]["feature_link"]["source_describe"] == "三重：玄鸟暴击后触发额外伤害"
+
+
+def test_fanxiu_item_stone_value_uses_catalog_field_policy() -> None:
+    assert _item_stone_value(5030001, "") == 10
+    assert _item_stone_value(7020014, "使用后增加100点友好度") == 100
+    assert _item_stone_value(999999, "普通材料") is None
 
 
 def test_fanxiu_item_catalog_marks_high_reuse_primary_and_small_icons():

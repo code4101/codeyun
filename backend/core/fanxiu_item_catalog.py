@@ -29,7 +29,7 @@ DEFAULT_QUALITY_ROWS = Path("parsed_configs/Quality/rows.json")
 DEFAULT_ITEM_CATALOG = Path("parsed_configs/item_catalog/item_catalog.json")
 DEFAULT_GONGFA_FEATURE_FAMILIES = Path("parsed_configs/gongfa_feature_probe/feature_families.tsv")
 DEFAULT_GONGFA_FEATURE_LINKS = Path("parsed_configs/gongfa_feature_probe/feature_links.tsv")
-ITEM_CATALOG_SCHEMA_VERSION = 50
+ITEM_CATALOG_SCHEMA_VERSION = 51
 _WHITESPACE_RE = re.compile(r"\s+")
 _BRACKET_TERM_RE = re.compile(r"【([^】]{1,30})】")
 _RICH_TAG_RE = re.compile(r"<[^>]+>")
@@ -6561,6 +6561,27 @@ def _build_faze_effect_details_by_id(root: Path) -> tuple[dict[int, dict[str, An
     }
 
 
+FIXED_ITEM_STONE_VALUES: dict[int, int] = {
+    5030001: 10,
+}
+
+
+def _item_stone_value(item_id: int | None, effect_text: Any) -> int | float | None:
+    if item_id in FIXED_ITEM_STONE_VALUES:
+        return FIXED_ITEM_STONE_VALUES[item_id]
+    text = str(effect_text or "")
+    match = re.search(r"(?:提升|增加|获得)\s*([0-9]+(?:\.[0-9]+)?)\s*点?\s*(?:友好度|好感度)", text)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return int(value) if value.is_integer() else value
+
+
 def _compact_item_row(
     row: dict[str, Any],
     quality_by_id: dict[int, dict[str, Any]],
@@ -6757,6 +6778,9 @@ def _compact_item_row(
         "icon_source_table": "Item" if row.get("icon") else "",
         "icon_source_field": "icon" if row.get("icon") else "",
     }
+    stone_value = _item_stone_value(item_id, "\n".join((_text_value(row, "descript"), effect_text)))
+    if stone_value is not None:
+        card["stone_value"] = stone_value
     if optional_gift_rewards:
         card["optional_gift_group_id"] = optional_gift_group_id
         card["optional_gift_rewards"] = optional_gift_rewards

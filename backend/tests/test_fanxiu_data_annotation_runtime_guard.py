@@ -899,6 +899,24 @@ def test_wait_mail_detail_closes_popup_and_keeps_waiting(tmp_path, monkeypatch):
         def wait(self, _seconds):
             return False
 
+        def wait(self, _seconds):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(scene_results))
     monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda _ctx, _frame: closed.append("popup") or True if not closed else False)
@@ -1046,6 +1064,32 @@ def test_runtime_guard_service_skips_manual_jobs(monkeypatch, tmp_path):
 
     assert status == BehaviorTreeStatus.SKIP
     assert calls == []
+
+
+def test_runtime_wait_view_timeout_is_not_deferred_by_popup_guard(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image("邮件", "0121.png", [])
+    ctx = {"entry": object(), "images": {121: image121}}
+    runtime = runner._fanxiu_runtime(ctx, frame_data_url="frame")
+    guard_calls: list[str] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: guard_calls.append("guard") or True)
+
+    try:
+        runner._run_direct_runtime_action(
+            lambda: runtime.wait_view(121, timeout=0.01, label="测试等待"),
+            stop_event=threading.Event(),
+            tick_seconds=0.02,
+            max_runtime_seconds=1,
+        )
+    except TimeoutError as exc:
+        assert "测试等待 超时" in str(exc)
+    else:
+        raise AssertionError("wait_view should timeout even when popup guard keeps handling")
+
+    assert guard_calls == []
 
 
 def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(tmp_path, monkeypatch):
@@ -1758,6 +1802,255 @@ def test_xianfu_visit_partner_is_dynamic_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
+def test_daily_boss_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "daily-boss")
+
+    assert task["task_type"] == "daily_boss"
+    assert task["label"] == "日常_首领"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_lingzu_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingzu")
+
+    assert task["task_type"] == "daily_lingzu"
+    assert task["label"] == "日常_灵祖"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_jianling_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-jianling")
+
+    assert task["task_type"] == "daily_jianling"
+    assert task["label"] == "日常_剑灵"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_lingta_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-lingta")
+
+    assert task["task_type"] == "daily_lingta"
+    assert task["label"] == "日常_灵塔"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image20 = _image("绿瓶", "0020.png", [
+        {"id": "back-world", "kind": "rect", "title": "回到世界", "x": 0.07, "y": 0.90, "w": 0.18, "h": 0.08},
+    ])
+    ctx = {"entry": object(), "images": {20: image20}}
+    frames = iter(["green_outer", "world"])
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def fake_ocr_lines(frame):
+        if frame == "green_outer":
+            return [{"text": "炼丹绿瓶世界"}]
+        return [{"text": "储物袋角色装备功法书"}]
+
+    def fake_identify_scene_number(_ctx, frame, _preferred):
+        if frame == "world":
+            return 34, 100.0
+        return None, 0.0
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_ocr_lines", fake_ocr_lines)
+    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify_scene_number)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_keyevents", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not use keyevent/back")))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._leave_daily_lingta_green_bottle(ctx, FakeStopEvent()),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(144.0, 1504.0), (94.5, 1456.0)]
+
+
+def test_daily_xianyuan_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-xianyuan")
+
+    assert task["task_type"] == "daily_xianyuan"
+    assert task["label"] == "日常_挑战仙缘"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_assistant_is_daily_runtime_task():
+    task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-assistant")
+
+    assert task["task_type"] == "daily_assistant"
+    assert task["label"] == "日常_助手"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["schedule_times"] == ["05:00", "12:00", "18:00", "00:00"]
+    assert task["enabled"] is False
+    assert task["cooldown_seconds"] == 600
+    assert _data_annotation_task_supported(task)
+
+
+def test_daily_assistant_requires_assistant_asset_after_list_detected():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "exit", "kind": "rect", "title": "退出", "x": 0.02, "y": 0.93, "w": 0.1, "h": 0.05},
+    ])
+    ctx = {"entry": object(), "images": {69: image69}}
+    clicked: list[tuple[float, float]] = []
+    runner._click_frame_point = lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1)))  # type: ignore[method-assign]
+
+    try:
+        runner._run_direct_runtime_action(
+            lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {}),
+            stop_event=threading.Event(),
+            tick_seconds=0.01,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("daily_assistant must not continue without #204 assistant list assets")
+
+    assert clicked == [(63.0, 1528.0)]
+    assert "#204「小助手」标注" in message
+    assert "点击屏幕继续" in message
+
+
+def test_daily_assistant_entry_matches_bottom_tab_merged_ocr_line():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.1, "y": 0.15, "w": 0.8, "h": 0.6},
+    ])
+    lines = [{"text": "活动报名小助手奖励找回新", "x": 131.0, "y": 1385.0, "w": 600.0, "h": 45.0}]
+
+    matches = runner._daily_assistant_entry_matches(lines, image69)
+
+    assert matches
+    x, y, text = matches[0]
+    assert text == "活动报名小助手奖励找回新"
+    assert 330 <= x <= 340
+    assert y == 1407.5
+
+
+def test_daily_assistant_accepts_world_like_text_without_storage_bag_word():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_assistant_text_is_world_like("止清羊驼角色装备星海功法书 修为：14.5亿")
+
+
+def test_world_scene_leave_matches_only_right_side_leave_text():
+    runner = create_fanxiu_runtime_runner()
+    lines = [
+        {"text": "离开", "x": 790.0, "y": 840.0, "w": 70.0, "h": 50.0},
+        {"text": "离开", "x": 100.0, "y": 840.0, "w": 70.0, "h": 50.0},
+        {"text": "是否离开", "x": 720.0, "y": 840.0, "w": 120.0, "h": 50.0},
+    ]
+
+    matches = runner._world_scene_leave_matches(lines, width=900.0, height=1600.0)
+
+    assert matches == [(825.0, 865.0, "离开")]
+
+
+def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image121 = _image("邮件", "0121.png", [
+        {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6},
+    ])
+    ctx = {"entry": object(), "asset_tree_path": tmp_path / "asset_tree.json", "images": {34: image34, 121: image121}}
+    frames = iter(["scene-inside", "world-after-leave", "mail-list"])
+    clicked: list[tuple[float, float]] = []
+    opened_mail: list[bool] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        attrs: dict[str, object] = {}
+
+        def cur_frame(self, update: bool = False):
+            return next(frames)
+
+        def wait_view(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+
+    def fake_identify(_ctx, frame, _preferred):
+        if frame == "scene-inside":
+            return 69, 100.0
+        if frame == "world-after-leave":
+            return 34, 100.0
+        return 121, 100.0
+
+    def fake_ocr_lines(_frame):
+        return [
+            {"text": "离开", "x": 790.0, "y": 840.0, "w": 70.0, "h": 50.0},
+            {"text": "角色 装备 储物袋 功法书", "x": 420.0, "y": 1450.0, "w": 300.0, "h": 50.0},
+        ]
+
+    def fake_open_mail(_runtime):
+        opened_mail.append(True)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    def fake_list_load(self, runtime):
+        runtime.attrs["load_new"] = False
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
+    monkeypatch.setattr(runner, "_ocr_lines", fake_ocr_lines)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_mail)
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runtime_runner_core.Shape, "load", fake_list_load)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 1, "max_scrolls": 1}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(825.0, 865.0)]
+    assert opened_mail == [True]
+
+
 def test_xianfu_learn_skill_is_dynamic_runtime_task():
     task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "xianfu-learn-skill")
 
@@ -1835,6 +2128,216 @@ def test_legacy_xianfu_visit_scheduler_task_is_migrated_to_runtime_task():
     assert task["next_time"] == "2026-06-11 04:16:13"
 
 
+def test_legacy_daily_boss_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-dynamic-daily-boss",
+            "task_type": "legacy_dynamic_task",
+            "label": "日常 首领",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "dynamic",
+            "legacy_name": "日常_首领",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_首领"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"daily-boss": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "daily-boss")
+
+    assert changed is True
+    assert task["task_type"] == "daily_boss"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_首领"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
+def test_legacy_daily_lingzu_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-daily-lingzu",
+            "task_type": "legacy_daily_task",
+            "label": "日常 灵祖",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": "日常_灵祖",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_灵祖"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"legacy-daily-lingzu": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "legacy-daily-lingzu")
+
+    assert changed is True
+    assert task["task_type"] == "daily_lingzu"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_灵祖"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
+def test_legacy_daily_jianling_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-daily-jianling",
+            "task_type": "legacy_daily_task",
+            "label": "日常 剑灵",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": "日常_剑灵",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_剑灵"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"legacy-daily-jianling": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "legacy-daily-jianling")
+
+    assert changed is True
+    assert task["task_type"] == "daily_jianling"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_剑灵"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
+def test_legacy_daily_lingta_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-daily-lingta",
+            "task_type": "legacy_daily_task",
+            "label": "日常 灵塔",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": "日常_灵塔",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_灵塔"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"legacy-daily-lingta": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
+
+    assert changed is True
+    assert task["task_type"] == "daily_lingta"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_灵塔"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
+def test_legacy_daily_xianyuan_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-daily-xianyuan",
+            "task_type": "legacy_daily_task",
+            "label": "日常 挑战仙缘",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": "日常_挑战仙缘",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_挑战仙缘"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"legacy-daily-xianyuan": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "legacy-daily-xianyuan")
+
+    assert changed is True
+    assert task["task_type"] == "daily_xianyuan"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_挑战仙缘"
+    assert task["schedule_times"] == ["05:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
+def test_legacy_daily_assistant_scheduler_task_is_migrated_to_runtime_task():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "legacy-daily-assistant",
+            "task_type": "legacy_daily_task",
+            "label": "日常 助手",
+            "source": "legacy_behavior_tree",
+            "schedule_kind": "daily",
+            "legacy_name": "日常_助手",
+            "enabled": False,
+            "cooldown_seconds": 0,
+            "payload": {"legacy_name": "日常_助手"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {"discoveries": {"task": {"legacy-daily-assistant": {"discovered_next_time": "2026-06-11 05:00:00"}}}},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 10, 12, 0, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
+
+    assert changed is True
+    assert task["task_type"] == "daily_assistant"
+    assert task["source"] == "data_annotation_runtime"
+    assert task["schedule_kind"] == "daily"
+    assert task["label"] == "日常_助手"
+    assert task["schedule_times"] == ["05:00", "12:00", "18:00", "00:00"]
+    assert task["cooldown_seconds"] == 600
+    assert task["next_time"] == "2026-06-11 05:00:00"
+
+
 def test_legacy_xianfu_skill_scheduler_task_is_migrated_to_runtime_task():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
@@ -1905,6 +2408,56 @@ def test_mail_full_scan_observe_only_ignores_claim_and_delete_policy(tmp_path, m
 
     assert result == "success"
     assert received == {"action_enabled": False}
+
+
+def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image("邮件", "0121.png", [])
+    image122 = _image("邮件内容", "0122.png", [
+        {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.05},
+        {"id": "back", "kind": "rect", "title": "空白-返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05},
+    ])
+    ctx = {"entry": object(), "images": {121: image121, 122: image122}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json")
+    title_shape = runtime_runner_core.Shape(
+        {"id": "row", "kind": "rect", "title": "测试邮件", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.05},
+        parent_view=runtime_runner_core.View(image121),
+    )
+    mail = runtime_runner_core._RuntimeMailRow({"title": "测试邮件"}, title_shape)
+    clicked: list[str] = []
+    wait_calls: list[tuple[int, ...]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+
+    def fake_wait_view(*views, **_kwargs):
+        view_ids = tuple(int(view) for view in views)
+        wait_calls.append(view_ids)
+        if view_ids == (122, 123):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View(image122)
+        if view_ids == (121,) and len(wait_calls) == 2:
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            raise TimeoutError("未自动回列表")
+        if view_ids == (121,):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View(image121)
+        raise AssertionError(view_ids)
+
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._claim_runtime_mail_row(runtime, mail),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "claim"
+    assert clicked == ["测试邮件", "领取", "空白-返回"]
+    assert wait_calls == [(122, 123), (121,), (121,)]
 
 
 def test_mail_world_menu_ocr_click_uses_mail_shape_lower_point_when_available():
@@ -3289,6 +3842,375 @@ def test_daily_signup_signature_excludes_occlusion_marker_regions(tmp_path):
     assert signature == "仙缘斗法"
 
 
+def test_daily_xianyuan_excludes_xianyuan_duel_and_clicks_real_entry(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image69 = _image("日常", "0069.png", [
+        {"id": "identity", "kind": "rect", "title": "日常", "x": 0.02, "y": 0.03, "w": 0.12, "h": 0.06},
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.2, "w": 0.9, "h": 0.65},
+        {"id": "exit", "kind": "rect", "title": "退出", "x": 0.04, "y": 0.9, "w": 0.1, "h": 0.06},
+    ])
+    ctx = {"entry": object(), "asset_tree": [], "asset_tree_path": path, "images": {69: image69}}
+    ocr_calls = iter([
+        [
+            {"x": 330, "y": 330, "w": 180, "h": 35, "text": "仙缘斗法"},
+            {"x": 330, "y": 560, "w": 180, "h": 35, "text": "挑战仙缘"},
+        ],
+    ])
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: next(ocr_calls))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_daily_xianyuan_from_daily(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "open"
+    assert clicked == [(420.0, 577.5)]
+
+
+def test_daily_xianyuan_not_found_does_not_mark_success(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.2, "w": 0.9, "h": 0.65},
+    ])
+    ctx = {"entry": object(), "asset_tree": [], "asset_tree_path": path, "images": {69: image69}}
+    dragged: list[tuple[float, float, float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"x": 300, "y": 500, "w": 200, "h": 30, "text": "仙缘斗法"}])
+    monkeypatch.setattr(runner, "_drag_frame_point", lambda _ctx, _image, sx, sy, ex, ey, **_kwargs: dragged.append((sx, sy, ex, ey)))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_daily_xianyuan_from_daily(
+            ctx,
+            FakeStopEvent(),
+            {"max_scrolls": 1, "reverse_scrolls": 1},
+        ),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "not_found"
+    assert len(dragged) == 2
+
+
+def test_daily_xianyuan_after_entry_returns_people_list_scene(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}
+    scenes = iter([(None, 0.0), (None, 0.0)])
+    stop_event = threading.Event()
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _preferred: next(scenes))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "仙缘"},
+            {"text": "可送礼雅妃可送礼炎帝萧炎"},
+            {"text": "隐藏已无物品的仙缘"},
+        ],
+    )
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_daily_xianyuan_after_entry(ctx, stop_event, {"post_click_timeout": 1}),
+        stop_event=stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == (197, 100.0)
+
+
+def test_daily_xianyuan_people_list_target_candidates():
+    runner = create_fanxiu_runtime_runner()
+    image197 = {
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "title": "人物列表",
+                "x": 0.07,
+                "y": 0.19,
+                "w": 0.88,
+                "h": 0.66,
+            }
+        ],
+    }
+    lines = [
+        {"text": "不离不弃不离不弃不离不弃", "x": 97, "y": 1174, "w": 665, "h": 50},
+        {"text": "隐藏已无物品的仙缘", "x": 554, "y": 1367, "w": 322, "h": 36},
+    ]
+
+    candidates = runner._daily_xianyuan_list_target_candidates(lines, image197, {"target_pattern": "不离不弃"})
+
+    assert len(candidates) == 3
+    assert 150 < candidates[0][0] < 280
+    assert 1020 < candidates[0][1] < 1100
+
+
+def test_daily_xianyuan_dialogue_runs_challenge_flow(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image199 = _image("仙缘人物对话", "0199.png", [
+        {"id": "teach", "kind": "rect", "title": "教他做人", "x": 0.5, "y": 0.56, "w": 0.44, "h": 0.09},
+    ])
+    ctx = {"entry": object(), "asset_tree": [], "asset_tree_path": path, "images": {199: image199}}
+    frame_iter = iter(["f0", "f1", "f2", "f3", "f4", "f5"])
+    lines_by_frame = {
+        "f0": [{"x": 610, "y": 940, "w": 150, "h": 40, "text": "教他做人"}],
+        "f1": [{"x": 610, "y": 940, "w": 120, "h": 40, "text": "看招吧"}],
+        "f2": [{"x": 610, "y": 940, "w": 120, "h": 40, "text": "看招吧"}],
+        "f3": [{"x": 410, "y": 930, "w": 90, "h": 40, "text": "继续"}],
+        "f4": [{"x": 300, "y": 880, "w": 260, "h": 40, "text": "友好度减少"}],
+        "f5": [],
+    }
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frame_iter))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: lines_by_frame[frame])
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _preferred: (34, 100.0) if frame == "f5" else (None, 0.0))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_record_daily_xianyuan_done", lambda _payload, *, message: "2026-06-12 05:00:00")
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_xianyuan_from_dialogue(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked[:3] == [(685.0, 960.0), (670.0, 960.0), (455.0, 950.0)]
+    assert any(point == (450.0, 992.0) for point in clicked)
+
+
+def test_daily_xianyuan_dialogue_advances_to_attack_then_world_like(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image199 = _image("仙缘人物对话", "0199.png", [
+        {"id": "teach", "kind": "rect", "title": "教他做人", "x": 0.5, "y": 0.65, "w": 0.44, "h": 0.09},
+    ])
+    ctx = {"entry": object(), "images": {199: image199}}
+    frames = iter(["dialogue", "challenge-count", "attack", "battle", "battle", "world"])
+    lines_by_frame = {
+        "dialogue": [{"x": 560, "y": 1060, "w": 180, "h": 55, "text": "教他做人"}],
+        "challenge-count": [{"x": 390, "y": 1190, "w": 360, "h": 40, "text": "今日可挑战次数：3/3"}],
+        "attack": [{"x": 520, "y": 960, "w": 260, "h": 55, "text": "看招吧（友好度-2000）"}],
+        "battle": [{"x": 785, "y": 800, "w": 80, "h": 50, "text": "离开"}],
+        "world": [{"text": "天机阁"}, {"text": "储物袋"}, {"text": "角色"}, {"text": "装备"}, {"text": "功法书"}],
+    }
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: lines_by_frame[frame])
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_record_daily_xianyuan_done", lambda _payload, *, message: "2026-06-12 05:00:00")
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_xianyuan_from_dialogue(ctx, FakeStopEvent(), {"challenge_continue_timeout": -1}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [
+        (650.0, 1087.5),
+        (650.0, 987.5),
+        (825.0, 825.0),
+    ]
+
+
+def test_daily_xianyuan_can_resume_from_challenge_dialogue(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image200 = _image("仙缘挑战对话", "0200.png")
+    ctx = {"entry": object(), "images": {200: image200}}
+    frames = iter(["attack-id", "attack", "battle", "battle", "world"])
+    lines_by_frame = {
+        "attack-id": [{"x": 390, "y": 1190, "w": 360, "h": 40, "text": "今日可挑战次数：3/3"}],
+        "attack": [{"x": 520, "y": 960, "w": 260, "h": 55, "text": "看招吧（友好度-2000）"}],
+        "battle": [{"x": 785, "y": 800, "w": 80, "h": 50, "text": "离开"}],
+        "world": [{"text": "天机阁"}, {"text": "储物袋"}, {"text": "角色"}, {"text": "装备"}, {"text": "功法书"}],
+    }
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: lines_by_frame[frame])
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _preferred: (200, 100.0) if frame == "attack-id" else (None, 0.0))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_record_daily_xianyuan_done", lambda _payload, *, message: "2026-06-12 05:00:00")
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_xianyuan_from_challenge_state(ctx, FakeStopEvent(), {"challenge_continue_timeout": -1}, 200),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(650.0, 987.5), (825.0, 825.0)]
+
+
+def test_daily_xianyuan_count_empty_returns_world_before_recording(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image200 = _image("仙缘挑战对话", "0200.png")
+    ctx = {"entry": object(), "images": {200: image200}}
+    frames = iter(["challenge-id", "count-empty"])
+    calls: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _preferred: (200, 100.0) if frame == "challenge-id" else (None, 0.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "今日可挑战次数：0/3"}] if frame == "count-empty" else [])
+
+    def fake_return_current(_ctx, _stop_event):
+        calls.append("return-world")
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    def fake_record(_payload, *, message):
+        calls.append(f"record:{message}")
+        return "2026-06-12 05:00:00"
+
+    monkeypatch.setattr(runner, "_return_daily_xianyuan_current_to_world", fake_return_current)
+    monkeypatch.setattr(runner, "_record_daily_xianyuan_done", fake_record)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_xianyuan_from_challenge_state(ctx, FakeStopEvent(), {}, 200),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert calls == ["return-world", "record:仙缘对话显示今日可挑战次数已空"]
+
+
+def test_daily_xianyuan_battle_leave_accepts_world_like_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ref_image = _image("仙缘人物对话", "0199.png")
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "world-frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "天机阁"},
+            {"text": "储物袋"},
+            {"text": "角色"},
+            {"text": "装备"},
+            {"text": "功法书"},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._leave_daily_xianyuan_battle({}, FakeStopEvent(), {}, ref_image),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == []
+
+
+def test_daily_xianyuan_return_from_daily_accepts_world_like_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "exit", "kind": "rect", "title": "退出", "x": 0.05, "y": 0.93, "w": 0.08, "h": 0.05},
+    ])
+    ctx = {"images": {69: image69}}
+    frames = iter(["daily", "world-like"])
+    clicked: list[tuple[float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _preferred: (69, 100.0) if frame == "daily" else (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: [] if frame == "daily" else [
+            {"text": "天机阁"},
+            {"text": "储物袋"},
+            {"text": "角色"},
+            {"text": "装备"},
+            {"text": "功法书"},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._return_daily_xianyuan_to_world(ctx, FakeStopEvent()),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(81.0, 1528.0)]
+
+
 def test_daily_signup_does_not_log_ready_when_scene_confirm_fails(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
@@ -3396,6 +4318,502 @@ def test_xianfu_visit_partner_cd_parser():
     assert runtime_runner_core._parse_xianfu_visit_cd_seconds("无法识别") is None
 
 
+def test_daily_boss_reward_and_cd_parsers():
+    assert runtime_runner_core._parse_daily_boss_reward_remaining("剩余奖励次数：3/3+") == 3
+    assert runtime_runner_core._parse_daily_boss_reward_remaining("剩余奖励次数：0") == 0
+    assert runtime_runner_core._parse_daily_boss_reward_remaining("前往挑战") is None
+    assert runtime_runner_core._parse_daily_boss_cd_seconds("06:33:27后刷新") == 23607
+    assert runtime_runner_core._parse_daily_boss_hp_percent("首领 命20% 自动战斗中") == 20
+
+
+def test_daily_boss_detail_clicks_challenge_when_available(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image179 = _image("首领详情", "0179.png", [
+        {"id": "watch", "kind": "rect", "title": "神识注视", "x": 0.35, "y": 0.5, "w": 0.5, "h": 0.06},
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.78, "w": 0.4, "h": 0.06},
+        {"id": "action", "kind": "rect", "title": "挑战状态", "x": 0.25, "y": 0.82, "w": 0.5, "h": 0.07},
+        {"id": "challenge", "kind": "rect", "title": "前往挑战", "x": 0.25, "y": 0.82, "w": 0.5, "h": 0.07},
+    ])
+    ctx = {"asset_tree_path": path, "images": {179: image179}}
+    clicked: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "神识注视剩余奖励次数：3/3前往挑战"}])
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    def fake_wait(_ctx, _stop_event, _payload):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_daily_boss_after_challenge", fake_wait)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_daily_boss_detail(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["前往挑战"]
+
+
+def test_daily_boss_detail_records_next_reset_when_reward_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 10, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image179 = _image("首领详情", "0179.png", [
+        {"id": "watch", "kind": "rect", "title": "神识注视", "x": 0.35, "y": 0.5, "w": 0.5, "h": 0.06},
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.78, "w": 0.4, "h": 0.06},
+        {"id": "action", "kind": "rect", "title": "挑战状态", "x": 0.25, "y": 0.82, "w": 0.5, "h": 0.07},
+    ])
+    ctx = {"asset_tree_path": path, "images": {179: image179}}
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "神识注视剩余奖励次数：0/3"}])
+
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_daily_boss_detail(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-12 05:00:00"
+    assert fact["task_type"] == "daily_boss"
+
+
+def test_daily_boss_after_challenge_requires_done_scene_before_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"images": {}, "asset_tree_path": tmp_path / "asset_tree.json"}
+    scenes = iter([(180, 100.0, "fight"), (None, 0.0, "cd-only"), (181, 100.0, "done")])
+    phases: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: next(scenes))
+
+    def fake_text(_ctx, frame=None):
+        return "首领自动战斗中" if frame == "fight" else "00:07:17后刷新封印泷尊剑主" if frame == "done" else "00:07:17后刷新首领伤害数据统计"
+
+    monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", fake_text)
+    completed_after_done: list[bool] = []
+
+    def fake_complete(_ctx, _stop_event, _payload):
+        completed_after_done.append(True)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_complete_daily_boss_from_done_frame", fake_complete)
+    original_set_status = runner._set_status_locked
+
+    def record_status(status, message="", **extra):
+        if extra.get("phase"):
+            phases.append(extra["phase"])
+        original_set_status(status, message, **extra)
+
+    monkeypatch.setattr(runner, "_set_status_locked", record_status)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_daily_boss_after_challenge(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert "daily_boss_wait_boss_done" in phases
+    assert "daily_boss_wait_done_after_cd" in phases
+    assert completed_after_done == [True]
+
+
+def test_daily_boss_stuck_at_twenty_percent_leaves_and_rechecks_rewards(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image180 = _image("挑战中", "0180.png", [
+        {"id": "hp", "kind": "rect", "title": "BOSS生命值", "x": 0.18, "y": 0.11, "w": 0.62, "h": 0.26},
+        {"id": "leave", "kind": "rect", "title": "离开", "x": 0.83, "y": 0.45, "w": 0.12, "h": 0.09},
+    ])
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+    ])
+    ctx = {"asset_tree_path": path, "images": {178: image178, 180: image180}}
+    scenes = iter([(180, 100.0, "fight-1"), (180, 100.0, "fight-2")])
+    clicked: list[str] = []
+    waited: list[int] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: next(scenes))
+    monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", lambda _ctx, frame=None: "首领 命20% 自动战斗中")
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "剩余奖励次数：0"}])
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    def fake_wait_scene(_ctx, _stop_event, scene_id, **_kwargs):
+        waited.append(scene_id)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_daily_boss_after_challenge(ctx, FakeStopEvent(), {"boss_twenty_percent_stuck_count": 2}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["离开"]
+    assert waited == [178]
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-12 05:00:00"
+
+
+def test_daily_boss_stuck_on_boss_map_leaves_and_rechecks_rewards(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image180 = _image("挑战中", "0180.png", [
+        {"id": "hp", "kind": "rect", "title": "BOSS生命值", "x": 0.18, "y": 0.11, "w": 0.62, "h": 0.26},
+        {"id": "leave", "kind": "rect", "title": "离开", "x": 0.83, "y": 0.45, "w": 0.12, "h": 0.09},
+    ])
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+    ])
+    ctx = {"asset_tree_path": path, "images": {178: image178, 180: image180}}
+    scenes = iter([(180, 100.0, "map-1"), (180, 100.0, "map-2")])
+    clicked: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: next(scenes))
+    monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", lambda _ctx, frame=None: "首领·泷尊剑主 100% 数据统计 离开")
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "剩余奖励次数：0"}])
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    def fake_wait_scene(_ctx, _stop_event, scene_id, **_kwargs):
+        assert scene_id == 178
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_daily_boss_after_challenge(ctx, FakeStopEvent(), {"boss_map_stuck_count": 2}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["离开"]
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-12 05:00:00"
+
+
+def test_daily_boss_reopens_list_after_leave_lands_on_world(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {"asset_tree_path": tmp_path / "asset_tree.json", "images": {}}
+    calls: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    class FakeRuntime:
+        def goto_view(self, scene_id):
+            calls.append(f"goto:{scene_id}")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "success"
+
+    def fake_wait_scene(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        raise RuntimeError("not list")
+
+    def fake_open_list(_ctx, _stop_event):
+        calls.append("open-list")
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (34, 100.0, "world"))
+    monkeypatch.setattr(runner, "_open_daily_boss_list_from_daily", fake_open_list)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_daily_boss_list_after_leaving_fight(ctx, FakeRuntime(), FakeStopEvent()),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result is True
+    assert calls == ["goto:69", "open-list"]
+
+
+def test_daily_boss_returns_to_world_after_list_completion(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "xianjie", "kind": "rect", "title": "仙界", "x": 0.6, "y": 0.08, "w": 0.2, "h": 0.05},
+        {"id": "list", "kind": "rect", "title": "首领列表", "x": 0.05, "y": 0.15, "w": 0.9, "h": 0.65},
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+    ])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.08, "y": 0.25, "w": 0.88, "h": 0.55},
+    ])
+    image179 = _image("首领详情", "0179.png", [])
+    image180 = _image("挑战中", "0180.png", [])
+    image181 = _image("挑战完", "0181.png", [])
+    image182 = _image("0182.png", "0182.png", [])
+    ctx = {"asset_tree_path": path, "images": {69: image69, 178: image178, 179: image179, 180: image180, 181: image181, 182: image182}}
+    returned: list[bool] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (178, 100.0, "list"))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
+    def fake_wait_scene(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "剩余奖励次数：0"}])
+
+    def fake_return(_ctx, _stop_event):
+        returned.append(True)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_boss_task(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert returned == [True]
+
+
+def test_daily_boss_done_uses_list_refresh_time_from_182(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+        {"id": "list", "kind": "rect", "title": "首领列表", "x": 0.05, "y": 0.15, "w": 0.9, "h": 0.65},
+    ])
+    image182 = _image("0182.png", "0182.png", [
+        {"id": "refresh", "kind": "rect", "title": "刷新时间", "x": 0.06, "y": 0.49, "w": 0.86, "h": 0.09},
+    ])
+    ctx = {
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {178: image178, 182: image182},
+    }
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (178, 100.0, "list-frame"))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+
+    def fake_ocr_lines_in_shapes(_frame, image, names, **_kwargs):
+        if image is image178 and "剩余奖励次数" in names:
+            return [{"text": "剩余奖励次数：1"}]
+        if image is image182 and "刷新时间" in names:
+            return [{"text": "刷新时间 00:07:17"}]
+        return []
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", fake_ocr_lines_in_shapes)
+
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._complete_daily_boss_from_done_frame(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-11 11:07:27"
+
+
+def test_daily_boss_done_falls_back_to_half_hour_when_list_cd_unread(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    image178 = _image("首领列表", "0178.png", [
+        {"id": "reward", "kind": "rect", "title": "剩余奖励次数", "x": 0.3, "y": 0.8, "w": 0.4, "h": 0.06},
+    ])
+    image182 = _image("0182.png", "0182.png", [
+        {"id": "refresh", "kind": "rect", "title": "刷新时间", "x": 0.06, "y": 0.49, "w": 0.86, "h": 0.09},
+    ])
+    ctx = {
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {178: image178, 182: image182},
+    }
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (178, 100.0, "list-frame"))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+
+    def fake_ocr_lines_in_shapes(_frame, image, names, **_kwargs):
+        if image is image178 and "剩余奖励次数" in names:
+            return [{"text": "剩余奖励次数：1"}]
+        return [{"text": ""}]
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", fake_ocr_lines_in_shapes)
+
+    def fake_return_world(_ctx, _stop_event):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._complete_daily_boss_from_done_frame(ctx, FakeStopEvent(), {}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["daily-boss"]
+    assert fact["discovered_next_time"] == "2026-06-11 11:30:00"
+
+
+def test_xianfu_visit_partner_max_continue_zero_closes_popup(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image174 = _image("绝品仙侣", "0174.png", [])
+    image175 = _image("继续寻访", "0175.png", [
+        {"id": "half", "kind": "rect", "title": "半价", "x": 0.58, "y": 0.75, "w": 0.3, "h": 0.06},
+        {"id": "continue", "kind": "rect", "title": "继续", "x": 0.56, "y": 0.82, "w": 0.3, "h": 0.07},
+        {"id": "close", "kind": "rect", "title": "关闭", "x": 0.16, "y": 0.82, "w": 0.29, "h": 0.07},
+    ])
+    ctx = {"entry": object(), "images": {174: image174, 175: image175}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json")
+    clicked: list[str] = []
+    wait_calls: list[tuple[int, ...]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "50（半价）"}])
+
+    def fake_wait_view(*views, **_kwargs):
+        view_ids = tuple(int(view) for view in views)
+        wait_calls.append(view_ids)
+        if view_ids == (175,):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View(image175)
+        if view_ids == (174,):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View(image174)
+        raise AssertionError(view_ids)
+
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_xianfu_continue_visit_popup(runtime, max_continue=0),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["关闭"]
+    assert wait_calls == [(175,), (174,)]
+
+
 def test_xianfu_learn_skill_cd_parser_reuses_free_draw_cd_text():
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("06:33:27后可免费抽取") == 23607
     assert runtime_runner_core._parse_xianfu_skill_cd_seconds("12分05秒后可免费抽取") == 725
@@ -3423,22 +4841,32 @@ def test_xianfu_learn_skill_skips_when_skill_page_annotation_missing(tmp_path):
 
 
 def test_xianfu_learn_skill_skips_when_price_is_not_free_without_cd(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 1, 0, 0))
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
     path.write_text("[]", encoding="utf-8")
     image176 = _image("绝技", "0176.png", [
         {"id": "status", "kind": "rect", "title": "状态", "x": 0.1, "y": 0.78, "w": 0.4, "h": 0.06},
         {"id": "price", "kind": "rect", "title": "价格", "x": 0.2, "y": 0.7, "w": 0.2, "h": 0.05},
+        {"id": "xianpin", "kind": "rect", "title": "仙品绝技", "x": 0.72, "y": 0.82, "w": 0.1, "h": 0.16},
     ])
     ctx = {"asset_tree_path": path, "images": {176: image176}}
+    clicked: list[str] = []
 
     class FakeStopEvent:
         def is_set(self):
             return False
 
+        def wait(self, _seconds):
+            return False
+
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _preferred: (176, 100.0))
     monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "200领悟一次"}])
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._execute_xianfu_learn_skill_task(ctx, FakeStopEvent(), {}),
@@ -3447,7 +4875,54 @@ def test_xianfu_learn_skill_skips_when_price_is_not_free_without_cd(tmp_path, mo
     )
 
     assert result == "skipped"
+    assert clicked == ["仙品绝技"]
     assert any("未识别到免费领悟或倒计时" in log["message"] for log in runner.status()["logs"])
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["xianfu-learn-skill"]
+    assert fact["discovered_next_time"] == "2026-06-11 01:30:00"
+    assert fact["task_type"] == "xianfu_learn_skill"
+
+
+def test_xianfu_learn_skill_existing_cd_is_not_marked_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 1, 0, 0))
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image176 = _image("绝技", "0176.png", [
+        {"id": "status", "kind": "rect", "title": "状态", "x": 0.1, "y": 0.78, "w": 0.4, "h": 0.06},
+        {"id": "price", "kind": "rect", "title": "价格", "x": 0.2, "y": 0.7, "w": 0.2, "h": 0.05},
+        {"id": "learn", "kind": "rect", "title": "领悟一次", "x": 0.16, "y": 0.742, "w": 0.285, "h": 0.06},
+        {"id": "xianpin", "kind": "rect", "title": "仙品绝技", "x": 0.72, "y": 0.82, "w": 0.1, "h": 0.16},
+    ])
+    ctx = {"asset_tree_path": path, "images": {176: image176}}
+    clicked: list[str] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _preferred: (176, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "23:59:17后可免费抽取"}])
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_xianfu_learn_skill_task(ctx, FakeStopEvent(), {"__scheduler_task_id": "xianfu-learn-skill"}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "skipped"
+    assert clicked == []
+    assert any("本轮未点击领悟" in log["message"] for log in runner.status()["logs"])
+    fact = fanxiu_api._read_data_annotation_world_facts()["discoveries"]["task"]["xianfu-learn-skill"]
+    assert fact["discovered_next_time"] == "2026-06-12 00:59:17"
+    assert fact["task_type"] == "xianfu_learn_skill"
 
 
 def test_scheduler_success_uses_discovered_dynamic_next_time(tmp_path, monkeypatch):
@@ -3726,6 +5201,65 @@ def test_ensure_service_restarts_stale_loop_when_manual_job_is_pending(tmp_path,
     assert starts[-1]["kwargs"]["generation"] == 8
     assert status["service_running"] is True
     assert any("心跳停滞" in item["message"] for item in status["logs"])
+
+
+def test_restore_persisted_guard_config_keeps_close_popups_when_logs_exist(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    runtime_state = tmp_path / "runtime_state.json"
+    runtime_state.write_text(
+        json.dumps(
+            {
+                "guard_enabled": True,
+                "guard_running": False,
+                "guard_entry_id": "codepc_mf",
+                "guard_interval_seconds": 2.0,
+                "guard_items": {
+                    "close_popups": {"enabled": True, "entry_id": "codepc_mf", "updated_at": 123.0},
+                    "wanling_invite": {"enabled": False, "entry_id": "", "updated_at": 0.0},
+                },
+                "logs": [{"kind": "info", "message": "persisted"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runner = create_fanxiu_runtime_runner()
+
+    with runner._lock:
+        runner._guard_enabled = False
+        runner._status["logs"] = [{"kind": "info", "message": "local"}]
+        runner._restore_persisted_config_locked()
+        runner._sync_guard_status_locked()
+        status = json.loads(json.dumps(runner._status, ensure_ascii=False))
+
+    assert status["guard_enabled"] is True
+    assert status["guard_entry_id"] == "codepc_mf"
+    assert status["guard_items"]["close_popups"]["enabled"] is True
+    assert status["logs"] == [{"kind": "info", "message": "local"}]
+
+
+def test_scheduler_task_due_soon_detects_near_enabled_supported_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_runner_core, "_now", lambda: datetime(2026, 6, 11, 23, 58, 0))
+    monkeypatch.setattr(runtime_runner_core.time, "time", lambda: datetime(2026, 6, 11, 23, 58, 0).timestamp())
+    monkeypatch.setattr(
+        runtime_runner_core,
+        "_read_data_annotation_scheduler_tasks",
+        lambda: [
+            {
+                "id": "mail-cleanup",
+                "task_type": "mail_cleanup",
+                "enabled": True,
+                "source": "data_annotation_runtime",
+                "schedule_kind": "daily",
+                "next_time": "2026-06-12 00:00:00",
+                "retry_after": None,
+            }
+        ],
+    )
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._scheduler_task_due_soon(within_seconds=180.0) is True
 
 
 def test_ensure_service_uses_device_entry_id_over_raw_alias(tmp_path, monkeypatch):

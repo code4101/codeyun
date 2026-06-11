@@ -403,6 +403,27 @@ class TaskManager:
                 self._set_task_next_run_at(session, task, formatted)
         self._install_next_run_job(task_id, formatted)
 
+    def _reset_interval_schedule_after_manual_trigger(self, task_id: str) -> None:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task or not task.schedule_policy:
+                return
+            trigger = task.schedule_policy.get("trigger") or {}
+            trigger_type = str(trigger.get("type") or "").strip().lower()
+            if trigger_type != "interval":
+                return
+            task.schedule_state = apply_schedule_result(
+                task.schedule_policy,
+                task.schedule_state or {},
+                result=RESULT_SUCCESS,
+            )
+            formatted = self._set_task_next_run_at(
+                session,
+                task,
+                (task.schedule_state or {}).get("next_trigger_at"),
+            )
+        self._install_next_run_job(task_id, formatted)
+
     def trigger_scheduled_task(self, task_id: str):
         with Session(engine) as session:
             task = session.get(TaskModel, task_id)
@@ -555,6 +576,8 @@ class TaskManager:
         try:
             # Pass command and env from DB
             result = device.start_task(task.id, task.command, task.cwd, env={}, timeout=task.timeout)
+            if trigger_reason != "scheduled" and result.get("status") != "already_running":
+                self._reset_interval_schedule_after_manual_trigger(task_id)
             if result.get("status") == "already_running":
                 status = device.get_task_status(task.id)
                 elapsed = None
@@ -601,6 +624,8 @@ class TaskManager:
                 "overlap_policy": policy.overlap_policy,
             },
         )
+        if trigger_reason != "scheduled" and queued:
+            self._reset_interval_schedule_after_manual_trigger(task_id)
         return {
             "task_key": task_id,
             "queued": queued,

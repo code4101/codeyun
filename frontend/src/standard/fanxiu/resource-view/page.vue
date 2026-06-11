@@ -120,6 +120,13 @@ const itemRewardRows = computed<FanxiuGongfaLinkedItem[]>(() => {
   return current.optional_gift_rewards ?? []
 })
 
+const itemSpiritStoneValue = computed(() => {
+  const current = card.value
+  if (!current || resourceType.value !== 'item') return 0
+  const value = Number('stone_value' in current ? current.stone_value : 0)
+  return Number.isFinite(value) && value > 0 ? value : 0
+})
+
 const sourceJson = computed(() => JSON.stringify(card.value ?? {}, null, 2))
 const linkTargetGroups = computed(() => buildFanxiuLinkTargetGroups(linkTargets.value))
 const resourceMetaRows = computed(() => {
@@ -145,6 +152,7 @@ const resourceMetaRows = computed(() => {
     ['图标来源', iconSource],
     ['图标复用', iconQuality],
     ['小图标复用', smallIconQuality],
+    ['价值灵石', itemSpiritStoneValue.value || ''],
     ['状态', current.presence_status],
   ]
   return rows

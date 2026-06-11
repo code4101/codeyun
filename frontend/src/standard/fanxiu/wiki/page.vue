@@ -644,7 +644,7 @@ const storageBagMainGroup = ref('all')
 const storageBagSubGroup = ref('')
 const storageBagSubGroupMemory = ref<Record<string, string>>({})
 const storageBagSubGroupAllSelected = ref(false)
-const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'total_friendship'>('default')
+const storageBagSortKey = ref<'default' | 'num' | 'friendship' | 'spirit_stone_value'>('friendship')
 const storageBagWorshipSortKey = ref<'friendship' | 'time' | 'plane' | 'type'>('friendship')
 const playerProfileSortKey = ref<PlayerProfileSortKey>('attack_desc')
 const playerProfilePage = ref(1)
@@ -6372,8 +6372,22 @@ function storageBagTotalFriendshipValue(row: Record<string, any>) {
   return friendship > 0 && Number.isFinite(count) ? friendship * count : 0
 }
 
+function storageBagSpiritStoneValue(row: Record<string, any>) {
+  const value = Number(row?.item?.stone_value)
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function formatStorageBagSpiritStoneValue(row: Record<string, any>) {
+  const value = storageBagSpiritStoneValue(row)
+  return value > 0 ? formatPacketInsightValue(value) : ''
+}
+
 const showStorageBagFriendshipColumns = computed(() => (
   storageBagMainGroup.value === 'resource' && storageBagSubGroup.value === '仙花'
+))
+
+const showStorageBagSpiritStoneValueColumn = computed(() => (
+  showStorageBagFriendshipColumns.value || filteredStorageBagItems.value.some(row => storageBagSpiritStoneValue(row) > 0)
 ))
 
 const storageBagWorshipTargetConfig = computed(() => {
@@ -6408,7 +6422,7 @@ function classifyStorageBagItem(row: Record<string, any>) {
   if (/灵兽|饲灵|兽神|天凰/.test(text)) return { main: 'resource', sub: '灵兽' }
   if (/洗灵/.test(text)) return { main: 'resource', sub: '洗灵' }
   if (['剑纹', '魂晶', '神兵部件'].includes(typeName) || /剑纹|魂晶|神兵部件/.test(text)) return { main: 'other', sub: storageBagOtherSubGroup(row) }
-  if (['仙环气铠'].includes(typeName) || /装备|玄铁|灵环|气铠|神兵|鞘|炉|图/.test(text)) return { main: 'resource', sub: '装备' }
+  if (typeName === '材料' && /装备|玄铁|灵环|气铠|神兵|鞘|炉|图/.test(text)) return { main: 'resource', sub: '装备' }
   if (typeName === '丹药' || /淬体|精魄|神火|龙髓|宝魄|惊蛰|圣焰|火种|金蛟|建木/.test(text)) return { main: 'resource', sub: '淬体' }
 
   return { main: 'other', sub: storageBagOtherSubGroup(row) }
@@ -6469,7 +6483,7 @@ const filteredStorageBagItems = computed(() => {
 function storageBagSortValue(row: Record<string, any>) {
   if (storageBagSortKey.value === 'num') return Number(row?.num) || 0
   if (storageBagSortKey.value === 'friendship') return storageBagFriendshipValue(row)
-  if (storageBagSortKey.value === 'total_friendship') return storageBagTotalFriendshipValue(row)
+  if (storageBagSortKey.value === 'spirit_stone_value') return storageBagSpiritStoneValue(row)
   return 0
 }
 
@@ -6905,7 +6919,7 @@ function selectStorageBagAllSubGroups() {
   storageBagSubGroup.value = ''
 }
 
-function sortStorageBagBy(key: 'num' | 'friendship' | 'total_friendship') {
+function sortStorageBagBy(key: 'num' | 'friendship' | 'spirit_stone_value') {
   storageBagSortKey.value = key
 }
 
@@ -12863,13 +12877,13 @@ onBeforeUnmount(() => {
                   @click="sortStorageBagBy('friendship')"
                 >友好度</button>
               </th>
-              <th v-if="showStorageBagFriendshipColumns" class="numeric-head">
+              <th v-if="showStorageBagSpiritStoneValueColumn" class="numeric-head">
                 <button
                   class="storage-bag-sort-button"
-                  :class="{ active: storageBagSortKey === 'total_friendship' }"
+                  :class="{ active: storageBagSortKey === 'spirit_stone_value' }"
                   type="button"
-                  @click="sortStorageBagBy('total_friendship')"
-                >总价值</button>
+                  @click="sortStorageBagBy('spirit_stone_value')"
+                >价值灵石</button>
               </th>
               <th>类型</th>
             </tr>
@@ -12903,7 +12917,7 @@ onBeforeUnmount(() => {
               </td>
               <td class="numeric-cell">{{ formatPacketInsightValue(row.num) }}</td>
               <td v-if="showStorageBagFriendshipColumns" class="numeric-cell">{{ formatPacketInsightValue(storageBagFriendshipValue(row)) }}</td>
-              <td v-if="showStorageBagFriendshipColumns" class="numeric-cell">{{ formatPacketInsightValue(storageBagTotalFriendshipValue(row)) }}</td>
+              <td v-if="showStorageBagSpiritStoneValueColumn" class="numeric-cell">{{ formatStorageBagSpiritStoneValue(row) }}</td>
               <td>{{ row.item?.type_name || '-' }}</td>
             </tr>
           </tbody>

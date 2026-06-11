@@ -19,7 +19,7 @@ from backend.core.stock.market_data import (
     DEFAULT_HISTORY_KTYPE,
     DEFAULT_POSITION_LOOKBACK_DAYS,
     serialize_sync_result,
-    sync_market_history_from_futu,
+    sync_market_history_from_akshare,
 )
 
 
@@ -31,7 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit("未找到有东财持仓或成交记录的用户，请用 --user-id 或 --username 指定。")
 
         try:
-            result = sync_market_history_from_futu(
+            result = sync_market_history_from_akshare(
                 session,
                 user_id=int(user.id),
                 database_path=args.database or None,
@@ -40,8 +40,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lookback_days=args.lookback_days,
                 ktype=args.ktype,
                 autype=args.autype,
-                host=args.host,
-                port=args.port,
                 incremental=not args.full_refresh,
                 dry_run=args.dry_run,
                 limit=args.limit,
@@ -53,20 +51,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="同步富途历史行情到本地 market-data.sqlite。")
+    parser = argparse.ArgumentParser(description="同步 AKShare 历史行情到本地 market-data.sqlite。")
     parser.add_argument("--user-id", type=int, default=None, help="CodeYun 用户 ID。默认选择第一个有东财股票数据的用户。")
     parser.add_argument("--username", default="", help="CodeYun 用户名。优先级高于默认自动选择。")
     parser.add_argument("--database", default="", help="行情缓存 SQLite 路径。默认在 CODEYUN_DATA_DIR/stock/market-data.sqlite。")
     parser.add_argument("--start", default="", help="强制开始日期，格式 YYYY-MM-DD。默认按最早成交日或持仓回看天数。")
     parser.add_argument("--end", default="", help="结束日期，格式 YYYY-MM-DD。默认今天。")
     parser.add_argument("--lookback-days", type=int, default=DEFAULT_POSITION_LOOKBACK_DAYS, help="只有持仓但没有成交记录时的默认回看天数。")
-    parser.add_argument("--ktype", default=DEFAULT_HISTORY_KTYPE, help="K 线周期，默认 1m。")
+    parser.add_argument("--ktype", default=DEFAULT_HISTORY_KTYPE, help="K 线周期，支持 daily/weekly/monthly，默认 daily。")
     parser.add_argument("--autype", default=DEFAULT_HISTORY_AUTYPE, help="复权类型，默认 none，成交价分析建议用 none。")
-    parser.add_argument("--host", default="127.0.0.1", help="Futu OpenD host。")
-    parser.add_argument("--port", type=int, default=11111, help="Futu OpenD port。")
     parser.add_argument("--limit", type=int, default=None, help="只同步前 N 个目标，便于试跑。")
     parser.add_argument("--full-refresh", action="store_true", help="不按本地最大 time_key 增量同步，从目标 start 重新覆盖。")
-    parser.add_argument("--dry-run", action="store_true", help="只输出待同步目标，不连接富途、不写数据库。")
+    parser.add_argument("--dry-run", action="store_true", help="只输出待同步目标，不连接 AKShare、不写数据库。")
     return parser.parse_args(argv)
 
 

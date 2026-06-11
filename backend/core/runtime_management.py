@@ -15,13 +15,6 @@ from backend.api.task_manager import task_manager
 from backend.db import engine
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import device_manager, get_device_id
-from backend.core.futu_opend_runtime import (
-    FUTU_OPEND_SERVICE_KEY,
-    FutuOpenDError,
-    get_futu_opend_status,
-    start_futu_opend,
-    stop_futu_opend,
-)
 from backend.core.codeyun_watchdog_runtime import (
     CODEYUN_WATCHDOG_SERVICE_KEY,
     CodeYunWatchdogError,
@@ -488,71 +481,6 @@ def _serialize_ocr_service_item(status: dict[str, Any]) -> dict[str, Any]:
         "concurrency_scope": "unit",
         "concurrency_key": BUILTIN_OCR_SERVICE_KEY,
         "overlap_policy": "queue",
-        "queue_key": None,
-    }
-
-
-def _futu_opend_description(status: dict[str, Any]) -> str:
-    endpoint = str(status.get("endpoint") or "")
-    if status.get("running"):
-        pids = ", ".join(str(pid) for pid in status.get("pids") or [])
-        return " · ".join(part for part in (endpoint, f"PID {pids}" if pids else "端口已连接") if part)
-    if status.get("configured"):
-        source = str(status.get("executable_source") or "")
-        return " · ".join(part for part in (endpoint, f"可执行文件 {source}" if source else "已发现可执行文件") if part)
-    return "未安装或未发现 OpenD · 运行详情含官方下载入口"
-
-
-def _serialize_futu_opend_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(status or get_futu_opend_status())
-    running = bool(payload.get("running"))
-    state = str(payload.get("state") or ("running" if running else "unconfigured"))
-    state_label = str(payload.get("state_label") or ("运行中" if running else "未配置"))
-    return {
-        "id": f"builtin:{FUTU_OPEND_SERVICE_KEY}",
-        "key": FUTU_OPEND_SERVICE_KEY,
-        "kind": "service",
-        "source": "builtin",
-        "group_id": "service:stock",
-        "group_title": "股票服务",
-        "title": payload.get("title") or "Futu OpenD",
-        "description": _futu_opend_description(payload),
-        "command": payload.get("executable_path") or "",
-        "cwd": "",
-        "schedule": "",
-        "schedule_policy": None,
-        "schedule_label": "",
-        "next_run_at": None,
-        "timeout": None,
-        "order": 0,
-        "enabled": True,
-        "active": running,
-        "status": {
-            "running": running,
-            "state": state,
-            "state_label": state_label,
-            "configured": bool(payload.get("configured")),
-            "host": payload.get("host"),
-            "port": payload.get("port"),
-            "endpoint": payload.get("endpoint"),
-            "executable_path": payload.get("executable_path"),
-            "executable_source": payload.get("executable_source"),
-            "configured_path": payload.get("configured_path"),
-            "process_count": payload.get("process_count"),
-            "pids": payload.get("pids") or [],
-            "last_error": payload.get("last_error") or "",
-            "download_url": payload.get("download_url"),
-            "doc_url": payload.get("doc_url"),
-            "controllable": True,
-        },
-        "actions": ["trigger", "stop", "logs", "configure"],
-        "raw": payload,
-        "schedule_kind": "manual",
-        "timeout_policy": "none",
-        "timeout_seconds": None,
-        "concurrency_scope": "unit",
-        "concurrency_key": FUTU_OPEND_SERVICE_KEY,
-        "overlap_policy": "replace",
         "queue_key": None,
     }
 
@@ -1169,8 +1097,6 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return lines
     if item.get("key") == GAME_WINDOW_SERVICE_KEY:
         return _build_game_window_service_log_lines(item)
-    if item.get("key") == FUTU_OPEND_SERVICE_KEY:
-        return _build_futu_opend_service_log_lines(item)
     if item.get("key") == CODEYUN_WATCHDOG_SERVICE_KEY:
         return build_codeyun_watchdog_log_lines()
     if item.get("key") == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
@@ -1208,45 +1134,6 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         lines.append(f"最近调用：{_format_epoch(status.get('last_used_at'))}")
     if status.get("last_error"):
         lines.extend(["", f"最近错误：{status.get('last_error')}"])
-    return lines
-
-
-def _build_futu_opend_service_log_lines(item: dict[str, Any]) -> list[str]:
-    status = item.get("status") or {}
-    raw = item.get("raw") or {}
-    lines = [
-        f"名称：{item.get('title') or item.get('key')}",
-        f"状态：{status.get('state_label') or '-'}",
-        f"端口：{status.get('endpoint') or '-'}",
-        f"可执行文件：{status.get('executable_path') or status.get('configured_path') or '-'}",
-    ]
-    if status.get("download_url"):
-        lines.append(f"官方下载：{status.get('download_url')}")
-    if status.get("doc_url"):
-        lines.append(f"官方说明：{status.get('doc_url')}")
-    if status.get("executable_source"):
-        lines.append(f"发现来源：{status.get('executable_source')}")
-    pids = status.get("pids") or []
-    if pids:
-        lines.append(f"PID：{', '.join(str(pid) for pid in pids)}")
-
-    processes = raw.get("processes") if isinstance(raw, dict) else None
-    if processes:
-        lines.append("")
-        lines.append("进程：")
-        for process in processes[:20]:
-            if not isinstance(process, dict):
-                continue
-            lines.append(
-                f"- PID {process.get('pid')} · {process.get('name') or '-'} · "
-                f"{process.get('exe') or process.get('cmdline') or '-'}"
-            )
-
-    last_error = status.get("last_error")
-    if last_error:
-        lines.extend(["", f"提示：{last_error}"])
-    lines.append("")
-    lines.append("行情模块会通过这个运行单元连接富途官方 OpenD，本机页面打开时按分钟刷新，后台作业按小时刷新。")
     return lines
 
 
@@ -1405,7 +1292,6 @@ def _collect_builtin_services() -> dict[str, Any]:
         items.append(_serialize_fanxiu_capture_runtime_service_item())
     if _fanxiu_game_window_service_enabled():
         items.append(_serialize_game_window_service_item())
-    items.append(_serialize_futu_opend_service_item())
     return {
         "items": items,
     }
@@ -1603,11 +1489,6 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             return start_proxy_traffic_audit()
         except ProxyTrafficAuditError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if normalized_key == FUTU_OPEND_SERVICE_KEY:
-        try:
-            return start_futu_opend()
-        except FutuOpenDError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == GAME_WINDOW_SERVICE_KEY:
         if not _fanxiu_game_window_service_enabled():
             raise HTTPException(status_code=404, detail="凡修画面流未在当前机器启用")
@@ -1662,11 +1543,6 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         return stop_codeyun_watchdog()
     if normalized_key == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
         return stop_proxy_traffic_audit()
-    if normalized_key == FUTU_OPEND_SERVICE_KEY:
-        try:
-            return stop_futu_opend()
-        except FutuOpenDError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == GAME_WINDOW_SERVICE_KEY:
         if not _fanxiu_game_window_service_enabled():
             raise HTTPException(status_code=404, detail="凡修画面流未在当前机器启用")

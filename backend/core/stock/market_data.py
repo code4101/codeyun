@@ -2,47 +2,36 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import socket
+import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import requests
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from backend.core.futu_opend_runtime import ensure_futu_opend_available
 from backend.models import EastmoneyPositionSnapshot, EastmoneyTradeRecord
 
+from .akshare_market import fetch_akshare_stock_history
 
-MARKET_DATA_PROVIDER_FUTU = "futu"
-MARKET_DATA_PROVIDER_EASTMONEY_PUBLIC = "eastmoney_public"
-DEFAULT_HISTORY_KTYPE = "1m"
+
+MARKET_DATA_PROVIDER_AKSHARE = "akshare"
+DEFAULT_HISTORY_KTYPE = "daily"
 DEFAULT_HISTORY_AUTYPE = "none"
 DEFAULT_POSITION_LOOKBACK_DAYS = 365
-EASTMONEY_PUBLIC_QUOTE_URL = "https://push2.eastmoney.com/api/qt/stock/get"
-EASTMONEY_PUBLIC_QUOTE_FIELDS = "f43,f44,f45,f46,f47,f48,f57,f58,f59,f60,f86,f170"
 
 SUPPORTED_KTYPES = {
-    "1m": "K_1M",
-    "3m": "K_3M",
-    "5m": "K_5M",
-    "10m": "K_10M",
-    "15m": "K_15M",
-    "30m": "K_30M",
-    "60m": "K_60M",
-    "day": "K_DAY",
-    "week": "K_WEEK",
-    "month": "K_MON",
-    "quarter": "K_QUARTER",
-    "year": "K_YEAR",
+    "daily": "daily",
+    "weekly": "weekly",
+    "monthly": "monthly",
 }
 SUPPORTED_AUTYPES = {
-    "none": "NONE",
-    "qfq": "QFQ",
-    "hfq": "HFQ",
+    "none": "",
+    "qfq": "qfq",
+    "hfq": "hfq",
 }
 
 
@@ -243,46 +232,30 @@ def normalize_symbol(symbol: str | None) -> str:
     return "".join(ch for ch in (symbol or "").strip().upper() if ch.isalnum())
 
 
-def to_futu_code(market: str, symbol: str) -> str:
+def to_akshare_code(market: str, symbol: str) -> str:
     normalized = normalize_market_code(market, symbol)
     if normalized is None:
         raise ValueError("股票代码不能为空")
-    normalized_market, normalized_symbol = normalized
-    return f"{normalized_market}.{normalized_symbol}"
-
-
-def to_eastmoney_secid(market: str, symbol: str) -> str:
-    normalized = normalize_market_code(market, symbol)
-    if normalized is None:
-        raise ValueError("股票代码不能为空")
-    normalized_market, normalized_symbol = normalized
-    market_id = {
-        "SZ": "0",
-        "SH": "1",
-        "HK": "116",
-    }.get(normalized_market)
-    if not market_id:
-        raise ValueError(f"暂不支持的东方财富行情市场：{market}")
-    return f"{market_id}.{normalized_symbol}"
+    return normalized[1]
 
 
 def normalize_ktype(ktype: str | None) -> str:
     value = (ktype or DEFAULT_HISTORY_KTYPE).strip().lower().replace("_", "")
     aliases = {
-        "1min": "1m",
-        "3min": "3m",
-        "5min": "5m",
-        "10min": "10m",
-        "15min": "15m",
-        "30min": "30m",
-        "60min": "60m",
-        "d": "day",
-        "kday": "day",
-        "k_day": "day",
+        "d": "daily",
+        "day": "daily",
+        "kday": "daily",
+        "w": "weekly",
+        "week": "weekly",
+        "kweek": "weekly",
+        "m": "monthly",
+        "mon": "monthly",
+        "month": "monthly",
+        "kmon": "monthly",
     }
     normalized = aliases.get(value, value)
     if normalized not in SUPPORTED_KTYPES:
-        raise ValueError(f"暂不支持的 K 线周期：{ktype}")
+        raise ValueError(f"AKShare 当前只支持日线/周线/月线，暂不支持的 K 线周期：{ktype}")
     return normalized
 
 
@@ -405,7 +378,7 @@ def collect_market_history_targets(
             MarketHistoryTarget(
                 market=market,
                 symbol=symbol,
-                provider_code=to_futu_code(market, symbol),
+                provider_code=to_akshare_code(market, symbol),
                 name=item["name"],
                 sources=tuple(sorted(item["sources"])),
                 first_trade_date=first_trade_date,
@@ -422,6 +395,18 @@ def normalize_date_text(value: str | None) -> str:
     if not text:
         return ""
     return dt.date.fromisoformat(text[:10]).isoformat()
+
+
+def normalize_time_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10:
+        try:
+            return dt.date.fromisoformat(text[:10]).isoformat() + text[10:]
+        except ValueError:
+            return text
+    return text
 
 
 def get_incremental_start_date(
@@ -615,16 +600,7 @@ def upsert_quote_items(conn: sqlite3.Connection, *, items: Iterable[MarketQuoteI
     return inserted_count, updated_count
 
 
-def normalize_time_key(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if len(text) == 10:
-        return f"{text} 00:00:00"
-    return text[:19]
-
-
-def sync_market_history_from_futu(
+def sync_market_history_from_akshare(
     session: Session,
     *,
     user_id: int,
@@ -634,9 +610,8 @@ def sync_market_history_from_futu(
     lookback_days: int = DEFAULT_POSITION_LOOKBACK_DAYS,
     ktype: str = DEFAULT_HISTORY_KTYPE,
     autype: str = DEFAULT_HISTORY_AUTYPE,
-    host: str = "127.0.0.1",
-    port: int = 11111,
-    auto_start_opend: bool = True,
+    include_positions: bool = True,
+    include_trades: bool = True,
     incremental: bool = True,
     dry_run: bool = False,
     limit: int | None = None,
@@ -649,14 +624,17 @@ def sync_market_history_from_futu(
         start_date=start_date,
         end_date=end_date,
         lookback_days=lookback_days,
+        include_positions=include_positions,
+        include_trades=include_trades,
     )
     if limit is not None:
         targets = targets[: max(0, int(limit))]
 
     db_path = Path(database_path) if database_path is not None else get_market_data_db_path()
+    items: list[MarketHistorySyncItem] = []
     if dry_run:
         return MarketHistorySyncResult(
-            provider=MARKET_DATA_PROVIDER_FUTU,
+            provider=MARKET_DATA_PROVIDER_AKSHARE,
             database_path=db_path,
             items=tuple(
                 MarketHistorySyncItem(
@@ -671,80 +649,78 @@ def sync_market_history_from_futu(
             ),
         )
 
-    futu = import_futu_module()
-    client = FutuHistoryClient(futu, host=host, port=port, auto_start_opend=auto_start_opend)
-    items: list[MarketHistorySyncItem] = []
     with connect_market_data_db(db_path) as conn:
-        try:
-            for target in targets:
-                requested_start = target.start_date
-                if incremental:
-                    requested_start = get_incremental_start_date(
-                        conn,
-                        provider=MARKET_DATA_PROVIDER_FUTU,
+        for target in targets:
+            requested_start = (
+                get_incremental_start_date(
+                    conn,
+                    provider=MARKET_DATA_PROVIDER_AKSHARE,
+                    target=target,
+                    ktype=normalized_ktype,
+                    autype=normalized_autype,
+                    requested_start=target.start_date,
+                )
+                if incremental
+                else target.start_date
+            )
+            if requested_start > target.end_date:
+                items.append(
+                    MarketHistorySyncItem(
                         target=target,
                         ktype=normalized_ktype,
                         autype=normalized_autype,
                         requested_start=requested_start,
+                        requested_end=target.end_date,
+                        skipped=True,
                     )
-                if requested_start > target.end_date:
-                    items.append(
-                        MarketHistorySyncItem(
-                            target=target,
-                            ktype=normalized_ktype,
-                            autype=normalized_autype,
-                            requested_start=requested_start,
-                            requested_end=target.end_date,
-                            skipped=True,
-                        )
-                    )
-                    continue
+                )
+                continue
 
-                try:
-                    rows = client.request_history_kline(
-                        target.provider_code,
-                        start=requested_start,
-                        end=target.end_date,
-                        ktype=normalized_ktype,
-                        autype=normalized_autype,
-                    )
-                    inserted_count, updated_count = upsert_kline_rows(
-                        conn,
-                        provider=MARKET_DATA_PROVIDER_FUTU,
+            try:
+                history = fetch_akshare_stock_history(
+                    symbol=target.provider_code,
+                    name=target.name,
+                    period=normalized_ktype,
+                    start_date=requested_start,
+                    end_date=target.end_date,
+                    adjust=SUPPORTED_AUTYPES[normalized_autype],
+                )
+                rows = [_kline_row_from_akshare_history_row(row) for row in history.rows]
+                inserted_count, updated_count = upsert_kline_rows(
+                    conn,
+                    provider=MARKET_DATA_PROVIDER_AKSHARE,
+                    target=target,
+                    ktype=normalized_ktype,
+                    autype=normalized_autype,
+                    rows=rows,
+                    provisional_date=target.end_date,
+                )
+                items.append(
+                    MarketHistorySyncItem(
                         target=target,
                         ktype=normalized_ktype,
                         autype=normalized_autype,
-                        rows=rows,
-                        provisional_date=target.end_date,
+                        requested_start=requested_start,
+                        requested_end=target.end_date,
+                        fetched_count=len(rows),
+                        inserted_count=inserted_count,
+                        updated_count=updated_count,
                     )
-                    items.append(
-                        MarketHistorySyncItem(
-                            target=target,
-                            ktype=normalized_ktype,
-                            autype=normalized_autype,
-                            requested_start=requested_start,
-                            requested_end=target.end_date,
-                            fetched_count=len(rows),
-                            inserted_count=inserted_count,
-                            updated_count=updated_count,
-                        )
+                )
+            except Exception as exc:
+                items.append(
+                    MarketHistorySyncItem(
+                        target=target,
+                        ktype=normalized_ktype,
+                        autype=normalized_autype,
+                        requested_start=requested_start,
+                        requested_end=target.end_date,
+                        error=str(exc),
                     )
-                except Exception as exc:
-                    items.append(
-                        MarketHistorySyncItem(
-                            target=target,
-                            ktype=normalized_ktype,
-                            autype=normalized_autype,
-                            requested_start=requested_start,
-                            requested_end=target.end_date,
-                            error=str(exc),
-                        )
-                    )
-        finally:
-            client.close()
+                )
 
     return MarketHistorySyncResult(
-        provider=MARKET_DATA_PROVIDER_FUTU,
+        provider=MARKET_DATA_PROVIDER_AKSHARE,
         database_path=db_path,
         items=tuple(items),
     )
@@ -777,19 +753,11 @@ def list_latest_market_quotes(
                 FROM market_quote
                 WHERE market = ?
                   AND symbol = ?
-                ORDER BY CASE provider
-                    WHEN ? THEN 0
-                    WHEN ? THEN 1
-                    ELSE 9
-                END, fetched_at DESC
+                  AND provider = ?
+                ORDER BY fetched_at DESC
                 LIMIT 1
                 """,
-                (
-                    target.market,
-                    target.symbol,
-                    MARKET_DATA_PROVIDER_EASTMONEY_PUBLIC,
-                    MARKET_DATA_PROVIDER_FUTU,
-                ),
+                (target.market, target.symbol, MARKET_DATA_PROVIDER_AKSHARE),
             ).fetchone()
             if not row:
                 continue
@@ -797,7 +765,7 @@ def list_latest_market_quotes(
     return items
 
 
-def refresh_market_quotes_from_eastmoney_public(
+def refresh_market_quotes_from_akshare(
     session: Session,
     *,
     user_id: int,
@@ -805,7 +773,6 @@ def refresh_market_quotes_from_eastmoney_public(
     include_positions: bool = True,
     include_trades: bool = False,
     limit: int | None = None,
-    timeout: float = 8.0,
 ) -> MarketQuoteRefreshResult:
     targets = collect_market_history_targets(
         session,
@@ -816,212 +783,97 @@ def refresh_market_quotes_from_eastmoney_public(
     if limit is not None:
         targets = targets[: max(0, int(limit))]
 
-    db_path = Path(database_path) if database_path is not None else get_market_data_db_path()
-    items: list[MarketQuoteItem] = []
     fetched_at = time.time()
+    db_path = Path(database_path) if database_path is not None else get_market_data_db_path()
+    try:
+        spot_rows = load_akshare_spot_rows()
+    except Exception as exc:
+        items = tuple(
+            MarketQuoteItem(
+                provider=MARKET_DATA_PROVIDER_AKSHARE,
+                market=target.market,
+                symbol=target.symbol,
+                provider_code=target.provider_code,
+                name=target.name,
+                price=None,
+                fetched_at=fetched_at,
+                error=str(exc),
+            )
+            for target in targets
+        )
+        return MarketQuoteRefreshResult(provider=MARKET_DATA_PROVIDER_AKSHARE, database_path=db_path, items=items)
+
+    row_by_symbol = {
+        normalize_symbol(str(_first_existing(row, "代码", "code", "symbol"))): row
+        for row in spot_rows
+        if _first_existing(row, "代码", "code", "symbol")
+    }
+    items: list[MarketQuoteItem] = []
     for target in targets:
-        try:
-            row = request_eastmoney_public_quote(target, timeout=timeout)
-            items.append(market_quote_item_from_eastmoney_public_snapshot(target, row, fetched_at=fetched_at))
-        except Exception as exc:
+        raw_row = row_by_symbol.get(target.symbol)
+        if raw_row is None:
             items.append(
                 MarketQuoteItem(
-                    provider=MARKET_DATA_PROVIDER_EASTMONEY_PUBLIC,
+                    provider=MARKET_DATA_PROVIDER_AKSHARE,
                     market=target.market,
                     symbol=target.symbol,
-                    provider_code=to_eastmoney_secid(target.market, target.symbol),
+                    provider_code=target.provider_code,
                     name=target.name,
                     price=None,
                     fetched_at=fetched_at,
-                    error=str(exc),
+                    error="AKShare 未返回实时行情",
                 )
             )
+            continue
+        items.append(market_quote_item_from_akshare_spot_row(target, raw_row, fetched_at=fetched_at))
 
     with connect_market_data_db(db_path) as conn:
         upsert_quote_items(conn, items=items)
 
     return MarketQuoteRefreshResult(
-        provider=MARKET_DATA_PROVIDER_EASTMONEY_PUBLIC,
+        provider=MARKET_DATA_PROVIDER_AKSHARE,
         database_path=db_path,
         items=tuple(items),
     )
 
 
-def request_eastmoney_public_quote(target: MarketHistoryTarget, *, timeout: float = 8.0) -> dict[str, Any]:
-    secid = to_eastmoney_secid(target.market, target.symbol)
-    response = requests.get(
-        EASTMONEY_PUBLIC_QUOTE_URL,
-        params={"secid": secid, "fields": EASTMONEY_PUBLIC_QUOTE_FIELDS},
-        timeout=timeout,
-        headers={"User-Agent": "Mozilla/5.0 CodeYun stock quote"},
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, dict) or payload.get("rc") != 0:
-        raise RuntimeError(f"东方财富公共行情返回异常：{payload}")
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        raise RuntimeError("东方财富公共行情未返回数据")
-    return data
-
-
-def refresh_market_quotes_from_futu(
-    session: Session,
-    *,
-    user_id: int,
-    database_path: str | Path | None = None,
-    host: str = "127.0.0.1",
-    port: int = 11111,
-    auto_start_opend: bool = True,
-    include_positions: bool = True,
-    include_trades: bool = False,
-    limit: int | None = None,
-) -> MarketQuoteRefreshResult:
-    targets = collect_market_history_targets(
-        session,
-        user_id=user_id,
-        include_positions=include_positions,
-        include_trades=include_trades,
-    )
-    if limit is not None:
-        targets = targets[: max(0, int(limit))]
-
-    db_path = Path(database_path) if database_path is not None else get_market_data_db_path()
-    futu = import_futu_module()
-    client = FutuHistoryClient(futu, host=host, port=port, auto_start_opend=auto_start_opend)
-    items: list[MarketQuoteItem] = []
-    fetched_at = time.time()
-
+def load_akshare_spot_rows() -> list[dict[str, Any]]:
     try:
-        for index in range(0, len(targets), 400):
-            chunk = targets[index : index + 400]
+        import akshare as ak
+    except Exception as exc:  # pragma: no cover - environment guard
+        raise RuntimeError("AKShare 未安装或无法导入，请先执行 uv sync。") from exc
+
+    rows: list[dict[str, Any]] = []
+    fetchers = (
+        ("stock_zh_a_spot_em", getattr(ak, "stock_zh_a_spot_em", None)),
+        ("fund_etf_spot_em", getattr(ak, "fund_etf_spot_em", None)),
+    )
+    errors: list[str] = []
+    for name, fetcher in fetchers:
+        if not callable(fetcher):
+            continue
+        try:
+            frame = fetcher()
+        except Exception as exc:
+            if not _looks_like_proxy_error(exc):
+                errors.append(f"{name}: {exc}")
+                continue
             try:
-                rows = client.request_market_snapshot([target.provider_code for target in chunk])
-                row_by_code = {
-                    _normalize_futu_provider_code(row.get("code")): row
-                    for row in rows
-                    if row.get("code")
-                }
-                for target in chunk:
-                    raw_row = row_by_code.get(target.provider_code)
-                    if raw_row is None:
-                        items.append(
-                            MarketQuoteItem(
-                                provider=MARKET_DATA_PROVIDER_FUTU,
-                                market=target.market,
-                                symbol=target.symbol,
-                                provider_code=target.provider_code,
-                                name=target.name,
-                                price=None,
-                                fetched_at=fetched_at,
-                                error="未返回快照",
-                            )
-                        )
-                        continue
-                    items.append(market_quote_item_from_snapshot(target, raw_row, fetched_at=fetched_at))
-            except Exception as exc:
-                for target in chunk:
-                    items.append(
-                        MarketQuoteItem(
-                            provider=MARKET_DATA_PROVIDER_FUTU,
-                            market=target.market,
-                            symbol=target.symbol,
-                            provider_code=target.provider_code,
-                            name=target.name,
-                            price=None,
-                            fetched_at=fetched_at,
-                            error=str(exc),
-                        )
-                    )
-    finally:
-        client.close()
+                with _without_proxy_env():
+                    frame = fetcher()
+            except Exception as retry_exc:
+                errors.append(f"{name}: {retry_exc}")
+                continue
+        try:
+            if hasattr(frame, "to_dict"):
+                rows.extend(dict(row) for row in frame.to_dict("records"))
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
 
-    with connect_market_data_db(db_path) as conn:
-        upsert_quote_items(conn, items=items)
-
-    return MarketQuoteRefreshResult(
-        provider=MARKET_DATA_PROVIDER_FUTU,
-        database_path=db_path,
-        items=tuple(items),
-    )
-
-
-def import_futu_module() -> Any:
-    try:
-        import futu  # type: ignore[import-not-found]
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("缺少 futu-api 依赖，请先执行 uv sync。") from exc
-    return futu
-
-
-class FutuHistoryClient:
-    def __init__(self, futu_module: Any, *, host: str, port: int, auto_start_opend: bool = True) -> None:
-        self._futu = futu_module
-        ensure_futu_opend_available(host=host, port=port, auto_start=auto_start_opend)
-        self._ctx = futu_module.OpenQuoteContext(host=host, port=port)
-
-    def close(self) -> None:
-        close = getattr(self._ctx, "close", None)
-        if callable(close):
-            close()
-
-    def request_history_kline(
-        self,
-        code: str,
-        *,
-        start: str,
-        end: str,
-        ktype: str,
-        autype: str,
-        max_count: int = 1000,
-    ) -> list[dict[str, Any]]:
-        futu_ktype = getattr(self._futu.KLType, SUPPORTED_KTYPES[normalize_ktype(ktype)])
-        futu_autype = getattr(self._futu.AuType, SUPPORTED_AUTYPES[normalize_autype(autype)])
-        page_req_key = None
-        rows: list[dict[str, Any]] = []
-
-        while True:
-            ret, data, page_req_key = self._ctx.request_history_kline(
-                code,
-                start=start,
-                end=end,
-                ktype=futu_ktype,
-                autype=futu_autype,
-                max_count=max_count,
-                page_req_key=page_req_key,
-            )
-            if ret != self._futu.RET_OK:
-                raise RuntimeError(f"{code} 历史 K 线获取失败：{data}")
-            rows.extend(dataframe_to_records(data))
-            if page_req_key is None:
-                break
-
-        return rows
-
-    def request_market_snapshot(self, codes: list[str]) -> list[dict[str, Any]]:
-        if not codes:
-            return []
-        ret, data = self._ctx.get_market_snapshot(codes)
-        if ret != self._futu.RET_OK:
-            raise RuntimeError(f"行情快照获取失败：{data}")
-        return dataframe_to_records(data)
-
-
-def dataframe_to_records(data: Any) -> list[dict[str, Any]]:
-    if hasattr(data, "to_dict"):
-        records = data.to_dict("records")
-        return [dict(record) for record in records]
-    if isinstance(data, list):
-        return [dict(record) for record in data if isinstance(record, dict)]
-    return []
-
-
-def ensure_tcp_port_open(host: str, port: int, timeout: float = 3.0) -> None:
-    try:
-        with socket.create_connection((host, int(port)), timeout=timeout):
-            return
-    except OSError as exc:
-        raise RuntimeError(f"无法连接 Futu OpenD：{host}:{port}，请先启动 OpenD 并确认端口可访问。") from exc
+    if not rows:
+        suffix = "；".join(errors) if errors else "未找到可用的 AKShare 实时行情函数"
+        raise RuntimeError(f"AKShare 实时行情获取失败：{suffix}")
+    return rows
 
 
 def serialize_sync_result(result: MarketHistorySyncResult) -> dict[str, Any]:
@@ -1092,58 +944,26 @@ def serialize_quote_item(item: MarketQuoteItem) -> dict[str, Any]:
     }
 
 
-def market_quote_item_from_snapshot(
+def market_quote_item_from_akshare_spot_row(
     target: MarketHistoryTarget,
     row: dict[str, Any],
     *,
     fetched_at: float,
 ) -> MarketQuoteItem:
     return MarketQuoteItem(
-        provider=MARKET_DATA_PROVIDER_FUTU,
+        provider=MARKET_DATA_PROVIDER_AKSHARE,
         market=target.market,
         symbol=target.symbol,
         provider_code=target.provider_code,
-        name=str(row.get("name") or target.name or "").strip(),
-        price=_float_or_none(_first_existing(row, "last_price", "cur_price", "price")),
-        open_price=_float_or_none(row.get("open_price")),
-        high_price=_float_or_none(row.get("high_price")),
-        low_price=_float_or_none(row.get("low_price")),
-        prev_close_price=_float_or_none(row.get("prev_close_price") or row.get("last_close_price")),
-        volume=_float_or_none(row.get("volume")),
-        turnover=_float_or_none(row.get("turnover")),
-        update_time=str(row.get("update_time") or row.get("data_time") or "").strip(),
-        fetched_at=fetched_at,
-        raw_json=_json_safe_dict(row),
-    )
-
-
-def market_quote_item_from_eastmoney_public_snapshot(
-    target: MarketHistoryTarget,
-    row: dict[str, Any],
-    *,
-    fetched_at: float,
-) -> MarketQuoteItem:
-    precision = _int_or_default(row.get("f59"), 2)
-    timestamp = _float_or_none(row.get("f86"))
-    update_time = (
-        dt.datetime.fromtimestamp(timestamp).replace(microsecond=0).isoformat(sep=" ")
-        if timestamp and timestamp > 0
-        else ""
-    )
-    return MarketQuoteItem(
-        provider=MARKET_DATA_PROVIDER_EASTMONEY_PUBLIC,
-        market=target.market,
-        symbol=target.symbol,
-        provider_code=to_eastmoney_secid(target.market, target.symbol),
-        name=str(row.get("f58") or target.name or "").strip(),
-        price=_scaled_eastmoney_number(row.get("f43"), precision),
-        open_price=_scaled_eastmoney_number(row.get("f46"), precision),
-        high_price=_scaled_eastmoney_number(row.get("f44"), precision),
-        low_price=_scaled_eastmoney_number(row.get("f45"), precision),
-        prev_close_price=_scaled_eastmoney_number(row.get("f60"), precision),
-        volume=_float_or_none(row.get("f47")),
-        turnover=_float_or_none(row.get("f48")),
-        update_time=update_time,
+        name=str(_first_existing(row, "名称", "name") or target.name or "").strip(),
+        price=_float_or_none(_first_existing(row, "最新价", "现价", "last_price", "price")),
+        open_price=_float_or_none(_first_existing(row, "今开", "开盘", "open")),
+        high_price=_float_or_none(_first_existing(row, "最高", "high")),
+        low_price=_float_or_none(_first_existing(row, "最低", "low")),
+        prev_close_price=_float_or_none(_first_existing(row, "昨收", "prev_close", "last_close")),
+        volume=_float_or_none(_first_existing(row, "成交量", "volume")),
+        turnover=_float_or_none(_first_existing(row, "成交额", "turnover", "amount")),
+        update_time=str(_first_existing(row, "更新时间", "update_time", "time") or "").strip(),
         fetched_at=fetched_at,
         raw_json=_json_safe_dict(row),
     )
@@ -1174,23 +994,28 @@ def market_quote_item_from_row(row: sqlite3.Row) -> MarketQuoteItem:
     )
 
 
+def _kline_row_from_akshare_history_row(row: Any) -> dict[str, Any]:
+    return {
+        "date": row.date,
+        "time_key": row.date,
+        "open": row.open,
+        "close": row.close,
+        "high": row.high,
+        "low": row.low,
+        "volume": row.volume,
+        "turnover": row.amount,
+        "turnover_rate": row.turnover_rate,
+        "change_rate": row.change_percent,
+        "raw_symbol": row.symbol,
+    }
+
+
 def _first_existing(row: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = row.get(key)
         if value is not None and value != "":
             return value
     return None
-
-
-def _normalize_futu_provider_code(value: Any) -> str:
-    text = str(value or "").strip().upper()
-    if "." not in text:
-        return text
-    market, symbol = text.split(".", 1)
-    normalized = normalize_market_code(market, symbol)
-    if normalized is None:
-        return text
-    return f"{normalized[0]}.{normalized[1]}"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1203,21 +1028,6 @@ def _float_or_none(value: Any) -> float | None:
     return numeric if numeric == numeric else None
 
 
-def _int_or_default(value: Any, default: int) -> int:
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default
-
-
-def _scaled_eastmoney_number(value: Any, precision: int) -> float | None:
-    numeric = _float_or_none(value)
-    if numeric is None or numeric < 0:
-        return None
-    scale = 10 ** max(0, int(precision))
-    return numeric / scale
-
-
 def _json_safe_dict(row: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
     for key, value in row.items():
@@ -1226,3 +1036,24 @@ def _json_safe_dict(row: dict[str, Any]) -> dict[str, Any]:
         else:
             safe[str(key)] = str(value)
     return safe
+
+
+def _looks_like_proxy_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return "proxyerror" in text or "unable to connect to proxy" in text
+
+
+@contextmanager
+def _without_proxy_env():
+    keys = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        for key in keys:
+            os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
