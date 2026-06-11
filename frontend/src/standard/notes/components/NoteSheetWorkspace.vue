@@ -5125,9 +5125,12 @@ function createTouchTreeContextMenu(baseMenu: SheetContextMenuConfig) {
     }
 
     submenuItems.forEach((child: SheetContextMenuItemConfig, index: number) => {
-      const childKey = typeof child.key === 'string' && child.key ? child.key : `${key}__child_${index}`
+      // Handsontable treats ":" in command keys as submenu syntax. Touch fallback
+      // flattens submenus, so flattened child keys must be plain top-level keys.
+      const childKey = `${key}__touch_child_${index}`
       items[childKey] = {
         ...child,
+        key: childKey,
         name(this: unknown, ...args: unknown[]) {
           return `\u00A0\u00A0${resolveContextMenuItemName(child.name, this, args)}`
         },

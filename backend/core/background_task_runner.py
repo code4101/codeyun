@@ -409,7 +409,7 @@ def _enqueue_rime_config_sync() -> str | None:
 def _run_market_quote_refresh_job() -> None:
     from sqlmodel import select
 
-    from backend.core.stock import refresh_market_quotes_from_eastmoney_public
+    from backend.core.stock import refresh_market_quotes_from_akshare
     from backend.db import engine
     from backend.models import EastmoneyPositionSnapshot
 
@@ -430,7 +430,7 @@ def _run_market_quote_refresh_job() -> None:
         failures: list[str] = []
         for user_id in user_ids:
             try:
-                result = refresh_market_quotes_from_eastmoney_public(session, user_id=user_id)
+                result = refresh_market_quotes_from_akshare(session, user_id=user_id)
             except Exception as exc:
                 failures.append(f"user={user_id}: {exc}")
                 continue

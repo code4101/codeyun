@@ -2242,6 +2242,7 @@ export interface FanxiuItemCard {
   overlay?: string | number;
   backpack?: string | number;
   effect_value?: unknown;
+  stone_value?: string | number;
   can_use?: string | number | boolean;
   sort?: string | number;
   progression_counts?: Record<string, number>;

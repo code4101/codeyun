@@ -2533,27 +2533,73 @@ def _fanxiu_mail_enrich_recomputed_rewards(
 
 
 def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, Any]:
-    data = row.model_dump()
-    payload = data.get("payload")
+    payload = row.payload or {}
     if not isinstance(payload, dict):
-        return data
+        payload = {}
     packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
     mail_vo = payload.get("mailVo") if isinstance(payload.get("mailVo"), dict) else packet.get("mailVo")
-    if not isinstance(mail_vo, dict):
-        return data
     existing_rewards = payload.get("mail_rewards")
     if not isinstance(existing_rewards, list):
         existing_rewards = packet.get("mail_rewards")
-    recomputed_rewards = _normalize_mail_rewards(mail_vo)
-    if not recomputed_rewards or len(recomputed_rewards) <= (len(existing_rewards) if isinstance(existing_rewards, list) else 0):
-        return data
-    enriched_rewards = _fanxiu_mail_enrich_recomputed_rewards(recomputed_rewards, existing_rewards)
-    patched_payload = dict(payload)
-    patched_payload["mail_rewards"] = enriched_rewards
-    patched_payload["mail_rewards_summary"] = _mail_rewards_summary(enriched_rewards)
-    data["payload"] = patched_payload
-    return data
-
+    rewards = existing_rewards if isinstance(existing_rewards, list) else []
+    if not rewards and isinstance(mail_vo, dict):
+        recomputed_rewards = _normalize_mail_rewards(mail_vo)
+        if recomputed_rewards:
+            rewards = _fanxiu_mail_enrich_recomputed_rewards(recomputed_rewards, rewards)
+    direct_content = payload.get("mail_content_text")
+    packet_content = packet.get("mail_content_text") if isinstance(packet, dict) else ""
+    content_text = direct_content if isinstance(direct_content, str) else packet_content
+    response_payload: dict[str, Any] = {}
+    if isinstance(content_text, str) and content_text.strip():
+        response_payload["mail_content_text"] = content_text
+    if rewards:
+        response_payload["mail_rewards"] = rewards
+        response_payload["mail_rewards_summary"] = _mail_rewards_summary(rewards)
+    for key in (
+        "mail_rewards_unresolved",
+        "mail_rewards_unresolved_reason",
+        "has_attachment_hint",
+        "orphan_action_status",
+    ):
+        if key in payload:
+            response_payload[key] = payload.get(key)
+    evidence = row.evidence or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    response_evidence = {
+        key: evidence.get(key)
+        for key in (
+            "orphan_action",
+            "visible_orphan_backfill",
+            "has_attachment_hint",
+            "pcap_name",
+            "orphan_action_reason",
+        )
+        if key in evidence
+    }
+    return {
+        "id": row.id,
+        "mail_key": row.mail_key,
+        "mail_id": row.mail_id,
+        "title": row.title,
+        "normalized_title": row.normalized_title,
+        "mail_type": row.mail_type,
+        "create_time_text": row.create_time_text,
+        "create_time_ms": row.create_time_ms,
+        "source": row.source,
+        "status": row.status,
+        "locked": row.locked,
+        "action_policy": row.action_policy,
+        "last_action_error": row.last_action_error,
+        "seen_count": row.seen_count,
+        "first_seen_at": row.first_seen_at,
+        "last_seen_at": row.last_seen_at,
+        "last_seen_capture_at": row.last_seen_capture_at,
+        "payload": response_payload,
+        "evidence": response_evidence,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
 
 @status_router.get("/mail-records", response_model=FanxiuMailRecordListResponse)
 def list_fanxiu_mail_records(
@@ -2588,14 +2634,25 @@ def list_fanxiu_mail_records(
     total_count = len(rows)
     rows = rows[offset:offset + limit]
     records = [_fanxiu_mail_record_dump_for_response(row) for row in rows]
-    return FanxiuMailRecordListResponse(
-        ok=True,
-        count=len(records),
-        total=total_count,
-        offset=offset,
-        limit=limit,
-        records=records,
+    payload = {
+        "ok": True,
+        "count": len(records),
+        "total": total_count,
+        "offset": offset,
+        "limit": limit,
+        "records": records,
+    }
+    response = Response(
+        content=json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        media_type="application/json",
     )
+    for key, value in payload.items():
+        setattr(response, key, value)
+    return response
 
 
 @status_router.patch("/mail-records/{mail_key}", response_model=FanxiuMailRecordUpdateResponse)
@@ -2614,7 +2671,7 @@ def update_fanxiu_mail_record_status(
         raise HTTPException(status_code=404, detail="邮件记录不存在")
     session.commit()
     session.refresh(record)
-    return FanxiuMailRecordUpdateResponse(ok=True, record=record.model_dump())
+    return FanxiuMailRecordUpdateResponse(ok=True, record=_fanxiu_mail_record_dump_for_response(record))
 
 
 @status_router.post("/mail-records/sync-packets", response_model=FanxiuMailPacketSyncResponse)

@@ -32,7 +32,7 @@ from backend.core.fanxiu_tcp_flow import (
 )
 from backend.core.settings import get_settings
 
-PACKET_INSIGHT_SCHEMA_VERSION = 16
+PACKET_INSIGHT_SCHEMA_VERSION = 18
 
 PACKET_RUNTIME_INSIGHT_PROTOCOLS = {
     "SM_Login",
@@ -216,7 +216,22 @@ def _item_summary(base_id: Any, item_index: dict[str, Any]) -> dict[str, Any]:
         "description": card.get("description") or "",
         "effect_description": card.get("effect_description") or "",
         "effect_detail_preview": card.get("effect_detail_preview") or "",
+        "stone_value": card.get("stone_value"),
     }
+
+
+def _item_summary_from_bag_analysis(row: dict[str, Any], item_index: dict[str, Any]) -> dict[str, Any]:
+    item = _item_summary(row.get("base_id"), item_index)
+    name = str(row.get("name") or "").strip()
+    quality = str(row.get("quality") or "").strip()
+    item_type = str(row.get("type") or "").strip()
+    if name:
+        item["name"] = name
+    if quality:
+        item["quality_name"] = quality
+    if item_type:
+        item["type_name"] = item_type
+    return item
 
 
 def _has_truncated_items(value: Any) -> bool:
@@ -227,6 +242,69 @@ def _has_truncated_items(value: Any) -> bool:
     if isinstance(value, list):
         return any(_has_truncated_items(item) for item in value)
     return False
+
+
+def _load_full_bag_analysis_for_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    source_path = Path(str(entry.get("source_path") or ""))
+    candidates: list[Path] = []
+    if source_path:
+        candidates.append(source_path.parent / "all_bag_full_items.analysis.json")
+    record_id = str(entry.get("record_id") or "").strip()
+    try:
+        tcp_root = resolve_fanxiu_tcp_store_root(None)
+        if record_id:
+            candidates.append(tcp_root / record_id / "all_bag_full_items.analysis.json")
+        candidates.extend(
+            sorted(
+                tcp_root.glob("**/all_bag_full_items.analysis.json"),
+                key=lambda item: item.stat().st_mtime_ns,
+                reverse=True,
+            )
+        )
+    except Exception:
+        pass
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file():
+            continue
+        try:
+            data = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        rows = data.get("rows") if isinstance(data, dict) else None
+        if isinstance(rows, list) and rows:
+            return {"path": str(resolved), "data": data}
+    return None
+
+
+def _compact_items_from_bag_analysis(rows: list[Any], item_index: dict[str, Any]) -> list[dict[str, Any]]:
+    compact_items: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        base_id = row.get("base_id")
+        num = _as_int(row.get("num")) or 0
+        compact_items.append(
+            {
+                "instance_id": row.get("instance_id") or None,
+                "base_id": base_id,
+                "num": num,
+                "item": _item_summary_from_bag_analysis(row, item_index),
+                "ext_summary": {},
+                "bag_index": row.get("bag_i"),
+                "vo_type": row.get("vo") or "",
+                "analysis_index": index,
+            }
+        )
+    return compact_items
 
 
 def _bag_section_summaries(parsed: dict[str, Any]) -> list[dict[str, Any]]:
@@ -665,6 +743,23 @@ def _extract_bag(
         ),
         reverse=True,
     )
+    analysis_source = None
+    if _has_truncated_items(parsed):
+        analysis = _load_full_bag_analysis_for_entry(entry)
+        analysis_rows = (analysis.get("data") or {}).get("rows") if isinstance(analysis, dict) else None
+        if isinstance(analysis_rows, list) and len(analysis_rows) > len(compact_items):
+            analysis_items = _compact_items_from_bag_analysis(analysis_rows, item_index)
+            if len(analysis_items) > len(compact_items):
+                compact_items = analysis_items
+                type_counter = Counter(str((row.get("item") or {}).get("type_name") or "未分类") for row in compact_items)
+                quality_counter = Counter(
+                    str((row.get("item") or {}).get("quality_name") or "")
+                    for row in compact_items
+                    if (row.get("item") or {}).get("quality_name")
+                )
+                stack_count = len(compact_items)
+                total_amount = sum(max(0, _as_int(row.get("num")) or 0) for row in compact_items)
+                analysis_source = analysis.get("path")
     return {
         "captured_at": entry.get("decoded_at") or "",
         **_storage_bag_owner_fields(owner_identity),
@@ -672,6 +767,8 @@ def _extract_bag(
         "decoded_stack_count": stack_count,
         "section_summary": _bag_section_summaries(parsed),
         "is_truncated": _has_truncated_items(parsed),
+        "decoded_from_analysis": bool(analysis_source),
+        "analysis_source": analysis_source or "",
         "total_amount": total_amount,
         "type_summary": [{"name": key, "count": value} for key, value in type_counter.most_common(16)],
         "quality_summary": [{"name": key, "count": value} for key, value in quality_counter.most_common(12)],

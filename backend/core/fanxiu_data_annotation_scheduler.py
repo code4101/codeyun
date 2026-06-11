@@ -97,8 +97,14 @@ def repair_data_annotation_scheduler_tasks(
     if not tasks:
         tasks = default_tasks
     legacy_mail_cleanup_task: dict[str, Any] | None = None
+    legacy_daily_boss_task: dict[str, Any] | None = None
     legacy_xianfu_visit_task: dict[str, Any] | None = None
     legacy_xianfu_skill_task: dict[str, Any] | None = None
+    legacy_daily_lingzu_task: dict[str, Any] | None = None
+    legacy_daily_jianling_task: dict[str, Any] | None = None
+    legacy_daily_lingta_task: dict[str, Any] | None = None
+    legacy_daily_xianyuan_task: dict[str, Any] | None = None
+    legacy_daily_assistant_task: dict[str, Any] | None = None
     for task in tasks:
         if str(task.get("id") or "") == "mail-claim-check" or str(task.get("task_type") or "") == "mail_claim_check":
             legacy_mail_cleanup_task = task
@@ -112,6 +118,17 @@ def repair_data_annotation_scheduler_tasks(
             if str(task.get("label") or "") != "邮件_清理":
                 task["label"] = "邮件_清理"
                 legacy_mail_cleanup_task = task
+        elif str(task.get("id") or "") == "legacy-dynamic-daily-boss":
+            legacy_daily_boss_task = task
+            task["id"] = "daily-boss"
+            task["task_type"] = "daily_boss"
+            task["label"] = "日常_首领"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_首领"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
         elif str(task.get("id") or "") == "legacy-dynamic-xianfu-visit":
             legacy_xianfu_visit_task = task
             task["id"] = "xianfu-visit-partner"
@@ -132,6 +149,56 @@ def repair_data_annotation_scheduler_tasks(
             task["legacy_name"] = "仙府_领悟绝技"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-lingzu" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_lingzu_task = task
+            task["task_type"] = "daily_lingzu"
+            task["label"] = "日常_灵祖"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_灵祖"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-jianling" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_jianling_task = task
+            task["task_type"] = "daily_jianling"
+            task["label"] = "日常_剑灵"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_剑灵"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-lingta" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_lingta_task = task
+            task["task_type"] = "daily_lingta"
+            task["label"] = "日常_灵塔"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_灵塔"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-xianyuan" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_xianyuan_task = task
+            task["task_type"] = "daily_xianyuan"
+            task["label"] = "日常_挑战仙缘"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_挑战仙缘"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-assistant" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_assistant_task = task
+            task["task_type"] = "daily_assistant"
+            task["label"] = "日常_助手"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00", "12:00", "18:00", "00:00"]
+            task["legacy_name"] = "日常_助手"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
     obsolete_task_ids = {"gift-code-real-test", "gift-code-test-real", "real-test-gift-code", "mail-full-scan"}
     obsolete_task_labels = {"真实测试礼包码", "邮件_全量遍历"}
     before_cleanup_count = len(tasks)
@@ -144,9 +211,21 @@ def repair_data_annotation_scheduler_tasks(
     changed = len(tasks) != before_cleanup_count
     if legacy_mail_cleanup_task is not None:
         changed = True
+    if legacy_daily_boss_task is not None:
+        changed = True
     if legacy_xianfu_visit_task is not None:
         changed = True
     if legacy_xianfu_skill_task is not None:
+        changed = True
+    if legacy_daily_lingzu_task is not None:
+        changed = True
+    if legacy_daily_jianling_task is not None:
+        changed = True
+    if legacy_daily_lingta_task is not None:
+        changed = True
+    if legacy_daily_xianyuan_task is not None:
+        changed = True
+    if legacy_daily_assistant_task is not None:
         changed = True
     defaults_by_id = {
         str(task.get("id") or ""): task
@@ -178,7 +257,16 @@ def repair_data_annotation_scheduler_tasks(
         task["payload"] = {**default_payload, **task_payload}
         task["payload"][definition_marker] = default_task_type
         if (
-            str(task.get("id") or "") in {"xianfu-visit-partner", "xianfu-learn-skill"}
+            str(task.get("id") or "") in {
+                "daily-boss",
+                "xianfu-visit-partner",
+                "xianfu-learn-skill",
+                "legacy-daily-lingzu",
+                "legacy-daily-jianling",
+                "legacy-daily-lingta",
+                "legacy-daily-xianyuan",
+                "legacy-daily-assistant",
+            }
             and task.get("cooldown_seconds") != default_task.get("cooldown_seconds")
         ):
             task["cooldown_seconds"] = default_task.get("cooldown_seconds")

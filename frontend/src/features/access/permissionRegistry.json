@@ -65,6 +65,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "tools.music-tools",
+      "title": "音乐工具",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 40,
+      "route_paths": ["/tools/music-tools"],
+      "menu_paths": ["/tools/music-tools"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "ai-tools",
       "title": "AI工具",
       "node_type": "group",
@@ -594,8 +605,8 @@
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 35,
-      "route_paths": ["/notes/eastmoney"],
-      "menu_paths": ["/notes/eastmoney"],
+      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/robot-history"],
+      "menu_paths": ["/notes/eastmoney", "/notes/eastmoney/robot-history"],
       "api_scopes": ["note-tools.eastmoney"],
       "default_anonymous_allow": false
     },

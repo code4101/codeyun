@@ -188,7 +188,7 @@ def request_fanxiu_behavior_tree_stop(
 def read_fanxiu_behavior_tree_service_owner(
     path: Path | None = None,
     *,
-    stale_after_seconds: float = 30.0,
+    stale_after_seconds: float = 120.0,
 ) -> dict[str, Any]:
     owner_path = path or fanxiu_behavior_tree_service_owner_path()
     return read_json_object_status(

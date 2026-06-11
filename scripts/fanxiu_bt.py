@@ -243,7 +243,7 @@ def main() -> int:
     logs_parser.add_argument("--json", action="store_true", help="输出 JSON")
 
     owner_parser = subparsers.add_parser("owner", help="查看行为树全局单例 owner")
-    owner_parser.add_argument("--stale-after-seconds", type=float, default=30.0)
+    owner_parser.add_argument("--stale-after-seconds", type=float, default=120.0)
     owner_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
 
     isolation = subparsers.add_parser("isolation", help="查看普通作业组隔离锁")

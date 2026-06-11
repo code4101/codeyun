@@ -9,12 +9,14 @@ import aiReductionPage from './ai-reduction'
 import aiWechatPage from './ai-wechat'
 import colorToolsPage from './color-tools'
 import imageBrowserPage from './image-browser'
+import musicToolsPage from './music-tools'
 import passwordGeneratorPage from './password-generator'
 
 const pages: AppPageDefinition[] = [
   passwordGeneratorPage,
   colorToolsPage,
   imageBrowserPage,
+  musicToolsPage,
   aiConfigPage,
   aiEvoMindPage,
   aiChatPage,

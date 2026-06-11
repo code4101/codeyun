@@ -29,7 +29,7 @@ dependencies = [
     "pypdf>=6.0.0",
     "pypinyin>=0.55.0",
     "jieba>=0.42.1",
-    "futu-api>=10.5.6508",
+    "akshare>=1.18.64",
     "adb-shell>=0.4.4",
     "rembg[cpu]>=2.0.69",
 ]

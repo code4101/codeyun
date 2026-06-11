@@ -69,6 +69,7 @@ const AUTHOR_CONTACT_PATH = requirePageMenuPath('AuthorContact');
 const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
+const MUSIC_TOOLS_PATH = requirePageMenuPath('MusicTools');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
 const AI_EVOMIND_PATH = requirePageMenuPath('AiEvoMind');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
@@ -110,6 +111,7 @@ const NOTES_CHAT_DATA_PATH = requirePageMenuPath('NotesChatData');
 const NOTES_TASK_SYSTEM_PATH = requirePageMenuPath('NotesTaskSystem');
 const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
+const EASTMONEY_ROBOT_HISTORY_PATH = requirePageMenuPath('EastmoneyRobotHistory');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
@@ -124,6 +126,7 @@ const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
 const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
 const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
+const EASTMONEY_SUBMENU_INDEX = 'eastmoney';
 const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
 const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
 const NOTES_CENTER_SUBMENU_INDEX = 'notes-center';
@@ -137,6 +140,7 @@ const TOOLS_TITLE = requirePermissionTitle('tools');
 const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
 const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH);
 const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
+const MUSIC_TOOLS_TITLE = requirePermissionTitleByMenuPath(MUSIC_TOOLS_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
 const AI_EVOMIND_TITLE = requirePermissionTitleByMenuPath(AI_EVOMIND_PATH);
@@ -184,6 +188,7 @@ const NOTES_CHAT_DATA_TITLE = requirePermissionTitleByMenuPath(NOTES_CHAT_DATA_P
 const NOTES_TASK_SYSTEM_TITLE = requirePermissionTitleByMenuPath(NOTES_TASK_SYSTEM_PATH);
 const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
 const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
+const EASTMONEY_ROBOT_HISTORY_TITLE = '股票量化分析';
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
@@ -357,6 +362,7 @@ const toolsMenuVisible = computed(() =>
     PASSWORD_GENERATOR_PATH,
     IMAGE_BROWSER_PATH,
     COLOR_TOOLS_PATH,
+    MUSIC_TOOLS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -460,6 +466,7 @@ const noteToolsMenuVisible = computed(() =>
     NOTES_TASK_SYSTEM_PATH,
     NOTES_COMMON_SITES_PATH,
     EASTMONEY_PATH,
+    EASTMONEY_ROBOT_HISTORY_PATH,
     FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
     NOTES_WECHAT_PATH,
@@ -479,6 +486,12 @@ const notesCenterMenuEntryPath = computed(() =>
   canAccessMenuPath(NOTES_CENTER_MENU_PATH)
     ? NOTES_CENTER_MENU_PATH
     : NOTES_CHAT_DATA_PATH,
+);
+
+const eastmoneyMenuEntryPath = computed(() =>
+  canAccessMenuPath(EASTMONEY_PATH)
+    ? EASTMONEY_PATH
+    : EASTMONEY_ROBOT_HISTORY_PATH,
 );
 
 const clusterFilesMenuVisible = computed(() =>
@@ -563,6 +576,9 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/notes/')) openeds.push('note-tools');
   if (route.path === NOTES_CENTER_CANONICAL_PATH || route.path === NOTES_CENTER_MENU_PATH || route.path === NOTES_CHAT_DATA_PATH) {
     openeds.push(NOTES_CENTER_SUBMENU_INDEX);
+  }
+  if (route.path === EASTMONEY_PATH || route.path.startsWith(`${EASTMONEY_PATH}/`)) {
+    openeds.push(EASTMONEY_SUBMENU_INDEX);
   }
   if (route.path.startsWith('/notes/wechat')) {
     openeds.push(NOTES_WECHAT_SUBMENU_INDEX);
@@ -780,6 +796,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(PASSWORD_GENERATOR_PATH)" :index="PASSWORD_GENERATOR_PATH">{{ PASSWORD_GENERATOR_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(IMAGE_BROWSER_PATH)" :index="IMAGE_BROWSER_PATH">{{ IMAGE_BROWSER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(COLOR_TOOLS_PATH)" :index="COLOR_TOOLS_PATH">{{ COLOR_TOOLS_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(MUSIC_TOOLS_PATH)" :index="MUSIC_TOOLS_PATH">{{ MUSIC_TOOLS_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="aiToolsMenuVisible" index="ai-tools">
@@ -924,7 +941,19 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(NOTES_TASK_SYSTEM_PATH)" :index="NOTES_TASK_SYSTEM_PATH">{{ NOTES_TASK_SYSTEM_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(EASTMONEY_PATH)" :index="EASTMONEY_PATH">{{ EASTMONEY_TITLE }}</el-menu-item>
+            <el-sub-menu
+              v-if="canAccessMenuPath(EASTMONEY_PATH) || canAccessMenuPath(EASTMONEY_ROBOT_HISTORY_PATH)"
+              :index="EASTMONEY_SUBMENU_INDEX"
+            >
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(eastmoneyMenuEntryPath, $event)">
+                  {{ EASTMONEY_TITLE }}
+                </span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_ROBOT_HISTORY_PATH)" :index="EASTMONEY_ROBOT_HISTORY_PATH">
+                {{ EASTMONEY_ROBOT_HISTORY_TITLE }}
+              </el-menu-item>
+            </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>
             <el-sub-menu
               v-if="canAccessMenuPath(NOTES_WECHAT_PATH) || canAccessMenuPath(NOTES_WECHAT_STORAGE_PATH)"

@@ -4,6 +4,7 @@ import infiniteCanvasPage from './infinite-canvas'
 import notesChatDataPage from './chat-data'
 import commonSitesPage from './common-sites'
 import eastmoneyPage from './eastmoney'
+import eastmoneyRobotHistoryPage from './eastmoney/robot-history'
 import freebillPage from './freebill'
 import notesCenterPage from './center'
 import notesTaskSystemPage from './task-system'
@@ -21,6 +22,7 @@ const pages: AppPageDefinition[] = [
   notesChatDataPage,
   commonSitesPage,
   eastmoneyPage,
+  eastmoneyRobotHistoryPage,
   freebillPage,
   infiniteCanvasPage,
   notesSheetsManagerPage,

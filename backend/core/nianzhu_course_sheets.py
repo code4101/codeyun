@@ -876,17 +876,16 @@ def _fill_nianzhu_attendance_schema_defaults(
 
 
 def _requires_attendance_tracking_meta_columns(document: dict[str, Any], *, course_name: str = "") -> bool:
-    columns = _normalize_document_columns(document)
-    if any(_find_column_index(columns, header) is not None for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS):
-        return True
-
     resolved_course_name = _normalize_text(course_name)
     if not resolved_course_name:
         source_meta = dict(document.get("source_meta") or {})
         resolved_course_name = _normalize_text(source_meta.get("course_name"))
     if not resolved_course_name:
+        columns = _normalize_document_columns(document)
+        if any(_find_column_index(columns, header) is not None for header in NIANZHU_ATTENDANCE_SCHEMA_META_COLUMNS):
+            return True
         return True
-    return any(keyword in resolved_course_name for keyword in ["闯关", "念住", "觉观", "修道班"])
+    return "闯关" in resolved_course_name
 
 
 def _ensure_nianzhu_attendance_schema(
@@ -3356,6 +3355,17 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     for row_index, row in enumerate(rows):
         next_row = list(row)
         document_row = data_start_row + row_index
+        row_number = _formula_row_number(current_document, row_index)
+        row_changed = False
+        if _sync_row_local_managed_formulas(
+            current_document,
+            next_row,
+            columns=columns,
+            document_row=document_row,
+            row_number=row_number,
+        ):
+            updated_cells += 1
+            row_changed = True
         styled_cells += _clear_blank_progress_backgrounds(
             current_document,
             cell_meta,
@@ -3365,6 +3375,8 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         )
         if not _is_active_tracking_row(next_row, columns, active_only=active_only):
             skipped_rows += 1
+            if row_changed:
+                updated_rows += 1
             next_rows.append(next_row)
             continue
 
@@ -3375,6 +3387,8 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         )
         if not identity_keys:
             missing_identity_rows += 1
+            if row_changed:
+                updated_rows += 1
             next_rows.append(next_row)
             continue
 
@@ -3382,7 +3396,6 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         if rule_version_index is not None:
             rule_version = _normalize_text(next_row[rule_version_index]) or CURRENT_RULE
 
-        row_changed = False
         video_refund = 0.0
         completed_video_count = 0
         score = 0
@@ -3471,7 +3484,6 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                     styled_cells += 1
 
         total_clockin_refund += clockin_refund
-        row_number = _formula_row_number(current_document, row_index)
         completed_video_formula = _build_completed_video_count_formula(
             video_config,
             video_column_indexes,
@@ -4016,6 +4028,28 @@ def _build_zen_guest_formula(columns: list[str], *, row_number: int) -> str | No
     completed_video_ref = _formula_cell_ref(completed_video_index, row_number)
     clockin_ref = _formula_cell_ref(clockin_index, row_number)
     return f'=IF(AND({completed_video_ref}>=11,{clockin_ref}>=7),"是","")'
+
+
+def _sync_row_local_managed_formulas(
+    document: dict[str, Any],
+    row: list[Any],
+    *,
+    columns: list[str],
+    document_row: int,
+    row_number: int,
+) -> int:
+    updated_cells = 0
+    zen_guest_index = _find_column_index(columns, "禅客")
+    zen_guest_formula = _build_zen_guest_formula(columns, row_number=row_number)
+    if zen_guest_formula and _set_row_value(
+        document,
+        row,
+        document_row=document_row,
+        column_index=zen_guest_index,
+        value=zen_guest_formula,
+    ):
+        updated_cells += 1
+    return updated_cells
 
 
 def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[str, Any], int]:

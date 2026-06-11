@@ -67,6 +67,57 @@ def test_runtime_player_profile_rows_collects_unique_snapshot_records() -> None:
     assert rows == [valid_row, record_only_row]
 
 
+def test_extract_bag_uses_full_analysis_when_decoded_payload_is_truncated(tmp_path, monkeypatch) -> None:
+    record_dir = tmp_path / "tcp-flow" / "record-1"
+    record_dir.mkdir(parents=True)
+    decoded_path = record_dir / "decoded.json"
+    decoded_path.write_text("{}", encoding="utf-8")
+    (record_dir / "all_bag_full_items.analysis.json").write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {"bag_i": 0, "vo": "ItemVO", "base_id": "1001", "num": 3, "name": "仙花", "quality": "红色品质", "type": "法宝/符器"},
+                    {"bag_i": 0, "vo": "ItemVO", "base_id": "1002", "num": 4, "name": "灵草", "quality": "绿色品质", "type": "道具"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(insights, "resolve_fanxiu_tcp_store_root", lambda _data_dir=None: tmp_path / "tcp-flow")
+
+    row = insights._extract_bag(
+        {
+            "bagInfoVOs": {
+                "items": [
+                    {
+                        "itemVOs": {
+                            "_count": 2,
+                            "_truncated_items": 1,
+                            "items": [{"_super": {"baseId": "1001", "id": 1, "num": 1}}],
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "id": "record-1|s2c|1|30110|1",
+            "name": "SM_AllBagSyncInfo",
+            "record_id": "record-1",
+            "source_path": str(decoded_path),
+            "decoded_at": "2026-06-11 12:00:00",
+        },
+        {"cards_by_id": {}},
+        allow_pcap_redecode=False,
+    )
+
+    assert row is not None
+    assert row["decoded_from_analysis"] is True
+    assert row["stack_count"] == 2
+    assert row["decoded_stack_count"] == 2
+    assert [item["item"]["name"] for item in row["items"]] == ["仙花", "灵草"]
+
+
 def test_decode_result_with_worldline_activity_triggers_activity_sync(monkeypatch) -> None:
     calls = []
 

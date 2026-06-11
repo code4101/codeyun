@@ -129,7 +129,7 @@ type BatchProfileModel = {
   chartMaxPrice: number
   currentPrice: number | null
   currentPricePercent: number | null
-  currentPriceSource: 'eastmoney_public' | 'futu' | 'market' | 'position' | ''
+  currentPriceSource: 'akshare' | 'market' | 'position' | ''
   currentPriceUpdatedAt: string
 }
 
@@ -574,12 +574,11 @@ function getBatchCurrentPriceLabel(source: BatchProfileModel['currentPriceSource
 }
 
 function isMarketQuoteSource(source: BatchProfileModel['currentPriceSource'] | undefined) {
-  return source === 'eastmoney_public' || source === 'futu' || source === 'market'
+  return source === 'akshare' || source === 'market'
 }
 
 function getBatchQuoteSourceLabel(source: BatchProfileModel['currentPriceSource'] | undefined) {
-  if (source === 'eastmoney_public') return '东财现价'
-  if (source === 'futu') return '富途现价'
+  if (source === 'akshare') return 'AKShare现价'
   if (source === 'market') return '行情现价'
   return '现价'
 }
@@ -705,7 +704,7 @@ function buildBatchProfileModel(
 }
 
 function normalizeQuotePriceSource(provider: string | undefined): BatchProfileModel['currentPriceSource'] {
-  if (provider === 'eastmoney_public' || provider === 'futu') return provider
+  if (provider === 'akshare') return provider
   return 'market'
 }
 
@@ -717,7 +716,7 @@ function layoutBatchProfile(input: {
   lots: BatchLot[]
   matches: BatchMatch[]
   currentPrice: number | null
-  currentPriceSource: 'futu' | 'position' | ''
+  currentPriceSource: 'akshare' | 'position' | ''
   currentPriceUpdatedAt: string
 }): BatchProfileModel {
   const sortedLots = input.lots

@@ -194,6 +194,251 @@ export interface EastmoneyMarketQuoteRefreshResult {
   items: EastmoneyMarketQuote[]
 }
 
+export interface EastmoneyAkshareHistoryItem {
+  date: string
+  symbol: string
+  open: number | null
+  close: number | null
+  high: number | null
+  low: number | null
+  volume: number | null
+  amount: number | null
+  amplitude: number | null
+  change_percent: number | null
+  change_amount: number | null
+  turnover_rate: number | null
+}
+
+export interface EastmoneyAkshareHistoryPage {
+  provider: string
+  market: string
+  symbol: string
+  name: string
+  period: string
+  adjust: string
+  start_date: string
+  end_date: string
+  error?: string
+  items: EastmoneyAkshareHistoryItem[]
+}
+
+export interface EastmoneyAkshareIntradayItem {
+  time: string
+  symbol: string
+  open: number | null
+  close: number | null
+  high: number | null
+  low: number | null
+  volume: number | null
+  amount: number | null
+  average_price: number | null
+}
+
+export interface EastmoneyAkshareIntradayPage {
+  provider: string
+  market: string
+  symbol: string
+  name: string
+  period: string
+  trade_date: string
+  error?: string
+  items: EastmoneyAkshareIntradayItem[]
+}
+
+export interface EastmoneyQlibExportItem {
+  market: string
+  symbol: string
+  name: string
+  qlib_symbol: string
+  csv_path: string
+  row_count: number
+  source: string
+  error: string
+}
+
+export interface EastmoneyQlibExportResult {
+  qlib_repo_path: string
+  source_dir: string
+  qlib_dir: string
+  dump_command: string
+  exported_count: number
+  items: EastmoneyQlibExportItem[]
+}
+
+export interface EastmoneyQlibAnalysis {
+  market: string
+  symbol: string
+  name: string
+  qlib_symbol: string
+  row_count: number
+  source: string
+  start_date: string
+  end_date: string
+  latest_close: number | null
+  latest_change_percent: number | null
+  return_5: number | null
+  return_20: number | null
+  return_60: number | null
+  ma_5: number | null
+  ma_20: number | null
+  ma_60: number | null
+  ma_20_distance: number | null
+  volatility_20: number | null
+  max_drawdown: number | null
+  volume_ratio_5_20: number | null
+  score: number | null
+  signal: string
+  model_status: string
+  scoring_rules?: string[]
+  error: string
+}
+
+export interface EastmoneyQlibScreenItem {
+  pool: string
+  market: string
+  symbol: string
+  name: string
+  qlib_symbol: string
+  score: number | null
+  signal: string
+  row_count: number
+  source: string
+  start_date: string
+  end_date: string
+  latest_close: number | null
+  latest_change_percent: number | null
+  return_5: number | null
+  return_20: number | null
+  return_60: number | null
+  ma_20_distance: number | null
+  volatility_20: number | null
+  max_drawdown: number | null
+  volume_ratio_5_20: number | null
+  error: string
+}
+
+export interface EastmoneyQlibScreenResult {
+  pool: string
+  source: string
+  target_count: number
+  analyzed_count: number
+  failed_count: number
+  error: string
+  scoring_rules?: string[]
+  items: EastmoneyQlibScreenItem[]
+}
+
+export interface EastmoneyQlibBacktestPoint {
+  date: string
+  close: number
+  score: number | null
+  cash: number
+  position_value: number
+  equity: number
+  action: string
+}
+
+export interface EastmoneyQlibBacktestTrade {
+  trigger_date: string
+  trigger_score: number
+  buy_date: string
+  buy_price: number
+  sell_date: string
+  sell_price: number | null
+  lot_size: number
+  shares: number
+  buy_cost: number
+  sell_proceeds: number | null
+  realized_profit: number | null
+  realized_return_percent: number | null
+  holding_days: number
+  status: string
+}
+
+export interface EastmoneyQlibBacktestResult {
+  market: string
+  symbol: string
+  name: string
+  start_date: string
+  end_date: string
+  lot_size: number
+  score_threshold: number
+  take_profit_percent: number
+  cost_rate: number
+  capital_mode: string
+  initial_capital: number
+  total_invested: number
+  total_fee: number
+  max_capital_used: number
+  final_equity: number
+  total_profit: number
+  total_return_percent: number
+  trade_count: number
+  closed_trade_count: number
+  open_position_shares: number
+  source: string
+  force_liquidate_end: boolean
+  rules: string[]
+  error: string
+  points: EastmoneyQlibBacktestPoint[]
+  trades: EastmoneyQlibBacktestTrade[]
+}
+
+export interface EastmoneyQlibPoolBacktestItem {
+  market: string
+  symbol: string
+  name: string
+  lot_size: number | null
+  total_profit: number
+  total_return_percent: number
+  total_invested: number
+  max_capital_used: number
+  trade_count: number
+  closed_trade_count: number
+  open_position_shares: number
+  start_date: string
+  end_date: string
+  error: string
+}
+
+export interface EastmoneyQlibBenchmark {
+  market: string
+  symbol: string
+  name: string
+  start_date: string
+  end_date: string
+  start_close: number | null
+  end_close: number | null
+  return_percent: number | null
+  excess_return_percent: number | null
+  source: string
+  error: string
+}
+
+export interface EastmoneyQlibPoolBacktestResult {
+  pool: string
+  source: string
+  target_count: number
+  tested_count: number
+  skipped_count: number
+  start_date: string
+  end_date: string
+  score_threshold: number
+  take_profit_percent: number
+  cost_rate: number
+  total_profit: number
+  total_invested: number
+  total_fee: number
+  max_capital_used: number
+  trade_count: number
+  closed_trade_count: number
+  open_position_count: number
+  force_liquidate_end: boolean
+  benchmarks: EastmoneyQlibBenchmark[]
+  error: string
+  items: EastmoneyQlibPoolBacktestItem[]
+}
+
 export interface EastmoneyFundFlowFilterOptions {
   categories: string[]
   security_codes: string[]
@@ -363,6 +608,132 @@ export async function refreshEastmoneyMarketQuotes() {
     '/eastmoney/market-quotes/refresh',
     {},
     { timeout: 30000 },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyAkshareHistory(params: {
+  market?: string
+  symbol?: string
+  name?: string
+  period?: string
+  start_date?: string
+  end_date?: string
+  adjust?: string
+  refresh?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyAkshareHistoryPage>(
+    '/eastmoney/market-history/akshare',
+    {
+      params,
+      timeout: 60000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyAkshareIntraday(params: {
+  market?: string
+  symbol?: string
+  name?: string
+  trade_date?: string
+  period?: string
+  day_count?: number
+} = {}) {
+  const response = await api.get<EastmoneyAkshareIntradayPage>(
+    '/eastmoney/market-intraday/akshare',
+    {
+      params,
+      timeout: 30000,
+    },
+  )
+  return response.data
+}
+
+export async function exportEastmoneyQlibDataset(params: { refresh?: boolean } = {}) {
+  const response = await api.post<EastmoneyQlibExportResult>(
+    '/eastmoney/qlib/export',
+    {},
+    {
+      params,
+      timeout: 120000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibAnalysis(params: {
+  market?: string
+  symbol?: string
+  name?: string
+  start_date?: string
+  refresh?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyQlibAnalysis>(
+    '/eastmoney/qlib/analysis',
+    {
+      params,
+      timeout: 120000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibHkPoolScreen(params: {
+  refresh?: boolean
+  limit?: number
+  start_date?: string
+} = {}) {
+  const response = await api.get<EastmoneyQlibScreenResult>(
+    '/eastmoney/qlib/screen/hk-pool',
+    {
+      params,
+      timeout: 120000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibOneLotScoreBacktest(params: {
+  market?: string
+  symbol?: string
+  name?: string
+  start_date?: string
+  end_date?: string
+  lot_size?: number
+  score_threshold?: number
+  take_profit_percent?: number
+  cost_rate?: number
+  force_liquidate_end?: boolean
+  refresh?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyQlibBacktestResult>(
+    '/eastmoney/qlib/backtest/one-lot-score',
+    {
+      params,
+      timeout: 120000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibHkPoolOneLotScoreBacktest(params: {
+  refresh?: boolean
+  limit?: number
+  detail_limit?: number
+  start_date?: string
+  end_date?: string
+  score_threshold?: number
+  take_profit_percent?: number
+  cost_rate?: number
+  force_liquidate_end?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyQlibPoolBacktestResult>(
+    '/eastmoney/qlib/backtest/hk-pool-one-lot-score',
+    {
+      params,
+      timeout: 300000,
+    },
   )
   return response.data
 }

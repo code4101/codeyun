@@ -494,12 +494,13 @@ def test_builtin_attendance_behavior_tree_logs_use_service_log_builder(session, 
 def test_attendance_behavior_tree_builtin_service_is_mi15_scoped(monkeypatch):
     monkeypatch.setattr(runtime_core, "get_ocr_service_status", lambda: {"title": "OCR"})
     monkeypatch.setattr(runtime_core, "_serialize_ocr_service_item", lambda _status: {"key": "ocr"})
+    monkeypatch.setattr(runtime_core, "_serialize_codeyun_watchdog_service_item", lambda: {"key": "codeyun-watchdog"})
+    monkeypatch.setattr(runtime_core, "_serialize_proxy_traffic_audit_service_item", lambda: {"key": "proxy-traffic-audit"})
     monkeypatch.setattr(
         runtime_core,
         "_serialize_fanxiu_behavior_tree_service_item",
         lambda: {"key": "fanxiu-behavior-tree"},
     )
-    monkeypatch.setattr(runtime_core, "_serialize_futu_opend_service_item", lambda: {"key": "futu_opend"})
     monkeypatch.setattr(
         runtime_core,
         "_serialize_attendance_behavior_tree_service_item",
@@ -510,16 +511,18 @@ def test_attendance_behavior_tree_builtin_service_is_mi15_scoped(monkeypatch):
     monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: False)
     assert [item["key"] for item in runtime_core._collect_builtin_services()["items"]] == [
         "ocr",
+        "codeyun-watchdog",
+        "proxy-traffic-audit",
         "fanxiu-behavior-tree",
-        "futu_opend",
     ]
 
     monkeypatch.setattr(runtime_core, "is_attendance_behavior_tree_service_enabled", lambda: True)
     assert [item["key"] for item in runtime_core._collect_builtin_services()["items"]] == [
         "ocr",
+        "codeyun-watchdog",
+        "proxy-traffic-audit",
         "attendance-behavior-tree",
         "fanxiu-behavior-tree",
-        "futu_opend",
     ]
 
 
@@ -655,100 +658,3 @@ def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monk
     )
 
     assert fanxiu_service._get_primary_lan_address() == "192.168.31.15"
-
-
-def test_futu_opend_service_serializes_as_builtin_runtime_service():
-    item = runtime_core._serialize_futu_opend_service_item({
-        "key": "futu_opend",
-        "title": "Futu OpenD",
-        "host": "127.0.0.1",
-        "port": 11111,
-        "endpoint": "127.0.0.1:11111",
-        "running": True,
-        "state": "running",
-        "state_label": "运行中",
-        "configured": True,
-        "executable_path": r"C:\FutuOpenD\FutuOpenD.exe",
-        "executable_source": "common-path",
-        "process_count": 1,
-        "pids": [1234],
-        "processes": [],
-        "last_error": "",
-    })
-
-    assert item["key"] == "futu_opend"
-    assert item["kind"] == "service"
-    assert item["source"] == "builtin"
-    assert item["group_id"] == "service:stock"
-    assert item["active"] is True
-    assert item["status"]["running"] is True
-    assert item["status"]["endpoint"] == "127.0.0.1:11111"
-    assert item["actions"] == ["trigger", "stop", "logs", "configure"]
-    assert "PID 1234" in item["description"]
-
-
-def test_trigger_builtin_futu_opend_runtime_item_starts_service(session, monkeypatch):
-    captured = {}
-
-    def fake_start_futu_opend():
-        captured["called"] = True
-        return {"status": "started", "service": {"key": "futu_opend", "running": True}}
-
-    monkeypatch.setattr(runtime_core, "start_futu_opend", fake_start_futu_opend)
-
-    result = runtime_core.trigger_builtin_runtime_item("futu_opend", session)
-
-    assert captured == {"called": True}
-    assert result == {"status": "started", "service": {"key": "futu_opend", "running": True}}
-
-
-def test_stop_builtin_futu_opend_runtime_item_stops_service(monkeypatch):
-    captured = {}
-
-    def fake_stop_futu_opend():
-        captured["called"] = True
-        return {"status": "stopped", "service": {"key": "futu_opend", "running": False}}
-
-    monkeypatch.setattr(runtime_core, "stop_futu_opend", fake_stop_futu_opend)
-
-    result = runtime_core.stop_builtin_runtime_item("futu_opend")
-
-    assert captured == {"called": True}
-    assert result == {"status": "stopped", "service": {"key": "futu_opend", "running": False}}
-
-
-def test_builtin_futu_opend_logs_show_endpoint_and_executable(session, monkeypatch):
-    item = runtime_core._serialize_futu_opend_service_item({
-        "key": "futu_opend",
-        "title": "Futu OpenD",
-        "endpoint": "127.0.0.1:11111",
-        "running": False,
-        "state": "stopped",
-        "state_label": "已配置",
-        "configured": True,
-        "executable_path": r"C:\FutuOpenD\FutuOpenD.exe",
-        "executable_source": "env:FUTU_OPEND_EXE",
-        "process_count": 0,
-        "pids": [],
-        "processes": [],
-        "last_error": "",
-    })
-    monkeypatch.setattr(
-        runtime_core,
-        "_collect_builtin_jobs",
-        lambda session: {
-            "items": [],
-            "queue": None,
-            "runner_running": False,
-            "next_wake_at": None,
-            "runner_error": None,
-        },
-    )
-    monkeypatch.setattr(runtime_core, "_collect_builtin_services", lambda: {"items": [item]})
-
-    payload = runtime_core.get_runtime_item_logs("builtin", "futu_opend", session)
-
-    assert payload["kind"] == "service"
-    assert payload["title"] == "Futu OpenD"
-    assert any("127.0.0.1:11111" in line for line in payload["logs"])
-    assert any("FutuOpenD.exe" in line for line in payload["logs"])
