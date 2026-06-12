@@ -476,6 +476,8 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   ok: boolean;
   service_running?: boolean;
   running: boolean;
+  guard_group_enabled?: boolean;
+  guard_group_running?: boolean;
   guard_enabled?: boolean;
   guard_running?: boolean;
   guard_entry_id?: string;
@@ -530,6 +532,7 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
 export interface FanxiuDataAnnotationSchedulerTasksResponse {
   ok: boolean;
   tasks: FanxiuDataAnnotationSchedulerTaskItem[];
+  job_group_enabled?: boolean;
   path: string;
 }
 
@@ -551,6 +554,7 @@ export interface FanxiuDataAnnotationSchedulerPlanResponse {
   ok: boolean;
   next_action: string;
   message: string;
+  job_group_enabled?: boolean;
   runtime: Record<string, unknown>;
   facts_summary: Record<string, unknown>;
   due_tasks: FanxiuDataAnnotationSchedulerPlanItem[];
@@ -4954,6 +4958,16 @@ export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: bo
     .then(res => res.data);
 };
 
+export const setFanxiuDataAnnotationRuntimeGuardGroup = (entryId: string, enabled: boolean) => {
+  return api
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/guard/group/set',
+      { entry_id: entryId, enabled },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
+    )
+    .then(res => res.data);
+};
+
 export const tickFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType = 'manual_tick', payload: Record<string, unknown> = {}) => {
   return api
     .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/task/tick', { entry_id: entryId, task_type: taskType, payload }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
@@ -4986,6 +5000,12 @@ export const getFanxiuDataAnnotationSchedulerPlan = () => {
 
 export const saveFanxiuDataAnnotationSchedulerTasks = (tasks: FanxiuDataAnnotationSchedulerTaskItem[]) => {
   return api.put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks', tasks).then(res => res.data);
+};
+
+export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolean) => {
+  return api
+    .put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/settings', { job_group_enabled: jobGroupEnabled })
+    .then(res => res.data);
 };
 
 export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}) => {

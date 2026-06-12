@@ -329,19 +329,22 @@
                         :style="annotationCanvasStyle"
                         :alt="selectedImageNode.title"
                         draggable="false"
+                        @error="markSelectedImagePreviewMissing"
                       />
-                      <div v-else class="empty-image-surface">
-                        <span>{{ selectedImageNode.filename || selectedImagePreviewLoading ? '加载中' : '空图' }}</span>
+                      <div
+                        v-else
+                        class="empty-image-surface"
+                        :class="{ 'is-missing': selectedImagePreviewMissing }"
+                      >
+                        <span>{{ selectedImagePlaceholderText }}</span>
                       </div>
                       <div
-                        v-if="selectedImagePreviewUrl"
                         v-for="shape in occlusionOverlayShapes"
                         :key="'occlusion-' + shape.id"
                         class="annotation-occlusion-mask"
                         :style="shapeBoxStyle(shape)"
                       />
                       <div
-                        v-if="selectedImagePreviewUrl"
                         v-for="shape in annotationShapes"
                         :key="shape.id"
                         class="annotation-shape"
@@ -6738,6 +6741,7 @@ const expandedShapeNodeIds = ref<string[]>([]);
 const deletedShapeIds = ref<Set<string>>(new Set());
 const assetImagePreviewUrls = ref<Record<string, string>>({});
 const assetImagePreviewLoadingIds = ref<Record<string, boolean>>({});
+const assetImagePreviewMissingIds = ref<Record<string, boolean>>({});
 const imageCompareDialogVisible = ref(false);
 const imageCompareLoading = ref(false);
 const imageCompareError = ref('');
@@ -7779,11 +7783,23 @@ const selectedImageUsesJpegFrame = computed(() => {
 const selectedImagePreviewUrl = computed(() => {
   const image = selectedImageNode.value;
   if (!image) return '';
+  if (assetImagePreviewMissingIds.value[image.id]) return '';
   return assetImagePreviewUrls.value[image.id] || image.imageDataUrl || '';
 });
 const selectedImagePreviewLoading = computed(() => {
   const image = selectedImageNode.value;
   return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewLoadingIds.value[image.id]);
+});
+const selectedImagePreviewMissing = computed(() => {
+  const image = selectedImageNode.value;
+  return Boolean(image && image.filename && !selectedImagePreviewUrl.value && assetImagePreviewMissingIds.value[image.id]);
+});
+const selectedImagePlaceholderText = computed(() => {
+  const image = selectedImageNode.value;
+  if (!image) return '空图';
+  if (selectedImagePreviewLoading.value) return '加载中';
+  if (selectedImagePreviewMissing.value) return '原图缺失，仅显示标注框';
+  return image.filename ? '等待加载' : '空图';
 });
 const selectedImageShapes = computed(() => selectedImageNode.value?.shapes ?? []);
 const isDrawableShape = (shape: DataAnnotationShape) => shape.kind !== 'group';
@@ -8545,6 +8561,9 @@ const revokeAssetImagePreviewUrl = (url: string | undefined) => {
 const setAssetImagePreviewUrl = (imageId: string, url: string) => {
   const previous = assetImagePreviewUrls.value[imageId];
   if (previous && previous !== url) revokeAssetImagePreviewUrl(previous);
+  const missing = { ...assetImagePreviewMissingIds.value };
+  delete missing[imageId];
+  assetImagePreviewMissingIds.value = missing;
   assetImagePreviewUrls.value = {
     ...assetImagePreviewUrls.value,
     [imageId]: url,
@@ -8554,6 +8573,7 @@ const setAssetImagePreviewUrl = (imageId: string, url: string) => {
 const releaseAssetImagePreviewUrls = () => {
   Object.values(assetImagePreviewUrls.value).forEach(revokeAssetImagePreviewUrl);
   assetImagePreviewUrls.value = {};
+  assetImagePreviewMissingIds.value = {};
 };
 
 const blobToObjectUrl = (blob: Blob) => URL.createObjectURL(blob);
@@ -8561,6 +8581,7 @@ const blobToObjectUrl = (blob: Blob) => URL.createObjectURL(blob);
 const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
   if (assetImagePreviewUrls.value[image.id]) return assetImagePreviewUrls.value[image.id];
   if (image.imageDataUrl) return image.imageDataUrl;
+  if (assetImagePreviewMissingIds.value[image.id]) return '';
   if (!selectedEntryId.value || !image.filename) return '';
   assetImagePreviewLoadingIds.value = {
     ...assetImagePreviewLoadingIds.value,
@@ -8571,6 +8592,12 @@ const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
     const previewUrl = blobToObjectUrl(blob);
     setAssetImagePreviewUrl(image.id, previewUrl);
     return previewUrl;
+  } catch (error) {
+    assetImagePreviewMissingIds.value = {
+      ...assetImagePreviewMissingIds.value,
+      [image.id]: true,
+    };
+    throw error;
   } finally {
     const next = { ...assetImagePreviewLoadingIds.value };
     delete next[image.id];
@@ -8578,9 +8605,18 @@ const getAssetImageDataUrl = async (image: DataAnnotationAssetNode) => {
   }
 };
 
+const markSelectedImagePreviewMissing = () => {
+  const image = selectedImageNode.value;
+  if (!image) return;
+  assetImagePreviewMissingIds.value = {
+    ...assetImagePreviewMissingIds.value,
+    [image.id]: true,
+  };
+};
+
 const ensureSelectedImagePreview = async () => {
   const image = selectedImageNode.value;
-  if (!image || selectedImagePreviewUrl.value) return;
+  if (!image || selectedImagePreviewUrl.value || selectedImagePreviewMissing.value) return;
   try {
     await getAssetImageDataUrl(image);
   } catch {
@@ -13743,6 +13779,19 @@ const finishShapeDrag = () => {
   font-size: 13px;
   background: #f8fafc;
   pointer-events: none;
+}
+
+.empty-image-surface.is-missing {
+  color: #b45309;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(245, 158, 11, 0.08) 0,
+      rgba(245, 158, 11, 0.08) 12px,
+      rgba(255, 255, 255, 0.82) 12px,
+      rgba(255, 255, 255, 0.82) 24px
+    ),
+    #fffbeb;
 }
 
 .annotation-shape {

@@ -138,6 +138,15 @@ def test_mumu_adb_recovery_does_not_use_proxy_device_by_default(monkeypatch):
     assert (str(Path("D:/adb.exe")), "connect", "192.168.31.181:5555") not in calls
 
 
+def test_mumu_adb_inject_events_error_is_treated_as_unavailable():
+    message = (
+        "ADB 输入失败：192.168.31.181:5555: Exception occurred while executing 'swipe':\n"
+        "java.lang.SecurityException: Injecting to another application requires INJECT_EVENTS permission"
+    )
+
+    assert mumu._is_mumu_adb_unavailable_error(message)
+
+
 def test_mumu_adb_session_ignores_cached_proxy_device_by_default(monkeypatch):
     for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)

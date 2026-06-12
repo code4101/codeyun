@@ -30,6 +30,8 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     ok: bool = True
     service_running: bool = False
     running: bool = False
+    guard_group_enabled: bool = True
+    guard_group_running: bool = False
     guard_enabled: bool = False
     guard_running: bool = False
     guard_entry_id: str = ""
@@ -73,6 +75,11 @@ class FanxiuDataAnnotationRuntimeGuardRequest(BaseModel):
     interval_seconds: float = Field(2.0, ge=0.5, le=30)
 
 
+class FanxiuDataAnnotationRuntimeGuardGroupRequest(BaseModel):
+    entry_id: str
+    enabled: bool
+
+
 class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     id: str
     task_type: str
@@ -97,6 +104,7 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
 class FanxiuDataAnnotationSchedulerTasksResponse(BaseModel):
     ok: bool = True
     tasks: list[FanxiuDataAnnotationSchedulerTaskItem] = Field(default_factory=list)
+    job_group_enabled: bool = True
     path: str = ""
 
 
@@ -119,6 +127,7 @@ class FanxiuDataAnnotationSchedulerPlanResponse(BaseModel):
     ok: bool = True
     next_action: str = "idle"
     message: str = ""
+    job_group_enabled: bool = True
     runtime: dict[str, Any] = Field(default_factory=dict)
     facts_summary: dict[str, Any] = Field(default_factory=dict)
     due_tasks: list[FanxiuDataAnnotationSchedulerPlanItem] = Field(default_factory=list)
@@ -128,6 +137,10 @@ class FanxiuDataAnnotationSchedulerPlanResponse(BaseModel):
 
 class FanxiuDataAnnotationSchedulerRunDueRequest(BaseModel):
     entry_id: str
+
+
+class FanxiuDataAnnotationSchedulerSettingsRequest(BaseModel):
+    job_group_enabled: bool
 
 
 class FanxiuDataAnnotationSchedulerRunNowRequest(BaseModel):

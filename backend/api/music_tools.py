@@ -46,11 +46,16 @@ SEPARATED_STEMS_BY_ENGINE = {
 }
 MUSIC_TOOLS_ROOT = Path(r"D:\home\chenkunze\slns+\music-tools")
 TRANSCRIPTION_ROOT = MUSIC_TOOLS_ROOT / "outputs" / "transcriptions"
+INSTRUMENT_REGISTRY_PATH = MUSIC_TOOLS_ROOT / "data" / "instrument-registry" / "instrument-registry.json"
 DEMUCS_PYTHON = MUSIC_TOOLS_ROOT / ".venvs" / "demucs" / "Scripts" / "python.exe"
 DEMUCS_MODEL = "htdemucs"
 AUDIO_SEPARATOR_EXE = MUSIC_TOOLS_ROOT / ".venvs" / "audio-separator" / "Scripts" / "audio-separator.exe"
+AUDIO_SEPARATOR_PYTHON = MUSIC_TOOLS_ROOT / ".venvs" / "audio-separator" / "Scripts" / "python.exe"
+BASIC_PITCH_PYTHON = MUSIC_TOOLS_ROOT / ".venvs" / "basic-pitch" / "Scripts" / "python.exe"
 AUDIO_SEPARATOR_MODEL = "htdemucs_6s.yaml"
 AUDIO_SEPARATOR_MODEL_DIR = MUSIC_TOOLS_ROOT / "models" / "audio-separator"
+PIANO_TRANSCRIPTION_SCRIPT = MUSIC_TOOLS_ROOT / "scripts" / "transcribe-piano-stem.py"
+HUMMING_TRANSCRIPTION_TIMEOUT_SECONDS = 20 * 60
 ORPHANED_JOB_GRACE_SECONDS = 120.0
 
 _task_manager = LongTaskManager("music-separation", max_workers=1, max_records=32, record_ttl_seconds=6 * 60 * 60)
@@ -87,6 +92,19 @@ class MusicScoreInfo(BaseModel):
 
 class MusicScoreList(BaseModel):
     scores: list[MusicScoreInfo]
+
+
+class MusicInstrumentRegistry(BaseModel):
+    version: int
+    generated_at: str
+    sources: dict[str, str]
+    source_counts: dict[str, int]
+    total: int
+    instruments: list[dict[str, Any]]
+
+
+class MusicJobUpdate(BaseModel):
+    filename: str
 
 
 def _normalize_engine(engine: str | None) -> str:
@@ -166,6 +184,27 @@ def _get_indexed_job(job_id: str) -> dict[str, Any] | None:
                 job = dict(item)
                 return _refresh_indexed_job_runtime_state(job, persist=True)
     return None
+
+
+def _update_indexed_job(job_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    with _index_lock:
+        payload = _load_index()
+        jobs = [item for item in payload.get("jobs", []) if isinstance(item, dict)]
+        updated_job: dict[str, Any] | None = None
+        for index, item in enumerate(jobs):
+            if item.get("job_id") != job_id:
+                continue
+            next_item = dict(item)
+            next_item.update(updates)
+            next_item["updated_at"] = time.time()
+            jobs[index] = next_item
+            updated_job = next_item
+            break
+        if updated_job is None:
+            return None
+        payload["jobs"] = jobs
+        _write_index(payload)
+    return _refresh_indexed_job_runtime_state(dict(updated_job), persist=False)
 
 
 def _list_indexed_jobs() -> list[dict[str, Any]]:
@@ -285,6 +324,34 @@ def _stem_output_file(job_id: str, stem: str) -> Path:
     if not default_path.exists():
         return default_path
     return _job_dir(job_id) / f"{stem}-{uuid4().hex[:8]}.mp3"
+
+
+def _clear_generated_audio_outputs(job_id: str) -> None:
+    job_dir = _job_dir(job_id)
+    for stem in STEM_ORDER:
+        if stem == "original":
+            continue
+        for path in job_dir.glob(f"{stem}*.mp3"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+    for directory_name in ("demucs", "audio-separator"):
+        path = job_dir / directory_name
+        if path.exists():
+            shutil.rmtree(path)
+    for log_name in ("demucs.log", "audio-separator.log"):
+        (job_dir / log_name).unlink(missing_ok=True)
+
+
+def _clear_generated_score_outputs(job_id: str) -> None:
+    if not TRANSCRIPTION_ROOT.exists():
+        return
+    for path in TRANSCRIPTION_ROOT.glob("*/score-manifest.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and str(payload.get("job_id") or "") == job_id:
+            shutil.rmtree(path.parent, ignore_errors=True)
 
 
 def _public_file(job_id: str, stem: str, path: Path) -> dict[str, Any]:
@@ -431,6 +498,158 @@ def _extract_video_audio(input_path: Path, output_path: Path) -> None:
         raise RuntimeError((completed.stdout or "ffmpeg audio extraction failed").strip())
 
 
+def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, Any], context: LongTaskContext) -> bool:
+    if not piano_path.exists() or not BASIC_PITCH_PYTHON.exists() or not PIANO_TRANSCRIPTION_SCRIPT.exists():
+        return False
+
+    context.heartbeat(stage="transcribing", message="正在生成钢琴轨扒谱")
+    raw_title = Path(str(job.get("filename") or "音频")).stem.strip() or "音频"
+    title = f"{raw_title} 钢琴轨扒谱"
+    version = time.strftime("v%Y%m%d-%H%M%S")
+    output_dir = TRANSCRIPTION_ROOT / f"{job_id}-piano-stem"
+    clean_output_dir = TRANSCRIPTION_ROOT / f"{job_id}-piano-stem-clean"
+    melody_output_dir = TRANSCRIPTION_ROOT / f"{job_id}-melody-skeleton"
+    command = [
+        os.fspath(BASIC_PITCH_PYTHON),
+        os.fspath(PIANO_TRANSCRIPTION_SCRIPT),
+        "--input",
+        os.fspath(piano_path),
+        "--output-dir",
+        os.fspath(output_dir),
+        "--clean-output-dir",
+        os.fspath(clean_output_dir),
+        "--melody-output-dir",
+        os.fspath(melody_output_dir),
+        "--job-id",
+        job_id,
+        "--title",
+        title,
+        "--version",
+        version,
+        "--tempo-bpm",
+        "80.75",
+        "--beats-per-bar",
+        "8",
+    ]
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    completed = subprocess.run(
+        command,
+        cwd=os.fspath(MUSIC_TOOLS_ROOT),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=20 * 60,
+    )
+    log_text = completed.stdout or ""
+    (_job_dir(job_id) / "piano-transcription.log").write_text(log_text, encoding="utf-8")
+    if completed.returncode != 0:
+        raise RuntimeError(log_text.strip() or f"piano transcription failed with exit code {completed.returncode}")
+    return (
+        (output_dir / "score-manifest.json").is_file()
+        or (clean_output_dir / "score-manifest.json").is_file()
+        or (melody_output_dir / "score-manifest.json").is_file()
+    )
+
+
+def _run_humming_transcription(
+    job_id: str,
+    input_path: Path,
+    job: dict[str, Any],
+    context: LongTaskContext,
+    *,
+    tempo_bpm: float,
+    beats_per_bar: int,
+) -> dict[str, Any]:
+    if not BASIC_PITCH_PYTHON.exists() or not PIANO_TRANSCRIPTION_SCRIPT.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Basic Pitch 转写工具未安装：{BASIC_PITCH_PYTHON}",
+        )
+
+    context.heartbeat(stage="transcribing", message="正在把哼唱转成主旋律草稿")
+    raw_title = Path(str(job.get("filename") or "哼唱")).stem.strip() or "哼唱"
+    title = f"{raw_title} 哼唱转谱"
+    version = time.strftime("v%Y%m%d-%H%M%S")
+    output_dir = TRANSCRIPTION_ROOT / f"{job_id}-humming-raw"
+    clean_output_dir = TRANSCRIPTION_ROOT / f"{job_id}-humming-clean"
+    melody_output_dir = TRANSCRIPTION_ROOT / f"{job_id}-humming-melody"
+    command = [
+        os.fspath(BASIC_PITCH_PYTHON),
+        os.fspath(PIANO_TRANSCRIPTION_SCRIPT),
+        "--input",
+        os.fspath(input_path),
+        "--output-dir",
+        os.fspath(output_dir),
+        "--clean-output-dir",
+        os.fspath(clean_output_dir),
+        "--melody-output-dir",
+        os.fspath(melody_output_dir),
+        "--job-id",
+        job_id,
+        "--title",
+        title,
+        "--version",
+        version,
+        "--tempo-bpm",
+        str(tempo_bpm),
+        "--beats-per-bar",
+        str(beats_per_bar),
+        "--onset-threshold",
+        "0.35",
+        "--frame-threshold",
+        "0.25",
+        "--minimum-note-length",
+        "60",
+    ]
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    started_at = time.time()
+    completed = subprocess.run(
+        command,
+        cwd=os.fspath(MUSIC_TOOLS_ROOT),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=HUMMING_TRANSCRIPTION_TIMEOUT_SECONDS,
+    )
+    log_text = completed.stdout or ""
+    (_job_dir(job_id) / "humming-transcription.log").write_text(log_text, encoding="utf-8")
+    if completed.returncode != 0:
+        raise RuntimeError(log_text.strip() or f"humming transcription failed with exit code {completed.returncode}")
+    if not (melody_output_dir / "score-manifest.json").is_file():
+        raise RuntimeError("哼唱转写没有生成主旋律草稿")
+
+    completed_job = _get_indexed_job(job_id) or {"job_id": job_id}
+    completed_job.update({
+        "job_id": job_id,
+        "status": "completed",
+        "task_id": context.task_id,
+        "engine": "basic_pitch_humming",
+        "model": "basic_pitch",
+        "expected_stems": [],
+        "elapsed_ms": int(round((time.time() - started_at) * 1000)),
+        "files": _list_job_files(job_id),
+        "log_url": f"/api/music-tools/jobs/{job_id}/log",
+        "error": None,
+        "task_message": "哼唱转谱完成，已生成主旋律草稿",
+        "task_stage": "completed",
+        "updated_at": time.time(),
+    })
+    _upsert_job(completed_job)
+    return completed_job
+
+
 def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict[str, Any]:
     if not DEMUCS_PYTHON.exists():
         raise HTTPException(
@@ -559,6 +778,18 @@ def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskCont
         shutil.copy2(matches[0], _stem_output_file(job_id, stem))
 
     job = _get_indexed_job(job_id) or {"job_id": job_id}
+    transcription_done = False
+    transcription_error: str | None = None
+    try:
+        transcription_done = _run_piano_stem_transcription(job_id, _stem_file(job_id, "piano"), job, context)
+    except Exception as exc:
+        transcription_error = str(exc)
+    if transcription_error:
+        task_message = f"六轨细分完成，钢琴轨扒谱失败：{transcription_error[:120]}"
+    elif transcription_done:
+        task_message = "六轨细分完成，钢琴轨扒谱已生成"
+    else:
+        task_message = "六轨细分完成"
     job.update({
         "job_id": job_id,
         "status": "completed",
@@ -570,7 +801,7 @@ def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskCont
         "files": _list_job_files(job_id),
         "log_url": f"/api/music-tools/jobs/{job_id}/log",
         "error": None,
-        "task_message": "六轨细分完成",
+        "task_message": task_message,
         "task_stage": "completed",
         "updated_at": time.time(),
     })
@@ -589,6 +820,19 @@ def get_music_tool_info():
     )
 
 
+@router.get("/instrument-registry", response_model=MusicInstrumentRegistry)
+def get_music_instrument_registry():
+    if not INSTRUMENT_REGISTRY_PATH.exists():
+        raise HTTPException(status_code=404, detail="乐器资料表尚未生成")
+    try:
+        payload = json.loads(INSTRUMENT_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="乐器资料表读取失败") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("instruments"), list):
+        raise HTTPException(status_code=500, detail="乐器资料表格式无效")
+    return payload
+
+
 @router.get("/jobs")
 def list_music_jobs():
     return {"jobs": _list_indexed_jobs()}
@@ -600,6 +844,19 @@ def get_music_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Music job not found")
     return job
+
+
+@router.patch("/jobs/{job_id}")
+def update_music_job(job_id: str, payload: MusicJobUpdate):
+    filename = payload.filename.strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    if len(filename) > 160:
+        raise HTTPException(status_code=400, detail="名称不能超过 160 个字符")
+    updated = _update_indexed_job(job_id, {"filename": filename})
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Music job not found")
+    return updated
 
 
 @router.get("/jobs/{job_id}/scores", response_model=MusicScoreList)
@@ -702,6 +959,99 @@ async def start_music_separation(file: UploadFile = File(...), engine: str = For
     return task_payload
 
 
+@router.post("/humming-transcribe")
+async def start_humming_transcription(
+    file: UploadFile = File(...),
+    tempo_bpm: float = Form(96.0),
+    beats_per_bar: int = Form(4),
+):
+    raw_extension = Path(file.filename or "").suffix.lower()
+    if raw_extension not in SUPPORTED_MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="不支持的音频或视频格式")
+    if tempo_bpm < 40 or tempo_bpm > 240:
+        raise HTTPException(status_code=400, detail="BPM 需要在 40-240 之间")
+    if beats_per_bar < 2 or beats_per_bar > 12:
+        raise HTTPException(status_code=400, detail="每小节拍数需要在 2-12 之间")
+
+    original_name = _safe_filename(file.filename or "humming.webm")
+    extension = Path(original_name).suffix.lower()
+    is_video_input = extension in SUPPORTED_VIDEO_EXTENSIONS
+
+    job_id = uuid4().hex
+    job_dir = _job_dir(job_id)
+    input_path = job_dir / original_name
+    original_path = job_dir / ("original.mp3" if is_video_input else f"original{extension}")
+
+    with input_path.open("wb") as target:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            target.write(chunk)
+    if is_video_input:
+        _extract_video_audio(input_path, original_path)
+    else:
+        shutil.copy2(input_path, original_path)
+
+    now = time.time()
+    _upsert_job({
+        "job_id": job_id,
+        "filename": original_name,
+        "status": "queued",
+        "engine": "basic_pitch_humming",
+        "model": "basic_pitch",
+        "expected_stems": [],
+        "input_kind": "humming",
+        "created_at": now,
+        "updated_at": now,
+        "elapsed_ms": None,
+        "task_message": "哼唱转谱任务已排队",
+        "log_url": f"/api/music-tools/jobs/{job_id}/log",
+    })
+
+    def run(context: LongTaskContext) -> dict[str, Any]:
+        job = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
+        job.update({
+            "status": "running",
+            "task_id": context.task_id,
+            "updated_at": time.time(),
+            "task_message": "正在分析哼唱旋律",
+        })
+        _upsert_job(job)
+        try:
+            return _run_humming_transcription(
+                job_id,
+                original_path,
+                job,
+                context,
+                tempo_bpm=tempo_bpm,
+                beats_per_bar=beats_per_bar,
+            )
+        except Exception:
+            failed = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
+            failed.update({"status": "failed", "task_id": context.task_id, "updated_at": time.time()})
+            _upsert_job(failed)
+            raise
+
+    task_payload = _task_manager.start(
+        run,
+        stage="queued",
+        message="哼唱转谱任务已排队",
+        metadata={
+            "job_id": job_id,
+            "filename": original_name,
+            "engine": "basic_pitch_humming",
+            "expected_stems": [],
+            "input_kind": "humming",
+            "files": _list_job_files(job_id),
+        },
+    )
+    job = _get_indexed_job(job_id) or {"job_id": job_id, "filename": original_name}
+    job["task_id"] = task_payload["task_id"]
+    _upsert_job(job)
+    return task_payload
+
+
 @router.post("/jobs/{job_id}/rerun")
 def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
     job = _get_indexed_job(job_id)
@@ -714,6 +1064,8 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
     original_path = _stem_file(job_id, "original")
     if not original_path.exists():
         raise HTTPException(status_code=404, detail="原始音频不存在，无法重新分离")
+    _clear_generated_audio_outputs(job_id)
+    _clear_generated_score_outputs(job_id)
 
     now = time.time()
     job.update({
@@ -725,7 +1077,7 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
         "updated_at": now,
         "elapsed_ms": None,
         "error": None,
-        "task_message": "重新分轨任务已排队",
+        "task_message": "重新解析任务已排队",
         "log_url": f"/api/music-tools/jobs/{job_id}/log",
     })
     _upsert_job(job)
@@ -736,7 +1088,7 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
             "status": "running",
             "task_id": context.task_id,
             "updated_at": time.time(),
-            "task_message": "正在重新分轨",
+            "task_message": "正在重新解析",
         })
         _upsert_job(running_job)
         try:
@@ -752,7 +1104,7 @@ def rerun_music_job(job_id: str, engine: str = Form("audio_separator_6s")):
     task_payload = _task_manager.start(
         run,
         stage="queued",
-        message="重新分轨任务已排队",
+        message="重新解析任务已排队",
         metadata={
             "job_id": job_id,
             "filename": str(job.get("filename") or original_path.name),
@@ -803,7 +1155,14 @@ def get_music_job_log(job_id: str):
     job = _get_indexed_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Music job not found")
-    path = _job_dir(job_id) / ("audio-separator.log" if job.get("engine") == "audio_separator_6s" else "demucs.log")
+    engine = str(job.get("engine") or "")
+    if engine == "audio_separator_6s":
+        log_name = "audio-separator.log"
+    elif engine == "basic_pitch_humming":
+        log_name = "humming-transcription.log"
+    else:
+        log_name = "demucs.log"
+    path = _job_dir(job_id) / log_name
     if not path.exists():
         raise HTTPException(status_code=404, detail="Log file not found")
     return FileResponse(path, media_type="text/plain; charset=utf-8", filename=path.name)

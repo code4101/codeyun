@@ -24,6 +24,8 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_jianling",
     "daily_lingta",
     "daily_xianyuan",
+    "daily_yaowang",
+    "daily_yaozu",
     "daily_assistant",
     "mail_cleanup",
     "xianfu_visit_partner",
@@ -170,7 +172,25 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_xianyuan_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_assistant", "日常_助手", scheduler_supported=True)
+    @register_fanxiu_data_annotation_manual_job("daily_yaowang", "日常_妖王来袭", scheduler_supported=True)
+    def _run_data_annotation_daily_yaowang_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_yaowang_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_yaozu", "日常_妖族袭城", scheduler_supported=True)
+    def _run_data_annotation_daily_yaozu_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_yaozu_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_assistant", "日常_助手", scheduler_supported=False)
     def _run_data_annotation_daily_assistant_manual_job(
         runner: Any,
         ctx: dict[str, Any],

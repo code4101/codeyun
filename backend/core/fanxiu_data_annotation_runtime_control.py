@@ -21,6 +21,7 @@ from backend.core.fanxiu_behavior_tree import (
     ensure_fanxiu_runtime_jobs_registered,
     fanxiu_data_annotation_manual_job_state_path,
     fanxiu_data_annotation_runtime_state_path,
+    fanxiu_data_annotation_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path,
     fanxiu_runtime_guard_definitions,
@@ -30,6 +31,7 @@ from backend.core.fanxiu_behavior_tree import (
     fanxiu_runtime_task_label,
     replace_fanxiu_runtime_logs,
     set_fanxiu_runtime_guard,
+    set_fanxiu_runtime_guard_group_enabled,
     start_fanxiu_manual_runtime_task,
     stop_fanxiu_behavior_tree_current_task,
 )
@@ -58,6 +60,7 @@ from backend.core.fanxiu_data_annotation_state import (
     is_data_annotation_runtime_live_empty,
     next_data_annotation_scheduler_time,
     normalize_data_annotation_runtime_guard_items,
+    normalize_data_annotation_scheduler_settings,
     persist_data_annotation_runtime_status,
     read_data_annotation_json,
     read_data_annotation_runtime_status,
@@ -232,6 +235,33 @@ def write_scheduler_tasks(tasks: list[dict[str, Any]], *, scheduler_state_path: 
     )
 
 
+def read_scheduler_settings(*, scheduler_settings_path: Path | None = None) -> dict[str, Any]:
+    path = scheduler_settings_path or fanxiu_data_annotation_scheduler_settings_path()
+    return normalize_data_annotation_scheduler_settings(read_data_annotation_json(path, None))
+
+
+def write_scheduler_settings(
+    settings: dict[str, Any],
+    *,
+    scheduler_settings_path: Path | None = None,
+) -> dict[str, Any]:
+    path = scheduler_settings_path or fanxiu_data_annotation_scheduler_settings_path()
+    normalized = normalize_data_annotation_scheduler_settings(settings)
+    normalized["updated_at"] = time.time()
+    write_data_annotation_json(path, normalized)
+    return normalized
+
+
+def set_scheduler_job_group_enabled(
+    enabled: bool,
+    *,
+    scheduler_settings_path: Path | None = None,
+) -> dict[str, Any]:
+    settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    settings["job_group_enabled"] = bool(enabled)
+    return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
+
+
 def update_scheduler_tasks(
     updates: list[dict[str, Any]],
     *,
@@ -358,6 +388,26 @@ def set_runtime_guard(
         guard_id=guard_id,
         enabled=enabled,
         interval_seconds=interval_seconds,
+        asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
+    )
+    persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    return status
+
+
+def set_runtime_guard_group_enabled(
+    *,
+    entry: Any,
+    entry_id: str,
+    enabled: bool,
+    asset_tree_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
+    status = set_fanxiu_runtime_guard_group_enabled(
+        entry=entry,
+        entry_id=resolved_entry_id,
+        enabled=enabled,
         asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
     )
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
@@ -542,10 +592,12 @@ def world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
 def build_scheduler_plan(
     *,
     scheduler_state_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
     world_facts_path: Path | None = None,
     manual_job_path: Path | None = None,
 ) -> dict[str, Any]:
-    return build_data_annotation_scheduler_plan(
+    settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    plan = build_data_annotation_scheduler_plan(
         read_scheduler_tasks(
             scheduler_state_path=scheduler_state_path,
             world_facts_path=world_facts_path,
@@ -558,6 +610,11 @@ def build_scheduler_plan(
         task_due=data_annotation_task_due,
         now_ts=time.time(),
     )
+    plan["job_group_enabled"] = bool(settings.get("job_group_enabled", True))
+    if not plan["job_group_enabled"]:
+        plan["next_action"] = "job_group_disabled"
+        plan["message"] = "作业组已关闭，到期作业暂不自动执行"
+    return plan
 
 
 def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
@@ -643,12 +700,23 @@ def run_due_scheduler_tasks(
     entry: Any,
     entry_id: str,
     scheduler_state_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
     manual_job_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
     ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
+    settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    if not bool(settings.get("job_group_enabled", True)):
+        status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        status.update({
+            "message": "作业组已关闭，到期作业暂不自动执行",
+            "phase": "scheduler_job_group_disabled",
+            "updated_at": time.time(),
+        })
+        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        return status
     tasks = read_scheduler_tasks(
         scheduler_state_path=scheduler_state_path,
         world_facts_path=world_facts_path,

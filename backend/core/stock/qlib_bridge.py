@@ -31,6 +31,13 @@ QLIB_FACTOR_SCORE_RULES = (
     "量能比 >= 1.4 且5日动量 > 0：+8；量能比 >= 1.4 且5日动量 < 0：-8",
     "当前版本暂未把60日动量纳入综合分；这是手工启发式评分，不是训练模型预测分。",
 )
+QLIB_SCORE_PROFILE_LABELS = {
+    "balanced": "均衡量价",
+    "trend_momentum": "趋势动量",
+    "short_reversal": "短期反转",
+    "low_volatility": "低波防守",
+    "volume_breakout": "量价突破",
+}
 
 
 @dataclass(frozen=True)
@@ -136,7 +143,10 @@ class QlibBacktestResult:
     end_date: str
     lot_size: int
     score_threshold: int
+    score_profile: str
     take_profit_percent: float
+    stop_loss_percent: float
+    max_holding_days: int
     cost_rate: float
     capital_mode: str
     initial_capital: float
@@ -173,7 +183,10 @@ def backtest_qlib_one_lot_score_strategy(
     end_date: str | None = None,
     lot_size: int = 200,
     score_threshold: int = 84,
+    score_profile: str = "balanced",
     take_profit_percent: float = 5.0,
+    stop_loss_percent: float = 0.0,
+    max_holding_days: int = 0,
     cost_rate: float = 0.01,
     force_liquidate_end: bool = True,
     refresh: bool = False,
@@ -189,7 +202,10 @@ def backtest_qlib_one_lot_score_strategy(
         end_date=end_date,
         lot_size=lot_size,
         score_threshold=score_threshold,
+        score_profile=score_profile,
         take_profit_percent=take_profit_percent,
+        stop_loss_percent=stop_loss_percent,
+        max_holding_days=max_holding_days,
         cost_rate=cost_rate,
         force_liquidate_end=force_liquidate_end,
     )
@@ -205,7 +221,10 @@ def backtest_qlib_rows_one_lot_score_strategy(
     end_date: str | None = None,
     lot_size: int = 200,
     score_threshold: int = 84,
+    score_profile: str = "balanced",
     take_profit_percent: float = 5.0,
+    stop_loss_percent: float = 0.0,
+    max_holding_days: int = 0,
     cost_rate: float = 0.01,
     force_liquidate_end: bool = True,
 ) -> QlibBacktestResult:
@@ -218,7 +237,10 @@ def backtest_qlib_rows_one_lot_score_strategy(
             end_date=end_date or "",
             lot_size=lot_size,
             score_threshold=score_threshold,
+            score_profile=normalize_score_profile(score_profile),
             take_profit_percent=take_profit_percent,
+            stop_loss_percent=max(0, float(stop_loss_percent)),
+            max_holding_days=max(0, int(max_holding_days)),
             cost_rate=cost_rate,
             capital_mode="unlimited",
             initial_capital=0,
@@ -233,7 +255,7 @@ def backtest_qlib_rows_one_lot_score_strategy(
             open_position_shares=0,
             points=(),
             trades=(),
-            rules=_backtest_strategy_rules(score_threshold=score_threshold, take_profit_percent=take_profit_percent, cost_rate=cost_rate, lot_size=lot_size, force_liquidate_end=force_liquidate_end),
+            rules=_backtest_strategy_rules(score_threshold=score_threshold, score_profile=score_profile, take_profit_percent=take_profit_percent, stop_loss_percent=stop_loss_percent, max_holding_days=max_holding_days, cost_rate=cost_rate, lot_size=lot_size, force_liquidate_end=force_liquidate_end),
             source=source,
             force_liquidate_end=force_liquidate_end,
             error=error or "没有可回测的日线数据",
@@ -244,7 +266,8 @@ def backtest_qlib_rows_one_lot_score_strategy(
     rows = tuple(row for row in all_rows if row.date <= end_iso)
     if not rows:
         rows = all_rows
-    score_by_date = _daily_factor_scores(rows)
+    normalized_score_profile = normalize_score_profile(score_profile)
+    score_by_date = _daily_factor_scores(rows, score_profile=normalized_score_profile)
     raw_points, trades, final_cash, final_position_shares, total_invested, total_fee, max_capital_used = _simulate_one_lot_score_strategy(
         rows=rows,
         score_by_date=score_by_date,
@@ -252,6 +275,8 @@ def backtest_qlib_rows_one_lot_score_strategy(
         lot_size=max(1, int(lot_size)),
         score_threshold=int(score_threshold),
         take_profit_rate=max(0, float(take_profit_percent)) / 100,
+        stop_loss_rate=max(0, float(stop_loss_percent)) / 100,
+        max_holding_days=max(0, int(max_holding_days)),
         cost_rate=max(0, float(cost_rate)),
         force_liquidate_end=force_liquidate_end,
     )
@@ -280,7 +305,10 @@ def backtest_qlib_rows_one_lot_score_strategy(
         end_date=end_iso,
         lot_size=max(1, int(lot_size)),
         score_threshold=int(score_threshold),
+        score_profile=normalized_score_profile,
         take_profit_percent=float(take_profit_percent),
+        stop_loss_percent=max(0, float(stop_loss_percent)),
+        max_holding_days=max(0, int(max_holding_days)),
         cost_rate=max(0, float(cost_rate)),
         capital_mode="unlimited",
         initial_capital=initial_capital,
@@ -291,11 +319,11 @@ def backtest_qlib_rows_one_lot_score_strategy(
         total_profit=total_profit,
         total_return_percent=total_return_percent,
         trade_count=len(trades),
-        closed_trade_count=sum(1 for trade in trades if trade.status in {"closed", "forced_closed"}),
+        closed_trade_count=sum(1 for trade in trades if trade.status != "open"),
         open_position_shares=final_position_shares,
         points=points,
         trades=tuple(trades),
-        rules=_backtest_strategy_rules(score_threshold=score_threshold, take_profit_percent=take_profit_percent, cost_rate=cost_rate, lot_size=lot_size, force_liquidate_end=force_liquidate_end),
+        rules=_backtest_strategy_rules(score_threshold=score_threshold, score_profile=normalized_score_profile, take_profit_percent=take_profit_percent, stop_loss_percent=stop_loss_percent, max_holding_days=max_holding_days, cost_rate=cost_rate, lot_size=lot_size, force_liquidate_end=force_liquidate_end),
         source=source,
         force_liquidate_end=force_liquidate_end,
         error=error,
@@ -413,7 +441,10 @@ def serialize_qlib_backtest_result(result: QlibBacktestResult) -> dict[str, Any]
         "end_date": result.end_date,
         "lot_size": result.lot_size,
         "score_threshold": result.score_threshold,
+        "score_profile": result.score_profile,
         "take_profit_percent": result.take_profit_percent,
+        "stop_loss_percent": result.stop_loss_percent,
+        "max_holding_days": result.max_holding_days,
         "cost_rate": result.cost_rate,
         "capital_mode": result.capital_mode,
         "initial_capital": result.initial_capital,
@@ -545,6 +576,7 @@ def _analyze_rows(
     score = _factor_score(
         return_5=return_5,
         return_20=return_20,
+        return_60=return_60,
         ma_20_distance=ma_20_distance,
         volatility_20=volatility_20,
         max_drawdown=max_drawdown,
@@ -676,7 +708,43 @@ def _factor_score(
     volatility_20: float | None,
     max_drawdown: float | None,
     volume_ratio_5_20: float | None,
+    return_60: float | None = None,
+    score_profile: str = "balanced",
 ) -> int:
+    profile = normalize_score_profile(score_profile)
+    if profile == "trend_momentum":
+        return _trend_momentum_score(
+            return_5=return_5,
+            return_20=return_20,
+            return_60=return_60,
+            ma_20_distance=ma_20_distance,
+            volatility_20=volatility_20,
+            volume_ratio_5_20=volume_ratio_5_20,
+        )
+    if profile == "short_reversal":
+        return _short_reversal_score(
+            return_5=return_5,
+            return_20=return_20,
+            ma_20_distance=ma_20_distance,
+            volatility_20=volatility_20,
+            max_drawdown=max_drawdown,
+            volume_ratio_5_20=volume_ratio_5_20,
+        )
+    if profile == "low_volatility":
+        return _low_volatility_score(
+            return_20=return_20,
+            ma_20_distance=ma_20_distance,
+            volatility_20=volatility_20,
+            max_drawdown=max_drawdown,
+        )
+    if profile == "volume_breakout":
+        return _volume_breakout_score(
+            return_5=return_5,
+            return_20=return_20,
+            ma_20_distance=ma_20_distance,
+            volatility_20=volatility_20,
+            volume_ratio_5_20=volume_ratio_5_20,
+        )
     score = 50
     if return_5 is not None:
         score += 12 if return_5 > 0 else -8
@@ -704,6 +772,136 @@ def _factor_score(
     return max(0, min(100, round(score)))
 
 
+def normalize_score_profile(value: str | None) -> str:
+    text = str(value or "balanced").strip()
+    return text if text in QLIB_SCORE_PROFILE_LABELS else "balanced"
+
+
+def _clamp_score(score: float) -> int:
+    return max(0, min(100, round(score)))
+
+
+def _trend_momentum_score(
+    *,
+    return_5: float | None,
+    return_20: float | None,
+    return_60: float | None,
+    ma_20_distance: float | None,
+    volatility_20: float | None,
+    volume_ratio_5_20: float | None,
+) -> int:
+    score = 50
+    if return_20 is not None:
+        score += 18 if return_20 > 0 else -14
+    if return_60 is not None:
+        score += 16 if return_60 > 0 else -10
+    if return_5 is not None:
+        score += 6 if return_5 > 0 else -4
+    if ma_20_distance is not None:
+        if 0 <= ma_20_distance <= 12:
+            score += 10
+        elif ma_20_distance > 18:
+            score -= 10
+        elif ma_20_distance < -8:
+            score -= 8
+    if volume_ratio_5_20 is not None and volume_ratio_5_20 >= 1.2 and (return_20 or 0) > 0:
+        score += 8
+    if volatility_20 is not None and volatility_20 > 85:
+        score -= 10
+    return _clamp_score(score)
+
+
+def _short_reversal_score(
+    *,
+    return_5: float | None,
+    return_20: float | None,
+    ma_20_distance: float | None,
+    volatility_20: float | None,
+    max_drawdown: float | None,
+    volume_ratio_5_20: float | None,
+) -> int:
+    score = 50
+    if return_5 is not None:
+        score += 14 if return_5 < 0 else -6
+    if return_20 is not None:
+        score += 10 if return_20 > -12 else -10
+    if ma_20_distance is not None:
+        if -12 <= ma_20_distance <= -2:
+            score += 16
+        elif ma_20_distance > 8:
+            score -= 12
+        elif ma_20_distance < -22:
+            score -= 8
+    if max_drawdown is not None:
+        if -22 <= max_drawdown <= -5:
+            score += 8
+        elif max_drawdown < -35:
+            score -= 12
+    if volume_ratio_5_20 is not None and volume_ratio_5_20 >= 1.6 and (return_5 or 0) < 0:
+        score += 4
+    if volatility_20 is not None and volatility_20 > 95:
+        score -= 12
+    return _clamp_score(score)
+
+
+def _low_volatility_score(
+    *,
+    return_20: float | None,
+    ma_20_distance: float | None,
+    volatility_20: float | None,
+    max_drawdown: float | None,
+) -> int:
+    score = 50
+    if return_20 is not None:
+        score += 10 if return_20 > 0 else -8
+    if volatility_20 is not None:
+        if volatility_20 < 45:
+            score += 16
+        elif volatility_20 > 70:
+            score -= 16
+    if max_drawdown is not None:
+        if max_drawdown > -15:
+            score += 12
+        elif max_drawdown < -25:
+            score -= 16
+    if ma_20_distance is not None:
+        if -5 <= ma_20_distance <= 5:
+            score += 8
+        elif abs(ma_20_distance) > 15:
+            score -= 8
+    return _clamp_score(score)
+
+
+def _volume_breakout_score(
+    *,
+    return_5: float | None,
+    return_20: float | None,
+    ma_20_distance: float | None,
+    volatility_20: float | None,
+    volume_ratio_5_20: float | None,
+) -> int:
+    score = 50
+    if return_5 is not None:
+        score += 10 if return_5 > 0 else -10
+    if return_20 is not None:
+        score += 8 if return_20 > 0 else -6
+    if volume_ratio_5_20 is not None:
+        if volume_ratio_5_20 >= 1.8 and (return_5 or 0) > 0:
+            score += 18
+        elif volume_ratio_5_20 >= 1.3 and (return_5 or 0) > 0:
+            score += 10
+        elif volume_ratio_5_20 >= 1.5 and (return_5 or 0) < 0:
+            score -= 10
+    if ma_20_distance is not None:
+        if 0 <= ma_20_distance <= 10:
+            score += 8
+        elif ma_20_distance > 18:
+            score -= 10
+    if volatility_20 is not None and volatility_20 > 90:
+        score -= 10
+    return _clamp_score(score)
+
+
 def _signal_label(score: int | None) -> str:
     if score is None:
         return "数据不足"
@@ -724,10 +922,13 @@ def _normalize_iso_date(value: str | None) -> str:
     return text[:10]
 
 
-def _daily_factor_scores(rows: tuple[AkshareStockHistoryRow, ...]) -> dict[str, int | None]:
+def _daily_factor_scores(rows: tuple[AkshareStockHistoryRow, ...], *, score_profile: str = "balanced") -> dict[str, int | None]:
     scores: dict[str, int | None] = {}
     closes: list[float] = []
     volumes: list[float] = []
+    returns: list[float] = []
+    return_sum_20 = 0.0
+    return_square_sum_20 = 0.0
     peak_close: float | None = None
     max_drawdown: float | None = None
     for row in rows:
@@ -736,22 +937,42 @@ def _daily_factor_scores(rows: tuple[AkshareStockHistoryRow, ...]) -> dict[str, 
         if close is None:
             scores[row.date] = None
             continue
+        previous_close = closes[-1] if closes else None
         closes.append(close)
-        volumes.append(volume or 0)
+        volume_value = volume or 0
+        volumes.append(volume_value)
+        if previous_close:
+            daily_return = close / previous_close - 1
+            returns.append(daily_return)
+            return_sum_20 += daily_return
+            return_square_sum_20 += daily_return ** 2
+            if len(returns) > 20:
+                removed_return = returns[-21]
+                return_sum_20 -= removed_return
+                return_square_sum_20 -= removed_return ** 2
         peak_close = close if peak_close is None else max(peak_close, close)
         current_drawdown = (close / peak_close - 1) * 100 if peak_close else 0
         max_drawdown = current_drawdown if max_drawdown is None else min(max_drawdown, current_drawdown)
         return_5 = _period_return(closes, 5)
         return_20 = _period_return(closes, 20)
+        return_60 = _period_return(closes, 60)
         ma_20 = _moving_average(closes, 20)
         ma_20_distance = (close / ma_20 - 1) * 100 if ma_20 else None
+        volatility_20 = None
+        if len(returns) >= 20:
+            mean = return_sum_20 / 20
+            variance = (return_square_sum_20 - 20 * mean ** 2) / 19
+            volatility_20 = math.sqrt(max(0, variance)) * math.sqrt(252) * 100
+        volume_ratio_5_20 = _volume_ratio(volumes)
         scores[row.date] = _factor_score(
             return_5=return_5,
             return_20=return_20,
             ma_20_distance=ma_20_distance,
-            volatility_20=_annualized_volatility(closes, 20),
+            volatility_20=volatility_20,
             max_drawdown=max_drawdown,
-            volume_ratio_5_20=_volume_ratio(volumes),
+            volume_ratio_5_20=volume_ratio_5_20,
+            return_60=return_60,
+            score_profile=score_profile,
         )
     return scores
 
@@ -764,6 +985,8 @@ def _simulate_one_lot_score_strategy(
     lot_size: int,
     score_threshold: int,
     take_profit_rate: float,
+    stop_loss_rate: float,
+    max_holding_days: int,
     cost_rate: float,
     force_liquidate_end: bool,
 ) -> tuple[list[QlibBacktestPoint], list[QlibBacktestTrade], float, int, float, float, float]:
@@ -780,6 +1003,7 @@ def _simulate_one_lot_score_strategy(
         close = _finite_float(row.close)
         open_price = _finite_float(row.open)
         high = _finite_float(row.high)
+        low = _finite_float(row.low)
         if close is None:
             continue
 
@@ -801,6 +1025,7 @@ def _simulate_one_lot_score_strategy(
                         "buy_price": open_price,
                         "buy_cost": buy_cost,
                         "target_price": open_price * (1 + take_profit_rate),
+                        "stop_price": open_price * (1 - stop_loss_rate) if stop_loss_rate > 0 else None,
                     }
                 )
                 actions.append("买入")
@@ -810,14 +1035,27 @@ def _simulate_one_lot_score_strategy(
         remaining_positions: list[dict[str, Any]] = []
         for position in open_positions:
             target_price = float(position["target_price"])
-            if high is not None and high >= target_price:
-                sell_gross = target_price * lot_size
+            stop_price = _finite_float(position.get("stop_price"))
+            buy_index = int(position["buy_index"])
+            holding_days = max(0, index - buy_index)
+            sell_price: float | None = None
+            trade_status = "closed"
+            if stop_price is not None and low is not None and low <= stop_price:
+                sell_price = stop_price
+                trade_status = "stop_loss"
+            elif high is not None and high >= target_price:
+                sell_price = target_price
+                trade_status = "closed"
+            elif max_holding_days > 0 and holding_days >= max_holding_days:
+                sell_price = close
+                trade_status = "time_exit"
+            if sell_price is not None:
+                sell_gross = sell_price * lot_size
                 sell_fee = sell_gross * cost_rate
                 sell_proceeds = sell_gross - sell_fee
                 cash += sell_proceeds
                 total_fee += sell_fee
                 realized_profit = sell_proceeds - float(position["buy_cost"])
-                buy_index = int(position["buy_index"])
                 trades.append(
                     QlibBacktestTrade(
                         trigger_date=str(position["trigger_date"]),
@@ -825,18 +1063,18 @@ def _simulate_one_lot_score_strategy(
                         buy_date=str(position["buy_date"]),
                         buy_price=float(position["buy_price"]),
                         sell_date=row.date,
-                        sell_price=target_price,
+                        sell_price=sell_price,
                         lot_size=lot_size,
                         shares=lot_size,
                         buy_cost=float(position["buy_cost"]),
                         sell_proceeds=sell_proceeds,
                         realized_profit=realized_profit,
                         realized_return_percent=realized_profit / float(position["buy_cost"]) * 100 if position["buy_cost"] else None,
-                        holding_days=max(0, index - buy_index),
-                        status="closed",
+                        holding_days=holding_days,
+                        status=trade_status,
                     )
                 )
-                actions.append("卖出")
+                actions.append({"closed": "止盈", "stop_loss": "止损", "time_exit": "到期"}[trade_status])
             else:
                 remaining_positions.append(position)
         open_positions = remaining_positions
@@ -934,17 +1172,25 @@ def _simulate_one_lot_score_strategy(
 def _backtest_strategy_rules(
     *,
     score_threshold: int,
+    score_profile: str,
     take_profit_percent: float,
+    stop_loss_percent: float,
+    max_holding_days: int,
     cost_rate: float,
     lot_size: int,
     force_liquidate_end: bool,
 ) -> tuple[str, ...]:
+    profile_label = QLIB_SCORE_PROFILE_LABELS.get(normalize_score_profile(score_profile), "均衡量价")
     rules = [
-        f"从回测开始日后，每个交易日收盘后计算综合分；综合分 >= {int(score_threshold)} 时，次一交易日按开盘价买入一手。",
+        f"从回测开始日后，每个交易日收盘后按“{profile_label}”模型计算综合分；综合分 >= {int(score_threshold)} 时，次一交易日按开盘价买入一手。",
         f"一手按 {int(lot_size)} 股计算；允许无限资金，因此每次信号都会新增一手，不因已有持仓跳过。",
         f"每一手独立持仓；日内最高价达到买入价上涨 {float(take_profit_percent):g}% 时，按目标价卖出。",
         f"买入和卖出均按单边成本 {float(cost_rate) * 100:g}% 扣减；日线数据无法还原真实盘中成交顺序。",
     ]
+    if float(stop_loss_percent) > 0:
+        rules.append(f"日内最低价触及买入价下跌 {float(stop_loss_percent):g}% 时止损；若同日止盈和止损都触发，保守按止损先发生。")
+    if int(max_holding_days) > 0:
+        rules.append(f"持仓达到 {int(max_holding_days)} 个交易日仍未止盈/止损，则按当日收盘价退出。")
     if force_liquidate_end:
         rules.append("回测结束日按最后一个可用收盘价强制平掉所有未卖出持仓，最终结果只看现金。")
     else:
