@@ -363,7 +363,10 @@ export interface EastmoneyQlibBacktestResult {
   end_date: string
   lot_size: number
   score_threshold: number
+  score_profile: string
   take_profit_percent: number
+  stop_loss_percent: number
+  max_holding_days: number
   cost_rate: number
   capital_mode: string
   initial_capital: number
@@ -424,7 +427,10 @@ export interface EastmoneyQlibPoolBacktestResult {
   start_date: string
   end_date: string
   score_threshold: number
+  score_profile: string
   take_profit_percent: number
+  stop_loss_percent: number
+  max_holding_days: number
   cost_rate: number
   total_profit: number
   total_invested: number
@@ -437,6 +443,153 @@ export interface EastmoneyQlibPoolBacktestResult {
   benchmarks: EastmoneyQlibBenchmark[]
   error: string
   items: EastmoneyQlibPoolBacktestItem[]
+}
+
+export interface EastmoneyQlibStrategyYearResult {
+  year: number
+  start_date: string
+  end_date: string
+  total_profit: number
+  return_percent: number | null
+  max_capital_used: number
+  total_fee: number
+  trade_count: number
+  tested_count: number
+  skipped_count: number
+  benchmark_name: string
+  benchmark_return_percent: number | null
+  excess_return_percent: number | null
+}
+
+export interface EastmoneyQlibStrategySearchItem {
+  key: string
+  name: string
+  score_threshold: number
+  score_profile: string
+  take_profit_percent: number
+  stop_loss_percent: number
+  max_holding_days: number
+  cost_rate: number
+  total_profit: number
+  average_return_percent: number | null
+  min_return_percent: number | null
+  average_excess_return_percent: number | null
+  min_excess_return_percent: number | null
+  profitable_year_count: number
+  beat_benchmark_year_count: number
+  tested_year_count: number
+  all_years_profitable: boolean
+  all_years_beat_benchmark: boolean
+  is_qualified: boolean
+  qualification_note: string
+  years: EastmoneyQlibStrategyYearResult[]
+}
+
+export interface EastmoneyQlibStrategySearchResult {
+  pool: string
+  source: string
+  years: number[]
+  limit: number | null
+  benchmark_name: string
+  min_annual_return_percent: number
+  require_beat_benchmark: boolean
+  qualified_count: number
+  done_count: number
+  candidate_count: number
+  status: string
+  error: string
+  items: EastmoneyQlibStrategySearchItem[]
+}
+
+export interface EastmoneyQlibRotationStrategySearchItem {
+  key: string
+  name: string
+  score_profile: string
+  rank_metric: string
+  market_filter: string
+  score_threshold: number
+  min_amount: number
+  top_n: number
+  rebalance: string
+  cost_rate: number
+  total_profit: number
+  average_return_percent: number | null
+  min_return_percent: number | null
+  average_excess_return_percent: number | null
+  min_excess_return_percent: number | null
+  profitable_year_count: number
+  beat_benchmark_year_count: number
+  tested_year_count: number
+  all_years_profitable: boolean
+  all_years_beat_benchmark: boolean
+  is_qualified: boolean
+  qualification_note: string
+  years: EastmoneyQlibStrategyYearResult[]
+}
+
+export interface EastmoneyQlibRotationStrategySearchResult {
+  pool: string
+  source: string
+  years: number[]
+  limit: number | null
+  benchmark_name: string
+  min_annual_return_percent: number
+  require_beat_benchmark: boolean
+  qualified_count: number
+  done_count: number
+  candidate_count: number
+  status: string
+  error: string
+  items: EastmoneyQlibRotationStrategySearchItem[]
+}
+
+export interface EastmoneyHkConnectMomentumCandidate {
+  rank: number
+  market: string
+  symbol: string
+  name: string
+  signal_score: number
+  return_10_percent: number
+  amount: number
+  average_amount_20: number
+  close: number
+  lot_size: number
+  lot_value: number
+  budget_lots: number
+  estimated_cash: number
+  market_cap: number
+  selected: boolean
+}
+
+export interface EastmoneyHkConnectMomentumReviewResult {
+  strategy_key: string
+  strategy_name: string
+  source: string
+  status: string
+  generated_at: string
+  signal_date: string
+  hsi_date: string
+  hsi_close: number | null
+  hsi_ma60: number | null
+  hsi_filter_passed: boolean
+  action: string
+  summary: string
+  pool_count: number
+  usable_count: number
+  capital: number
+  max_position_percent: number
+  single_position_budget: number
+  cost_rate: number
+  universe_limit: number
+  min_market_cap: number
+  min_amount: number
+  top_n: number
+  lookback_days: number
+  volume_window_days: number
+  hold_days: number
+  error: string
+  candidates: EastmoneyHkConnectMomentumCandidate[]
+  selected: EastmoneyHkConnectMomentumCandidate[]
 }
 
 export interface EastmoneyFundFlowFilterOptions {
@@ -702,7 +855,10 @@ export async function fetchEastmoneyQlibOneLotScoreBacktest(params: {
   end_date?: string
   lot_size?: number
   score_threshold?: number
+  score_profile?: string
   take_profit_percent?: number
+  stop_loss_percent?: number
+  max_holding_days?: number
   cost_rate?: number
   force_liquidate_end?: boolean
   refresh?: boolean
@@ -719,17 +875,98 @@ export async function fetchEastmoneyQlibOneLotScoreBacktest(params: {
 
 export async function fetchEastmoneyQlibHkPoolOneLotScoreBacktest(params: {
   refresh?: boolean
+  background?: boolean
+  progress?: boolean
   limit?: number
   detail_limit?: number
   start_date?: string
   end_date?: string
   score_threshold?: number
+  score_profile?: string
   take_profit_percent?: number
+  stop_loss_percent?: number
+  max_holding_days?: number
   cost_rate?: number
   force_liquidate_end?: boolean
 } = {}) {
   const response = await api.get<EastmoneyQlibPoolBacktestResult>(
     '/eastmoney/qlib/backtest/hk-pool-one-lot-score',
+    {
+      params,
+      timeout: 300000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibHkPoolStrategySearch(params: {
+  years?: string
+  limit?: number
+  score_thresholds?: string
+  score_profiles?: string
+  take_profit_percents?: string
+  stop_loss_percents?: string
+  max_holding_days?: string
+  cost_rate?: number
+  min_annual_return_percent?: number
+  require_beat_benchmark?: boolean
+  background?: boolean
+  progress?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyQlibStrategySearchResult>(
+    '/eastmoney/qlib/backtest/hk-pool-strategy-search',
+    {
+      params,
+      timeout: 300000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyQlibHkPoolRotationStrategySearch(params: {
+  years?: string
+  limit?: number
+  score_profiles?: string
+  rank_metrics?: string
+  market_filters?: string
+  score_thresholds?: string
+  min_amounts?: string
+  top_n_values?: string
+  rebalances?: string
+  cost_rate?: number
+  min_annual_return_percent?: number
+  require_beat_benchmark?: boolean
+  background?: boolean
+  progress?: boolean
+} = {}) {
+  const response = await api.get<EastmoneyQlibRotationStrategySearchResult>(
+    '/eastmoney/qlib/backtest/hk-pool-rotation-strategy-search',
+    {
+      params,
+      timeout: 300000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyHkConnectMomentumReview(params: {
+  refresh?: boolean
+  background?: boolean
+  progress?: boolean
+  end_date?: string
+  capital?: number
+  max_position_percent?: number
+  universe_limit?: number
+  min_market_cap?: number
+  min_amount?: number
+  top_n?: number
+  lookback_days?: number
+  volume_window_days?: number
+  hold_days?: number
+  cost_rate?: number
+} = {}) {
+  const response = await api.get<EastmoneyHkConnectMomentumReviewResult>(
+    '/eastmoney/qlib/hk-connect-momentum-review',
     {
       params,
       timeout: 300000,

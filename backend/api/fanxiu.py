@@ -380,6 +380,7 @@ from backend.core.fanxiu_data_annotation_models import (
     FanxiuDataAnnotationRuntimeStatus,
     FanxiuDataAnnotationRuntimeTaskRequest,
     FanxiuDataAnnotationRuntimeStopRequest,
+    FanxiuDataAnnotationRuntimeGuardGroupRequest,
     FanxiuDataAnnotationRuntimeGuardRequest,
     FanxiuDataAnnotationSchedulerTaskItem,
     FanxiuDataAnnotationSchedulerTasksResponse,
@@ -387,6 +388,7 @@ from backend.core.fanxiu_data_annotation_models import (
     FanxiuDataAnnotationSchedulerPlanResponse,
     FanxiuDataAnnotationSchedulerRunDueRequest,
     FanxiuDataAnnotationSchedulerRunNowRequest,
+    FanxiuDataAnnotationSchedulerSettingsRequest,
     FanxiuDataAnnotationWorldFactsResponse,
 )
 from backend.core.fanxiu_data_annotation_state import (
@@ -438,10 +440,12 @@ from backend.core.fanxiu_behavior_tree import (
     fanxiu_data_annotation_runtime_logs as _core_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status as _core_data_annotation_runtime_status,
     fanxiu_data_annotation_runtime_state_path as _core_runtime_state_path,
+    fanxiu_data_annotation_scheduler_settings_path as _core_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
     fanxiu_job_group_isolated,
     fanxiu_job_group_isolation_path as _core_job_group_isolation_path,
+    fanxiu_runtime_runner_wake,
     clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
     release_fanxiu_job_group_isolation,
     register_fanxiu_runtime_runner,
@@ -3848,6 +3852,10 @@ def _data_annotation_scheduler_state_path() -> Path:
     return _core_scheduler_state_path()
 
 
+def _data_annotation_scheduler_settings_path() -> Path:
+    return _core_scheduler_settings_path()
+
+
 def _data_annotation_manual_job_state_path() -> Path:
     return _core_manual_job_state_path()
 
@@ -4055,6 +4063,7 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
     return _runtime_control.build_scheduler_plan(
         scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         manual_job_path=_data_annotation_manual_job_state_path(),
     )
@@ -5120,6 +5129,27 @@ def set_fanxiu_data_annotation_runtime_guard(
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
+@status_router.post("/data-annotation/runtime/guard/group/set", response_model=FanxiuDataAnnotationRuntimeStatus)
+def set_fanxiu_data_annotation_runtime_guard_group(
+    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_runtime_guard_group_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        enabled=req.enabled,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
 @status_router.post(
     "/data-annotation/runtime/service/guard/set",
     response_model=FanxiuDataAnnotationRuntimeStatus,
@@ -5138,6 +5168,29 @@ def set_fanxiu_data_annotation_runtime_service_guard(
         guard_id=req.guard_id,
         enabled=req.enabled,
         interval_seconds=req.interval_seconds,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+@status_router.post(
+    "/data-annotation/runtime/service/guard/group/set",
+    response_model=FanxiuDataAnnotationRuntimeStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+)
+def set_fanxiu_data_annotation_runtime_service_guard_group(
+    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
+    session: Session = Depends(get_session),
+):
+    entry = _get_service_user_device_or_404(session, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_runtime_guard_group_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        enabled=req.enabled,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
@@ -5263,11 +5316,15 @@ def get_fanxiu_data_annotation_scheduler_tasks(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    settings = _runtime_control.read_scheduler_settings(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    )
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
             for item in _read_data_annotation_scheduler_tasks()
         ],
+        job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
     )
 
@@ -5300,6 +5357,51 @@ def put_fanxiu_data_annotation_scheduler_tasks(
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
             for item in payload
         ],
+        job_group_enabled=bool(_runtime_control.read_scheduler_settings(
+            scheduler_settings_path=_data_annotation_scheduler_settings_path()
+        ).get("job_group_enabled", True)),
+        path=str(_data_annotation_scheduler_state_path()),
+    )
+
+
+@status_router.get("/data-annotation/scheduler/settings", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
+def get_fanxiu_data_annotation_scheduler_settings(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    settings = _runtime_control.read_scheduler_settings(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    )
+    return FanxiuDataAnnotationSchedulerTasksResponse(
+        tasks=[
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
+            for item in _read_data_annotation_scheduler_tasks()
+        ],
+        job_group_enabled=bool(settings.get("job_group_enabled", True)),
+        path=str(_data_annotation_scheduler_state_path()),
+    )
+
+
+@status_router.put("/data-annotation/scheduler/settings", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
+def put_fanxiu_data_annotation_scheduler_settings(
+    req: FanxiuDataAnnotationSchedulerSettingsRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    settings = _runtime_control.set_scheduler_job_group_enabled(
+        req.job_group_enabled,
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+    )
+    _sync_data_annotation_runtime_runner_to_core()
+    fanxiu_runtime_runner_wake()
+    return FanxiuDataAnnotationSchedulerTasksResponse(
+        tasks=[
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
+            for item in _read_data_annotation_scheduler_tasks()
+        ],
+        job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
     )
 
@@ -5378,6 +5480,7 @@ def run_due_fanxiu_data_annotation_scheduler_tasks(
         entry=entry,
         entry_id=entry_id,
         scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         manual_job_path=_data_annotation_manual_job_state_path(),
@@ -5402,6 +5505,7 @@ def run_due_fanxiu_data_annotation_scheduler_service_tasks(
         entry=entry,
         entry_id=entry_id,
         scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         manual_job_path=_data_annotation_manual_job_state_path(),

@@ -76,6 +76,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "tools.open-score-study",
+      "title": "开源乐谱解析",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 45,
+      "route_paths": ["/tools/open-score-study"],
+      "menu_paths": ["/tools/open-score-study"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "ai-tools",
       "title": "AI工具",
       "node_type": "group",

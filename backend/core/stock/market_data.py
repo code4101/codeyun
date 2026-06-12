@@ -136,8 +136,10 @@ def get_market_data_db_path(data_dir: str | Path | None = None) -> Path:
 def connect_market_data_db(path: str | Path | None = None) -> sqlite3.Connection:
     db_path = Path(path) if path is not None else get_market_data_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
     ensure_market_data_schema(conn)
     return conn
 

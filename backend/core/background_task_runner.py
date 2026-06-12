@@ -47,9 +47,11 @@ MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT = 200
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
+HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
+HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
 RUANYF_WEEKLY_START_TIME = "06:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 6
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 7
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
@@ -60,6 +62,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
     MARKET_QUOTE_REFRESH_TASK_KEY,
+    HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
 }
@@ -181,6 +184,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"}, retry_minutes=10)
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
+    if task_key == HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
         return _job_schedule_policy({"type": "cron", "expression": "0 * * * *"}, retry_minutes=10)
     if task_key == "storage_analysis":
@@ -448,6 +453,27 @@ def _enqueue_market_quote_refresh() -> str | None:
     return task_id
 
 
+def _run_hk_connect_momentum_review_job() -> dict:
+    from backend.api.eastmoney import run_hk_connect_momentum_review_snapshot_job
+
+    payload = run_hk_connect_momentum_review_snapshot_job()
+    print(
+        "HK connect momentum review completed: "
+        f"signal_date={payload.get('signal_date')} "
+        f"action={payload.get('action')} "
+        f"selected={len(payload.get('selected') or [])}"
+    )
+    return payload
+
+
+def _enqueue_hk_connect_momentum_review() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
+        _run_hk_connect_momentum_review_job,
+    )
+    return task_id
+
+
 def _enqueue_public_frontend_deploy() -> str | None:
     task_id, _ = background_task_queue.enqueue_once(PUBLIC_FRONTEND_DEPLOY_TASK_KEY, run_public_frontend_deploy_check)
     return task_id
@@ -577,6 +603,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后下次调度重试",
         action=_enqueue_market_quote_refresh,
         manual_warning="会访问东方财富公共行情接口，仅刷新当前持仓现价缓存，不修改交易数据。",
+    ),
+    BackgroundTaskSpec(
+        key=HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
+        title="港股通策略复盘",
+        category="股票",
+        description="每天港股收盘后刷新港股通大市值成交额动量策略快照，给出次日开盘买入或空仓建议；无信号也会写入复盘摘要。",
+        schedule_label=f"每天 {HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_hk_connect_momentum_review,
+        manual_warning="会访问东方财富和 AkShare 公共行情，刷新策略复盘缓存；只生成建议，不修改交易数据。",
+        default_visible=False,
     ),
     BackgroundTaskSpec(
         key="storage_analysis",

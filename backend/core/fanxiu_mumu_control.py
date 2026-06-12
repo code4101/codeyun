@@ -93,6 +93,8 @@ def _is_mumu_adb_unavailable_error(message: str) -> bool:
             "failed to connect",
             "timed out",
             "adb 端口不可用",
+            "securityexception",
+            "injecting to another application requires inject_events permission",
         )
     )
 

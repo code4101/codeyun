@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from backend.api import fanxiu
+from backend.core import fanxiu_data_annotation_runtime_control as runtime_control
 from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
 from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
 from backend.core.fanxiu_runtime_errors import FanxiuRuntimeError
@@ -14,15 +15,21 @@ def _scheduler_state_path(tmp_path):
     return tmp_path / "fanxiu" / "data-annotation" / "runtime" / "scheduler_tasks.json"
 
 
+def _scheduler_settings_path(tmp_path):
+    return tmp_path / "fanxiu" / "data-annotation" / "runtime" / "scheduler_settings.json"
+
+
 def _patch_data_annotation_api_common(monkeypatch, tmp_path):
     monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_fanxiu_runtime_runner())
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_settings_path", lambda: _scheduler_settings_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_job_group_isolation_path", lambda: tmp_path / "job_group_isolation.json")
     monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_settings_path", lambda: _scheduler_settings_path(tmp_path))
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
@@ -250,6 +257,7 @@ def test_data_annotation_runtime_scheduler_routes_replace_stepper_routes():
         "/data-annotation/runtime/task/tick",
         "/data-annotation/runtime/logs",
         "/data-annotation/scheduler/tasks",
+        "/data-annotation/scheduler/settings",
         "/data-annotation/scheduler/run-due",
         "/data-annotation/scheduler/task/run-now",
     }
@@ -587,6 +595,77 @@ def test_data_annotation_scheduler_plan_uses_world_facts_and_due_tasks(tmp_path,
     assert plan["facts_summary"]["task_fact_count"] == 1
     legacy_item = next(item for item in plan["tasks"] if item["id"] == "legacy-daily-youli")
     assert legacy_item["supported"] is False
+
+
+def test_scheduler_job_group_settings_default_enabled_and_persisted(tmp_path):
+    path = _scheduler_settings_path(tmp_path)
+
+    assert runtime_control.read_scheduler_settings(scheduler_settings_path=path)["job_group_enabled"] is True
+
+    saved = runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=path)
+
+    assert saved["job_group_enabled"] is False
+    assert runtime_control.read_scheduler_settings(scheduler_settings_path=path)["job_group_enabled"] is False
+    assert json.loads(path.read_text(encoding="utf-8"))["job_group_enabled"] is False
+
+
+def test_scheduler_plan_keeps_due_tasks_but_marks_job_group_disabled(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(fanxiu.time, "time", lambda: datetime(2026, 6, 2, 12, 0).timestamp())
+    runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "due-gift",
+            "task_type": "gift_code_redeem",
+            "label": "礼包",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "enabled": True,
+            "interruptible": True,
+            "next_time": "2026-06-02 04:00:00",
+            "payload": {"codes": []},
+        }
+    ])
+
+    plan = fanxiu._build_data_annotation_scheduler_plan()
+
+    assert plan["job_group_enabled"] is False
+    assert plan["next_action"] == "job_group_disabled"
+    assert plan["due_tasks"][0]["id"] == "due-gift"
+
+
+def test_run_due_scheduler_tasks_skips_when_job_group_disabled(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
+    monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runtime_control, "submit_manual_job", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not submit jobs")))
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "due-gift",
+            "task_type": "gift_code_redeem",
+            "label": "礼包",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "enabled": True,
+            "interruptible": True,
+            "next_time": "2000-01-01 00:00:00",
+            "payload": {"codes": []},
+        }
+    ])
+
+    status = runtime_control.run_due_scheduler_tasks(
+        entry=object(),
+        entry_id="entry",
+        scheduler_state_path=_scheduler_state_path(tmp_path),
+        scheduler_settings_path=_scheduler_settings_path(tmp_path),
+        runtime_state_path=tmp_path / "runtime_state.json",
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert status["phase"] == "scheduler_job_group_disabled"
+    assert "作业组已关闭" in status["message"]
 
 
 def test_data_annotation_scheduler_plan_waits_for_non_interruptible_runtime(tmp_path, monkeypatch):
@@ -1188,6 +1267,41 @@ def test_data_annotation_guard_endpoint_persists_switch_state(tmp_path, monkeypa
     assert persisted["guard_interval_seconds"] == 3
 
 
+def test_data_annotation_guard_group_endpoint_persists_switch_state(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+
+    def fake_set_guard_group_enabled(**kwargs):
+        return {
+            "ok": True,
+            "running": False,
+            "guard_group_enabled": kwargs["enabled"],
+            "guard_group_running": False,
+            "guard_enabled": True,
+            "guard_running": False,
+            "guard_entry_id": kwargs["entry_id"],
+            "guard_interval_seconds": 2,
+            "status": "idle",
+            "entry_id": kwargs["entry_id"],
+            "message": "guard group set",
+            "guard_items": {"close_popups": {"id": "close_popups", "enabled": True}},
+            "logs": [],
+        }
+
+    monkeypatch.setattr(runtime_control, "set_fanxiu_runtime_guard_group_enabled", fake_set_guard_group_enabled)
+
+    response = fanxiu.set_fanxiu_data_annotation_runtime_guard_group(
+        fanxiu.FanxiuDataAnnotationRuntimeGuardGroupRequest(entry_id="entry", enabled=False),
+        current_user=object(),
+        session=object(),
+    )
+    persisted = json.loads((tmp_path / "runtime_state.json").read_text(encoding="utf-8"))
+
+    assert response.guard_group_enabled is False
+    assert response.guard_enabled is True
+    assert persisted["guard_group_enabled"] is False
+    assert persisted["guard_items"]["close_popups"]["enabled"] is True
+
+
 def test_data_annotation_runtime_status_corrects_stale_running_after_backend_reload(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     stale_status = {
@@ -1347,6 +1461,37 @@ def test_due_scheduler_is_skipped_when_job_group_isolated(tmp_path, monkeypatch)
     }
     fanxiu._write_data_annotation_scheduler_tasks([task])
     runner._acquire_job_group_isolation(reason="test")
+
+    started = runner._start_due_scheduler_tasks_if_idle(
+        entry=object(),
+        entry_id="entry",
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert started is False
+
+
+def test_due_scheduler_is_skipped_when_job_group_disabled(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
+    task = {
+        "id": "hide-floating",
+        "task_type": "hide_floating_window",
+        "label": "隐藏浮窗",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "interruptible": True,
+        "payload": {},
+        "schedule_times": ["00:00"],
+        "last_result": "",
+    }
+    fanxiu._write_data_annotation_scheduler_tasks([task])
+    monkeypatch.setattr(
+        runner,
+        "start_scheduler_tasks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("disabled job group must not start due tasks")),
+    )
 
     started = runner._start_due_scheduler_tasks_if_idle(
         entry=object(),

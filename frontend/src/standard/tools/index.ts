@@ -10,6 +10,7 @@ import aiWechatPage from './ai-wechat'
 import colorToolsPage from './color-tools'
 import imageBrowserPage from './image-browser'
 import musicToolsPage from './music-tools'
+import openScoreStudyPage from './open-score-study'
 import passwordGeneratorPage from './password-generator'
 
 const pages: AppPageDefinition[] = [
@@ -17,6 +18,7 @@ const pages: AppPageDefinition[] = [
   colorToolsPage,
   imageBrowserPage,
   musicToolsPage,
+  openScoreStudyPage,
   aiConfigPage,
   aiEvoMindPage,
   aiChatPage,

@@ -91,6 +91,16 @@ def load_index_benchmark(
     )
 
 
+def load_index_rows(
+    *,
+    market: str,
+    symbol: str,
+    refresh: bool = False,
+) -> tuple[dict[str, Any], ...]:
+    rows, _source, _error = _load_index_rows(market=market, symbol=symbol, refresh=refresh)
+    return rows
+
+
 def serialize_index_benchmark(item: IndexBenchmark) -> dict[str, Any]:
     return {
         "market": item.market,

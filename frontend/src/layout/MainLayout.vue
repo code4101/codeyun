@@ -70,6 +70,7 @@ const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const MUSIC_TOOLS_PATH = requirePageMenuPath('MusicTools');
+const OPEN_SCORE_STUDY_PATH = requirePageMenuPath('OpenScoreStudy');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
 const AI_EVOMIND_PATH = requirePageMenuPath('AiEvoMind');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
@@ -141,6 +142,7 @@ const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENER
 const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH);
 const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
 const MUSIC_TOOLS_TITLE = requirePermissionTitleByMenuPath(MUSIC_TOOLS_PATH);
+const OPEN_SCORE_STUDY_TITLE = requirePermissionTitleByMenuPath(OPEN_SCORE_STUDY_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
 const AI_EVOMIND_TITLE = requirePermissionTitleByMenuPath(AI_EVOMIND_PATH);
@@ -797,6 +799,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(IMAGE_BROWSER_PATH)" :index="IMAGE_BROWSER_PATH">{{ IMAGE_BROWSER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(COLOR_TOOLS_PATH)" :index="COLOR_TOOLS_PATH">{{ COLOR_TOOLS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(MUSIC_TOOLS_PATH)" :index="MUSIC_TOOLS_PATH">{{ MUSIC_TOOLS_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(OPEN_SCORE_STUDY_PATH)" :index="OPEN_SCORE_STUDY_PATH">{{ OPEN_SCORE_STUDY_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="aiToolsMenuVisible" index="ai-tools">

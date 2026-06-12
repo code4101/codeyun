@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
-import { DataZoomComponent, GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { DataZoomComponent, GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { BarChart, CustomChart, LineChart } from 'echarts/charts'
 import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessage } from 'element-plus'
@@ -10,26 +10,29 @@ import {
   fetchEastmoneyQlibAnalysis,
   fetchEastmoneyQlibHkPoolScreen,
   fetchEastmoneyQlibHkPoolOneLotScoreBacktest,
-  fetchEastmoneyQlibOneLotScoreBacktest,
+  fetchEastmoneyQlibHkPoolRotationStrategySearch,
+  fetchEastmoneyQlibHkPoolStrategySearch,
+  fetchEastmoneyHkConnectMomentumReview,
   fetchEastmoneyAkshareHistory,
   fetchEastmoneyAkshareIntraday,
   type EastmoneyAkshareHistoryItem,
   type EastmoneyAkshareIntradayItem,
-  type EastmoneyQlibBacktestResult,
+  type EastmoneyHkConnectMomentumCandidate,
+  type EastmoneyHkConnectMomentumReviewResult,
   type EastmoneyQlibPoolBacktestItem,
   type EastmoneyQlibPoolBacktestResult,
   type EastmoneyQlibAnalysis,
   type EastmoneyQlibScreenItem,
   type EastmoneyQlibScreenResult,
+  type EastmoneyQlibRotationStrategySearchResult,
+  type EastmoneyQlibStrategySearchResult,
 } from '@/api/eastmoney'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { formatChineseCompactNumber } from '@/standard/fanxiu/numberFormat'
 
-echarts.use([DataZoomComponent, GridComponent, LegendComponent, TooltipComponent, BarChart, CustomChart, LineChart, CanvasRenderer])
+echarts.use([DataZoomComponent, GridComponent, LegendComponent, TitleComponent, TooltipComponent, BarChart, CustomChart, LineChart, CanvasRenderer])
 
 const PREFERENCE_STORAGE_KEY = 'codeyun.eastmoney.robotHistory.preferences'
-const BACKTEST_START_DATE = '2025-01-01'
-const BACKTEST_END_DATE = '2025-12-31'
 
 type MainPeriodValue = 'intraday' | 'five_day' | 'daily' | 'weekly' | 'monthly'
 type MorePeriodValue = 'minute_1' | 'minute_5' | 'minute_15' | 'minute_30' | 'minute_60' | 'minute_120' | 'quarterly' | 'yearly'
@@ -49,6 +52,25 @@ type RobotHistoryPreferences = {
   adjust?: string
   startDate?: string
   endDate?: string
+}
+type StrategyDeskKey = 'hk_connect' | 'cross_asset_etf' | 'convertible_bond'
+type StrategyDeskStatus = 'buy' | 'hold_cash' | 'watch'
+type StrategyDeskItem = {
+  key: StrategyDeskKey
+  name: string
+  status: StrategyDeskStatus
+  statusText: string
+  summary: string
+  evidence: string
+  risk: string
+}
+type StrategyDeskOrder = {
+  code: string
+  name: string
+  close: number
+  amount: string
+  quantity: string
+  skipAbove: number
 }
 
 const watchTargets: WatchTarget[] = [
@@ -133,24 +155,63 @@ const qlibAnalysis = ref<EastmoneyQlibAnalysis | null>(null)
 const hkPoolLoading = ref(false)
 const hkPoolRefreshing = ref(false)
 const hkPoolScreen = ref<EastmoneyQlibScreenResult | null>(null)
-const backtestLoading = ref(false)
-const backtestResult = ref<EastmoneyQlibBacktestResult | null>(null)
+const hkConnectReviewLoading = ref(false)
+const hkConnectReviewRefreshing = ref(false)
+const hkConnectReview = ref<EastmoneyHkConnectMomentumReviewResult | null>(null)
 const poolBacktestLoading = ref(false)
 const poolBacktestRefreshing = ref(false)
 const poolBacktestResult = ref<EastmoneyQlibPoolBacktestResult | null>(null)
+const poolBacktestYear = ref('2025')
+const poolBacktestScoreThreshold = ref(84)
+const poolBacktestTakeProfitPercent = ref(5)
+const poolBacktestCostPercent = ref(1)
+const poolBacktestLimit = ref(0)
+const strategySearchLoading = ref(false)
+const strategySearchRefreshing = ref(false)
+const strategySearchResult = ref<EastmoneyQlibStrategySearchResult | null>(null)
+const strategySearchYears = ref('2023,2024,2025')
+const strategySearchLimit = ref(20)
+const strategySearchScoreThresholds = ref('70,76,80,84,88,90')
+const strategySearchScoreProfiles = ref('balanced,trend_momentum,short_reversal,low_volatility,volume_breakout')
+const strategySearchTakeProfitPercents = ref('5,8,10,15')
+const strategySearchStopLossPercents = ref('0,8')
+const strategySearchMaxHoldingDays = ref('0,60')
+const strategySearchCostPercent = ref(1)
+const strategySearchMinAnnualReturnPercent = ref(5)
+const strategySearchRequireBeatBenchmark = ref(true)
+const rotationSearchLoading = ref(false)
+const rotationSearchRefreshing = ref(false)
+const rotationSearchResult = ref<EastmoneyQlibRotationStrategySearchResult | null>(null)
+const rotationSearchYears = ref('2024,2025')
+const rotationSearchLimit = ref(100)
+const rotationSearchScoreProfiles = ref('balanced')
+const rotationSearchRankMetrics = ref('score,volume_breakout_rank,value_score_rank')
+const rotationSearchMarketFilters = ref('none,hsi_ma60')
+const rotationSearchScoreThresholds = ref('0')
+const rotationSearchMinAmounts = ref('10000000')
+const rotationSearchTopNValues = ref('5')
+const rotationSearchRebalances = ref('quarterly')
+const rotationSearchCostPercent = ref(1)
+const rotationSearchMinAnnualReturnPercent = ref(5)
+const rotationSearchRequireBeatBenchmark = ref(true)
 const hkPoolPage = ref(1)
 const hkPoolPageSize = ref(20)
+const selectedStrategyKey = ref<StrategyDeskKey>('cross_asset_etf')
+const researchPanels = ref<string[]>([])
 const loadedAt = ref('')
 const rows = ref<EastmoneyAkshareHistoryItem[]>([])
 const intradayRows = ref<EastmoneyAkshareIntradayItem[]>([])
+const chartNotice = ref('')
 const chartRef = ref<HTMLDivElement | null>(null)
-const backtestChartRef = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
-let backtestChart: echarts.ECharts | null = null
 let resizeObserver: ResizeObserver | null = null
 let loadSequence = 0
 let qlibLoadSequence = 0
 let intradayRefreshTimer: number | null = null
+let poolBacktestProgressTimer: number | null = null
+let hkConnectReviewProgressTimer: number | null = null
+let strategySearchProgressTimer: number | null = null
+let rotationSearchProgressTimer: number | null = null
 
 const periodOptions: { label: string, value: MainPeriodValue }[] = [
   { label: '分时', value: 'intraday' },
@@ -175,6 +236,21 @@ const adjustOptions = [
   { label: '不复权', value: '' },
   { label: '前复权', value: 'qfq' },
   { label: '后复权', value: 'hfq' },
+]
+const poolBacktestYearOptions = ['2025', '2024', '2023', '2022', '2021', '2020']
+const poolBacktestLimitOptions = [
+  { label: '全量', value: 0 },
+  { label: '前100', value: 100 },
+  { label: '前300', value: 300 },
+  { label: '前500', value: 500 },
+  { label: '前1000', value: 1000 },
+]
+const strategySearchLimitOptions = [
+  { label: '前20', value: 20 },
+  { label: '前100', value: 100 },
+  { label: '前300', value: 300 },
+  { label: '前500', value: 500 },
+  { label: '全量', value: 0 },
 ]
 
 const isIntraday = computed(() => period.value === 'intraday' || period.value === 'five_day' || period.value.startsWith('minute_'))
@@ -217,25 +293,34 @@ const maxIntradayVolumeRow = computed(() => intradayRows.value.reduce<EastmoneyA
   if (!best) return row
   return (row.volume ?? 0) > (best.volume ?? 0) ? row : best
 }, null))
+const usingDailyFallback = computed(() => isIntraday.value && intradayRows.value.length === 0 && rows.value.length > 0)
+const metricLatestClose = computed(() => {
+  if (usingDailyFallback.value) return latestRow.value?.close
+  return isIntraday.value ? latestIntradayRow.value?.close : latestRow.value?.close
+})
+const metricChange = computed(() => {
+  if (usingDailyFallback.value) return closeChange.value
+  return isIntraday.value ? intradayChange.value : closeChange.value
+})
+const metricChangeRate = computed(() => {
+  if (usingDailyFallback.value) return closeChangeRate.value
+  return isIntraday.value ? intradayChangeRate.value : closeChangeRate.value
+})
+const metricTotalAmount = computed(() => {
+  if (usingDailyFallback.value) return totalAmount.value
+  return isIntraday.value ? intradayTotalAmount.value : totalAmount.value
+})
+const metricMaxVolumeLabel = computed(() => {
+  if (usingDailyFallback.value || !isIntraday.value) {
+    return `${maxVolumeRow.value?.date || '-'} · ${formatVolume(maxVolumeRow.value?.volume)}`
+  }
+  return `${maxIntradayVolumeRow.value?.time?.slice(11, 16) || '-'} · ${formatVolume(maxIntradayVolumeRow.value?.volume)}`
+})
+const metricRowCount = computed(() => usingDailyFallback.value || !isIntraday.value ? rows.value.length : intradayRows.value.length)
+const metricModeLabel = computed(() => usingDailyFallback.value ? '日K兜底' : selectedPeriodLabel.value)
 const qlibScoreRules = computed(() => qlibAnalysis.value?.scoring_rules?.length
   ? qlibAnalysis.value.scoring_rules
   : hkPoolScreen.value?.scoring_rules ?? [])
-const backtestOpenLots = computed(() => {
-  const result = backtestResult.value
-  if (!result?.lot_size) return 0
-  return Math.floor(result.open_position_shares / result.lot_size)
-})
-const backtestMaxScore = computed(() => {
-  const scores = (backtestResult.value?.points ?? [])
-    .map((point) => point.score)
-    .filter((score): score is number => score != null && Number.isFinite(score))
-  return scores.length ? Math.max(...scores) : null
-})
-const backtestTriggerCount = computed(() => {
-  const result = backtestResult.value
-  if (!result) return 0
-  return result.points.filter((point) => (point.score ?? -1) >= result.score_threshold).length
-})
 const poolBacktestWinners = computed(() => {
   return (poolBacktestResult.value?.items ?? [])
     .filter((item) => item.total_profit > 0)
@@ -251,6 +336,82 @@ const poolBacktestReturnPercent = computed(() => {
   const result = poolBacktestResult.value
   if (!result?.max_capital_used) return null
   return result.total_profit / result.max_capital_used * 100
+})
+const poolBacktestStartDate = computed(() => `${poolBacktestYear.value}-01-01`)
+const poolBacktestEndDate = computed(() => `${poolBacktestYear.value}-12-31`)
+const poolBacktestScaleLabel = computed(() => poolBacktestLimit.value ? `前${poolBacktestLimit.value}` : '全量')
+const poolBacktestActionText = computed(() => poolBacktestLimit.value ? '快速试算' : '全量重算')
+const poolBacktestRunning = computed(() => (poolBacktestResult.value?.source || '').startsWith('running:'))
+const strategySearchRows = computed(() => strategySearchResult.value?.items ?? [])
+const strategySearchScaleLabel = computed(() => strategySearchLimit.value ? `前${strategySearchLimit.value}` : '全量')
+const strategySearchRunning = computed(() => strategySearchResult.value?.status === 'running' || (strategySearchResult.value?.source || '').startsWith('running:'))
+const strategySearchQualifiedCount = computed(() => strategySearchResult.value?.qualified_count ?? strategySearchRows.value.filter((row) => row.is_qualified).length)
+const rotationSearchRows = computed(() => rotationSearchResult.value?.items ?? [])
+const rotationSearchScaleLabel = computed(() => rotationSearchLimit.value ? `前${rotationSearchLimit.value}` : '全量')
+const rotationSearchRunning = computed(() => rotationSearchResult.value?.status === 'running' || (rotationSearchResult.value?.source || '').startsWith('running:'))
+const rotationSearchQualifiedCount = computed(() => rotationSearchResult.value?.qualified_count ?? rotationSearchRows.value.filter((row) => row.is_qualified).length)
+const hkConnectReviewRunning = computed(() => hkConnectReview.value?.status === 'running' || (hkConnectReview.value?.source || '').startsWith('running:'))
+const hkConnectActionText = computed(() => {
+  if (!hkConnectReview.value) return '-'
+  if (hkConnectReview.value.action === 'buy') return '开仓'
+  if (hkConnectReview.value.action === 'hold_cash') return '空仓'
+  return '等待'
+})
+const hkConnectActionClass = computed(() => {
+  if (hkConnectReview.value?.action === 'buy') return 'positive'
+  if (hkConnectReview.value?.action === 'hold_cash') return 'negative'
+  return ''
+})
+const hkConnectCandidateRows = computed(() => hkConnectReview.value?.candidates ?? [])
+const hkConnectSelectedRows = computed(() => hkConnectReview.value?.selected ?? [])
+const crossAssetOrders: StrategyDeskOrder[] = [
+  { code: '513520', name: '日经ETF华夏', close: 2.292, amount: '34838.40 元', quantity: '15200 份', skipAbove: 2.338 },
+  { code: '515220', name: '煤炭ETF国泰', close: 1.318, amount: '34927.00 元', quantity: '26500 份', skipAbove: 1.344 },
+]
+const convertibleBondWatchRows = [
+  { code: '111023', name: '利柏转债', metric: '双低 110.23', note: 'AA / 成交 3.08 亿' },
+  { code: '113042', name: '上银转债', metric: '双低 124.01', note: 'AAA / 成交 4.38 亿' },
+  { code: '113644', name: '艾迪转债', metric: '双低 123.03', note: 'AA- / 成交 3.69 亿' },
+]
+const strategyDeskItems = computed<StrategyDeskItem[]>(() => {
+  const hkSummary = hkConnectReview.value?.summary || '恒生指数过滤未确认，等待盘后复盘。'
+  return [
+    {
+      key: 'hk_connect',
+      name: '港股通主策略',
+      status: hkConnectReview.value?.action === 'buy' ? 'buy' : 'hold_cash',
+      statusText: hkConnectReview.value?.action === 'buy' ? '开仓' : '空仓',
+      summary: hkSummary,
+      evidence: hkConnectReview.value
+        ? `恒生 ${formatNumber(hkConnectReview.value.hsi_close, 2)} / MA60 ${formatNumber(hkConnectReview.value.hsi_ma60, 2)}`
+        : '等待缓存',
+      risk: '只在恒生站上 60 日线后执行，避免弱势市场追动量。',
+    },
+    {
+      key: 'cross_asset_etf',
+      name: '跨资产 ETF 轮动',
+      status: 'watch',
+      statusText: '小仓验证',
+      summary: '固定资产池周频 20 日动量给出下周信号，建议只用观察仓验证。',
+      evidence: '2021-2026YTD 年度为正；最大回撤约 -13.20%。',
+      risk: '2026 年 3-4 月曾连续亏损，不适合满额执行。',
+    },
+    {
+      key: 'convertible_bond',
+      name: '可转债观察池',
+      status: 'watch',
+      statusText: '观察',
+      summary: '当前有双低候选，但价格型周频回测没有通过年度稳定性。',
+      evidence: '低价 Top10 在 2022、2023、2026YTD 均不稳定。',
+      risk: '缺历史溢价率、剩余规模和强赎状态，不直接给买入清单。',
+    },
+  ]
+})
+const selectedStrategy = computed<StrategyDeskItem>(() => strategyDeskItems.value.find((item) => item.key === selectedStrategyKey.value) ?? strategyDeskItems.value[0]!)
+const deskFinalAction = computed(() => {
+  if (selectedStrategy.value?.key === 'cross_asset_etf') return '下周可小仓验证'
+  if (hkConnectReview.value?.action === 'buy') return '港股通可开仓'
+  return '主策略空仓'
 })
 
 function formatNumber(value: number | null | undefined, digits = 3) {
@@ -412,6 +573,7 @@ async function loadHistory() {
   loading.value = true
   rows.value = []
   intradayRows.value = []
+  chartNotice.value = ''
   loadedAt.value = ''
   try {
     const result = await fetchEastmoneyAkshareHistory({
@@ -444,6 +606,7 @@ async function loadIntraday() {
   loadSequence = sequence
   loading.value = true
   rows.value = []
+  chartNotice.value = ''
   try {
     const intradayParams = intradayParamsForApi()
     const result = await fetchEastmoneyAkshareIntraday({
@@ -455,6 +618,22 @@ async function loadIntraday() {
     })
     if (sequence !== loadSequence) return
     intradayRows.value = result.items
+    if (result.items.length === 0) {
+      const fallback = await fetchEastmoneyAkshareHistory({
+        market: activeTarget.value.market,
+        symbol: activeTarget.value.symbol,
+        name: activeTarget.value.name,
+        period: 'daily',
+        start_date: activeTarget.value.startDate,
+        adjust: 'qfq',
+        refresh: false,
+      })
+      if (sequence !== loadSequence) return
+      rows.value = fallback.items
+      chartNotice.value = fallback.items.length > 0
+        ? `${selectedPeriodLabel.value}暂无数据，已显示日K缓存`
+        : `${selectedPeriodLabel.value}和日K缓存均暂无数据`
+    }
     loadedAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
     await nextTick()
     renderChart()
@@ -542,31 +721,57 @@ async function loadHkPoolScreen(refresh = false) {
   }
 }
 
-async function loadXiaomiBacktest() {
-  backtestLoading.value = true
+async function loadHkConnectReview(refresh = false) {
+  if (refresh) {
+    hkConnectReviewRefreshing.value = true
+  }
+  else {
+    hkConnectReviewLoading.value = true
+  }
   try {
-    backtestResult.value = await fetchEastmoneyQlibOneLotScoreBacktest({
-      market: 'HK',
-      symbol: '01810',
-      name: '小米集团',
-      start_date: BACKTEST_START_DATE,
-      end_date: BACKTEST_END_DATE,
-      lot_size: 200,
-      score_threshold: 84,
-      take_profit_percent: 5,
-      cost_rate: 0.01,
-      force_liquidate_end: true,
-      refresh: false,
+    hkConnectReview.value = await fetchEastmoneyHkConnectMomentumReview({
+      refresh,
+      background: refresh,
     })
-    await nextTick()
-    renderBacktestChart()
+    if (refresh) {
+      startHkConnectReviewProgressTimer()
+      ElMessage.success('港股通策略复盘已在后台开始')
+    }
   }
   catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    ElMessage.error(`读取小米策略回测失败：${message}`)
+    ElMessage.error(`读取港股通策略复盘失败：${message}`)
   }
   finally {
-    backtestLoading.value = false
+    hkConnectReviewLoading.value = false
+    if (!refresh || hkConnectReviewProgressTimer == null) {
+      hkConnectReviewRefreshing.value = false
+    }
+  }
+}
+
+async function loadHkConnectReviewProgress() {
+  try {
+    const result = await fetchEastmoneyHkConnectMomentumReview({
+      progress: true,
+    })
+    hkConnectReview.value = result
+    if (result.status !== 'running' && !result.source.startsWith('running:')) {
+      stopHkConnectReviewProgressTimer()
+      hkConnectReviewRefreshing.value = false
+      if (result.error) {
+        ElMessage.error(`港股通策略复盘失败：${result.error}`)
+      }
+      else {
+        ElMessage.success('港股通策略复盘完成')
+      }
+    }
+  }
+  catch (error) {
+    stopHkConnectReviewProgressTimer()
+    hkConnectReviewRefreshing.value = false
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取港股通策略复盘进度失败：${message}`)
   }
 }
 
@@ -578,18 +783,22 @@ async function loadPoolBacktest(refresh = false) {
     poolBacktestLoading.value = true
   }
   try {
+    const limit = poolBacktestLimit.value || undefined
     poolBacktestResult.value = await fetchEastmoneyQlibHkPoolOneLotScoreBacktest({
       refresh,
-      detail_limit: 5000,
-      start_date: BACKTEST_START_DATE,
-      end_date: BACKTEST_END_DATE,
-      score_threshold: 84,
-      take_profit_percent: 5,
-      cost_rate: 0.01,
+      background: refresh,
+      limit,
+      detail_limit: limit ? Math.max(limit, 100) : 5000,
+      start_date: poolBacktestStartDate.value,
+      end_date: poolBacktestEndDate.value,
+      score_threshold: poolBacktestScoreThreshold.value,
+      take_profit_percent: poolBacktestTakeProfitPercent.value,
+      cost_rate: poolBacktestCostPercent.value / 100,
       force_liquidate_end: true,
     })
     if (refresh) {
-      ElMessage.success(`港股池回测完成：${poolBacktestResult.value.tested_count}/${poolBacktestResult.value.target_count}`)
+      startPoolBacktestProgressTimer()
+      ElMessage.success('港股池回测已在后台开始')
     }
   }
   catch (error) {
@@ -598,7 +807,184 @@ async function loadPoolBacktest(refresh = false) {
   }
   finally {
     poolBacktestLoading.value = false
+    if (!refresh || poolBacktestProgressTimer == null) {
+      poolBacktestRefreshing.value = false
+    }
+  }
+}
+
+async function loadPoolBacktestProgress() {
+  try {
+    const limit = poolBacktestLimit.value || undefined
+    const result = await fetchEastmoneyQlibHkPoolOneLotScoreBacktest({
+      progress: true,
+      limit,
+      detail_limit: limit ? Math.max(limit, 100) : 5000,
+      start_date: poolBacktestStartDate.value,
+      end_date: poolBacktestEndDate.value,
+      score_threshold: poolBacktestScoreThreshold.value,
+      take_profit_percent: poolBacktestTakeProfitPercent.value,
+      cost_rate: poolBacktestCostPercent.value / 100,
+      force_liquidate_end: true,
+    })
+    poolBacktestResult.value = result
+    if (!result.source.startsWith('running:')) {
+      stopPoolBacktestProgressTimer()
+      poolBacktestRefreshing.value = false
+      ElMessage.success(`港股池回测完成：${result.tested_count}/${result.target_count}`)
+    }
+  }
+  catch (error) {
+    stopPoolBacktestProgressTimer()
     poolBacktestRefreshing.value = false
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取港股池回测进度失败：${message}`)
+  }
+}
+
+function strategySearchParams(extra: { background?: boolean, progress?: boolean } = {}) {
+  return {
+    years: strategySearchYears.value,
+    limit: strategySearchLimit.value || undefined,
+    score_thresholds: strategySearchScoreThresholds.value,
+    score_profiles: strategySearchScoreProfiles.value,
+    take_profit_percents: strategySearchTakeProfitPercents.value,
+    stop_loss_percents: strategySearchStopLossPercents.value,
+    max_holding_days: strategySearchMaxHoldingDays.value,
+    cost_rate: strategySearchCostPercent.value / 100,
+    min_annual_return_percent: strategySearchMinAnnualReturnPercent.value,
+    require_beat_benchmark: strategySearchRequireBeatBenchmark.value,
+    ...extra,
+  }
+}
+
+async function loadStrategySearch(refresh = false) {
+  if (refresh) {
+    strategySearchRefreshing.value = true
+  }
+  else {
+    strategySearchLoading.value = true
+  }
+  try {
+    strategySearchResult.value = await fetchEastmoneyQlibHkPoolStrategySearch(strategySearchParams({
+      background: refresh,
+    }))
+    if (refresh) {
+      startStrategySearchProgressTimer()
+      ElMessage.success('候选策略搜索已在后台开始')
+    }
+    else {
+      ElMessage.success(`候选策略完成：${strategySearchResult.value.items.length} 组`)
+    }
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取候选策略失败：${message}`)
+  }
+  finally {
+    strategySearchLoading.value = false
+    if (!refresh || strategySearchProgressTimer == null) {
+      strategySearchRefreshing.value = false
+    }
+  }
+}
+
+async function loadStrategySearchProgress() {
+  try {
+    const result = await fetchEastmoneyQlibHkPoolStrategySearch(strategySearchParams({
+      progress: true,
+    }))
+    strategySearchResult.value = result
+    if (result.status !== 'running' && !result.source.startsWith('running:')) {
+      stopStrategySearchProgressTimer()
+      strategySearchRefreshing.value = false
+      if (result.error) {
+        ElMessage.error(`候选策略搜索失败：${result.error}`)
+      }
+      else {
+        ElMessage.success(`候选策略完成：${result.items.length} 组`)
+      }
+    }
+  }
+  catch (error) {
+    stopStrategySearchProgressTimer()
+    strategySearchRefreshing.value = false
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取候选策略进度失败：${message}`)
+  }
+}
+
+function rotationSearchParams(extra: { background?: boolean, progress?: boolean } = {}) {
+  return {
+    years: rotationSearchYears.value,
+    limit: rotationSearchLimit.value || undefined,
+    score_profiles: rotationSearchScoreProfiles.value,
+    rank_metrics: rotationSearchRankMetrics.value,
+    market_filters: rotationSearchMarketFilters.value,
+    score_thresholds: rotationSearchScoreThresholds.value,
+    min_amounts: rotationSearchMinAmounts.value,
+    top_n_values: rotationSearchTopNValues.value,
+    rebalances: rotationSearchRebalances.value,
+    cost_rate: rotationSearchCostPercent.value / 100,
+    min_annual_return_percent: rotationSearchMinAnnualReturnPercent.value,
+    require_beat_benchmark: rotationSearchRequireBeatBenchmark.value,
+    ...extra,
+  }
+}
+
+async function loadRotationSearch(refresh = false) {
+  if (refresh) {
+    rotationSearchRefreshing.value = true
+  }
+  else {
+    rotationSearchLoading.value = true
+  }
+  try {
+    rotationSearchResult.value = await fetchEastmoneyQlibHkPoolRotationStrategySearch(rotationSearchParams({
+      background: refresh,
+    }))
+    if (refresh) {
+      startRotationSearchProgressTimer()
+      ElMessage.success('轮动策略搜索已在后台开始')
+    }
+    else {
+      ElMessage.success(`轮动策略完成：${rotationSearchResult.value.items.length} 组`)
+    }
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取轮动策略失败：${message}`)
+  }
+  finally {
+    rotationSearchLoading.value = false
+    if (!refresh || rotationSearchProgressTimer == null) {
+      rotationSearchRefreshing.value = false
+    }
+  }
+}
+
+async function loadRotationSearchProgress() {
+  try {
+    const result = await fetchEastmoneyQlibHkPoolRotationStrategySearch(rotationSearchParams({
+      progress: true,
+    }))
+    rotationSearchResult.value = result
+    if (result.status !== 'running' && !result.source.startsWith('running:')) {
+      stopRotationSearchProgressTimer()
+      rotationSearchRefreshing.value = false
+      if (result.error) {
+        ElMessage.error(`轮动策略搜索失败：${result.error}`)
+      }
+      else {
+        ElMessage.success(`轮动策略完成：${result.items.length} 组`)
+      }
+    }
+  }
+  catch (error) {
+    stopRotationSearchProgressTimer()
+    rotationSearchRefreshing.value = false
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取轮动策略进度失败：${message}`)
   }
 }
 
@@ -696,14 +1082,6 @@ function ensureChart() {
   return chart
 }
 
-function ensureBacktestChart() {
-  if (!backtestChartRef.value) return null
-  if (!backtestChart) {
-    backtestChart = echarts.init(backtestChartRef.value)
-  }
-  return backtestChart
-}
-
 function defaultKlineZoomRange(total: number) {
   if (total <= 0) return { start: 0, end: 100 }
   const visibleCountByPeriod: Partial<Record<PeriodValue, number>> = {
@@ -724,8 +1102,12 @@ function defaultKlineZoomRange(total: number) {
 function renderChart() {
   const instance = ensureChart()
   if (!instance) return
-  if (isIntraday.value) {
+  if (isIntraday.value && intradayRows.value.length > 0) {
     renderIntradayChart(instance)
+    return
+  }
+  if (rows.value.length === 0) {
+    renderEmptyChart(instance, chartNotice.value || '暂无行情数据')
     return
   }
   const dates = rows.value.map((row) => formatKlineDateLabel(row.date))
@@ -854,6 +1236,25 @@ function renderChart() {
   }, true)
 }
 
+function renderEmptyChart(instance: echarts.ECharts, message: string) {
+  instance.setOption({
+    animation: false,
+    title: {
+      text: message,
+      left: 'center',
+      top: 'middle',
+      textStyle: {
+        color: '#607086',
+        fontSize: 14,
+        fontWeight: 500,
+      },
+    },
+    xAxis: { show: false },
+    yAxis: { show: false },
+    series: [],
+  }, true)
+}
+
 function renderIntradayChart(instance: echarts.ECharts) {
   const showDateInIntradayAxis = period.value === 'five_day'
   const times = intradayRows.value.map((row) => {
@@ -957,92 +1358,6 @@ function renderIntradayChart(instance: echarts.ECharts) {
   }, true)
 }
 
-function renderBacktestChart() {
-  const instance = ensureBacktestChart()
-  const result = backtestResult.value
-  if (!instance || !result) return
-  const dates = result.points.map((point) => point.date)
-  instance.setOption({
-    animation: false,
-    color: ['#1f6feb', '#079455', '#d97706'],
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: unknown) => {
-        const items = (Array.isArray(params) ? params : [params]) as ChartTooltipItem[]
-        const index = Number((items[0] as any)?.dataIndex ?? 0)
-        const point = result.points[index]
-        const title = point?.date ? `${point.date}<br>` : ''
-        const action = point?.action ? `<br>动作<span style="float:right;margin-left:16px;font-weight:600">${point.action}</span>` : ''
-        const lines = items.map((item) => {
-          const numericValue = typeof item.value === 'number' ? item.value : Number(item.value)
-          return `${item.marker ?? ''}${item.seriesName ?? ''}<span style="float:right;margin-left:16px;font-weight:600">${formatCurrency(numericValue)}</span>`
-        })
-        return `${title}${lines.join('<br>')}${action}`
-      },
-    },
-    legend: {
-      top: 0,
-      right: 4,
-      itemWidth: 12,
-      itemHeight: 8,
-      textStyle: { color: '#52637a', fontSize: 12 },
-    },
-    grid: { left: 64, right: 28, top: 34, bottom: 54 },
-    dataZoom: [
-      { type: 'inside', xAxisIndex: 0, start: 0, end: 100, filterMode: 'filter' },
-      {
-        type: 'slider',
-        xAxisIndex: 0,
-        start: 0,
-        end: 100,
-        filterMode: 'filter',
-        height: 18,
-        bottom: 16,
-        brushSelect: false,
-        showDataShadow: false,
-        borderColor: '#dce5f0',
-        fillerColor: 'rgba(31, 111, 235, 0.12)',
-        textStyle: { color: '#607086', fontSize: 11 },
-      },
-    ],
-    xAxis: {
-      type: 'category',
-      data: dates,
-      axisLabel: { color: '#607086', hideOverlap: true },
-      axisTick: { alignWithLabel: true },
-    },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      axisLabel: { color: '#607086', formatter: (value: number) => formatChineseCompactNumber(value) },
-      splitLine: { lineStyle: { color: '#edf1f7' } },
-    },
-    series: [
-      {
-        name: '净收益',
-        type: 'line',
-        data: result.points.map((point) => point.equity),
-        symbol: 'none',
-        lineStyle: { width: 2 },
-      },
-      {
-        name: '持仓市值',
-        type: 'line',
-        data: result.points.map((point) => point.position_value),
-        symbol: 'none',
-        lineStyle: { width: 1.5 },
-      },
-      {
-        name: '现金流',
-        type: 'line',
-        data: result.points.map((point) => point.cash),
-        symbol: 'none',
-        lineStyle: { width: 1, type: 'dashed' },
-      },
-    ],
-  }, true)
-}
-
 function startIntradayRefreshTimer() {
   stopIntradayRefreshTimer()
   if (!isIntraday.value) return
@@ -1058,42 +1373,100 @@ function stopIntradayRefreshTimer() {
   }
 }
 
+function startPoolBacktestProgressTimer() {
+  stopPoolBacktestProgressTimer()
+  poolBacktestRefreshing.value = true
+  void loadPoolBacktestProgress()
+  poolBacktestProgressTimer = window.setInterval(() => {
+    void loadPoolBacktestProgress()
+  }, 2000)
+}
+
+function stopPoolBacktestProgressTimer() {
+  if (poolBacktestProgressTimer != null) {
+    window.clearInterval(poolBacktestProgressTimer)
+    poolBacktestProgressTimer = null
+  }
+}
+
+function startHkConnectReviewProgressTimer() {
+  stopHkConnectReviewProgressTimer()
+  hkConnectReviewRefreshing.value = true
+  void loadHkConnectReviewProgress()
+  hkConnectReviewProgressTimer = window.setInterval(() => {
+    void loadHkConnectReviewProgress()
+  }, 2000)
+}
+
+function stopHkConnectReviewProgressTimer() {
+  if (hkConnectReviewProgressTimer != null) {
+    window.clearInterval(hkConnectReviewProgressTimer)
+    hkConnectReviewProgressTimer = null
+  }
+}
+
+function startStrategySearchProgressTimer() {
+  stopStrategySearchProgressTimer()
+  strategySearchRefreshing.value = true
+  void loadStrategySearchProgress()
+  strategySearchProgressTimer = window.setInterval(() => {
+    void loadStrategySearchProgress()
+  }, 2000)
+}
+
+function stopStrategySearchProgressTimer() {
+  if (strategySearchProgressTimer != null) {
+    window.clearInterval(strategySearchProgressTimer)
+    strategySearchProgressTimer = null
+  }
+}
+
+function startRotationSearchProgressTimer() {
+  stopRotationSearchProgressTimer()
+  rotationSearchRefreshing.value = true
+  void loadRotationSearchProgress()
+  rotationSearchProgressTimer = window.setInterval(() => {
+    void loadRotationSearchProgress()
+  }, 2000)
+}
+
+function stopRotationSearchProgressTimer() {
+  if (rotationSearchProgressTimer != null) {
+    window.clearInterval(rotationSearchProgressTimer)
+    rotationSearchProgressTimer = null
+  }
+}
+
 onMounted(() => {
   void loadHistory()
   void loadQlibAnalysis(false)
   void loadHkPoolScreen(false)
-  void loadXiaomiBacktest()
+  void loadHkConnectReview(false)
   void loadPoolBacktest(false)
   startIntradayRefreshTimer()
-  if (chartRef.value || backtestChartRef.value) {
+  if (chartRef.value) {
     resizeObserver = new ResizeObserver(() => {
       chart?.resize()
-      backtestChart?.resize()
     })
   }
   if (chartRef.value && resizeObserver) {
     resizeObserver.observe(chartRef.value)
   }
-  if (backtestChartRef.value && resizeObserver) {
-    resizeObserver.observe(backtestChartRef.value)
-  }
 })
 
 onBeforeUnmount(() => {
   stopIntradayRefreshTimer()
+  stopPoolBacktestProgressTimer()
+  stopHkConnectReviewProgressTimer()
+  stopStrategySearchProgressTimer()
+  stopRotationSearchProgressTimer()
   resizeObserver?.disconnect()
   chart?.dispose()
-  backtestChart?.dispose()
   chart = null
-  backtestChart = null
 })
 
 watch(rows, () => {
   void nextTick(renderChart)
-})
-
-watch(backtestResult, () => {
-  void nextTick(renderBacktestChart)
 })
 
 watch(period, () => {
@@ -1179,31 +1552,131 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
       </div>
     </header>
 
+    <section class="strategy-desk">
+      <div class="strategy-desk-head">
+        <div>
+          <span>今日结论</span>
+          <strong>{{ deskFinalAction }}</strong>
+        </div>
+        <p>{{ selectedStrategy.summary }}</p>
+      </div>
+      <div class="strategy-desk-body">
+        <nav class="strategy-list" aria-label="策略列表">
+          <button
+            v-for="strategy in strategyDeskItems"
+            :key="strategy.key"
+            class="strategy-list-item"
+            :class="{ active: selectedStrategyKey === strategy.key }"
+            type="button"
+            @click="selectedStrategyKey = strategy.key"
+          >
+            <span>
+              <strong>{{ strategy.name }}</strong>
+              <small>{{ strategy.evidence }}</small>
+            </span>
+            <em :class="`strategy-status is-${strategy.status}`">{{ strategy.statusText }}</em>
+          </button>
+        </nav>
+        <div class="strategy-detail">
+          <div class="strategy-detail-title">
+            <div>
+              <span>当前策略</span>
+              <h2>{{ selectedStrategy.name }}</h2>
+            </div>
+            <em :class="`strategy-status is-${selectedStrategy.status}`">{{ selectedStrategy.statusText }}</em>
+          </div>
+
+          <template v-if="selectedStrategy.key === 'cross_asset_etf'">
+            <div class="strategy-signal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>收盘</th>
+                    <th>计划</th>
+                    <th>占用</th>
+                    <th>跳过价</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="order in crossAssetOrders" :key="order.code">
+                    <td>{{ order.code }}</td>
+                    <td>{{ order.name }}</td>
+                    <td>{{ formatNumber(order.close, 3) }}</td>
+                    <td>{{ order.quantity }}</td>
+                    <td>{{ order.amount }}</td>
+                    <td>{{ formatNumber(order.skipAbove, 3) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="strategy-facts">
+              <div><span>年度</span><strong>2021-2026YTD 全正</strong></div>
+              <div><span>累计</span><strong class="positive">89.95%</strong></div>
+              <div><span>最大回撤</span><strong class="negative">-13.20%</strong></div>
+            </div>
+          </template>
+
+          <template v-else-if="selectedStrategy.key === 'hk_connect'">
+            <div class="strategy-facts">
+              <div><span>明日动作</span><strong :class="hkConnectActionClass">{{ hkConnectActionText }}</strong></div>
+              <div><span>恒生过滤</span><strong>{{ hkConnectReview?.hsi_filter_passed ? '通过' : '未通过' }}</strong></div>
+              <div><span>候选</span><strong>{{ hkConnectReview?.usable_count ?? 0 }}/{{ hkConnectReview?.pool_count ?? 0 }}</strong></div>
+            </div>
+            <p class="strategy-note">{{ hkConnectReview?.summary || selectedStrategy.summary }}</p>
+          </template>
+
+          <template v-else>
+            <div class="strategy-signal-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>指标</th>
+                    <th>备注</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in convertibleBondWatchRows" :key="row.code">
+                    <td>{{ row.code }}</td>
+                    <td>{{ row.name }}</td>
+                    <td>{{ row.metric }}</td>
+                    <td>{{ row.note }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+
+          <p class="strategy-risk">{{ selectedStrategy.risk }}</p>
+        </div>
+      </div>
+    </section>
+
     <section class="robot-history-metrics">
       <div>
-        <span>{{ isIntraday ? '最新价' : '最新收盘' }}</span>
-        <strong>{{ formatNumber(isIntraday ? latestIntradayRow?.close : latestRow?.close) }}</strong>
+        <span>{{ usingDailyFallback || !isIntraday ? '最新收盘' : '最新价' }}</span>
+        <strong>{{ formatNumber(metricLatestClose) }}</strong>
       </div>
       <div>
-        <span>{{ isIntraday ? `${selectedPeriodLabel}涨跌` : '区间涨跌' }}</span>
-        <strong :class="{ positive: ((isIntraday ? intradayChange : closeChange) ?? 0) > 0, negative: ((isIntraday ? intradayChange : closeChange) ?? 0) < 0 }">
-          {{ formatNumber(isIntraday ? intradayChange : closeChange) }} / {{ formatPercent(isIntraday ? intradayChangeRate : closeChangeRate) }}
+        <span>{{ usingDailyFallback ? '日K区间涨跌' : (isIntraday ? `${selectedPeriodLabel}涨跌` : '区间涨跌') }}</span>
+        <strong :class="{ positive: (metricChange ?? 0) > 0, negative: (metricChange ?? 0) < 0 }">
+          {{ formatNumber(metricChange) }} / {{ formatPercent(metricChangeRate) }}
         </strong>
       </div>
       <div>
-        <span>{{ isIntraday ? `${selectedPeriodLabel}成交额` : '区间成交额' }}</span>
-        <strong>{{ formatAmount(isIntraday ? intradayTotalAmount : totalAmount) }}</strong>
+        <span>{{ usingDailyFallback ? '日K区间成交额' : (isIntraday ? `${selectedPeriodLabel}成交额` : '区间成交额') }}</span>
+        <strong>{{ formatAmount(metricTotalAmount) }}</strong>
       </div>
       <div>
         <span>最大成交量</span>
-        <strong>
-          {{ isIntraday ? (maxIntradayVolumeRow?.time?.slice(11, 16) || '-') : (maxVolumeRow?.date || '-') }}
-          · {{ formatVolume(isIntraday ? maxIntradayVolumeRow?.volume : maxVolumeRow?.volume) }}
-        </strong>
+        <strong>{{ metricMaxVolumeLabel }}</strong>
       </div>
       <div>
-        <span>{{ isIntraday ? '分钟条数' : '数据条数' }}</span>
-        <strong>{{ isIntraday ? intradayRows.length : rows.length }}</strong>
+        <span>{{ usingDailyFallback ? '日K条数' : (isIntraday ? '分钟条数' : '数据条数') }}</span>
+        <strong>{{ metricRowCount }}</strong>
       </div>
       <div>
         <span>加载时间</span>
@@ -1212,7 +1685,106 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
     </section>
 
     <section class="robot-history-chart-section" v-loading="loading">
+      <div v-if="chartNotice" class="chart-notice">{{ chartNotice }}</div>
       <div ref="chartRef" class="robot-history-chart" />
+    </section>
+
+    <el-collapse v-model="researchPanels" class="research-collapse">
+      <el-collapse-item title="复盘与高级研究" name="advanced">
+    <section class="hk-connect-review-section" v-loading="hkConnectReviewLoading">
+      <div class="backtest-header">
+        <div>
+          <h2>港股通策略复盘</h2>
+          <span>
+            {{ hkConnectReview?.signal_date || '-' }}
+            · {{ hkConnectReview?.strategy_name || '恒生60日线大市值成交额动量' }}
+            · 可用 {{ hkConnectReview?.usable_count ?? 0 }}/{{ hkConnectReview?.pool_count ?? 0 }}
+            <template v-if="hkConnectReviewRunning"> · 后台计算中</template>
+          </span>
+        </div>
+        <div class="pool-backtest-actions">
+          <el-button size="small" :loading="hkConnectReviewLoading" @click="loadHkConnectReview(false)">读缓存</el-button>
+          <el-button size="small" type="primary" :loading="hkConnectReviewRefreshing" @click="loadHkConnectReview(true)">盘后重算</el-button>
+        </div>
+      </div>
+      <div class="hk-connect-review-summary">
+        <div>
+          <span>明日动作</span>
+          <strong :class="hkConnectActionClass">{{ hkConnectActionText }}</strong>
+        </div>
+        <div>
+          <span>恒生过滤</span>
+          <strong :class="{ positive: hkConnectReview?.hsi_filter_passed, negative: hkConnectReview && !hkConnectReview.hsi_filter_passed }">
+            {{ hkConnectReview?.hsi_filter_passed ? '通过' : '未通过' }}
+          </strong>
+        </div>
+        <div>
+          <span>恒生 / MA60</span>
+          <strong>{{ formatNumber(hkConnectReview?.hsi_close, 2) }} / {{ formatNumber(hkConnectReview?.hsi_ma60, 2) }}</strong>
+        </div>
+        <div>
+          <span>单票预算</span>
+          <strong>{{ formatCurrency(hkConnectReview?.single_position_budget) }}</strong>
+        </div>
+        <div>
+          <span>生成时间</span>
+          <strong>{{ hkConnectReview?.generated_at?.replace('T', ' ') || '-' }}</strong>
+        </div>
+      </div>
+      <p class="hk-connect-review-note" :class="{ negative: hkConnectReview?.action === 'hold_cash', positive: hkConnectReview?.action === 'buy' }">
+        {{ hkConnectReview?.summary || '暂无复盘结果' }}
+      </p>
+      <div v-if="hkConnectSelectedRows.length" class="hk-connect-selected">
+        <h3>建议开仓</h3>
+        <el-table :data="hkConnectSelectedRows" table-layout="auto" :fit="false" stripe>
+          <el-table-column label="代码" min-width="78">
+            <template #default="{ row }">{{ row.symbol }}</template>
+          </el-table-column>
+          <el-table-column label="名称" min-width="118">
+            <template #default="{ row }">{{ row.name }}</template>
+          </el-table-column>
+          <el-table-column label="手数" min-width="70" align="right">
+            <template #default="{ row }">{{ row.budget_lots }}</template>
+          </el-table-column>
+          <el-table-column label="预计占用" min-width="92" align="right">
+            <template #default="{ row }">{{ formatCurrency(row.estimated_cash) }}</template>
+          </el-table-column>
+          <el-table-column label="10日涨幅" min-width="92" align="right">
+            <template #default="{ row }">{{ formatPercent(row.return_10_percent) }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <div class="hk-connect-candidates">
+        <h3>候选排名</h3>
+        <el-table :data="hkConnectCandidateRows" table-layout="auto" :fit="false" stripe>
+          <el-table-column label="#" min-width="48" align="right">
+            <template #default="{ row }">{{ row.rank }}</template>
+          </el-table-column>
+          <el-table-column label="代码" min-width="78">
+            <template #default="{ row }">{{ row.symbol }}</template>
+          </el-table-column>
+          <el-table-column label="名称" min-width="120">
+            <template #default="{ row }">{{ row.name }}</template>
+          </el-table-column>
+          <el-table-column label="信号分" min-width="82" align="right">
+            <template #default="{ row }">{{ formatNumber(row.signal_score, 2) }}</template>
+          </el-table-column>
+          <el-table-column label="10日" min-width="82" align="right">
+            <template #default="{ row }">{{ formatPercent(row.return_10_percent) }}</template>
+          </el-table-column>
+          <el-table-column label="成交额" min-width="92" align="right">
+            <template #default="{ row }">{{ formatAmount(row.amount) }}</template>
+          </el-table-column>
+          <el-table-column label="一手" min-width="82" align="right">
+            <template #default="{ row }">{{ formatCurrency(row.lot_value) }}</template>
+          </el-table-column>
+          <el-table-column label="可买" min-width="64" align="right">
+            <template #default="{ row }">
+              <span :class="{ negative: row.budget_lots <= 0, positive: row.selected }">{{ row.budget_lots }} 手</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </section>
 
     <section class="qlib-analysis-section" v-loading="qlibAnalysisLoading">
@@ -1295,128 +1867,85 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
       </div>
     </section>
 
-    <section class="backtest-section" v-loading="backtestLoading">
-      <div class="backtest-header">
-        <div>
-          <h2>小米一手评分策略回测</h2>
-          <span>HK.01810 · {{ BACKTEST_START_DATE }} ~ {{ BACKTEST_END_DATE }} · 年末强制平仓</span>
-        </div>
-        <el-popover placement="top" trigger="click" width="420">
-          <template #reference>
-            <button class="score-help-button" type="button" aria-label="查看回测规则">?</button>
-          </template>
-          <div class="score-rule-popover">
-            <strong>当前回测规则</strong>
-            <ul>
-              <li v-for="rule in backtestResult?.rules ?? []" :key="rule">{{ rule }}</li>
-            </ul>
-          </div>
-        </el-popover>
-      </div>
-      <div class="backtest-metrics">
-        <div>
-          <span>净收益</span>
-          <strong :class="{ positive: (backtestResult?.total_profit ?? 0) > 0, negative: (backtestResult?.total_profit ?? 0) < 0 }">
-            {{ formatCurrency(backtestResult?.total_profit) }}
-          </strong>
-        </div>
-        <div>
-          <span>最终资金</span>
-          <strong>{{ formatCurrency((backtestResult?.max_capital_used ?? 0) + (backtestResult?.total_profit ?? 0)) }}</strong>
-        </div>
-        <div>
-          <span>占用收益率</span>
-          <strong :class="{ positive: (backtestResult?.total_return_percent ?? 0) > 0, negative: (backtestResult?.total_return_percent ?? 0) < 0 }">
-            {{ formatPercent(backtestResult?.total_return_percent) }}
-          </strong>
-        </div>
-        <div>
-          <span>最大资金占用</span>
-          <strong>{{ formatCurrency(backtestResult?.max_capital_used) }}</strong>
-        </div>
-        <div>
-          <span>总买入成本</span>
-          <strong>{{ formatCurrency(backtestResult?.total_invested) }}</strong>
-        </div>
-        <div>
-          <span>手续费消耗</span>
-          <strong>{{ formatCurrency(backtestResult?.total_fee) }}</strong>
-        </div>
-        <div>
-          <span>最高分</span>
-          <strong>{{ backtestMaxScore ?? '-' }}</strong>
-        </div>
-        <div>
-          <span>触发次数</span>
-          <strong>{{ backtestTriggerCount }}</strong>
-        </div>
-        <div>
-          <span>交易</span>
-          <strong>{{ backtestResult?.closed_trade_count ?? 0 }}/{{ backtestResult?.trade_count ?? 0 }}</strong>
-        </div>
-        <div>
-          <span>期末持仓</span>
-          <strong>{{ backtestOpenLots }} 手</strong>
-        </div>
-      </div>
-      <div ref="backtestChartRef" class="backtest-chart" />
-      <el-table
-        :data="backtestResult?.trades ?? []"
-        table-layout="auto"
-        :fit="false"
-        stripe
-      >
-        <el-table-column label="触发日" min-width="100">
-          <template #default="{ row }">{{ row.trigger_date }}</template>
-        </el-table-column>
-        <el-table-column label="买入日" min-width="100">
-          <template #default="{ row }">{{ row.buy_date }}</template>
-        </el-table-column>
-        <el-table-column label="买入价" min-width="86" align="right">
-          <template #default="{ row }">{{ formatNumber(row.buy_price) }}</template>
-        </el-table-column>
-        <el-table-column label="卖出日" min-width="100">
-          <template #default="{ row }">{{ row.sell_date || '持有中' }}</template>
-        </el-table-column>
-        <el-table-column label="卖出价" min-width="86" align="right">
-          <template #default="{ row }">{{ formatNumber(row.sell_price) }}</template>
-        </el-table-column>
-        <el-table-column label="股数" min-width="72" align="right">
-          <template #default="{ row }">{{ row.shares }}</template>
-        </el-table-column>
-        <el-table-column label="盈亏" min-width="92" align="right">
-          <template #default="{ row }">
-            <span :class="{ positive: (row.realized_profit ?? 0) > 0, negative: (row.realized_profit ?? 0) < 0 }">
-              {{ formatCurrency(row.realized_profit) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="收益率" min-width="84" align="right">
-          <template #default="{ row }">{{ formatPercent(row.realized_return_percent) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" min-width="76">
-          <template #default="{ row }">{{ row.status === 'closed' ? '已卖出' : '持有中' }}</template>
-        </el-table-column>
-      </el-table>
-    </section>
-
-    <section class="pool-backtest-section" v-loading="poolBacktestLoading || poolBacktestRefreshing">
+    <section class="pool-backtest-section">
       <div class="backtest-header">
         <div>
           <h2>港股池一手评分策略回测</h2>
           <span>
             {{ poolBacktestResult?.tested_count ?? 0 }}/{{ poolBacktestResult?.target_count ?? 0 }}
             · 跳过 {{ poolBacktestResult?.skipped_count ?? 0 }}
-            · {{ BACKTEST_START_DATE }} ~ {{ BACKTEST_END_DATE }}
+            · {{ poolBacktestStartDate }} ~ {{ poolBacktestEndDate }}
+            · {{ poolBacktestScaleLabel }}
+            <template v-if="poolBacktestRunning"> · 后台计算中</template>
           </span>
         </div>
-        <el-button :loading="poolBacktestRefreshing" @click="loadPoolBacktest(true)">重算港股池</el-button>
+      </div>
+      <div class="pool-backtest-controls">
+        <label>
+          <span>年份</span>
+          <el-select v-model="poolBacktestYear" size="small" style="width: 94px">
+            <el-option v-for="year in poolBacktestYearOptions" :key="year" :label="year" :value="year" />
+          </el-select>
+        </label>
+        <label>
+          <span>触发分</span>
+          <el-input-number
+            v-model="poolBacktestScoreThreshold"
+            size="small"
+            :min="0"
+            :max="100"
+            :step="1"
+            controls-position="right"
+            style="width: 104px"
+          />
+        </label>
+        <label>
+          <span>止盈%</span>
+          <el-input-number
+            v-model="poolBacktestTakeProfitPercent"
+            size="small"
+            :min="0"
+            :max="100"
+            :step="0.5"
+            controls-position="right"
+            style="width: 112px"
+          />
+        </label>
+        <label>
+          <span>成本%</span>
+          <el-input-number
+            v-model="poolBacktestCostPercent"
+            size="small"
+            :min="0"
+            :max="10"
+            :step="0.1"
+            controls-position="right"
+            style="width: 112px"
+          />
+        </label>
+        <label>
+          <span>规模</span>
+          <el-select v-model="poolBacktestLimit" size="small" style="width: 94px">
+            <el-option
+              v-for="option in poolBacktestLimitOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </label>
+        <div class="pool-backtest-actions">
+          <el-button size="small" :loading="poolBacktestLoading" @click="loadPoolBacktest(false)">读缓存</el-button>
+          <el-button size="small" type="primary" :loading="poolBacktestRefreshing" @click="loadPoolBacktest(true)">
+            {{ poolBacktestActionText }}
+          </el-button>
+        </div>
       </div>
       <div class="backtest-metrics">
         <div>
           <span>组合净收益</span>
           <strong :class="{ positive: (poolBacktestResult?.total_profit ?? 0) > 0, negative: (poolBacktestResult?.total_profit ?? 0) < 0 }">
-            {{ formatCurrency(poolBacktestResult?.total_profit) }}
+            {{ formatCurrency(poolBacktestResult?.total_profit) }} / {{ formatPercent(poolBacktestReturnPercent) }}
           </strong>
         </div>
         <div>
@@ -1426,10 +1955,6 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
         <div>
           <span>最大资金占用</span>
           <strong>{{ formatCurrency(poolBacktestResult?.max_capital_used) }}</strong>
-        </div>
-        <div>
-          <span>总买入成本</span>
-          <strong>{{ formatCurrency(poolBacktestResult?.total_invested) }}</strong>
         </div>
         <div>
           <span>手续费消耗</span>
@@ -1458,23 +1983,10 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
         <el-table-column label="基准" min-width="132">
           <template #default="{ row }">{{ row.name }}</template>
         </el-table-column>
-        <el-table-column label="区间" min-width="180">
-          <template #default="{ row }">{{ row.start_date || '-' }} ~ {{ row.end_date || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="策略占用收益率" min-width="126" align="right">
-          <template #default>{{ formatPercent(poolBacktestReturnPercent) }}</template>
-        </el-table-column>
         <el-table-column label="指数收益" min-width="96" align="right">
           <template #default="{ row }">
             <span :class="{ positive: (row.return_percent ?? 0) > 0, negative: (row.return_percent ?? 0) < 0 }">
               {{ formatPercent(row.return_percent) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="超额收益" min-width="96" align="right">
-          <template #default="{ row }">
-            <span :class="{ positive: (row.excess_return_percent ?? 0) > 0, negative: (row.excess_return_percent ?? 0) < 0 }">
-              {{ formatPercent(row.excess_return_percent) }}
             </span>
           </template>
         </el-table-column>
@@ -1529,6 +2041,324 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
           </el-table>
         </div>
       </div>
+    </section>
+
+    <section class="strategy-search-section">
+      <div class="backtest-header">
+        <div>
+          <h2>轮动策略年度对比</h2>
+          <span>
+            {{ rotationSearchResult?.done_count ?? rotationSearchRows.length }}/{{ rotationSearchResult?.candidate_count ?? 0 }} 组
+            · 达标 {{ rotationSearchQualifiedCount }}
+            · {{ rotationSearchYears }}
+            · {{ rotationSearchScaleLabel }}
+            · {{ rotationSearchResult?.source || '-' }}
+            <template v-if="rotationSearchRunning"> · 后台计算中</template>
+          </span>
+        </div>
+        <div class="strategy-search-controls">
+          <label>
+            <span>年份</span>
+            <el-input v-model="rotationSearchYears" size="small" style="width: 112px" />
+          </label>
+          <label>
+            <span>规模</span>
+            <el-select v-model="rotationSearchLimit" size="small" style="width: 94px">
+              <el-option
+                v-for="option in strategySearchLimitOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </label>
+          <label>
+            <span>排序</span>
+            <el-input v-model="rotationSearchRankMetrics" size="small" style="width: 190px" />
+          </label>
+          <label>
+            <span>过滤</span>
+            <el-input v-model="rotationSearchMarketFilters" size="small" style="width: 118px" />
+          </label>
+          <label>
+            <span>分数</span>
+            <el-input v-model="rotationSearchScoreThresholds" size="small" style="width: 72px" />
+          </label>
+          <label>
+            <span>成交额</span>
+            <el-input v-model="rotationSearchMinAmounts" size="small" style="width: 112px" />
+          </label>
+          <label>
+            <span>TopN</span>
+            <el-input v-model="rotationSearchTopNValues" size="small" style="width: 72px" />
+          </label>
+          <label>
+            <span>调仓</span>
+            <el-input v-model="rotationSearchRebalances" size="small" style="width: 86px" />
+          </label>
+          <label>
+            <span>成本%</span>
+            <el-input-number
+              v-model="rotationSearchCostPercent"
+              size="small"
+              :min="0"
+              :max="20"
+              :step="0.1"
+              controls-position="right"
+              style="width: 102px"
+            />
+          </label>
+          <label>
+            <span>年收益底线%</span>
+            <el-input-number
+              v-model="rotationSearchMinAnnualReturnPercent"
+              size="small"
+              :min="-100"
+              :max="1000"
+              :step="1"
+              controls-position="right"
+              style="width: 124px"
+            />
+          </label>
+          <el-checkbox v-model="rotationSearchRequireBeatBenchmark" size="small">每年跑赢恒生</el-checkbox>
+          <el-button size="small" :loading="rotationSearchLoading" @click="loadRotationSearch(false)">读缓存</el-button>
+          <el-button size="small" type="primary" :loading="rotationSearchRefreshing" @click="loadRotationSearch(true)">后台搜索</el-button>
+        </div>
+      </div>
+      <el-table
+        :data="rotationSearchRows"
+        table-layout="auto"
+        :fit="false"
+        stripe
+      >
+        <el-table-column label="达标" min-width="72">
+          <template #default="{ row }">
+            <span :class="{ positive: row.is_qualified, negative: !row.is_qualified }">
+              {{ row.is_qualified ? '是' : '否' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定" min-width="118">
+          <template #default="{ row }">
+            <span :class="{ positive: row.is_qualified, negative: !row.is_qualified }">
+              {{ row.qualification_note || '-' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="策略" min-width="260">
+          <template #default="{ row }">{{ row.name }}</template>
+        </el-table-column>
+        <el-table-column label="盈利年份" min-width="82" align="right">
+          <template #default="{ row }">{{ row.profitable_year_count }}/{{ row.tested_year_count }}</template>
+        </el-table-column>
+        <el-table-column label="跑赢恒生" min-width="82" align="right">
+          <template #default="{ row }">{{ row.beat_benchmark_year_count }}/{{ row.tested_year_count }}</template>
+        </el-table-column>
+        <el-table-column label="平均收益" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.average_return_percent ?? 0) > 0, negative: (row.average_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.average_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最差收益" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.min_return_percent ?? 0) > 0, negative: (row.min_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.min_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最差超额" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.min_excess_return_percent ?? 0) > 0, negative: (row.min_excess_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.min_excess_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="总净收益" min-width="100" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: row.total_profit > 0, negative: row.total_profit < 0 }">
+              {{ formatCurrency(row.total_profit) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="年度" min-width="360">
+          <template #default="{ row }">
+            <div class="strategy-year-chips">
+              <span
+                v-for="year in row.years"
+                :key="year.year"
+              >
+                {{ year.year }}:
+                <strong :class="{ positive: (year.return_percent ?? 0) > 0, negative: (year.return_percent ?? 0) < 0 }">
+                  {{ formatPercent(year.return_percent) }}
+                </strong>
+                / {{ year.benchmark_name || rotationSearchResult?.benchmark_name || '指数' }}
+                <strong :class="{ positive: (year.benchmark_return_percent ?? 0) > 0, negative: (year.benchmark_return_percent ?? 0) < 0 }">
+                  {{ formatPercent(year.benchmark_return_percent) }}
+                </strong>
+              </span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <section class="strategy-search-section">
+      <div class="backtest-header">
+        <div>
+          <h2>候选策略年度对比</h2>
+          <span>
+            {{ strategySearchResult?.done_count ?? strategySearchRows.length }}/{{ strategySearchResult?.candidate_count ?? 0 }} 组
+            · 达标 {{ strategySearchQualifiedCount }}
+            · {{ strategySearchYears }}
+            · {{ strategySearchScaleLabel }}
+            · {{ strategySearchResult?.source || '-' }}
+            <template v-if="strategySearchRunning"> · 后台计算中</template>
+          </span>
+        </div>
+        <div class="strategy-search-controls">
+          <label>
+            <span>年份</span>
+            <el-input v-model="strategySearchYears" size="small" style="width: 138px" />
+          </label>
+          <label>
+            <span>规模</span>
+            <el-select v-model="strategySearchLimit" size="small" style="width: 94px">
+              <el-option
+                v-for="option in strategySearchLimitOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </label>
+          <label>
+            <span>分数</span>
+            <el-input v-model="strategySearchScoreThresholds" size="small" style="width: 136px" />
+          </label>
+          <label>
+            <span>模型</span>
+            <el-input v-model="strategySearchScoreProfiles" size="small" style="width: 250px" />
+          </label>
+          <label>
+            <span>止盈%</span>
+            <el-input v-model="strategySearchTakeProfitPercents" size="small" style="width: 112px" />
+          </label>
+          <label>
+            <span>止损%</span>
+            <el-input v-model="strategySearchStopLossPercents" size="small" style="width: 92px" />
+          </label>
+          <label>
+            <span>持有日</span>
+            <el-input v-model="strategySearchMaxHoldingDays" size="small" style="width: 92px" />
+          </label>
+          <label>
+            <span>成本%</span>
+            <el-input-number
+              v-model="strategySearchCostPercent"
+              size="small"
+              :min="0"
+              :max="20"
+              :step="0.1"
+              controls-position="right"
+              style="width: 102px"
+            />
+          </label>
+          <label>
+            <span>年收益底线%</span>
+            <el-input-number
+              v-model="strategySearchMinAnnualReturnPercent"
+              size="small"
+              :min="-100"
+              :max="1000"
+              :step="1"
+              controls-position="right"
+              style="width: 124px"
+            />
+          </label>
+          <el-checkbox v-model="strategySearchRequireBeatBenchmark" size="small">每年跑赢恒生</el-checkbox>
+          <el-button size="small" :loading="strategySearchLoading" @click="loadStrategySearch(false)">读缓存</el-button>
+          <el-button size="small" type="primary" :loading="strategySearchRefreshing" @click="loadStrategySearch(true)">后台搜索</el-button>
+        </div>
+      </div>
+      <el-table
+        :data="strategySearchRows"
+        table-layout="auto"
+        :fit="false"
+        stripe
+      >
+        <el-table-column label="达标" min-width="72">
+          <template #default="{ row }">
+            <span :class="{ positive: row.is_qualified, negative: !row.is_qualified }">
+              {{ row.is_qualified ? '是' : '否' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定" min-width="118">
+          <template #default="{ row }">
+            <span :class="{ positive: row.is_qualified, negative: !row.is_qualified }">
+              {{ row.qualification_note || '-' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="策略" min-width="142">
+          <template #default="{ row }">{{ row.name }}</template>
+        </el-table-column>
+        <el-table-column label="盈利年份" min-width="82" align="right">
+          <template #default="{ row }">{{ row.profitable_year_count }}/{{ row.tested_year_count }}</template>
+        </el-table-column>
+        <el-table-column label="跑赢恒生" min-width="82" align="right">
+          <template #default="{ row }">{{ row.beat_benchmark_year_count }}/{{ row.tested_year_count }}</template>
+        </el-table-column>
+        <el-table-column label="平均收益" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.average_return_percent ?? 0) > 0, negative: (row.average_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.average_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最差收益" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.min_return_percent ?? 0) > 0, negative: (row.min_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.min_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最差超额" min-width="92" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: (row.min_excess_return_percent ?? 0) > 0, negative: (row.min_excess_return_percent ?? 0) < 0 }">
+              {{ formatPercent(row.min_excess_return_percent) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="总净收益" min-width="100" align="right">
+          <template #default="{ row }">
+            <span :class="{ positive: row.total_profit > 0, negative: row.total_profit < 0 }">
+              {{ formatCurrency(row.total_profit) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="年度" min-width="360">
+          <template #default="{ row }">
+            <div class="strategy-year-chips">
+              <span
+                v-for="year in row.years"
+                :key="year.year"
+              >
+                {{ year.year }}:
+                <strong :class="{ positive: (year.return_percent ?? 0) > 0, negative: (year.return_percent ?? 0) < 0 }">
+                  {{ formatPercent(year.return_percent) }}
+                </strong>
+                / {{ year.benchmark_name || strategySearchResult?.benchmark_name || '指数' }}
+                <strong :class="{ positive: (year.benchmark_return_percent ?? 0) > 0, negative: (year.benchmark_return_percent ?? 0) < 0 }">
+                  {{ formatPercent(year.benchmark_return_percent) }}
+                </strong>
+              </span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
     </section>
 
     <section class="hk-pool-section" v-loading="hkPoolLoading || hkPoolRefreshing">
@@ -1617,6 +2447,8 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
         />
       </div>
     </section>
+      </el-collapse-item>
+    </el-collapse>
 
   </div>
 </template>
@@ -1690,6 +2522,197 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   width: 178px;
 }
 
+.strategy-desk {
+  border-bottom: 1px solid #e6ebf2;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+}
+
+.strategy-desk-head {
+  align-items: flex-end;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.strategy-desk-head div {
+  display: grid;
+  gap: 2px;
+}
+
+.strategy-desk-head span,
+.strategy-detail-title span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.strategy-desk-head strong {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.strategy-desk-head p {
+  color: #526173;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 720px;
+}
+
+.strategy-desk-body {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(260px, 330px) minmax(520px, 1fr);
+}
+
+.strategy-list {
+  display: grid;
+  gap: 6px;
+}
+
+.strategy-list-item {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dfe7f0;
+  border-radius: 6px;
+  color: #172033;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.strategy-list-item:hover,
+.strategy-list-item.active {
+  border-color: #8bb8ee;
+  background: #f7fbff;
+}
+
+.strategy-list-item span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.strategy-list-item strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.strategy-list-item small {
+  color: #607086;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-status {
+  border-radius: 4px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+
+.strategy-status.is-buy,
+.strategy-status.is-watch {
+  background: #fff5e6;
+  color: #b54708;
+}
+
+.strategy-status.is-hold_cash {
+  background: #edf4ff;
+  color: #175cd3;
+}
+
+.strategy-detail {
+  border-left: 1px solid #e6ebf2;
+  min-width: 0;
+  padding-left: 18px;
+}
+
+.strategy-detail-title {
+  align-items: start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.strategy-detail-title h2 {
+  font-size: 18px;
+  margin: 2px 0 0;
+}
+
+.strategy-signal-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.strategy-signal-table table {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.strategy-signal-table th,
+.strategy-signal-table td {
+  border-bottom: 1px solid #e6ebf2;
+  padding: 8px 18px 8px 0;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.strategy-signal-table th {
+  color: #607086;
+  font-weight: 600;
+}
+
+.strategy-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-top: 12px;
+}
+
+.strategy-facts div {
+  display: grid;
+  gap: 2px;
+}
+
+.strategy-facts span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.strategy-facts strong {
+  font-size: 15px;
+}
+
+.strategy-note,
+.strategy-risk {
+  color: #526173;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
+
+.strategy-risk {
+  color: #7a4b00;
+}
+
+.research-collapse {
+  border-top: 0;
+  margin-top: 4px;
+}
+
 .robot-history-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(120px, max-content));
@@ -1723,18 +2746,18 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   padding: 12px 10px 8px;
 }
 
+.chart-notice {
+  color: #7a4b00;
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
 .robot-history-chart {
   height: 390px;
   width: 100%;
 }
 
 .qlib-analysis-section {
-  border-bottom: 1px solid #e6ebf2;
-  margin-bottom: 14px;
-  padding: 2px 0 14px;
-}
-
-.backtest-section {
   border-bottom: 1px solid #e6ebf2;
   margin-bottom: 14px;
   padding: 2px 0 14px;
@@ -1784,20 +2807,77 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   white-space: nowrap;
 }
 
-.backtest-chart {
-  border: 1px solid #dce5f0;
-  border-radius: 6px;
-  box-sizing: border-box;
-  height: 260px;
-  margin-bottom: 10px;
-  padding: 8px 8px 0;
-  width: 100%;
-}
-
 .pool-backtest-section {
   border-bottom: 1px solid #e6ebf2;
   margin-bottom: 14px;
   padding: 2px 0 14px;
+}
+
+.hk-connect-review-section {
+  border-bottom: 1px solid #e6ebf2;
+  margin-bottom: 14px;
+  padding: 2px 0 14px;
+}
+
+.hk-connect-review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 22px;
+  margin: 8px 0;
+}
+
+.hk-connect-review-summary div {
+  display: grid;
+  gap: 2px;
+}
+
+.hk-connect-review-summary span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.hk-connect-review-summary strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hk-connect-review-note {
+  margin: 6px 0 12px;
+}
+
+.hk-connect-selected {
+  margin-bottom: 12px;
+}
+
+.hk-connect-selected h3,
+.hk-connect-candidates h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+.pool-backtest-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 10px;
+}
+
+.pool-backtest-controls label {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.pool-backtest-controls span {
+  color: #607086;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pool-backtest-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .pool-backtest-lists {
@@ -1810,6 +2890,42 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 
 .benchmark-table {
   margin-bottom: 12px;
+}
+
+.strategy-search-section {
+  border-bottom: 1px solid #e6ebf2;
+  margin-bottom: 14px;
+  padding: 2px 0 14px;
+}
+
+.strategy-search-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.strategy-search-controls label {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+}
+
+.strategy-search-controls span {
+  color: #607086;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.strategy-year-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  max-width: 720px;
+}
+
+.strategy-year-chips span {
+  white-space: nowrap;
 }
 
 .pool-backtest-lists h3 {
@@ -1967,6 +3083,22 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 
   .robot-history-controls {
     justify-content: flex-start;
+  }
+
+  .strategy-desk-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .strategy-desk-body {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-detail {
+    border-left: 0;
+    border-top: 1px solid #e6ebf2;
+    padding-left: 0;
+    padding-top: 14px;
   }
 
   .robot-history-metrics {

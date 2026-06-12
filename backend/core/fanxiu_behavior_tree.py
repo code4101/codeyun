@@ -138,6 +138,10 @@ def fanxiu_data_annotation_scheduler_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "scheduler_tasks.json"
 
 
+def fanxiu_data_annotation_scheduler_settings_path() -> Path:
+    return fanxiu_data_annotation_runtime_dir() / "scheduler_settings.json"
+
+
 def fanxiu_data_annotation_manual_job_state_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "manual_jobs.json"
 
@@ -344,6 +348,23 @@ def set_fanxiu_runtime_guard(
         guard_id=guard_id,
         enabled=enabled,
         interval_seconds=interval_seconds,
+    )
+
+
+def set_fanxiu_runtime_guard_group_enabled(
+    *,
+    entry: Any,
+    entry_id: str,
+    asset_tree_path: Path | None = None,
+    enabled: bool,
+) -> dict[str, Any]:
+    ensure_fanxiu_runtime_jobs_registered()
+    resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or DEFAULT_FANXIU_ENTRY_ID)
+    return get_fanxiu_runtime_runner().set_guard_group_enabled(
+        entry=entry,
+        entry_id=resolved_entry_id,
+        asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
+        enabled=enabled,
     )
 
 

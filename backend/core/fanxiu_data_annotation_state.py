@@ -176,6 +176,7 @@ def persist_data_annotation_runtime_status(
     guard = ensure_mapping_bucket(facts, "guard")
     last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
     guard.update({
+        "group_enabled": bool(status.get("guard_group_enabled", True)),
         "enabled": bool(status.get("guard_enabled")),
         "running": bool(status.get("guard_running")),
         "entry_id": status.get("guard_entry_id") or "",
@@ -223,6 +224,7 @@ def initial_data_annotation_runtime_status() -> dict[str, Any]:
         "ok": True,
         "service_running": False,
         "running": False,
+        "guard_group_enabled": True,
         "guard_enabled": False,
         "guard_running": False,
         "guard_entry_id": "",
@@ -290,7 +292,7 @@ def normalize_data_annotation_runtime_guard_items(
 ) -> None:
     close_popups_override: dict[str, Any] = {
         "enabled": bool(status.get("guard_enabled")),
-        "running": bool(status.get("guard_running")),
+        "running": bool(status.get("guard_group_enabled", True) and status.get("guard_running")),
         "entry_id": str(status.get("guard_entry_id") or ""),
     }
     last_guard_event = status.get("last_guard_event")
@@ -309,6 +311,14 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
 
 def data_annotation_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
     return scheduled_task_state(task)
+
+
+def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    return {
+        "job_group_enabled": bool(source.get("job_group_enabled", True)),
+        "updated_at": float(source.get("updated_at") or 0),
+    }
 
 
 def normalize_data_annotation_manual_job(item: Any) -> dict[str, Any] | None:

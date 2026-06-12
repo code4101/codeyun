@@ -10,7 +10,9 @@ import {
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
   saveFanxiuDataAnnotationSchedulerTasks,
+  setFanxiuDataAnnotationSchedulerSettings,
   setFanxiuDataAnnotationRuntimeGuard,
+  setFanxiuDataAnnotationRuntimeGuardGroup,
   type FanxiuDataAnnotationRuntimeLogEntry,
   type FanxiuDataAnnotationRuntimeGuardItem,
   type FanxiuDataAnnotationRuntimeStatus,
@@ -25,6 +27,7 @@ const entryId = ref(String(route.query.entry_id || ''));
 const runtimeStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
 const schedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const schedulerPlan = ref<FanxiuDataAnnotationSchedulerPlanResponse | null>(null);
+const schedulerJobGroupEnabled = ref(true);
 const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
 const actionLoading = ref('');
@@ -39,6 +42,7 @@ const contextMenu = ref({
 let pollTimer: number | null = null;
 
 const devices = computed(() => taskStore.devices);
+const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enabled ?? true);
 const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
 const machineName = 'codepc_mf';
@@ -75,6 +79,11 @@ const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
     message: item.message || '-',
   }));
 });
+const guardGroupTitle = computed(() => (
+  guardGroupEnabled.value
+    ? '守护组已开启；启用的守护会参与常驻行为树'
+    : '守护组已关闭；单个守护配置仍保留，但不会自动执行'
+));
 const isBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (['go_scene', 'hide_floating_window'].includes(task.task_type)) return false;
   const label = task.label || '';
@@ -101,6 +110,12 @@ const businessTasks = computed(() => schedulerTasks.value
     || taskTriggerValue(a) - taskTriggerValue(b)
     || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
   )));
+
+const jobGroupTitle = computed(() => (
+  schedulerJobGroupEnabled.value
+    ? '自动作业组已开启；到期作业会由常驻行为树执行'
+    : '自动作业组已关闭；每个作业配置和下次触发仍保留，但到期时不自动执行'
+));
 
 const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   const labels: Record<string, string> = {
@@ -137,12 +152,13 @@ const formatRuntimeTime = (value: string) => {
 };
 
 const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  if (!task.enabled) return '';
   if (task.retry_after) return `重试 ${formatRuntimeTime(task.retry_after)}`;
   if (task.next_time) return formatRuntimeTime(task.next_time);
   return '';
 };
 
-const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => task.retry_after || task.next_time || '';
+const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => (task.enabled ? task.retry_after || task.next_time || '' : '');
 
 const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: string) => {
   contextMenu.value = {
@@ -194,6 +210,7 @@ const refreshScheduler = async () => {
   ]);
   schedulerTasks.value = tasksResponse.tasks || [];
   schedulerPlan.value = planResponse;
+  schedulerJobGroupEnabled.value = tasksResponse.job_group_enabled ?? planResponse.job_group_enabled ?? true;
 };
 
 const refreshAll = async () => {
@@ -224,6 +241,8 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
 
 const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntimeGuard(entryId.value, !guardEnabled.value, 2, 'close_popups'));
 
+const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
+
 const toggleGuardItem = (itemId: string) => {
   if (itemId === 'close_popups') {
     void toggleGuard();
@@ -241,6 +260,21 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
     ));
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
+    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
+    await refreshScheduler();
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
+const toggleJobGroupEnabled = async () => {
+  actionLoading.value = 'job-group';
+  try {
+    const response = await setFanxiuDataAnnotationSchedulerSettings(!schedulerJobGroupEnabled.value);
+    schedulerTasks.value = response.tasks || [];
+    schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
     await refreshScheduler();
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
@@ -316,8 +350,19 @@ onUnmounted(() => {
 
     <main class="runtime-main" v-loading="loading">
       <section class="runtime-section">
-        <div class="section-title">
+        <div class="section-title group-section-title">
           <h3>守护</h3>
+          <div class="section-actions">
+            <span>自动执行</span>
+            <button
+              class="enable-dot group-enable-dot"
+              :class="{ enabled: guardGroupEnabled }"
+              type="button"
+              :disabled="actionLoading === 'guard-group'"
+              :title="guardGroupTitle"
+              @click="toggleGuardGroupEnabled"
+            />
+          </div>
         </div>
         <div class="runtime-table">
           <table class="runtime-native-table is-guard-table">
@@ -361,8 +406,19 @@ onUnmounted(() => {
       </section>
 
       <section class="runtime-section">
-        <div class="section-title">
+        <div class="section-title group-section-title">
           <h3>作业</h3>
+          <div class="section-actions">
+            <span>自动执行</span>
+            <button
+              class="enable-dot group-enable-dot"
+              :class="{ enabled: schedulerJobGroupEnabled }"
+              type="button"
+              :disabled="actionLoading === 'job-group'"
+              :title="jobGroupTitle"
+              @click="toggleJobGroupEnabled"
+            />
+          </div>
         </div>
         <div class="runtime-table">
           <table class="runtime-native-table is-job-table">
@@ -529,7 +585,7 @@ onUnmounted(() => {
 
 .section-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
@@ -539,6 +595,10 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.group-section-title {
+  justify-content: flex-start;
 }
 
 .section-title h3 {
@@ -677,6 +737,11 @@ onUnmounted(() => {
 .enable-dot:disabled {
   cursor: not-allowed;
   opacity: 1;
+}
+
+.group-enable-dot {
+  width: 24px;
+  height: 24px;
 }
 
 .runtime-facts span {
