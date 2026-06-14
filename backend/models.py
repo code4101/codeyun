@@ -646,6 +646,30 @@ class NoteMetadataFeedbackOptimizationRun(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class CodexMaintenanceFeedback(SQLModel, table=True):
+    __tablename__ = "codexmaintenancefeedback"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    status: str = Field(default="pending", index=True)
+    source_kind: str = Field(default="", index=True)
+    source_ref_id: str = Field(default="", index=True)
+    source_date: str = Field(default="", index=True)
+    stage: str = Field(default="", index=True)
+    error_type: str = Field(default="", index=True)
+    error_message: str = Field(default="")
+    context_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    event_count: int = Field(default=1)
+    consumer_run_id: Optional[str] = Field(default=None, index=True)
+    first_event_at: float = Field(default_factory=time.time, index=True)
+    last_event_at: float = Field(default_factory=time.time, index=True)
+    consumed_at: Optional[float] = Field(default=None, index=True)
+    compressed_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class AttendanceServiceConfig(SQLModel, table=True):
     __tablename__ = "attendanceserviceconfig"
     __table_args__ = {"extend_existing": True}

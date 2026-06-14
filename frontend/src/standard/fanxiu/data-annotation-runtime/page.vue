@@ -9,6 +9,7 @@ import {
   getFanxiuDataAnnotationRuntimeStatus,
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
+  runDueFanxiuDataAnnotationSchedulerTasks,
   saveFanxiuDataAnnotationSchedulerTasks,
   setFanxiuDataAnnotationSchedulerSettings,
   setFanxiuDataAnnotationRuntimeGuard,
@@ -40,6 +41,8 @@ const contextMenu = ref({
   title: '',
 });
 let pollTimer: number | null = null;
+let pollTick = 0;
+let polling = false;
 
 const devices = computed(() => taskStore.devices);
 const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enabled ?? true);
@@ -91,22 +94,17 @@ const isBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   return true;
 };
 
-const taskGroupRank = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  const ranks: Record<string, number> = { daily: 10, dynamic: 20, manual: 30 };
-  return ranks[task.schedule_kind || ''] ?? 90;
-};
-
 const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   const exact = parseRuntimeTime(task.retry_after || task.next_time || '');
   if (exact) return exact.getTime();
   const clock = [...(task.schedule_times || [])].filter(Boolean).sort()[0] || '';
-  return clock ? Date.parse(`1970-01-01T${clock}`) : 0;
+  return clock ? Date.parse(`1970-01-01T${clock}`) : Number.POSITIVE_INFINITY;
 };
 
 const businessTasks = computed(() => schedulerTasks.value
   .filter((task) => task.supported && isBusinessTask(task))
   .sort((a, b) => (
-    taskGroupRank(a) - taskGroupRank(b)
+    Number(!a.enabled) - Number(!b.enabled)
     || taskTriggerValue(a) - taskTriggerValue(b)
     || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
   )));
@@ -143,9 +141,7 @@ const formatRuntimeTime = (value: string) => {
   const isSameDate = date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const isWithinNext24Hours = date.getTime() >= now.getTime()
-    && date.getTime() - now.getTime() < 24 * 60 * 60 * 1000;
-  if (isSameDate || isWithinNext24Hours) return time;
+  if (isSameDate) return time;
   const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
   if (date.getFullYear() === now.getFullYear()) return monthDayTime;
   return `${date.getFullYear()}-${monthDayTime}`;
@@ -217,6 +213,11 @@ const refreshAll = async () => {
   loading.value = true;
   try {
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
+    if (schedulerJobGroupEnabled.value && entryId.value) {
+      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
+      applyStatus(status);
+      await Promise.all([refreshLogs(), refreshScheduler()]);
+    }
   } finally {
     loading.value = false;
   }
@@ -253,15 +254,20 @@ const toggleGuardItem = (itemId: string) => {
 
 const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (task.schedule_kind === 'manual') return;
+  const willEnable = !task.enabled;
   actionLoading.value = `enable:${task.id}`;
   try {
     const tasks = schedulerTasks.value.map((item) => (
-      item.id === task.id ? { ...item, enabled: !item.enabled } : { ...item }
+      item.id === task.id ? { ...item, enabled: willEnable } : { ...item }
     ));
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    await refreshScheduler();
+    if (willEnable && schedulerJobGroupEnabled.value && entryId.value) {
+      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
+      applyStatus(status);
+    }
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -270,12 +276,17 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
 };
 
 const toggleJobGroupEnabled = async () => {
+  const willEnable = !schedulerJobGroupEnabled.value;
   actionLoading.value = 'job-group';
   try {
-    const response = await setFanxiuDataAnnotationSchedulerSettings(!schedulerJobGroupEnabled.value);
+    const response = await setFanxiuDataAnnotationSchedulerSettings(willEnable);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
-    await refreshScheduler();
+    if (willEnable && entryId.value) {
+      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
+      applyStatus(status);
+    }
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -291,7 +302,20 @@ const recoverRuntimeService = () => runAction('service', async () => {
 const startPolling = () => {
   if (pollTimer !== null) return;
   pollTimer = window.setInterval(() => {
-    void refreshStatus();
+    if (polling) return;
+    polling = true;
+    pollTick += 1;
+    const syncSlowState = pollTick % 2 === 0;
+    void (async () => {
+      try {
+        await refreshStatus();
+        if (syncSlowState) {
+          await Promise.all([refreshLogs(), refreshScheduler()]);
+        }
+      } finally {
+        polling = false;
+      }
+    })();
   }, 1500);
 };
 

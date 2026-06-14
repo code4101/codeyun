@@ -172,6 +172,31 @@ def fanxiu_behavior_tree_control_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "behavior_tree_control.json"
 
 
+def _fanxiu_process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        if os.name != "nt":
+            return False
+        try:
+            import ctypes
+
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+        except Exception:
+            return False
+        return False
+    return True
+
+
 def request_fanxiu_behavior_tree_stop(
     *,
     entry_id: str = "",
@@ -189,17 +214,47 @@ def request_fanxiu_behavior_tree_stop(
     )
 
 
+def request_fanxiu_behavior_tree_wake(
+    *,
+    entry_id: str = "",
+    reason: str = "wake",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    control_path = path or fanxiu_behavior_tree_control_path()
+    return write_json_command(
+        control_path,
+        command="wake_service",
+        request_id=uuid.uuid4().hex,
+        created_at=time.time(),
+        entry_id=str(entry_id or ""),
+        reason=str(reason or "wake"),
+    )
+
+
 def read_fanxiu_behavior_tree_service_owner(
     path: Path | None = None,
     *,
     stale_after_seconds: float = 120.0,
 ) -> dict[str, Any]:
     owner_path = path or fanxiu_behavior_tree_service_owner_path()
-    return read_json_object_status(
+    status = read_json_object_status(
         owner_path,
         stale_after_seconds=stale_after_seconds,
         invalid_message="owner 文件不是 JSON object",
     )
+    try:
+        owner_pid = int(status.get("pid") or 0)
+    except (TypeError, ValueError):
+        owner_pid = 0
+    if bool(status.get("active")) and owner_pid and owner_pid != os.getpid() and not _fanxiu_process_exists(owner_pid):
+        return {
+            **status,
+            "active": False,
+            "stale": True,
+            "error": f"owner 进程不存在：pid={owner_pid}",
+        }
+    return status
+
 
 
 def fanxiu_job_group_isolated(path: Path | None = None) -> bool:
@@ -307,6 +362,10 @@ def fanxiu_runtime_runner_wake() -> None:
     wake_event = getattr(runner, "_service_wake_event", None)
     if wake_event is not None:
         wake_event.set()
+    try:
+        request_fanxiu_behavior_tree_wake(reason="runtime_wake")
+    except Exception:
+        pass
 
 
 def fanxiu_runtime_task_label(task_type: str, payload: dict[str, Any] | None = None) -> str:
@@ -395,9 +454,19 @@ def fanxiu_data_annotation_runtime_status(
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     runner = get_fanxiu_runtime_runner()
-    status = runner.status()
     persisted = read_fanxiu_runtime_status(runtime_state_path) if runtime_state_path is not None else read_fanxiu_runtime_status()
-    if persisted and is_data_annotation_runtime_live_empty(status):
+    owner = read_fanxiu_behavior_tree_service_owner() if runtime_state_path is None else {}
+    owner_active_elsewhere = (
+        bool(owner.get("active"))
+        and not bool(owner.get("stale"))
+        and int(owner.get("pid") or 0) != os.getpid()
+    )
+    if owner_active_elsewhere and isinstance(persisted, dict) and persisted:
+        status = dict(persisted)
+    else:
+        status = runner.status()
+    owner_error = str(owner.get("error") or "") if isinstance(owner, dict) else ""
+    if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
         status["running"] = False
         status["guard_running"] = False
@@ -423,6 +492,32 @@ def fanxiu_data_annotation_runtime_status(
                 "后端已重载，行为树服务待恢复",
                 time_text=datetime.now().strftime("%H:%M:%S"),
             )
+    if (
+        runtime_state_path is None
+        and isinstance(owner, dict)
+        and bool(owner.get("exists"))
+        and not owner_active_elsewhere
+        and bool(owner.get("stale"))
+        and not bool(status.get("running"))
+        and str(status.get("phase") or "") == "service_owned_by_other"
+    ):
+        status["status"] = "idle"
+        status["phase"] = "idle"
+        status["service_running"] = False
+        status["guard_running"] = False
+        status["message"] = f"行为树常驻服务未运行，等待恢复：{owner_error or 'owner 已过期'}"
+        status["updated_at"] = time.time()
+    if runtime_state_path is None:
+        if bool(owner.get("active")) and not bool(owner.get("stale")):
+            status["service_running"] = True
+            status["updated_at"] = time.time()
+            if not bool(status.get("running")):
+                status["status"] = "idle"
+                status["phase"] = str(owner.get("step") or "scheduler_poll")
+                status["message"] = (
+                    f"行为树常驻服务运行中：进程 {owner.get('pid')} "
+                    f"{owner.get('step') or 'scheduler_poll'}"
+                )
     normalize_data_annotation_runtime_guard_items(status, runner.guard_definitions)
     status.pop("priority", None)
     if runtime_state_path is None and world_facts_path is None:
@@ -518,16 +613,33 @@ def wait_fanxiu_local_manual_job(
         current_task_id = str(status.get("current_task_id") or "")
         running = bool(status.get("running"))
         if matching_job is None and (current_task_id != resolved_job_id or not running):
-            return {
-                "done": True,
-                "result": "completed",
-                "job_id": resolved_job_id,
-                "runtime_status": status,
-            }
+            logs = [item for item in status.get("logs") or [] if isinstance(item, dict)]
+            matching_logs = [
+                item
+                for item in logs
+                if resolved_job_id and resolved_job_id in str(item.get("message") or "")
+            ]
+            terminal_logs = [
+                item
+                for item in matching_logs
+                if str(item.get("kind") or "") in {"success", "stop", "error"}
+            ]
+            if terminal_logs:
+                return {
+                    "done": True,
+                    "result": "completed",
+                    "job_id": resolved_job_id,
+                    "runtime_status": status,
+                }
         if time.time() >= deadline:
+            logs = [item for item in last_status.get("logs") or [] if isinstance(item, dict)]
+            has_matching_log = any(
+                resolved_job_id and resolved_job_id in str(item.get("message") or "")
+                for item in logs
+            )
             return {
                 "done": False,
-                "result": "timeout",
+                "result": "timeout" if matching_job is not None or has_matching_log else "missing_completion_evidence",
                 "job_id": resolved_job_id,
                 "job": matching_job or {},
                 "runtime_status": last_status,

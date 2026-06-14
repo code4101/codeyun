@@ -1171,7 +1171,77 @@ def _get_workbook_defined_names(session: Session, workbook: WorkbookDocument | N
         return []
     setting = session.get(AppSetting, _workbook_defined_names_setting_key(workbook))
     value = setting.value if setting is not None and isinstance(setting.value, dict) else {}
-    return _normalize_defined_names(value.get("names"), scope="workbook")
+    return _normalize_attendance_refund_defined_names_for_context(
+        _normalize_defined_names(value.get("names"), scope="workbook"),
+        context_text=workbook.title,
+    )
+
+
+def _is_attendance_zen_stage_context(text: str) -> bool:
+    normalized = _normalize_sheet_text(text)
+    return "禅宗" in normalized or "修道班" in normalized
+
+
+def _normalize_zen_stage_refund_name_formula(name: str, formula: str) -> str:
+    normalized_name = name.lower()
+    if normalized_name == NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME.lower():
+        return "=第几周"
+    if normalized_name == "返款id后缀":
+        return re.sub(r"_day", "_week", formula, flags=re.I)
+    if normalized_name == "返款说明":
+        return (
+            formula
+            .replace('天返款"', '周返款"')
+            .replace('&"天"', '&"周"')
+            .replace('&"天返款"', '&"周返款"')
+        )
+    return formula
+
+
+def _normalize_attendance_refund_defined_names_for_context(
+    names: list[dict[str, Any]],
+    *,
+    context_text: str,
+) -> list[dict[str, Any]]:
+    if not names or not _is_attendance_zen_stage_context(context_text):
+        return names
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    has_day_index_name = any(str(item.get("name") or "").strip() == "第几天" for item in names)
+    has_week_index_name = any(str(item.get("name") or "").strip() == "第几周" for item in names)
+    inserted_week_index_name = False
+
+    for item in names:
+        name = str(item.get("name") or "").strip()
+        key = name.lower()
+
+        next_item = dict(item)
+        formula = _normalize_defined_name_formula(next_item.get("formula"))
+        if formula:
+            next_item["formula"] = _normalize_zen_stage_refund_name_formula(name, formula)
+        normalized.append(next_item)
+        seen.add(key)
+
+        if name == "第几天" and not has_week_index_name:
+            week_item = {
+                "name": "第几周",
+                "formula": "=INT((第几天-1)/7)+1",
+                "comment": "禅宗修道班按周返款",
+            }
+            if item.get("scope"):
+                week_item["scope"] = item.get("scope")
+            normalized.append(week_item)
+            seen.add("第几周".lower())
+            inserted_week_index_name = True
+
+    if has_day_index_name and not has_week_index_name and not inserted_week_index_name:
+        normalized.append({
+            "name": "第几周",
+            "formula": "=INT((第几天-1)/7)+1",
+            "comment": "禅宗修道班按周返款",
+        })
+    return normalized
 
 
 def _set_workbook_defined_names(
@@ -1264,9 +1334,21 @@ def _defined_names_for_formula(
     workbook: WorkbookDocument | None,
 ) -> dict[str, str]:
     names: dict[str, str] = {}
-    for item in _merge_effective_defined_names(
+    context_text = " ".join(
+        item
+        for item in [
+            _normalize_sheet_text(workbook.title if workbook is not None else ""),
+            _normalize_sheet_text(document.title),
+        ]
+        if item
+    )
+    effective_names = _merge_effective_defined_names(
         _get_workbook_defined_names(session, workbook),
         _get_sheet_defined_names(dict(document.document_json or {})),
+    )
+    for item in _normalize_attendance_refund_defined_names_for_context(
+        effective_names,
+        context_text=context_text,
     ):
         name = str(item.get("name") or "").strip()
         formula = _normalize_defined_name_formula(item.get("formula"))
@@ -2068,10 +2150,17 @@ def _sync_attendance_questionnaire_sheet_document(
         return
 
     current_document = deepcopy(dict(document.document_json or {}))
-    next_document, changed = _sync_attendance_questionnaire_course_links(
+    from backend.api.attendance import _sync_attendance_wjx_sheet_rows_from_entries
+
+    next_document, rows_changed = _sync_attendance_wjx_sheet_rows_from_entries(
         session,
         deepcopy(current_document),
     )
+    next_document, links_changed = _sync_attendance_questionnaire_course_links(
+        session,
+        deepcopy(next_document),
+    )
+    changed = rows_changed or links_changed
     if changed and next_document != current_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
@@ -6796,10 +6885,11 @@ def _normalize_attendance_refund_config_row(
 ) -> tuple[dict[str, Any], int]:
     grid_rows = _extract_document_grid_rows(document_json)
     config_row_index = _normalize_document_data_start_row(document_json) - 1
+    field_row_index = int(document_json.get("field_row_index") or 0)
     period_display_index = _get_column_index(columns, "已返款")
     order_amount_index = _get_column_index(columns, "订单金额")
     current_refund_index = _get_column_index(columns, "当前应返款")
-    if not grid_rows or config_row_index < 0 or config_row_index >= len(grid_rows):
+    if not grid_rows or config_row_index < 0 or config_row_index >= len(grid_rows) or config_row_index <= field_row_index:
         return document_json, 0
 
     next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
@@ -6807,7 +6897,13 @@ def _normalize_attendance_refund_config_row(
     config_changed_cells: list[int] = []
     if period_display_index >= 0:
         period_label_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"周"'
-        if not _normalize_sheet_text(config_row[period_display_index]):
+        current_period_label = _normalize_sheet_text(config_row[period_display_index])
+        current_period_label_compact = re.sub(r"\s+", "", current_period_label)
+        legacy_day_label_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"天"'
+        if (
+            not current_period_label
+            or current_period_label_compact == legacy_day_label_formula
+        ):
             config_row[period_display_index] = period_label_formula
             config_changed_cells.append(period_display_index)
     standard_amount = _find_attendance_standard_order_amount(
@@ -6851,12 +6947,14 @@ def _normalize_attendance_current_refund_config_note(
 ) -> tuple[dict[str, Any], int]:
     grid_rows = _extract_document_grid_rows(document_json)
     config_row_index = _normalize_document_data_start_row(document_json) - 1
+    field_row_index = int(document_json.get("field_row_index") or 0)
     current_refund_index = _get_column_index(columns, "当前应返款")
     if (
         current_refund_index < 0
         or not grid_rows
         or config_row_index < 0
         or config_row_index >= len(grid_rows)
+        or config_row_index <= field_row_index
     ):
         return document_json, 0
 

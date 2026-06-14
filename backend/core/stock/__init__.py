@@ -55,6 +55,23 @@ from .akshare_market import (
     serialize_akshare_etf_intraday,
     serialize_akshare_stock_history,
 )
+from .strategy_research import (
+    get_strategy_research_item,
+    list_strategy_research_backlog,
+    list_strategy_research_items,
+    load_strategy_research_catalog,
+)
+from .etf_rotation import (
+    apply_etf_rotation_volatility_target_overlay,
+    compute_cross_asset_etf_breadth_filtered_canary_rotation,
+    compute_cross_asset_etf_canary_rotation,
+    compute_cross_asset_etf_dual_momentum_switch,
+    compute_cross_asset_etf_hybrid_asset_allocation,
+    compute_cross_asset_etf_inverse_variance_sleeve,
+    compute_nasdaq_etf_turn_of_month_strategy,
+    evaluate_etf_premium_execution_guard,
+    serialize_etf_rotation_backtest_result,
+)
 from .qlib_bridge import (
     analyze_qlib_daily_target,
     backtest_qlib_one_lot_score_strategy,
@@ -134,6 +151,19 @@ __all__ = [
     "fetch_akshare_stock_history",
     "serialize_akshare_etf_intraday",
     "serialize_akshare_stock_history",
+    "get_strategy_research_item",
+    "list_strategy_research_backlog",
+    "list_strategy_research_items",
+    "load_strategy_research_catalog",
+    "apply_etf_rotation_volatility_target_overlay",
+    "compute_cross_asset_etf_breadth_filtered_canary_rotation",
+    "compute_cross_asset_etf_canary_rotation",
+    "compute_cross_asset_etf_dual_momentum_switch",
+    "compute_cross_asset_etf_hybrid_asset_allocation",
+    "compute_cross_asset_etf_inverse_variance_sleeve",
+    "compute_nasdaq_etf_turn_of_month_strategy",
+    "evaluate_etf_premium_execution_guard",
+    "serialize_etf_rotation_backtest_result",
     "export_qlib_daily_dataset",
     "serialize_qlib_export_result",
     "analyze_qlib_daily_target",

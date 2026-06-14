@@ -23,6 +23,7 @@ from backend.core.stock import (
     backtest_hk_pool_one_lot_score,
     build_qlib_rotation_strategy_candidates,
     build_qlib_strategy_candidates,
+    compute_cross_asset_etf_canary_rotation,
     compute_hk_connect_momentum_review,
     export_qlib_daily_dataset,
     fetch_akshare_etf_intraday,
@@ -30,6 +31,8 @@ from backend.core.stock import (
     get_market_data_db_path,
     get_latest_asset_snapshot,
     import_mobile_trade_detail_record,
+    get_strategy_research_item,
+    list_strategy_research_backlog,
     list_latest_market_quotes,
     list_fund_flow_categories,
     list_fund_flow_filter_options,
@@ -37,6 +40,7 @@ from backend.core.stock import (
     list_latest_position_snapshots,
     list_sync_runs,
     list_trade_records,
+    list_strategy_research_items,
     open_trade_account_page,
     read_trade_snapshot,
     refresh_market_quotes_from_akshare,
@@ -45,6 +49,7 @@ from backend.core.stock import (
     serialize_quote_refresh_result,
     serialize_akshare_etf_intraday,
     serialize_akshare_stock_history,
+    serialize_etf_rotation_backtest_result,
     serialize_qlib_export_result,
     serialize_qlib_factor_analysis,
     serialize_qlib_backtest_result,
@@ -74,10 +79,12 @@ from backend.core.stock.market_data import (
     normalize_autype,
     normalize_ktype,
     normalize_market_code,
+    upsert_intraday_rows,
     upsert_kline_rows,
 )
 from backend.core.stock.akshare_market import (
     AkshareEtfIntraday,
+    AkshareEtfIntradayRow,
     AkshareStockHistory,
     AkshareStockHistoryRow,
     _aggregate_history_rows,
@@ -180,6 +187,45 @@ _hk_pool_strategy_jobs: dict[str, Future] = {}
 class EastmoneySyncRequest(BaseModel):
     start_date: str | None = PydanticField(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str | None = PydanticField(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@router.get("/strategy-research")
+def get_eastmoney_strategy_research_catalog(
+    family: str | None = Query(default=None, max_length=80),
+    status: str | None = Query(default=None, max_length=80),
+    market: str | None = Query(default=None, max_length=20),
+    min_priority: int | None = Query(default=None, ge=1, le=9),
+):
+    try:
+        return list_strategy_research_items(
+            family=family,
+            status=status,
+            market=market,
+            min_priority=min_priority,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"读取策略研究库失败：{exc}") from exc
+
+
+@router.get("/strategy-research/{strategy_id}")
+def get_eastmoney_strategy_research_item(strategy_id: str):
+    try:
+        item = get_strategy_research_item(strategy_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"读取策略研究条目失败：{exc}") from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="策略研究条目不存在")
+    return item
+
+
+@router.get("/strategy-research-backlog")
+def get_eastmoney_strategy_research_backlog(
+    max_priority: int = Query(default=3, ge=1, le=9),
+):
+    try:
+        return list_strategy_research_backlog(max_priority=max_priority)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"读取策略研究队列失败：{exc}") from exc
 
 
 @router.post("/qlib/export")
@@ -449,6 +495,31 @@ def _hk_connect_momentum_review_cache_paths():
     return (
         base_path / "hk_connect_momentum_review.json",
         base_path / "hk_connect_momentum_review_progress.json",
+    )
+
+
+def _etf_canary_rotation_cache_key(
+    *,
+    start_date: str,
+    hold_days: int,
+    top_n: int,
+    cost: float,
+    canary_threshold: float,
+) -> dict:
+    return {
+        "start_date": start_date,
+        "hold_days": int(hold_days),
+        "top_n": int(top_n),
+        "cost": float(cost),
+        "canary_threshold": float(canary_threshold),
+    }
+
+
+def _etf_canary_rotation_cache_paths():
+    base_path = get_settings().data_dir / "stock" / "qlib"
+    return (
+        base_path / "cross_asset_etf_canary_rotation.json",
+        base_path / "cross_asset_etf_canary_rotation_progress.json",
     )
 
 
@@ -722,6 +793,176 @@ def run_hk_connect_momentum_review_snapshot_job() -> dict:
     _write_dict_snapshot(cache_path, cache_key, payload)
     _write_dict_snapshot(progress_path, cache_key, payload)
     return payload
+
+
+def run_cross_asset_etf_canary_rotation_snapshot_job() -> dict:
+    cache_key = _etf_canary_rotation_cache_key(
+        start_date="2021-01-01",
+        hold_days=10,
+        top_n=1,
+        cost=0.001,
+        canary_threshold=0.5,
+    )
+    cache_path, progress_path = _etf_canary_rotation_cache_paths()
+    payload = serialize_etf_rotation_backtest_result(
+        compute_cross_asset_etf_canary_rotation(
+            start_date="2021-01-01",
+            hold_days=10,
+            top_n=1,
+            cost=0.001,
+            canary_threshold=0.5,
+        )
+    )
+    _write_dict_snapshot(cache_path, cache_key, payload)
+    _write_dict_snapshot(progress_path, cache_key, payload)
+    return payload
+
+
+def run_market_intraday_persist_snapshot_job(
+    *,
+    include_market_kline: bool = True,
+    limit: int | None = 300,
+    day_count: int = 5,
+) -> dict:
+    targets = _collect_market_intraday_persist_targets(
+        include_market_kline=include_market_kline,
+        limit=limit,
+    )
+    target_trade_date = dt.date.today().isoformat()
+    items: list[dict] = []
+    for target in targets:
+        market_code, normalized_symbol = resolve_akshare_market_symbol(
+            format_market_symbol(target["market"], target["symbol"])
+        )
+        latest_trade_date = read_latest_persisted_history_date(
+            market=market_code,
+            symbol=normalized_symbol,
+        )
+        item = {
+            "market": market_code,
+            "symbol": normalized_symbol,
+            "name": target["name"],
+            "latest_daily_date": latest_trade_date,
+            "target_trade_date": target_trade_date,
+            "status": "skipped",
+            "rows": 0,
+            "trade_dates": [],
+            "error": "",
+        }
+        try:
+            intraday = fetch_akshare_etf_intraday(
+                market=market_code,
+                symbol=normalized_symbol,
+                name=target["name"],
+                trade_date=target_trade_date,
+                period="1",
+                day_count=day_count,
+            )
+            if intraday.rows:
+                persist_akshare_intraday(intraday)
+                trade_dates = sorted({row.time[:10] for row in intraday.rows if row.time})
+                item["status"] = "persisted"
+                item["rows"] = len(intraday.rows)
+                item["trade_dates"] = trade_dates
+            else:
+                item["status"] = "empty"
+                item["error"] = f"数据源未返回 {target_trade_date} 附近的分时数据"
+        except Exception as exc:
+            item["status"] = "error"
+            item["error"] = str(exc)
+        items.append(item)
+    return {
+        "provider": "akshare",
+        "period": "1",
+        "day_count": max(1, min(int(day_count or 1), 5)),
+        "target_trade_date": target_trade_date,
+        "target_count": len(targets),
+        "items": items,
+        "persisted": sum(1 for item in items if item["status"] == "persisted"),
+        "failed": sum(1 for item in items if item["status"] == "error"),
+    }
+
+
+def _collect_market_intraday_persist_targets(
+    *,
+    include_market_kline: bool,
+    limit: int | None,
+) -> list[dict]:
+    base_targets = [
+        {"market": "SZ", "symbol": "159278", "name": "机器人PH"},
+        {"market": "HK", "symbol": "03896", "name": "金山云"},
+        {"market": "HK", "symbol": "01810", "name": "小米集团"},
+    ]
+    targets_by_key: dict[tuple[str, str], dict] = {}
+    for target in base_targets:
+        market, symbol = resolve_akshare_market_symbol(format_market_symbol(target["market"], target["symbol"]))
+        targets_by_key[(market, symbol)] = {"market": market, "symbol": symbol, "name": target["name"], "priority": 0}
+
+    if include_market_kline:
+        with connect_market_data_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    k.market,
+                    k.symbol,
+                    COALESCE(MAX(k.name), '') AS name,
+                    MAX(k.time_key) AS latest_daily_date,
+                    MAX(i.trade_date) AS latest_intraday_date,
+                    COUNT(*) AS daily_rows
+                FROM market_kline AS k
+                LEFT JOIN market_intraday AS i
+                  ON i.provider = k.provider
+                 AND i.market = k.market
+                 AND i.symbol = k.symbol
+                 AND i.period = '1'
+                WHERE k.provider = ?
+                  AND k.ktype = 'daily'
+                  AND k.time_key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                GROUP BY k.market, k.symbol
+                """,
+                (MARKET_DATA_PROVIDER_AKSHARE,),
+            ).fetchall()
+        for row in rows:
+            market = str(row["market"] or "")
+            symbol = str(row["symbol"] or "")
+            if not market or not symbol:
+                continue
+            latest_daily_date = str(row["latest_daily_date"] or "")[:10]
+            latest_intraday_date = str(row["latest_intraday_date"] or "")[:10]
+            has_recent_intraday = bool(latest_intraday_date and latest_intraday_date >= latest_daily_date)
+            is_cn_fund = market in {"SH", "SZ"} and symbol.startswith(("15", "16", "50", "51", "52", "56", "58"))
+            priority = 1 if is_cn_fund else 2
+            if latest_intraday_date:
+                priority += 2
+            if has_recent_intraday:
+                priority += 3
+            key = (market, symbol)
+            targets_by_key.setdefault(
+                key,
+                {
+                    "market": market,
+                    "symbol": symbol,
+                    "name": str(row["name"] or ""),
+                    "priority": priority,
+                    "latest_daily_date": latest_daily_date,
+                    "latest_intraday_date": latest_intraday_date,
+                    "daily_rows": int(row["daily_rows"] or 0),
+                },
+            )
+
+    targets = sorted(
+        targets_by_key.values(),
+        key=lambda item: (
+            int(item.get("priority") or 99),
+            str(item.get("latest_intraday_date") or ""),
+            -int(item.get("daily_rows") or 0),
+            str(item.get("market") or ""),
+            str(item.get("symbol") or ""),
+        ),
+    )
+    if limit is not None and limit > 0:
+        targets = targets[:limit]
+    return targets
 
 
 @router.get("/qlib/hk-connect-momentum-review")
@@ -1190,6 +1431,49 @@ def get_eastmoney_qlib_hk_pool_rotation_strategy_search(
         raise HTTPException(status_code=502, detail=f"搜索港股池轮动策略失败：{exc}") from exc
 
 
+@router.get("/qlib/backtest/cross-asset-etf-canary-rotation")
+def get_eastmoney_cross_asset_etf_canary_rotation_backtest(
+    refresh: bool = Query(default=False),
+    progress: bool = Query(default=False),
+    start_date: str = Query(default="2021-01-01", max_length=10),
+    hold_days: int = Query(default=10, ge=1, le=60),
+    top_n: int = Query(default=1, ge=1, le=3),
+    cost: float = Query(default=0.001, ge=0, le=0.02),
+    canary_threshold: float = Query(default=0.5, ge=-10, le=10),
+):
+    try:
+        cache_key = _etf_canary_rotation_cache_key(
+            start_date=start_date,
+            hold_days=hold_days,
+            top_n=top_n,
+            cost=cost,
+            canary_threshold=canary_threshold,
+        )
+        cache_path, progress_path = _etf_canary_rotation_cache_paths()
+        if progress:
+            payload = _read_dict_snapshot(progress_path, cache_key) or _read_dict_snapshot(cache_path, cache_key)
+            if payload is not None:
+                return payload
+        if not refresh:
+            payload = _read_dict_snapshot(cache_path, cache_key)
+            if payload is not None:
+                return payload
+        payload = serialize_etf_rotation_backtest_result(
+            compute_cross_asset_etf_canary_rotation(
+                start_date=start_date,
+                hold_days=hold_days,
+                top_n=top_n,
+                cost=cost,
+                canary_threshold=canary_threshold,
+            )
+        )
+        _write_dict_snapshot(cache_path, cache_key, payload)
+        _write_dict_snapshot(progress_path, cache_key, payload)
+        return payload
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"计算跨资产ETF轮动失败：{exc}") from exc
+
+
 @router.get("/market-history/akshare")
 def get_akshare_market_history(
     market: str = Query(default="SZ", max_length=8),
@@ -1290,9 +1574,24 @@ def get_akshare_market_intraday(
     trade_date: str | None = Query(default=None),
     period: str = Query(default="1"),
     day_count: int = Query(default=1, ge=1, le=5),
+    refresh: bool = Query(default=False),
 ):
-    try:
-        intraday = fetch_akshare_etf_intraday(
+    market_code, normalized_symbol = resolve_akshare_market_symbol(format_market_symbol(market, symbol))
+    latest_trade_date = read_latest_persisted_history_date(
+        market=market_code,
+        symbol=normalized_symbol,
+    )
+    requested_trade_date = akshare_date_to_iso(trade_date) if trade_date else ""
+    target_trade_date = requested_trade_date or latest_trade_date
+
+    def serialize_with_target(intraday: AkshareEtfIntraday) -> dict:
+        payload = serialize_akshare_etf_intraday(intraday)
+        payload["target_trade_date"] = target_trade_date or intraday.trade_date
+        payload["display_trade_date"] = intraday.trade_date
+        return payload
+
+    if not refresh:
+        cached = read_persisted_akshare_intraday(
             market=market,
             symbol=symbol,
             name=name,
@@ -1300,23 +1599,275 @@ def get_akshare_market_intraday(
             period=period,
             day_count=day_count,
         )
-        return serialize_akshare_etf_intraday(intraday)
+        if cached is not None:
+            if not requested_trade_date and latest_trade_date and cached.trade_date < latest_trade_date:
+                return serialize_with_target(
+                    AkshareEtfIntraday(
+                        provider=cached.provider,
+                        market=cached.market,
+                        symbol=cached.symbol,
+                        name=cached.name,
+                        period=cached.period,
+                        trade_date=cached.trade_date,
+                        rows=cached.rows,
+                        error=f"目标交易日 {latest_trade_date} 分时数据尚未持久化，当前显示最近已持久化交易日 {cached.trade_date}",
+                    )
+                )
+            return serialize_with_target(cached)
+        return serialize_with_target(
+            AkshareEtfIntraday(
+                provider="market-data",
+                market=market_code,
+                symbol=normalized_symbol,
+                name=name,
+                period=period,
+                trade_date=target_trade_date,
+                rows=(),
+                error=(
+                    f"本地暂无目标交易日 {target_trade_date} 分时持久化数据；可点补下载尝试拉取并落库"
+                    if target_trade_date
+                    else "本地暂无分时持久化数据；可点补下载尝试拉取并落库"
+                ),
+            )
+        )
+
+    try:
+        intraday = fetch_akshare_etf_intraday(
+            market=market,
+            symbol=symbol,
+            name=name,
+            trade_date=requested_trade_date or latest_trade_date or None,
+            period=period,
+            day_count=day_count,
+        )
+        if intraday.rows:
+            persist_akshare_intraday(intraday)
+            return serialize_with_target(intraday)
+        return serialize_with_target(
+            AkshareEtfIntraday(
+                provider="akshare-empty",
+                market=intraday.market,
+                symbol=intraday.symbol,
+                name=intraday.name,
+                period=intraday.period,
+                trade_date=intraday.trade_date,
+                rows=(),
+                error=f"AKShare 未返回 {intraday.trade_date} 分时数据",
+            )
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        market_code, normalized_symbol = resolve_akshare_market_symbol(format_market_symbol(market, symbol))
-        return serialize_akshare_etf_intraday(
+        cached = read_persisted_akshare_intraday(
+            market=market,
+            symbol=symbol,
+            name=name,
+            trade_date=requested_trade_date or latest_trade_date or trade_date,
+            period=period,
+            day_count=day_count,
+        )
+        if cached is not None:
+            return serialize_with_target(
+                AkshareEtfIntraday(
+                    provider=cached.provider,
+                    market=cached.market,
+                    symbol=cached.symbol,
+                    name=cached.name,
+                    period=cached.period,
+                    trade_date=cached.trade_date,
+                    rows=cached.rows,
+                    error=str(exc),
+                )
+            )
+        if not requested_trade_date:
+            fallback_cached = read_persisted_akshare_intraday(
+                market=market,
+                symbol=symbol,
+                name=name,
+                trade_date=None,
+                period=period,
+                day_count=day_count,
+            )
+            if fallback_cached is not None:
+                target_date = latest_trade_date or fallback_cached.trade_date
+                return serialize_with_target(
+                    AkshareEtfIntraday(
+                        provider=fallback_cached.provider,
+                        market=fallback_cached.market,
+                        symbol=fallback_cached.symbol,
+                        name=fallback_cached.name,
+                        period=fallback_cached.period,
+                        trade_date=fallback_cached.trade_date,
+                        rows=fallback_cached.rows,
+                        error=f"补下载目标交易日 {target_date} 分时失败，当前显示最近已持久化交易日 {fallback_cached.trade_date}：{exc}",
+                    )
+                )
+        return serialize_with_target(
             AkshareEtfIntraday(
                 provider="akshare-error",
                 market=market_code,
                 symbol=normalized_symbol,
                 name=name,
                 period=period,
-                trade_date=trade_date or "",
+                trade_date=requested_trade_date or latest_trade_date or "",
                 rows=(),
-                error=str(exc),
+                error=(
+                    f"本地暂无目标交易日 {target_trade_date} 分时持久化数据；补下载失败：{exc}"
+                    if target_trade_date
+                    else str(exc)
+                ),
             )
         )
+
+
+def persist_akshare_intraday(intraday: AkshareEtfIntraday) -> None:
+    market, symbol = resolve_akshare_market_symbol(format_market_symbol(intraday.market, intraday.symbol))
+    fallback_trade_date = akshare_date_to_iso(intraday.trade_date)
+    rows_by_trade_date: dict[str, list[dict]] = {}
+    for row in intraday.rows:
+        row_trade_date = akshare_date_to_iso(row.time[:10]) or fallback_trade_date
+        if not row_trade_date:
+            continue
+        rows_by_trade_date.setdefault(row_trade_date, []).append(
+            {
+            "time_key": row.time,
+            "trade_date": row_trade_date,
+            "open": row.open,
+            "close": row.close,
+            "high": row.high,
+            "low": row.low,
+            "volume": row.volume,
+            "turnover": row.amount,
+            "average_price": row.average_price,
+            "raw_symbol": row.symbol,
+            }
+        )
+    with connect_market_data_db() as conn:
+        for trade_date, rows in rows_by_trade_date.items():
+            target = MarketHistoryTarget(
+                market=market,
+                symbol=symbol,
+                provider_code=symbol,
+                name=intraday.name,
+                sources=("akshare:intraday",),
+                first_trade_date=trade_date,
+                start_date=trade_date,
+                end_date=trade_date,
+            )
+            upsert_intraday_rows(
+                conn,
+                provider=MARKET_DATA_PROVIDER_AKSHARE,
+                target=target,
+                period=intraday.period,
+                trade_date=trade_date,
+                rows=rows,
+            )
+
+
+def read_persisted_akshare_intraday(
+    *,
+    market: str,
+    symbol: str,
+    name: str,
+    trade_date: str | None,
+    period: str,
+    day_count: int,
+) -> AkshareEtfIntraday | None:
+    market_code, normalized_symbol = resolve_akshare_market_symbol(format_market_symbol(market, symbol))
+    normalized_period = str(period or "1")
+    normalized_day_count = max(1, min(int(day_count or 1), 5))
+    requested_trade_date = akshare_date_to_iso(trade_date) if trade_date else ""
+
+    with connect_market_data_db() as conn:
+        if requested_trade_date:
+            trade_dates = [requested_trade_date]
+        else:
+            date_rows = conn.execute(
+                """
+                SELECT DISTINCT trade_date
+                FROM market_intraday
+                WHERE provider = ?
+                  AND market = ?
+                  AND symbol = ?
+                  AND period = ?
+                ORDER BY trade_date DESC
+                LIMIT ?
+                """,
+                (
+                    MARKET_DATA_PROVIDER_AKSHARE,
+                    market_code,
+                    normalized_symbol,
+                    normalized_period,
+                    normalized_day_count,
+                ),
+            ).fetchall()
+            trade_dates = [str(row["trade_date"] or "") for row in reversed(date_rows) if row["trade_date"]]
+        if not trade_dates:
+            return None
+
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM market_intraday
+            WHERE provider = ?
+              AND market = ?
+              AND symbol = ?
+              AND period = ?
+              AND trade_date IN ({",".join("?" for _ in trade_dates)})
+            ORDER BY time_key
+            """,
+            (
+                MARKET_DATA_PROVIDER_AKSHARE,
+                market_code,
+                normalized_symbol,
+                normalized_period,
+                *trade_dates,
+            ),
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    intraday_rows = [
+        AkshareEtfIntradayRow(
+            time=str(row["time_key"] or ""),
+            symbol=normalized_symbol,
+            open=row["open"],
+            close=row["close"],
+            high=row["high"],
+            low=row["low"],
+            volume=row["volume"],
+            amount=row["turnover"],
+            average_price=row["average_price"],
+        )
+        for row in rows
+    ]
+    return AkshareEtfIntraday(
+        provider="market-data",
+        market=market_code,
+        symbol=normalized_symbol,
+        name=name.strip() or str(rows[-1]["name"] or ""),
+        period=normalized_period,
+        trade_date=str(rows[-1]["trade_date"] or ""),
+        rows=tuple(intraday_rows),
+    )
+
+
+def read_latest_persisted_history_date(*, market: str, symbol: str) -> str:
+    with connect_market_data_db() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(time_key) AS max_time_key
+            FROM market_kline
+            WHERE provider = ?
+              AND market = ?
+              AND symbol = ?
+              AND ktype = 'daily'
+              AND time_key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+            """,
+            (MARKET_DATA_PROVIDER_AKSHARE, market, symbol),
+        ).fetchone()
+    return str(row["max_time_key"] or "")[:10] if row else ""
 
 
 def cache_akshare_history(history: AkshareStockHistory) -> None:

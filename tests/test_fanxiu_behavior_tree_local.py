@@ -85,6 +85,23 @@ def test_core_stop_request_writes_control_file(monkeypatch, tmp_path):
     }
 
 
+def test_core_wake_request_writes_control_file(monkeypatch, tmp_path):
+    control_path = tmp_path / "behavior_tree_control.json"
+    monkeypatch.setattr(bt.uuid, "uuid4", lambda: type("FakeUuid", (), {"hex": "wake-id"})())
+    monkeypatch.setattr(bt.time, "time", lambda: 456.0)
+
+    request = bt.request_fanxiu_behavior_tree_wake(entry_id="entry", reason="test", path=control_path)
+
+    assert request["path"] == str(control_path)
+    assert json.loads(control_path.read_text(encoding="utf-8")) == {
+        "id": "wake-id",
+        "command": "wake_service",
+        "entry_id": "entry",
+        "reason": "test",
+        "created_at": 456.0,
+    }
+
+
 def test_core_service_owner_diagnostics(monkeypatch, tmp_path):
     owner_path = tmp_path / "behavior_tree_service_owner.json"
 
@@ -95,6 +112,7 @@ def test_core_service_owner_diagnostics(monkeypatch, tmp_path):
         json.dumps({"pid": 123, "entry_id": "entry", "step": "idle_guard", "updated_at": 95.0}),
         encoding="utf-8",
     )
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda pid: True)
 
     active = bt.read_fanxiu_behavior_tree_service_owner(owner_path, stale_after_seconds=30.0)
     assert active["active"] is True
@@ -104,6 +122,23 @@ def test_core_service_owner_diagnostics(monkeypatch, tmp_path):
     stale = bt.read_fanxiu_behavior_tree_service_owner(owner_path, stale_after_seconds=3.0)
     assert stale["active"] is False
     assert stale["stale"] is True
+
+
+def test_core_service_owner_marks_missing_pid_stale(monkeypatch, tmp_path):
+    owner_path = tmp_path / "behavior_tree_service_owner.json"
+    monkeypatch.setattr(bt.time, "time", lambda: 100.0)
+    monkeypatch.setattr(bt.os, "getpid", lambda: 456)
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda pid: False)
+    owner_path.write_text(
+        json.dumps({"pid": 123, "entry_id": "entry", "step": "idle_guard", "updated_at": 99.0}),
+        encoding="utf-8",
+    )
+
+    status = bt.read_fanxiu_behavior_tree_service_owner(owner_path, stale_after_seconds=30.0)
+
+    assert status["active"] is False
+    assert status["stale"] is True
+    assert "owner 进程不存在" in status["error"]
 
 
 def test_core_manual_job_payload_normalizers_are_api_free():
@@ -381,6 +416,7 @@ def test_core_runner_facade_operations_use_registered_runner(tmp_path, monkeypat
     monkeypatch.setattr(bt, "_RUNTIME_RUNNER", FakeRunner())
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: calls.append(("register",)))
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(bt, "request_fanxiu_behavior_tree_wake", lambda **kwargs: calls.append(("wake-request", kwargs)))
 
     assert bt.fanxiu_runtime_runner_running() is True
     bt.fanxiu_runtime_runner_wake()
@@ -390,6 +426,7 @@ def test_core_runner_facade_operations_use_registered_runner(tmp_path, monkeypat
     bt.replace_fanxiu_runtime_logs([])
 
     assert ("wake",) in calls
+    assert any(call[0] == "wake-request" for call in calls)
     assert ("register",) in calls
     assert any(call[0] == "manual" and call[1]["asset_tree_path"] == tmp_path / "entry.json" for call in calls)
     assert any(call[0] == "guard" and call[1]["guard_id"] == "close_popups" for call in calls)
@@ -567,7 +604,12 @@ def test_local_manual_job_wait_observes_queue_removal(monkeypatch):
     monkeypatch.setattr(
         bt,
         "fanxiu_data_annotation_runtime_status",
-        lambda: {"running": False, "current_task_id": "", "status": "success"},
+        lambda: {
+            "running": False,
+            "current_task_id": "",
+            "status": "success",
+            "logs": [{"kind": "success", "message": "[manual-1] 手动作业完成：到场景 #34"}],
+        },
     )
     monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
 
@@ -576,6 +618,32 @@ def test_local_manual_job_wait_observes_queue_removal(monkeypatch):
     assert result["done"] is True
     assert result["result"] == "completed"
     assert calls["jobs"] == 2
+
+
+def test_local_manual_job_wait_requires_completion_evidence(monkeypatch):
+    calls = {"jobs": 0}
+    clock = {"now": 100.0}
+
+    def fake_jobs():
+        calls["jobs"] += 1
+        if calls["jobs"] == 1:
+            return [{"id": "manual-1", "status": "pending", "task_type": "go_scene"}]
+        return []
+
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_jobs", fake_jobs)
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: {"running": False, "current_task_id": "", "status": "idle", "logs": []},
+    )
+    monkeypatch.setattr(bt.time, "time", lambda: clock["now"])
+    monkeypatch.setattr(bt.time, "sleep", lambda seconds: clock.update(now=clock["now"] + seconds))
+
+    result = bt.wait_fanxiu_local_manual_job("manual-1", timeout_seconds=0.2, poll_seconds=0.1)
+
+    assert result["done"] is False
+    assert result["result"] == "missing_completion_evidence"
+    assert calls["jobs"] >= 2
 
 
 def test_local_manual_job_wait_times_out(monkeypatch):

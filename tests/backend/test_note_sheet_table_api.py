@@ -243,6 +243,59 @@ def test_note_sheet_table_api_returns_evaluated_defined_name_values(client, sess
     assert raw_table["defined_name_values"] == {}
 
 
+def test_note_sheet_table_api_normalizes_zen_stage_refund_defined_names(client, session, test_device):
+    workbook = WorkbookDocument(
+        numeric_id=15,
+        title="修道班7期5阶",
+    )
+    sheet = SheetDocument(
+        numeric_id=16,
+        scope="notes",
+        owner_type="user",
+        owner_key="1",
+        sheet_key="16",
+        title="考勤表",
+        document_json={
+            "columns": ["返款配置"],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "grid_rows": [
+                ["返款配置"],
+                ['=TEXTJOIN(",",TRUE,返款说明,"order"&返款ID后缀,返款周期)'],
+            ],
+            "rows": [
+                ['=TEXTJOIN(",",TRUE,返款说明,"order"&返款ID后缀,返款周期)'],
+            ],
+        },
+        version=1,
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=10))
+    note_sheets_api._set_workbook_defined_names(session, workbook, [
+        {"name": "开始日期", "formula": '=DATE(2026,6,1)'},
+        {"name": "第几天", "formula": '=DATEDIF(开始日期,"2026-06-14","d")'},
+        {"name": "返款周期", "formula": "=第几天"},
+        {"name": "返款说明", "formula": '="修道班第"&返款周期&"天返款"'},
+        {"name": "返款ID后缀", "formula": '="_day"&返款周期'},
+    ])
+    session.commit()
+
+    text_response = client.get(
+        "/api/note-sheets/sheets/16/table",
+        params={"workbook_id": 15, "include_grid": True},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert text_response.status_code == 200
+    text_table = text_response.json()
+    assert text_table["defined_name_values"]["返款周期"] == 2
+    assert text_table["defined_name_values"]["返款说明"] == "修道班第2周返款"
+    assert text_table["defined_name_values"]["返款id后缀"] == "_week2"
+    assert text_table["rows"][0]["返款配置"] == "修道班第2周返款,order_week2,2"
+
+
 def test_note_sheet_table_api_evaluates_legacy_attendance_formulas(client, session, test_device):
     workbook = WorkbookDocument(
         numeric_id=6,

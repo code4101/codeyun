@@ -47,6 +47,7 @@ from backend.core.fanxiu_data_annotation_scheduler import (
     build_data_annotation_scheduler_plan,
     merge_data_annotation_scheduler_task_updates,
     data_annotation_scheduler_run_now_task,
+    data_annotation_scheduler_time_order_key,
     data_annotation_scheduler_task_plan_reason,
     data_annotation_world_facts_summary,
     repair_data_annotation_scheduler_tasks,
@@ -225,7 +226,7 @@ def read_scheduler_tasks(
         changed = True
     if changed:
         write_scheduler_tasks(tasks, scheduler_state_path=path)
-    return tasks
+    return sorted(tasks, key=data_annotation_scheduler_time_order_key)
 
 
 def write_scheduler_tasks(tasks: list[dict[str, Any]], *, scheduler_state_path: Path | None = None) -> None:
@@ -637,10 +638,7 @@ def prepare_runtime_for_scheduler_task(
     if not status.get("running"):
         return None
     task_id = str(task.get("id") or "")
-    task["last_result"] = "queued"
-    record_scheduler_task_fact(task, "queued", world_facts_path=world_facts_path)
-    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
-    message = f"当前有任务运行，{task_id or task.get('label') or task.get('task_type')} 已排队"
+    message = f"当前有任务运行，{task_id or task.get('label') or task.get('task_type')} 暂不触发"
     status.update({"message": message, "updated_at": time.time()})
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status

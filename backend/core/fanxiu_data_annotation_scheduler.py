@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +27,9 @@ from backend.core.fanxiu_data_annotation_state import (
 TaskSupported = Callable[[dict[str, Any]], bool]
 TaskDue = Callable[[dict[str, Any]], bool]
 
+_UNSCHEDULED_MANUAL_RESULTS = {"manual_check_pending"}
+_DAILY_RETRY_TO_NEXT_TRIGGER_GRACE = timedelta(minutes=60)
+
 
 def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
     return first_valid_schedule_time_text(fact, *keys)
@@ -42,6 +45,31 @@ def data_annotation_scheduler_due_timestamp(task: dict[str, Any]) -> float:
 
 def data_annotation_scheduler_order_key(task: dict[str, Any]) -> tuple[int, float, str]:
     return schedule_task_order_key(task)
+
+
+def data_annotation_scheduler_time_order_key(task: dict[str, Any]) -> tuple[int, float, int, str]:
+    due_ts = data_annotation_scheduler_due_timestamp(task)
+    return (
+        0 if task.get("enabled") else 1,
+        due_ts if due_ts > 0 else float("inf"),
+        data_annotation_scheduler_group_rank(task),
+        str(task.get("id") or ""),
+    )
+
+
+def _daily_retry_should_defer_to_next_trigger(task: dict[str, Any], current_time: datetime) -> str | None:
+    if str(task.get("schedule_kind") or "") != "daily":
+        return None
+    retry_ts = parse_data_annotation_task_time(task.get("retry_after"))
+    if retry_ts is None:
+        return None
+    next_time = next_data_annotation_scheduler_time(task, current_time)
+    next_ts = parse_data_annotation_task_time(next_time)
+    if not next_time or next_ts is None:
+        return None
+    if retry_ts <= next_ts and next_ts - retry_ts <= _DAILY_RETRY_TO_NEXT_TRIGGER_GRACE.total_seconds():
+        return next_time
+    return None
 
 
 def sync_data_annotation_scheduler_tasks_from_world_facts(
@@ -60,6 +88,18 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         fact = filtered_task_facts.get(task_id)
         if not isinstance(fact, dict):
             continue
+        fact_result = str(fact.get("last_result") or "")
+        if fact_result in {"error", "stopped", "skipped", "unsupported"} and (fact.get("discovered_retry_after") or fact.get("retry_after")):
+            fact = dict(fact)
+            fact.pop("discovered_next_time", None)
+            fact.pop("next_time", None)
+        if fact_result in _UNSCHEDULED_MANUAL_RESULTS:
+            fact = dict(fact)
+            fact.pop("discovered_next_time", None)
+            fact.pop("next_time", None)
+            fact.pop("discovered_retry_after", None)
+            fact.pop("retry_after", None)
+            filtered_task_facts[task_id] = fact
         fact_updated_at = float(fact.get("updated_at") or 0)
         last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
         if fact_updated_at and last_run_at and fact_updated_at < last_run_at:
@@ -118,6 +158,8 @@ def repair_data_annotation_scheduler_tasks(
     legacy_daily_lingta_task: dict[str, Any] | None = None
     legacy_daily_xianyuan_task: dict[str, Any] | None = None
     legacy_daily_assistant_task: dict[str, Any] | None = None
+    legacy_daily_shuangxiu_task: dict[str, Any] | None = None
+    legacy_daily_dungeon_task: dict[str, Any] | None = None
     legacy_daily_yaowang_task: dict[str, Any] | None = None
     legacy_daily_yaozu_task: dict[str, Any] | None = None
     for task in tasks:
@@ -216,10 +258,30 @@ def repair_data_annotation_scheduler_tasks(
             task["label"] = "日常_助手"
             task["source"] = "data_annotation_runtime"
             task["schedule_kind"] = "daily"
-            task["schedule_times"] = ["05:00", "12:00", "18:00", "00:00"]
+            task["schedule_times"] = ["00:00", "06:00", "12:00", "18:00"]
             task["legacy_name"] = "日常_助手"
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             task["payload"] = {key: value for key, value in payload.items() if key != "legacy_name"}
+        elif str(task.get("id") or "") == "legacy-daily-shuangxiu" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_shuangxiu_task = task
+            task["task_type"] = "daily_shuangxiu"
+            task["label"] = "日常_双修"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_双修"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key not in {"legacy_name", "args"}}
+        elif str(task.get("id") or "") == "legacy-daily-dungeon" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
+            legacy_daily_dungeon_task = task
+            task["task_type"] = "daily_dungeon"
+            task["label"] = "日常_每日副本"
+            task["source"] = "data_annotation_runtime"
+            task["schedule_kind"] = "daily"
+            task["schedule_times"] = ["05:00"]
+            task["legacy_name"] = "日常_每日副本"
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            task["payload"] = {key: value for key, value in payload.items() if key not in {"legacy_name", "args"}}
         elif str(task.get("id") or "") == "legacy-daily-yaowang" and str(task.get("task_type") or "") in {"legacy_daily_task", "legacy_dynamic_task"}:
             legacy_daily_yaowang_task = task
             task["task_type"] = "daily_yaowang"
@@ -268,6 +330,10 @@ def repair_data_annotation_scheduler_tasks(
         changed = True
     if legacy_daily_assistant_task is not None:
         changed = True
+    if legacy_daily_shuangxiu_task is not None:
+        changed = True
+    if legacy_daily_dungeon_task is not None:
+        changed = True
     if legacy_daily_yaowang_task is not None:
         changed = True
     if legacy_daily_yaozu_task is not None:
@@ -311,6 +377,8 @@ def repair_data_annotation_scheduler_tasks(
                 "legacy-daily-lingta",
                 "legacy-daily-xianyuan",
                 "legacy-daily-assistant",
+                "legacy-daily-shuangxiu",
+                "legacy-daily-dungeon",
                 "legacy-daily-yaowang",
                 "legacy-daily-yaozu",
             }
@@ -318,6 +386,11 @@ def repair_data_annotation_scheduler_tasks(
         ):
             task["cooldown_seconds"] = default_task.get("cooldown_seconds")
             changed = True
+        if str(task.get("id") or "") == "legacy-daily-assistant":
+            for key in ("enabled", "schedule_times", "cooldown_seconds"):
+                if task.get(key) != default_task.get(key):
+                    task[key] = default_task.get(key)
+                    changed = True
     by_id = {str(task.get("id") or ""): task for task in tasks}
     if len(by_id) != len(tasks):
         deduped: dict[str, dict[str, Any]] = {}
@@ -345,19 +418,79 @@ def repair_data_annotation_scheduler_tasks(
     if sync_data_annotation_scheduler_tasks_from_world_facts(tasks, facts, now=now):
         changed = True
     current_time = now or datetime.now()
+    current_ts = current_time.timestamp()
     for task in tasks:
         if str(task.get("schedule_kind") or "") == "manual" and task.get("enabled"):
             task["enabled"] = False
             changed = True
+        if task.get("enabled") and task.get("retry_after"):
+            deferred_next_time = _daily_retry_should_defer_to_next_trigger(task, current_time)
+            if deferred_next_time:
+                task["next_time"] = deferred_next_time
+                task["retry_after"] = None
+                checkpoint = task.get("checkpoint") if isinstance(task.get("checkpoint"), dict) else {}
+                checkpoint.pop("manual_inspection_note", None)
+                if checkpoint:
+                    task["checkpoint"] = checkpoint
+                else:
+                    task["checkpoint"] = None
+                changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("last_result") or "") in _UNSCHEDULED_MANUAL_RESULTS
+        ):
+            if task.get("next_time") or task.get("retry_after"):
+                task["next_time"] = None
+                task["retry_after"] = None
+                changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and task.get("retry_after")
+            and task.get("next_time")
+        ):
+            task["next_time"] = None
+            changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and not task.get("retry_after")
+        ):
+            cooldown_seconds = int(task.get("cooldown_seconds") or 600)
+            task["next_time"] = None
+            task["retry_after"] = datetime.fromtimestamp(current_ts + cooldown_seconds).strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
+            and str(task.get("last_result") or "") not in _UNSCHEDULED_MANUAL_RESULTS
             and not task.get("next_time")
             and not task.get("retry_after")
         ):
             next_time = next_data_annotation_scheduler_time(task, current_time)
             if next_time:
                 task["next_time"] = next_time
+                changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("schedule_kind") or "") == "daily"
+            and str(task.get("last_result") or "") not in _UNSCHEDULED_MANUAL_RESULTS
+            and isinstance(task.get("schedule_times"), list)
+            and len([value for value in task.get("schedule_times", []) if str(value or "").strip()]) > 1
+            and not task.get("retry_after")
+        ):
+            expected_next_time = next_data_annotation_scheduler_time(task, current_time)
+            expected_ts = parse_data_annotation_task_time(expected_next_time)
+            actual_ts = parse_data_annotation_task_time(task.get("next_time"))
+            if (
+                expected_next_time
+                and expected_ts is not None
+                and expected_ts > current_ts
+                and actual_ts is not None
+                and actual_ts > current_ts
+                and task.get("next_time") != expected_next_time
+            ):
+                task["next_time"] = expected_next_time
                 changed = True
     for task in tasks:
         if not task_supported(task) and task.get("enabled"):

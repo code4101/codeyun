@@ -215,6 +215,22 @@ def fetch_akshare_etf_intraday(
         except Exception as transport_exc:
             raise RuntimeError(f"AKShare 获取 {normalized_symbol} 分时行情失败：{transport_exc}") from transport_exc
 
+    if normalized_market == "HK" and normalized_day_count > 1:
+        source_dates = {row.time[:10] for row in rows if row.time}
+        if len(source_dates) < normalized_day_count:
+            try:
+                yahoo_rows = _request_hk_intraday_rows_from_yahoo(
+                    symbol=normalized_symbol,
+                    start_date=start_at,
+                    end_date=end_at,
+                    period=request_period,
+                )
+                yahoo_dates = {row.time[:10] for row in yahoo_rows if row.time}
+                if len(yahoo_dates) > len(source_dates):
+                    rows = yahoo_rows
+            except Exception:
+                pass
+
     rows = _limit_intraday_rows_to_recent_days(rows, normalized_day_count)
     if normalized_period == "120":
         rows = _aggregate_intraday_rows(rows, normalized_symbol, minutes=120)
@@ -316,13 +332,32 @@ def _request_akshare_history_rows(
                 adjust=adjust,
             )
     else:
-        frame = ak_module.stock_zh_a_hist(
-            symbol=symbol,
-            period=period,
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust,
-        )
+        if _looks_like_cn_fund_symbol(symbol):
+            try:
+                frame = ak_module.fund_etf_hist_em(
+                    symbol=symbol,
+                    period=period,
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=adjust,
+                )
+            except Exception:
+                return _request_akshare_cn_etf_daily_rows_from_sina(
+                    ak_module,
+                    market=market,
+                    symbol=symbol,
+                    period=period,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+        else:
+            frame = ak_module.stock_zh_a_hist(
+                symbol=symbol,
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust,
+            )
     return tuple(_history_row_from_record(symbol, record) for record in frame.to_dict("records"))
 
 
@@ -336,6 +371,29 @@ def _request_akshare_hk_daily_rows_from_sina(
     adjust: str,
 ) -> tuple[AkshareStockHistoryRow, ...]:
     frame = ak_module.stock_hk_daily(symbol=symbol, adjust=adjust if adjust in {"", "qfq"} else "")
+    start_iso = _akshare_date_to_iso(start_date)
+    end_iso = _akshare_date_to_iso(end_date)
+    rows = tuple(
+        _history_row_from_record(symbol, record)
+        for record in frame.to_dict("records")
+        if _date_in_range(str(record.get("date") or record.get("日期") or ""), start_iso, end_iso)
+    )
+    if period in {"weekly", "monthly"}:
+        return _aggregate_history_rows(rows, symbol, period)
+    return rows
+
+
+def _request_akshare_cn_etf_daily_rows_from_sina(
+    ak_module: Any,
+    *,
+    market: str,
+    symbol: str,
+    period: str,
+    start_date: str,
+    end_date: str,
+) -> tuple[AkshareStockHistoryRow, ...]:
+    sina_symbol = f"{market.lower()}{symbol}"
+    frame = ak_module.fund_etf_hist_sina(symbol=sina_symbol)
     start_iso = _akshare_date_to_iso(start_date)
     end_iso = _akshare_date_to_iso(end_date)
     rows = tuple(
@@ -397,14 +455,111 @@ def _request_akshare_etf_intraday_rows_with_curl_transport(
             )
     except Exception:
         with _without_proxy_env(), _with_curl_cffi_requests_get():
-            return _request_akshare_etf_intraday_rows(
-                ak_module,
-                market=market,
+            try:
+                return _request_akshare_etf_intraday_rows(
+                    ak_module,
+                    market=market,
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    period=period,
+                )
+            except Exception:
+                if market == "HK":
+                    return _request_hk_intraday_rows_from_yahoo(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        period=period,
+                    )
+                else:
+                    return _request_akshare_cn_intraday_rows_from_sina(
+                        ak_module,
+                        market=market,
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        period=period,
+                    )
+
+
+def _request_hk_intraday_rows_from_yahoo(
+    *,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    period: str,
+) -> tuple[AkshareEtfIntradayRow, ...]:
+    import requests
+
+    yahoo_symbol = f"{int(symbol):04d}.HK"
+    interval = f"{int(period)}m"
+    response = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
+        params={"range": "5d", "interval": interval},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    results = ((payload.get("chart") or {}).get("result") or [])
+    if not results:
+        return ()
+    result = results[0]
+    timestamps = result.get("timestamp") or []
+    quote = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+    start_text = start_date[:19]
+    end_text = end_date[:19]
+    tz = dt.timezone(dt.timedelta(hours=8))
+    rows: list[AkshareEtfIntradayRow] = []
+    for index, timestamp in enumerate(timestamps):
+        try:
+            time_text = dt.datetime.fromtimestamp(int(timestamp), tz=tz).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        if not (start_text <= time_text <= end_text):
+            continue
+        close = _float_or_none(_list_get(closes, index))
+        rows.append(
+            AkshareEtfIntradayRow(
+                time=time_text,
                 symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
-                period=period,
+                open=_float_or_none(_list_get(opens, index)),
+                close=close,
+                high=_float_or_none(_list_get(highs, index)),
+                low=_float_or_none(_list_get(lows, index)),
+                volume=_float_or_none(_list_get(volumes, index)),
+                amount=None,
+                average_price=close,
             )
+        )
+    return tuple(rows)
+
+
+def _request_akshare_cn_intraday_rows_from_sina(
+    ak_module: Any,
+    *,
+    market: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    period: str,
+) -> tuple[AkshareEtfIntradayRow, ...]:
+    sina_symbol = f"{market.lower()}{symbol}"
+    frame = ak_module.stock_zh_a_minute(symbol=sina_symbol, period=period, adjust="")
+    start_text = start_date[:19]
+    end_text = end_date[:19]
+    rows = tuple(
+        _intraday_row_from_record(symbol, record)
+        for record in frame.to_dict("records")
+        if start_text <= str(record.get("时间") or record.get("day") or record.get("datetime") or record.get("date") or "")[:19] <= end_text
+    )
+    return rows
 
 
 def _request_akshare_history_rows_with_curl_transport(
@@ -495,17 +650,25 @@ def _normalize_ohlc_prices(
 
 
 def _intraday_row_from_record(symbol: str, record: dict[str, Any]) -> AkshareEtfIntradayRow:
+    time_text = str(record.get("时间") or record.get("day") or record.get("datetime") or record.get("date") or "")
     return AkshareEtfIntradayRow(
-        time=str(record.get("时间") or ""),
+        time=time_text,
         symbol=symbol,
-        open=_float_or_none(record.get("开盘")),
-        close=_float_or_none(record.get("收盘")),
-        high=_float_or_none(record.get("最高")),
-        low=_float_or_none(record.get("最低")),
-        volume=_float_or_none(record.get("成交量")),
-        amount=_float_or_none(record.get("成交额")),
-        average_price=_float_or_none(record.get("均价") if "均价" in record else record.get("最新价")),
+        open=_float_or_none(record.get("开盘") if "开盘" in record else record.get("open")),
+        close=_float_or_none(record.get("收盘") if "收盘" in record else record.get("close")),
+        high=_float_or_none(record.get("最高") if "最高" in record else record.get("high")),
+        low=_float_or_none(record.get("最低") if "最低" in record else record.get("low")),
+        volume=_float_or_none(record.get("成交量") if "成交量" in record else record.get("volume")),
+        amount=_float_or_none(record.get("成交额") if "成交额" in record else record.get("amount")),
+        average_price=_float_or_none(record.get("均价") if "均价" in record else record.get("最新价") if "最新价" in record else record.get("close")),
     )
+
+
+def _list_get(values: list[Any], index: int) -> Any:
+    try:
+        return values[index]
+    except Exception:
+        return None
 
 
 def _aggregate_history_rows(
@@ -649,6 +812,11 @@ def _normalize_symbol(value: str | None, *, market: str = DEFAULT_AKSHARE_MARKET
     if market == "HK":
         return symbol.zfill(5)
     return symbol.zfill(6)
+
+
+def _looks_like_cn_fund_symbol(symbol: str) -> bool:
+    code = "".join(ch for ch in str(symbol or "") if ch.isdigit()).zfill(6)
+    return code.startswith(("15", "16", "50", "51", "52", "56", "58"))
 
 
 def _normalize_period(value: str | None) -> str:

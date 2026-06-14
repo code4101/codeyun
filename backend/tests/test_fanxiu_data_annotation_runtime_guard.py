@@ -30,7 +30,10 @@ from backend.api.fanxiu import (
 )
 from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
 from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
-from backend.core.fanxiu_data_annotation_scheduler import repair_data_annotation_scheduler_tasks
+from backend.core.fanxiu_data_annotation_scheduler import (
+    data_annotation_scheduler_time_order_key,
+    repair_data_annotation_scheduler_tasks,
+)
 from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
 from backend.core.fanxiu_mumu_control import _compare_frame_crops
 from backend.models import FanxiuMailRecord, UserDevice
@@ -75,6 +78,15 @@ def _build_service_session() -> Session:
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_daily_dungeon_purchase_remaining_count_parses_ocr_variants():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_dungeon_purchase_remaining_count("剩余限购次数：3") == 3
+    assert runner._daily_dungeon_purchase_remaining_count("破界符 拥有：0/1 剩余限购次数: １") == 1
+    assert runner._daily_dungeon_purchase_remaining_count("剩余限购次数：O 购买并使用") == 0
+    assert runner._daily_dungeon_purchase_remaining_count("购买并使用 价格：100") is None
 
 
 def test_scene_route_click_falls_back_for_world_open_menu(monkeypatch):
@@ -489,6 +501,90 @@ def test_click_floating_optional_ocr_shape_still_requires_a_match(monkeypatch):
     else:
         raise AssertionError("expected optional OCR miss on floating action to abort click")
     assert clicked == []
+
+
+def test_click_shape_respecting_conditions_waits_when_shape_has_condition(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("双修痴情咒详情", "0216.png")
+    shape = {
+        "id": "invite",
+        "kind": "rect",
+        "title": "邀请道友",
+        "imageMatchRole": "required",
+        "x": 0.45,
+        "y": 0.76,
+        "w": 0.1,
+        "h": 0.05,
+    }
+    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+    waited: list[str] = []
+    clicked: list[tuple[str, dict]] = []
+
+    def fake_wait_shape_match(_ctx, _stop_event, _image, _shape, **kwargs):
+        waited.append(kwargs["label"])
+        if False:
+            yield None
+        return "matched-frame", {"matched": True, "similarity": 100, "fixed_box": {"x": 100, "y": 200, "w": 80, "h": 40}}
+
+    monkeypatch.setattr(runner, "_wait_shape_match", fake_wait_shape_match)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, _shape, frame, match_result=None: clicked.append((frame, match_result)))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not raw click")))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_shape_respecting_conditions(
+            ctx,
+            threading.Event(),
+            image,
+            shape,
+            {},
+            label="等待邀请道友",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result is None
+    assert waited == ["等待邀请道友"]
+    assert clicked == [("matched-frame", {"matched": True, "similarity": 100, "fixed_box": {"x": 100, "y": 200, "w": 80, "h": 40}})]
+
+
+def test_click_shape_respecting_conditions_raw_clicks_without_condition(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("双修秘术", "0215.png")
+    shape = {
+        "id": "book",
+        "kind": "rect",
+        "title": "痴情咒",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "off",
+        "x": 0.166667,
+        "y": 0.260417,
+        "w": 0.207407,
+        "h": 0.052083,
+    }
+    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_wait_shape_match", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not wait")))
+    monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not matched click")))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_shape_respecting_conditions(
+            ctx,
+            threading.Event(),
+            image,
+            shape,
+            {},
+            label="点击痴情咒",
+            y_ratio=0.35,
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result is None
+    assert clicked == [(243.3, 445.8)]
 
 
 def test_runtime_shape_payload_matches_frontend_protocol_for_floating_ocr():
@@ -1711,6 +1807,64 @@ def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch)
     assert popped["id"] == "manual-older-low-priority"
 
 
+def test_runtime_scene_candidates_use_primary_frames_before_popup_fallback():
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image35 = _image("世界下方菜单", "0035.png", [
+        {"id": "menu-id", "kind": "rect", "title": "下方菜单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image47 = _image("提示", "0047.png")
+    image86 = _image("离开提示", "0086.png")
+    image198 = _image("仙缘人物详情", "0198.png", [
+        {"id": "local-id", "kind": "rect", "title": "身份", "sceneIdentityRole": "required", "sceneIdentityScope": "local"},
+    ])
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image34["children"] = [image35]
+    tree = [
+        {"type": "folder", "title": "世界", "children": [image34]},
+        {"type": "folder", "title": "弹窗", "children": [image47, image86]},
+        {"type": "folder", "title": "日常", "children": [image198, image204]},
+    ]
+    ctx = {"asset_tree": tree, "images": {34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 204: image204}}
+
+    assert runner._runtime_scene_candidate_ids(ctx) == [34, 204]
+    assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
+
+
+def test_identify_scene_number_tries_popup_fallback_when_primary_unknown(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image47 = _image("提示", "0047.png")
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "assistant-id", "kind": "rect", "title": "小助手清单标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    tree = [
+        {"type": "folder", "title": "世界", "children": [image34]},
+        {"type": "folder", "title": "弹窗", "children": [image47]},
+        {"type": "folder", "title": "日常", "children": [image204]},
+    ]
+    ctx = {"asset_tree": tree, "images": {34: image34, 47: image47, 204: image204}}
+    scanned: list[list[int] | None] = []
+
+    class FakeRecognizer:
+        def identify_scene_number(self, _ctx, _frame, *, preferred_scene_ids=None):
+            scanned.append(list(preferred_scene_ids) if preferred_scene_ids is not None else None)
+            if preferred_scene_ids == [47]:
+                return 47, 92.0
+            return None, 0.0
+
+    monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
+
+    assert runner._identify_scene_number(ctx, "frame") == (47, 92.0)
+    assert scanned == [[34, 204], [47]]
+
+
 def test_runtime_container_skips_disabled_guards(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
@@ -1881,6 +2035,40 @@ def test_mail_cleanup_is_daily_runtime_task():
     assert _data_annotation_task_supported(task)
 
 
+def test_mail_cleanup_retry_near_daily_trigger_defers_to_next_daily_run():
+    defaults = _default_data_annotation_scheduler_tasks()
+    raw = [
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["00:05"],
+            "last_result": "retry_later",
+            "retry_after": "2026-06-14 23:30:00",
+            "next_time": None,
+            "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+            "checkpoint": {"manual_inspection_note": "邮件清理重试延后"},
+        }
+    ]
+
+    tasks, changed = repair_data_annotation_scheduler_tasks(
+        raw,
+        defaults,
+        {},
+        task_supported=_data_annotation_task_supported,
+        now=datetime(2026, 6, 14, 15, 30, 0),
+    )
+    task = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert changed is True
+    assert task["retry_after"] is None
+    assert task["next_time"] == "2026-06-15 00:05:00"
+    assert task["checkpoint"] is None
+
+
 def test_xianfu_visit_partner_is_dynamic_runtime_task():
     task = next(item for item in _default_data_annotation_scheduler_tasks() if item["id"] == "xianfu-visit-partner")
 
@@ -2008,13 +2196,13 @@ def test_daily_assistant_is_daily_runtime_task():
     assert task["label"] == "日常_助手"
     assert task["source"] == "data_annotation_runtime"
     assert task["schedule_kind"] == "daily"
-    assert task["schedule_times"] == ["05:00", "12:00", "18:00", "00:00"]
-    assert task["enabled"] is False
+    assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
+    assert task["enabled"] is True
     assert task["cooldown_seconds"] == 600
-    assert not _data_annotation_task_supported(task)
+    assert _data_annotation_task_supported(task)
 
 
-def test_daily_assistant_scheduler_task_is_disabled_until_204_assets_exist():
+def test_daily_assistant_scheduler_task_is_enabled_with_standard_times():
     defaults = _default_data_annotation_scheduler_tasks()
     raw = [
         {
@@ -2024,7 +2212,7 @@ def test_daily_assistant_scheduler_task_is_disabled_until_204_assets_exist():
             "source": "data_annotation_runtime",
             "schedule_kind": "daily",
             "schedule_times": ["05:00", "12:00", "18:00", "00:00"],
-            "enabled": True,
+            "enabled": False,
             "next_time": "2026-06-12 05:00:00",
             "payload": {"__scheduler_definition_task_type": "daily_assistant"},
         }
@@ -2040,8 +2228,42 @@ def test_daily_assistant_scheduler_task_is_disabled_until_204_assets_exist():
     task = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
 
     assert changed is True
-    assert task["enabled"] is False
-    assert task["last_result"] == "unsupported"
+    assert task["enabled"] is True
+    assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
+    assert task["last_result"] != "unsupported"
+
+
+def test_scheduler_time_order_sorts_dynamic_before_later_daily_and_disabled_last():
+    tasks = [
+        {
+            "id": "daily-0500",
+            "enabled": True,
+            "schedule_kind": "daily",
+            "next_time": "2026-06-13 05:00:00",
+        },
+        {
+            "id": "dynamic-0115",
+            "enabled": True,
+            "schedule_kind": "dynamic",
+            "next_time": "2026-06-13 01:15:00",
+        },
+        {
+            "id": "manual-disabled",
+            "enabled": False,
+            "schedule_kind": "manual",
+        },
+        {
+            "id": "retry-0050",
+            "enabled": True,
+            "schedule_kind": "daily",
+            "retry_after": "2026-06-13 00:50:00",
+            "next_time": "2026-06-13 18:00:00",
+        },
+    ]
+
+    ordered = [task["id"] for task in sorted(tasks, key=data_annotation_scheduler_time_order_key)]
+
+    assert ordered == ["retry-0050", "dynamic-0115", "daily-0500", "manual-disabled"]
 
 
 def test_daily_yaowang_and_yaozu_are_daily_runtime_tasks():
@@ -2085,6 +2307,541 @@ def test_daily_entry_matches_yaowang_and_yaozu_in_scroll_window():
     assert yaowang and yaowang[0][2] == "抵御妖王来袭"
     assert yaozu and yaozu[0][2] == "抵御妖族袭城"
     assert runner._daily_task_row_progress(lines, yaowang[0][1]) == (0, 2)
+
+
+def test_daily_entry_matches_shuangxiu_in_scroll_window():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    lines = [
+        {"text": "完成双人修炼1次", "x": 365.0, "y": 300.0, "w": 285.0, "h": 45.0},
+        {"text": "活10/次", "x": 425.0, "y": 380.0, "w": 140.0, "h": 38.0},
+        {"text": "0/3", "x": 425.0, "y": 420.0, "w": 80.0, "h": 38.0},
+    ]
+
+    matches = runner._daily_entry_matches(
+        lines,
+        image69,
+        title_pattern=r"完成\s*双\s*人\s*修\s*炼\s*1\s*次|双\s*人\s*修\s*炼|双\s*修",
+    )
+
+    assert matches and matches[0][2] == "完成双人修炼1次"
+    assert runner._daily_task_row_progress(lines, matches[0][1]) == (0, 3)
+
+
+def test_daily_dungeon_entry_does_not_match_wudao_weekly():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    lines = [
+        {"text": "完成悟道试炼周本", "x": 365.0, "y": 300.0, "w": 285.0, "h": 45.0},
+        {"text": "活10/次", "x": 425.0, "y": 380.0, "w": 140.0, "h": 38.0},
+        {"text": "0/1", "x": 425.0, "y": 420.0, "w": 80.0, "h": 38.0},
+        {"text": "通关每日副本", "x": 365.0, "y": 700.0, "w": 285.0, "h": 45.0},
+        {"text": "0/6", "x": 425.0, "y": 820.0, "w": 80.0, "h": 38.0},
+    ]
+
+    matches = runner._daily_entry_matches(
+        lines,
+        image69,
+        title_pattern=r"通\s*关\s*每\s*日\s*副\s*本|每\s*日\s*副\s*本|副\s*本\s*探\s*险",
+        exclude_pattern=r"悟\s*道|试\s*炼|周\s*本",
+    )
+
+    assert matches and matches[0][2] == "通关每日副本"
+
+
+def _fake_daily_shuangxiu_finish(runner):
+    def finish(*_args, **_kwargs):
+        if False:
+            yield None
+        return runner._complete_daily_shuangxiu_after_continue(current_scene=34)
+
+    return finish
+
+
+def test_daily_shuangxiu_opens_daily_entry_from_69(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    frames = iter(["initial-daily", "daily-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (69, 100.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            []
+            if frame == "initial-daily"
+            else [
+                {"text": "完成双人修炼1次", "x": 365.0, "y": 300.0, "w": 285.0, "h": 45.0},
+                {"text": "活10/次", "x": 425.0, "y": 380.0, "w": 140.0, "h": 38.0},
+                {"text": "0/3", "x": 425.0, "y": 420.0, "w": 80.0, "h": 38.0},
+            ]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_detail", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_invite", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_training_ready", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    def fake_wait_scene_id(*_args, **_kwargs):
+        if False:
+            yield None
+        return 215, 100.0
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(507.5, 322.5), (243.3, 445.8), (453.3, 1265.0), (319.2, 365.0), (711.7, 499.2), (450.0, 1416.7), (449.2, 1435.8)]
+    assert runner.status()["phase"] == "daily_shuangxiu_complete_continued"
+
+
+def test_daily_shuangxiu_clicks_first_book_when_already_on_215(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "secret-page")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (215, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "秘术", "x": 120.0, "y": 120.0, "w": 100.0, "h": 40.0}])
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_detail", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_invite", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_training_ready", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(243.3, 445.8), (453.3, 1265.0), (319.2, 365.0), (711.7, 499.2), (450.0, 1416.7), (449.2, 1435.8)]
+
+
+def test_daily_shuangxiu_clicks_invite_when_already_on_detail(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "detail-page")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "痴情咒", "x": 300.0, "y": 500.0, "w": 100.0, "h": 35.0},
+            {"text": "双人神通", "x": 120.0, "y": 800.0, "w": 160.0, "h": 35.0},
+            {"text": "邀请道友", "x": 390.0, "y": 1320.0, "w": 150.0, "h": 40.0},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_invite", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_training_ready", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(453.3, 1265.0), (319.2, 365.0), (711.7, 499.2), (450.0, 1416.7), (449.2, 1435.8)]
+
+
+def test_daily_shuangxiu_clicks_xianyuan_when_already_on_invite(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "invite-page")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "双人邀请", "x": 300.0, "y": 60.0, "w": 160.0, "h": 40.0},
+            {"text": "好友 仙缘 灵界", "x": 110.0, "y": 340.0, "w": 260.0, "h": 40.0},
+            {"text": "已顿悟《痴情咒》次数不足", "x": 220.0, "y": 560.0, "w": 310.0, "h": 40.0},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_training_ready", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(319.2, 365.0), (711.7, 499.2), (450.0, 1416.7), (449.2, 1435.8)]
+
+
+def test_daily_shuangxiu_clicks_partner_when_already_on_xianyuan_list(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "xianyuan-list")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "邀请", "x": 300.0, "y": 60.0, "w": 120.0, "h": 40.0},
+            {"text": "好友 仙缘 灵界", "x": 110.0, "y": 330.0, "w": 260.0, "h": 40.0},
+            {"text": "好感度：不离不弃", "x": 220.0, "y": 560.0, "w": 310.0, "h": 40.0},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_training_ready", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(711.7, 499.2), (450.0, 1416.7), (449.2, 1435.8)]
+    assert runner.status()["phase"] == "daily_shuangxiu_complete_continued"
+
+
+def test_daily_shuangxiu_clicks_start_when_already_on_training_ready(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "training-ready")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "双人修炼规则", "x": 340.0, "y": 80.0, "w": 180.0, "h": 40.0},
+            {"text": "今日剩余修炼次数：3", "x": 260.0, "y": 1260.0, "w": 280.0, "h": 40.0},
+            {"text": "前往修炼", "x": 350.0, "y": 1400.0, "w": 180.0, "h": 45.0},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(450.0, 1416.7), (449.2, 1435.8)]
+    assert runner.status()["phase"] == "daily_shuangxiu_complete_continued"
+
+
+def test_daily_shuangxiu_clicks_continue_when_already_on_complete(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.05, "y": 0.20, "w": 0.90, "h": 0.62},
+    ])
+    image215 = _image("双修秘术", "0215.png", [
+        {"id": "secret", "kind": "rect", "title": "秘术标识", "x": 0.137037, "y": 0.071875, "w": 0.144444, "h": 0.054167},
+        {"id": "book", "kind": "rect", "title": "痴情咒", "x": 0.166667, "y": 0.260417, "w": 0.207407, "h": 0.052083},
+    ])
+    image216 = _image("双修痴情咒详情", "0216.png", [
+        {"id": "invite", "kind": "rect", "title": "邀请道友", "x": 0.451852, "y": 0.763542, "w": 0.103704, "h": 0.054167},
+    ])
+    image217 = _image("双修邀请", "0217.png", [
+        {"id": "xianyuan-tab", "kind": "rect", "title": "仙缘页签", "x": 0.285185, "y": 0.207292, "w": 0.138889, "h": 0.041667},
+    ])
+    image218 = _image("双修仙缘邀请列表", "0218.png", [
+        {"id": "partner-invite", "kind": "rect", "title": "邀请按钮", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.724074, "y": 0.284375, "w": 0.133333, "h": 0.055208},
+    ])
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+    ])
+    image221 = _image("双修修炼完成", "0221.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.361111, "y": 0.875, "w": 0.275926, "h": 0.044792},
+    ])
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
+    }
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "complete-page")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda _frame: [
+            {"text": "修炼完成", "x": 320.0, "y": 260.0, "w": 220.0, "h": 120.0},
+            {"text": "已进行3次修炼获得修为：19.31万", "x": 220.0, "y": 960.0, "w": 430.0, "h": 45.0},
+            {"text": "点击屏幕继续", "x": 300.0, "y": 1420.0, "w": 260.0, "h": 45.0},
+        ],
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(449.2, 1435.8)]
+    assert runner.status()["phase"] == "daily_shuangxiu_complete_continued"
+
+
+def test_daily_shuangxiu_leaves_219_after_complete_continue(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image219 = _image("双修修炼准备", "0219.png", [
+        {"id": "start-training", "kind": "rect", "title": "前往修炼", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.385185, "y": 0.86875, "w": 0.22963, "h": 0.033333},
+        {"id": "leave", "kind": "rect", "title": "离开", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.038889, "y": 0.485417, "w": 0.109259, "h": 0.084375},
+    ])
+    image86 = _image("离开场景", "0086.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "imageMatchRole": "off", "ocrMatchRole": "off", "x": 0.624074, "y": 0.64375, "w": 0.12037, "h": 0.041667},
+    ])
+    ctx = {"entry": object(), "asset_tree_path": tmp_path / "asset_tree.json", "images": {86: image86, 219: image219}}
+    frames = iter(["training-ready", "leave-confirm"])
+    clicked: list[tuple[str, float, float]] = []
+    waited: list[int] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (86, 100.0) if frame == "leave-confirm" else (None, 0.0),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "双人修炼规则 今日剩余修炼次数：3 前往修炼", "x": 100, "y": 100, "w": 600, "h": 80}]
+            if frame == "training-ready"
+            else [{"text": "是否离开当前场景 取消 确认", "x": 200, "y": 720, "w": 500, "h": 80}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
+        waited.append(scene_id)
+        if False:
+            yield None
+        return scene_id, 100.0
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._finish_daily_shuangxiu_after_continue(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [("双修修炼准备", 84.2, 844.2), ("离开场景", 615.8, 1063.3)]
+    assert waited == [34]
+    assert runner.status()["phase"] == "daily_shuangxiu_complete_continued"
 
 
 def test_daily_boss_entry_match_does_not_click_boss_marquee():
@@ -2281,7 +3038,7 @@ def test_daily_assistant_visible_items_close_detail_one_by_one(monkeypatch):
     monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
 
     result = runner._run_direct_runtime_action(
-        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {}),
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_group": "initial_executes"}),
         stop_event=threading.Event(),
         tick_seconds=0.01,
     )
@@ -2522,6 +3279,649 @@ def test_daily_assistant_xianfu_resource_claim_uses_floating_template(monkeypatc
 
     assert result == "success"
     assert clicked == [(749.6, 688.0)]
+
+
+def test_daily_assistant_tongyou_confirm_prompt_is_confirmed_atomically(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "tongyou-row",
+            "kind": "rect",
+            "title": "同游传道助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "tongyou-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "tongyou-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image210 = _image("同游传道确认提示", "0210.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.638, "w": 0.28, "h": 0.055},
+    ])
+    image211 = _image("同游传道结果", "0211.png", [
+        {"id": "ok", "kind": "rect", "title": "确定", "x": 0.36, "y": 0.842, "w": 0.29, "h": 0.058},
+    ])
+    image212 = _image("同游传道喜纳弟子", "0212.png", [
+        {"id": "close", "kind": "rect", "title": "空白关闭", "x": 0.30, "y": 0.84, "w": 0.40, "h": 0.08},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 210: image210, 211: image211, 212: image212}}
+    frames = iter(["before-tongyou", "after-tongyou-confirm", "after-tongyou-result", "after-new-disciple", "after-tongyou-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (
+            (210, 100.0)
+            if frame == "after-tongyou-confirm"
+            else (211, 100.0)
+            if frame == "after-tongyou-result"
+            else (212, 100.0)
+            if frame == "after-new-disciple"
+            else (204, 100.0)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{
+                "text": "一键同游将会快速进行多次同游传道，直到弟子数量达到上限或体力不足为止",
+                "x": 190,
+                "y": 700,
+                "w": 560,
+                "h": 80,
+            }]
+            if frame == "after-tongyou-confirm"
+            else [{"text": "同游结果 确定", "x": 260, "y": 350, "w": 420, "h": 90}]
+            if frame == "after-tongyou-result"
+            else [{"text": "喜纳弟子 点击空白处关闭", "x": 300, "y": 150, "w": 300, "h": 120}]
+            if frame == "after-new-disciple"
+            else [{"text": "同游传道助手", "x": 430, "y": 604, "w": 245, "h": 40}, {"text": "执行", "x": 708, "y": 633, "w": 90, "h": 70}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["同游传道助手/执行"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(749.6, 688.0), (612.0, 1064.8), (454.5, 1393.6), (450.0, 1408.0)]
+
+
+def test_daily_assistant_tongyou_confirm_text_wins_over_213_scene_match(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "tongyou-row",
+            "kind": "rect",
+            "title": "同游传道助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "tongyou-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "tongyou-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image210 = _image("同游传道确认提示", "0210.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.638, "w": 0.28, "h": 0.055},
+    ])
+    image213 = _image("同游传道弟子已满提示", "0213.png", [
+        {"id": "cancel", "kind": "rect", "title": "取消", "x": 0.20, "y": 0.638, "w": 0.28, "h": 0.055},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 210: image210, 213: image213}}
+    frames = iter(["before-tongyou", "after-tongyou-confirm", "after-tongyou-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (213, 100.0) if frame == "after-tongyou-confirm" else (204, 100.0),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "一键同游将会快速进行多次同游传道，直到弟子数量达到上限或体力不足为止 取消 确认", "x": 190, "y": 700, "w": 560, "h": 80}]
+            if frame == "after-tongyou-confirm"
+            else [{"text": "同游传道助手", "x": 430, "y": 604, "w": 245, "h": 40}, {"text": "执行", "x": 708, "y": 633, "w": 90, "h": 70}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["同游传道助手/执行"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [
+        ("小助手清单", 749.6, 688.0),
+        ("同游传道确认提示", 612.0, 1064.8),
+    ]
+
+
+def test_daily_assistant_tongyou_result_may_return_to_list_without_new_disciple(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "tongyou-row",
+            "kind": "rect",
+            "title": "同游传道助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "tongyou-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "tongyou-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image210 = _image("同游传道确认提示", "0210.png", [
+        {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.638, "w": 0.28, "h": 0.055},
+    ])
+    image211 = _image("同游传道结果", "0211.png", [
+        {"id": "ok", "kind": "rect", "title": "确定", "x": 0.36, "y": 0.842, "w": 0.29, "h": 0.058},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 210: image210, 211: image211}}
+    frames = iter(["before-tongyou", "after-tongyou-confirm", "after-tongyou-result", "after-tongyou-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (
+            (210, 100.0)
+            if frame == "after-tongyou-confirm"
+            else (211, 100.0)
+            if frame == "after-tongyou-result"
+            else (204, 100.0)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "一键同游将会快速进行多次同游传道，直到弟子数量达到上限或体力不足为止", "x": 190, "y": 700, "w": 560, "h": 80}]
+            if frame == "after-tongyou-confirm"
+            else [{"text": "同游结果 确定", "x": 260, "y": 350, "w": 420, "h": 90}]
+            if frame == "after-tongyou-result"
+            else [{"text": "同游传道助手", "x": 430, "y": 604, "w": 245, "h": 40}, {"text": "执行", "x": 708, "y": 633, "w": 90, "h": 70}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["同游传道助手/执行"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(749.6, 688.0), (612.0, 1064.8), (454.5, 1393.6)]
+
+
+def test_daily_assistant_tongyou_result_resets_wait_budget_after_211(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [])
+    image211 = _image("同游传道结果", "0211.png", [
+        {"id": "ok", "kind": "rect", "title": "确定", "x": 0.36, "y": 0.842, "w": 0.29, "h": 0.058},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 211: image211}}
+    frames = iter(["result-211", "after-211-waiting", "back-list"])
+    times = iter([0.0, 0.0, 11.0, 12.0, 12.1])
+    last_time = {"value": 12.1}
+    clicked: list[tuple[float, float]] = []
+
+    def fake_monotonic():
+        try:
+            last_time["value"] = next(times)
+        except StopIteration:
+            pass
+        return last_time["value"]
+
+    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.time.monotonic", fake_monotonic)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (
+            (211, 100.0)
+            if frame == "result-211"
+            else (204, 100.0)
+            if frame == "back-list"
+            else (None, 0.0)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "同游结果 确定", "x": 260, "y": 350, "w": 420, "h": 90}]
+            if frame == "result-211"
+            else [{"text": "小助手 同游传道助手", "x": 250, "y": 300, "w": 400, "h": 90}]
+            if frame == "back-list"
+            else []
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_daily_assistant_tongyou_result(
+            ctx,
+            threading.Event(),
+            {"assistant_tongyou_result_timeout_seconds": 10},
+            "同游传道助手",
+            "执行",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "confirmed_no_result"
+    assert clicked == [(454.5, 1393.6)]
+
+
+def test_daily_assistant_teaching_tongyou_teaching_group_order(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [])
+    ctx = {"entry": object(), "images": {204: image204}}
+    calls: list[str] = []
+
+    def fake_run_item(_ctx, _stop_event, _payload, _image204, shape_title):
+        calls.append(shape_title)
+        if False:
+            yield None
+        return "ok"
+
+    monkeypatch.setattr(runner, "_run_daily_assistant_item_from_list", fake_run_item)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_group_from_list(
+            ctx,
+            threading.Event(),
+            {},
+            image204,
+            "授业-传道-授业",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == [
+        ("弟子授业助手/执行", "ok"),
+        ("同游传道助手/执行", "ok"),
+        ("弟子授业助手/执行", "ok"),
+    ]
+    assert calls == ["弟子授业助手/执行", "同游传道助手/执行", "弟子授业助手/执行"]
+
+
+def test_daily_assistant_study_teaching_group_uses_row_template_for_go_button(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "disciple-teaching-row",
+            "kind": "rect",
+            "title": "弟子授业助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "teaching-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "teaching-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    ctx = {"entry": object(), "images": {204: image204}}
+    frames = iter([
+        "before-study",
+        "after-study-list",
+        "before-teaching",
+        "after-teaching-list",
+    ])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (204, 100.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [
+                {"text": "弟子求学助手", "x": 415, "y": 725, "w": 250, "h": 40},
+                {"text": "前往", "x": 710, "y": 790, "w": 95, "h": 72},
+            ]
+            if frame in {"before-study", "after-study-list"}
+            else [
+                {"text": "弟子教学助手", "x": 415, "y": 930, "w": 250, "h": 40},
+                {"text": "前往", "x": 710, "y": 995, "w": 95, "h": 72},
+            ]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_group_from_list(
+            ctx,
+            threading.Event(),
+            {"assistant_item_wait_seconds": 0.01},
+            image204,
+            "求学-教学",
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == [
+        ("弟子求学助手/前往", "no_popup"),
+        ("弟子教学助手/前往", "no_popup"),
+    ]
+    assert clicked == [(737.1, 809.0), (737.1, 1014.0)]
+
+
+def test_daily_assistant_teaching_go_closes_214_complete_popup(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "template-row",
+            "kind": "rect",
+            "title": "弟子授业助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image214 = _image("指教完成", "0214.png", [
+        {"id": "continue", "kind": "rect", "title": "继续", "x": 0.369, "y": 0.844, "w": 0.274, "h": 0.036},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 214: image214}}
+    frames = iter(["before-teaching", "after-teaching-complete", "back-list"])
+    clicked: list[tuple[str, float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (214, 100.0) if frame == "after-teaching-complete" else (204, 100.0),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "弟子教学助手", "x": 415, "y": 930, "w": 250, "h": 40}, {"text": "前往", "x": 710, "y": 995, "w": 95, "h": 72}]
+            if frame == "before-teaching"
+            else [{"text": "指教完成 继续", "x": 250, "y": 330, "w": 420, "h": 120}]
+            if frame == "after-teaching-complete"
+            else [{"text": "小助手 弟子教学助手", "x": 250, "y": 300, "w": 420, "h": 90}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["弟子教学助手/前往"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [
+        ("小助手清单", 737.1, 1014.0),
+        ("指教完成", 455.4, 1379.2),
+    ]
+
+
+def test_daily_assistant_full_group_returns_to_daily_by_default(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.045, "y": 0.925, "w": 0.085, "h": 0.055},
+    ])
+    ctx = {"entry": object(), "images": {204: image204}}
+    groups: list[str] = []
+    clicked: list[tuple[float, float]] = []
+    waited: list[int] = []
+
+    def fake_group(_ctx, _stop_event, _payload, _image204, group):
+        groups.append(group)
+        if False:
+            yield None
+        return [(group, "ok")]
+
+    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
+        waited.append(scene_id)
+        if False:
+            yield None
+        return scene_id, 100
+
+    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert groups == ["完整小助手"]
+    assert clicked == [(78.8, 1524.0)]
+    assert waited == [69]
+
+
+def test_daily_assistant_empty_items_are_respected_and_only_return(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.045, "y": 0.925, "w": 0.085, "h": 0.055},
+    ])
+    ctx = {"entry": object(), "images": {204: image204}}
+    clicked: list[tuple[float, float]] = []
+    waited: list[int] = []
+
+    def fail_group(*_args, **_kwargs):
+        raise AssertionError("empty assistant_items must not fall back to default full group")
+
+    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
+        waited.append(scene_id)
+        if False:
+            yield None
+        return scene_id, 100
+
+    monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fail_group)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(
+            ctx,
+            threading.Event(),
+            {"assistant_items": [], "assistant_return_after_items": True},
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(78.8, 1524.0)]
+    assert waited == [69]
+
+
+def test_daily_assistant_reuses_bottom_reached_for_missing_floating_items(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "template-row",
+            "kind": "rect",
+            "title": "弟子授业助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    ctx = {"entry": object(), "images": {204: image204}}
+    frames = iter(["before-first", "after-scroll-bottom", "before-second"])
+    scrolls: list[str] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (204, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "小助手 弟子求学助手 弟子教学助手", "x": 220, "y": 320, "w": 500, "h": 90}])
+
+    def fake_scroll(*_args, **_kwargs):
+        scrolls.append("down")
+        if False:
+            yield None
+        return False
+
+    monkeypatch.setattr(runner, "_scroll_daily_xianyuan_list", fake_scroll)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(
+            ctx,
+            threading.Event(),
+            {"assistant_items": ["弟子授业助手/执行", "同游传道助手/执行"]},
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert scrolls == ["down"]
+    logs = runner.status()["logs"]
+    assert any("小助手清单已在底部" in log["message"] for log in logs)
+
+
+def test_daily_assistant_can_resume_from_214_complete_popup(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    asset_tree_path = tmp_path / "asset_tree.json"
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [])
+    image204 = _image("小助手清单", "0204.png", [])
+    image214 = _image("小助手教学指教完成", "0214.png", [
+        {"id": "continue", "kind": "rect", "title": "继续", "x": 0.369, "y": 0.844, "w": 0.274, "h": 0.036},
+    ])
+    ctx = {"entry": object(), "asset_tree_path": asset_tree_path, "images": {34: image34, 69: image69, 204: image204, 214: image214}}
+    clicked: list[tuple[str, float, float]] = []
+    ran_list: list[bool] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame-214")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (214, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "指教完成 继续"}])
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
+
+    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
+        assert scene_id == 204
+        if False:
+            yield None
+        return scene_id, 100
+
+    def fake_run_from_list(_ctx, _stop_event, _payload):
+        ran_list.append(True)
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_run_daily_assistant_from_list", fake_run_from_list)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_assistant_task(ctx, threading.Event(), {}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [("小助手教学指教完成", 455.4, 1379.2)]
+    assert ran_list == [True]
+
+
+def test_daily_assistant_tongyou_risk_prompt_is_cancelled(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "tongyou-row",
+            "kind": "rect",
+            "title": "同游传道助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "tongyou-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "tongyou-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image213 = _image("同游传道弟子已满提示", "0213.png", [
+        {"id": "cancel", "kind": "rect", "title": "取消", "x": 0.20, "y": 0.638, "w": 0.28, "h": 0.055},
+        {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.54, "y": 0.638, "w": 0.28, "h": 0.055},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 213: image213}}
+    frames = iter(["before-tongyou", "after-tongyou-risk", "after-risk-cancel-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number",
+        lambda _ctx, frame, _ids: (213, 100.0) if frame == "after-tongyou-risk" else (204, 100.0),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "弟子数量已达到上限，一键同游仅能获得同游奖励，无法获得弟子 取消 确认", "x": 190, "y": 700, "w": 560, "h": 80}]
+            if frame == "after-tongyou-risk"
+            else [{"text": "同游传道助手", "x": 430, "y": 604, "w": 245, "h": 40}, {"text": "执行", "x": 708, "y": 633, "w": 90, "h": 70}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["同游传道助手/执行"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(749.6, 688.0), (306.0, 1064.8)]
 
 
 def test_daily_assistant_daoyi_times_out_as_no_popup_when_still_on_204(monkeypatch):
@@ -3005,7 +4405,7 @@ def test_legacy_daily_assistant_scheduler_task_is_migrated_to_runtime_task():
     assert task["source"] == "data_annotation_runtime"
     assert task["schedule_kind"] == "daily"
     assert task["label"] == "日常_助手"
-    assert task["schedule_times"] == ["05:00", "12:00", "18:00", "00:00"]
+    assert task["schedule_times"] == ["00:00", "06:00", "12:00", "18:00"]
     assert task["cooldown_seconds"] == 600
     assert task["next_time"] == "2026-06-11 05:00:00"
 
@@ -3179,17 +4579,19 @@ def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_pat
             if False:
                 yield BehaviorTreeStatus.RUNNING
             return runtime_runner_core.View(image122)
-        if view_ids == (121,) and len(wait_calls) == 2:
-            if False:
-                yield BehaviorTreeStatus.RUNNING
-            raise TimeoutError("未自动回列表")
         if view_ids == (121,):
             if False:
                 yield BehaviorTreeStatus.RUNNING
             return runtime_runner_core.View(image121)
         raise AssertionError(view_ids)
 
+    def fake_wait_mail_list_or_world(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "timeout"
+
     monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runner, "_wait_mail_list_or_reopen_from_world_after_action", fake_wait_mail_list_or_world)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
 
     result = runner._run_direct_runtime_action(
@@ -3200,7 +4602,97 @@ def test_mail_cleanup_returns_from_detail_when_claim_does_not_auto_close(tmp_pat
 
     assert result == "claim"
     assert clicked == ["测试邮件", "领取", "空白-返回"]
-    assert wait_calls == [(122, 123), (121,), (121,)]
+    assert wait_calls == [(122, 123), (121,)]
+
+
+def test_mail_cleanup_reopens_mail_when_claim_returns_to_world(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image(
+        "邮件",
+        "0121.png",
+        [{"id": "marker", "kind": "rect", "title": "邮件标识", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.06}],
+    )
+    image122 = _image("邮件内容", "0122.png", [
+        {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.8, "w": 0.2, "h": 0.05},
+        {"id": "back", "kind": "rect", "title": "空白-返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05},
+    ])
+    ctx = {"entry": object(), "images": {121: image121, 122: image122}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
+    title_shape = runtime_runner_core.Shape(
+        {"id": "row", "kind": "rect", "title": "测试邮件", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.05},
+        parent_view=runtime_runner_core.View(image121),
+    )
+    mail = runtime_runner_core._RuntimeMailRow({"title": "测试邮件"}, title_shape)
+    clicked: list[str] = []
+    reopened: list[bool] = []
+
+    def fake_wait_view(*views, **_kwargs):
+        view_ids = tuple(int(view) for view in views)
+        if view_ids == (122, 123):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return runtime_runner_core.View(image122)
+        raise AssertionError(view_ids)
+
+    def fake_wait_mail_list_or_world(*_args, **_kwargs):
+        reopened.append(True)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "reopened"
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+    monkeypatch.setattr(runner, "_wait_mail_list_or_reopen_from_world_after_action", fake_wait_mail_list_or_world)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._claim_runtime_mail_row(runtime, mail),
+        stop_event=runtime.stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == "claim"
+    assert clicked == ["测试邮件", "领取"]
+    assert reopened == [True]
+
+
+def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image(
+        "邮件",
+        "0121.png",
+        [{"id": "marker", "kind": "rect", "title": "邮件标识", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.06}],
+    )
+    image122 = _image("邮件内容", "0122.png", [])
+    ctx = {"images": {121: image121, 122: image122}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
+    reopened: list[bool] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _targets: (None, 0.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "角色 装备 星海 功法书 储物袋"}])
+
+    def fake_reopen(_runtime):
+        reopened.append(True)
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "success"
+
+    monkeypatch.setattr(runner, "_reopen_mail_from_current_world_like", fake_reopen)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_mail_list_or_reopen_from_world_after_action(
+            runtime,
+            runtime_runner_core.View(image122),
+            timeout=1.0,
+            label="邮件_清理：返回邮件 #121",
+        ),
+        stop_event=runtime.stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == "reopened"
+    assert reopened == [True]
 
 
 def test_mail_world_menu_ocr_click_uses_mail_shape_lower_point_when_available():
@@ -4001,7 +5493,7 @@ def test_scroll_shape_content_uses_half_page_slow_drag(monkeypatch):
     assert sx == ex == 450
     assert sy == 1040
     assert ey == 560
-    assert duration_ms == 1000
+    assert duration_ms == 1500
 
 
 def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeypatch):
@@ -4454,6 +5946,57 @@ def test_daily_signup_scrolls_signup_column_until_all_signup_items_clicked(tmp_p
     assert len(dragged) == 2
 
 
+def test_daily_signup_success_when_return_daily_cleanup_is_not_confirmed(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    path = tmp_path / "asset_tree.json"
+    path.write_text("[]", encoding="utf-8")
+    image23 = _image("报名", "0023.png", [
+        {"id": "column", "kind": "rect", "title": "报名列", "x": 0.7, "y": 0.2, "w": 0.2, "h": 0.6, "contentDirection": "down"},
+        {"id": "back", "kind": "rect", "title": "返回", "x": 0.04, "y": 0.03, "w": 0.1, "h": 0.06},
+    ])
+    image24 = _image("报名领取灵石奖励", "0024.png", [
+        {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1},
+    ])
+    ctx = {"entry": object(), "asset_tree": [image23, image24], "asset_tree_path": path, "images": {23: image23, 24: image24}}
+    ocr_calls = iter([
+        [{"x": 700, "y": 340, "w": 70, "h": 30, "text": "已报名"}],
+        [{"x": 700, "y": 340, "w": 70, "h": 30, "text": "已报名"}],
+    ])
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def fake_wait_scene_id(_ctx, _stop_event, target_scene_id, **_kwargs):
+        if target_scene_id == 69:
+            raise RuntimeError("未返回日常")
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return target_scene_id, 100
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: next(ocr_calls))
+    monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_drag_frame_point", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0))
+
+    stop_event = FakeStopEvent()
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_daily_signup_signup_list(ctx, stop_event),
+        stop_event=stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    logs = runner.status()["logs"]
+    assert any("返回日常收尾识别失败" in log["message"] for log in logs)
+    assert "收尾返回未确认" in runner.status()["message"]
+
+
 def test_daily_signup_uses_first_row_marker_to_stop_after_scroll_exhausted(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     path = tmp_path / "asset_tree.json"
@@ -4801,7 +6344,7 @@ def test_daily_xianyuan_dialogue_runs_challenge_flow(tmp_path, monkeypatch):
     )
 
     assert result == "success"
-    assert clicked[:3] == [(648.0, 968.0), (670.0, 960.0), (455.0, 950.0)]
+    assert clicked[:3] == [(685.0, 960.0), (670.0, 960.0), (455.0, 950.0)]
     assert any(point == (450.0, 992.0) for point in clicked)
 
 
@@ -4842,7 +6385,7 @@ def test_daily_xianyuan_dialogue_advances_to_attack_then_world_like(monkeypatch)
 
     assert result == "success"
     assert clicked == [
-        (648.0, 1112.0),
+        (650.0, 1087.5),
         (650.0, 987.5),
         (825.0, 825.0),
     ]
@@ -4884,7 +6427,7 @@ def test_daily_xianyuan_can_resume_from_challenge_dialogue(monkeypatch):
     assert clicked == [(650.0, 987.5), (825.0, 825.0)]
 
 
-def test_daily_xianyuan_count_empty_returns_world_before_recording(monkeypatch):
+def test_daily_xianyuan_count_empty_records_before_returning_world(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image200 = _image("仙缘挑战对话", "0200.png")
     ctx = {"entry": object(), "images": {200: image200}}
@@ -4922,7 +6465,7 @@ def test_daily_xianyuan_count_empty_returns_world_before_recording(monkeypatch):
     )
 
     assert result == "success"
-    assert calls == ["return-world", "record:仙缘对话显示今日可挑战次数已空"]
+    assert calls == ["record:仙缘对话显示今日可挑战次数已空", "return-world"]
 
 
 def test_daily_xianyuan_battle_leave_accepts_world_like_text(monkeypatch):
@@ -5926,6 +7469,70 @@ def test_manual_runtime_task_runs_inside_resident_service_without_worker_thread(
     assert status["guard_enabled"] is True
     assert status["guard_items"]["close_popups"]["enabled"] is True
     assert status["guard_items"]["wanling_invite"]["enabled"] is True
+
+
+def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
+
+    def fake_persist_status():
+        events.append((
+            "persist",
+            [str(item.get("message") or "") for item in runner.status().get("logs") or []],
+        ))
+
+    def fake_remove_job(task_id: str):
+        events.append(("remove", [task_id]))
+
+    monkeypatch.setattr(runner, "_persist_status", fake_persist_status)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", fake_remove_job)
+
+    runner.start_manual_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task={"id": "manual-1", "task_type": "detect_scene", "label": "单步识别", "payload": {}},
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    remove_index = next(index for index, event in enumerate(events) if event[0] == "remove")
+    persisted_before_remove = [messages for event, messages in events[:remove_index] if event == "persist"]
+    assert any(any("[manual-1] 手动作业已启动：单步识别" in message for message in messages) for messages in persisted_before_remove)
+    assert any(any("[manual-1] 手动作业完成：单步识别" in message for message in messages) for messages in persisted_before_remove)
+
+
+def test_resident_manual_job_uses_current_runner_instance(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    jobs = [{
+        "id": "manual-1",
+        "task_type": "detect_scene",
+        "label": "单步识别",
+        "payload": {},
+        "status": "pending",
+        "created_at": 1.0,
+    }]
+    called: list[str] = []
+
+    monkeypatch.setattr(runtime_runner_core, "_read_data_annotation_manual_jobs", lambda: list(jobs))
+
+    def fake_write(updated):
+        jobs[:] = list(updated)
+
+    def fake_start_manual_runtime_task(**kwargs):
+        called.append(str(kwargs["task"]["id"]))
+        return {"status": "success"}
+
+    monkeypatch.setattr(runtime_runner_core, "_write_data_annotation_manual_jobs", fake_write)
+    monkeypatch.setattr(runner, "start_manual_runtime_task", fake_start_manual_runtime_task)
+
+    status = runner._start_next_manual_job_if_idle(object(), "entry")
+
+    assert status == {"status": "success"}
+    assert called == ["manual-1"]
+    assert jobs[0]["status"] == "running"
 
 
 def test_manual_success_clears_matching_scheduler_retry_without_scheduler_id(tmp_path, monkeypatch):
