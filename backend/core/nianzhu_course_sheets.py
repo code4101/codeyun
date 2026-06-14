@@ -72,6 +72,33 @@ CURRENT_RULE = "当前规则"
 LEGACY_AFTER_20250522_RULE = "旧规则-20250522后"
 LEGACY_BEFORE_20250522_RULE = "旧规则-20250522前"
 ZERO_REFUND_COMPLETED_BACKGROUND = "#D9D9D9"
+ZEN_STAGE_WEEK_HEADER_STYLE_PALETTE = [
+    (
+        {"background_color": "#5B9BD5", "text_color": "#000000"},
+        {"background_color": "#9DC3E6", "text_color": "#0000FF"},
+    ),
+    (
+        {"background_color": "#70AD47", "text_color": "#000000"},
+        {"background_color": "#C6E0B4", "text_color": "#0000FF"},
+    ),
+    (
+        {"background_color": "#8064A2", "text_color": "#000000"},
+        {"background_color": "#CCC0DA", "text_color": "#0000FF"},
+    ),
+    (
+        {"background_color": "#9BBB59", "text_color": "#000000"},
+        {"background_color": "#D8E4BC", "text_color": "#0000FF"},
+    ),
+    (
+        {"background_color": "#4472C4", "text_color": "#000000"},
+        {"background_color": "#B4C6E7", "text_color": "#0000FF"},
+    ),
+    (
+        {"background_color": "#F4B183", "text_color": "#000000"},
+        {"background_color": "#FCE4D6", "text_color": "#0000FF"},
+    ),
+]
+ZEN_STAGE_NOTE_ROW_STYLE = {"background_color": "#D8D8D8", "text_color": "#000000"}
 
 VIDEO_CONFIG_COLUMNS = [
     "lesson_id",
@@ -205,6 +232,7 @@ class VideoConfigItem:
     video_duration: float = 0.0
     start_date: datetime | None = None
     course_name: str = ""
+    lesson_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -959,6 +987,197 @@ def _ensure_nianzhu_attendance_schema(
         "schema_refund_columns_reordered": refund_columns_reordered,
         "schema_defaulted_cells": defaulted_cells,
     }
+
+
+def _lesson_header_from_video_item(item: VideoConfigItem) -> str:
+    text = _normalize_text(item.lesson_name)
+    if "=" in text:
+        text = text.rsplit("=", 1)[1].strip()
+    return text
+
+
+def _lesson_week_from_video_item(item: VideoConfigItem) -> int | None:
+    match = re.search(r"第\s*(\d+)\s*周\s*=", _normalize_text(item.lesson_name))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _video_progress_insert_index(columns: list[str]) -> int:
+    marker_indexes = [
+        index for index in (
+            _find_column_index(columns, TRACKING_GROUP_COLUMN),
+            _find_column_index(columns, TRACKING_STATUS_COLUMN),
+            _find_column_index(columns, FREEZE_TIME_COLUMN),
+            _find_column_index(columns, RULE_VERSION_COLUMN),
+        )
+        if index is not None
+    ]
+    if marker_indexes:
+        return min(marker_indexes)
+    return len(columns)
+
+
+def _ensure_video_progress_columns(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem],
+) -> tuple[dict[str, Any], list[str]]:
+    next_document = document
+    inserted_headers: list[str] = []
+    seen_headers = {_normalize_text(column) for column in _normalize_document_columns(next_document)}
+    for item in video_config:
+        if not item.participates_refund:
+            continue
+        header = _lesson_header_from_video_item(item)
+        if not header or _normalize_text(header) in seen_headers:
+            continue
+        columns = _normalize_document_columns(next_document)
+        next_document = _insert_nianzhu_attendance_column(
+            next_document,
+            header=header,
+            insert_index=_video_progress_insert_index(columns),
+            width=96,
+        )
+        seen_headers.add(_normalize_text(header))
+        inserted_headers.append(header)
+    return next_document, inserted_headers
+
+
+def _set_cell_style(cell_meta: dict[str, Any], row_index: int, column_index: int, style: dict[str, Any]) -> bool:
+    target_key = f"{row_index}:{column_index}"
+    previous_meta = cell_meta.get(target_key)
+    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
+    if next_meta.get("style") == style:
+        return False
+    next_meta["style"] = dict(style)
+    cell_meta[target_key] = next_meta
+    return True
+
+
+def _sync_zen_stage_video_header_layout(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem],
+    video_column_indexes: dict[str, int | None],
+) -> tuple[dict[str, Any], int]:
+    zen_items = [
+        item for item in video_config
+        if item.participates_refund
+        and _is_zen_stage_video_item(item)
+        and video_column_indexes.get(item.lesson_id) is not None
+    ]
+    if not zen_items:
+        return document, 0
+
+    columns = _normalize_document_columns(document)
+    if not columns:
+        return document, 0
+
+    try:
+        field_row_index = max(int(document.get("field_row_index") or 0), 0)
+    except (TypeError, ValueError):
+        field_row_index = 0
+    week_row_index = max(field_row_index - 1, 0)
+    note_row_index = field_row_index + 1
+
+    source_grid_rows = document.get("grid_rows")
+    grid_rows = [
+        note_sheet_inline_links.normalize_row(row, len(columns))
+        for row in source_grid_rows
+    ] if isinstance(source_grid_rows, list) else []
+    while len(grid_rows) <= note_row_index:
+        grid_rows.append([""] * len(columns))
+
+    changed = 0
+    cell_meta = dict(document.get("cell_meta")) if isinstance(document.get("cell_meta"), dict) else {}
+    column_configs = dict(document.get("column_configs")) if isinstance(document.get("column_configs"), dict) else {}
+
+    item_by_column = sorted(
+        ((int(video_column_indexes[item.lesson_id]), item) for item in zen_items),
+        key=lambda pair: pair[0],
+    )
+    video_columns = [column_index for column_index, _item in item_by_column]
+    min_video_column = min(video_columns)
+    max_video_column = max(video_columns)
+
+    for column_index, item in item_by_column:
+        header = _lesson_header_from_video_item(item)
+        current_header = grid_rows[field_row_index][column_index]
+        next_header: Any = header
+        if item.lesson_url:
+            next_header = note_sheet_inline_links.with_inline_cell_link(header, {"url": item.lesson_url})
+        if current_header != next_header:
+            grid_rows[field_row_index][column_index] = next_header
+            changed += 1
+
+        config = dict(column_configs.get(columns[column_index])) if isinstance(column_configs.get(columns[column_index]), dict) else {}
+        if config.get("header_background_color") != "#E2F0D9":
+            config["header_background_color"] = "#E2F0D9"
+            column_configs[columns[column_index]] = config
+            changed += 1
+
+    week_groups: dict[int, list[int]] = {}
+    for column_index, item in item_by_column:
+        week = _lesson_week_from_video_item(item)
+        if week is None:
+            continue
+        week_groups.setdefault(week, []).append(column_index)
+    week_start_columns = {min(group_columns) for group_columns in week_groups.values() if group_columns}
+
+    for week, group_columns in week_groups.items():
+        week_style, field_style = ZEN_STAGE_WEEK_HEADER_STYLE_PALETTE[
+            (week - 1) % len(ZEN_STAGE_WEEK_HEADER_STYLE_PALETTE)
+        ]
+        for column_index in group_columns:
+            if _set_cell_style(cell_meta, week_row_index, column_index, week_style):
+                changed += 1
+            if _set_cell_style(cell_meta, field_row_index, column_index, field_style):
+                changed += 1
+            if _set_cell_style(cell_meta, note_row_index, column_index, ZEN_STAGE_NOTE_ROW_STYLE):
+                changed += 1
+
+    for column_index in video_columns:
+        if column_index not in week_start_columns and grid_rows[week_row_index][column_index] != "":
+            grid_rows[week_row_index][column_index] = ""
+            changed += 1
+
+    source_merged_cells = list(document.get("merged_cells") or [])
+    merged_cells = [
+        cell for cell in (document.get("merged_cells") or [])
+        if not (
+            isinstance(cell, dict)
+            and int(cell.get("row") or 0) == week_row_index
+            and int(cell.get("col") or 0) <= max_video_column
+            and int(cell.get("col") or 0) + max(int(cell.get("colspan") or 1), 1) > min_video_column
+        )
+    ]
+    next_week_merges: list[dict[str, int]] = []
+    for week, group_columns in sorted(week_groups.items(), key=lambda pair: min(pair[1])):
+        group_columns = sorted(group_columns)
+        start_column = group_columns[0]
+        colspan = group_columns[-1] - start_column + 1
+        label = f"第{week}周"
+        if grid_rows[week_row_index][start_column] != label:
+            grid_rows[week_row_index][start_column] = label
+            changed += 1
+        next_week_merges.append({
+            "row": week_row_index,
+            "col": start_column,
+            "rowspan": 1,
+            "colspan": colspan,
+        })
+    next_merged_cells = [*merged_cells, *next_week_merges]
+    if source_merged_cells != next_merged_cells:
+        changed += 1
+
+    next_document = dict(document)
+    next_document["grid_rows"] = grid_rows
+    next_document["cell_meta"] = cell_meta
+    next_document["column_configs"] = column_configs
+    next_document["merged_cells"] = next_merged_cells
+    return next_document, changed
 
 
 def _document_cell_link(document: dict[str, Any], *, row_index: int, column_index: int) -> str:
@@ -2558,6 +2777,7 @@ def _load_video_config(
             video_duration=_to_float(row.get("video_duration")),
             start_date=_parse_datetime_cell(row.get("start_date")),
             course_name=course_name,
+            lesson_url=_video_config_url(row),
         ))
     return sorted(items, key=lambda item: item.order_index)
 
@@ -3298,6 +3518,24 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         video_config_document,
         timed_video_rules_override=_attendance_video_refund_rules_override(current_document, columns),
     )
+    current_document, inserted_video_columns = _ensure_video_progress_columns(current_document, video_config)
+    if inserted_video_columns:
+        schema_summary["schema_inserted_video_columns"] = inserted_video_columns
+        columns = _normalize_document_columns(current_document)
+        rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
+        data_start_row = _normalize_document_data_start_row(current_document)
+        indexes = {
+            "优秀学员评分": _find_column_index(columns, "优秀学员评分"),
+            "禅客": _find_column_index(columns, "禅客"),
+            "完成视频数": _find_column_index(columns, "完成视频数"),
+            "视频应返款": _find_column_index(columns, "视频应返款"),
+            "打卡应返款": _find_column_index(columns, "打卡应返款"),
+            "总应返款": _find_column_index(columns, "总应返款"),
+            "已返款": _find_column_index(columns, "已返款"),
+            "订单金额": _find_column_index(columns, "订单金额"),
+            "当前应返款": _find_column_index(columns, "当前应返款"),
+        }
+        rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
     legacy_zen_video_refund_amount = _attendance_legacy_zen_video_refund_amount(current_document, columns)
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
@@ -3332,6 +3570,13 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         item.lesson_id: progress_column_by_key.get(item.course_key)
         for item in video_config
     }
+    current_document, header_layout_repaired_cells = _sync_zen_stage_video_header_layout(
+        current_document,
+        video_config,
+        video_column_indexes,
+    )
+    if header_layout_repaired_cells:
+        schema_summary["video_header_layout_repaired_cells"] = header_layout_repaired_cells
     blank_progress_cleanup_columns = sorted({
         column_index
         for column_index in video_column_indexes.values()
@@ -3797,6 +4042,7 @@ def _build_legacy_zen_video_refund_formula(
     *,
     row_number: int,
     refund_amount: float,
+    max_refund_count: int | None = None,
 ) -> str | None:
     if refund_amount <= 0:
         return None
@@ -3812,7 +4058,10 @@ def _build_legacy_zen_video_refund_formula(
     if not ranges:
         return None
     amount_text = _format_numeric_cell(refund_amount)
-    return "=" + "+".join(f'COUNTIF({range_ref},"准时完成")*{amount_text}' for range_ref in ranges)
+    count_expr = "+".join(f'COUNTIF({range_ref},"准时完成")' for range_ref in ranges)
+    if max_refund_count is not None and max_refund_count > 0:
+        count_expr = f"MIN({count_expr},{int(max_refund_count)})"
+    return f"={count_expr}*{amount_text}"
 
 
 def _build_video_refund_formula(
@@ -3837,6 +4086,7 @@ def _build_video_refund_formula(
             video_column_indexes,
             row_number=row_number,
             refund_amount=legacy_zen_refund_amount,
+            max_refund_count=49,
         )
     return _build_timed_video_refund_formula(
         video_config,

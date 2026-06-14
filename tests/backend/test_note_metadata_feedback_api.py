@@ -7,9 +7,10 @@ from backend.core.ai_chat import OllamaClientError
 from backend.core.note_metadata_feedback import (
     NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS,
     create_note_metadata_feedback_optimization_run,
+    record_codex_maintenance_feedback,
     run_note_metadata_feedback_optimization_worker,
 )
-from backend.models import NoteMetadataFeedback, NoteMetadataFeedbackOptimizationRun, NoteNode
+from backend.models import CodexMaintenanceFeedback, NoteMetadataFeedback, NoteMetadataFeedbackOptimizationRun, NoteNode
 
 
 def _make_note(
@@ -128,6 +129,18 @@ def test_feedback_optimizer_codex_failure_is_skipped_without_consuming(client, s
     response = client.put(f"/api/notes/{note.numeric_id}", json={"title": "失败场景标题"})
     assert response.status_code == 200
     feedback_id = session.exec(select(NoteMetadataFeedback.id)).one()
+    maintenance = record_codex_maintenance_feedback(
+        session,
+        source_kind="codex_daily_summary",
+        source_ref_id="failed-daily-run",
+        user_id=auth_user.id,
+        source_date="2026-06-14",
+        stage="running_deepseek",
+        error_message="timeout",
+        context={"root_dir": "codeyun"},
+    )
+    session.commit()
+    assert maintenance is not None
 
     run = create_note_metadata_feedback_optimization_run(session, trigger_reason="manual-test", enqueue=False)
     assert run is not None
@@ -145,9 +158,51 @@ def test_feedback_optimizer_codex_failure_is_skipped_without_consuming(client, s
     assert feedback is not None
     assert feedback.status == "pending"
     assert feedback.consumer_run_id is None
+    maintenance_feedback = session.get(CodexMaintenanceFeedback, maintenance.id)
+    assert maintenance_feedback is not None
+    assert maintenance_feedback.status == "pending"
+    assert maintenance_feedback.consumer_run_id is None
 
     normal_response = client.put(f"/api/notes/{note.numeric_id}", json={"content": "<p>后端仍可正常保存。</p>"})
     assert normal_response.status_code == 200
+
+
+def test_codex_maintenance_feedback_records_and_coalesces_failures(session: Session, auth_user):
+    row = record_codex_maintenance_feedback(
+        session,
+        source_kind="codex_diary_import",
+        source_ref_id="run-1",
+        user_id=auth_user.id,
+        source_date="2026-06-14",
+        stage="drafting",
+        error_message="JSON decode failed",
+        context={"prompt_version": "test-v1"},
+        now=100.0,
+    )
+    session.commit()
+    assert row is not None
+
+    second = record_codex_maintenance_feedback(
+        session,
+        source_kind="codex_diary_import",
+        source_ref_id="run-1",
+        user_id=auth_user.id,
+        source_date="2026-06-14",
+        stage="drafting",
+        error_message="JSON decode failed again",
+        context={"prompt_version": "test-v2"},
+        now=120.0,
+    )
+    session.commit()
+
+    rows = session.exec(select(CodexMaintenanceFeedback)).all()
+    assert len(rows) == 1
+    assert second is not None
+    assert rows[0].id == row.id == second.id
+    assert rows[0].status == "pending"
+    assert rows[0].error_type == "parse_error"
+    assert rows[0].event_count == 2
+    assert rows[0].context_json["prompt_version"] == "test-v2"
 
 
 def test_feedback_optimizer_success_consumes_samples_and_compresses_old_rows(session: Session, auth_user, engine):
@@ -194,15 +249,52 @@ def test_feedback_optimizer_success_consumes_samples_and_compresses_old_rows(ses
         created_at=now - 100,
         updated_at=now - 100,
     )
+    maintenance_pending = CodexMaintenanceFeedback(
+        user_id=auth_user.id,
+        status="pending",
+        source_kind="codex_diary_import",
+        source_ref_id="diary-run-1",
+        source_date="2026-06-14",
+        stage="drafting",
+        error_type="parse_error",
+        error_message="JSON decode failed",
+        context_json={"prompt_version": "test-v1", "source_turn_count": 3},
+        first_event_at=now,
+        last_event_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    old_maintenance = CodexMaintenanceFeedback(
+        user_id=auth_user.id,
+        status="consumed",
+        source_kind="codex_daily_summary",
+        source_ref_id="daily-run-old",
+        source_date="2026-05-01",
+        stage="running_deepseek",
+        error_type="timeout",
+        error_message="timeout",
+        context_json={"root_dir": "old"},
+        consumer_run_id="old-run",
+        consumed_at=now - NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS - 60,
+        first_event_at=now - 100,
+        last_event_at=now - 100,
+        created_at=now - 100,
+        updated_at=now - 100,
+    )
     session.add(pending)
     session.add(old_consumed)
+    session.add(maintenance_pending)
+    session.add(old_maintenance)
     session.commit()
 
     run = create_note_metadata_feedback_optimization_run(session, trigger_reason="manual-test", enqueue=False)
     assert run is not None
 
     def successful_chat(**kwargs):
-        assert "新标题" in kwargs["messages"][0]["content"]
+        prompt = kwargs["messages"][0]["content"]
+        assert "新标题" in prompt
+        assert "codex_failure_samples" in prompt
+        assert "JSON decode failed" in prompt
         return {"model": "codex-test", "content": "未发现需要修改源码的稳定规律。"}
 
     run_note_metadata_feedback_optimization_worker(engine, run.id, chat_func=successful_chat)
@@ -211,18 +303,28 @@ def test_feedback_optimizer_success_consumes_samples_and_compresses_old_rows(ses
     refreshed_run = session.get(NoteMetadataFeedbackOptimizationRun, run.id)
     refreshed_pending = session.get(NoteMetadataFeedback, pending.id)
     refreshed_old = session.get(NoteMetadataFeedback, old_consumed.id)
+    refreshed_maintenance_pending = session.get(CodexMaintenanceFeedback, maintenance_pending.id)
+    refreshed_old_maintenance = session.get(CodexMaintenanceFeedback, old_maintenance.id)
     assert refreshed_run is not None
     assert refreshed_run.status == "completed"
-    assert refreshed_run.sample_count == 1
+    assert refreshed_run.sample_count == 2
     assert refreshed_run.consumed_feedback_ids == [pending.id]
+    assert refreshed_run.test_results["consumed_maintenance_feedback_ids"] == [maintenance_pending.id]
     assert refreshed_pending is not None
     assert refreshed_pending.status == "consumed"
     assert refreshed_pending.consumer_run_id == run.id
+    assert refreshed_maintenance_pending is not None
+    assert refreshed_maintenance_pending.status == "consumed"
+    assert refreshed_maintenance_pending.consumer_run_id == run.id
     assert refreshed_old is not None
     assert refreshed_old.before_snapshot is None
     assert refreshed_old.after_snapshot is None
     assert refreshed_old.content_summary == ""
     assert refreshed_old.compressed_at is not None
+    assert refreshed_old_maintenance is not None
+    assert refreshed_old_maintenance.error_message == ""
+    assert refreshed_old_maintenance.context_json == {}
+    assert refreshed_old_maintenance.compressed_at is not None
 
 
 def test_metadata_feedback_status_api_reports_counts(client, session: Session, auth_user):
@@ -247,11 +349,30 @@ def test_metadata_feedback_status_api_reports_counts(client, session: Session, a
             updated_at=1,
         )
     )
+    session.add(
+        CodexMaintenanceFeedback(
+            user_id=auth_user.id,
+            status="pending",
+            source_kind="codex_daily_summary",
+            source_ref_id="status-run",
+            source_date="2026-06-14",
+            stage="running_deepseek",
+            error_type="timeout",
+            error_message="timeout",
+            context_json={"root_dir": "codeyun"},
+            first_event_at=1,
+            last_event_at=1,
+            created_at=1,
+            updated_at=1,
+        )
+    )
     session.commit()
 
     response = client.get("/api/notes/metadata-feedback/status")
     assert response.status_code == 200
     payload = response.json()
     assert payload["pending_count"] == 1
+    assert payload["maintenance_pending_count"] == 1
+    assert payload["total_pending_count"] == 2
     assert payload["trigger_threshold"] == 200
     assert "queue" in payload

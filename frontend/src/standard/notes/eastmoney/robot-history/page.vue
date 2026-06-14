@@ -5,6 +5,7 @@ import { DataZoomComponent, GridComponent, LegendComponent, TitleComponent, Tool
 import { BarChart, CustomChart, LineChart } from 'echarts/charts'
 import { CanvasRenderer } from 'echarts/renderers'
 import { ElMessage } from 'element-plus'
+import { Document, FolderOpened } from '@element-plus/icons-vue'
 import {
   exportEastmoneyQlibDataset,
   fetchEastmoneyQlibAnalysis,
@@ -12,13 +13,17 @@ import {
   fetchEastmoneyQlibHkPoolOneLotScoreBacktest,
   fetchEastmoneyQlibHkPoolRotationStrategySearch,
   fetchEastmoneyQlibHkPoolStrategySearch,
+  fetchEastmoneyCrossAssetEtfCanaryRotation,
   fetchEastmoneyHkConnectMomentumReview,
+  fetchEastmoneyStrategyResearchCatalog,
   fetchEastmoneyAkshareHistory,
   fetchEastmoneyAkshareIntraday,
   type EastmoneyAkshareHistoryItem,
   type EastmoneyAkshareIntradayItem,
   type EastmoneyHkConnectMomentumCandidate,
   type EastmoneyHkConnectMomentumReviewResult,
+  type EastmoneyEtfRotationBacktestResult,
+  type EastmoneyEtfRotationHolding,
   type EastmoneyQlibPoolBacktestItem,
   type EastmoneyQlibPoolBacktestResult,
   type EastmoneyQlibAnalysis,
@@ -26,6 +31,9 @@ import {
   type EastmoneyQlibScreenResult,
   type EastmoneyQlibRotationStrategySearchResult,
   type EastmoneyQlibStrategySearchResult,
+  type EastmoneyStrategyJsonValue,
+  type EastmoneyStrategyResearchCatalog,
+  type EastmoneyStrategyResearchItem,
 } from '@/api/eastmoney'
 import StandardPagination from '@/components/StandardPagination.vue'
 import { formatChineseCompactNumber } from '@/standard/fanxiu/numberFormat'
@@ -52,6 +60,14 @@ type RobotHistoryPreferences = {
   adjust?: string
   startDate?: string
   endDate?: string
+  strategyLibraryView?: StrategyLibraryView
+  strategyCardScope?: StrategyCardScope
+  strategyCardPage?: number
+  strategyCardPageSize?: number
+  strategyCardQuality?: StrategyCardQuality
+  strategyCatalogKeyword?: string
+  selectedResearchStrategyId?: string
+  expandedStrategyTreeKeys?: string[]
 }
 type StrategyDeskKey = 'hk_connect' | 'cross_asset_etf' | 'convertible_bond'
 type StrategyDeskStatus = 'buy' | 'hold_cash' | 'watch'
@@ -64,14 +80,26 @@ type StrategyDeskItem = {
   evidence: string
   risk: string
 }
-type StrategyDeskOrder = {
-  code: string
-  name: string
-  close: number
-  amount: string
-  quantity: string
-  skipAbove: number
+type StrategyTreeFamily = {
+  key: string
+  label: string
+  count: number
+  items: EastmoneyStrategyResearchItem[]
 }
+type StrategyTreeGroup = {
+  key: string
+  label: string
+  description: string
+  count: number
+  families: StrategyTreeFamily[]
+}
+type StrategyTreeVisibleRow =
+  | { kind: 'group', id: string, key: string, label: string, depth: number, expanded: boolean }
+  | { kind: 'family', id: string, groupKey: string, key: string, label: string, depth: number, expanded: boolean }
+  | { kind: 'strategy', id: string, strategy: EastmoneyStrategyResearchItem, depth: number }
+type StrategyLibraryView = 'tree' | 'cards'
+type StrategyCardScope = 'hk_connect' | 'all' | 'cross_asset_etf' | 'convertible_bond'
+type StrategyCardQuality = 'referenceable' | 'research' | 'all'
 
 const watchTargets: WatchTarget[] = [
   { key: 'robot_ph', label: 'SZ.159278 机器人PH', market: 'SZ', symbol: '159278', name: '机器人PH', startDate: '1990-01-01' },
@@ -97,6 +125,10 @@ const periodValues = new Set<PeriodValue>([
 ])
 const adjustValues = new Set(['', 'qfq', 'hfq'])
 const targetKeys = new Set<WatchTargetKey>(watchTargets.map((target) => target.key))
+const strategyLibraryViews = new Set<StrategyLibraryView>(['tree', 'cards'])
+const strategyCardScopes = new Set<StrategyCardScope>(['hk_connect', 'all', 'cross_asset_etf', 'convertible_bond'])
+const strategyCardQualities = new Set<StrategyCardQuality>(['referenceable', 'research', 'all'])
+const strategyCardPageSizes = new Set([12, 24, 36, 50])
 const morePeriodValues = new Set<MorePeriodValue>([
   'minute_1',
   'minute_5',
@@ -128,6 +160,14 @@ function writePreferences() {
     adjust: adjust.value,
     startDate: startDate.value,
     endDate: endDate.value,
+    strategyLibraryView: strategyLibraryView.value,
+    strategyCardScope: strategyCardScope.value,
+    strategyCardPage: strategyCardPage.value,
+    strategyCardPageSize: strategyCardPageSize.value,
+    strategyCardQuality: strategyCardQuality.value,
+    strategyCatalogKeyword: strategyCatalogKeyword.value,
+    selectedResearchStrategyId: selectedResearchStrategyId.value,
+    expandedStrategyTreeKeys: [...expandedStrategyTreeKeys.value],
   }
   window.localStorage.setItem(PREFERENCE_STORAGE_KEY, JSON.stringify(preferences))
 }
@@ -158,6 +198,8 @@ const hkPoolScreen = ref<EastmoneyQlibScreenResult | null>(null)
 const hkConnectReviewLoading = ref(false)
 const hkConnectReviewRefreshing = ref(false)
 const hkConnectReview = ref<EastmoneyHkConnectMomentumReviewResult | null>(null)
+const etfRotationLoading = ref(false)
+const etfRotation = ref<EastmoneyEtfRotationBacktestResult | null>(null)
 const poolBacktestLoading = ref(false)
 const poolBacktestRefreshing = ref(false)
 const poolBacktestResult = ref<EastmoneyQlibPoolBacktestResult | null>(null)
@@ -197,6 +239,45 @@ const rotationSearchRequireBeatBenchmark = ref(true)
 const hkPoolPage = ref(1)
 const hkPoolPageSize = ref(20)
 const selectedStrategyKey = ref<StrategyDeskKey>('cross_asset_etf')
+const strategyCatalogLoading = ref(false)
+const strategyCatalog = ref<EastmoneyStrategyResearchCatalog | null>(null)
+const strategyCatalogKeyword = ref(typeof savedPreferences.strategyCatalogKeyword === 'string' ? savedPreferences.strategyCatalogKeyword : '')
+const selectedResearchStrategyId = ref(
+  typeof savedPreferences.selectedResearchStrategyId === 'string'
+    ? savedPreferences.selectedResearchStrategyId
+    : 'hk_connect_hsi60_largecap_volume_momentum_top2',
+)
+const expandedStrategyTreeKeys = ref(new Set<string>(
+  Array.isArray(savedPreferences.expandedStrategyTreeKeys) && savedPreferences.expandedStrategyTreeKeys.every((key) => typeof key === 'string')
+    ? savedPreferences.expandedStrategyTreeKeys
+    : ['group:tracked'],
+))
+const strategyLibraryView = ref<StrategyLibraryView>(
+  strategyLibraryViews.has(savedPreferences.strategyLibraryView as StrategyLibraryView)
+    ? savedPreferences.strategyLibraryView as StrategyLibraryView
+    : 'tree',
+)
+const strategyCardScope = ref<StrategyCardScope>(
+  strategyCardScopes.has(savedPreferences.strategyCardScope as StrategyCardScope)
+    ? savedPreferences.strategyCardScope as StrategyCardScope
+    : 'hk_connect',
+)
+const strategyCardQuality = ref<StrategyCardQuality>(
+  strategyCardQualities.has(savedPreferences.strategyCardQuality as StrategyCardQuality)
+    ? savedPreferences.strategyCardQuality as StrategyCardQuality
+    : 'referenceable',
+)
+const strategyCardPage = ref(
+  Number.isInteger(savedPreferences.strategyCardPage) && (savedPreferences.strategyCardPage ?? 0) > 0
+    ? savedPreferences.strategyCardPage!
+    : 1,
+)
+const strategyCardPageSize = ref(
+  strategyCardPageSizes.has(savedPreferences.strategyCardPageSize ?? 0)
+    ? savedPreferences.strategyCardPageSize!
+    : 24,
+)
+const showResearchWorkbench = false
 const researchPanels = ref<string[]>([])
 const loadedAt = ref('')
 const rows = ref<EastmoneyAkshareHistoryItem[]>([])
@@ -252,6 +333,44 @@ const strategySearchLimitOptions = [
   { label: '前500', value: 500 },
   { label: '全量', value: 0 },
 ]
+const strategyTreeBucketOrder = ['tracked', 'candidate', 'backlog', 'risk_filter', 'rejected', 'archive']
+const strategyStatusBucketMeta: Record<string, { label: string, description: string }> = {
+  tracked: { label: '已实现/重点跟踪', description: '已有实现或接近可验证，需要优先看信号、偏差和执行约束。' },
+  candidate: { label: '候选假设', description: '逻辑可继续研究，但还没有稳定通过年度与样本外验证。' },
+  backlog: { label: '待回测队列', description: '已进入研究清单，下一步是补数据、跑基准或做参数冻结。' },
+  risk_filter: { label: '风控与过滤器', description: '更适合作为组合条件或执行保护，不单独当主策略。' },
+  rejected: { label: '未通过/观察', description: '本地探针或回测没有通过，保留原因用于避免重复试错。' },
+  archive: { label: '灵感与资料', description: '资料型条目，当前主要用于启发后续假设。' },
+}
+const strategyFamilyLabels: Record<string, string> = {
+  absolute_momentum: '绝对动量',
+  alternative_data: '另类数据',
+  calendar_effect: '日历效应',
+  capital_flow: '资金流',
+  convertible_bond: '可转债',
+  cross_sectional_momentum: '截面动量',
+  data_infrastructure: '数据工程',
+  data_quality: '数据质量',
+  defensive: '防守条件',
+  dual_momentum: '双动量',
+  etf: 'ETF',
+  etf_rotation: 'ETF轮动',
+  liquidity: '流动性',
+  machine_learning: '机器学习',
+  market_breadth: '市场宽度',
+  microstructure: '微观结构',
+  portfolio: '组合构建',
+  relative_momentum: '相对动量',
+  research_process: '研究流程',
+  risk_filter: '风控过滤',
+  sector_rotation: '行业轮动',
+  stat_arb: '统计套利',
+  strategy_selection: '策略选择',
+  tactical_asset_allocation: '战术配置',
+  trend_filter: '趋势过滤',
+  trend_following: '趋势跟随',
+  volatility: '波动率',
+}
 
 const isIntraday = computed(() => period.value === 'intraday' || period.value === 'five_day' || period.value.startsWith('minute_'))
 const selectedPeriodLabel = computed(() => {
@@ -293,31 +412,25 @@ const maxIntradayVolumeRow = computed(() => intradayRows.value.reduce<EastmoneyA
   if (!best) return row
   return (row.volume ?? 0) > (best.volume ?? 0) ? row : best
 }, null))
-const usingDailyFallback = computed(() => isIntraday.value && intradayRows.value.length === 0 && rows.value.length > 0)
 const metricLatestClose = computed(() => {
-  if (usingDailyFallback.value) return latestRow.value?.close
   return isIntraday.value ? latestIntradayRow.value?.close : latestRow.value?.close
 })
 const metricChange = computed(() => {
-  if (usingDailyFallback.value) return closeChange.value
   return isIntraday.value ? intradayChange.value : closeChange.value
 })
 const metricChangeRate = computed(() => {
-  if (usingDailyFallback.value) return closeChangeRate.value
   return isIntraday.value ? intradayChangeRate.value : closeChangeRate.value
 })
 const metricTotalAmount = computed(() => {
-  if (usingDailyFallback.value) return totalAmount.value
   return isIntraday.value ? intradayTotalAmount.value : totalAmount.value
 })
 const metricMaxVolumeLabel = computed(() => {
-  if (usingDailyFallback.value || !isIntraday.value) {
+  if (!isIntraday.value) {
     return `${maxVolumeRow.value?.date || '-'} · ${formatVolume(maxVolumeRow.value?.volume)}`
   }
   return `${maxIntradayVolumeRow.value?.time?.slice(11, 16) || '-'} · ${formatVolume(maxIntradayVolumeRow.value?.volume)}`
 })
-const metricRowCount = computed(() => usingDailyFallback.value || !isIntraday.value ? rows.value.length : intradayRows.value.length)
-const metricModeLabel = computed(() => usingDailyFallback.value ? '日K兜底' : selectedPeriodLabel.value)
+const metricRowCount = computed(() => isIntraday.value ? intradayRows.value.length : rows.value.length)
 const qlibScoreRules = computed(() => qlibAnalysis.value?.scoring_rules?.length
   ? qlibAnalysis.value.scoring_rules
   : hkPoolScreen.value?.scoring_rules ?? [])
@@ -364,10 +477,31 @@ const hkConnectActionClass = computed(() => {
 })
 const hkConnectCandidateRows = computed(() => hkConnectReview.value?.candidates ?? [])
 const hkConnectSelectedRows = computed(() => hkConnectReview.value?.selected ?? [])
-const crossAssetOrders: StrategyDeskOrder[] = [
-  { code: '513520', name: '日经ETF华夏', close: 2.292, amount: '34838.40 元', quantity: '15200 份', skipAbove: 2.338 },
-  { code: '515220', name: '煤炭ETF国泰', close: 1.318, amount: '34927.00 元', quantity: '26500 份', skipAbove: 1.344 },
-]
+const etfRotationLatest = computed(() => etfRotation.value?.latest_signal ?? null)
+const etfRotationHoldings = computed<EastmoneyEtfRotationHolding[]>(() => etfRotationLatest.value?.holdings ?? [])
+const etfRotationAnnualYears = computed(() => Object.keys(etfRotation.value?.annual_returns ?? {}).sort())
+const etfRotationAnnualRange = computed(() => {
+  const years = etfRotationAnnualYears.value
+  if (years.length === 0) return '-'
+  return `${years[0]}-${years[years.length - 1]} 全正`
+})
+const etfRotationEvidence = computed(() => {
+  const annual = etfRotation.value?.annual_returns
+  if (!annual) return '等待ETF轮动计算'
+  const years = Object.keys(annual).sort()
+  const allPositive = years.length > 0 && years.every((year) => (annual[year] ?? 0) > 0)
+  const latestYear = years[years.length - 1]
+  const latestText = latestYear ? `${latestYear} ${formatSignedPercent((annual[latestYear] ?? 0) * 100)}` : ''
+  return `${years[0]}-${latestYear}${allPositive ? ' 年度全正' : ' 年度未全正'}${latestText ? `；${latestText}` : ''}`
+})
+const etfRotationSummary = computed(() => {
+  const latest = etfRotationLatest.value
+  if (!latest) return etfRotationLoading.value ? 'ETF轮动信号计算中。' : 'ETF轮动信号暂不可用。'
+  const holdingsText = latest.holdings
+    .map((holding) => `${formatPercentValue(holding.weight)} ${holding.symbol} ${holding.name}`)
+    .join(' + ')
+  return `${latest.date} 信号：${holdingsText || '空仓'}。`
+})
 const convertibleBondWatchRows = [
   { code: '111023', name: '利柏转债', metric: '双低 110.23', note: 'AA / 成交 3.08 亿' },
   { code: '113042', name: '上银转债', metric: '双低 124.01', note: 'AAA / 成交 4.38 亿' },
@@ -392,9 +526,9 @@ const strategyDeskItems = computed<StrategyDeskItem[]>(() => {
       name: '跨资产 ETF 轮动',
       status: 'watch',
       statusText: '小仓验证',
-      summary: '固定资产池周频 20 日动量给出下周信号，建议只用观察仓验证。',
-      evidence: '2021-2026YTD 年度为正；最大回撤约 -13.20%。',
-      risk: '2026 年 3-4 月曾连续亏损，不适合满额执行。',
+      summary: etfRotationSummary.value,
+      evidence: etfRotationEvidence.value,
+      risk: '样本内年度全正，但仍需固定参数后的样本外跟踪；当前只适合小仓验证。',
     },
     {
       key: 'convertible_bond',
@@ -408,11 +542,377 @@ const strategyDeskItems = computed<StrategyDeskItem[]>(() => {
   ]
 })
 const selectedStrategy = computed<StrategyDeskItem>(() => strategyDeskItems.value.find((item) => item.key === selectedStrategyKey.value) ?? strategyDeskItems.value[0]!)
-const deskFinalAction = computed(() => {
-  if (selectedStrategy.value?.key === 'cross_asset_etf') return '下周可小仓验证'
-  if (hkConnectReview.value?.action === 'buy') return '港股通可开仓'
-  return '主策略空仓'
+const strategyCatalogItems = computed(() => strategyCatalog.value?.items ?? [])
+const strategySourceLabelById = computed(() => {
+  const pairs = (strategyCatalog.value?.source_groups ?? []).map((source) => [source.id, source.name || source.title || source.id] as const)
+  return Object.fromEntries(pairs) as Record<string, string>
 })
+const filteredStrategyCatalogItems = computed(() => {
+  const keyword = strategyCatalogKeyword.value.trim().toLowerCase()
+  if (!keyword) return strategyCatalogItems.value
+  return strategyCatalogItems.value.filter((item) => {
+    const haystack = [
+      item.id,
+      item.title,
+      item.status,
+      item.timeframe,
+      item.hypothesis,
+      ...(item.family ?? []),
+      ...(item.market_scope ?? []),
+      ...(item.instrument_scope ?? []),
+      ...(item.sources ?? []),
+    ].join(' ').toLowerCase()
+    return haystack.includes(keyword)
+  })
+})
+const cardScopedStrategyCatalogItems = computed(() => {
+  const scopedItems = strategyCardScope.value === 'all'
+    ? filteredStrategyCatalogItems.value
+    : filteredStrategyCatalogItems.value.filter((item) => strategyMatchesCardScope(item, strategyCardScope.value))
+  if (strategyCardQuality.value === 'all') return scopedItems
+  return scopedItems.filter((item) => strategyMatchesCardQuality(item, strategyCardQuality.value))
+})
+const scoredStrategyCatalogItems = computed(() => {
+  return [...cardScopedStrategyCatalogItems.value]
+    .sort(compareStrategyCardItems)
+})
+const strategyCardTotal = computed(() => scoredStrategyCatalogItems.value.length)
+const strategyCardPageCount = computed(() => Math.max(1, Math.ceil(strategyCardTotal.value / Math.max(strategyCardPageSize.value, 1))))
+const strategyCardRows = computed(() => {
+  const start = (strategyCardPage.value - 1) * strategyCardPageSize.value
+  return scoredStrategyCatalogItems.value.slice(start, start + strategyCardPageSize.value)
+})
+const strategyCardEmptyText = computed(() => {
+  if (strategyCardQuality.value === 'referenceable' && strategyCardScope.value === 'hk_connect') {
+    return '港股通暂无已验证可参考策略；切到“研究中”可看候选。'
+  }
+  if (strategyCardQuality.value === 'referenceable') return '暂无已验证可参考策略'
+  return '没有匹配的策略'
+})
+const strategyTreeGroups = computed<StrategyTreeGroup[]>(() => {
+  const bucketMap = new Map<string, Map<string, EastmoneyStrategyResearchItem[]>>()
+  for (const item of filteredStrategyCatalogItems.value) {
+    const bucket = strategyItemStatusBucket(item)
+    const family = primaryStrategyFamily(item)
+    if (!bucketMap.has(bucket)) bucketMap.set(bucket, new Map())
+    const familyMap = bucketMap.get(bucket)!
+    familyMap.set(family, [...(familyMap.get(family) ?? []), item])
+  }
+  return strategyTreeBucketOrder
+    .filter((bucket) => bucketMap.has(bucket))
+    .map((bucket) => {
+      const familyMap = bucketMap.get(bucket)!
+      const families = [...familyMap.entries()]
+        .map(([family, items]) => ({
+          key: family,
+          label: strategyFamilyLabel(family),
+          count: items.length,
+          items: [...items].sort(compareStrategyItems),
+        }))
+        .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'zh-CN'))
+      const meta = strategyStatusBucketMeta[bucket]
+      return {
+        key: bucket,
+        label: meta.label,
+        description: meta.description,
+        count: families.reduce((total, family) => total + family.count, 0),
+        families,
+      }
+    })
+})
+const strategyTreeVisibleRows = computed<StrategyTreeVisibleRow[]>(() => {
+  const rows: StrategyTreeVisibleRow[] = []
+  for (const group of strategyTreeGroups.value) {
+    const groupRowKey = strategyGroupRowKey(group.key)
+    const groupExpanded = expandedStrategyTreeKeys.value.has(groupRowKey)
+    rows.push({
+      kind: 'group',
+      id: groupRowKey,
+      key: group.key,
+      label: group.label,
+      depth: 0,
+      expanded: groupExpanded,
+    })
+    if (!groupExpanded) continue
+    for (const family of group.families) {
+      const familyRowKey = strategyFamilyRowKey(group.key, family.key)
+      const familyExpanded = expandedStrategyTreeKeys.value.has(familyRowKey)
+      rows.push({
+        kind: 'family',
+        id: familyRowKey,
+        groupKey: group.key,
+        key: family.key,
+        label: family.label,
+        depth: 1,
+        expanded: familyExpanded,
+      })
+      if (!familyExpanded) continue
+      for (const strategy of family.items) {
+        rows.push({
+          kind: 'strategy',
+          id: strategy.id,
+          strategy,
+          depth: 2,
+        })
+      }
+    }
+  }
+  return rows
+})
+const selectedResearchStrategy = computed(() => {
+  const selected = strategyCatalogItems.value.find((item) => item.id === selectedResearchStrategyId.value)
+  if (strategyLibraryView.value === 'cards') {
+    if (selected && cardScopedStrategyCatalogItems.value.some((item) => item.id === selected.id)) return selected
+    return scoredStrategyCatalogItems.value[0] ?? null
+  }
+  return selected
+    ?? filteredStrategyCatalogItems.value[0]
+    ?? strategyCatalogItems.value[0]
+    ?? null
+})
+const selectedResearchRuleEntries = computed(() => Object.entries(selectedResearchStrategy.value?.rules ?? {}))
+const selectedResearchMappingEntries = computed(() => Object.entries(selectedResearchStrategy.value?.existing_mapping ?? {}))
+const selectedResearchReadableDataNeeds = computed(() => {
+  return (selectedResearchStrategy.value?.data_requirements ?? []).map(readableStrategyDataNeed)
+})
+const selectedResearchReadableValidationPlan = computed(() => {
+  return (selectedResearchStrategy.value?.validation_plan ?? []).map(readableStrategyValidationStep)
+})
+const selectedResearchSourceLabels = computed(() => {
+  return (selectedResearchStrategy.value?.sources ?? []).map((source) => strategySourceLabelById.value[source] ?? source)
+})
+const selectedResearchLiveKey = computed<StrategyDeskKey | null>(() => {
+  return selectedStrategyLiveKeyForId(selectedResearchStrategy.value?.id ?? '')
+})
+const selectedResearchLiveStrategy = computed(() => {
+  const liveKey = selectedResearchLiveKey.value
+  return liveKey ? strategyDeskItems.value.find((item) => item.key === liveKey) ?? null : null
+})
+const selectedResearchWorkbenchNote = computed(() => {
+  const title = selectedResearchStrategy.value?.title
+  if (!title) return '这里是复盘和回测工具区，会优先展示与当前策略有关的结果。'
+  if (selectedResearchLiveKey.value) {
+    return `这里优先展示「${title}」能直接复盘的结果；后面的因子信号、回测和候选池属于通用研究工具。`
+  }
+  return `这里是通用研究工具，不一定和「${title}」一一对应。`
+})
+function compareStrategyItems(left: EastmoneyStrategyResearchItem, right: EastmoneyStrategyResearchItem) {
+  return left.priority - right.priority || left.title.localeCompare(right.title, 'zh-CN')
+}
+
+function compareStrategyCardItems(left: EastmoneyStrategyResearchItem, right: EastmoneyStrategyResearchItem) {
+  const leftRank = strategyQualityRank(left)
+  const rightRank = strategyQualityRank(right)
+  return rightRank - leftRank
+    || strategyCompositeScore(right) - strategyCompositeScore(left)
+    || compareStrategyItems(left, right)
+}
+
+function selectedStrategyLiveKeyForId(id: string): StrategyDeskKey | null {
+  if (id.startsWith('hk_connect_') || id.includes('hk_pool')) return 'hk_connect'
+  if (id.startsWith('cross_asset_etf_') || id.includes('etf_rotation')) return 'cross_asset_etf'
+  if (id.includes('convertible_bond')) return 'convertible_bond'
+  return null
+}
+
+function strategyMatchesCardScope(item: EastmoneyStrategyResearchItem, scope: StrategyCardScope) {
+  const haystack = [
+    item.id,
+    ...(item.market_scope ?? []),
+    ...(item.instrument_scope ?? []),
+    ...(item.family ?? []),
+    ...(item.sources ?? []),
+  ].join(' ').toLowerCase()
+  if (scope === 'hk_connect') {
+    return haystack.includes('hk_connect') || haystack.includes('hk_pool') || haystack.includes('hk_connect_stock')
+  }
+  if (scope === 'cross_asset_etf') {
+    return haystack.includes('cross_asset_etf') || haystack.includes('etf_rotation') || item.instrument_scope?.includes('etf')
+  }
+  if (scope === 'convertible_bond') {
+    return haystack.includes('convertible_bond') || haystack.includes('可转债')
+  }
+  return true
+}
+
+function strategyMatchesCardQuality(item: EastmoneyStrategyResearchItem, quality: StrategyCardQuality) {
+  const bucket = strategyItemStatusBucket(item)
+  if (quality === 'referenceable') return bucket === 'tracked'
+  if (quality === 'research') return bucket === 'candidate' || bucket === 'backlog'
+  return true
+}
+
+function strategyCompositeScore(item: EastmoneyStrategyResearchItem) {
+  const bucket = strategyItemStatusBucket(item)
+  const priorityScore = Math.max(0, 10 - item.priority) * 4
+  const bucketScore: Record<string, number> = {
+    tracked: 80,
+    candidate: 35,
+    backlog: 18,
+    risk_filter: 8,
+    rejected: -20,
+    archive: 0,
+  }
+  const mappingScore = item.existing_mapping && Object.keys(item.existing_mapping).length > 0 ? 10 : 0
+  const executableScore = selectedStrategyLiveKeyForId(item.id) ? 8 : 0
+  const validationScore = Math.min((item.validation_plan?.length ?? 0) * 2, 8)
+  return priorityScore + (bucketScore[bucket] ?? 0) + mappingScore + executableScore + validationScore
+}
+
+function strategyQualityRank(item: EastmoneyStrategyResearchItem) {
+  const bucket = strategyItemStatusBucket(item)
+  const rank: Record<string, number> = {
+    tracked: 5,
+    candidate: 4,
+    backlog: 3,
+    risk_filter: 2,
+    archive: 1,
+    rejected: 0,
+  }
+  return rank[bucket] ?? 0
+}
+
+function strategyGroupRowKey(groupKey: string) {
+  return `group:${groupKey}`
+}
+
+function strategyFamilyRowKey(groupKey: string, familyKey: string) {
+  return `family:${groupKey}:${familyKey}`
+}
+
+function toggleStrategyTreeRow(row: StrategyTreeVisibleRow) {
+  if (row.kind === 'strategy') {
+    selectResearchStrategy(row.strategy)
+    return
+  }
+  const next = new Set(expandedStrategyTreeKeys.value)
+  if (next.has(row.id)) next.delete(row.id)
+  else next.add(row.id)
+  expandedStrategyTreeKeys.value = next
+}
+
+function getStrategyTreeIndentStyle(depth: number) {
+  return {
+    paddingInlineStart: `${depth * 18}px`,
+  }
+}
+
+function expandSelectedStrategyTreePath() {
+  const selected = selectedResearchStrategy.value
+  if (!selected) return
+  const groupKey = strategyItemStatusBucket(selected)
+  const familyKey = primaryStrategyFamily(selected)
+  expandedStrategyTreeKeys.value = new Set([
+    ...expandedStrategyTreeKeys.value,
+    strategyGroupRowKey(groupKey),
+    strategyFamilyRowKey(groupKey, familyKey),
+  ])
+}
+
+function strategyStatusBucket(status: string) {
+  const normalized = status.toLowerCase()
+  if (normalized.includes('rejected') || normalized.includes('not_promoted') || normalized.includes('failed') || normalized.includes('watch_only')) return 'rejected'
+  if (normalized.includes('needs') || normalized.includes('missing') || normalized.includes('unconfirmed') || normalized.includes('blocked')) return 'candidate'
+  if (normalized.includes('implemented') || normalized.includes('promising')) return 'tracked'
+  if (normalized.includes('candidate')) return 'candidate'
+  if (normalized.includes('backlog') || normalized.includes('idea_to_backtest')) return 'backlog'
+  if (normalized.includes('risk_filter') || normalized.includes('guard') || normalized.includes('filter')) return 'risk_filter'
+  return 'archive'
+}
+
+function strategyItemStatusBucket(item: EastmoneyStrategyResearchItem) {
+  const normalized = [
+    item.status,
+    item.notes ?? '',
+  ].join(' ').toLowerCase()
+  if (
+    normalized.includes('年度不稳定')
+    || normalized.includes('非执行策略')
+    || normalized.includes('未通过')
+    || normalized.includes('不作为')
+    || normalized.includes('not_promoted')
+    || normalized.includes('failed')
+  ) {
+    return 'rejected'
+  }
+  if (
+    normalized.includes('不应把')
+    || normalized.includes('正式可执行')
+    || normalized.includes('仍需')
+    || normalized.includes('需要')
+    || normalized.includes('待')
+    || normalized.includes('补齐')
+    || normalized.includes('修正')
+  ) {
+    return 'candidate'
+  }
+  return strategyStatusBucket(item.status)
+}
+
+function primaryStrategyFamily(item: EastmoneyStrategyResearchItem) {
+  return item.family?.[0] || 'uncategorized'
+}
+
+function strategyFamilyLabel(family: string) {
+  return strategyFamilyLabels[family] ?? family.replaceAll('_', ' ')
+}
+
+function strategyStatusLabel(status: string) {
+  const bucket = strategyStatusBucket(status)
+  const bucketLabel = strategyStatusBucketMeta[bucket]?.label ?? '策略'
+  return `${bucketLabel} · ${status.replaceAll('_', ' ')}`
+}
+
+function strategyItemStatusLabel(item: EastmoneyStrategyResearchItem) {
+  const bucket = strategyItemStatusBucket(item)
+  const bucketLabel = strategyStatusBucketMeta[bucket]?.label ?? '策略'
+  return `${bucketLabel} · ${item.status.replaceAll('_', ' ')}`
+}
+
+function strategyScopeLabel(values: string[] | undefined) {
+  return values?.length ? values.join(' / ') : '-'
+}
+
+function formatStrategyJsonValue(value: EastmoneyStrategyJsonValue | undefined): string {
+  if (value == null) return '-'
+  if (Array.isArray(value)) return value.map((item) => formatStrategyJsonValue(item)).join('，')
+  if (typeof value === 'object') {
+    return Object.entries(value)
+      .map(([key, item]) => `${key}: ${formatStrategyJsonValue(item)}`)
+      .join('；')
+  }
+  return String(value)
+}
+
+function readableStrategyDataNeed(value: string) {
+  const normalized = value.toLowerCase()
+  if (normalized.includes('ohlcv') || normalized.includes('daily')) return '每天的价格和成交量'
+  if (normalized.includes('liquidity')) return '成交要够活跃，避免买不到或卖不出'
+  if (normalized.includes('open_price')) return '开盘价，用来估算真实买入成本'
+  if (normalized.includes('membership')) return '当时真实可买的股票名单'
+  if (normalized.includes('market_cap')) return '市值数据，用来过滤太小的公司'
+  if (normalized.includes('board_lot')) return '每只港股的一手股数'
+  if (normalized.includes('hsi')) return '恒生指数走势，用来判断大环境'
+  return value.replaceAll('_', ' ')
+}
+
+function readableStrategyValidationStep(value: string) {
+  return value
+    .replaceAll('2026YTD', '2026 年以来')
+    .replaceAll('VAA/DAA式canary', '防守信号')
+    .replaceAll('canary', '防守信号')
+    .replaceAll('hold_days=10', '持有 10 天')
+    .replaceAll('canary_threshold=1.0', '防守阈值固定为 1.0')
+    .replaceAll('ETF日线缓存', 'ETF日线数据')
+    .replaceAll('样本外', '新数据')
+}
+
+function selectResearchStrategy(item: EastmoneyStrategyResearchItem) {
+  selectedResearchStrategyId.value = item.id
+  expandSelectedStrategyTreePath()
+  const liveKey = selectedResearchLiveKey.value
+  if (liveKey) selectedStrategyKey.value = liveKey
+}
 
 function formatNumber(value: number | null | undefined, digits = 3) {
   if (value == null || !Number.isFinite(value)) return '-'
@@ -425,6 +925,16 @@ function formatNumber(value: number | null | undefined, digits = 3) {
 function formatPercent(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return '-'
   return `${value.toFixed(2)}%`
+}
+
+function formatSignedPercent(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '-'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function formatPercentValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '-'
+  return `${(value * 100).toFixed(0)}%`
 }
 
 function formatAmount(value: number | null | undefined) {
@@ -558,14 +1068,56 @@ function intradayParamsForApi() {
   return { period: '1', day_count: 1 }
 }
 
+function isWeekend(date: Date) {
+  const day = date.getDay()
+  return day === 0 || day === 6
+}
+
+function minutesSinceMidnight(date: Date) {
+  return date.getHours() * 60 + date.getMinutes()
+}
+
+function isLikelyMarketClosedNow(date = new Date()) {
+  if (isWeekend(date)) return true
+  const minutes = minutesSinceMidnight(date)
+  if (activeTarget.value.market === 'HK') {
+    return minutes < 9 * 60 + 30 || minutes > 16 * 60 + 15
+  }
+  return minutes < 9 * 60 + 15 || minutes > 15 * 60 + 15
+}
+
+function buildIntradayClosedNotice(tradeDate: string) {
+  return tradeDate
+    ? `当前休市或未开盘，显示 ${tradeDate} 的${selectedPeriodLabel.value}数据`
+    : `当前休市或未开盘，显示最近交易日的${selectedPeriodLabel.value}数据`
+}
+
+function buildIntradayFallbackNotice(error: string | undefined, tradeDate = '', refresh = false) {
+  if (error) {
+    if (error.includes('本地暂无') && !refresh) return `${selectedPeriodLabel.value}${error}`
+    if (tradeDate && refresh) {
+      if (error.includes('补下载失败')) return `${selectedPeriodLabel.value}${error}`
+      return `${selectedPeriodLabel.value}补下载失败：${error}`
+    }
+    const dateText = tradeDate ? `（目标交易日 ${tradeDate}）` : ''
+    return `${selectedPeriodLabel.value}获取失败${dateText}：${error}`
+  }
+  if (isLikelyMarketClosedNow()) {
+    return tradeDate
+      ? `${selectedPeriodLabel.value}本地暂无 ${tradeDate} 已持久化数据`
+      : `${selectedPeriodLabel.value}本地暂无已持久化数据`
+  }
+  return `${selectedPeriodLabel.value}暂无数据`
+}
+
 function selectMorePeriod(value: MorePeriodValue | '') {
   if (!value) return
   period.value = value
 }
 
-async function loadHistory() {
+async function loadHistory(refresh = false) {
   if (isIntraday.value) {
-    await loadIntraday()
+    await loadIntraday(refresh)
     return
   }
   const sequence = loadSequence + 1
@@ -601,7 +1153,7 @@ async function loadHistory() {
   }
 }
 
-async function loadIntraday() {
+async function loadIntraday(refresh = false) {
   const sequence = loadSequence + 1
   loadSequence = sequence
   loading.value = true
@@ -609,30 +1161,27 @@ async function loadIntraday() {
   chartNotice.value = ''
   try {
     const intradayParams = intradayParamsForApi()
+    const marketClosed = isLikelyMarketClosedNow()
     const result = await fetchEastmoneyAkshareIntraday({
       market: activeTarget.value.market,
       symbol: activeTarget.value.symbol,
       name: activeTarget.value.name,
       period: intradayParams.period,
       day_count: intradayParams.day_count,
+      refresh,
     })
     if (sequence !== loadSequence) return
     intradayRows.value = result.items
+    const targetTradeDate = result.target_trade_date || result.trade_date
+    const displayTradeDate = result.display_trade_date || result.trade_date
+    if (result.items.length > 0 && result.error) {
+      chartNotice.value = result.error
+    }
+    else if (result.items.length > 0 && (marketClosed || result.provider === 'market-data')) {
+      chartNotice.value = buildIntradayClosedNotice(displayTradeDate)
+    }
     if (result.items.length === 0) {
-      const fallback = await fetchEastmoneyAkshareHistory({
-        market: activeTarget.value.market,
-        symbol: activeTarget.value.symbol,
-        name: activeTarget.value.name,
-        period: 'daily',
-        start_date: activeTarget.value.startDate,
-        adjust: 'qfq',
-        refresh: false,
-      })
-      if (sequence !== loadSequence) return
-      rows.value = fallback.items
-      chartNotice.value = fallback.items.length > 0
-        ? `${selectedPeriodLabel.value}暂无数据，已显示日K缓存`
-        : `${selectedPeriodLabel.value}和日K缓存均暂无数据`
+      chartNotice.value = buildIntradayFallbackNotice(result.error, targetTradeDate, refresh)
     }
     loadedAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
     await nextTick()
@@ -721,6 +1270,24 @@ async function loadHkPoolScreen(refresh = false) {
   }
 }
 
+async function loadStrategyCatalog() {
+  strategyCatalogLoading.value = true
+  try {
+    strategyCatalog.value = await fetchEastmoneyStrategyResearchCatalog()
+    if (!strategyCatalogItems.value.some((item) => item.id === selectedResearchStrategyId.value)) {
+      selectedResearchStrategyId.value = strategyCatalogItems.value[0]?.id ?? ''
+    }
+    expandSelectedStrategyTreePath()
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取策略研究目录失败：${message}`)
+  }
+  finally {
+    strategyCatalogLoading.value = false
+  }
+}
+
 async function loadHkConnectReview(refresh = false) {
   if (refresh) {
     hkConnectReviewRefreshing.value = true
@@ -772,6 +1339,20 @@ async function loadHkConnectReviewProgress() {
     hkConnectReviewRefreshing.value = false
     const message = error instanceof Error ? error.message : String(error)
     ElMessage.error(`读取港股通策略复盘进度失败：${message}`)
+  }
+}
+
+async function loadEtfRotation(refresh = false) {
+  etfRotationLoading.value = true
+  try {
+    etfRotation.value = await fetchEastmoneyCrossAssetEtfCanaryRotation({ refresh })
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    ElMessage.error(`读取跨资产ETF轮动失败：${message}`)
+  }
+  finally {
+    etfRotationLoading.value = false
   }
 }
 
@@ -1362,7 +1943,8 @@ function startIntradayRefreshTimer() {
   stopIntradayRefreshTimer()
   if (!isIntraday.value) return
   intradayRefreshTimer = window.setInterval(() => {
-    void loadIntraday()
+    if (intradayRows.value.length === 0) return
+    void loadIntraday(false)
   }, 60000)
 }
 
@@ -1439,10 +2021,8 @@ function stopRotationSearchProgressTimer() {
 
 onMounted(() => {
   void loadHistory()
-  void loadQlibAnalysis(false)
-  void loadHkPoolScreen(false)
-  void loadHkConnectReview(false)
-  void loadPoolBacktest(false)
+  void loadStrategyCatalog()
+  void loadEtfRotation()
   startIntradayRefreshTimer()
   if (chartRef.value) {
     resizeObserver = new ResizeObserver(() => {
@@ -1487,12 +2067,51 @@ watch(targetKey, (_value, oldValue) => {
   if (oldValue != null) {
     startIntradayRefreshTimer()
     void loadHistory()
-    void loadQlibAnalysis(false)
   }
 })
 
 watch([targetKey, period, adjust, startDate, endDate], () => {
   writePreferences()
+})
+
+watch(strategyCatalogKeyword, () => {
+  strategyCardPage.value = 1
+  writePreferences()
+})
+
+watch(strategyCardScope, () => {
+  strategyCardPage.value = 1
+  if (
+    strategyCardScope.value !== 'all'
+    && selectedResearchStrategy.value
+    && !strategyMatchesCardScope(selectedResearchStrategy.value, strategyCardScope.value)
+  ) {
+    const first = scoredStrategyCatalogItems.value[0]
+    if (first) selectResearchStrategy(first)
+  }
+  writePreferences()
+})
+
+watch(strategyCardQuality, () => {
+  strategyCardPage.value = 1
+  writePreferences()
+})
+
+watch([
+  strategyLibraryView,
+  strategyCardPage,
+  strategyCardPageSize,
+  strategyCardQuality,
+  selectedResearchStrategyId,
+  expandedStrategyTreeKeys,
+], () => {
+  writePreferences()
+})
+
+watch(strategyCardPageCount, (pageCount) => {
+  if (strategyCardPage.value > pageCount) {
+    strategyCardPage.value = pageCount
+  }
 })
 </script>
 
@@ -1548,86 +2167,299 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
         <el-button v-if="!isIntraday" @click="loadLocalHistoryRange">最近区间</el-button>
         <el-button v-if="!isIntraday" @click="loadFullHistory">完整历史</el-button>
         <el-button :loading="qlibExporting" @click="exportQlibDataset">Qlib分析</el-button>
-        <el-button type="primary" :loading="loading" @click="loadHistory">查询</el-button>
+        <el-button v-if="isIntraday" :loading="loading" @click="loadHistory(false)">查询</el-button>
+        <el-button v-if="isIntraday" type="primary" :loading="loading" @click="loadHistory(true)">补下载</el-button>
+        <el-button v-else type="primary" :loading="loading" @click="loadHistory(false)">查询</el-button>
       </div>
     </header>
 
+    <section class="robot-history-metrics">
+      <div>
+        <span>{{ isIntraday ? '最新价' : '最新收盘' }}</span>
+        <strong>{{ formatNumber(metricLatestClose) }}</strong>
+      </div>
+      <div>
+        <span>{{ isIntraday ? `${selectedPeriodLabel}涨跌` : '区间涨跌' }}</span>
+        <strong :class="{ positive: (metricChange ?? 0) > 0, negative: (metricChange ?? 0) < 0 }">
+          {{ formatNumber(metricChange) }} / {{ formatPercent(metricChangeRate) }}
+        </strong>
+      </div>
+      <div>
+        <span>{{ isIntraday ? `${selectedPeriodLabel}成交额` : '区间成交额' }}</span>
+        <strong>{{ formatAmount(metricTotalAmount) }}</strong>
+      </div>
+      <div>
+        <span>最大成交量</span>
+        <strong>{{ metricMaxVolumeLabel }}</strong>
+      </div>
+      <div>
+        <span>{{ isIntraday ? '分钟条数' : '数据条数' }}</span>
+        <strong>{{ metricRowCount }}</strong>
+      </div>
+      <div>
+        <span>加载时间</span>
+        <strong>{{ loadedAt || '-' }}</strong>
+      </div>
+    </section>
+
+    <section class="robot-history-chart-section" v-loading="loading">
+      <div class="chart-section-head">
+        <span>行情图</span>
+        <strong>{{ selectedPeriodLabel }}</strong>
+      </div>
+      <div v-if="chartNotice" class="chart-notice">{{ chartNotice }}</div>
+      <div ref="chartRef" class="robot-history-chart" />
+    </section>
+
     <section class="strategy-desk">
       <div class="strategy-desk-head">
-        <div>
-          <span>今日结论</span>
-          <strong>{{ deskFinalAction }}</strong>
-        </div>
-        <p>{{ selectedStrategy.summary }}</p>
+        <strong>策略库 {{ strategyCatalog?.count ?? 0 }}条</strong>
+        <p>{{ selectedResearchStrategy?.hypothesis || selectedStrategy.summary }}</p>
       </div>
-      <div class="strategy-desk-body">
-        <nav class="strategy-list" aria-label="策略列表">
-          <button
-            v-for="strategy in strategyDeskItems"
-            :key="strategy.key"
-            class="strategy-list-item"
-            :class="{ active: selectedStrategyKey === strategy.key }"
-            type="button"
-            @click="selectedStrategyKey = strategy.key"
-          >
-            <span>
-              <strong>{{ strategy.name }}</strong>
-              <small>{{ strategy.evidence }}</small>
-            </span>
-            <em :class="`strategy-status is-${strategy.status}`">{{ strategy.statusText }}</em>
-          </button>
-        </nav>
-        <div class="strategy-detail">
+      <div class="strategy-desk-body" v-loading="strategyCatalogLoading">
+        <aside class="strategy-list" aria-label="策略研究目录">
+          <div class="strategy-tree-toolbar">
+            <el-input
+              v-model="strategyCatalogKeyword"
+              clearable
+              placeholder="搜索策略、市场、状态"
+              size="small"
+            />
+          </div>
+          <div class="strategy-library-tabs" role="tablist" aria-label="策略库视图">
+            <button
+              type="button"
+              :class="{ 'is-active': strategyLibraryView === 'tree' }"
+              @click="strategyLibraryView = 'tree'"
+            >
+              树形
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-active': strategyLibraryView === 'cards' }"
+              @click="strategyLibraryView = 'cards'"
+            >
+              卡片
+            </button>
+          </div>
+          <div v-if="strategyLibraryView === 'tree'" class="strategy-tree">
+            <button
+              v-for="row in strategyTreeVisibleRows"
+              :key="row.id"
+              class="strategy-tree-row"
+              :class="{
+                'is-group': row.kind === 'group',
+                'is-family': row.kind === 'family',
+                'is-strategy': row.kind === 'strategy',
+                'is-active': row.kind === 'strategy' && selectedResearchStrategy?.id === row.strategy.id,
+              }"
+              type="button"
+              :style="getStrategyTreeIndentStyle(row.depth)"
+              @click="toggleStrategyTreeRow(row)"
+            >
+              <span class="strategy-tree-toggle">
+                <template v-if="row.kind === 'strategy'"></template>
+                <template v-else>{{ row.expanded ? '-' : '+' }}</template>
+              </span>
+              <el-icon class="strategy-tree-icon" :class="{ 'is-leaf': row.kind === 'strategy' }">
+                <Document v-if="row.kind === 'strategy'" />
+                <FolderOpened v-else />
+              </el-icon>
+              <span class="strategy-tree-name" :title="row.kind === 'strategy' ? row.strategy.title : row.label">
+                {{ row.kind === 'strategy' ? row.strategy.title : row.label }}
+              </span>
+            </button>
+            <div v-if="!strategyTreeGroups.length" class="strategy-empty">没有匹配的策略</div>
+          </div>
+          <div v-else class="strategy-card-view">
+            <div class="strategy-card-scope-tabs" aria-label="策略范围">
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardScope === 'hk_connect' }"
+                @click="strategyCardScope = 'hk_connect'"
+              >
+                港股通
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardScope === 'cross_asset_etf' }"
+                @click="strategyCardScope = 'cross_asset_etf'"
+              >
+                ETF
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardScope === 'convertible_bond' }"
+                @click="strategyCardScope = 'convertible_bond'"
+              >
+                可转债
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardScope === 'all' }"
+                @click="strategyCardScope = 'all'"
+              >
+                全部
+              </button>
+            </div>
+            <div class="strategy-card-quality-tabs" aria-label="策略质量">
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardQuality === 'referenceable' }"
+                @click="strategyCardQuality = 'referenceable'"
+              >
+                可参考
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardQuality === 'research' }"
+                @click="strategyCardQuality = 'research'"
+              >
+                研究中
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': strategyCardQuality === 'all' }"
+                @click="strategyCardQuality = 'all'"
+              >
+                全部
+              </button>
+            </div>
+            <div class="strategy-card-list">
+              <button
+                v-for="strategy in strategyCardRows"
+                :key="strategy.id"
+                type="button"
+                class="strategy-card-item"
+                :class="{ 'is-active': selectedResearchStrategy?.id === strategy.id }"
+                @click="selectResearchStrategy(strategy)"
+              >
+                <span class="strategy-card-score">{{ strategyCompositeScore(strategy) }}</span>
+                <span class="strategy-card-main">
+                  <strong>{{ strategy.title }}</strong>
+                  <small>{{ strategyStatusBucketMeta[strategyItemStatusBucket(strategy)]?.label }} · {{ strategyFamilyLabel(primaryStrategyFamily(strategy)) }}</small>
+                </span>
+              </button>
+              <div v-if="!strategyCardRows.length" class="strategy-empty">
+                {{ strategyCardEmptyText }}
+              </div>
+            </div>
+            <StandardPagination
+              v-if="strategyCardTotal > strategyCardPageSize"
+              v-model:page="strategyCardPage"
+              v-model:page-size="strategyCardPageSize"
+              class="strategy-card-pagination"
+              :total="strategyCardTotal"
+              :page-size-options="[12, 24, 36, 50]"
+              align="center"
+              @page-size-change="strategyCardPage = 1"
+            />
+          </div>
+        </aside>
+
+        <div v-if="selectedResearchStrategy" class="strategy-detail">
           <div class="strategy-detail-title">
             <div>
-              <span>当前策略</span>
-              <h2>{{ selectedStrategy.name }}</h2>
+              <span>策略档案 · {{ strategyItemStatusLabel(selectedResearchStrategy) }}</span>
+              <h2>{{ selectedResearchStrategy.title }}</h2>
             </div>
-            <em :class="`strategy-status is-${selectedStrategy.status}`">{{ selectedStrategy.statusText }}</em>
+            <em :class="`strategy-status is-${strategyItemStatusBucket(selectedResearchStrategy)}`">P{{ selectedResearchStrategy.priority }}</em>
           </div>
 
-          <template v-if="selectedStrategy.key === 'cross_asset_etf'">
-            <div class="strategy-signal-table">
+          <div class="strategy-facts">
+            <div><span>编号</span><strong>{{ selectedResearchStrategy.id }}</strong></div>
+            <div><span>市场</span><strong>{{ strategyScopeLabel(selectedResearchStrategy.market_scope) }}</strong></div>
+            <div><span>品种</span><strong>{{ strategyScopeLabel(selectedResearchStrategy.instrument_scope) }}</strong></div>
+            <div><span>周期</span><strong>{{ selectedResearchStrategy.timeframe || '-' }}</strong></div>
+          </div>
+
+          <p class="strategy-note">{{ selectedResearchStrategy.hypothesis }}</p>
+
+          <section class="strategy-detail-section">
+            <h3>规则</h3>
+            <dl class="strategy-rule-list">
+              <template v-for="[key, value] in selectedResearchRuleEntries" :key="key">
+                <dt>{{ key }}</dt>
+                <dd>{{ formatStrategyJsonValue(value) }}</dd>
+              </template>
+            </dl>
+          </section>
+
+          <div class="strategy-detail-columns">
+            <section class="strategy-detail-section">
+              <h3>需要哪些数据</h3>
+              <ul>
+                <li v-for="item in selectedResearchReadableDataNeeds" :key="item">{{ item }}</li>
+              </ul>
+            </section>
+            <section class="strategy-detail-section">
+              <h3>还要确认什么</h3>
+              <ul>
+                <li v-for="item in selectedResearchReadableValidationPlan" :key="item">{{ item }}</li>
+              </ul>
+            </section>
+          </div>
+
+          <section v-if="selectedResearchMappingEntries.length" class="strategy-detail-section">
+            <h3>已有工程映射</h3>
+            <dl class="strategy-rule-list">
+              <template v-for="[key, value] in selectedResearchMappingEntries" :key="key">
+                <dt>{{ key }}</dt>
+                <dd>{{ formatStrategyJsonValue(value) }}</dd>
+              </template>
+            </dl>
+          </section>
+
+          <section v-if="selectedResearchLiveStrategy" class="strategy-live-section">
+            <div class="strategy-live-head">
+              <span>今天怎么做</span>
+              <em :class="`strategy-status is-${selectedResearchLiveStrategy.status}`">{{ selectedResearchLiveStrategy.statusText }}</em>
+            </div>
+            <p>{{ selectedResearchLiveStrategy.summary }}</p>
+
+          <template v-if="selectedResearchLiveKey === 'cross_asset_etf'">
+            <div class="strategy-inline-actions">
+              <span>{{ etfRotation?.source || 'cache:market_kline:cross_asset_etf_canary_rotation' }}</span>
+              <el-button size="small" :loading="etfRotationLoading" @click="loadEtfRotation(true)">重算ETF信号</el-button>
+            </div>
+            <div class="strategy-signal-table" v-loading="etfRotationLoading">
               <table>
                 <thead>
                   <tr>
                     <th>代码</th>
                     <th>名称</th>
-                    <th>收盘</th>
-                    <th>计划</th>
-                    <th>占用</th>
-                    <th>跳过价</th>
+                    <th>比例</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="order in crossAssetOrders" :key="order.code">
-                    <td>{{ order.code }}</td>
-                    <td>{{ order.name }}</td>
-                    <td>{{ formatNumber(order.close, 3) }}</td>
-                    <td>{{ order.quantity }}</td>
-                    <td>{{ order.amount }}</td>
-                    <td>{{ formatNumber(order.skipAbove, 3) }}</td>
+                  <tr v-for="holding in etfRotationHoldings" :key="`${holding.market}.${holding.symbol}`">
+                    <td>{{ holding.symbol }}</td>
+                    <td>{{ holding.name }}</td>
+                    <td>{{ formatPercentValue(holding.weight) }}</td>
+                  </tr>
+                  <tr v-if="etfRotationHoldings.length === 0">
+                    <td colspan="3">暂无ETF轮动信号</td>
                   </tr>
                 </tbody>
               </table>
             </div>
             <div class="strategy-facts">
-              <div><span>年度</span><strong>2021-2026YTD 全正</strong></div>
-              <div><span>累计</span><strong class="positive">89.95%</strong></div>
-              <div><span>最大回撤</span><strong class="negative">-13.20%</strong></div>
+              <div><span>信号日</span><strong>{{ etfRotationLatest?.date || '-' }}</strong></div>
+              <div><span>历史区间</span><strong>{{ etfRotationAnnualRange }}</strong></div>
+              <div><span>历史累计</span><strong class="positive">{{ etfRotation ? formatSignedPercent(etfRotation.total_return * 100) : '-' }}</strong></div>
             </div>
           </template>
 
-          <template v-else-if="selectedStrategy.key === 'hk_connect'">
+          <template v-else-if="selectedResearchLiveKey === 'hk_connect'">
             <div class="strategy-facts">
               <div><span>明日动作</span><strong :class="hkConnectActionClass">{{ hkConnectActionText }}</strong></div>
               <div><span>恒生过滤</span><strong>{{ hkConnectReview?.hsi_filter_passed ? '通过' : '未通过' }}</strong></div>
               <div><span>候选</span><strong>{{ hkConnectReview?.usable_count ?? 0 }}/{{ hkConnectReview?.pool_count ?? 0 }}</strong></div>
             </div>
-            <p class="strategy-note">{{ hkConnectReview?.summary || selectedStrategy.summary }}</p>
+            <p class="strategy-note">{{ hkConnectReview?.summary || selectedResearchLiveStrategy.summary }}</p>
           </template>
 
-          <template v-else>
+          <template v-else-if="selectedResearchLiveKey === 'convertible_bond'">
             <div class="strategy-signal-table">
               <table>
                 <thead>
@@ -1649,48 +2481,21 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
               </table>
             </div>
           </template>
+          </section>
 
-          <p class="strategy-risk">{{ selectedStrategy.risk }}</p>
+          <div class="strategy-tags">
+            <span v-for="family in selectedResearchStrategy.family" :key="family">{{ strategyFamilyLabel(family) }}</span>
+            <span v-for="source in selectedResearchSourceLabels" :key="source">{{ source }}</span>
+          </div>
+          <p v-if="selectedResearchStrategy.notes" class="strategy-risk">{{ selectedResearchStrategy.notes }}</p>
         </div>
+        <div v-else class="strategy-detail strategy-empty">暂无策略目录数据</div>
       </div>
     </section>
 
-    <section class="robot-history-metrics">
-      <div>
-        <span>{{ usingDailyFallback || !isIntraday ? '最新收盘' : '最新价' }}</span>
-        <strong>{{ formatNumber(metricLatestClose) }}</strong>
-      </div>
-      <div>
-        <span>{{ usingDailyFallback ? '日K区间涨跌' : (isIntraday ? `${selectedPeriodLabel}涨跌` : '区间涨跌') }}</span>
-        <strong :class="{ positive: (metricChange ?? 0) > 0, negative: (metricChange ?? 0) < 0 }">
-          {{ formatNumber(metricChange) }} / {{ formatPercent(metricChangeRate) }}
-        </strong>
-      </div>
-      <div>
-        <span>{{ usingDailyFallback ? '日K区间成交额' : (isIntraday ? `${selectedPeriodLabel}成交额` : '区间成交额') }}</span>
-        <strong>{{ formatAmount(metricTotalAmount) }}</strong>
-      </div>
-      <div>
-        <span>最大成交量</span>
-        <strong>{{ metricMaxVolumeLabel }}</strong>
-      </div>
-      <div>
-        <span>{{ usingDailyFallback ? '日K条数' : (isIntraday ? '分钟条数' : '数据条数') }}</span>
-        <strong>{{ metricRowCount }}</strong>
-      </div>
-      <div>
-        <span>加载时间</span>
-        <strong>{{ loadedAt || '-' }}</strong>
-      </div>
-    </section>
-
-    <section class="robot-history-chart-section" v-loading="loading">
-      <div v-if="chartNotice" class="chart-notice">{{ chartNotice }}</div>
-      <div ref="chartRef" class="robot-history-chart" />
-    </section>
-
-    <el-collapse v-model="researchPanels" class="research-collapse">
-      <el-collapse-item title="复盘与高级研究" name="advanced">
+    <el-collapse v-if="showResearchWorkbench" v-model="researchPanels" class="research-collapse">
+      <el-collapse-item title="关联复盘与研究工具" name="advanced">
+    <p class="research-workbench-note">{{ selectedResearchWorkbenchNote }}</p>
     <section class="hk-connect-review-section" v-loading="hkConnectReviewLoading">
       <div class="backtest-header">
         <div>
@@ -2529,26 +3334,23 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 }
 
 .strategy-desk-head {
-  align-items: flex-end;
-  display: flex;
-  gap: 18px;
-  justify-content: space-between;
+  align-items: start;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(300px, 380px) minmax(520px, 1fr);
   margin-bottom: 12px;
 }
 
-.strategy-desk-head div {
-  display: grid;
-  gap: 2px;
-}
-
-.strategy-desk-head span,
 .strategy-detail-title span {
   color: #607086;
   font-size: 12px;
 }
 
 .strategy-desk-head strong {
-  font-size: 24px;
+  color: #172033;
+  font-size: 16px;
+  font-weight: 700;
+  justify-self: start;
   line-height: 1.2;
 }
 
@@ -2561,54 +3363,248 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 }
 
 .strategy-desk-body {
-  align-items: start;
+  align-items: stretch;
   display: grid;
   gap: 18px;
-  grid-template-columns: minmax(260px, 330px) minmax(520px, 1fr);
+  grid-template-columns: minmax(300px, 380px) minmax(520px, 1fr);
 }
 
 .strategy-list {
   display: grid;
-  gap: 6px;
-}
-
-.strategy-list-item {
-  align-items: center;
-  background: #fff;
-  border: 1px solid #dfe7f0;
-  border-radius: 6px;
-  color: #172033;
-  cursor: pointer;
-  display: flex;
   gap: 10px;
-  justify-content: space-between;
-  padding: 10px 12px;
-  text-align: left;
-}
-
-.strategy-list-item:hover,
-.strategy-list-item.active {
-  border-color: #8bb8ee;
-  background: #f7fbff;
-}
-
-.strategy-list-item span {
-  display: grid;
-  gap: 3px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
   min-width: 0;
+  min-height: 0;
 }
 
-.strategy-list-item strong {
-  font-size: 14px;
+.strategy-tree-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr;
+}
+
+.strategy-library-tabs {
+  align-items: center;
+  border-bottom: 1px solid #e6ebf2;
+  display: flex;
+  gap: 2px;
+}
+
+.strategy-library-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #526173;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
+.strategy-library-tabs button:hover {
+  color: #1d4ed8;
+}
+
+.strategy-library-tabs button.is-active {
+  border-bottom-color: #409eff;
+  color: #172033;
   font-weight: 700;
 }
 
-.strategy-list-item small {
-  color: #607086;
-  font-size: 12px;
+.strategy-tree {
+  border-right: 1px solid #e6ebf2;
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 14px;
+}
+
+.strategy-tree-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #111827;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 7px;
+  min-height: 30px;
+  min-width: 0;
+  padding: 4px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.strategy-tree-row:hover {
+  background: #f8fafc;
+}
+
+.strategy-tree-row.is-active {
+  background: #eff6ff;
+}
+
+.strategy-tree-row.is-group {
+  font-weight: 700;
+}
+
+.strategy-tree-row.is-family {
+  color: #334155;
+  font-weight: 600;
+}
+
+.strategy-tree-row.is-strategy {
+  color: #172033;
+}
+
+.strategy-tree-toggle {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #d5dde8;
+  border-radius: 4px;
+  color: #64748b;
+  display: inline-flex;
+  flex: 0 0 18px;
+  font-size: 13px;
+  font-weight: 700;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.strategy-tree-row.is-strategy .strategy-tree-toggle {
+  background: transparent;
+  border-color: transparent;
+}
+
+.strategy-tree-icon {
+  color: #64748b;
+  flex: 0 0 16px;
+  font-size: 15px;
+}
+
+.strategy-tree-icon.is-leaf {
+  color: #94a3b8;
+}
+
+.strategy-tree-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.strategy-card-view {
+  border-right: 1px solid #e6ebf2;
+  display: grid;
+  gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 14px;
+}
+
+.strategy-card-scope-tabs,
+.strategy-card-quality-tabs {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.strategy-card-scope-tabs button,
+.strategy-card-quality-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #526173;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 3px 7px;
+}
+
+.strategy-card-scope-tabs button:hover,
+.strategy-card-quality-tabs button:hover {
+  color: #1d4ed8;
+}
+
+.strategy-card-scope-tabs button.is-active,
+.strategy-card-quality-tabs button.is-active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #175cd3;
+  font-weight: 700;
+}
+
+.strategy-card-list {
+  align-content: start;
+  display: grid;
+  gap: 4px;
+  grid-auto-rows: max-content;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.strategy-card-item {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dfe7f0;
+  border-radius: 5px;
+  color: #172033;
+  cursor: pointer;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 36px 1fr;
+  min-height: 48px;
+  padding: 6px 9px;
+  text-align: left;
+}
+
+.strategy-card-item:hover,
+.strategy-card-item.is-active {
+  background: #f7fbff;
+  border-color: #8bb8ee;
+}
+
+.strategy-card-score {
+  color: #175cd3;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.strategy-card-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.strategy-card-main strong {
+  font-size: 13px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-card-main small {
+  color: #607086;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-card-pagination {
+  border-top: 1px solid #e6ebf2;
+  padding-top: 8px;
 }
 
 .strategy-status {
@@ -2626,15 +3622,31 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   color: #b54708;
 }
 
-.strategy-status.is-hold_cash {
+.strategy-status.is-hold_cash,
+.strategy-status.is-tracked {
   background: #edf4ff;
   color: #175cd3;
 }
 
+.strategy-status.is-candidate,
+.strategy-status.is-backlog {
+  background: #ecfdf3;
+  color: #087443;
+}
+
+.strategy-status.is-risk_filter {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.strategy-status.is-rejected,
+.strategy-status.is-archive {
+  background: #f4f6f8;
+  color: #526173;
+}
+
 .strategy-detail {
-  border-left: 1px solid #e6ebf2;
   min-width: 0;
-  padding-left: 18px;
 }
 
 .strategy-detail-title {
@@ -2648,6 +3660,88 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 .strategy-detail-title h2 {
   font-size: 18px;
   margin: 2px 0 0;
+}
+
+.strategy-detail-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.strategy-detail-section h3,
+.strategy-live-head span {
+  color: #172033;
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.strategy-detail-section ul {
+  color: #526173;
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+  line-height: 1.55;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.strategy-detail-columns {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
+.strategy-rule-list {
+  display: grid;
+  font-size: 13px;
+  gap: 7px 14px;
+  grid-template-columns: max-content 1fr;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.strategy-rule-list dt {
+  color: #607086;
+  font-weight: 600;
+}
+
+.strategy-rule-list dd {
+  color: #172033;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.strategy-live-section {
+  border-top: 1px solid #e6ebf2;
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.strategy-live-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.strategy-live-section p {
+  color: #526173;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.strategy-inline-actions {
+  align-items: center;
+  color: #607086;
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 
 .strategy-signal-table {
@@ -2708,9 +3802,39 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   color: #7a4b00;
 }
 
+.strategy-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.strategy-tags span {
+  background: #f4f7fb;
+  border: 1px solid #e1e8f0;
+  border-radius: 4px;
+  color: #526173;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.strategy-empty {
+  color: #607086;
+  font-size: 13px;
+  padding: 24px 0;
+  text-align: center;
+}
+
 .research-collapse {
   border-top: 0;
   margin-top: 4px;
+}
+
+.research-workbench-note {
+  color: #607086;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 12px;
 }
 
 .robot-history-metrics {
@@ -2746,9 +3870,27 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   padding: 12px 10px 8px;
 }
 
+.chart-section-head {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chart-section-head span {
+  color: #607086;
+  font-size: 12px;
+}
+
+.chart-section-head strong {
+  color: #172033;
+  font-size: 15px;
+}
+
 .chart-notice {
   color: #7a4b00;
   font-size: 12px;
+  line-height: 1.5;
   margin: 0 0 8px;
 }
 
@@ -3087,7 +4229,7 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
 
   .strategy-desk-head {
     align-items: stretch;
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
 
   .strategy-desk-body {
@@ -3095,10 +4237,25 @@ watch([targetKey, period, adjust, startDate, endDate], () => {
   }
 
   .strategy-detail {
-    border-left: 0;
     border-top: 1px solid #e6ebf2;
-    padding-left: 0;
     padding-top: 14px;
+  }
+
+  .strategy-tree {
+    border-right: 0;
+    max-height: 420px;
+    padding-right: 0;
+  }
+
+  .strategy-card-view {
+    border-right: 0;
+    max-height: 420px;
+    padding-right: 0;
+  }
+
+  .strategy-detail-columns,
+  .strategy-rule-list {
+    grid-template-columns: 1fr;
   }
 
   .robot-history-metrics {

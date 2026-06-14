@@ -103,6 +103,11 @@ class DataAnnotationRuntimeDebugContext:
             raise RuntimeError(f"找不到标注：scene={scene} shape={title}")
         self._runner._click_shape(self._ctx, image, shape, frame_data_url=frame)
 
+    def wait_click(self, frame: int | str | None, shape: str, **options: Any):
+        self._require_act()
+        runtime = self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return (yield from runtime.wait_click(frame, shape, **options))
+
     def tap(self, scene: int | str, x: float, y: float) -> None:
         self._require_act()
         image = self.image(scene)

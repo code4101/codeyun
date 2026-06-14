@@ -4929,6 +4929,57 @@ def v74_add_notenode_version(session: Session):
     print("  Added notenode version column.")
 
 
+def v75_add_codex_maintenance_feedback_table(session: Session):
+    """
+    Migration V75: Add Codex maintenance feedback table.
+    """
+    print("Running System Upgrade V75: Add Codex maintenance feedback table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS codexmaintenancefeedback (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                user_id INTEGER,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                source_kind VARCHAR NOT NULL DEFAULT '',
+                source_ref_id VARCHAR NOT NULL DEFAULT '',
+                source_date VARCHAR NOT NULL DEFAULT '',
+                stage VARCHAR NOT NULL DEFAULT '',
+                error_type VARCHAR NOT NULL DEFAULT '',
+                error_message VARCHAR NOT NULL DEFAULT '',
+                context_json JSON NOT NULL DEFAULT '{}',
+                event_count INTEGER NOT NULL DEFAULT 1,
+                consumer_run_id VARCHAR,
+                first_event_at FLOAT NOT NULL,
+                last_event_at FLOAT NOT NULL,
+                consumed_at FLOAT,
+                compressed_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_user_id ON codexmaintenancefeedback (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_status ON codexmaintenancefeedback (status)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_source_kind ON codexmaintenancefeedback (source_kind)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_source_ref_id ON codexmaintenancefeedback (source_ref_id)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_source_date ON codexmaintenancefeedback (source_date)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_stage ON codexmaintenancefeedback (stage)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_error_type ON codexmaintenancefeedback (error_type)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_consumer_run_id ON codexmaintenancefeedback (consumer_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_first_event_at ON codexmaintenancefeedback (first_event_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_last_event_at ON codexmaintenancefeedback (last_event_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_consumed_at ON codexmaintenancefeedback (consumed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_compressed_at ON codexmaintenancefeedback (compressed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexmaintenancefeedback_pending_lookup ON codexmaintenancefeedback (status, source_kind, source_ref_id)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Codex maintenance feedback table.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5006,6 +5057,7 @@ MIGRATIONS = [
     (72, "Add noteedge graph lookup indexes", v72_add_noteedge_graph_lookup_indexes),
     (73, "Add Fanxiu packet decoded records", v73_add_fanxiu_packet_decoded_records),
     (74, "Add note node version", v74_add_notenode_version),
+    (75, "Add Codex maintenance feedback table", v75_add_codex_maintenance_feedback_table),
 ]
 
 def get_current_version(session: Session) -> int:

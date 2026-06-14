@@ -1,6 +1,7 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 import aiChatPage from './ai-chat'
+import aiAgentsPage from './ai-agents'
 import aiConfigPage from './ai-config'
 import aiEvoMindPage from './ai-evomind'
 import aiGitCommitPage from './ai-git-commit'
@@ -21,6 +22,7 @@ const pages: AppPageDefinition[] = [
   openScoreStudyPage,
   aiConfigPage,
   aiEvoMindPage,
+  aiAgentsPage,
   aiChatPage,
   aiReductionPage,
   aiGitCommitPage,

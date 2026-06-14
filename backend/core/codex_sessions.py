@@ -2447,8 +2447,11 @@ def _run_codex_daily_summary_worker(
         stop_heartbeat()
         failed_at = time.time()
         error_message = str(getattr(exc, "detail", None) or exc)
+        failed_stage = ""
 
         def _mutate_failed(run: CodexDailySummaryRun) -> None:
+            nonlocal failed_stage
+            failed_stage = run.stage
             run.status = "failed"
             run.stage = "failed"
             run.stage_label = "生成失败"
@@ -2458,6 +2461,36 @@ def _run_codex_daily_summary_worker(
             run.updated_at = failed_at
 
         mutate_run(_mutate_failed)
+        try:
+            from backend.core.note_metadata_feedback import record_codex_maintenance_feedback
+
+            with Session(db_engine) as session:
+                failed_run = session.get(CodexDailySummaryRun, run_id)
+                if failed_run is not None:
+                    record_codex_maintenance_feedback(
+                        session,
+                        source_kind="codex_daily_summary",
+                        source_ref_id=failed_run.id,
+                        user_id=failed_run.user_id,
+                        source_date=failed_run.summary_date or target_date_text,
+                        stage=failed_stage or failed_run.stage,
+                        error_message=error_message,
+                        context={
+                            "scope_key": failed_run.scope_key,
+                            "root_key": failed_run.root_key,
+                            "root_dir": failed_run.root_dir or root_dir,
+                            "provider": failed_run.provider,
+                            "generated_by": failed_run.generated_by,
+                            "model": failed_run.model or model or "",
+                            "prompt_version": failed_run.prompt_version,
+                            "thread_count": failed_run.thread_count,
+                            "turn_count": failed_run.turn_count,
+                            "force_requested": failed_run.force_requested,
+                        },
+                    )
+                    session.commit()
+        except Exception:
+            pass
 
 
 def get_codex_daily_summary_latest_run(

@@ -119,6 +119,7 @@ def test_attendance_formula_normalizer_removes_refund_label_from_config_row() ->
     normalized, changed_count = note_sheets_api._normalize_attendance_dual_clockin_refund_formulas(document)
 
     assert changed_count >= 1
+    assert normalized["grid_rows"][2][columns.index("已返款")] == '="第"&返款周期&"周"'
     assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
 
 
@@ -4499,6 +4500,155 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
         persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 5)).first()
         assert persisted is not None
         assert persisted.version == 2
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_questionnaire_sheet_get_reconciles_rows_from_entries(client, session):
+    from backend.api import attendance as attendance_api
+
+    owner = _create_user(session, username="note-sheet-questionnaire-reconcile-owner")
+    source_sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="attendance-summary",
+        sheet_key="courses",
+        title="课程",
+        document_json={
+            "schema_version": 1,
+            "columns": ["课程类型", "课程名称", "在线考勤表", "考勤负责人"],
+            "rows": [
+                [
+                    "禅宗二阶",
+                    "禅宗11期二阶",
+                    {
+                        "value": "20260412禅宗11期二阶",
+                        "link": {"url": "https://www.kdocs.cn/l/zen11-stage2"},
+                    },
+                    "陈坤泽, 白玄度",
+                ],
+                [
+                    "禅宗一阶",
+                    "禅宗12期一阶",
+                    {
+                        "value": "20260412禅宗12期一阶",
+                        "link": {"url": "https://www.kdocs.cn/l/zen12-stage1"},
+                    },
+                    "陈坤泽, Judy chen",
+                ],
+            ],
+        },
+    )
+    data_sheet = SheetDocument(
+        numeric_id=5,
+        scope="notes",
+        owner_type="attendance_questionnaire",
+        owner_key="wjx-data",
+        sheet_key="data",
+        title="问卷数据",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        version=1,
+        document_json={
+            "schema_version": 1,
+            "columns": [
+                "序号",
+                "提交时间",
+                "来源",
+                "课程",
+                "考勤负责人",
+                "学号",
+                "姓名",
+                "修正需求",
+                "补充说明",
+                "处理状态",
+                "AI初判",
+            ],
+            "rows": [[
+                "683",
+                "2026/06/14 12:31:47",
+                "采集系统",
+                {"value": "20260412禅宗12期一阶", "link": {"url": "https://www.kdocs.cn/l/zen12-stage1"}},
+                "Judy chen",
+                "306",
+                "韩羽婷",
+                "旧问题",
+                "",
+                "人工备注保留",
+                "",
+            ]],
+            "grid_rows": [
+                [
+                    "序号",
+                    "提交时间",
+                    "来源",
+                    "课程",
+                    "考勤负责人",
+                    "学号",
+                    "姓名",
+                    "修正需求",
+                    "补充说明",
+                    "处理状态",
+                    "AI初判",
+                ],
+                [
+                    "683",
+                    "2026/06/14 12:31:47",
+                    "采集系统",
+                    {"value": "20260412禅宗12期一阶", "link": {"url": "https://www.kdocs.cn/l/zen12-stage1"}},
+                    "Judy chen",
+                    "306",
+                    "韩羽婷",
+                    "旧问题",
+                    "",
+                    "人工备注保留",
+                    "",
+                ],
+            ],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+    entry = AttendanceWjxDataEntry(
+        activity_id=attendance_api.LOCAL_FEEDBACK_ACTIVITY_ID,
+        seq=683,
+        submitted_at_text="2026/06/14 12:31:47",
+        source="采集系统",
+        source_detail="CodeYun反馈表",
+        course_name="20260412禅宗11期二阶",
+        student_id_text="306",
+        student_name="韩羽婷",
+        correction_request="第九周5阿含经 完成当堂学习",
+        extra_note="",
+        process_status="",
+    )
+    session.add(source_sheet)
+    session.add(data_sheet)
+    session.add(entry)
+    session.commit()
+    session.refresh(data_sheet)
+
+    _override_user(owner)
+    try:
+        response = client.get("/api/note-sheets/sheets/5")
+        assert response.status_code == 200
+        detail = response.json()
+        row = detail["document_json"]["rows"][0]
+        assert row[3] == {
+            "value": "20260412禅宗11期二阶",
+            "link": {"url": "https://www.kdocs.cn/l/zen11-stage2"},
+        }
+        assert row[4] == "白玄度"
+        assert row[7] == "第九周5阿含经 完成当堂学习"
+        assert row[9] == "人工备注保留"
+
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 5)).first()
+        assert persisted is not None
+        assert persisted.version == 2
+        assert persisted.document_json["rows"][0][3]["value"] == "20260412禅宗11期二阶"
+        assert persisted.document_json["rows"][0][4] == "白玄度"
     finally:
         _clear_user_override()
 

@@ -5352,6 +5352,8 @@ def put_fanxiu_data_annotation_scheduler_tasks(
         manual_job_path=_data_annotation_manual_job_state_path(),
         now=datetime.now(),
     )
+    _sync_data_annotation_runtime_runner_to_core()
+    fanxiu_runtime_runner_wake()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
             FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))

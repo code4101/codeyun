@@ -30,6 +30,13 @@
         >
           哼唱转谱
         </button>
+        <button
+          type="button"
+          :class="{ active: commandMode === 'multitrack' }"
+          @click="activateMultitrackMode"
+        >
+          真实分轨 ZIP
+        </button>
       </div>
 
       <div v-if="commandMode === 'separate'" class="command-fields">
@@ -56,6 +63,7 @@
       </div>
 
       <div v-else class="command-fields">
+        <template v-if="commandMode === 'humming'">
         <el-button
           :type="isRecording ? 'danger' : 'default'"
           :disabled="task?.running || !canRecordHumming"
@@ -80,6 +88,112 @@
           生成主旋律
         </el-button>
         <audio v-if="recordedHummingUrl" class="recording-preview" :src="recordedHummingUrl" controls />
+        </template>
+        <template v-else>
+          <label class="file-picker command-file">
+            <input type="file" accept=".zip,application/zip,application/x-zip-compressed" @change="handleMultitrackZipChange" />
+            <span>{{ multitrackZipFile ? multitrackZipFile.name : '选择真实分轨 ZIP' }}</span>
+          </label>
+          <el-input
+            v-model="multitrackZipUrl"
+            class="multitrack-url-input"
+            clearable
+            placeholder="或粘贴 ZIP 直链"
+          />
+          <el-select v-model="selectedMultitrackSourceId" class="engine-select multitrack-source-select" title="素材来源">
+            <el-option label="手动下载的分轨包" value="" />
+            <el-option
+              v-for="source in multitrackSources"
+              :key="source.id"
+              :label="source.name"
+              :value="source.id"
+            />
+          </el-select>
+          <el-button type="primary" :disabled="(!multitrackZipFile && !multitrackZipUrl.trim()) || multitrackImporting" :loading="multitrackImporting" @click="importSelectedMultitrackZip">
+            导入试听
+          </el-button>
+        </template>
+      </div>
+    </section>
+
+    <section v-if="commandMode === 'multitrack'" class="multitrack-source-panel">
+      <div class="multitrack-source-head">
+        <strong>真实分轨素材来源</strong>
+        <span>优先选完整真实歌曲；需要听清单件乐器时，再用独奏轨/古典数据集。</span>
+      </div>
+      <div class="multitrack-source-list">
+        <a
+          v-for="source in multitrackSources"
+          :key="source.id"
+          class="multitrack-source-card"
+          :href="source.url"
+          target="_blank"
+          rel="noreferrer"
+        >
+          <span>{{ source.kind }}</span>
+          <strong>{{ source.name }}</strong>
+          <em v-if="source.fit">{{ source.fit }}</em>
+          <p>{{ source.import_hint }}</p>
+        </a>
+      </div>
+      <div v-if="featuredMultitrackWorks.length" class="multitrack-work-list">
+        <div class="multitrack-work-title">推荐先听</div>
+        <div
+          v-for="work in featuredMultitrackWorks"
+          :key="work.key"
+          class="multitrack-work-item"
+          :class="{ active: selectedMultitrackWorkKey === work.key }"
+          role="button"
+          tabindex="0"
+          @click="selectMultitrackWork(work.key)"
+          @keydown.enter="selectMultitrackWork(work.key)"
+        >
+          <div class="multitrack-work-main">
+            <span>{{ work.level }}</span>
+            <strong>{{ work.title }}</strong>
+            <em>{{ work.focus }}</em>
+          </div>
+          <div class="multitrack-work-instruments">
+            <span v-for="instrument in work.instruments" :key="`${work.title}:${instrument}`">{{ instrument }}</span>
+          </div>
+          <p>{{ work.why }}</p>
+          <p>{{ work.study }}</p>
+          <p class="style-bridge">{{ work.style_bridge }}</p>
+          <a :href="work.sourceUrl" target="_blank" rel="noreferrer" @click.stop>{{ work.sourceName }}</a>
+        </div>
+      </div>
+      <div v-if="selectedMultitrackWork" class="multitrack-study-panel">
+        <div class="multitrack-study-head">
+          <div>
+            <span>{{ selectedMultitrackWork.sourceName }}</span>
+            <strong>{{ selectedMultitrackWork.title }}</strong>
+          </div>
+          <div class="multitrack-study-actions">
+            <button type="button" @click="copyPrompt(selectedMultitrackStudyText)">复制学习清单</button>
+            <button type="button" @click="openSelectedMultitrackSource">打开下载页</button>
+          </div>
+        </div>
+        <div class="multitrack-study-grid">
+          <div>
+            <span>为什么选</span>
+            <p>{{ selectedMultitrackWork.why }}</p>
+          </div>
+          <div>
+            <span>导入方式</span>
+            <p>{{ selectedMultitrackImportHint }}</p>
+          </div>
+          <div>
+            <span>拆听顺序</span>
+            <p>{{ selectedMultitrackWork.study }}</p>
+          </div>
+          <div>
+            <span>风格迁移</span>
+            <p>{{ selectedMultitrackWork.style_bridge }}</p>
+          </div>
+        </div>
+        <div class="multitrack-study-steps">
+          <span v-for="step in selectedMultitrackSteps" :key="step">{{ step }}</span>
+        </div>
       </div>
     </section>
 
@@ -179,6 +293,234 @@
             </div>
           </div>
         </div>
+
+        <section class="creative-brief-panel">
+          <div class="creative-brief-head">
+            <div>
+              <div class="creative-title">音乐描述 / Suno 提示词</div>
+              <div class="creative-meta">按当前音频和分轨结果生成，可继续手工改写成古风、纯音乐、影视配乐方向。</div>
+            </div>
+            <el-button size="small" plain :loading="creativeBriefLoading" @click="loadCreativeBrief">
+              生成描述
+            </el-button>
+          </div>
+          <div v-if="manualCopyText" class="manual-copy-panel">
+            <div class="manual-copy-head">
+              <span>浏览器限制自动复制，已保留文本</span>
+              <button type="button" @click="manualCopyText = ''">收起</button>
+            </div>
+            <textarea :value="manualCopyText" readonly @focus="$event.target.select()" />
+          </div>
+          <div v-if="creativeBrief" class="creative-brief-body">
+            <p>{{ creativeBrief.description_zh }}</p>
+            <div class="creative-tags">
+              <span v-for="tag in creativeBrief.tags" :key="tag">{{ tag }}</span>
+            </div>
+            <div v-if="creativeFeatureItems.length" class="feature-grid">
+              <div v-for="item in creativeFeatureItems" :key="item.label">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
+            <div v-if="creativeStyleProfile" class="style-profile-panel">
+              <div class="style-profile-head">
+                <div>
+                  <span>推荐方向</span>
+                  <strong>{{ creativeStyleProfile.best_fit }}</strong>
+                </div>
+                <button type="button" @click="copyPrompt(creativeStyleProfileCopyText)">复制画像</button>
+              </div>
+              <div v-if="creativeStyleProfile.analysis_tags?.length" class="style-profile-tags">
+                <span v-for="tag in creativeStyleProfile.analysis_tags" :key="`profile:${tag}`">{{ tag }}</span>
+              </div>
+              <div v-if="creativeStyleProfile.why?.length" class="style-profile-reasons">
+                <p v-for="reason in creativeStyleProfile.why" :key="reason">{{ reason }}</p>
+              </div>
+              <div v-if="creativeStyleScores.length" class="style-score-list">
+                <div v-for="item in creativeStyleScores" :key="item.name">
+                  <span>{{ item.name }}</span>
+                  <strong>{{ item.score }}</strong>
+                </div>
+              </div>
+            </div>
+            <div v-if="creativeSections.length" class="section-strip">
+              <div
+                v-for="section in creativeSections"
+                :key="`${section.name}:${section.start_second}`"
+                class="section-segment"
+                :class="`energy-${section.energy}`"
+                :style="{ flexGrow: section.width }"
+              >
+                <span>{{ section.name }}</span>
+                <strong>{{ section.energy }}</strong>
+              </div>
+            </div>
+            <div v-if="creativeStyleDirections.length" class="style-direction-row">
+              <button
+                v-for="direction in creativeStyleDirections"
+                :key="direction.key"
+                type="button"
+                :class="{ active: direction.key === selectedCreativeStyleKey }"
+                @click="selectedCreativeStyleKey = direction.key"
+              >
+                {{ direction.name }}
+              </button>
+            </div>
+            <div v-if="selectedCreativeStyle" class="style-direction-meta">
+              <span>{{ selectedCreativeStyle.use_case }}</span>
+              <strong>{{ selectedCreativeStyle.palette.join(' / ') }}</strong>
+            </div>
+            <div v-if="creativeSunoFieldItems.length" class="suno-field-grid">
+              <div v-for="item in creativeSunoFieldItems" :key="item.label" class="suno-field-card">
+                <div class="prompt-label">
+                  <span>{{ item.label }}</span>
+                  <button type="button" @click="copyPrompt(item.copyText)">复制</button>
+                </div>
+                <p>{{ item.text }}</p>
+              </div>
+            </div>
+            <div v-if="creativeStylePresets.length" class="style-preset-panel">
+              <div class="prompt-record-title">固定风格路线</div>
+              <div class="style-preset-tabs">
+                <button
+                  v-for="preset in creativeStylePresets"
+                  :key="preset.key"
+                  type="button"
+                  :class="{ active: preset.key === selectedCreativePreset?.key }"
+                  @click="selectedCreativePresetKey = preset.key"
+                >
+                  {{ preset.name }}
+                </button>
+              </div>
+              <div v-if="selectedCreativePreset" class="style-preset-detail">
+                <div class="style-preset-main">
+                  <div>
+                    <strong>{{ selectedCreativePreset.name }}</strong>
+                    <span>{{ selectedCreativePreset.fit }}</span>
+                  </div>
+                  <div class="platform-open-actions">
+                    <button type="button" @click="copyAndOpenPreset(selectedCreativePreset, 'suno')">投到 Suno</button>
+                    <button type="button" @click="copyAndOpenPreset(selectedCreativePreset, 'udio')">投到 Udio</button>
+                  </div>
+                </div>
+                <div class="style-preset-palette">
+                  <span v-for="item in selectedCreativePreset.palette" :key="`${selectedCreativePreset.key}:palette:${item}`">{{ item }}</span>
+                </div>
+                <div class="style-preset-grid">
+                  <div>
+                    <span>回听检查</span>
+                    <p>{{ selectedCreativePreset.listen_check.join(' / ') }}</p>
+                  </div>
+                  <div>
+                    <span>Suno Style</span>
+                    <p>{{ selectedCreativePreset.suno_style }}</p>
+                  </div>
+                </div>
+                <div class="creative-recipe-actions">
+                  <button type="button" @click="copyPrompt(selectedCreativePreset.suno_prompt)">复制 Suno</button>
+                  <button type="button" @click="copyPrompt(presetPackageText(selectedCreativePreset, 'suno'))">复制 Suno 包</button>
+                  <button type="button" @click="copyPrompt(selectedCreativePreset.udio_prompt)">复制 Udio</button>
+                  <button type="button" @click="copyPrompt(presetPackageText(selectedCreativePreset, 'udio'))">复制 Udio 包</button>
+                  <button type="button" @click="copyPrompt(selectedCreativePreset.negative)">复制规避项</button>
+                  <button type="button" @click="savePresetPromptVersion(selectedCreativePreset, 'suno')">保存 Suno</button>
+                  <button type="button" @click="savePresetPromptVersion(selectedCreativePreset, 'udio')">保存 Udio</button>
+                </div>
+              </div>
+            </div>
+            <div v-if="creativeRecipes.length" class="creative-recipe-list">
+              <div class="prompt-record-title">创作方案</div>
+              <div v-for="recipe in creativeRecipes" :key="recipe.key" class="creative-recipe-item">
+                <div class="creative-recipe-head">
+                  <div>
+                    <strong>{{ recipe.title }}</strong>
+                    <span>{{ recipe.goal }}</span>
+                  </div>
+                  <div class="platform-open-actions">
+                    <button type="button" @click="copyAndOpenRecipe(recipe, 'suno')">投到 Suno</button>
+                    <button type="button" @click="copyAndOpenRecipe(recipe, 'udio')">投到 Udio</button>
+                  </div>
+                </div>
+                <p>{{ recipe.hook }}</p>
+                <div class="creative-recipe-tags">
+                  <span v-for="tag in recipe.style_tags" :key="`${recipe.key}:tag:${tag}`">{{ tag }}</span>
+                </div>
+                <div class="creative-recipe-columns">
+                  <div>
+                    <span>配器</span>
+                    <p>{{ recipe.instrumentation.join(' / ') }}</p>
+                  </div>
+                  <div>
+                    <span>先听</span>
+                    <p>{{ recipe.listen_first.join(' / ') }}</p>
+                  </div>
+                </div>
+                <ol class="creative-recipe-moves">
+                  <li v-for="move in recipe.arrangement_moves" :key="`${recipe.key}:move:${move}`">{{ move }}</li>
+                </ol>
+                <div class="creative-recipe-actions">
+                  <button type="button" @click="saveRecipePromptVersion(recipe, 'suno')">保存 Suno</button>
+                  <button type="button" @click="saveRecipePromptVersion(recipe, 'udio')">保存 Udio</button>
+                  <button type="button" @click="copyPrompt(recipePackageText(recipe, 'suno'))">复制 Suno 包</button>
+                  <button type="button" @click="copyPrompt(recipe.platform_prompts.suno_style || '')">复制 Style</button>
+                  <button type="button" @click="copyPrompt(recipe.platform_prompts.udio_prompt || '')">复制 Udio</button>
+                  <button type="button" @click="copyPrompt(recipePackageText(recipe, 'udio'))">复制 Udio 包</button>
+                  <button type="button" @click="copyPrompt(recipe.platform_prompts.negative || '')">复制规避项</button>
+                </div>
+              </div>
+            </div>
+            <div class="prompt-grid">
+              <div>
+                <div class="prompt-label">
+                  <span>中文提示词</span>
+                  <span class="prompt-actions">
+                    <button type="button" @click="copyPrompt(currentCreativePromptZh)">复制</button>
+                    <button type="button" @click="saveCurrentCreativePrompt">保存</button>
+                  </span>
+                </div>
+                <p>{{ currentCreativePromptZh }}</p>
+              </div>
+              <div>
+                <div class="prompt-label">
+                  <span>English Prompt</span>
+                  <span class="prompt-actions">
+                    <button type="button" @click="copyPrompt(currentCreativePromptEn)">复制</button>
+                    <button type="button" @click="saveCurrentCreativePrompt">保存</button>
+                  </span>
+                </div>
+                <p>{{ currentCreativePromptEn }}</p>
+              </div>
+            </div>
+            <div v-if="creativeArrangementPlan.length" class="arrangement-plan">
+              <div class="prompt-record-title">编曲拆解</div>
+              <div v-for="item in creativeArrangementPlan" :key="item.section" class="arrangement-item">
+                <span>{{ item.section }} · {{ item.energy }}</span>
+                <p>{{ item.listen }}</p>
+                <strong>{{ item.arrange }}</strong>
+              </div>
+            </div>
+            <div v-if="creativeStemInsights.length" class="stem-insight-list">
+              <div class="prompt-record-title">分轨听法</div>
+              <div v-for="item in creativeStemInsights" :key="item.stem" class="stem-insight-item">
+                <div>
+                  <strong>{{ item.label }}</strong>
+                  <span>{{ item.role }}</span>
+                </div>
+                <p>{{ item.focus }}</p>
+                <p>{{ item.usage }}</p>
+              </div>
+            </div>
+            <div v-if="creativePromptRecords.length" class="prompt-record-list">
+              <div class="prompt-record-title">已保存版本</div>
+              <div v-for="record in creativePromptRecords" :key="record.id" class="prompt-record-item">
+                <div>
+                  <strong>{{ record.name }}</strong>
+                  <span>{{ formatDate(record.created_at) }} · {{ record.source }}</span>
+                </div>
+                <button type="button" @click="copyPrompt(record.prompt_zh)">复制</button>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <section v-if="scoreInfos.length || isPianoStemScoreKind(selectedScoreKind)" class="score-panel">
           <div class="score-toolbar">
@@ -479,21 +821,32 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Microphone, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import NoteSplitView from '@/components/NoteSplitView.vue'
 import {
   getMusicInstrumentRegistry,
+  getMusicJobCreativeBrief,
   getMusicSeparationTask,
   getMusicToolInfo,
+  importMultitrackZip,
+  importMultitrackZipUrl,
+  listMultitrackLibrary,
+  listMusicJobCreativePrompts,
   listMusicJobScores,
   listMusicJobs,
   rerunMusicJob,
+  saveMusicJobCreativePrompt,
   startHummingTranscription,
   startMusicSeparation,
   updateMusicJob,
   type MusicInstrumentRecord,
+  type MusicAudioFile,
+  type MusicCreativeBrief,
+  type MusicCreativePromptRecord,
   type MusicInstrumentRegistry,
+  type MultitrackLibrarySource,
   type MusicSeparationEngine,
   type MusicJob,
   type MusicScoreInfo,
@@ -556,9 +909,21 @@ interface InstrumentPivotRow {
   cells: Record<string, InstrumentCellGroup[]>
 }
 
+interface CreativeSection {
+  name: string
+  start_second: number
+  end_second: number
+  energy: string
+  average: number
+  width: number
+}
+
 type ScoreKind = 'piano_solo_score' | 'piano_stem_transcription' | 'piano_stem_transcription_clean' | 'melody_skeleton'
 type MusicToolView = 'workspace' | 'instruments'
-type CommandMode = 'separate' | 'humming'
+type CommandMode = 'separate' | 'humming' | 'multitrack'
+type CreativeRecipe = MusicCreativeBrief['creative_recipes'][number]
+type CreativeStylePreset = NonNullable<MusicCreativeBrief['style_presets']>[number]
+type GenerationPlatform = 'suno' | 'udio'
 type InstrumentColumnMode = 'modern' | 'bayin'
 
 const STEM_LABELS: Record<MusicStem, string> = {
@@ -687,12 +1052,23 @@ const MUSESCORE_GROUP_LABELS: Record<string, string> = {
 }
 
 const DEFAULT_COLLAPSED_INSTRUMENT_ROLES = ['旋律', '低音', '节奏', '和声', '织体', '未知']
+const GENERATION_PLATFORM_URLS: Record<GenerationPlatform, string> = {
+  suno: 'https://suno.com/create',
+  udio: 'https://www.udio.com/create',
+}
 
 const activeView = ref<MusicToolView>('workspace')
 const commandMode = ref<CommandMode>('separate')
+const route = useRoute()
 const toolInfo = ref<MusicToolInfo | null>(null)
 const selectedFile = ref<File | null>(null)
 const hummingFile = ref<File | null>(null)
+const multitrackZipFile = ref<File | null>(null)
+const multitrackZipUrl = ref('')
+const multitrackImporting = ref(false)
+const multitrackSources = ref<MultitrackLibrarySource[]>([])
+const selectedMultitrackSourceId = ref('')
+const selectedMultitrackWorkKey = ref('')
 const hummingTempoBpm = ref(96)
 const hummingBeatsPerBar = ref(4)
 const isRecording = ref(false)
@@ -719,6 +1095,13 @@ const scoreLoading = ref(false)
 const selectedScoreKind = ref<ScoreKind>('piano_solo_score')
 const isScorePlaying = ref(false)
 const scoreCurrentTime = ref(0)
+const creativeBrief = ref<MusicCreativeBrief | null>(null)
+const creativeBriefLoading = ref(false)
+const creativePromptRecords = ref<MusicCreativePromptRecord[]>([])
+const creativePromptSaving = ref(false)
+const selectedCreativeStyleKey = ref('base')
+const selectedCreativePresetKey = ref('')
+const manualCopyText = ref('')
 const workspacePrefs = ref<StoredWorkspace>({})
 const persistTimer = ref<number | null>(null)
 const isRestoringWorkspace = ref(false)
@@ -740,6 +1123,147 @@ const expandedInstrumentCellGroups = ref<string[]>([])
 const tracks = reactive<StemTrack[]>(DEFAULT_TRACKS.map((track) => ({ ...track })))
 
 const activeJob = computed(() => jobs.value.find((job) => job.job_id === selectedJobId.value) || null)
+const creativeFeatureItems = computed(() => {
+  const features = creativeBrief.value?.audio_features || {}
+  if (!features.available) return []
+  const items = [
+    { label: '估计 BPM', value: features.estimated_bpm },
+    { label: '可能调性', value: features.estimated_key_zh || features.estimated_key },
+    { label: '能量', value: features.energy_label },
+    { label: '情绪', value: features.mood_label },
+    { label: '音色明暗', value: features.brightness_label },
+    { label: '结构', value: features.arrangement_shape },
+    { label: '峰值', value: typeof features.peak_second === 'number' ? `${features.peak_second}s` : '' },
+    { label: '动态范围', value: features.dynamic_range },
+    { label: '低频占比', value: features.low_frequency_ratio },
+    { label: '静音比例', value: features.silence_ratio },
+    { label: '分析时长', value: features.analyzed_seconds ? `${features.analyzed_seconds}s` : '' },
+  ]
+  return items.filter((item) => item.value !== null && item.value !== undefined && item.value !== '')
+})
+const creativeSections = computed<CreativeSection[]>(() => {
+  const sections = creativeBrief.value?.audio_features?.sections
+  if (!Array.isArray(sections)) return []
+  return sections
+    .map((section) => {
+      if (!section || typeof section !== 'object') return null
+      const item = section as Record<string, unknown>
+      return {
+        name: String(item.name || ''),
+        start_second: Number(item.start_second || 0),
+        end_second: Number(item.end_second || 0),
+        energy: String(item.energy || ''),
+        average: Number(item.average || 0),
+        width: Math.max(0.1, Number(item.width || 0.25)),
+      }
+    })
+    .filter((section): section is CreativeSection => Boolean(section?.name && section.energy))
+})
+const creativeStyleProfile = computed(() => creativeBrief.value?.style_profile || null)
+const creativeStyleScores = computed(() => creativeStyleProfile.value?.style_scores || [])
+const creativeStyleProfileCopyText = computed(() => {
+  const profile = creativeStyleProfile.value
+  if (!profile) return ''
+  const blueprint = profile.prompt_blueprint || {}
+  const style = Array.isArray(blueprint.suno_style) ? blueprint.suno_style.join(', ') : ''
+  const reasons = Array.isArray(profile.why) ? profile.why.join('；') : ''
+  const workflow = Array.isArray(profile.workflow) ? profile.workflow.join(' / ') : ''
+  return [
+    `推荐方向：${profile.best_fit || ''}`,
+    style ? `Style：${style}` : '',
+    blueprint.prompt_core_zh ? `中文核心：${blueprint.prompt_core_zh}` : '',
+    blueprint.prompt_core_en ? `English core: ${blueprint.prompt_core_en}` : '',
+    reasons ? `原因：${reasons}` : '',
+    workflow ? `流程：${workflow}` : '',
+  ].filter(Boolean).join('\n')
+})
+const creativeStyleDirections = computed(() => creativeBrief.value?.style_directions || [])
+const selectedCreativeStyle = computed(() => {
+  const directions = creativeStyleDirections.value
+  return directions.find((direction) => direction.key === selectedCreativeStyleKey.value) || directions[0] || null
+})
+const currentCreativePromptZh = computed(() => selectedCreativeStyle.value?.prompt_zh || creativeBrief.value?.suno_prompt_zh || '')
+const currentCreativePromptEn = computed(() => selectedCreativeStyle.value?.prompt_en || creativeBrief.value?.suno_prompt_en || '')
+const creativeStemInsights = computed(() => creativeBrief.value?.stem_insights || [])
+const creativeArrangementPlan = computed(() => creativeBrief.value?.arrangement_plan || [])
+const creativeRecipes = computed(() => creativeBrief.value?.creative_recipes || [])
+const creativeStylePresets = computed(() => creativeBrief.value?.style_presets || [])
+const selectedCreativePreset = computed(() => {
+  const presets = creativeStylePresets.value
+  return presets.find((preset) => preset.key === selectedCreativePresetKey.value) || presets[0] || null
+})
+const creativeSunoFieldItems = computed(() => {
+  const fields = creativeBrief.value?.suno_fields || {}
+  const join = (items: unknown) => Array.isArray(items) ? items.map((item) => String(item || '').trim()).filter(Boolean).join(', ') : ''
+  const rows = [
+    { label: '标题候选', text: join(fields.title_ideas) },
+    { label: 'Style Tags', text: join(fields.style_tags) },
+    { label: 'Mood / Energy', text: join(fields.mood_tags) },
+    { label: '结构约束', text: join(fields.structure_tags) },
+    { label: '规避项', text: String(fields.negative_prompt || '') },
+    { label: '纯音乐提示', text: String(fields.instrumental_hint || '') },
+  ]
+  return rows
+    .filter((row) => row.text)
+    .map((row) => ({ ...row, copyText: row.text }))
+})
+const featuredMultitrackWorks = computed(() =>
+  multitrackSources.value.flatMap((source) =>
+    (source.featured_works || []).map((work, index) => ({
+      ...work,
+      key: `${source.id}:${index}:${work.title}`,
+      sourceId: source.id,
+      sourceName: source.name,
+      sourceUrl: source.url,
+      sourceKind: source.kind,
+      sourceHint: source.import_hint,
+    })),
+  ),
+)
+const selectedMultitrackWork = computed(() =>
+  featuredMultitrackWorks.value.find((work) => work.key === selectedMultitrackWorkKey.value) || featuredMultitrackWorks.value[0] || null,
+)
+const selectedMultitrackImportHint = computed(() => {
+  const work = selectedMultitrackWork.value
+  if (!work) return ''
+  if (work.sourceId === 'urmp') {
+    return '下载数据集里对应 piece 的 individual audio / assembled mix / MIDI，整理成 ZIP 后导入；它最适合古典乐器独听。'
+  }
+  if (work.sourceId === 'telefunken-live-from-the-lab') {
+    return '打开 Live From The Lab 对应演出页，下载 multitrack 包；导入后优先从鼓、贝斯、和声乐器、人声/主奏逐步打开。'
+  }
+  if (work.sourceId === 'cambridge-mt') {
+    return '打开 Cambridge-MT 曲库，下载 Full Multitrack ZIP；如果页面只提供工程包，也可把 wav/aiff 轨道重新压成 ZIP 后导入。'
+  }
+  return work.sourceHint || '下载或整理包含多条音频轨的 ZIP，然后在上方选择来源并导入试听。'
+})
+const selectedMultitrackSteps = computed(() => {
+  const work = selectedMultitrackWork.value
+  if (!work) return []
+  return [
+    `1. 打开 ${work.sourceName} 下载页。`,
+    '2. 下载 Full Multitrack / stems / individual tracks。没有直链时手动下载，不绕过源站限制。',
+    '3. 把所有 wav/mp3/aiff 音轨放进一个 ZIP，在上方导入试听。',
+    '4. 先只开低音/节奏，再加和声层，最后加主奏或人声，记录每轨职责。',
+  ]
+})
+const selectedMultitrackStudyText = computed(() => {
+  const work = selectedMultitrackWork.value
+  if (!work) return ''
+  return [
+    `真实分轨学习素材：${work.title}`,
+    `来源：${work.sourceName}`,
+    `下载页：${work.sourceUrl}`,
+    `类型：${work.sourceKind}`,
+    `重点：${work.focus}`,
+    `乐器：${work.instruments.join(' / ')}`,
+    `为什么选：${work.why}`,
+    `导入方式：${selectedMultitrackImportHint.value}`,
+    `拆听顺序：${work.study}`,
+    `风格迁移：${work.style_bridge}`,
+    ...selectedMultitrackSteps.value,
+  ].join('\n')
+})
 const toolStatusText = computed(() => {
   if (!toolInfo.value?.demucs_installed) {
     return '分轨工具未安装'
@@ -1172,8 +1696,24 @@ const buildJianpuDraft = (notes: ScoreNote[]) => {
 
 const getTrack = (stem: MusicStem) => tracks.find((track) => track.key === stem)
 
+const trackLabelForFile = (file: MusicAudioFile) => file.label || STEM_LABELS[file.stem] || file.stem
+
+const ensureTracksForAudioFiles = () => {
+  const existing = new Set(tracks.map((track) => track.key))
+  for (const file of audioFiles.value) {
+    if (!file.stem || existing.has(file.stem)) continue
+    tracks.push({
+      key: file.stem,
+      label: trackLabelForFile(file),
+      enabled: file.stem !== 'original',
+      volume: 0.82,
+    })
+    existing.add(file.stem)
+  }
+}
+
 const getSeparatedTracks = () =>
-  SEPARATED_STEMS.map((stem) => getTrack(stem)).filter((track): track is StemTrack => Boolean(track))
+  tracks.filter((track) => track.key !== 'original')
 
 const defaultSeparatedEnabledSnapshot = () =>
   Object.fromEntries(SEPARATED_STEMS.map((stem) => [stem, true])) as Record<MusicStem, boolean>
@@ -1369,12 +1909,12 @@ const schedulePersistWorkspace = () => {
 
 const applyStoredJobWorkspace = (jobId: string) => {
   const jobPrefs = workspacePrefs.value.jobs?.[jobId]
-  for (const defaultTrack of DEFAULT_TRACKS) {
-    const track = getTrack(defaultTrack.key)
+  for (const track of tracks) {
+    const defaultTrack = DEFAULT_TRACKS.find((item) => item.key === track.key)
     if (!track) continue
-    const storedTrack = jobPrefs?.tracks?.[defaultTrack.key]
-    track.enabled = typeof storedTrack?.enabled === 'boolean' ? storedTrack.enabled : defaultTrack.enabled
-    track.volume = typeof storedTrack?.volume === 'number' ? storedTrack.volume : defaultTrack.volume
+    const storedTrack = jobPrefs?.tracks?.[track.key]
+    track.enabled = typeof storedTrack?.enabled === 'boolean' ? storedTrack.enabled : defaultTrack?.enabled ?? track.enabled
+    track.volume = typeof storedTrack?.volume === 'number' ? storedTrack.volume : defaultTrack?.volume ?? track.volume
   }
   if (getTrack('original')?.enabled) {
     for (const separatedTrack of getSeparatedTracks()) {
@@ -1409,9 +1949,13 @@ const selectJob = async (job: MusicJob) => {
   persistWorkspaceNow()
   stopScorePlayback()
   scoreCurrentTime.value = 0
+  creativeBrief.value = null
+  creativePromptRecords.value = []
+  selectedCreativeStyleKey.value = 'base'
   isRestoringWorkspace.value = true
   selectedJobId.value = job.job_id
   resetPlayback({ resetTime: false })
+  ensureTracksForAudioFiles()
   applyStoredJobWorkspace(job.job_id)
   await loadScore(job.job_id)
   await nextTick()
@@ -1425,6 +1969,186 @@ const selectJob = async (job: MusicJob) => {
   }
   isRestoringWorkspace.value = false
   persistWorkspaceNow()
+}
+
+const loadCreativeBrief = async () => {
+  if (!activeJob.value || creativeBriefLoading.value) return
+  creativeBriefLoading.value = true
+  try {
+    creativeBrief.value = await getMusicJobCreativeBrief(activeJob.value.job_id)
+    selectedCreativeStyleKey.value = creativeBrief.value.style_directions[0]?.key || 'base'
+    selectedCreativePresetKey.value = creativeBrief.value.style_presets?.[0]?.key || ''
+    await loadCreativePromptRecords()
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('生成音乐描述失败')
+  } finally {
+    creativeBriefLoading.value = false
+  }
+}
+
+const loadCreativePromptRecords = async () => {
+  if (!activeJob.value) {
+    creativePromptRecords.value = []
+    return
+  }
+  try {
+    const payload = await listMusicJobCreativePrompts(activeJob.value.job_id)
+    creativePromptRecords.value = payload.records
+  } catch (error) {
+    console.error(error)
+    creativePromptRecords.value = []
+  }
+}
+
+const saveCreativePromptVersion = async (name: string, promptZh: string, promptEn: string | null, source: string) => {
+  if (!activeJob.value || !creativeBrief.value || creativePromptSaving.value) return
+  creativePromptSaving.value = true
+  try {
+    const record = await saveMusicJobCreativePrompt(activeJob.value.job_id, {
+      name,
+      prompt_zh: promptZh,
+      prompt_en: promptEn,
+      source,
+      audio_features: creativeBrief.value.audio_features,
+    })
+    creativePromptRecords.value = [record, ...creativePromptRecords.value.filter((item) => item.id !== record.id)]
+    ElMessage.success('已保存提示词版本')
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('保存提示词失败')
+  } finally {
+    creativePromptSaving.value = false
+  }
+}
+
+const saveCurrentCreativePrompt = async () => {
+  const style = selectedCreativeStyle.value
+  await saveCreativePromptVersion(style?.name || '当前提示词', currentCreativePromptZh.value, currentCreativePromptEn.value, style?.key || 'brief')
+}
+
+const recipePrompt = (recipe: CreativeRecipe, platform: GenerationPlatform) => {
+  if (platform === 'udio') {
+    return String(recipe.platform_prompts.udio_prompt || recipe.platform_prompts.suno_prompt || recipe.hook || '').trim()
+  }
+  return String(recipe.platform_prompts.suno_prompt || recipe.hook || '').trim()
+}
+
+const recipeStyle = (recipe: CreativeRecipe) => String(recipe.platform_prompts.suno_style || '').trim()
+
+const presetPrompt = (preset: CreativeStylePreset, platform: GenerationPlatform) => {
+  if (platform === 'udio') return String(preset.udio_prompt || preset.suno_prompt || '').trim()
+  return String(preset.suno_prompt || '').trim()
+}
+
+const titleIdeasText = () => {
+  const ideas = creativeBrief.value?.suno_fields?.title_ideas
+  if (!Array.isArray(ideas)) return ''
+  return ideas.map((item) => String(item || '').trim()).filter(Boolean).join(' / ')
+}
+
+const presetPackageText = (preset: CreativeStylePreset, platform: GenerationPlatform) => {
+  const prompt = presetPrompt(preset, platform)
+  const rows = [
+    `平台：${platform.toUpperCase()}`,
+    `路线：${preset.name}`,
+    titleIdeasText() ? `标题候选：${titleIdeasText()}` : '',
+    platform === 'suno' && preset.suno_style ? `Style：${preset.suno_style}` : '',
+    prompt ? `Prompt：${prompt}` : '',
+    preset.negative ? `Negative：${preset.negative}` : '',
+    preset.listen_check?.length ? `回听检查：${preset.listen_check.join(' / ')}` : '',
+    preset.copy_order?.length ? `投放顺序：${preset.copy_order.join(' -> ')}` : '',
+  ]
+  return rows.filter(Boolean).join('\n')
+}
+
+const recipePackageText = (recipe: CreativeRecipe, platform: GenerationPlatform) => {
+  const prompt = recipePrompt(recipe, platform)
+  const style = recipeStyle(recipe)
+  const rows = [
+    `平台：${platform.toUpperCase()}`,
+    `方案：${recipe.title}`,
+    titleIdeasText() ? `标题候选：${titleIdeasText()}` : '',
+    platform === 'suno' && style ? `Style：${style}` : '',
+    prompt ? `Prompt：${prompt}` : '',
+    recipe.platform_prompts.negative ? `Negative：${recipe.platform_prompts.negative}` : '',
+    recipe.listen_first?.length ? `先听：${recipe.listen_first.join(' / ')}` : '',
+    recipe.arrangement_moves?.length ? `编曲动作：${recipe.arrangement_moves.join(' / ')}` : '',
+  ]
+  return rows.filter(Boolean).join('\n')
+}
+
+const saveRecipePromptVersion = async (recipe: CreativeRecipe, platform: GenerationPlatform) => {
+  const prompt = recipePackageText(recipe, platform)
+  if (!prompt) return
+  const style = platform === 'suno' ? recipeStyle(recipe) : null
+  await saveCreativePromptVersion(
+    `${recipe.title} · ${platform.toUpperCase()}`,
+    prompt,
+    style,
+    `recipe:${recipe.key}:${platform}`,
+  )
+}
+
+const savePresetPromptVersion = async (preset: CreativeStylePreset, platform: GenerationPlatform) => {
+  const prompt = presetPackageText(preset, platform)
+  if (!prompt) return
+  const style = platform === 'suno' ? String(preset.suno_style || '').trim() : null
+  await saveCreativePromptVersion(
+    `${preset.name} · ${platform.toUpperCase()}`,
+    prompt,
+    style,
+    `preset:${preset.key}:${platform}`,
+  )
+}
+
+const openGenerationPlatform = (platform: GenerationPlatform) => {
+  window.open(GENERATION_PLATFORM_URLS[platform], '_blank', 'noreferrer')
+}
+
+const copyAndOpenRecipe = async (recipe: CreativeRecipe, platform: GenerationPlatform) => {
+  const prompt = recipePackageText(recipe, platform)
+  if (!prompt) return
+  await copyPrompt(prompt)
+  openGenerationPlatform(platform)
+}
+
+const copyAndOpenPreset = async (preset: CreativeStylePreset, platform: GenerationPlatform) => {
+  const prompt = presetPackageText(preset, platform)
+  if (!prompt) return
+  await copyPrompt(prompt)
+  openGenerationPlatform(platform)
+}
+
+const copyPrompt = async (text: string) => {
+  const value = String(text || '').trim()
+  if (!value) return
+  try {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API unavailable')
+      }
+      await navigator.clipboard.writeText(value)
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = value
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      textarea.style.top = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      const ok = document.execCommand('copy')
+      textarea.remove()
+      if (!ok) throw new Error('Fallback copy failed')
+    }
+    manualCopyText.value = ''
+    ElMessage.success('已复制提示词')
+  } catch (error) {
+    console.error(error)
+    manualCopyText.value = value
+    ElMessage.warning('浏览器限制自动复制，已展开文本')
+  }
 }
 
 const renameHistoryJob = async (job: MusicJob) => {
@@ -1588,6 +2312,73 @@ const resumeJobPolling = async (job: MusicJob) => {
 const handleFileChange = (event: Event) => {
   const input = event.target as HTMLInputElement
   selectedFile.value = input.files?.[0] || null
+}
+
+const loadMultitrackSources = async () => {
+  if (multitrackSources.value.length) return
+  try {
+    const payload = await listMultitrackLibrary()
+    multitrackSources.value = payload.sources
+    if (!selectedMultitrackWorkKey.value) {
+      const firstSource = payload.sources[0]
+      const firstWork = firstSource?.featured_works?.[0]
+      if (firstSource && firstWork) {
+        selectedMultitrackWorkKey.value = `${firstSource.id}:0:${firstWork.title}`
+        selectedMultitrackSourceId.value = firstSource.id
+      }
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('加载真实分轨素材来源失败')
+  }
+}
+
+const activateMultitrackMode = async () => {
+  commandMode.value = 'multitrack'
+  await loadMultitrackSources()
+}
+
+const selectMultitrackWork = (key: string) => {
+  const work = featuredMultitrackWorks.value.find((item) => item.key === key)
+  if (!work) return
+  selectedMultitrackWorkKey.value = key
+  selectedMultitrackSourceId.value = work.sourceId
+}
+
+const openSelectedMultitrackSource = () => {
+  const work = selectedMultitrackWork.value
+  if (!work?.sourceUrl) return
+  selectedMultitrackSourceId.value = work.sourceId
+  window.open(work.sourceUrl, '_blank', 'noreferrer')
+}
+
+const handleMultitrackZipChange = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  multitrackZipFile.value = input.files?.[0] || null
+}
+
+const importSelectedMultitrackZip = async () => {
+  const url = multitrackZipUrl.value.trim()
+  if ((!multitrackZipFile.value && !url) || multitrackImporting.value) return
+  stopPolling()
+  persistWorkspaceNow()
+  resetPlayback()
+  stopScorePlayback()
+  multitrackImporting.value = true
+  try {
+    const job = url
+      ? await importMultitrackZipUrl(url, selectedMultitrackSourceId.value)
+      : await importMultitrackZip(multitrackZipFile.value as File, selectedMultitrackSourceId.value)
+    multitrackZipFile.value = null
+    multitrackZipUrl.value = ''
+    await loadJobs(job.job_id)
+    ElMessage.success(url ? '真实分轨 URL 已导入' : '真实分轨 ZIP 已导入')
+  } catch (error: any) {
+    console.error(error)
+    ElMessage.error(error?.response?.data?.detail || '导入真实分轨 ZIP 失败')
+  } finally {
+    multitrackImporting.value = false
+  }
 }
 
 const clearRecordedHummingUrl = () => {
@@ -2119,6 +2910,7 @@ const loadWaveform = async (url: string) => {
 watch(
   audioFiles,
   (files) => {
+    ensureTracksForAudioFiles()
     for (const file of files) {
       void loadWaveform(file.url)
     }
@@ -2151,6 +2943,12 @@ onMounted(async () => {
   workspacePrefs.value = loadStoredWorkspace()
   collapsedInstrumentRoles.value = loadCollapsedInstrumentRoles()
   expandedInstrumentCellGroups.value = loadExpandedInstrumentCellGroups()
+  if (route.query.mode === 'multitrack') {
+    commandMode.value = 'multitrack'
+    void loadMultitrackSources()
+  } else if (route.query.mode === 'humming') {
+    commandMode.value = 'humming'
+  }
   if (workspacePrefs.value.selectedEngine === 'demucs' || workspacePrefs.value.selectedEngine === 'audio_separator_6s') {
     selectedEngine.value = workspacePrefs.value.selectedEngine
   }
@@ -2356,6 +3154,16 @@ h1 {
   width: 120px;
 }
 
+.multitrack-source-select {
+  width: 190px;
+}
+
+.multitrack-url-input {
+  flex: 1 1 280px;
+  min-width: 260px;
+  max-width: 520px;
+}
+
 .command-fields :deep(.el-button) {
   height: 36px;
   border-radius: 8px;
@@ -2386,6 +3194,259 @@ h1 {
   display: block;
   width: 220px;
   height: 32px;
+}
+
+.multitrack-source-panel {
+  width: min(100%, 1260px);
+  padding: 12px;
+  border: 1px solid var(--music-line);
+  border-radius: 8px;
+  background: #fff;
+  box-sizing: border-box;
+  display: grid;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.multitrack-source-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.multitrack-source-head strong {
+  color: var(--music-text);
+}
+
+.multitrack-source-head span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.multitrack-source-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.multitrack-source-card {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #d8e3f0;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+  background: #f8fbff;
+}
+
+.multitrack-source-card span {
+  color: var(--music-blue);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.multitrack-source-card strong {
+  color: var(--music-text);
+}
+
+.multitrack-source-card em {
+  color: #0f766e;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.multitrack-source-card p {
+  margin: 0;
+  color: var(--music-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.multitrack-work-list {
+  border: 1px solid #d8e3f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.multitrack-work-title {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e7eef7;
+  color: var(--music-text);
+  font-size: 13px;
+  font-weight: 700;
+  background: #fbfdff;
+}
+
+.multitrack-work-item {
+  padding: 10px;
+  border-bottom: 1px solid #edf2f8;
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.multitrack-work-item:last-child {
+  border-bottom: 0;
+}
+
+.multitrack-work-item.active {
+  background: #eefaf8;
+  box-shadow: inset 3px 0 0 var(--music-accent);
+}
+
+.multitrack-work-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.multitrack-work-main span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #0f766e;
+  font-size: 12px;
+  font-style: normal;
+  background: #e5f7f4;
+}
+
+.multitrack-work-main strong {
+  color: var(--music-text);
+}
+
+.multitrack-work-main em {
+  color: var(--music-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.multitrack-work-instruments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.multitrack-work-instruments span {
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #32608f;
+  font-size: 12px;
+  background: #eef6ff;
+}
+
+.multitrack-work-item p {
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.multitrack-work-item .style-bridge {
+  color: #0f766e;
+}
+
+.multitrack-work-item a {
+  justify-self: start;
+  color: var(--music-blue);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.multitrack-study-panel {
+  border: 1px solid #d8e3f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.multitrack-study-head {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e7eef7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fbfdff;
+}
+
+.multitrack-study-head div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.multitrack-study-head span,
+.multitrack-study-grid span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.multitrack-study-head strong {
+  color: var(--music-text);
+}
+
+.multitrack-study-actions {
+  display: flex;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+.multitrack-study-actions button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 6px;
+  color: var(--music-blue);
+  font-size: 12px;
+  font-weight: 650;
+  background: #fff;
+  cursor: pointer;
+}
+
+.multitrack-study-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-bottom: 1px solid #edf2f8;
+}
+
+.multitrack-study-grid div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid #edf2f8;
+  display: grid;
+  gap: 5px;
+}
+
+.multitrack-study-grid div:nth-child(2n) {
+  border-right: 0;
+}
+
+.multitrack-study-grid p {
+  margin: 0;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.multitrack-study-steps {
+  padding: 9px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.multitrack-study-steps span {
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: #32608f;
+  font-size: 12px;
+  background: #eef6ff;
 }
 
 .task-alert {
@@ -2981,6 +4042,699 @@ h1 {
   width: 170px;
 }
 
+.creative-brief-panel {
+  border: 1px solid var(--music-line);
+  border-radius: 8px;
+  background: var(--music-panel);
+}
+
+.creative-brief-head {
+  min-height: 48px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--music-line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.creative-title {
+  font-weight: 700;
+  color: var(--music-text);
+}
+
+.creative-meta,
+.prompt-label {
+  font-size: 12px;
+  color: var(--music-muted);
+}
+
+.prompt-label {
+  min-height: 22px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.prompt-label button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  font-size: 12px;
+  background: #f8fbff;
+  cursor: pointer;
+}
+
+.prompt-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.creative-brief-body {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  color: var(--music-text);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.manual-copy-panel {
+  margin: 10px 12px 0;
+  border: 1px solid #f6d28b;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fffbeb;
+}
+
+.manual-copy-head {
+  min-height: 32px;
+  padding: 6px 9px;
+  border-bottom: 1px solid #f8e3ad;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.manual-copy-head span {
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.manual-copy-head button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #f6d28b;
+  border-radius: 5px;
+  color: #92400e;
+  background: #fff7d6;
+  cursor: pointer;
+}
+
+.manual-copy-panel textarea {
+  width: 100%;
+  min-height: 150px;
+  padding: 9px;
+  border: 0;
+  box-sizing: border-box;
+  resize: vertical;
+  color: var(--music-text);
+  font-size: 12px;
+  line-height: 1.6;
+  background: #fffdf5;
+}
+
+.creative-brief-body p {
+  margin: 0;
+}
+
+.creative-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.creative-tags span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #0f766e;
+  background: #e5f7f4;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.feature-grid > div {
+  padding: 8px 9px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  background: #fbfdff;
+}
+
+.feature-grid span {
+  font-size: 12px;
+  color: var(--music-muted);
+}
+
+.feature-grid strong {
+  font-size: 13px;
+  color: var(--music-text);
+}
+
+.style-profile-panel {
+  padding: 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  display: grid;
+  gap: 8px;
+  background: #f8fbff;
+}
+
+.style-profile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.style-profile-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.style-profile-head span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.style-profile-head strong {
+  color: var(--music-text);
+  font-size: 15px;
+}
+
+.style-profile-head button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  font-size: 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.style-profile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.style-profile-tags span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #2e82f0;
+  font-size: 12px;
+  background: #edf4ff;
+}
+
+.style-profile-reasons {
+  display: grid;
+  gap: 4px;
+}
+
+.style-profile-reasons p {
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.style-score-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, max-content));
+  gap: 6px;
+}
+
+.style-score-list > div {
+  min-width: 118px;
+  padding: 5px 8px;
+  border: 1px solid #edf2f8;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fff;
+}
+
+.style-score-list span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.style-score-list strong {
+  color: var(--music-text);
+  font-size: 12px;
+}
+
+.section-strip {
+  min-height: 38px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  background: #f8fafc;
+}
+
+.section-segment {
+  min-width: 70px;
+  padding: 7px 9px;
+  border-right: 1px solid rgba(255, 255, 255, 0.74);
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.section-segment:last-child {
+  border-right: 0;
+}
+
+.section-segment span {
+  font-size: 12px;
+  color: #475467;
+}
+
+.section-segment strong {
+  color: var(--music-text);
+  font-size: 13px;
+}
+
+.section-segment.energy-高 {
+  background: #dff6f2;
+}
+
+.section-segment.energy-中 {
+  background: #edf4ff;
+}
+
+.section-segment.energy-低 {
+  background: #f7f9fc;
+}
+
+.style-direction-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.style-direction-row button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #cfe0f5;
+  border-radius: 999px;
+  color: #2e82f0;
+  font-size: 12px;
+  font-weight: 650;
+  background: #f8fbff;
+  cursor: pointer;
+}
+
+.style-direction-row button.active {
+  border-color: #13a394;
+  color: #0f766e;
+  background: #e5f7f4;
+}
+
+.style-direction-meta {
+  padding: 8px 10px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  background: #fbfdff;
+}
+
+.style-direction-meta span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.style-direction-meta strong {
+  color: var(--music-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.suno-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.suno-field-card {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.suno-field-card p {
+  color: var(--music-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.creative-recipe-list {
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.style-preset-panel {
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.style-preset-tabs {
+  padding: 9px 10px;
+  border-bottom: 1px solid #edf2f8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.style-preset-tabs button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #d5dfeb;
+  border-radius: 6px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 650;
+  background: #fff;
+  cursor: pointer;
+}
+
+.style-preset-tabs button.active {
+  border-color: rgba(19, 163, 148, 0.28);
+  color: #0f766e;
+  background: #effbf9;
+}
+
+.style-preset-detail {
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.style-preset-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.style-preset-main > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.style-preset-main strong {
+  color: var(--music-text);
+  font-size: 14px;
+}
+
+.style-preset-main span,
+.style-preset-grid span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.style-preset-main button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  background: #f8fbff;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.platform-open-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.platform-open-actions button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  background: #f8fbff;
+  cursor: pointer;
+}
+
+.style-preset-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.style-preset-palette span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #0f766e;
+  font-size: 12px;
+  background: #e5f7f4;
+}
+
+.style-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.style-preset-grid > div {
+  padding: 8px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  display: grid;
+  gap: 2px;
+  background: #fbfdff;
+}
+
+.style-preset-grid p {
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.creative-recipe-item {
+  padding: 10px;
+  border-bottom: 1px solid #edf2f8;
+  display: grid;
+  gap: 8px;
+}
+
+.creative-recipe-item:last-child {
+  border-bottom: 0;
+}
+
+.creative-recipe-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.creative-recipe-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.creative-recipe-head strong {
+  color: var(--music-text);
+  font-size: 14px;
+}
+
+.creative-recipe-head span,
+.creative-recipe-columns span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.creative-recipe-head button,
+.creative-recipe-actions button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  background: #f8fbff;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.creative-recipe-tags,
+.creative-recipe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.creative-recipe-tags span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #0f766e;
+  font-size: 12px;
+  background: #e5f7f4;
+}
+
+.creative-recipe-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.creative-recipe-columns > div {
+  padding: 8px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  display: grid;
+  gap: 2px;
+  background: #fbfdff;
+}
+
+.creative-recipe-moves {
+  margin: 0;
+  padding-left: 20px;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.prompt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.prompt-grid > div {
+  padding: 10px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.variant-list {
+  display: grid;
+  gap: 8px;
+}
+
+.variant-item {
+  padding: 10px;
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.arrangement-plan,
+.stem-insight-list {
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.arrangement-item,
+.stem-insight-item {
+  padding: 9px 10px;
+  border-bottom: 1px solid #edf2f8;
+  display: grid;
+  gap: 3px;
+}
+
+.arrangement-item:last-child,
+.stem-insight-item:last-child {
+  border-bottom: 0;
+}
+
+.arrangement-item span,
+.stem-insight-item span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.arrangement-item strong,
+.stem-insight-item strong {
+  color: var(--music-text);
+  font-size: 13px;
+}
+
+.stem-insight-item > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prompt-record-list {
+  border: 1px solid #edf2f8;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.prompt-record-title {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf2f8;
+  color: var(--music-text);
+  font-weight: 700;
+  background: #fbfdff;
+}
+
+.prompt-record-item {
+  min-height: 42px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf2f8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prompt-record-item:last-child {
+  border-bottom: 0;
+}
+
+.prompt-record-item > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.prompt-record-item strong {
+  color: var(--music-text);
+}
+
+.prompt-record-item span {
+  color: var(--music-muted);
+  font-size: 12px;
+}
+
+.prompt-record-item button {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid #cfe0f5;
+  border-radius: 5px;
+  color: var(--music-blue);
+  background: #f8fbff;
+  cursor: pointer;
+}
+
 .score-panel {
   border: 1px solid var(--music-line);
   border-radius: 8px;
@@ -3242,6 +4996,36 @@ audio {
     flex: 1 1 0;
   }
 
+  .multitrack-source-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .multitrack-source-list {
+    grid-template-columns: 1fr;
+  }
+
+  .multitrack-study-head,
+  .multitrack-study-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .multitrack-study-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .multitrack-study-grid div {
+    border-right: 0;
+  }
+
+  .suno-field-grid,
+  .style-preset-grid,
+  .creative-recipe-columns,
+  .prompt-grid {
+    grid-template-columns: 1fr;
+  }
+
   .history-pane {
     position: static;
   }
@@ -3268,9 +5052,13 @@ audio {
 
   .file-picker,
   .command-file,
+  .engine-select,
+  .multitrack-source-select,
+  .multitrack-url-input,
   .volume-slider,
   .recording-preview {
     width: 100%;
+    max-width: none;
   }
 }
 

@@ -241,8 +241,82 @@ export interface EastmoneyAkshareIntradayPage {
   name: string
   period: string
   trade_date: string
+  target_trade_date?: string
+  display_trade_date?: string
   error?: string
   items: EastmoneyAkshareIntradayItem[]
+}
+
+export interface EastmoneyEtfRotationHolding {
+  market: string
+  symbol: string
+  name: string
+  weight: number
+  fast_momentum: number
+  forward_return: number | null
+}
+
+export interface EastmoneyEtfRotationPeriod {
+  date: string
+  year: string
+  cash_fraction: number
+  return: number
+  holdings: EastmoneyEtfRotationHolding[]
+}
+
+export interface EastmoneyEtfRotationBacktestResult {
+  strategy_id: string
+  source: string
+  parameters: Record<string, unknown>
+  annual_returns: Record<string, number>
+  total_return: number
+  latest_signal: EastmoneyEtfRotationPeriod | null
+  period_count: number
+  periods: EastmoneyEtfRotationPeriod[]
+}
+
+export type EastmoneyStrategyJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | EastmoneyStrategyJsonValue[]
+  | { [key: string]: EastmoneyStrategyJsonValue }
+
+export interface EastmoneyStrategyResearchSourceGroup {
+  id: string
+  name?: string
+  title?: string
+  summary?: string
+  notes?: string
+  urls?: string[]
+}
+
+export interface EastmoneyStrategyResearchItem {
+  id: string
+  title: string
+  family: string[]
+  market_scope: string[]
+  instrument_scope: string[]
+  timeframe: string
+  status: string
+  priority: number
+  hypothesis: string
+  rules: Record<string, EastmoneyStrategyJsonValue>
+  data_requirements: string[]
+  existing_mapping?: Record<string, EastmoneyStrategyJsonValue>
+  validation_plan: string[]
+  sources: string[]
+  notes?: string
+}
+
+export interface EastmoneyStrategyResearchCatalog {
+  schema_version: number
+  updated_at: string
+  purpose: string
+  source_groups: EastmoneyStrategyResearchSourceGroup[]
+  count: number
+  items: EastmoneyStrategyResearchItem[]
 }
 
 export interface EastmoneyQlibExportItem {
@@ -792,6 +866,7 @@ export async function fetchEastmoneyAkshareIntraday(params: {
   trade_date?: string
   period?: string
   day_count?: number
+  refresh?: boolean
 } = {}) {
   const response = await api.get<EastmoneyAkshareIntradayPage>(
     '/eastmoney/market-intraday/akshare',
@@ -944,6 +1019,51 @@ export async function fetchEastmoneyQlibHkPoolRotationStrategySearch(params: {
     {
       params,
       timeout: 300000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyCrossAssetEtfCanaryRotation(params: {
+  refresh?: boolean
+  progress?: boolean
+  start_date?: string
+  hold_days?: number
+  top_n?: number
+  cost?: number
+  canary_threshold?: number
+} = {}) {
+  const response = await api.get<EastmoneyEtfRotationBacktestResult>(
+    '/eastmoney/qlib/backtest/cross-asset-etf-canary-rotation',
+    {
+      params,
+      timeout: 60000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyStrategyResearchCatalog(params: {
+  family?: string
+  status?: string
+  market?: string
+  min_priority?: number
+} = {}) {
+  const response = await api.get<EastmoneyStrategyResearchCatalog>(
+    '/eastmoney/strategy-research',
+    {
+      params,
+      timeout: 60000,
+    },
+  )
+  return response.data
+}
+
+export async function fetchEastmoneyStrategyResearchItem(strategyId: string) {
+  const response = await api.get<EastmoneyStrategyResearchItem>(
+    `/eastmoney/strategy-research/${encodeURIComponent(strategyId)}`,
+    {
+      timeout: 60000,
     },
   )
   return response.data

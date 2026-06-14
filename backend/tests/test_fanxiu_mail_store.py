@@ -895,6 +895,7 @@ def test_mail_decoder_trim_keeps_full_mailvo_business_list():
     trimmed = _trim_value(
         {
             "mailVos": {"_type": "MailVo", "items": [{"id": i, "rewards": {"items": list(range(12))}} for i in range(12)]},
+            "mailRewards": {"_type": "RewardItem", "items": list(range(12))},
             "other": {"items": list(range(12))},
         }
     )
@@ -903,6 +904,8 @@ def test_mail_decoder_trim_keeps_full_mailvo_business_list():
     assert "_truncated_items" not in trimmed["mailVos"]
     assert len(trimmed["mailVos"]["items"][0]["rewards"]["items"]) == 8
     assert trimmed["mailVos"]["items"][0]["rewards"]["_truncated_items"] == 4
+    assert len(trimmed["mailRewards"]["items"]) == 12
+    assert "_truncated_items" not in trimmed["mailRewards"]
     assert len(trimmed["other"]["items"]) == 8
     assert trimmed["other"]["_truncated_items"] == 4
 

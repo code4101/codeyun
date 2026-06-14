@@ -207,6 +207,36 @@ def ensure_market_data_schema(conn: sqlite3.Connection) -> None:
         ON market_quote (provider, provider_code)
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_intraday (
+            provider TEXT NOT NULL,
+            market TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            provider_code TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            period TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            time_key TEXT NOT NULL,
+            open REAL,
+            close REAL,
+            high REAL,
+            low REAL,
+            volume REAL,
+            turnover REAL,
+            average_price REAL,
+            fetched_at REAL NOT NULL,
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (provider, market, symbol, period, trade_date, time_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_market_intraday_symbol_trade_date
+        ON market_intraday (provider, market, symbol, period, trade_date, time_key)
+        """
+    )
     conn.commit()
 
 
@@ -595,6 +625,91 @@ def upsert_quote_items(conn: sqlite3.Connection, *, items: Iterable[MarketQuoteI
                 item.update_time,
                 item.fetched_at,
                 json.dumps(item.raw_json or {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+    conn.commit()
+    return inserted_count, updated_count
+
+
+def upsert_intraday_rows(
+    conn: sqlite3.Connection,
+    *,
+    provider: str,
+    target: MarketHistoryTarget,
+    period: str,
+    trade_date: str,
+    rows: Iterable[dict[str, Any]],
+) -> tuple[int, int]:
+    now = time.time()
+    normalized_trade_date = normalize_date_text(trade_date)
+    inserted_count = 0
+    updated_count = 0
+
+    for raw_row in rows:
+        time_key = normalize_time_key(raw_row.get("time_key") or raw_row.get("time"))
+        if not time_key:
+            continue
+        row_trade_date = normalize_date_text(str(raw_row.get("trade_date") or time_key[:10]) or normalized_trade_date)
+        if row_trade_date != normalized_trade_date:
+            continue
+        exists = conn.execute(
+            """
+            SELECT 1
+            FROM market_intraday
+            WHERE provider = ?
+              AND market = ?
+              AND symbol = ?
+              AND period = ?
+              AND trade_date = ?
+              AND time_key = ?
+            """,
+            (provider, target.market, target.symbol, period, normalized_trade_date, time_key),
+        ).fetchone()
+        if exists:
+            updated_count += 1
+        else:
+            inserted_count += 1
+
+        conn.execute(
+            """
+            INSERT INTO market_intraday (
+                provider, market, symbol, provider_code, name, period, trade_date, time_key,
+                open, close, high, low, volume, turnover, average_price, fetched_at, raw_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, market, symbol, period, trade_date, time_key)
+            DO UPDATE SET
+                provider_code = excluded.provider_code,
+                name = excluded.name,
+                open = excluded.open,
+                close = excluded.close,
+                high = excluded.high,
+                low = excluded.low,
+                volume = excluded.volume,
+                turnover = excluded.turnover,
+                average_price = excluded.average_price,
+                fetched_at = excluded.fetched_at,
+                raw_json = excluded.raw_json
+            """,
+            (
+                provider,
+                target.market,
+                target.symbol,
+                target.provider_code,
+                target.name,
+                str(period or "1"),
+                normalized_trade_date,
+                time_key,
+                _float_or_none(raw_row.get("open")),
+                _float_or_none(raw_row.get("close")),
+                _float_or_none(raw_row.get("high")),
+                _float_or_none(raw_row.get("low")),
+                _float_or_none(raw_row.get("volume")),
+                _float_or_none(raw_row.get("turnover") or raw_row.get("amount")),
+                _float_or_none(raw_row.get("average_price")),
+                now,
+                json.dumps(_json_safe_dict(raw_row), ensure_ascii=False, sort_keys=True),
             ),
         )
 

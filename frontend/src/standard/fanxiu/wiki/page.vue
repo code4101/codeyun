@@ -17887,11 +17887,11 @@ onBeforeUnmount(() => {
 
 .mail-reward-slot {
   position: relative;
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 52px;
   flex: 0 0 auto;
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   color: inherit;
   text-decoration: none;
@@ -17960,14 +17960,15 @@ onBeforeUnmount(() => {
 
 .mail-reward-count {
   position: absolute;
-  right: 2px;
-  bottom: 0;
-  min-width: 18px;
+  right: 3px;
+  bottom: 2px;
+  min-width: 0;
   color: #fff;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 1.05;
   text-align: right;
+  white-space: nowrap;
   text-shadow:
     0 1px 1px rgba(0, 0, 0, 0.78),
     1px 0 1px rgba(0, 0, 0, 0.72),

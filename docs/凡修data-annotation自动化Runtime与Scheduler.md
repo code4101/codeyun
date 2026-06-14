@@ -131,7 +131,8 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 - 手动作业来自用户调试/API 临时提交，例如 `/data-annotation/runtime/task/start` 或单步识别；它们进入 `manual_job` 队列，不代表启动行为树服务。
 - 自动作业只拉取非 `schedule_kind=manual` 的到期任务，避免用户手动任务被空转 loop 反复执行。
 - Runtime 空闲时，常驻服务可以启动下一个任务。
-- Runtime 正在运行时，Scheduler 不抢占当前任务，新任务标记为 `queued` 等待后续空闲 tick。
+- Runtime 正在运行时，Scheduler 不抢占当前任务，也不把同组新任务标记为 `queued`；这些任务只作为候选保留，等当前任务完成并释放控制权后，由下一轮 tick 重新读取最新计划并选择一个任务启动。
+- 每轮自动作业调度只启动一个到期任务。即使同时有多个任务到期，也必须等当前任务 `SUCCESS / FAILURE / STOP` 后，下一轮再判断下一个任务，避免在业务层形成“一心二用”的隐式队列。
 - `/data-annotation/runtime/task/stop` 是历史兼容路径，语义只能是“停止当前业务任务”。它调用 `stop_current_task` 设置当前 task 的 stop event，不能停止 resident service；无任务时应返回空转状态和“当前没有正在运行的任务”。
 
 ## 典型手动任务
@@ -282,7 +283,7 @@ def task(ctx):
 - 旧状态文件会被默认结构修正，不会保留错误的 task_type/source/schedule_kind。
 - 每日任务执行后会推进到下一次 `schedule_times`。
 - `enabled`、`next_time`、`retry_after` 的到期判断。
-- Runtime 忙碌时，Scheduler 任务会标记为 queued，等待后续空闲 tick。
+- Runtime 忙碌时，Scheduler 不会改写同组任务状态；到期任务保留为候选，等待后续空闲 tick 重新选择。
 - Runtime task dispatch 使用后端正式任务入口。
 - Runtime 状态新增 `service_running`，表示常驻行为树 loop 是否存在；`running` 只表示当前是否有业务任务在执行。
 - runtime 页面不再自动开启“关闭弹窗”守护来制造运行状态。进入页面只确保常驻服务存在，守护/作业开关完全由页面配置决定。

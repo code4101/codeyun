@@ -141,6 +141,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "tools.ai-agents",
+      "title": "AGENTS",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 26,
+      "route_paths": ["/tools/ai-agents"],
+      "menu_paths": ["/tools/ai-agents"],
+      "api_scopes": ["ai-tools.agents"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "tools.ai-reduction",
       "title": "AI归纳",
       "node_type": "feature",

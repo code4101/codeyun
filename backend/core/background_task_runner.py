@@ -47,6 +47,8 @@ MEDIA_SYNC_HOME_DISCOVERY_TARGET_COUNT = 200
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
+MARKET_INTRADAY_PERSIST_TASK_KEY = "market_intraday_persist"
+MARKET_INTRADAY_PERSIST_RUN_TIME = "16:30"
 HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY = "hk_connect_momentum_review"
 HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME = "17:40"
 WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY = "wechat_archive_incremental_sync"
@@ -62,6 +64,7 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
     MARKET_QUOTE_REFRESH_TASK_KEY,
+    MARKET_INTRADAY_PERSIST_TASK_KEY,
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
@@ -184,6 +187,8 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"}, retry_minutes=10)
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
+    if task_key == MARKET_INTRADAY_PERSIST_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": MARKET_INTRADAY_PERSIST_RUN_TIME}, retry_minutes=10)
     if task_key == HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": HK_CONNECT_MOMENTUM_REVIEW_RUN_TIME}, retry_minutes=10)
     if task_key == WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY:
@@ -453,6 +458,26 @@ def _enqueue_market_quote_refresh() -> str | None:
     return task_id
 
 
+def _run_market_intraday_persist_job() -> dict:
+    from backend.api.eastmoney import run_market_intraday_persist_snapshot_job
+
+    payload = run_market_intraday_persist_snapshot_job()
+    print(
+        "Market intraday persist completed: "
+        f"persisted={payload.get('persisted')} "
+        f"failed={payload.get('failed')}"
+    )
+    return payload
+
+
+def _enqueue_market_intraday_persist() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(
+        MARKET_INTRADAY_PERSIST_TASK_KEY,
+        _run_market_intraday_persist_job,
+    )
+    return task_id
+
+
 def _run_hk_connect_momentum_review_job() -> dict:
     from backend.api.eastmoney import run_hk_connect_momentum_review_snapshot_job
 
@@ -603,6 +628,17 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后下次调度重试",
         action=_enqueue_market_quote_refresh,
         manual_warning="会访问东方财富公共行情接口，仅刷新当前持仓现价缓存，不修改交易数据。",
+    ),
+    BackgroundTaskSpec(
+        key=MARKET_INTRADAY_PERSIST_TASK_KEY,
+        title="股票分时持久化",
+        category="股票",
+        description="每天收盘后为股票量化分析页面自选池拉取最新交易日 1 分钟分时，并写入本地 market_intraday，供后续量化分析复用。",
+        schedule_label=f"每天 {MARKET_INTRADAY_PERSIST_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_market_intraday_persist,
+        manual_warning="会访问 AkShare/公开行情数据源并写入本地分时数据库；只保存行情，不修改交易数据。",
+        default_visible=False,
     ),
     BackgroundTaskSpec(
         key=HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,

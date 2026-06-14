@@ -81,6 +81,78 @@ def test_video_rule_system_boundaries_are_explicit() -> None:
     ) == nianzhu_course_sheets.VIDEO_RULE_SYSTEM_REGULAR
 
 
+def test_zen_stage_attendance_schema_adds_50_video_columns_and_caps_refund_formula() -> None:
+    document = {
+        "schema_version": 1,
+        "columns": ["姓名", "规则版本"],
+        "rows": [["甲", "当前规则"]],
+        "grid_rows": [["", ""], ["姓名", "规则版本"], ["", ""], ["甲", "当前规则"]],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": index,
+                    "lesson_id2": f"https://example.test/lesson/{index}",
+                    "lesson_name": f"第{((index - 1) // 3) + 1}周=第{index:02d}课",
+                },
+            )
+            for index in range(1, 51)
+        ],
+    )
+    video_config_document["source_meta"] = {"course_name": "修道班7期5阶"}
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+
+    next_document, inserted = nianzhu_course_sheets._ensure_video_progress_columns(document, video_config)
+    columns = next_document["columns"]
+    video_column_indexes = {
+        item.lesson_id: columns.index(nianzhu_course_sheets._lesson_header_from_video_item(item))
+        for item in video_config
+    }
+    next_document, repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        next_document,
+        video_config,
+        video_column_indexes,
+    )
+    formula = nianzhu_course_sheets._build_legacy_zen_video_refund_formula(
+        video_config,
+        video_column_indexes,
+        row_number=2,
+        refund_amount=15,
+        max_refund_count=49,
+    )
+
+    assert len(inserted) == 50
+    assert columns[1:51] == [f"第{index:02d}课" for index in range(1, 51)]
+    assert columns[-1] == "规则版本"
+    assert formula == '=MIN(COUNTIF(B2:AY2,"准时完成"),49)*15'
+    assert repaired > 0
+    assert next_document["grid_rows"][0][1] == "第1周"
+    assert next_document["grid_rows"][0][49] == "第17周"
+    assert next_document["grid_rows"][0][50] == ""
+    assert next_document["merged_cells"][-1] == {"row": 0, "col": 49, "rowspan": 1, "colspan": 2}
+    assert next_document["column_configs"]["第50课"]["header_background_color"] == "#E2F0D9"
+    assert next_document["cell_meta"]["0:1"]["style"] != next_document["cell_meta"]["0:4"]["style"]
+    assert next_document["cell_meta"]["1:1"]["style"] != next_document["cell_meta"]["1:4"]["style"]
+    assert next_document["cell_meta"]["0:49"]["style"] == next_document["cell_meta"]["0:50"]["style"]
+    assert next_document["cell_meta"]["1:49"]["style"] == next_document["cell_meta"]["1:50"]["style"]
+    assert next_document["cell_meta"]["2:50"]["style"]["background_color"] == "#D8D8D8"
+    assert next_document["grid_rows"][1][50]["link"]["url"] == "https://example.test/lesson/50"
+
+    stable_document, stable_repaired = nianzhu_course_sheets._sync_zen_stage_video_header_layout(
+        next_document,
+        video_config,
+        video_column_indexes,
+    )
+    assert stable_repaired == 0
+    assert stable_document == next_document
+
+
 def _create_nianzhu_workbook(session: Session) -> None:
     workbook = WorkbookDocument(
         id="7",

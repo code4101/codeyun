@@ -1686,7 +1686,7 @@ def _fanxiu_protocol_business_order(name: str, category: str = "") -> tuple[Any,
 
 
 def _trim_value(value: Any, *, max_items: int = 8, preserve_item_types: set[str] | None = None) -> Any:
-    preserve_item_types = preserve_item_types or {"MailVo"}
+    preserve_item_types = preserve_item_types or {"MailVo", "RewardItem"}
     if isinstance(value, dict):
         output: dict[str, Any] = {}
         for key, item in value.items():

@@ -1,6 +1,6 @@
 import api from './index'
 
-export type MusicStem = 'original' | 'vocals' | 'other' | 'bass' | 'drums' | 'guitar' | 'piano'
+export type MusicStem = string
 export type MusicSeparationEngine = 'demucs' | 'audio_separator_6s' | 'basic_pitch_humming'
 
 export interface MusicToolInfo {
@@ -13,6 +13,8 @@ export interface MusicToolInfo {
 
 export interface MusicAudioFile {
   stem: MusicStem
+  label?: string
+  role?: string
   filename: string
   url: string
   size: number
@@ -127,6 +129,161 @@ export interface MusicInstrumentRegistry {
   instruments: MusicInstrumentRecord[]
 }
 
+export interface OpenScoreNote {
+  pitch: number
+  start: number
+  duration: number
+  velocity: number
+}
+
+export interface OpenScorePart {
+  name: string
+  role: string
+  program: number | null
+  channel: number | null
+  note_count: number
+  range: [string, string]
+  notes: OpenScoreNote[]
+}
+
+export interface OpenScoreWorkSummary {
+  id: string
+  title: string
+  composer: string
+  level: string
+  form: string
+  instrumentation: string[]
+  description: string
+  listen_focus: string[]
+  source_name: string
+  license_label: string
+  source_url: string
+  midi_url: string
+  pdf_url: string
+  study_kind?: string
+  part_count?: number
+}
+
+export interface OpenScoreWork extends OpenScoreWorkSummary {
+  tempo_bpm: number
+  duration: number
+  ticks_per_beat: number
+  parts: OpenScorePart[]
+  cached_at: number
+  midi_size: number
+}
+
+export interface MultitrackLibrarySource {
+  id: string
+  name: string
+  kind: string
+  url: string
+  import_hint: string
+  fit?: string
+  strengths: string[]
+  cautions: string[]
+  featured_works?: Array<{
+    title: string
+    level: string
+    focus: string
+    instruments: string[]
+    why: string
+    study: string
+    style_bridge: string
+  }>
+}
+
+export interface MusicCreativeBrief {
+  job_id: string
+  title: string
+  duration_seconds: number | null
+  available_stems: string[]
+  audio_features: Record<string, unknown>
+  description_zh: string
+  suno_prompt_zh: string
+  suno_prompt_en: string
+  prompt_variants: Array<{ name: string; prompt_zh: string; prompt_en: string }>
+  style_directions: Array<{
+    key: string
+    name: string
+    prompt_zh: string
+    prompt_en: string
+    palette: string[]
+    use_case: string
+  }>
+  stem_insights: Array<{ stem: string; label: string; role: string; focus: string; usage: string }>
+  arrangement_plan: Array<{ section: string; energy: string; listen: string; arrange: string }>
+  suno_fields: {
+    title_ideas?: string[]
+    style_tags?: string[]
+    mood_tags?: string[]
+    structure_tags?: string[]
+    negative_prompt?: string
+    instrumental_hint?: string
+    copy_order?: string[]
+    style_count?: number
+    [key: string]: unknown
+  }
+  style_profile?: {
+    best_fit?: string
+    style_scores?: Array<{ name: string; score: number }>
+    why?: string[]
+    analysis_tags?: string[]
+    prompt_blueprint?: {
+      suno_style?: string[]
+      prompt_core_zh?: string
+      prompt_core_en?: string
+      [key: string]: unknown
+    }
+    workflow?: string[]
+    negative?: string[]
+    [key: string]: unknown
+  }
+  style_presets?: Array<{
+    key: string
+    name: string
+    fit: string
+    palette: string[]
+    listen_check: string[]
+    suno_style: string
+    suno_prompt: string
+    udio_prompt: string
+    negative: string
+    copy_order?: string[]
+    [key: string]: unknown
+  }>
+  creative_recipes: Array<{
+    key: string
+    title: string
+    goal: string
+    hook: string
+    style_tags: string[]
+    instrumentation: string[]
+    arrangement_moves: string[]
+    listen_first: string[]
+    platform_prompts: {
+      suno_style?: string
+      suno_prompt?: string
+      udio_prompt?: string
+      negative?: string
+      [key: string]: unknown
+    }
+  }>
+  tags: string[]
+  cautions: string[]
+}
+
+export interface MusicCreativePromptRecord {
+  id: string
+  job_id: string
+  name: string
+  prompt_zh: string
+  prompt_en: string | null
+  source: string
+  created_at: number
+  audio_features: Record<string, unknown>
+}
+
 export const getMusicToolInfo = async () => {
   const response = await api.get<MusicToolInfo>('/music-tools/info')
   return response.data
@@ -155,6 +312,30 @@ export const startHummingTranscription = async (file: File, tempoBpm = 96, beats
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+  })
+  return response.data
+}
+
+export const importMultitrackZip = async (file: File, sourceId = '') => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('source_id', sourceId)
+  const response = await api.post<MusicJob>('/music-tools/multitrack-import', form, {
+    timeout: 60_000,
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  })
+  return response.data
+}
+
+export const importMultitrackZipUrl = async (url: string, sourceId = '', filename = '') => {
+  const response = await api.post<MusicJob>('/music-tools/multitrack-import-url', {
+    url,
+    source_id: sourceId,
+    filename,
+  }, {
+    timeout: 60_000,
   })
   return response.data
 }
@@ -196,6 +377,24 @@ export const getMusicJobScore = async (jobId: string) => {
   return response.data
 }
 
+export const getMusicJobCreativeBrief = async (jobId: string) => {
+  const response = await api.get<MusicCreativeBrief>(`/music-tools/jobs/${jobId}/creative-brief`)
+  return response.data
+}
+
+export const listMusicJobCreativePrompts = async (jobId: string) => {
+  const response = await api.get<{ records: MusicCreativePromptRecord[] }>(`/music-tools/jobs/${jobId}/creative-prompts`)
+  return response.data
+}
+
+export const saveMusicJobCreativePrompt = async (
+  jobId: string,
+  payload: { name: string; prompt_zh: string; prompt_en?: string | null; source?: string; audio_features?: Record<string, unknown> },
+) => {
+  const response = await api.post<MusicCreativePromptRecord>(`/music-tools/jobs/${jobId}/creative-prompts`, payload)
+  return response.data
+}
+
 export const listMusicJobScores = async (jobId: string) => {
   const response = await api.get<{ scores: MusicScoreInfo[] }>(`/music-tools/jobs/${jobId}/scores`)
   return response.data
@@ -203,5 +402,20 @@ export const listMusicJobScores = async (jobId: string) => {
 
 export const getMusicInstrumentRegistry = async () => {
   const response = await api.get<MusicInstrumentRegistry>('/music-tools/instrument-registry')
+  return response.data
+}
+
+export const listMultitrackLibrary = async () => {
+  const response = await api.get<{ sources: MultitrackLibrarySource[] }>('/music-tools/multitrack-library')
+  return response.data
+}
+
+export const listOpenScoreWorks = async () => {
+  const response = await api.get<{ works: OpenScoreWorkSummary[] }>('/music-tools/open-scores')
+  return response.data
+}
+
+export const getOpenScoreWork = async (workId: string) => {
+  const response = await api.get<OpenScoreWork>(`/music-tools/open-scores/${workId}`, { timeout: 60_000 })
   return response.data
 }

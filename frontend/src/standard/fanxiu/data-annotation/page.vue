@@ -428,12 +428,12 @@
                     <button
                       type="button"
                       class="shape-condition-toggle"
-                      :class="'is-' + selectedShapeSceneIdentityRole"
-                      :title="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
-                      :aria-label="shapeMatchRoleTitle('scene', selectedShapeSceneIdentityRole)"
-                      @click="cycleSelectedShapeSceneIdentityRole"
+                      :class="'is-scope-' + selectedShapeSceneIdentityScope"
+                      :title="shapeSceneIdentityScopeTitle(selectedShapeSceneIdentityScope)"
+                      :aria-label="shapeSceneIdentityScopeTitle(selectedShapeSceneIdentityScope)"
+                      @click="cycleSelectedShapeSceneIdentityScope"
                     >
-                      {{ shapeMatchRoleLabel(selectedShapeSceneIdentityRole) }}
+                      {{ shapeSceneIdentityScopeLabel(selectedShapeSceneIdentityScope) }}
                     </button>
                     <span>场景标识</span>
                   </span>
@@ -1435,6 +1435,7 @@ interface VisualMacroUiState {
 type GameMacroAnnotationMode = 'simple' | 'ai';
 type GameMacroDragDurationMode = 'real' | 'fixed';
 type ShapeMatchRole = 'off' | 'optional' | 'required';
+type SceneIdentityScope = 'none' | 'local' | 'global';
 type ShapeOcrMatchMode = 'contains' | 'exact' | 'wildcard' | 'regex';
 
 type GameMacroConfig = {
@@ -1667,10 +1668,12 @@ let serviceStatusLastLoadedAt = 0;
 let adbFrameTimer: number | null = null;
 let actualFpsResetTimer: number | null = null;
 let actualFpsSamplerTimer: number | null = null;
+let liveImageLoadWaiters: Array<(loaded: boolean) => void> = [];
 const liveFrameTimestamps: number[] = [];
 let lastLiveFrameSample = '';
 let lastLiveFrameDataUrl = '';
 let lastLiveFrameCapturedAt = 0;
+let suppressStreamErrorDuringCaptureRefresh = false;
 let burstCaptureTimer: number | null = null;
 let burstCaptureToken = 0;
 let screenshotSaveTimer: number | null = null;
@@ -4512,6 +4515,25 @@ const syncMatchCanvas = () => {
   drawMatchOverlay();
 };
 
+const resolveLiveImageLoadWaiters = (loaded: boolean) => {
+  const waiters = liveImageLoadWaiters;
+  liveImageLoadWaiters = [];
+  waiters.forEach(resolve => resolve(loaded));
+};
+
+const waitForNextLiveImageLoad = async (timeoutMs = 4000) => new Promise<boolean>((resolve) => {
+  let done: (loaded: boolean) => void;
+  const timeout = window.setTimeout(() => {
+    liveImageLoadWaiters = liveImageLoadWaiters.filter(item => item !== done);
+    resolve(false);
+  }, timeoutMs);
+  done = (loaded: boolean) => {
+    window.clearTimeout(timeout);
+    resolve(loaded);
+  };
+  liveImageLoadWaiters.push(done);
+});
+
 const handleImageLoad = () => {
   const image = streamImageRef.value;
   if (!image) return;
@@ -4520,6 +4542,7 @@ const handleImageLoad = () => {
   naturalHeight.value = image.naturalHeight;
   const frame = captureCurrentLiveFrameDataUrl();
   if (frame) cacheLiveFrameDataUrl(frame);
+  resolveLiveImageLoadWaiters(Boolean(frame));
   void nextTick(syncCanvas);
 };
 
@@ -4677,9 +4700,11 @@ const setWindowViewModeOff = async () => {
 
 const handleStreamError = () => {
   if (windowViewMode.value === 'off') return;
+  if (suppressStreamErrorDuringCaptureRefresh) return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
   streamError.value = message;
   streamEnabled.value = false;
+  resolveLiveImageLoadWaiters(false);
   stopAdbFramePolling();
   stopActualFpsSampler();
   resetActualFps();
@@ -4711,6 +4736,24 @@ const restartStream = async () => {
   void nextTick(syncCanvas);
 };
 
+const ensureLiveStreamReadyForCapture = async (timeoutMs = 4000) => {
+  if (!selectedEntryId.value || windowViewMode.value === 'off') return '';
+  clearLastLiveFrameCache();
+  streamError.value = '';
+  naturalWidth.value = 0;
+  naturalHeight.value = 0;
+  suppressStreamErrorDuringCaptureRefresh = true;
+  try {
+    const loadPromise = waitForNextLiveImageLoad(timeoutMs);
+    await restartStream();
+    const loaded = await loadPromise;
+    if (!loaded) return '';
+    return waitForCurrentLiveFrameDataUrl(1000);
+  } finally {
+    suppressStreamErrorDuringCaptureRefresh = false;
+  }
+};
+
 const connectWindow = async (options: { allowStartService?: boolean } = {}) => {
   if (!selectedEntryId.value) return;
   if (windowViewMode.value === 'off') {
@@ -4738,7 +4781,11 @@ const saveCurrentFrame = async () => {
   if (!selectedEntryId.value) return;
   saveFrameLoading.value = true;
   try {
-    const currentFrameDataUrl = await captureCurrentFrameDataUrl('save');
+    const liveFrameDataUrl = await ensureLiveStreamReadyForCapture();
+    const currentFrameDataUrl = liveFrameDataUrl || await captureCurrentFrameDataUrl('save', {
+      preferLiveFrame: true,
+      liveFrameWaitMs: 1200,
+    });
     const result = await saveFanxiuGameWindow2Frame({
       entry_id: selectedEntryId.value,
       title: targetTitle.value.trim(),
@@ -4770,10 +4817,11 @@ const saveCurrentFrame = async () => {
     addSavedFrameToAssetTree(node);
     ElMessage.success(`已保存到帧树：${result.filename}`);
   } catch (error) {
-    streamError.value = getErrorMessage(error);
-    await setWindowViewModeOff();
     ElMessage.error(getErrorMessage(error));
   } finally {
+    if (selectedEntryId.value && windowViewMode.value !== 'off' && (!streamEnabled.value || !liveImageUrl.value)) {
+      await restartStream();
+    }
     saveFrameLoading.value = false;
   }
 };
@@ -6579,6 +6627,7 @@ onBeforeUnmount(() => {
   revokeAdbFrameUrl();
   releaseAssetImagePreviewUrls();
   releaseBurstPreviewUrls();
+  resolveLiveImageLoadWaiters(false);
   if (streamImageRef.value) streamImageRef.value.src = '';
   revokeScreenshotImageUrl();
   clearMatchResults();
@@ -6606,6 +6655,7 @@ type DataAnnotationShape = {
   jitterRadius?: number;
   isSceneIdentity?: boolean;
   sceneIdentityRole?: ShapeMatchRole;
+  sceneIdentityScope?: SceneIdentityScope;
   sceneJumpTarget?: string;
   contentDirection?: 'none' | 'up' | 'down' | 'left' | 'right';
   imageMatchRole?: ShapeMatchRole;
@@ -6868,9 +6918,7 @@ const formatRuntimeScheduleTime = (value: string) => {
   const isSameDate = date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const isWithinNext24Hours = date.getTime() >= now.getTime()
-    && date.getTime() - now.getTime() < 24 * 60 * 60 * 1000;
-  if (isSameDate || isWithinNext24Hours) return time;
+  if (isSameDate) return time;
   const monthDayTime = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${time}`;
   if (date.getFullYear() === now.getFullYear()) return monthDayTime;
   return `${date.getFullYear()}-${monthDayTime}`;
@@ -7090,6 +7138,18 @@ const normalizeShapeMatchRole = (value: unknown, fallback: ShapeMatchRole = 'off
   value === 'optional' || value === 'required' || value === 'off' ? value : fallback
 );
 
+const normalizeSceneIdentityScope = (value: unknown, fallback: SceneIdentityScope = 'none'): SceneIdentityScope => {
+  if (value === 'none' || value === 'local' || value === 'global') return value;
+  if (value === '无') return 'none';
+  if (value === '局') return 'local';
+  if (value === '全') return 'global';
+  return fallback;
+};
+
+const legacySceneIdentityScope = (shape: DataAnnotationShape, role: ShapeMatchRole): SceneIdentityScope => (
+  shape.isSceneIdentity || role !== 'off' ? 'local' : 'none'
+);
+
 const normalizeLegacyShapeMatchRole = (shape: DataAnnotationShape, key: 'imageRole' | 'ocrRole') => {
   const legacyShape = shape as DataAnnotationShape & Record<string, unknown>;
   return normalizeShapeMatchRole(legacyShape[key], 'off');
@@ -7100,11 +7160,22 @@ const normalizeShapeOcrMatchMode = (value: unknown): ShapeOcrMatchMode => (
 );
 
 const SHAPE_MATCH_ROLE_ORDER: ShapeMatchRole[] = ['off', 'required', 'optional'];
+const SCENE_IDENTITY_SCOPE_ORDER: SceneIdentityScope[] = ['none', 'local', 'global'];
 const shapeMatchRoleLabel = (role: ShapeMatchRole) => ({
   off: '关',
   optional: '定',
   required: '必',
 }[role]);
+const shapeSceneIdentityScopeLabel = (scope: SceneIdentityScope) => ({
+  none: '无',
+  local: '局',
+  global: '全',
+}[scope]);
+const shapeSceneIdentityScopeTitle = (scope: SceneIdentityScope) => ({
+  none: '场景标识：不作为场景身份',
+  local: '场景标识：局部，仅在流程上下文或显式候选中参与识别',
+  global: '场景标识：全局，可参与无上下文 detect_scene 默认识别',
+}[scope]);
 const shapeMatchRoleTitle = (kind: 'image' | 'ocr' | 'scene', role: ShapeMatchRole) => {
   const name = kind === 'image' ? '图像' : (kind === 'ocr' ? 'OCR' : '场景标识');
   return {
@@ -7117,6 +7188,11 @@ const nextShapeMatchRole = (role: ShapeMatchRole) => {
   const current = normalizeShapeMatchRole(role);
   const index = SHAPE_MATCH_ROLE_ORDER.indexOf(current);
   return SHAPE_MATCH_ROLE_ORDER[(index + 1) % SHAPE_MATCH_ROLE_ORDER.length];
+};
+const nextSceneIdentityScope = (scope: SceneIdentityScope) => {
+  const current = normalizeSceneIdentityScope(scope);
+  const index = SCENE_IDENTITY_SCOPE_ORDER.indexOf(current);
+  return SCENE_IDENTITY_SCOPE_ORDER[(index + 1) % SCENE_IDENTITY_SCOPE_ORDER.length];
 };
 
 const parseSceneJumpEntry = (value: string): SceneJumpEntry | null => {
@@ -7175,13 +7251,20 @@ const normalizeShapes = (
   const isDailyTaskBlockField = parentIsDailyTaskBlockTemplate;
   const effectiveFloating = isDailyTaskBlockField ? false : Boolean(shape.floating);
   const normalizedSceneIdentityRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+  const normalizedSceneIdentityScope = normalizeSceneIdentityScope(
+    shape.sceneIdentityScope,
+    legacySceneIdentityScope(shape, normalizedSceneIdentityRole),
+  );
+  const effectiveSceneIdentityRole = normalizedSceneIdentityScope === 'none'
+    ? 'off'
+    : (normalizedSceneIdentityRole === 'off' ? 'required' : normalizedSceneIdentityRole);
   const legacyImageMatchRole = normalizeLegacyShapeMatchRole(shape, 'imageRole');
   const legacyOcrMatchRole = normalizeLegacyShapeMatchRole(shape, 'ocrRole');
   const normalizedImageMatchRole = normalizeShapeMatchRole(
     shape.imageMatchRole,
     legacyImageMatchRole !== 'off'
       ? legacyImageMatchRole
-      : (effectiveFloating ? 'required' : (normalizedSceneIdentityRole !== 'off' ? normalizedSceneIdentityRole : 'off')),
+      : (effectiveFloating ? 'required' : (effectiveSceneIdentityRole !== 'off' ? effectiveSceneIdentityRole : 'off')),
   );
   const normalizedOcrMatchRole = normalizeShapeMatchRole(
     shape.ocrMatchRole,
@@ -7197,8 +7280,9 @@ const normalizeShapes = (
     floating: effectiveFloating,
     jitterEnabled: isDailyTaskBlockField ? false : Boolean(shape.jitterEnabled),
     jitterRadius: normalizeShapeJitterRadius(shape.jitterRadius),
-    isSceneIdentity: normalizedSceneIdentityRole !== 'off',
-    sceneIdentityRole: normalizedSceneIdentityRole,
+    isSceneIdentity: normalizedSceneIdentityScope !== 'none',
+    sceneIdentityRole: effectiveSceneIdentityRole,
+    sceneIdentityScope: normalizedSceneIdentityScope,
     sceneJumpTarget: typeof shape.sceneJumpTarget === 'string'
       ? normalizeSceneJumpTargetText(shape.sceneJumpTarget)
       : (typeof shape.sceneJumpTarget === 'number' ? String(shape.sceneJumpTarget) : ''),
@@ -8021,7 +8105,12 @@ const selectedShapeDetectDebug = computed(() => (
 ));
 const selectedShapeImageMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.imageMatchRole));
 const selectedShapeOcrMatchRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.ocrMatchRole, selectedShape.value?.ocrEnabled ? 'required' : 'off'));
-const selectedShapeSceneIdentityRole = computed(() => normalizeShapeMatchRole(selectedShape.value?.sceneIdentityRole, selectedShape.value?.isSceneIdentity ? 'required' : 'off'));
+const selectedShapeSceneIdentityScope = computed(() => {
+  const shape = selectedShape.value;
+  if (!shape) return 'none';
+  const role = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+  return normalizeSceneIdentityScope(shape.sceneIdentityScope, legacySceneIdentityScope(shape, role));
+});
 const cycleSelectedShapeMatchRole = (kind: 'image' | 'ocr') => {
   const shape = selectedShape.value;
   if (!shape || !isDrawableShape(shape)) return;
@@ -8032,12 +8121,15 @@ const cycleSelectedShapeMatchRole = (kind: 'image' | 'ocr') => {
   shape.ocrMatchRole = nextShapeMatchRole(normalizeShapeMatchRole(shape.ocrMatchRole, shape.ocrEnabled ? 'required' : 'off'));
   shape.ocrEnabled = shape.ocrMatchRole !== 'off';
 };
-const cycleSelectedShapeSceneIdentityRole = () => {
+const cycleSelectedShapeSceneIdentityScope = () => {
   const shape = selectedShape.value;
   if (!shape || !isDrawableShape(shape)) return;
-  shape.sceneIdentityRole = nextShapeMatchRole(normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off'));
-  shape.isSceneIdentity = shape.sceneIdentityRole !== 'off';
-  if (shape.sceneIdentityRole !== 'off' && !shapePrimaryMatchKind(shape)) {
+  const currentRole = normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
+  const nextScope = nextSceneIdentityScope(normalizeSceneIdentityScope(shape.sceneIdentityScope, legacySceneIdentityScope(shape, currentRole)));
+  shape.sceneIdentityScope = nextScope;
+  shape.isSceneIdentity = nextScope !== 'none';
+  shape.sceneIdentityRole = nextScope === 'none' ? 'off' : (currentRole === 'off' ? 'required' : currentRole);
+  if (nextScope !== 'none' && !shapePrimaryMatchKind(shape)) {
     shape.imageMatchRole = shape.sceneIdentityRole;
   }
 };
@@ -8079,7 +8171,10 @@ const shapeHasRequiredMatch = (shape: DataAnnotationShape) => (
   || (shapeOcrMatchRole(shape) === 'required' && Boolean(shape.ocrText?.trim()))
 );
 const shapeSceneIdentityRole = (shape: DataAnnotationShape) => normalizeShapeMatchRole(shape.sceneIdentityRole, shape.isSceneIdentity ? 'required' : 'off');
-const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityRole(shape) !== 'off';
+const shapeSceneIdentityScope = (shape: DataAnnotationShape) => (
+  normalizeSceneIdentityScope(shape.sceneIdentityScope, legacySceneIdentityScope(shape, shapeSceneIdentityRole(shape)))
+);
+const isSceneIdentityShape = (shape: DataAnnotationShape) => shapeSceneIdentityScope(shape) !== 'none';
 
 const shapeBoxIou = (a: DataAnnotationShape, b: DataAnnotationShape) => {
   const left = Math.max(a.x, b.x);
@@ -9109,6 +9204,7 @@ const createRecordedGameShape = (
     jitterRadius: 4,
     isSceneIdentity: shouldMarkScene,
     sceneIdentityRole: shouldMarkScene ? 'required' : 'off',
+    sceneIdentityScope: shouldMarkScene ? 'local' : 'none',
     sceneJumpTarget: '',
     contentDirection: action === 'drag' && endPoint ? dragDirectionOf(point, endPoint) : 'none',
     imageMatchRole: shouldMarkScene ? 'required' : 'off',
@@ -9327,6 +9423,7 @@ const addAnnotationShape = () => {
     jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
+    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: 'off',
@@ -10872,6 +10969,7 @@ const createLinkedShapeForImage = (image: DataAnnotationAssetNode, imageId: numb
     jitterRadius: normalizeShapeJitterRadius(source?.jitterRadius),
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
+    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: source?.imageMatchRole ?? 'off',
@@ -11379,6 +11477,7 @@ const buildShapeBox = (startX: number, startY: number, endX: number, endY: numbe
   jitterRadius: 4,
   isSceneIdentity: false,
   sceneIdentityRole: 'off',
+  sceneIdentityScope: 'none',
   sceneJumpTarget: '',
   contentDirection: 'none',
   imageMatchRole: 'off',
@@ -11463,6 +11562,7 @@ const finishShapeDraft = (event: PointerEvent) => {
     jitterRadius: 4,
     isSceneIdentity: false,
     sceneIdentityRole: 'off',
+    sceneIdentityScope: 'none',
     sceneJumpTarget: '',
     contentDirection: 'none',
     imageMatchRole: 'off',
@@ -13920,6 +14020,24 @@ const finishShapeDrag = () => {
 }
 
 .shape-condition-toggle.is-required {
+  border-color: #67c23a;
+  color: #fff;
+  background: #67c23a;
+}
+
+.shape-condition-toggle.is-scope-none {
+  border-color: #dcdfe6;
+  color: #909399;
+  background: #fff;
+}
+
+.shape-condition-toggle.is-scope-local {
+  border-color: #409eff;
+  color: #409eff;
+  background: #ecf5ff;
+}
+
+.shape-condition-toggle.is-scope-global {
   border-color: #67c23a;
   color: #fff;
   background: #67c23a;

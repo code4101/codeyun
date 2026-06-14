@@ -26,6 +26,7 @@ from backend.core.background_task_queue import background_task_queue
 from backend.core.note_progress import get_completion_progress_expr, is_note_system_custom_field_key
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import (
+    CodexMaintenanceFeedback,
     CodexDailySummaryRun,
     CodexDiaryImportRun,
     NoteMetadataFeedback,
@@ -49,6 +50,7 @@ NOTE_METADATA_FEEDBACK_STATUS_CONSUMED = "consumed"
 NOTE_METADATA_FEEDBACK_COALESCE_SECONDS = 10 * 60
 NOTE_METADATA_FEEDBACK_TRIGGER_THRESHOLD = 200
 NOTE_METADATA_FEEDBACK_CONSUME_LIMIT = 200
+CODEX_MAINTENANCE_FEEDBACK_CONSUME_LIMIT = 50
 NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS = 30 * 24 * 60 * 60
 NOTE_METADATA_FEEDBACK_CONTENT_SUMMARY_LIMIT = 600
 NOTE_METADATA_FEEDBACK_PROVIDER_ID = "note-metadata-feedback-optimizer"
@@ -66,6 +68,21 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 metadata_feedback_scheduler = BackgroundScheduler()
+
+
+def _classify_codex_maintenance_error(error_message: str) -> str:
+    text = str(error_message or "").lower()
+    if any(token in text for token in ("timeout", "timed out", "超时")):
+        return "timeout"
+    if any(token in text for token in ("json", "decode", "parse", "解析")):
+        return "parse_error"
+    if any(token in text for token in ("quota", "rate limit", "429", "限流", "额度")):
+        return "provider_limit"
+    if any(token in text for token in ("connection", "connect", "network", "unavailable", "网络", "不可用")):
+        return "source_unavailable"
+    if any(token in text for token in ("permission", "forbidden", "unauthorized", "403", "401", "权限")):
+        return "permission"
+    return "runtime_error"
 
 
 def _safe_json_value(value: Any) -> Any:
@@ -315,23 +332,98 @@ def record_note_metadata_feedback_for_created_note(
     )
 
 
+def record_codex_maintenance_feedback(
+    session: Session,
+    *,
+    source_kind: str,
+    source_ref_id: str,
+    error_message: str,
+    user_id: int | None = None,
+    source_date: str = "",
+    stage: str = "",
+    context: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> CodexMaintenanceFeedback | None:
+    normalized_source_kind = str(source_kind or "").strip()
+    normalized_source_ref_id = str(source_ref_id or "").strip()
+    normalized_error_message = str(error_message or "").strip()
+    if not normalized_source_kind or not normalized_source_ref_id or not normalized_error_message:
+        return None
+
+    now_ts = float(now or time.time())
+    error_type = _classify_codex_maintenance_error(normalized_error_message)
+    existing = session.exec(
+        select(CodexMaintenanceFeedback)
+        .where(
+            CodexMaintenanceFeedback.status == NOTE_METADATA_FEEDBACK_STATUS_PENDING,
+            CodexMaintenanceFeedback.source_kind == normalized_source_kind,
+            CodexMaintenanceFeedback.source_ref_id == normalized_source_ref_id,
+        )
+        .order_by(CodexMaintenanceFeedback.last_event_at.desc())
+    ).first()
+    safe_context = _safe_json_value(context or {})
+    if existing:
+        existing.user_id = user_id or existing.user_id
+        existing.source_date = str(source_date or existing.source_date or "")
+        existing.stage = str(stage or existing.stage or "")
+        existing.error_type = error_type
+        existing.error_message = normalized_error_message
+        existing.context_json = safe_context
+        existing.event_count = int(existing.event_count or 1) + 1
+        existing.last_event_at = now_ts
+        existing.updated_at = now_ts
+        session.add(existing)
+        return existing
+
+    row = CodexMaintenanceFeedback(
+        user_id=user_id,
+        status=NOTE_METADATA_FEEDBACK_STATUS_PENDING,
+        source_kind=normalized_source_kind,
+        source_ref_id=normalized_source_ref_id,
+        source_date=str(source_date or ""),
+        stage=str(stage or ""),
+        error_type=error_type,
+        error_message=normalized_error_message,
+        context_json=safe_context,
+        first_event_at=now_ts,
+        last_event_at=now_ts,
+        created_at=now_ts,
+        updated_at=now_ts,
+    )
+    session.add(row)
+    return row
+
+
 def get_note_metadata_feedback_status(session: Session) -> dict[str, Any]:
     pending_count = session.exec(
         select(func.count()).select_from(NoteMetadataFeedback).where(NoteMetadataFeedback.status == "pending")
     ).one()
+    maintenance_pending_count = session.exec(
+        select(func.count()).select_from(CodexMaintenanceFeedback).where(CodexMaintenanceFeedback.status == "pending")
+    ).one()
     consumed_count = session.exec(
         select(func.count()).select_from(NoteMetadataFeedback).where(NoteMetadataFeedback.status == "consumed")
     ).one()
+    maintenance_consumed_count = session.exec(
+        select(func.count()).select_from(CodexMaintenanceFeedback).where(CodexMaintenanceFeedback.status == "consumed")
+    ).one()
     compressed_count = session.exec(
         select(func.count()).select_from(NoteMetadataFeedback).where(NoteMetadataFeedback.compressed_at.is_not(None))
+    ).one()
+    maintenance_compressed_count = session.exec(
+        select(func.count()).select_from(CodexMaintenanceFeedback).where(CodexMaintenanceFeedback.compressed_at.is_not(None))
     ).one()
     latest_run = session.exec(
         select(NoteMetadataFeedbackOptimizationRun).order_by(NoteMetadataFeedbackOptimizationRun.created_at.desc())
     ).first()
     return {
         "pending_count": int(pending_count or 0),
+        "maintenance_pending_count": int(maintenance_pending_count or 0),
+        "total_pending_count": int(pending_count or 0) + int(maintenance_pending_count or 0),
         "consumed_count": int(consumed_count or 0),
+        "maintenance_consumed_count": int(maintenance_consumed_count or 0),
         "compressed_count": int(compressed_count or 0),
+        "maintenance_compressed_count": int(maintenance_compressed_count or 0),
         "trigger_threshold": NOTE_METADATA_FEEDBACK_TRIGGER_THRESHOLD,
         "coalesce_seconds": NOTE_METADATA_FEEDBACK_COALESCE_SECONDS,
         "cleanup_retention_days": int(NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS / 86400),
@@ -405,10 +497,15 @@ def _is_automatic_window(now_dt: datetime | None = None) -> bool:
 
 
 def _pending_feedback_count(session: Session) -> int:
-    value = session.exec(
+    metadata_value = session.exec(
         select(func.count()).select_from(NoteMetadataFeedback).where(NoteMetadataFeedback.status == NOTE_METADATA_FEEDBACK_STATUS_PENDING)
     ).one()
-    return int(value or 0)
+    maintenance_value = session.exec(
+        select(func.count())
+        .select_from(CodexMaintenanceFeedback)
+        .where(CodexMaintenanceFeedback.status == NOTE_METADATA_FEEDBACK_STATUS_PENDING)
+    ).one()
+    return int(metadata_value or 0) + int(maintenance_value or 0)
 
 
 def create_note_metadata_feedback_optimization_run(
@@ -468,17 +565,31 @@ def _select_feedback_samples(session: Session) -> list[NoteMetadataFeedback]:
     ).all()
 
 
-def _build_optimizer_prompt(samples: list[NoteMetadataFeedback]) -> str:
+def _select_codex_maintenance_samples(session: Session) -> list[CodexMaintenanceFeedback]:
+    return session.exec(
+        select(CodexMaintenanceFeedback)
+        .where(CodexMaintenanceFeedback.status == NOTE_METADATA_FEEDBACK_STATUS_PENDING)
+        .order_by(CodexMaintenanceFeedback.last_event_at)
+        .limit(CODEX_MAINTENANCE_FEEDBACK_CONSUME_LIMIT)
+    ).all()
+
+
+def _build_optimizer_prompt(
+    samples: list[NoteMetadataFeedback],
+    maintenance_samples: list[CodexMaintenanceFeedback] | None = None,
+) -> str:
+    maintenance_samples = maintenance_samples or []
     payload = {
-        "task": "Analyze note metadata correction feedback and directly improve CodeYun source code for AI分类 and Codex diary metadata/title generation.",
+        "task": "Analyze note metadata correction feedback and Codex daily/diary failure samples, then directly improve CodeYun source code for AI分类, Codex 日报, and Codex 日记 generation.",
         "allowed_files": list(NOTE_METADATA_FEEDBACK_ALLOWED_FILES),
         "rules": [
             "Only edit allowed files.",
-            "Prefer small prompt/rule/test improvements grounded in the samples.",
+            "Prefer small prompt/rule/test improvements grounded in the feedback and failure samples.",
             "Do not change unrelated product behavior.",
+            "Do not treat a single transient timeout or unavailable remote device as proof of a code bug.",
             "If no safe improvement is justified, leave files unchanged and explain why.",
         ],
-        "samples": [
+        "metadata_feedback_samples": [
             {
                 "id": item.id,
                 "source_kinds": item.source_kinds or [item.source_kind],
@@ -490,6 +601,20 @@ def _build_optimizer_prompt(samples: list[NoteMetadataFeedback]) -> str:
                 "event_count": item.event_count,
             }
             for item in samples
+        ],
+        "codex_failure_samples": [
+            {
+                "id": item.id,
+                "source_kind": item.source_kind,
+                "source_ref_id": item.source_ref_id,
+                "source_date": item.source_date,
+                "stage": item.stage,
+                "error_type": item.error_type,
+                "error_message": item.error_message,
+                "context": item.context_json or {},
+                "event_count": item.event_count,
+            }
+            for item in maintenance_samples
         ],
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -562,6 +687,20 @@ def _consume_feedback_samples(session: Session, samples: list[NoteMetadataFeedba
         session.add(item)
 
 
+def _consume_codex_maintenance_samples(
+    session: Session,
+    samples: list[CodexMaintenanceFeedback],
+    run_id: str,
+    now_ts: float,
+) -> None:
+    for item in samples:
+        item.status = NOTE_METADATA_FEEDBACK_STATUS_CONSUMED
+        item.consumer_run_id = run_id
+        item.consumed_at = now_ts
+        item.updated_at = now_ts
+        session.add(item)
+
+
 def cleanup_consumed_note_metadata_feedback(session: Session, *, now: float | None = None) -> int:
     now_ts = float(now or time.time())
     cutoff = now_ts - NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS
@@ -577,6 +716,26 @@ def cleanup_consumed_note_metadata_feedback(session: Session, *, now: float | No
         row.before_snapshot = None
         row.after_snapshot = None
         row.content_summary = ""
+        row.compressed_at = now_ts
+        row.updated_at = now_ts
+        session.add(row)
+    return len(rows)
+
+
+def cleanup_consumed_codex_maintenance_feedback(session: Session, *, now: float | None = None) -> int:
+    now_ts = float(now or time.time())
+    cutoff = now_ts - NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS
+    rows = session.exec(
+        select(CodexMaintenanceFeedback).where(
+            CodexMaintenanceFeedback.status == NOTE_METADATA_FEEDBACK_STATUS_CONSUMED,
+            CodexMaintenanceFeedback.consumed_at.is_not(None),
+            CodexMaintenanceFeedback.consumed_at < cutoff,
+            CodexMaintenanceFeedback.compressed_at.is_(None),
+        )
+    ).all()
+    for row in rows:
+        row.context_json = {}
+        row.error_message = ""
         row.compressed_at = now_ts
         row.updated_at = now_ts
         session.add(row)
@@ -605,7 +764,8 @@ def run_note_metadata_feedback_optimization_worker(
         session.commit()
 
         samples = _select_feedback_samples(session)
-        if not samples:
+        maintenance_samples = _select_codex_maintenance_samples(session)
+        if not samples and not maintenance_samples:
             run.status = "skipped"
             run.stage = "empty"
             run.stage_label = "没有待处理反馈"
@@ -616,7 +776,7 @@ def run_note_metadata_feedback_optimization_worker(
             session.commit()
             return
 
-        run.sample_count = len(samples)
+        run.sample_count = len(samples) + len(maintenance_samples)
         run.stage = "calling_codex"
         run.stage_label = "调用 Codex CLI 分析反馈"
         run.heartbeat_at = time.time()
@@ -639,9 +799,10 @@ def run_note_metadata_feedback_optimization_worker(
                 model=provider.default_model,
                 system_prompt=(
                     "你是 CodeYun 的后台代码优化代理。你只能根据输入样本改进 AI分类 和 Codex 日记生成的标题/元标签准确性。"
+                    "也可以根据 Codex 日报/日记失败样本改进错误处理、提示词、解析和兜底逻辑。"
                     "允许直接修改工作区源码，但只能改 allowed_files。"
                 ),
-                messages=[{"role": "user", "content": _build_optimizer_prompt(samples)}],
+                messages=[{"role": "user", "content": _build_optimizer_prompt(samples, maintenance_samples)}],
                 timeout_seconds=provider.timeout_seconds,
                 extra_providers=(provider,),
             )
@@ -700,12 +861,19 @@ def run_note_metadata_feedback_optimization_worker(
 
         now_ts = time.time()
         _consume_feedback_samples(session, samples, run.id, now_ts)
+        _consume_codex_maintenance_samples(session, maintenance_samples, run.id, now_ts)
         cleanup_count = cleanup_consumed_note_metadata_feedback(session, now=now_ts)
+        maintenance_cleanup_count = cleanup_consumed_codex_maintenance_feedback(session, now=now_ts)
         run.consumed_feedback_ids = [item.id for item in samples]
         run.status = "completed"
         run.stage = "completed"
-        run.stage_label = f"已消费 {len(samples)} 条反馈"
-        run.test_results = {"items": test_results, "cleanup_count": cleanup_count}
+        run.stage_label = f"已消费 {len(samples) + len(maintenance_samples)} 条反馈"
+        run.test_results = {
+            "items": test_results,
+            "cleanup_count": cleanup_count,
+            "maintenance_cleanup_count": maintenance_cleanup_count,
+            "consumed_maintenance_feedback_ids": [item.id for item in maintenance_samples],
+        }
         run.finished_at = now_ts
         run.updated_at = now_ts
         run.heartbeat_at = now_ts

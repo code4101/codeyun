@@ -384,6 +384,30 @@ const rgbToHex = (rgb: { r: number; g: number; b: number }) => (
   `#${[rgb.r, rgb.g, rgb.b].map(channel => Math.round(channel).toString(16).padStart(2, '0')).join('')}`.toUpperCase()
 );
 
+const relativeLuminance = (hex: string) => {
+  const { r, g, b } = hexToRgb(hex);
+  const normalize = (channel: number) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return normalize(r) * 0.2126 + normalize(g) * 0.7152 + normalize(b) * 0.0722;
+};
+
+const contrastRatio = (foreground: string, background: string) => {
+  const fg = relativeLuminance(foreground);
+  const bg = relativeLuminance(background);
+  const lighter = Math.max(fg, bg);
+  const darker = Math.min(fg, bg);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
+const ensureReadableForeground = (foreground: string, background: string) => {
+  const normalizedForeground = normalizeNodeColor(foreground) ?? NODE_TYPES.general.baseColor;
+  const normalizedBackground = normalizeNodeColor(background) ?? '#FFFFFF';
+  if (contrastRatio(normalizedForeground, normalizedBackground) >= 3) return normalizedForeground;
+  return getReadableTextColor(hexToRgb(normalizedBackground));
+};
+
 export const resolveNoteTypesColor = (
   noteTypes: unknown,
   fallbackType: string | null | undefined = 'general'
@@ -459,6 +483,8 @@ const createBaseNodeVisualStyle = (type: NodeTypeItem, status: NodeStatusItem) =
       style.opacity = '0.6';
       break;
   }
+
+  style.color = ensureReadableForeground(type.baseColor, style.backgroundColor);
 
   return style;
 };

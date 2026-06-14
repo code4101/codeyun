@@ -26,7 +26,13 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_xianyuan",
     "daily_yaowang",
     "daily_yaozu",
+    "daily_youli",
+    "daily_yihuo",
+    "daily_gongfeng",
+    "daily_xianshi",
+    "daily_dungeon",
     "daily_assistant",
+    "daily_shuangxiu",
     "mail_cleanup",
     "xianfu_visit_partner",
     "xianfu_learn_skill",
@@ -46,13 +52,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> str:
         del payload, stop_event
         frame = runner._screencap(ctx)
-        key, score = runner._identify_scene(ctx, frame)
-        scene_id = runner.scene_ids.get(key) if runner._scene_matches(key, score) else None
+        scene_id, score = runner._identify_scene_number(ctx, frame)
         with runner._lock:
             runner._status.update({
                 "phase": "manual_tick",
                 "current_scene": scene_id,
-                "message": f"单步识别：{key if scene_id is not None else 'unknown'} {score:.0f}%",
+                "message": f"单步识别：{('#' + str(scene_id)) if scene_id is not None else 'unknown'} {score:.0f}%",
                 "updated_at": time.time(),
             })
             runner._log_locked("detail", runner._status["message"])
@@ -124,8 +129,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        del payload
-        return runner._execute_daily_signup_task(ctx, stop_event)
+        return runner._execute_daily_signup_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_boss", "日常_首领", scheduler_supported=True)
     def _run_data_annotation_daily_boss_manual_job(
@@ -190,7 +194,52 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     ) -> Any:
         return runner._execute_daily_yaozu_task(ctx, stop_event, payload)
 
-    @register_fanxiu_data_annotation_manual_job("daily_assistant", "日常_助手", scheduler_supported=False)
+    @register_fanxiu_data_annotation_manual_job("daily_youli", "日常_游历", scheduler_supported=True)
+    def _run_data_annotation_daily_youli_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_youli_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_yihuo", "日常_异火", scheduler_supported=True)
+    def _run_data_annotation_daily_yihuo_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_yihuo_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_gongfeng", "日常_供奉", scheduler_supported=True)
+    def _run_data_annotation_daily_gongfeng_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_gongfeng_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_xianshi", "日常_仙市", scheduler_supported=True)
+    def _run_data_annotation_daily_xianshi_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_xianshi_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_dungeon", "日常_每日副本", scheduler_supported=True)
+    def _run_data_annotation_daily_dungeon_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_dungeon_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_assistant", "日常_助手", scheduler_supported=True)
     def _run_data_annotation_daily_assistant_manual_job(
         runner: Any,
         ctx: dict[str, Any],
@@ -198,6 +247,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_assistant_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_shuangxiu", "日常_双修", scheduler_supported=True)
+    def _run_data_annotation_daily_shuangxiu_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_shuangxiu_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("mail_cleanup", "邮件_清理", scheduler_supported=True)
     def _run_data_annotation_mail_cleanup_manual_job(

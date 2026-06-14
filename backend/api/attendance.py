@@ -1329,9 +1329,7 @@ def _sync_attendance_wjx_sheet_course_info_for_row(
         current_owner = _normalize_attendance_wjx_sheet_cell(
             row[owner_column_index] if owner_column_index < len(row) else ""
         )
-        next_owner = _normalize_attendance_wjx_course_owner_display(current_owner)
-        if not next_owner and course_owner:
-            next_owner = course_owner
+        next_owner = course_owner if course_owner else _normalize_attendance_wjx_course_owner_display(current_owner)
         if next_owner != current_owner:
             _set_attendance_wjx_sheet_cell(row, columns, "考勤负责人", next_owner)
             changed = True
@@ -1739,6 +1737,76 @@ def _seed_attendance_wjx_sheet_from_entries(
             course_owner_map=course_owner_map,
         )
     return next_document
+
+
+def _sync_attendance_wjx_sheet_rows_from_entries(
+    session: Session,
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    activity_ids = [FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]
+    entries = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id.in_(activity_ids))
+        .order_by(AttendanceWjxDataEntry.seq.asc(), AttendanceWjxDataEntry.id.asc())
+    ).all()
+    if not entries:
+        return _normalize_attendance_wjx_sheet_document(document_json), False
+
+    next_document = _normalize_attendance_wjx_sheet_document(document_json)
+    columns = list(next_document["columns"])
+    rows = [list(row) for row in next_document["rows"]]
+    row_index_by_seq: dict[int, int] = {}
+    for row_index, row in enumerate(rows):
+        seq = _parse_attendance_wjx_sheet_seq(_get_attendance_wjx_sheet_cell(row, columns, "序号"))
+        if seq is not None:
+            row_index_by_seq.setdefault(seq, row_index)
+
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
+    changed = False
+    for entry in entries:
+        seq = _parse_attendance_wjx_sheet_seq(entry.seq)
+        if seq is None:
+            continue
+        values = _entry_to_attendance_wjx_sheet_values(entry)
+        row_index = row_index_by_seq.get(seq)
+        inserted = row_index is None
+        if inserted:
+            row = [""] * len(columns)
+            row_index = _get_attendance_wjx_sheet_insert_index(rows, columns, seq)
+            rows.insert(row_index, row)
+            row_index_by_seq = {
+                current_seq: (current_index + 1 if current_index >= row_index else current_index)
+                for current_seq, current_index in row_index_by_seq.items()
+            }
+            row_index_by_seq[seq] = row_index
+            _shift_attendance_wjx_sheet_cell_meta_rows_for_insert(
+                next_document,
+                insert_index=row_index,
+                amount=1,
+            )
+        else:
+            row = list(rows[row_index])
+
+        original_row = list(row)
+        existing_process_status = _get_attendance_wjx_sheet_cell(row, columns, "处理状态")
+        for header in ATTENDANCE_WJX_DATA_COLUMNS:
+            if header == "处理状态" and existing_process_status:
+                continue
+            if header in values:
+                _set_attendance_wjx_sheet_cell(row, columns, header, values.get(header))
+
+        rows[row_index] = row
+        next_document["rows"] = rows
+        course_info_changed = _sync_attendance_wjx_sheet_course_info_for_row(
+            next_document,
+            row_index=row_index,
+            row=row,
+            columns=columns,
+            course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
+        )
+        changed = changed or inserted or row != original_row or course_info_changed
+    return next_document, changed
 
 
 def _persist_attendance_wjx_sheet_document(

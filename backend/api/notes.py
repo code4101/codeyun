@@ -107,6 +107,7 @@ from backend.core.note_progress import (
 from backend.core.note_metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
+    record_codex_maintenance_feedback,
     record_note_metadata_feedback_for_created_note,
     record_note_metadata_feedback_for_update,
     serialize_note_metadata_feedback_optimization_run,
@@ -3040,6 +3041,7 @@ def _mark_codex_diary_import_run_failed(
         failed_run = active_session.get(CodexDiaryImportRun, run_id)
         if failed_run is None:
             return False
+        failed_stage = failed_run.stage
         failed_run.status = "failed"
         failed_run.stage = "failed"
         failed_run.stage_label = "导入失败"
@@ -3048,6 +3050,29 @@ def _mark_codex_diary_import_run_failed(
         failed_run.updated_at = now
         failed_run.heartbeat_at = now
         active_session.add(failed_run)
+        try:
+            record_codex_maintenance_feedback(
+                active_session,
+                source_kind="codex_diary_import",
+                source_ref_id=failed_run.id,
+                user_id=failed_run.user_id,
+                source_date=failed_run.diary_date,
+                stage=failed_stage or failed_run.stage,
+                error_message=error_message,
+                context={
+                    "scope_key": failed_run.scope_key,
+                    "entry_ids": failed_run.entry_ids or [],
+                    "entry_snapshot": failed_run.entry_snapshot or [],
+                    "timezone": failed_run.timezone,
+                    "source_thread_count": failed_run.source_thread_count,
+                    "source_turn_count": failed_run.source_turn_count,
+                    "created_note_count": failed_run.created_note_count,
+                    "duplicate_note_count": len(failed_run.duplicate_note_ids or []),
+                    "result_json": failed_run.result_json or {},
+                },
+            )
+        except Exception:
+            pass
         active_session.commit()
         return True
 
