@@ -21,8 +21,19 @@ def _completed_text(process: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(part.strip() for part in (process.stdout, process.stderr) if part and part.strip())
 
 
+def _hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def _run_command(command: list[str], timeout: float = 8) -> str:
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.run(
         command,
         capture_output=True,
@@ -30,7 +41,7 @@ def _run_command(command: list[str], timeout: float = 8) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        creationflags=creationflags,
+        **_hidden_subprocess_kwargs(),
     )
     output = _completed_text(process)
     if process.returncode != 0:

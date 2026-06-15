@@ -786,9 +786,14 @@ def _ensure_doctor_watch_background(
         command.append("--auto-run-due")
 
     creationflags = 0
+    startupinfo = None
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
     stdout_fh = stdout_path.open("ab")
     stderr_fh = stderr_path.open("ab")
     try:
@@ -800,6 +805,7 @@ def _ensure_doctor_watch_background(
             stderr=stderr_fh,
             close_fds=(os.name != "nt"),
             creationflags=creationflags,
+            startupinfo=startupinfo,
         )
     finally:
         stdout_fh.close()

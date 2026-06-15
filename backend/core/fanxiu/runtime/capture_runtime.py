@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
 
@@ -25,6 +27,22 @@ DEFAULT_CAPTURE_SNAPSHOT_INTERVAL_SECONDS = 10.0
 DEFAULT_CAPTURE_WATCHDOG_INTERVAL_SECONDS = 60.0
 DEFAULT_CAPTURE_STREAM_TO_LOCAL = False
 MIN_CAPTURE_PCAP_BYTES = 24
+
+
+def _hidden_process_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        ),
+        "startupinfo": startupinfo,
+    }
 
 
 def _now_label() -> str:
@@ -441,7 +459,6 @@ class FanxiuCaptureRuntimeService:
             "port",
             "5555",
         ]
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._tcpdump_process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -449,7 +466,7 @@ class FanxiuCaptureRuntimeService:
             text=True,
             encoding="utf-8",
             errors="replace",
-            creationflags=creationflags,
+            **_hidden_process_kwargs(),
         )
         self._current_remote_pcap_path = remote_path
         self._current_pcap_path = str(local_path)
@@ -472,12 +489,11 @@ class FanxiuCaptureRuntimeService:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         shell_command = "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555 2>/dev/null"
         command = [str(self._adb_path()), "-s", self.device_id, "shell", "-T", shell_command]
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            creationflags=creationflags,
+            **_hidden_process_kwargs(),
         )
         self._tcpdump_process = process
         self._current_remote_pcap_path = ""
@@ -634,45 +650,37 @@ class FanxiuCaptureRuntimeService:
     def _cleanup_stale_local_tcpdump_adb_locked(self) -> None:
         if os.name != "nt":
             return
-        escaped_device = self.device_id.replace("'", "''")
-        script = (
-            "$ErrorActionPreference='SilentlyContinue'; "
-            "$current=$PID; "
-            "Get-CimInstance Win32_Process | "
-            "Where-Object { "
-            "$_.ProcessId -ne $current -and "
-            "$_.Name -ieq 'adb.exe' -and "
-            "$_.CommandLine -and "
-            "$_.CommandLine -like '*shell tcpdump*' -and "
-            "($_.CommandLine -like '*codeyun_fanxiu_runtime_*' -or "
-            "$_.CommandLine -like '*shell -T tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555*' -or "
-            "$_.CommandLine -like '*shell tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555*') -and "
-            f"$_.CommandLine -like '*{escaped_device}*' "
-            "} | ForEach-Object { "
-            "Stop-Process -Id $_.ProcessId -Force; "
-            "Write-Output $_.ProcessId "
-            "}"
-        )
-        try:
-            process = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", script],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=8,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception as exc:
-            self._log(f"stale local adb tcpdump cleanup failed: {exc}")
-            return
-        killed = [line.strip() for line in process.stdout.splitlines() if line.strip().isdigit()]
+        killed: list[str] = []
+        warnings: list[str] = []
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                name = str(proc.info.get("name") or "").lower()
+                command_line = " ".join(proc.info.get("cmdline") or [])
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+                warnings.append(str(exc))
+                continue
+            if name != "adb.exe":
+                continue
+            if str(proc.pid) == str(os.getpid()):
+                continue
+            if self.device_id not in command_line:
+                continue
+            if "shell tcpdump" not in command_line and "shell -T tcpdump" not in command_line:
+                continue
+            if (
+                "codeyun_fanxiu_runtime_" not in command_line
+                and "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555" not in command_line
+            ):
+                continue
+            try:
+                proc.kill()
+                killed.append(str(proc.pid))
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+                warnings.append(str(exc))
         if killed:
             self._log(f"stale local adb tcpdump cleaned: {', '.join(killed[:20])}")
-        if process.returncode != 0:
-            detail = self._compact_output(_completed_text(process))
-            if detail:
-                self._log(f"stale local adb tcpdump cleanup warning: {detail}")
+        if warnings:
+            self._log(f"stale local adb tcpdump cleanup warning: {'; '.join(warnings[:3])}")
 
     def _start_runtime_packet_sync_thread(self, local_path: str) -> None:
         thread = threading.Thread(
@@ -852,7 +860,7 @@ class FanxiuCaptureRuntimeService:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **_hidden_process_kwargs(),
         )
         output = _completed_text(process)
         if process.returncode != 0:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -211,6 +212,18 @@ def extract_tcp_stream_payloads_with_tshark(
     return bytes(client), bytes(server)
 
 
+def _hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def _run_tshark_allow_partial_stdout(cmd: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         cmd,
@@ -220,6 +233,7 @@ def _run_tshark_allow_partial_stdout(cmd: list[str], *, timeout_seconds: float) 
         capture_output=True,
         timeout=max(1.0, float(timeout_seconds)),
         check=False,
+        **_hidden_subprocess_kwargs(),
     )
     if completed.returncode == 0 or completed.stdout.strip():
         return completed
