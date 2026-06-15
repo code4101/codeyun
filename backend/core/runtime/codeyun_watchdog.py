@@ -192,6 +192,19 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
     }
 
 
+def _resolve_watchdog_python_executable() -> str:
+    executable = Path(sys.executable)
+    if os.name == "nt":
+        venv_pythonw = ROOT_DIR / ".venv" / "Scripts" / "pythonw.exe"
+        if venv_pythonw.is_file():
+            return os.fspath(venv_pythonw)
+        if executable.name.lower() == "python.exe":
+            sibling_pythonw = executable.with_name("pythonw.exe")
+            if sibling_pythonw.is_file():
+                return os.fspath(sibling_pythonw)
+    return os.fspath(executable)
+
+
 def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
     status = get_codeyun_watchdog_status()
     if status.get("running"):
@@ -202,7 +215,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
     log_path = get_codeyun_watchdog_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
-        sys.executable,
+        _resolve_watchdog_python_executable(),
         os.fspath(WATCHDOG_SCRIPT),
         "--loop",
         "--interval",
