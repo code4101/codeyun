@@ -210,7 +210,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_daily_yihuo_task(ctx, stop_event, payload)
+        return runner._execute_daily_runtime_task(
+            ctx,
+            stop_event,
+            payload,
+            task_type="daily_yihuo",
+            label="日常_异火",
+            flow=runner.日常异火流程,
+        )
 
     @register_fanxiu_data_annotation_manual_job("daily_gongfeng", "日常_供奉", scheduler_supported=True)
     def _run_data_annotation_daily_gongfeng_manual_job(

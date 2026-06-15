@@ -12,6 +12,7 @@ import {
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
   runDueFanxiuDataAnnotationSchedulerTasks,
+  runNowFanxiuDataAnnotationSchedulerTask,
   saveFanxiuDataAnnotationSchedulerTasks,
   setFanxiuDataAnnotationSchedulerSettings,
   setFanxiuDataAnnotationRuntimeGuard,
@@ -43,6 +44,7 @@ const contextMenu = ref({
   scope: '',
   itemId: '',
   title: '',
+  task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
 });
 let pollTimer: number | null = null;
 let pollTick = 0;
@@ -105,8 +107,13 @@ const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   return clock ? Date.parse(`1970-01-01T${clock}`) : Number.POSITIVE_INFINITY;
 };
 
+const shouldShowBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  if (!isBusinessTask(task)) return false;
+  return task.supported !== false || task.enabled;
+};
+
 const businessTasks = computed(() => schedulerTasks.value
-  .filter((task) => task.supported && isBusinessTask(task))
+  .filter(shouldShowBusinessTask)
   .sort((a, b) => (
     Number(!a.enabled) - Number(!b.enabled)
     || taskTriggerValue(a) - taskTriggerValue(b)
@@ -164,12 +171,24 @@ const doctorAnnotationTitle = computed(() => {
 });
 const doctorSummaryText = computed(() => String(doctorSnapshot.value.summary || doctorWatchLatest.value?.message || ''));
 const doctorHeartbeat = computed(() => doctorWatchLatest.value?.heartbeat || {});
+const formatHeartbeatAge = (seconds: number) => {
+  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
+  if (safeSeconds < 60) return `${Math.round(safeSeconds)}s`;
+  if (safeSeconds < 3600) {
+    const minutes = safeSeconds / 60;
+    const value = minutes < 10 ? Math.round(minutes * 10) / 10 : Math.round(minutes);
+    return `${value}min`;
+  }
+  const hours = safeSeconds / 3600;
+  const value = hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
+  return `${value}hour`;
+};
 const doctorHeartbeatText = computed(() => {
   const heartbeat = doctorHeartbeat.value;
   if (!doctorWatchLatest.value?.exists) return '';
   if (heartbeat.active) return '巡检进程 在线';
   const age = Number(heartbeat.age_seconds || 0);
-  return age > 0 ? `巡检进程 失联 ${Math.round(age)}s` : '巡检进程 未确认';
+  return age > 0 ? `巡检进程 失联 ${formatHeartbeatAge(age)}` : '巡检进程 未确认';
 });
 const doctorHeartbeatClass = computed(() => (doctorHeartbeat.value.active ? 'is-ok' : 'is-error'));
 const doctorStaleText = computed(() => {
@@ -225,6 +244,13 @@ const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
 
 const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => (task.enabled ? task.retry_after || task.next_time || '' : '');
 
+const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
+  const file = String(entry.source_file || '').trim();
+  const line = entry.source_line ? `:${entry.source_line}` : '';
+  const expr = String(entry.source_expr || '').trim();
+  return file && expr ? `${file}${line}  ${expr}` : '';
+};
+
 const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: string) => {
   contextMenu.value = {
     visible: true,
@@ -233,6 +259,19 @@ const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: st
     scope,
     itemId,
     title,
+    task: null,
+  };
+};
+
+const openTaskMenu = (event: MouseEvent, task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    scope: 'job',
+    itemId: task.id,
+    title: task.label,
+    task,
   };
 };
 
@@ -252,6 +291,13 @@ const openContextLogs = () => {
       title: menu.title,
     },
   });
+};
+
+const runContextTaskNow = () => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task) return;
+  void runAction(`run-now:${task.id}`, () => runNowFanxiuDataAnnotationSchedulerTask(entryId.value, task.id, {}, true));
 };
 
 const openDoctorAnnotationTarget = () => {
@@ -567,7 +613,7 @@ onUnmounted(() => {
               <tr
                 v-for="(task, index) in businessTasks"
                 :key="task.id"
-                @contextmenu.prevent.stop="openLogMenu($event, 'job', task.id, task.label)"
+                @contextmenu.prevent.stop="openTaskMenu($event, task)"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
                 <td><strong>{{ task.label }}</strong></td>
@@ -627,7 +673,7 @@ onUnmounted(() => {
           <span>巡检 {{ doctorSeverityText }}</span>
           <span v-if="doctorHeartbeatText" :class="doctorHeartbeatClass">{{ doctorHeartbeatText }}</span>
           <span v-if="doctorStaleText">{{ doctorStaleText }}</span>
-          <span v-if="doctorSnapshot.checked_at">{{ doctorSnapshot.checked_at }}</span>
+          <span v-if="doctorSnapshot.checked_at">巡检 {{ doctorSnapshot.checked_at }}</span>
         </div>
         <div v-if="doctorActionText" class="runtime-blocking runtime-blocking-action" :title="doctorActionText">
           <span>{{ doctorActionText }}</span>
@@ -652,7 +698,10 @@ onUnmounted(() => {
           <div v-for="(entry, index) in logs" :key="`${entry.time}-${index}`" class="log-row" :class="`is-${entry.kind}`">
             <span>{{ entry.time }}</span>
             <b>{{ entry.kind }}</b>
-            <p>{{ entry.message }}</p>
+            <p>
+              <code v-if="logSourceText(entry)">{{ logSourceText(entry) }}</code>
+              <span>{{ entry.message }}</span>
+            </p>
           </div>
           <div v-if="!logs.length" class="empty-row">暂无日志</div>
         </div>
@@ -665,6 +714,7 @@ onUnmounted(() => {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
+      <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">立即触发</button>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>
@@ -1020,6 +1070,15 @@ onUnmounted(() => {
 .log-row p {
   min-width: 0;
   margin: 0;
+  word-break: break-all;
+}
+
+.log-row code {
+  display: inline-block;
+  margin-right: 10px;
+  color: #0f766e;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
   word-break: break-all;
 }
 

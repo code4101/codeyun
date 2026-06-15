@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { Directive } from 'vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LineChart, type LineSeriesOption } from 'echarts/charts'
 import {
@@ -227,6 +228,7 @@ const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const MAIL_PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const DEFAULT_MAIL_PAGE_SIZE = 20
+const MAIL_REWARD_SLOT_WIDTH = 44
 const DEFAULT_PLAYER_PROFILE_PAGE_SIZE = 50
 const STORAGE_BAG_PREVIEW_LIMIT = 100
 const STORAGE_BAG_WORSHIP_CHART_WIDTH = 640
@@ -625,6 +627,7 @@ const packetProtocolSamplesLoading = ref(false)
 const packetRuntimeInsights = ref<Record<string, any> | null>(null)
 const packetRuntimeInsightsLoading = ref(false)
 const mailRecords = ref<FanxiuMailRecord[]>([])
+const mailFilterStatusSnapshot = ref<Record<string, MailStatusFilter>>({})
 const mailRewardItemCardCache = ref<Record<string, FanxiuItemCard | null>>({})
 const mailRewardItemCardLoading = new Set<string>()
 const mailRecordSelectedStatuses = ref<MailStatusFilter[]>(MAIL_STATUS_OPTIONS.map(option => option.key))
@@ -640,6 +643,57 @@ const updatingMailKeys = ref<string[]>([])
 const mailContentDialogVisible = ref(false)
 const selectedMailContentTitle = ref('')
 const selectedMailContentText = ref('')
+
+type MailRewardLayoutState = {
+  frame: number | null
+  observer: ResizeObserver
+}
+
+const mailRewardLayoutStates = new WeakMap<HTMLElement, MailRewardLayoutState>()
+
+function updateMailRewardLayout(el: HTMLElement) {
+  const itemCount = el.children.length
+  if (!itemCount) {
+    el.style.gridTemplateColumns = ''
+    return
+  }
+  const availableWidth = Math.max(0, el.parentElement?.getBoundingClientRect().width || el.getBoundingClientRect().width)
+  const rowCapacity = Math.max(1, Math.floor(availableWidth / MAIL_REWARD_SLOT_WIDTH))
+  const rowCount = Math.max(1, Math.ceil(itemCount / rowCapacity))
+  const columnCount = Math.min(rowCapacity, Math.ceil(itemCount / rowCount))
+  el.style.gridTemplateColumns = `repeat(${columnCount}, ${MAIL_REWARD_SLOT_WIDTH}px)`
+}
+
+function scheduleMailRewardLayout(el: HTMLElement) {
+  const state = mailRewardLayoutStates.get(el)
+  if (!state || state.frame !== null) return
+  state.frame = window.requestAnimationFrame(() => {
+    state.frame = null
+    updateMailRewardLayout(el)
+  })
+}
+
+const vMailRewardLayout: Directive<HTMLElement, unknown> = {
+  mounted(el) {
+    const observer = new ResizeObserver(() => scheduleMailRewardLayout(el))
+    const state: MailRewardLayoutState = { frame: null, observer }
+    mailRewardLayoutStates.set(el, state)
+    observer.observe(el)
+    if (el.parentElement) observer.observe(el.parentElement)
+    scheduleMailRewardLayout(el)
+  },
+  updated(el) {
+    scheduleMailRewardLayout(el)
+  },
+  unmounted(el) {
+    const state = mailRewardLayoutStates.get(el)
+    if (!state) return
+    if (state.frame !== null) window.cancelAnimationFrame(state.frame)
+    state.observer.disconnect()
+    mailRewardLayoutStates.delete(el)
+  },
+}
+
 const storageBagMainGroup = ref('all')
 const storageBagSubGroup = ref('')
 const storageBagSubGroupMemory = ref<Record<string, string>>({})
@@ -5322,6 +5376,24 @@ function mailStatusKey(row: FanxiuMailRecord) {
   return 'seen'
 }
 
+function mailRecordKey(row: FanxiuMailRecord) {
+  return String(row.mail_key || row.id || row.mail_id || '').trim()
+}
+
+function resetMailFilterStatusSnapshot() {
+  const snapshot: Record<string, MailStatusFilter> = {}
+  for (const row of mailRecords.value) {
+    const key = mailRecordKey(row)
+    if (key) snapshot[key] = mailStatusKey(row) as MailStatusFilter
+  }
+  mailFilterStatusSnapshot.value = snapshot
+}
+
+function mailFilterStatusKey(row: FanxiuMailRecord) {
+  const key = mailRecordKey(row)
+  return (key && mailFilterStatusSnapshot.value[key]) || mailStatusKey(row)
+}
+
 function mailStatusLabel(value: string) {
   return MAIL_STATUS_OPTIONS.find(option => option.key === value)?.label || value || '-'
 }
@@ -5363,17 +5435,34 @@ function isMailStatusUpdating(row: FanxiuMailRecord) {
   return Boolean(key && updatingMailKeys.value.includes(key))
 }
 
+function withMailStatus(row: FanxiuMailRecord, status: MailDesiredStatus): FanxiuMailRecord {
+  return {
+    ...row,
+    status,
+    locked: status === '锁定',
+  }
+}
+
 async function setMailStatus(row: FanxiuMailRecord, status: MailDesiredStatus) {
   const mailKey = String(row.mail_key || '').trim()
   if (!mailKey || isMailStatusUpdating(row) || mailDesiredStatus(row) === status) return
+  const index = mailRecords.value.findIndex(item => item.mail_key === mailKey)
+  const previousRecord = index >= 0 ? mailRecords.value[index] : row
   updatingMailKeys.value = [...updatingMailKeys.value, mailKey]
+  if (index >= 0) {
+    mailRecords.value.splice(index, 1, withMailStatus(previousRecord, status))
+  }
   try {
     const response = await updateFanxiuMailRecordStatus(mailKey, status)
-    const index = mailRecords.value.findIndex(item => item.mail_key === mailKey)
-    if (index >= 0) {
-      mailRecords.value.splice(index, 1, response.record)
+    const latestIndex = mailRecords.value.findIndex(item => item.mail_key === mailKey)
+    if (latestIndex >= 0) {
+      mailRecords.value.splice(latestIndex, 1, response.record)
     }
   } catch (error: any) {
+    const latestIndex = mailRecords.value.findIndex(item => item.mail_key === mailKey)
+    if (latestIndex >= 0 && mailDesiredStatus(mailRecords.value[latestIndex]) === status) {
+      mailRecords.value.splice(latestIndex, 1, previousRecord)
+    }
     ElMessage.error(error?.response?.data?.detail || error?.message || '更新邮件状态失败')
   } finally {
     updatingMailKeys.value = updatingMailKeys.value.filter(key => key !== mailKey)
@@ -5402,6 +5491,7 @@ function toggleMailStatusFilter(value: MailStatusFilter) {
   }
   if (!selected.size) selected.add(value)
   target.value = MAIL_STATUS_OPTIONS.map(option => option.key).filter(key => selected.has(key))
+  resetMailFilterStatusSnapshot()
   persistMailStatusFilterPreference(mailSubTab.value)
 }
 
@@ -5678,7 +5768,7 @@ const filteredMailRecords = computed(() => {
   const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
   const selectedStatuses = new Set(mailRecordSelectedStatuses.value)
   return mailRecords.value.filter(row => {
-    if (!selectedStatuses.has(mailStatusKey(row))) return false
+    if (!selectedStatuses.has(mailFilterStatusKey(row))) return false
     if (!tokens.length) return true
     const haystack = mailSearchText(row)
     return tokens.every(token => haystack.includes(token))
@@ -5689,7 +5779,7 @@ const filteredMailSummaryRecords = computed(() => {
   const tokens = normalizeSearchQuery(query.value).toLowerCase().split(/\s+/).filter(Boolean)
   const selectedStatuses = new Set(mailSummarySelectedStatuses.value)
   return mailRecords.value.filter(row => {
-    if (!selectedStatuses.has(mailStatusKey(row))) return false
+    if (!selectedStatuses.has(mailFilterStatusKey(row))) return false
     if (!tokens.length) return true
     const haystack = mailSearchText(row)
     return tokens.every(token => haystack.includes(token))
@@ -7025,6 +7115,7 @@ async function loadMailRecords(options: { silent?: boolean } = {}) {
   try {
     const response = await getFanxiuMailRecords({ limit: 5000, source: 'packet_evidence' })
     mailRecords.value = response.records || []
+    resetMailFilterStatusSnapshot()
     total.value = mailRecords.value.length
     selectedId.value = ''
     selectedCard.value = null
@@ -13132,7 +13223,7 @@ onBeforeUnmount(() => {
                 <div class="mail-time-cell">{{ mailTimeText(row) }}</div>
               </td>
               <td class="mail-rewards-cell">
-                <div v-if="mailRewardItems(row).length" class="mail-reward-list">
+                <div v-if="mailRewardItems(row).length" v-mail-reward-layout class="mail-reward-list">
                   <span
                     v-for="(item, rewardIndex) in visibleMailRewardItems(row)"
                     :key="`${row.mail_key || row.id}-reward-${rewardIndex}`"
@@ -13229,7 +13320,7 @@ onBeforeUnmount(() => {
                 </div>
               </td>
               <td class="mail-rewards-cell">
-                <div v-if="row.averageRewards.length" class="mail-reward-list">
+                <div v-if="row.averageRewards.length" v-mail-reward-layout class="mail-reward-list">
                   <span
                     v-for="(item, rewardIndex) in row.averageRewards"
                     :key="`${row.title}-average-reward-${rewardIndex}`"
@@ -17874,10 +17965,12 @@ onBeforeUnmount(() => {
 }
 
 .mail-reward-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  display: grid;
+  gap: 0;
+  align-items: start;
+  justify-items: center;
+  width: max-content;
+  max-width: 100%;
 }
 
 .mail-reward-slot-wrap {
@@ -17887,8 +17980,8 @@ onBeforeUnmount(() => {
 
 .mail-reward-slot {
   position: relative;
-  width: 56px;
-  height: 52px;
+  width: 44px;
+  height: 46px;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: flex-start;
@@ -17960,8 +18053,8 @@ onBeforeUnmount(() => {
 
 .mail-reward-count {
   position: absolute;
-  right: 3px;
-  bottom: 2px;
+  right: 0;
+  bottom: 0;
   min-width: 0;
   color: #fff;
   font-size: 13px;

@@ -12,6 +12,11 @@ class FanxiuDataAnnotationRuntimeLogEntry(BaseModel):
     scope: str = ""
     item_id: str = ""
     message: str = ""
+    action: str = ""
+    source_file: str = ""
+    source_path: str = ""
+    source_line: int | None = None
+    source_expr: str = ""
     ts: str = ""
 
 
@@ -55,7 +60,7 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     running: bool = False
     guard_group_enabled: bool = True
     guard_group_running: bool = False
-    guard_enabled: bool = False
+    guard_enabled: bool = True
     guard_running: bool = False
     guard_entry_id: str = ""
     guard_interval_seconds: float = 2.0
@@ -171,3 +176,4 @@ class FanxiuDataAnnotationSchedulerRunNowRequest(BaseModel):
     entry_id: str
     task_id: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    interrupt_same_group: bool = True

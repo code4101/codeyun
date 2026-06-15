@@ -8,6 +8,7 @@ import pytest
 
 from backend.api import fanxiu
 from backend.core.fanxiu.runtime import behavior_tree as fanxiu_behavior_tree
+from backend.core.fanxiu.data_annotation import default_jobs as data_annotation_default_jobs
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
@@ -728,6 +729,78 @@ def test_data_annotation_prepare_scheduler_task_waits_when_runtime_is_busy(tmp_p
     assert tasks[0]["last_result"] == "running"
     assert tasks[1]["last_result"] == ""
     assert runner.stopped_entry_id is None
+
+
+def test_data_annotation_prepare_scheduler_task_interrupts_same_group_runtime(tmp_path, monkeypatch):
+    statuses = [
+        {
+            "running": True,
+            "entry_id": "entry-a",
+            "task_type": "scheduler_run_due",
+            "phase": "scheduler_task",
+            "current_task_id": "slow-task",
+            "status": "running",
+            "interruptible": True,
+        },
+        {
+            "running": False,
+            "entry_id": "entry-a",
+            "status": "idle",
+        },
+    ]
+    stop_calls = []
+
+    def fake_status():
+        return dict(statuses[0])
+
+    def fake_stop(entry_id):
+        stop_calls.append(entry_id)
+        statuses[0] = statuses[1]
+        return dict(statuses[0])
+
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", fake_status)
+    monkeypatch.setattr(runtime_control, "stop_fanxiu_behavior_tree_current_task", fake_stop)
+
+    blocked = runtime_control.prepare_runtime_for_scheduler_task(
+        {"id": "fast-task", "last_result": ""},
+        [{"id": "slow-task", "last_result": "running"}, {"id": "fast-task", "last_result": ""}],
+        entry_id="entry-a",
+        interrupt_same_group=True,
+        wait_timeout_seconds=0.1,
+        runtime_state_path=tmp_path / "runtime_state.json",
+        world_facts_path=tmp_path / "world_facts.json",
+    )
+
+    assert blocked is None
+    assert stop_calls == ["entry-a"]
+
+
+def test_data_annotation_prepare_scheduler_task_does_not_interrupt_other_group_runtime(tmp_path, monkeypatch):
+    stop_calls = []
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", lambda: {
+        "running": True,
+        "entry_id": "entry-a",
+        "task_type": "debug_eval",
+        "phase": "manual_job",
+        "current_task_id": "manual-1",
+        "status": "running",
+        "interruptible": True,
+    })
+    monkeypatch.setattr(runtime_control, "stop_fanxiu_behavior_tree_current_task", lambda entry_id: stop_calls.append(entry_id))
+
+    blocked = runtime_control.prepare_runtime_for_scheduler_task(
+        {"id": "fast-task", "last_result": ""},
+        [{"id": "fast-task", "last_result": ""}],
+        entry_id="entry-a",
+        interrupt_same_group=True,
+        wait_timeout_seconds=0.1,
+        runtime_state_path=tmp_path / "runtime_state.json",
+        world_facts_path=tmp_path / "world_facts.json",
+    )
+
+    assert blocked is not None
+    assert "当前有任务运行" in blocked["message"]
+    assert stop_calls == []
 
 
 def test_data_annotation_world_facts_merges_runtime_guard_and_keeps_events(tmp_path, monkeypatch):
@@ -1520,10 +1593,21 @@ def _drain_generator(gen):
             return exc.value
 
 
+def _run_registered_daily_yihuo(runner, ctx, stop_event, payload=None):
+    data_annotation_default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = runtime_runner_core._data_annotation_manual_job_definition("daily_yihuo")
+    assert definition is not None
+    return definition.handler(runner, ctx, payload or {}, stop_event)
+
+
 def _wait_click_runtime(image):
     runner = create_fanxiu_runtime_runner()
     ctx = {"images": {int(image["id"]): image}, "entry": object()}
     return runner, runtime_runner_core.FanxiuRuntime(runner, ctx, stop_event=fanxiu.threading.Event())
+
+
+def _sample_wait_click_flow(runtime):
+    yield from runtime.wait_click(247, "秘藏阁")
 
 
 def test_fanxiu_runtime_wait_click_fixed_shape(monkeypatch):
@@ -1541,6 +1625,26 @@ def test_fanxiu_runtime_wait_click_fixed_shape(monkeypatch):
     _drain_generator(runtime.wait_click("#247", "[秘藏阁]"))
 
     assert clicks == [(247, 550, 1700)]
+
+
+def test_fanxiu_runtime_wait_click_log_records_source_location(monkeypatch):
+    image = {
+        "id": 247,
+        "title": "仙市",
+        "width": 1000,
+        "height": 2000,
+        "shapes": [{"title": "秘藏阁", "x": 0.5, "y": 0.8, "w": 0.1, "h": 0.1}],
+    }
+    runner, runtime = _wait_click_runtime(image)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: None)
+
+    _drain_generator(_sample_wait_click_flow(runtime))
+
+    action_log = next(item for item in runner.status()["logs"] if item["kind"] == "waitClick")
+    assert action_log["source_file"] == "test_fanxiu_data_annotation_scheduler.py"
+    assert isinstance(action_log["source_line"], int)
+    assert action_log["source_expr"] == "wait_click(247, '秘藏阁')"
+    assert action_log["action"] == "wait_click"
 
 
 def test_fanxiu_runtime_wait_click_duplicate_shape_requires_path(monkeypatch):
@@ -1716,6 +1820,30 @@ def test_fanxiu_runtime_wait_click_ocr_floating_child_clicks_text_fragment(monke
     assert captured["match_shape"]["x"] == pytest.approx(0.34)
     assert captured["match_shape"]["w"] == pytest.approx(0.6)
     assert clicks == [(pytest.approx(560.0), pytest.approx(1492.5))]
+
+
+def test_goto_view_route_candidate_ranking_prefers_score_clarity_then_shortest(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    tree = [
+        {"type": "image", "id": 1, "title": "高可信长路径", "shapes": [{"title": "下一步", "sceneJumpTarget": "10"}]},
+        {"type": "image", "id": 2, "title": "同分歧义短路径", "shapes": [{"title": "歧义", "sceneJumpTarget": "98,99"}]},
+        {"type": "image", "id": 3, "title": "低可信短路径", "shapes": [{"title": "直达", "sceneJumpTarget": "99"}]},
+        {"type": "image", "id": 10, "title": "中转", "shapes": [{"title": "直达", "sceneJumpTarget": "99"}]},
+        {"type": "image", "id": 98, "title": "旁路", "shapes": []},
+        {"type": "image", "id": 99, "title": "目标", "shapes": []},
+    ]
+    ctx = {"images": {scene_id: {"id": scene_id, "title": str(scene_id), "shapes": []} for scene_id in [1, 2, 3, 99]}}
+    scores = {1: 90.0, 2: 90.0, 3: 89.0, 99: 0.0}
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: scores[int(image["id"])])
+
+    scene_id, score = runner._identify_scene_number_for_route(ctx, "frame", tree, 99, [99, 1, 2, 3])
+
+    assert (scene_id, score) == (1, 90.0)
+
+    scores[3] = 91.0
+    scene_id, score = runner._identify_scene_number_for_route(ctx, "frame", tree, 99, [99, 1, 2, 3])
+
+    assert (scene_id, score) == (3, 91.0)
 
 
 def test_data_annotation_daily_schedule_uses_nearest_future_time_independent_of_order():
@@ -2491,6 +2619,10 @@ def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
                 yield None
             return "success"
 
+        def wait_clicks(self, steps):
+            for view_id, shape in steps:
+                yield from self.wait_click(view_id, shape)
+
         def wait_view(self, *view_ids, **kwargs):
             actions.append(f"wait_view:{view_ids}")
             if False:
@@ -2552,7 +2684,8 @@ def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_record_scheduler_task_discovered_next_time", lambda *args, **kwargs: None)
 
     result = _drain_generator(
-        runner._execute_daily_yihuo_task(
+        _run_registered_daily_yihuo(
+            runner,
             {"asset_tree_path": tmp_path / "asset-tree.json", "images": images},
             fanxiu.threading.Event(),
             {},
@@ -2615,7 +2748,7 @@ def test_daily_yihuo_return_wait_accepts_direct_world(monkeypatch):
     assert result == "world"
 
 
-def test_daily_yihuo_recovers_from_local_jinglian_page(tmp_path, monkeypatch):
+def test_daily_yihuo_aligns_to_world_from_local_jinglian_page(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     images = {
         34: {
@@ -2687,9 +2820,23 @@ def test_daily_yihuo_recovers_from_local_jinglian_page(tmp_path, monkeypatch):
             actions.append(f"wait_click:{view_id}:{shape}")
             if view_id == 34 and shape == "下方菜单/星海":
                 state["page"] = 259
+            elif view_id == 259 and shape == "异火":
+                state["page"] = 260
+            elif view_id == 260 and shape == "净莲":
+                state["page"] = 261
+            elif view_id == 261 and shape == "返回":
+                state["page"] = 260
+            elif view_id == 260 and shape == "返回":
+                state["page"] = 259
+            elif view_id == 259 and shape == "返回":
+                state["page"] = 34
             if False:
                 yield None
             return "success"
+
+        def wait_clicks(self, steps):
+            for view_id, shape in steps:
+                yield from self.wait_click(view_id, shape)
 
         def wait_view(self, *view_ids, **kwargs):
             actions.append(f"wait_view:{view_ids}")
@@ -2751,7 +2898,8 @@ def test_daily_yihuo_recovers_from_local_jinglian_page(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_record_scheduler_task_discovered_next_time", lambda *args, **kwargs: None)
 
     result = _drain_generator(
-        runner._execute_daily_yihuo_task(
+        _run_registered_daily_yihuo(
+            runner,
             {"asset_tree_path": tmp_path / "asset-tree.json", "images": images},
             fanxiu.threading.Event(),
             {},
@@ -2760,8 +2908,14 @@ def test_daily_yihuo_recovers_from_local_jinglian_page(tmp_path, monkeypatch):
 
     assert result == "success"
     assert actions == [
-        "click:260:返回",
-        "click:259:返回",
+        "goto:34",
+        "wait_click:34:下方菜单/星海",
+        "wait_click:259:异火",
+        "wait_click:260:净莲",
+        "wait_click:261:箱子",
+        "wait_click:261:返回",
+        "wait_click:260:返回",
+        "wait_click:259:返回",
         "wait_view:(34,)",
     ]
 

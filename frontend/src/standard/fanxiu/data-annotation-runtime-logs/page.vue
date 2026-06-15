@@ -10,8 +10,11 @@ const entryId = computed(() => String(route.query.entry_id || ''));
 const scope = computed(() => String(route.query.scope || ''));
 const itemId = computed(() => String(route.query.item_id || ''));
 const title = computed(() => String(route.query.title || itemId.value || '日志'));
-const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
+type RuntimeLogRow = FanxiuDataAnnotationRuntimeLogEntry & { _uiKey: string };
+const LOG_LIMIT = 1000;
+const logs = ref<RuntimeLogRow[]>([]);
 const loading = ref(false);
+const loaded = ref(false);
 let pollTimer: number | null = null;
 
 const scopeText = computed(() => {
@@ -21,12 +24,55 @@ const scopeText = computed(() => {
   return '运行';
 });
 
-const refreshLogs = async () => {
-  loading.value = true;
+const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
+  const file = String(entry.source_file || '').trim();
+  const line = entry.source_line ? `:${entry.source_line}` : '';
+  const expr = String(entry.source_expr || '').trim();
+  return file && expr ? `${file}${line}  ${expr}` : '';
+};
+
+const logSignature = (entry: FanxiuDataAnnotationRuntimeLogEntry) => [
+  entry.time,
+  entry.kind,
+  entry.scope || '',
+  entry.item_id || '',
+  entry.message,
+  entry.action || '',
+  entry.source_file || '',
+  entry.source_line ?? '',
+  entry.source_expr || '',
+].join('\u001f');
+
+const buildLogRows = (entries: FanxiuDataAnnotationRuntimeLogEntry[]) => {
+  const seen = new Map<string, number>();
+  return entries.map((entry) => {
+    const signature = logSignature(entry);
+    const index = seen.get(signature) || 0;
+    seen.set(signature, index + 1);
+    return { ...entry, _uiKey: `${signature}\u001f${index}` };
+  }).reverse();
+};
+
+const sameLogWindow = (nextLogs: RuntimeLogRow[]) => {
+  if (nextLogs.length !== logs.value.length) return false;
+  return nextLogs.every((entry, index) => entry._uiKey === logs.value[index]?._uiKey);
+};
+
+const mergeLogRows = (nextLogs: RuntimeLogRow[]) => {
+  if (sameLogWindow(nextLogs)) return;
+  const currentByKey = new Map(logs.value.map(entry => [entry._uiKey, entry]));
+  logs.value = nextLogs.map(entry => currentByKey.get(entry._uiKey) || entry);
+};
+
+const refreshLogs = async (options: { silent?: boolean } = {}) => {
+  if (!options.silent && !loaded.value) {
+    loading.value = true;
+  }
   try {
-    const response = await getFanxiuDataAnnotationRuntimeLogs(1000, scope.value, itemId.value);
-    logs.value = response.entries || [];
+    const response = await getFanxiuDataAnnotationRuntimeLogs(LOG_LIMIT, scope.value, itemId.value);
+    mergeLogRows(buildLogRows(response.entries || []));
   } finally {
+    loaded.value = true;
     loading.value = false;
   }
 };
@@ -38,8 +84,8 @@ const backToRuntime = () => {
 const startPolling = () => {
   if (pollTimer !== null) return;
   pollTimer = window.setInterval(() => {
-    void refreshLogs();
-  }, 2000);
+    void refreshLogs({ silent: true });
+  }, 30000);
 };
 
 const stopPolling = () => {
@@ -68,10 +114,13 @@ onUnmounted(stopPolling);
 
     <main class="log-main" v-loading="loading">
       <div class="log-list">
-        <div v-for="(entry, index) in logs" :key="`${entry.time}-${index}`" class="log-row" :class="`is-${entry.kind}`">
+        <div v-for="entry in logs" :key="entry._uiKey" class="log-row" :class="`is-${entry.kind}`">
           <span>{{ entry.time }}</span>
           <b>{{ entry.kind }}</b>
-          <p>{{ entry.message }}</p>
+          <p>
+            <code v-if="logSourceText(entry)">{{ logSourceText(entry) }}</code>
+            <span>{{ entry.message }}</span>
+          </p>
         </div>
         <div v-if="!logs.length" class="empty-row">暂无日志</div>
       </div>
@@ -148,6 +197,15 @@ onUnmounted(stopPolling);
 .log-row p {
   min-width: 0;
   margin: 0;
+  word-break: break-all;
+}
+
+.log-row code {
+  display: inline-block;
+  margin-right: 10px;
+  color: #0f766e;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
   word-break: break-all;
 }
 

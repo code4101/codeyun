@@ -216,6 +216,8 @@ def _fanxiu_process_matches_service_owner(pid: int) -> bool:
         return False
     return (
         ("fanxiu_bt.py" in command and "service" in command)
+        or ("fanxiu_bt.py" in command and "watch-doctor" in command)
+        or ("fanxiu_bt.py" in command and "ensure-watch-doctor" in command)
         or ("uvicorn" in command and "backend.app:app" in command)
         or "dev.py" in command
     )
