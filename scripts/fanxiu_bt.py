@@ -765,8 +765,13 @@ def _ensure_doctor_watch_background(
     output_path = watch_dir / f"doctor_watch_background_{stamp}.ndjson"
     stdout_path = watch_dir / f"doctor_watch_background_{stamp}.stdout.log"
     stderr_path = watch_dir / f"doctor_watch_background_{stamp}.stderr.log"
+    python_executable = Path(sys.executable)
+    if os.name == "nt" and python_executable.name.lower() == "python.exe":
+        pythonw_executable = python_executable.with_name("pythonw.exe")
+        if pythonw_executable.is_file():
+            python_executable = pythonw_executable
     command = [
-        sys.executable,
+        str(python_executable),
         str(Path(__file__).resolve()),
         "watch-doctor",
         "--interval-seconds",

@@ -154,7 +154,10 @@ def setup_env(root_dir):
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):
-        python_name = "python.exe" if os.name == "nt" else "python"
+        if os.name == "nt" and os.path.basename(sys.executable).lower() == "pythonw.exe":
+            python_name = "pythonw.exe"
+        else:
+            python_name = "python.exe" if os.name == "nt" else "python"
         candidate = os.path.join(venv_scripts, python_name)
         if os.path.exists(candidate):
             python_executable = candidate
@@ -244,36 +247,21 @@ def _local_address_uses_port(local_address, port):
 
 
 def find_tcp_listener_pids(port):
-    if os.name != "nt":
-        return []
-
     try:
-        result = subprocess.run(
-            ["netstat", "-ano", "-p", "tcp"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            **hidden_subprocess_kwargs(),
-        )
-    except OSError:
+        import psutil
+    except ImportError:
         return []
 
     pids = set()
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 5 or parts[0].upper() != "TCP":
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except Exception:
+        return []
+    for conn in connections:
+        if conn.status != psutil.CONN_LISTEN or not conn.laddr or not conn.pid:
             continue
-        if parts[3].upper() != "LISTENING":
-            continue
-        if not _local_address_uses_port(parts[1], port):
-            continue
-        try:
-            pids.add(int(parts[4]))
-        except ValueError:
-            continue
+        if int(getattr(conn.laddr, "port", 0) or 0) == int(port):
+            pids.add(int(conn.pid))
     return sorted(pids)
 
 
@@ -411,14 +399,36 @@ def terminate_pids(pids, reason):
 
     log(f"Cleaning stale {reason}: PID(s) {', '.join(str(pid) for pid in pids)}")
     if os.name == "nt":
+        try:
+            import psutil
+        except ImportError:
+            return
+        targets = []
         for pid in pids:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                **hidden_subprocess_kwargs(),
-            )
+            try:
+                proc = psutil.Process(pid)
+                targets.extend(proc.children(recursive=True))
+                targets.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        seen = set()
+        unique_targets = []
+        for proc in targets:
+            if proc.pid in seen or proc.pid == os.getpid():
+                continue
+            seen.add(proc.pid)
+            unique_targets.append(proc)
+        for proc in unique_targets:
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _gone, alive = psutil.wait_procs(unique_targets, timeout=5.0)
+        for proc in alive:
+            try:
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
         return
 
     for pid in pids:
@@ -546,6 +556,7 @@ def popen_kwargs():
             subprocess.CREATE_NEW_PROCESS_GROUP
             | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
             | WINDOWS_CREATE_NO_WINDOW
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
         )
         kwargs["startupinfo"] = startupinfo
     else:
