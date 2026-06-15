@@ -1269,6 +1269,8 @@ def test_runtime_behavior_tree_runs_guard_before_job_and_skips_job_when_handled(
 
     with runner._lock:
         runner._guard_enabled = True
+        runner._status["running"] = True
+        runner._status["phase"] = "manual_job"
 
     def capture_frame(_ctx):
         frame = f"data:image/png;base64,frame{len(captured)}"

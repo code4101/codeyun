@@ -448,6 +448,11 @@ export interface FanxiuDataAnnotationRuntimeLogEntry {
   scope?: string;
   item_id?: string;
   message: string;
+  action?: string;
+  source_file?: string;
+  source_path?: string;
+  source_line?: number | null;
+  source_expr?: string;
   ts?: string;
 }
 
@@ -5085,9 +5090,13 @@ export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolea
     .then(res => res.data);
 };
 
-export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}) => {
+export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}, interruptSameGroup = true) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/scheduler/task/run-now', { entry_id: entryId, task_id: taskId, payload }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/scheduler/task/run-now',
+      { entry_id: entryId, task_id: taskId, payload, interrupt_same_group: interruptSameGroup },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
+    )
     .then(res => res.data);
 };
 

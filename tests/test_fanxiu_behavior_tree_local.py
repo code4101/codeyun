@@ -472,13 +472,43 @@ def test_runtime_runner_owner_acquire_ignores_dead_pid_before_ttl(monkeypatch, t
     runner._release_service_owner()
 
 
-def test_runtime_runner_default_close_popups_guard_is_off():
+def test_runtime_runner_default_close_popups_guard_is_on():
     runner = bt.create_fanxiu_runtime_runner()
 
     status = runner.status()
 
-    assert status["guard_enabled"] is False
+    assert status["guard_enabled"] is True
     assert status["guard_running"] is False
+    assert status["guard_items"]["close_popups"]["enabled"] is True
+
+
+def test_runtime_status_migrates_legacy_close_popups_guard_off_to_on():
+    status = {
+        "guard_group_enabled": True,
+        "guard_enabled": False,
+        "guard_running": False,
+        "guard_items": {"close_popups": {"enabled": False}},
+    }
+
+    runtime_control.normalize_runtime_guard_items(status)
+
+    assert status["guard_enabled"] is True
+    assert status["guard_items"]["close_popups"]["enabled"] is True
+    assert status["close_popups_guard_config_version"] >= 2
+
+
+def test_runtime_status_preserves_versioned_close_popups_guard_off():
+    status = {
+        "guard_group_enabled": True,
+        "guard_enabled": False,
+        "close_popups_guard_config_version": 2,
+        "guard_running": False,
+        "guard_items": {"close_popups": {"enabled": False}},
+    }
+
+    runtime_control.normalize_runtime_guard_items(status)
+
+    assert status["guard_enabled"] is False
     assert status["guard_items"]["close_popups"]["enabled"] is False
 
 

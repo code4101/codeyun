@@ -219,13 +219,23 @@ def read_data_annotation_runtime_status(path: Path) -> dict[str, Any]:
     return read_json_state_dict(path)
 
 
+CLOSE_POPUPS_GUARD_CONFIG_VERSION = 2
+
+
+def close_popups_guard_enabled_from_status(status: dict[str, Any]) -> bool:
+    if int(status.get("close_popups_guard_config_version") or 0) >= CLOSE_POPUPS_GUARD_CONFIG_VERSION:
+        return bool(status.get("guard_enabled", True))
+    return True
+
+
 def initial_data_annotation_runtime_status() -> dict[str, Any]:
     return {
         "ok": True,
         "service_running": False,
         "running": False,
         "guard_group_enabled": True,
-        "guard_enabled": False,
+        "guard_enabled": True,
+        "close_popups_guard_config_version": CLOSE_POPUPS_GUARD_CONFIG_VERSION,
         "guard_running": False,
         "guard_entry_id": "",
         "guard_interval_seconds": 2.0,
@@ -264,8 +274,9 @@ def append_data_annotation_runtime_status_log(
     item_id: str = "",
     time_text: str | None = None,
     updated_at: float | None = None,
-) -> None:
-    append_status_log(
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    item = append_status_log(
         status,
         kind,
         message,
@@ -274,6 +285,9 @@ def append_data_annotation_runtime_status_log(
         time_text=time_text,
         updated_at=updated_at,
     )
+    if isinstance(extra, dict):
+        item.update({str(key): value for key, value in extra.items() if value not in (None, "")})
+    return item
 
 
 def append_data_annotation_runtime_log_once(
@@ -290,8 +304,11 @@ def normalize_data_annotation_runtime_guard_items(
     status: dict[str, Any],
     guard_definitions: dict[str, dict[str, Any]],
 ) -> None:
+    close_popups_enabled = close_popups_guard_enabled_from_status(status)
+    status["guard_enabled"] = close_popups_enabled
+    status["close_popups_guard_config_version"] = CLOSE_POPUPS_GUARD_CONFIG_VERSION
     close_popups_override: dict[str, Any] = {
-        "enabled": bool(status.get("guard_enabled")),
+        "enabled": close_popups_enabled,
         "running": bool(status.get("guard_group_enabled", True) and status.get("guard_running")),
         "entry_id": str(status.get("guard_entry_id") or ""),
     }

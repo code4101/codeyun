@@ -916,6 +916,9 @@ def prepare_runtime_for_scheduler_task(
     task: dict[str, Any],
     tasks: list[dict[str, Any]],
     *,
+    entry_id: str | None = None,
+    interrupt_same_group: bool = False,
+    wait_timeout_seconds: float = 8.0,
     scheduler_state_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
@@ -923,11 +926,47 @@ def prepare_runtime_for_scheduler_task(
     status = fanxiu_runtime_runner_status()
     if not status.get("running"):
         return None
+    if interrupt_same_group and _is_scheduler_runtime_status(status):
+        if not bool(status.get("interruptible", True)):
+            message = f"当前作业不可中断，{task.get('id') or task.get('label') or task.get('task_type')} 暂不触发"
+            status.update({"message": message, "updated_at": time.time()})
+            persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+            return status
+        stop_fanxiu_behavior_tree_current_task(str(entry_id or status.get("entry_id") or ""))
+        if _wait_runtime_idle(wait_timeout_seconds):
+            return None
+        status = fanxiu_runtime_runner_status()
+        message = f"已请求中断当前作业，{task.get('id') or task.get('label') or task.get('task_type')} 等待运行时空闲"
+        status.update({"message": message, "updated_at": time.time()})
+        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        return status
     task_id = str(task.get("id") or "")
     message = f"当前有任务运行，{task_id or task.get('label') or task.get('task_type')} 暂不触发"
     status.update({"message": message, "updated_at": time.time()})
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
+
+
+def _is_scheduler_runtime_status(status: dict[str, Any]) -> bool:
+    task_type = str(status.get("task_type") or "")
+    phase = str(status.get("phase") or "")
+    current_task_id = str(status.get("current_task_id") or "")
+    if task_type in {"scheduler_run_due", "scheduler_run_now"}:
+        return True
+    if phase == "scheduler_task":
+        return True
+    return current_task_id in {"scheduler_run_due", "scheduler_run_now"}
+
+
+def _wait_runtime_idle(timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+    while time.monotonic() <= deadline:
+        status = fanxiu_runtime_runner_status()
+        if not status.get("running") and str(status.get("status") or "") != "stopping":
+            return True
+        time.sleep(0.1)
+    status = fanxiu_runtime_runner_status()
+    return not status.get("running") and str(status.get("status") or "") != "stopping"
 
 
 def run_now_scheduler_task(
@@ -936,6 +975,7 @@ def run_now_scheduler_task(
     entry_id: str,
     task_id: str,
     payload_override: dict[str, Any] | None = None,
+    interrupt_same_group: bool = True,
     scheduler_state_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
@@ -956,6 +996,8 @@ def run_now_scheduler_task(
     blocked_status = prepare_runtime_for_scheduler_task(
         state_task,
         tasks,
+        entry_id=entry_id,
+        interrupt_same_group=interrupt_same_group,
         scheduler_state_path=scheduler_state_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,

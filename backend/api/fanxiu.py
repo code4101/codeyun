@@ -5289,6 +5289,11 @@ def get_fanxiu_data_annotation_runtime_logs(
             scope=str(item.get("scope") or ""),
             item_id=str(item.get("item_id") or ""),
             message=str(item.get("message") or ""),
+            action=str(item.get("action") or ""),
+            source_file=str(item.get("source_file") or ""),
+            source_path=str(item.get("source_path") or ""),
+            source_line=item.get("source_line") if isinstance(item.get("source_line"), int) else None,
+            source_expr=str(item.get("source_expr") or ""),
             ts="",
         )
         for index, item in enumerate(log_items)
@@ -5454,6 +5459,7 @@ def run_now_fanxiu_data_annotation_scheduler_task(
             entry_id=entry_id,
             task_id=req.task_id,
             payload_override=req.payload,
+            interrupt_same_group=req.interrupt_same_group,
             scheduler_state_path=_data_annotation_scheduler_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
@@ -5485,6 +5491,7 @@ def run_now_fanxiu_data_annotation_scheduler_service_task(
             entry_id=entry_id,
             task_id=req.task_id,
             payload_override=req.payload,
+            interrupt_same_group=req.interrupt_same_group,
             scheduler_state_path=_data_annotation_scheduler_state_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),

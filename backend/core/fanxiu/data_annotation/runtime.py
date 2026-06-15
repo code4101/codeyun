@@ -75,16 +75,25 @@ class DataAnnotationRuntimeContainer:
     def guard_nodes(self) -> list[Node]:
         return [
             Action(
-                lambda guard_id=spec.node_id: self.owner._runtime_guard_service_tick(
-                    guard_id,
-                    self.runtime_ctx,
-                    self.asset_tree_path,
-                    self.stop_event,
-                ),
+                lambda guard_id=spec.node_id: self._run_guard_service(guard_id),
                 label=spec.label,
             )
             for spec in self.guard_specs()
         ]
+
+    def _run_guard_service(self, guard_id: str):
+        while True:
+            status = self.owner._runtime_guard_service_tick(
+                guard_id,
+                self.runtime_ctx,
+                self.asset_tree_path,
+                self.stop_event,
+                allow_during_task=True,
+            )
+            if status == BehaviorTreeStatus.RUNNING:
+                yield 1
+                continue
+            return status
 
     def build_job_tree(self, *, action: Callable[[], Any], label: str, result_holder: dict[str, Any]) -> Root:
         def guarded_action() -> Any:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import difflib
+import inspect
 import io
 import json
+import linecache
 import os
 import re
 import threading
@@ -56,6 +58,8 @@ from backend.core.fanxiu.data_annotation.scheduler import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
+    CLOSE_POPUPS_GUARD_CONFIG_VERSION,
+    close_popups_guard_enabled_from_status,
     data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
     data_annotation_task_due as _data_annotation_task_due,
     initial_data_annotation_runtime_status,
@@ -210,6 +214,8 @@ class FanxiuRuntime(Runtime):
     """
 
     default_wait_click_timeout = 18.0
+    default_wait_view_timeout = 20.0
+    default_wait_condition_timeout = 12.0
 
     def __init__(
         self,
@@ -410,11 +416,52 @@ class FanxiuRuntime(Runtime):
                 return view
         return self.get_cur_view(update=False)
 
+    def _runtime_source_info(self, action: str, source_expr: str = "") -> dict[str, Any]:
+        frame = inspect.currentframe()
+        if frame is not None:
+            frame = frame.f_back
+        own_file = Path(__file__).resolve()
+        while frame is not None:
+            filename = Path(frame.f_code.co_filename).resolve()
+            if filename != own_file:
+                line = linecache.getline(str(filename), frame.f_lineno).strip()
+                try:
+                    source_path = str(filename.relative_to(Path.cwd()))
+                except ValueError:
+                    source_path = str(filename)
+                return {
+                    "action": action,
+                    "source_file": filename.name,
+                    "source_path": source_path.replace("\\", "/"),
+                    "source_line": int(frame.f_lineno),
+                    "source_expr": source_expr or self._compact_runtime_source_expr(line),
+                }
+            frame = frame.f_back
+        return {"action": action, "source_expr": source_expr}
+
+    def _compact_runtime_source_expr(self, line: str) -> str:
+        text = str(line or "").strip()
+        text = re.sub(r"^.+?=\s*yield\s+from\s+", "", text)
+        text = re.sub(r"^yield\s+from\s+", "", text)
+        return text.replace("runtime.", "").strip()
+
+    def _format_runtime_call(self, name: str, *args: Any) -> str:
+        return f"{name}({', '.join(self._format_runtime_arg(arg) for arg in args)})"
+
+    def _format_runtime_arg(self, value: Any) -> str:
+        if isinstance(value, View):
+            return str(value.id) if value.id is not None else repr(value.title)
+        if isinstance(value, Shape):
+            return repr(value.title or value.raw.get("id") or "shape")
+        return repr(value)
+
     def _emit_runtime_action(
         self,
         message: str,
         *,
         phase: str,
+        kind: str = "action",
+        source_info: dict[str, Any] | None = None,
         current_scene: int | None = None,
     ) -> None:
         with self.runner._lock:
@@ -424,7 +471,7 @@ class FanxiuRuntime(Runtime):
                 phase=phase,
                 current_scene=current_scene,
             )
-            self.runner._log_locked("action", message)
+            self.runner._log_locked(kind, message, extra=source_info)
 
     def wait_click(
         self,
@@ -432,6 +479,9 @@ class FanxiuRuntime(Runtime):
         shape: Shape | str,
         **options: Any,
     ):
+        source_info = options.pop("_source_info", None)
+        if not isinstance(source_info, dict):
+            source_info = self._runtime_source_info("wait_click", self._format_runtime_call("wait_click", frame, shape))
         timeout = float(self.default_wait_click_timeout if options.get("timeout") is None else options["timeout"])
         scene_timeout = float(timeout if options.get("scene_timeout") is None else options["scene_timeout"])
         x_ratio = float(0.5 if options.get("x_ratio") is None else options["x_ratio"])
@@ -456,6 +506,8 @@ class FanxiuRuntime(Runtime):
         self._emit_runtime_action(
             f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
             phase="runtime_wait_click",
+            kind="waitClick",
+            source_info=source_info,
             current_scene=view.id,
         )
         if self.runner._shape_has_runtime_click_condition(target.raw):
@@ -485,6 +537,11 @@ class FanxiuRuntime(Runtime):
         self.runner._click_frame_point(self.ctx, view.raw, click_x, click_y)
         self.clear_frame()
 
+    def wait_clicks(self, steps: Iterable[tuple[View | int | str | None, Shape | str]]):
+        for frame, shape in steps:
+            source_info = self._runtime_source_info("wait_click", self._format_runtime_call("wait_click", frame, shape))
+            yield from self.wait_click(frame, shape, _source_info=source_info)
+
     def goto_view(self, view: View | int) -> Any:
         target_scene_id = view.id if isinstance(view, View) else int(view)
         if not isinstance(self.asset_tree_path, Path):
@@ -492,6 +549,8 @@ class FanxiuRuntime(Runtime):
         self._emit_runtime_action(
             f"前往 #{target_scene_id}",
             phase="runtime_goto_view",
+            kind="goto",
+            source_info=self._runtime_source_info("goto_view", self._format_runtime_call("goto_view", target_scene_id)),
             current_scene=target_scene_id,
         )
         stop_event = self.stop_event or threading.Event()
@@ -514,6 +573,15 @@ class FanxiuRuntime(Runtime):
                 if isinstance(image, dict):
                     target_views.append(View(image))
         start = time.monotonic()
+        wait_timeout = self.default_wait_view_timeout if timeout is None else float(timeout)
+        source_info = self._runtime_source_info("wait_view", self._format_runtime_call("wait_view", *view_ids))
+        self._emit_runtime_action(
+            f"{label}：等待 {'/'.join(f'#{view_id}' for view_id in view_ids)}",
+            phase="runtime_wait_view",
+            kind="wait",
+            source_info=source_info,
+            current_scene=view_ids[0] if len(view_ids) == 1 else None,
+        )
         last_scene_id: int | None = None
         last_score = 0.0
         while True:
@@ -543,7 +611,7 @@ class FanxiuRuntime(Runtime):
                     })
                 self.runner._log("success", f"{label}：已到达 #{scene_id} {score:.0f}%")
                 return self.get_view(scene_id) or scene_id
-            if timeout is not None and elapsed >= float(timeout):
+            if elapsed >= float(wait_timeout):
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 expected = "/".join(f"#{view_id}" for view_id in view_ids)
                 raise TimeoutError(f"{label} 超时，未检测到 {expected}，最后 {scene_text} {last_score:.0f}%")
@@ -645,12 +713,20 @@ class FanxiuRuntime(Runtime):
         self,
         conditions: Mapping[str, _FanxiuWaitCondition],
         *,
-        timeout: float,
+        timeout: float | None = None,
         label: str = "等待任一条件",
         interval: float = 0.5,
     ):
         if not conditions:
             raise RuntimeError("wait_any 至少需要一个等待条件")
+        wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
+        source_info = self._runtime_source_info("wait_any", "wait_any(...)")
+        self._emit_runtime_action(
+            f"{label}：等待 {' / '.join(str(key) for key in conditions.keys())}",
+            phase="runtime_wait_any",
+            kind="wait",
+            source_info=source_info,
+        )
         start = time.monotonic()
         last_details: dict[str, str] = {}
         while True:
@@ -672,7 +748,7 @@ class FanxiuRuntime(Runtime):
                         })
                     self.runner._log("success", self.runner._status["message"])
                     return key
-            if time.monotonic() - start >= max(1.0, float(timeout)):
+            if time.monotonic() - start >= max(1.0, float(wait_timeout)):
                 detail = "；".join(f"{key}: {value}" for key, value in last_details.items())
                 raise TimeoutError(f"{label} 超时：{detail or '无匹配结果'}")
             if self.runner._auto_close_popup_guard_step(self):
@@ -1074,11 +1150,11 @@ from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResou
 from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.signup_misc import SignupMiscTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianfu import XianfuTaskMixin
-from backend.core.fanxiu.data_annotation.tasks.yihuo import DailyYihuoTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mixin
 
 
 class DataAnnotationRuntimeRunner(
-    DailyYihuoTaskMixin,
+    日常异火任务Mixin,
     DailyFoundationTaskMixin,
     DailyResourceTaskMixin,
     DailyChallengeTaskMixin,
@@ -1086,9 +1162,10 @@ class DataAnnotationRuntimeRunner(
     SignupMiscTaskMixin,
     MailTaskMixin,
 ):
-    default_guard_enabled = False
+    default_guard_enabled = True
     default_guard_interval_seconds = 2.0
     default_guard_items = {
+        "close_popups": {"enabled": True, "entry_id": "", "updated_at": 0.0},
         "wanling_invite": {"enabled": False, "entry_id": "", "updated_at": 0.0},
     }
     guard_definitions = {
@@ -1552,7 +1629,7 @@ class DataAnnotationRuntimeRunner(
         if not persisted:
             return
         self._guard_group_enabled = bool(persisted.get("guard_group_enabled", True))
-        self._guard_enabled = bool(persisted.get("guard_enabled"))
+        self._guard_enabled = close_popups_guard_enabled_from_status(persisted)
         self._guard_entry_id = str(persisted.get("guard_entry_id") or "")
         self._guard_interval_seconds = float(persisted.get("guard_interval_seconds") or self._guard_interval_seconds)
         raw_items = persisted.get("guard_items")
@@ -1860,6 +1937,7 @@ class DataAnnotationRuntimeRunner(
                 self._guard_enabled = bool(enabled)
                 self._guard_entry_id = entry_id if enabled else ""
                 self._guard_interval_seconds = interval_seconds
+                self._status["close_popups_guard_config_version"] = CLOSE_POPUPS_GUARD_CONFIG_VERSION
                 if not enabled:
                     self._set_status_locked("idle" if not self._status.get("running") else str(self._status.get("status") or "running"), "守护已关闭")
                     self._sync_guard_status_locked()
@@ -2126,7 +2204,15 @@ class DataAnnotationRuntimeRunner(
         with self._lock:
             self._log_scope, self._log_item_id = previous
 
-    def _log_locked(self, kind: str, message: str, *, scope: str | None = None, item_id: str | None = None) -> None:
+    def _log_locked(
+        self,
+        kind: str,
+        message: str,
+        *,
+        scope: str | None = None,
+        item_id: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         log_scope = self._log_scope if scope is None else str(scope or "")
         log_item_id = self._log_item_id if item_id is None else str(item_id or "")
         append_data_annotation_runtime_status_log(
@@ -2137,11 +2223,67 @@ class DataAnnotationRuntimeRunner(
             item_id=log_item_id,
             time_text=_now().strftime("%H:%M:%S"),
             updated_at=time.time(),
+            extra=extra,
         )
 
     def _log(self, kind: str, message: str) -> None:
         with self._lock:
             self._log_locked(kind, message)
+
+    def _finish_daily_runtime_task(
+        self,
+        payload: dict[str, Any],
+        *,
+        task_type: str,
+        label: str,
+        message: str,
+        current_scene: int | None = 34,
+    ) -> None:
+        next_time = self._next_daily_boss_reset_time_text()
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or f"legacy-{task_type}")
+        self._record_scheduler_task_discovered_next_time(
+            scheduler_task_id,
+            next_time,
+            task_type=task_type,
+            label=label,
+            last_result="success",
+        )
+        with self._lock:
+            self._set_status_locked(
+                "success",
+                f"{message}，下次 {next_time}",
+                phase=f"{task_type}_done",
+                current_scene=current_scene,
+            )
+            self._log_locked("success", self._status["message"])
+
+    def _execute_daily_runtime_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None,
+        *,
+        task_type: str,
+        label: str,
+        flow: Callable[[FanxiuRuntime], Any],
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError(f"缺少{label}资产树路径，无法执行作业")
+
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        result = flow(runtime)
+        if isinstance(result, GeneratorType):
+            yield from result
+        yield from self._wait_runtime_action_settle(ctx, stop_event)
+        self._finish_daily_runtime_task(
+            payload,
+            task_type=task_type,
+            label=label,
+            message=f"{label}完成，已回到世界",
+        )
+        return "success"
 
     def _manual_job_log_message(self, task_id: str, message: str) -> str:
         task_id = str(task_id or "").strip()
@@ -2190,6 +2332,8 @@ class DataAnnotationRuntimeRunner(
         runtime_ctx: dict[str, Any],
         asset_tree_path: Path,
         stop_event: threading.Event,
+        *,
+        allow_during_task: bool = False,
     ) -> BehaviorTreeStatus:
         self._raise_if_stopped(stop_event)
         guard_id = str(guard_id or "").strip()
@@ -2197,9 +2341,10 @@ class DataAnnotationRuntimeRunner(
             return BehaviorTreeStatus.SKIP
         if guard_id != "close_popups":
             return BehaviorTreeStatus.SKIP
-        with self._lock:
-            if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"manual_job", "local_run"}:
-                return BehaviorTreeStatus.SKIP
+        if not allow_during_task:
+            with self._lock:
+                if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"manual_job", "local_run"}:
+                    return BehaviorTreeStatus.SKIP
         previous_log_context = self._set_log_context("guard", "close_popups")
         try:
             runtime = self._fanxiu_runtime(runtime_ctx, asset_tree_path)
@@ -4107,6 +4252,71 @@ class DataAnnotationRuntimeRunner(
 
     def _find_scene_route(self, tree: list[dict[str, Any]], start_scene_id: int, target_scene_id: int) -> list[dict[str, Any]] | None:
         return SceneNavigator(tree).find_scene_route(start_scene_id, target_scene_id)
+
+    def _scene_route_ranking(
+        self,
+        tree: list[dict[str, Any]],
+        scene_id: int,
+        target_scene_id: int,
+    ) -> tuple[int, int]:
+        if int(scene_id) == int(target_scene_id):
+            return 10, 0
+        route = self._find_scene_route(tree, scene_id, target_scene_id)
+        if route is not None:
+            ambiguous_edges = sum(1 for edge in route if len(edge.get("target_ids") or []) != 1)
+            return -ambiguous_edges, len(route)
+        if int(scene_id) in self._scene_jump_confirmation_scene_ids(tree):
+            return 1, 1
+        return -100, 9999
+
+    def _identify_scene_number_for_route(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        tree: list[dict[str, Any]],
+        target_scene_id: int,
+        candidate_scene_ids: list[int],
+    ) -> tuple[int | None, float]:
+        images = ctx.get("images") or {}
+        if not isinstance(images, dict) or not candidate_scene_ids:
+            return None, 0.0
+
+        previous_scope_filter = ctx.get("_scene_identity_scope_filter")
+        ctx["_scene_identity_scope_filter"] = "local_or_global"
+        try:
+            candidates: list[tuple[int, float, int, int, int]] = []
+            for order, scene_id in enumerate(candidate_scene_ids):
+                image = images.get(int(scene_id))
+                if not isinstance(image, dict):
+                    continue
+                score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
+                明确性, 路径长度 = self._scene_route_ranking(tree, int(scene_id), int(target_scene_id))
+                candidates.append((int(scene_id), score, 明确性, 路径长度, int(order)))
+        finally:
+            if previous_scope_filter is None:
+                ctx.pop("_scene_identity_scope_filter", None)
+            else:
+                ctx["_scene_identity_scope_filter"] = previous_scope_filter
+
+        if not candidates:
+            return None, 0.0
+        candidates.sort(
+            key=lambda item: (
+                item[1],
+                item[2],
+                -item[3],
+                -item[4],
+            ),
+            reverse=True,
+        )
+        scene_id, score, 明确性, 路径长度, _order = candidates[0]
+        if self._scene_matches_id(scene_id, score):
+            self._log(
+                "detail",
+                f"goto_view：路径候选命中 #{scene_id} {score:.0f}%，明确性 {明确性}，路径长度 {路径长度}",
+            )
+            return scene_id, score
+        return None, score
 
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
         source_shape = {"title": "离开"}
@@ -6028,7 +6238,13 @@ class DataAnnotationRuntimeRunner(
             self._raise_if_stopped(stop_event)
             route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
             frame = self._screencap(ctx)
-            current_scene_id, score = self._identify_scene_number(ctx, frame, route_candidate_ids)
+            current_scene_id, score = self._identify_scene_number_for_route(
+                ctx,
+                frame,
+                tree,
+                target_scene_id,
+                route_candidate_ids,
+            )
             if current_scene_id is None:
                 current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
