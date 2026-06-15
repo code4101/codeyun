@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlmodel import select
 
 from backend.api import device_entries as device_entries_api
-from backend.core.codex_sessions import (
+from backend.core.codex.sessions import (
     build_remote_codex_cache_root_key,
     cache_remote_codex_thread_detail,
 )

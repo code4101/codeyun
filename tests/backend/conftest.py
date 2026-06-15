@@ -23,8 +23,8 @@ os.environ.setdefault("CODEYUN_MACHINE_STATE_DIR", os.path.join(TEST_DATA_DIR, "
 from backend.app import app
 from backend.db import get_session
 from backend.models import User
-from backend.core.device import device_manager
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.devices.device import device_manager
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
 
 # Use in-memory SQLite for tests
 @pytest.fixture(name="engine")
@@ -62,16 +62,16 @@ def fixture_test_device(session):
     # Mock config instead of DB
     with patch("socket.gethostname", return_value="Test Local Device"), \
          patch(
-             "backend.core.device._load_machine_identity",
+             "backend.core.devices.device._load_machine_identity",
              return_value={
                  "device_id": device_id,
                  "device_identity_version": 2,
                  "device_identity_source": "test",
              },
          ), \
-         patch("backend.core.device._save_machine_identity"), \
-         patch("backend.core.device.get_device_token", return_value=token), \
-         patch("backend.core.device.get_device_id", return_value=device_id), \
+         patch("backend.core.devices.device._save_machine_identity"), \
+         patch("backend.core.devices.device.get_device_token", return_value=token), \
+         patch("backend.core.devices.device.get_device_id", return_value=device_id), \
          patch("backend.api.device.get_device_id", return_value=device_id), \
          patch("backend.api.device_entries.get_device_id", return_value=device_id), \
          patch("backend.api.device_control.get_device_id", return_value=device_id):

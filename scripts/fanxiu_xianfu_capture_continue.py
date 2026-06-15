@@ -14,16 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu_behavior_tree import (
+from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path,
     fanxiu_data_annotation_manual_jobs,
 )
-from backend.core.fanxiu_data_annotation_runtime_runner import (
+from backend.core.fanxiu.data_annotation.runtime_runner import (
     _parse_xianfu_visit_cd_seconds,
 )
-from backend.core.fanxiu_data_annotation_runtime_control import read_scheduler_tasks
+from backend.core.fanxiu.data_annotation.runtime_control import read_scheduler_tasks
 from backend.core.temp_paths import codeyun_temp_root
 from scripts.fanxiu_xianfu_migration_probe import (
     DEFAULT_OLD_XIANFU_ROOT,
@@ -491,3 +491,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

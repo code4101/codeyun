@@ -8,15 +8,15 @@ from sqlmodel import select
 
 from backend.app import app
 from backend.api import attendance as attendance_api
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.attendance_service import (
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.attendance.service import (
     encrypt_attendance_secret,
     get_attendance_course_data_flow_config,
     get_attendance_service_extra_config,
     get_attendance_service_order_operation_password,
     get_or_create_attendance_service_config,
 )
-from backend.core.feature_access import (
+from backend.core.access.feature_access import (
     FEATURE_ACCESS_SUBJECT_ANONYMOUS,
     FEATURE_ACCESS_SUBJECT_USER,
     save_feature_access_policy_overrides,

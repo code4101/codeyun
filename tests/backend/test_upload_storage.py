@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from backend.core import storage as storage_module
+from backend.core.resources import storage as storage_module
 
 
 def test_migrate_legacy_attachments_moves_files_to_data_dir(monkeypatch, tmp_path):

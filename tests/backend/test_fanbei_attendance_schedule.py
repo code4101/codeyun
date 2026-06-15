@@ -1,7 +1,7 @@
 from datetime import date
 
-from backend.core import fanbei_attendance_schedule as schedule
-from backend.core.attendance_progress_style import (
+from backend.core.attendance import fanbei_schedule as schedule
+from backend.core.attendance.progress_style import (
     PercentageRefundRule,
     highlight_percentage_refund_progress,
     highlight_presence_progress,

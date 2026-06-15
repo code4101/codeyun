@@ -51,7 +51,7 @@ from scripts.import_yuque_journal import (
     timestamp_from_week,
     yuque_session,
 )
-from backend.core.yuque_html import normalize_legacy_yuque_lake_html
+from backend.core.notes.yuque_html import normalize_legacy_yuque_lake_html
 
 
 LEGACY_ROOT_DOC_IDS = [

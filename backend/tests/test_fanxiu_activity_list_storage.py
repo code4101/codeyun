@@ -1,4 +1,4 @@
-from backend.core import fanxiu_inventory
+from backend.core.fanxiu.catalog import inventory as fanxiu_inventory
 
 
 def test_activity_list_extracts_legacy_cross_suffix(tmp_path, monkeypatch) -> None:

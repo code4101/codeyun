@@ -1,4 +1,4 @@
-from backend.core.fanxiu_activity_catalog import search_fanxiu_activity_cards
+from backend.core.fanxiu.catalog.activity import search_fanxiu_activity_cards
 
 
 def test_current_server_scope_keeps_matching_cross_group_activity() -> None:

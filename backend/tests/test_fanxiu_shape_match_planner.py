@@ -1,4 +1,4 @@
-from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
 from pyxllib.autogui import ShapeMatchPlanner
 
 

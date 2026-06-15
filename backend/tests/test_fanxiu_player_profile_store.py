@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from backend.core.fanxiu_player_profile_store import upsert_fanxiu_player_profile_rows
+from backend.core.fanxiu.packet.player_profile_store import upsert_fanxiu_player_profile_rows
 from backend.models import FanxiuPlayerProfileRecord
 
 

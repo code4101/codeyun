@@ -4,8 +4,8 @@ import sqlite3
 from types import SimpleNamespace
 
 from backend.api import wechat_archive
-from backend.core import tim_legacy_db
-from backend.core.tim_legacy_db import (
+from backend.core.messaging import tim_legacy_db
+from backend.core.messaging.tim_legacy_db import (
     TimLegacyDbStorage,
     classify_tim_export_file,
     extract_msgdbrandkeys_from_memory,

@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from backend.core.note_semantics import build_note_category_palette_setting_key
+from backend.core.notes.semantics import build_note_category_palette_setting_key
 from backend.models import AppSetting, NoteNode
 
 

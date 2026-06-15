@@ -6,12 +6,12 @@ from typing import Any, Callable, TypedDict
 
 from sqlmodel import Session, select
 
-from backend.core.resource_identity import (
+from backend.core.resources.identity import (
     RESOURCE_TYPE_WORKBOOK,
     ensure_resource_identity,
 )
-from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
-from backend.core.sheet_refs import (
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.resources.sheet_refs import (
     load_workbooks_by_refs,
     sheet_public_id,
     sheet_ref_aliases,

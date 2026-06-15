@@ -1,5 +1,10 @@
 <template>
-  <span v-if="displayLabel || iconComponent" class="note-form-badge" :class="{ 'is-compact': compact }">
+  <span
+    v-if="displayLabel || iconComponent"
+    class="note-form-badge"
+    :class="{ 'is-compact': compact }"
+    :style="badgeStyle"
+  >
     <el-icon v-if="iconComponent" class="form-icon"><component :is="iconComponent" /></el-icon>
     <span v-if="displayLabel" class="form-label">{{ formConfig.label }}</span>
   </span>
@@ -14,13 +19,18 @@ const props = withDefaults(defineProps<{
   form?: string | null;
   showLabel?: boolean;
   compact?: boolean;
+  textColor?: string | null;
 }>(), {
   form: 'note',
   showLabel: false,
-  compact: false
+  compact: false,
+  textColor: null
 });
 
 const formConfig = computed(() => getNoteFormConfig(props.form));
+const badgeStyle = computed(() => (
+  props.textColor ? { color: props.textColor } : undefined
+));
 const iconComponent = computed(() => {
   if (formConfig.value.id === 'document') return Document;
   if (formConfig.value.id === 'memo') return Tickets;

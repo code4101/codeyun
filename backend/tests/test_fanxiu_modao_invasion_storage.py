@@ -1,4 +1,4 @@
-from backend.core import fanxiu_inventory
+from backend.core.fanxiu.catalog import inventory as fanxiu_inventory
 
 
 def test_modao_invasion_exchange_list_roundtrip(tmp_path, monkeypatch) -> None:
@@ -172,4 +172,3 @@ def test_shouyuan_exploration_exchange_list_missing_collection_loads_empty(tmp_p
     monkeypatch.setattr(fanxiu_inventory, "get_inventory_storage_path", lambda: storage_path)
 
     assert fanxiu_inventory.load_shouyuan_exploration_exchange_list() == {"records": []}
-

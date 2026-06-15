@@ -8,8 +8,8 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
-from backend.core.auth import get_current_user_from_token
-from backend.core.device import get_device_id, get_device_token
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.devices.device import get_device_id, get_device_token
 from backend.db import get_session
 from backend.models import User, UserDevice
 from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceTokenRead, UserDeviceUpdate

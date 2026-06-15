@@ -5,9 +5,9 @@ import time
 import pytest
 
 from backend.api.git_tools import GitToolContextResponse
-from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
-from backend.core.git_tools import GitToolError, create_git_commit
-from backend.core.ollama_access_keys import create_ollama_access_key
+from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
+from backend.core.ai.git_tools import GitToolError, create_git_commit
+from backend.core.ai.ollama_access_keys import create_ollama_access_key
 from backend.models import UserDevice
 
 
@@ -382,7 +382,7 @@ def test_local_entry_git_generate_message_uses_ai_draft(client, auth_user, test_
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "qwen3:14b",
             "content": json.dumps(
@@ -436,7 +436,7 @@ def test_local_entry_git_reduce_message_runs_hierarchical_draft(client, auth_use
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "qwen3.5:4b-instruct",
             "content": json.dumps(
@@ -495,7 +495,7 @@ def test_local_entry_git_reduce_and_commit_runs_end_to_end(client, auth_user, te
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "qwen3.5:4b-instruct",
             "content": json.dumps(
@@ -557,7 +557,7 @@ def test_local_entry_git_reduction_run_reports_progress_and_result(client, auth_
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "qwen3.5:4b-instruct",
             "content": json.dumps(
@@ -628,7 +628,7 @@ def test_local_entry_git_generate_message_forces_split_for_large_change_set(clie
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "qwen3:14b",
             "content": json.dumps(
@@ -830,7 +830,7 @@ def test_local_entry_git_generate_and_commit_runs_end_to_end(client, auth_user, 
     entry_id = entry_resp.json()["id"]
 
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "qwen3:14b",
             "content": json.dumps(
@@ -919,7 +919,7 @@ def test_remote_entry_git_generate_message_reads_remote_context(client, session,
 
     monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(
@@ -1029,7 +1029,7 @@ def test_remote_entry_git_reduce_reads_remote_reduction_input(client, session, a
 
     monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(
@@ -1143,7 +1143,7 @@ def test_remote_entry_git_generate_and_commit_reads_context_then_commits(client,
 
     monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(
@@ -1280,7 +1280,7 @@ def test_remote_entry_git_reduce_and_commit_reads_reduction_input_then_commits(c
 
     monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(
@@ -1403,7 +1403,7 @@ def test_remote_entry_git_reduction_run_auto_commit_polls_to_completion(client, 
 
     monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(

@@ -12,7 +12,7 @@ import scripts.verify_fanxiu_resource_links as resource_links
 import scripts.verify_fanxiu_wiki_endpoints as endpoints
 import scripts.verify_fanxiu_wiki_icons as icons
 import scripts.verify_fanxiu_wiki_quality as quality
-from backend.core.fanxiu_item_icon_quality import build_item_icon_quality_report, load_item_icon_quality_review
+from backend.core.fanxiu.catalog.item_icon_quality import build_item_icon_quality_report, load_item_icon_quality_review
 
 
 def _healthy_contact_sheet_path() -> str:

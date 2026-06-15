@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.nianzhu_course_sheets import (
+from backend.core.attendance.nianzhu_course_sheets import (
     NIANZHU_ATTENDANCE_SHEET_NUMERIC_ID,
     NIANZHU_COURSE_NAME,
     NIANZHU_WORKBOOK_NUMERIC_ID,

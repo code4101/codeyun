@@ -10,13 +10,13 @@ from sqlmodel import Session, select
 
 from backend.api import note_sheets as note_sheets_api
 from backend.app import app
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.migrations.manager import (
     v29_migrate_attendance_course_sheets_to_notes_workbook,
     v30_add_numeric_sheet_and_workbook_ids,
 )
-from backend.core.sheet_identity import allocate_new_sheet_identity
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity
 from backend.models import AttendanceWjxDataEntry, ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 

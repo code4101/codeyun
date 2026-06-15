@@ -25,6 +25,7 @@ DEFAULT_BACKEND_URL = "http://127.0.0.1:8000/api/health"
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
 DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10.0
+DEFAULT_STARTUP_GRACE_SECONDS = 180.0
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
 
 
@@ -298,6 +299,17 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
     return stopped
 
 
+def _dev_process_startup_age(dev_processes: list[dict[str, Any]]) -> float | None:
+    started_at_values = [
+        float(item["started_at"])
+        for item in dev_processes
+        if item.get("started_at") is not None
+    ]
+    if not started_at_values:
+        return None
+    return max(0.0, time.time() - max(started_at_values))
+
+
 def _background_popen_kwargs() -> dict[str, Any]:
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -395,6 +407,23 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         _log(log_path, "Health check ok; no restart needed.")
         return {"status": "healthy", "health": health, "started_pid": None}
 
+    dev_processes = list_dev_processes()
+    startup_age = _dev_process_startup_age(dev_processes)
+    if dev_processes and startup_age is not None and startup_age < args.startup_grace:
+        _log(
+            log_path,
+            "Health check failed, but CodeYun dev runner is still starting; "
+            f"waiting. age={startup_age:.1f}s grace={args.startup_grace:.1f}s "
+            f"backend={health['backend']['message']} frontend={health['frontend']['message']}",
+        )
+        return {
+            "status": "starting",
+            "health": health,
+            "dev_processes": dev_processes,
+            "startup_age": startup_age,
+            "started_pid": None,
+        }
+
     _log(
         log_path,
         "Health check failed; restarting dev runner. "
@@ -432,6 +461,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=int, default=int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_REQUEST_TIMEOUT", DEFAULT_TIMEOUT_SECONDS)))
     parser.add_argument("--stop-timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_STOP_TIMEOUT", "8")))
+    parser.add_argument(
+        "--startup-grace",
+        type=float,
+        default=float(os.getenv("CODEYUN_WATCHDOG_STARTUP_GRACE_SECONDS", DEFAULT_STARTUP_GRACE_SECONDS)),
+    )
     parser.add_argument("--log-path", default=os.getenv("CODEYUN_WATCHDOG_LOG", os.fspath(_default_log_path())))
     parser.add_argument("--dev-stdout", default=os.getenv("CODEYUN_DEV_STDOUT_LOG", os.fspath(_default_dev_stdout_path())))
     parser.add_argument("--dev-stderr", default=os.getenv("CODEYUN_DEV_STDERR_LOG", os.fspath(_default_dev_stderr_path())))

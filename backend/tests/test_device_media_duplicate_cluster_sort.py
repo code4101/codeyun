@@ -5,7 +5,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from backend.api import filesystem as filesystem_api
-from backend.core import device as device_core
+from backend.core.devices import device as device_core
 from backend.models import DeviceFile
 
 

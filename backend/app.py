@@ -20,26 +20,26 @@ from backend.api.task_manager import (
 )
 from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
-from backend.core.auth import verify_api_token
-from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
-from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
-from backend.core.fanxiu_packet_insight_worker import fanxiu_packet_insight_worker
-from backend.core.service_tokens import ensure_legacy_service_tokens
-from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
-from backend.core.runtime_management import (
+from backend.core.access.auth import verify_api_token
+from backend.core.runtime.background_task_runner import init_background_task_runner, shutdown_background_task_runner
+from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu.packet.insight_worker import fanxiu_packet_insight_worker
+from backend.core.access.service_tokens import ensure_legacy_service_tokens
+from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
+from backend.core.runtime.management import (
     ensure_data_annotation_behavior_tree_service_on_startup,
     ensure_local_builtin_services_on_startup,
 )
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
-from backend.core.storage import (
+from backend.core.resources.storage import (
     ATTACHMENTS_URL_PREFIX,
     LEGACY_UPLOADS_URL_PREFIX,
     get_attachments_dir,
     migrate_legacy_attachments,
     migrate_legacy_source_data_dir,
 )
-from backend.core.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
+from backend.core.messaging.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
 from backend.db import init_db
 from backend.db import engine
 from backend.standard import register_standard_modules

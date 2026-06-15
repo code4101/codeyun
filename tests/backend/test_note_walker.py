@@ -1,6 +1,6 @@
 import uuid
 
-from backend.core.note_walker import NoteGraphContext, NoteWalker
+from backend.core.notes.walker import NoteGraphContext, NoteWalker
 from backend.models import NoteEdge, NoteNode
 
 

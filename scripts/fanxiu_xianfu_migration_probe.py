@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu_game_macro_annotation import _recognize_data_annotation_ocr_frame
-from backend.core.fanxiu_mumu_control import screencap_mumu_adb_png
+from backend.core.fanxiu.game.macro_annotation import _recognize_data_annotation_ocr_frame
+from backend.core.fanxiu.runtime.mumu_control import screencap_mumu_adb_png
 from backend.core.temp_paths import codeyun_temp_root
 
 

@@ -2,11 +2,11 @@ import json
 from unittest.mock import patch
 
 from backend.app import app
-from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
+from backend.core.ai.chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
 from backend.core import settings as settings_module
-from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
-from backend.core.auth import get_current_active_superuser
-from backend.core.ollama_access_keys import create_ollama_access_key
+from backend.core.ai.chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
+from backend.core.access.auth import get_current_active_superuser
+from backend.core.ai.ollama_access_keys import create_ollama_access_key
 from backend.models import AppSetting, User
 
 
@@ -455,7 +455,7 @@ def test_ai_chat_status_adds_qwen35_instruct_alias_for_ollama_models(monkeypatch
                 ]
             }
 
-    monkeypatch.setattr("backend.core.ai_chat.requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("backend.core.ai.chat.requests.get", lambda *args, **kwargs: FakeResponse())
 
     status = get_ai_provider_status(
         "ollama",
@@ -488,7 +488,7 @@ def test_ai_chat_ollama_alias_runs_with_think_false(monkeypatch):
         captured["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("backend.core.ai_chat.requests.post", fake_post)
+    monkeypatch.setattr("backend.core.ai.chat.requests.post", fake_post)
 
     response = chat_with_provider(
         provider_id="ollama",
@@ -540,7 +540,7 @@ def test_ai_chat_ollama_structured_sync_requests_use_streaming(monkeypatch):
         captured["stream"] = stream
         return FakeResponse()
 
-    monkeypatch.setattr("backend.core.ai_chat.requests.post", fake_post)
+    monkeypatch.setattr("backend.core.ai.chat.requests.post", fake_post)
 
     response = chat_with_provider(
         provider_id="ollama",
@@ -589,7 +589,7 @@ def test_ai_chat_openrouter_stream_ignores_sse_comments_and_event_lines(monkeypa
                 ]
             )
 
-    monkeypatch.setattr("backend.core.ai_chat.requests.post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("backend.core.ai.chat.requests.post", lambda *args, **kwargs: FakeResponse())
 
     events = list(
         stream_chat_with_provider(
@@ -644,7 +644,7 @@ def test_ai_chat_openrouter_stream_decodes_utf8_bytes_without_mojibake(monkeypat
                 ]
             )
 
-    monkeypatch.setattr("backend.core.ai_chat.requests.post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("backend.core.ai.chat.requests.post", lambda *args, **kwargs: FakeResponse())
 
     events = list(
         stream_chat_with_provider(

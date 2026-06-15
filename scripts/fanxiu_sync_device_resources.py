@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_resources import resolve_fanxiu_resource_root
+from backend.core.fanxiu.catalog.resources import resolve_fanxiu_resource_root
 
 
 DEFAULT_ADB = Path(r"D:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe")

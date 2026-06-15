@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_item_icon_quality import build_item_icon_quality_report
+from backend.core.fanxiu.catalog.item_icon_quality import build_item_icon_quality_report
 
 
 def main() -> int:

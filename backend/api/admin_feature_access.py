@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from backend.core.auth import get_current_active_superuser
-from backend.core.feature_access import (
+from backend.core.access.auth import get_current_active_superuser
+from backend.core.access.feature_access import (
     FEATURE_ACCESS_SUBJECT_ANONYMOUS,
     FEATURE_ACCESS_SUBJECT_USER,
     build_feature_access_admin_subject_context,

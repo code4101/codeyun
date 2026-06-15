@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.core import fanxiu_processes
-from backend.core import local_script_processes
+from backend.core.fanxiu.runtime import processes as fanxiu_processes
+from backend.core.runtime import local_script_processes
 
 
 def test_match_fanxiu_process_fields_recognizes_codex_continue_loader():

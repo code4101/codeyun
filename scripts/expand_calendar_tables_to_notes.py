@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.yuque_html import normalize_legacy_yuque_lake_html
+from backend.core.notes.yuque_html import normalize_legacy_yuque_lake_html
 try:
     from resource_identity_sqlite import allocate_note_numeric_id, insert_note_edge
 except ImportError:  # pragma: no cover - supports package imports in tests/tools

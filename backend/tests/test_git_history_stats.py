@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.core import git_tools
+from backend.core.ai import git_tools
 
 
 def _run_git(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> None:

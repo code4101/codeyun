@@ -28,7 +28,7 @@ from starlette.background import BackgroundTask
 from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
 
 from backend.api.device import REMOTE_DEVICE_DIRECT_PROXIES
-from backend.core.auth import (
+from backend.core.access.auth import (
     ALGORITHM,
     SECRET_KEY,
     create_access_token,
@@ -36,22 +36,22 @@ from backend.core.auth import (
     get_optional_current_user_from_token,
     verify_api_token,
 )
-from backend.core.feature_access_guard import ensure_feature_access, require_feature_access_dependency
-from backend.core.game_window_service_runtime import (
+from backend.core.access.feature_access_guard import ensure_feature_access, require_feature_access_dependency
+from backend.core.runtime.game_window_service import (
     GameWindowServiceError,
     get_game_window_service_status,
     open_game_window_service_stream,
     start_game_window_service,
 )
-from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
+from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
 from backend.core.settings import get_settings
-from backend.core.fanxiu_runtime_errors import FanxiuRuntimeError
-from backend.core.note_identity import allocate_new_note_identity
-from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
+from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
+from backend.core.notes.identity import allocate_new_note_identity
+from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import engine, get_session
 from backend.models import FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
-from backend.core.fanxiu_mumu_control import (
+from backend.core.fanxiu.runtime.mumu_control import (
     activate_mumu_window,
     capture_mumu_window_frame,
     click_mumu_window_processed_point,
@@ -77,7 +77,7 @@ from backend.core.fanxiu_mumu_control import (
     text_mumu_adb,
     write_fanxiu_screenshot_pre_label,
 )
-from backend.core.fanxiu_game_window_actions import (
+from backend.core.fanxiu.game.window_actions import (
     click_game_window2_service as _core_click_game_window2_service,
     click_remote_game_window2 as _core_click_remote_game_window2,
     drag_game_window2_service as _core_drag_game_window2_service,
@@ -97,44 +97,44 @@ from backend.core.fanxiu_game_window_actions import (
     text_game_window2_service as _core_text_game_window2_service,
     text_remote_game_window2 as _core_text_remote_game_window2,
 )
-from backend.core.fanxiu_pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
-from backend.core.fanxiu_visual_macro_runtime import (
+from backend.core.fanxiu.game.pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
+from backend.core.fanxiu.game.visual_macro_runtime import (
     VisualMacroRuntimeCallbacks,
     begin_visual_macro_run,
     end_visual_macro_run,
     run_fanxiu_visual_script,
     stop_visual_macro_run,
 )
-from backend.core.ai_app_config import (
+from backend.core.ai.app_config import (
     AiAppConfigError,
 )
-from backend.core.ai_chat import OllamaClientError
-from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
-from backend.core.fanxiu_inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
-from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
-from backend.core.fanxiu_inventory import load_spirit_beast_hall, save_spirit_beast_hall
-from backend.core.fanxiu_inventory import load_activity_list, save_activity_list
-from backend.core.fanxiu_inventory import load_modao_invasion_exchange_list, save_modao_invasion_exchange_list
-from backend.core.fanxiu_inventory import (
+from backend.core.ai.chat import OllamaClientError
+from backend.core.fanxiu.catalog.inventory import load_magic_treasure_hall, save_magic_treasure_hall
+from backend.core.fanxiu.catalog.inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
+from backend.core.fanxiu.catalog.inventory import load_wardrobe_hall, save_wardrobe_hall
+from backend.core.fanxiu.catalog.inventory import load_spirit_beast_hall, save_spirit_beast_hall
+from backend.core.fanxiu.catalog.inventory import load_activity_list, save_activity_list
+from backend.core.fanxiu.catalog.inventory import load_modao_invasion_exchange_list, save_modao_invasion_exchange_list
+from backend.core.fanxiu.catalog.inventory import (
     load_shouyuan_exploration_exchange_list,
     save_shouyuan_exploration_exchange_list,
 )
-from backend.core.fanxiu_processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
-from backend.core.fanxiu_packet_capture import build_fanxiu_packet_capture_snapshot
-from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
-from backend.core.fanxiu_packet_activity import fanxiu_packet_activity_service
-from backend.core.fanxiu_packet_proxy import fanxiu_packet_proxy_service
-from backend.core.fanxiu_capture_runtime import fanxiu_capture_runtime_service
-from backend.core.fanxiu_activity_packet_sync import (
+from backend.core.fanxiu.runtime.processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
+from backend.core.fanxiu.packet.capture import build_fanxiu_packet_capture_snapshot
+from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
+from backend.core.fanxiu.packet.activity import fanxiu_packet_activity_service
+from backend.core.fanxiu.packet.proxy import fanxiu_packet_proxy_service
+from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu.packet.activity_sync import (
     get_fanxiu_activity_packet_schedule,
     sync_fanxiu_activity_packets,
 )
-from backend.core.fanxiu_packet_insights import (
+from backend.core.fanxiu.packet.insights import (
     get_fanxiu_packet_runtime_insights,
     get_fanxiu_packet_storage_bag_snapshot,
     sync_fanxiu_packet_runtime_insights,
 )
-from backend.core.fanxiu_status_models import (
+from backend.core.fanxiu.catalog.status_models import (
     FanxiuActivityPacketSyncRequest,
     FanxiuActivityPacketSyncResponse,
     FanxiuAndroidProxyStatus,
@@ -195,7 +195,7 @@ from backend.core.fanxiu_status_models import (
     LocalScriptProcessItem,
     LocalScriptProcessListResponse,
 )
-from backend.core.fanxiu_game_window_models import (
+from backend.core.fanxiu.game.window_models import (
     FanxiuGameWindow2ActivateRequest,
     FanxiuGameWindow2BurstClearRequest,
     FanxiuGameWindow2BurstFrameRequest,
@@ -248,7 +248,7 @@ from backend.core.fanxiu_game_window_models import (
     FanxiuVisualScriptRunRequest,
     FanxiuVisualScriptStopRequest,
 )
-from backend.core.fanxiu_inventory_models import (
+from backend.core.fanxiu.catalog.inventory_models import (
     FanxiuActivityItem,
     FanxiuActivityListSnapshot,
     FanxiuFormationEffectDetailImportItem,
@@ -287,7 +287,7 @@ from backend.core.fanxiu_inventory_models import (
     FanxiuWardrobeHallSnapshot,
     FanxiuWardrobeItem,
 )
-from backend.core.fanxiu_ocr_utils import (
+from backend.core.fanxiu.game.ocr_utils import (
     _extract_magic_treasure_ocr_line_entries,
     _extract_magic_treasure_ocr_lines,
     _extract_ocr_line_entries,
@@ -295,7 +295,7 @@ from backend.core.fanxiu_ocr_utils import (
     _extract_shape_text,
     _sanitize_ocr_text,
 )
-from backend.core.fanxiu_formation_ocr import (
+from backend.core.fanxiu.catalog.formation_ocr import (
     _build_formation_effect_details_from_ocr_document,
     _build_formation_requirements_from_ocr_document,
     _is_formation_requirement_condition,
@@ -307,7 +307,7 @@ from backend.core.fanxiu_formation_ocr import (
     _normalize_formation_effect_text,
     _normalize_formation_requirement_text,
 )
-from backend.core.fanxiu_modao_shouyuan_ocr import (
+from backend.core.fanxiu.catalog.modao_shouyuan_ocr import (
     _build_modao_invasion_exchange_items_from_ocr_document,
     _build_modao_invasion_personal_rankings_from_ocr_document,
     _build_shouyuan_exploration_income_speed_from_ocr_document,
@@ -328,41 +328,41 @@ from backend.core.fanxiu_modao_shouyuan_ocr import (
     _parse_modao_invasion_personal_ranking_header_line,
     _parse_modao_invasion_personal_ranking_plane_line,
 )
-from backend.core.fanxiu_player_profile_store import (
+from backend.core.fanxiu.packet.player_profile_store import (
     list_fanxiu_player_profile_records,
     list_latest_fanxiu_player_profile_records,
 )
-from backend.core.fanxiu_tcp_flow import (
+from backend.core.fanxiu.packet.tcp_flow import (
     decode_fanxiu_tcp_pcap,
     list_fanxiu_tcp_business_entries,
     list_fanxiu_tcp_captures,
     list_fanxiu_tcp_records,
 )
-from backend.core.fanxiu_mail_store import (
+from backend.core.fanxiu.mail.store import (
     ensure_fanxiu_mail_table,
     mark_fanxiu_mail_action,
     normalize_fanxiu_mail_time_text,
     normalize_fanxiu_mail_title,
     update_fanxiu_mail_desired_status,
 )
-from backend.core.fanxiu_mail_policy import (
+from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
     fanxiu_mail_visible_group_action_policy,
     fanxiu_mail_rewards_from_payload,
     fanxiu_mail_rewards_unresolved,
 )
-from backend.core.fanxiu_mail_packet_sync import (
+from backend.core.fanxiu.mail.packet_sync import (
     _mail_rewards_summary,
     _normalize_mail_rewards,
     sync_fanxiu_mail_packets,
     trace_fanxiu_mail_packet_gap,
 )
-from backend.core.fanxiu_packet_insight_worker import (
+from backend.core.fanxiu.packet.insight_worker import (
     fanxiu_packet_insight_worker,
     sync_fanxiu_capture_paths,
 )
-from backend.core.fanxiu_data_annotation_jobs import (
+from backend.core.fanxiu.data_annotation.jobs import (
     DataAnnotationManualJobDefinition as _DataAnnotationManualJobDefinition,
     _DATA_ANNOTATION_MANUAL_JOB_REGISTRY,
     create_data_annotation_manual_job,
@@ -373,8 +373,10 @@ from backend.core.fanxiu_data_annotation_jobs import (
     requeue_running_data_annotation_manual_jobs,
     register_fanxiu_data_annotation_manual_job,
 )
-from backend.core import fanxiu_data_annotation_runtime_control as _runtime_control
-from backend.core.fanxiu_data_annotation_models import (
+from backend.core.fanxiu.data_annotation import runtime_control as _runtime_control
+from backend.core.fanxiu.data_annotation.models import (
+    FanxiuDataAnnotationDoctorWatchEnsureResponse,
+    FanxiuDataAnnotationDoctorWatchLatestResponse,
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
     FanxiuDataAnnotationRuntimeStatus,
@@ -391,7 +393,7 @@ from backend.core.fanxiu_data_annotation_models import (
     FanxiuDataAnnotationSchedulerSettingsRequest,
     FanxiuDataAnnotationWorldFactsResponse,
 )
-from backend.core.fanxiu_data_annotation_state import (
+from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_log_once,
     append_data_annotation_runtime_status_log,
     data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
@@ -410,7 +412,7 @@ from backend.core.fanxiu_data_annotation_state import (
     write_data_annotation_json as _write_data_annotation_json,
     write_data_annotation_world_facts,
 )
-from backend.core.fanxiu_data_annotation_scheduler import (
+from backend.core.fanxiu.data_annotation.scheduler import (
     build_data_annotation_scheduler_plan,
     data_annotation_fact_time_text as _data_annotation_fact_time_text,
     data_annotation_scheduler_run_now_task as _core_data_annotation_scheduler_run_now_task,
@@ -421,15 +423,16 @@ from backend.core.fanxiu_data_annotation_scheduler import (
     repair_data_annotation_scheduler_tasks,
     sync_data_annotation_scheduler_tasks_from_world_facts,
 )
-from backend.core.fanxiu_data_annotation_scheduler_defaults import (
+from backend.core.fanxiu.data_annotation.scheduler_defaults import (
     default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks,
 )
-from backend.core.fanxiu_data_annotation_runtime import (
+from backend.core.fanxiu.data_annotation.runtime import (
     DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer,
     DataAnnotationRuntimeGroupSpec as _DataAnnotationRuntimeGroupSpec,
     DataAnnotationRuntimeNodeSpec as _DataAnnotationRuntimeNodeSpec,
 )
-from backend.core.fanxiu_behavior_tree import (
+from backend.core.fanxiu.runtime.behavior_tree import (
+    DEFAULT_FANXIU_ENTRY_ID,
     acquire_fanxiu_job_group_isolation,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
@@ -449,8 +452,9 @@ from backend.core.fanxiu_behavior_tree import (
     clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
     release_fanxiu_job_group_isolation,
     register_fanxiu_runtime_runner,
+    resolve_fanxiu_entry,
 )
-from backend.core.fanxiu_game_macro_annotation import (
+from backend.core.fanxiu.game.macro_annotation import (
     _annotate_game_macro_shape_with_ai,
     _build_game_macro_annotation_prompt,
     _build_game_macro_ocr_context,
@@ -461,15 +465,15 @@ from backend.core.fanxiu_game_macro_annotation import (
     _recognize_data_annotation_ocr_frame,
     _summarize_game_macro_ocr_document,
 )
-from backend.core.fanxiu_data_annotation_rembg import remove_fanxiu_data_annotation_background
-from backend.core.fanxiu_behavior_tree_service import (
+from backend.core.fanxiu.data_annotation.rembg import remove_fanxiu_data_annotation_background
+from backend.core.fanxiu.runtime.behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
     stop_behavior_tree_service,
 )
-from backend.core.local_script_processes import list_local_script_processes
-from backend.core.note_access import note_to_response_dict
-from backend.core.note_semantics import (
+from backend.core.runtime.local_script_processes import list_local_script_processes
+from backend.core.notes.access import note_to_response_dict
+from backend.core.notes.semantics import (
     NOTE_KIND_FANXIU_CHAR,
     NOTE_KIND_FANXIU_ACTIVITY_ITEM,
     NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM,
@@ -483,7 +487,7 @@ from backend.core.note_semantics import (
     normalize_note_color,
     normalize_note_types,
 )
-from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
+from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 
 router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
@@ -3818,7 +3822,7 @@ _DATA_ANNOTATION_RUNTIME_RUNNER: Any = _FanxiuRuntimeRunnerProxy()
 
 def __getattr__(name: str) -> Any:
     if name == "_DataAnnotationRuntimeRunner":
-        from backend.core.fanxiu_data_annotation_runtime_runner import DataAnnotationRuntimeRunner
+        from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner
 
         return DataAnnotationRuntimeRunner
     raise AttributeError(name)
@@ -4061,7 +4065,15 @@ def _data_annotation_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any
 
 def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
+    try:
+        entry = resolve_fanxiu_entry(entry_id)
+    except Exception:
+        entry = None
     return _runtime_control.build_scheduler_plan(
+        entry=entry,
+        entry_id=entry_id,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         world_facts_path=_data_annotation_world_facts_path(),
@@ -5294,6 +5306,24 @@ def get_fanxiu_data_annotation_world_facts(
         facts=_read_data_annotation_world_facts(),
         path=str(_data_annotation_world_facts_path()),
     )
+
+
+@status_router.get("/data-annotation/runtime/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
+def get_fanxiu_data_annotation_doctor_watch_latest(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return FanxiuDataAnnotationDoctorWatchLatestResponse.model_validate(_runtime_control.read_doctor_watch_latest())
+
+
+@status_router.post("/data-annotation/runtime/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
+def ensure_fanxiu_data_annotation_doctor_watch(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_runtime_control.ensure_doctor_watch_background())
 
 
 @status_router.delete("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
@@ -7227,4 +7257,5 @@ def update_char(
 router.include_router(status_router)
 router.include_router(inventory_router)
 router.include_router(chars_router)
+
 

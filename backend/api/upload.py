@@ -5,8 +5,8 @@ import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlmodel import Session
 
-from backend.core.attachment_resources import index_attachment_file_resource
-from backend.core.storage import build_attachment_url, get_attachments_dir
+from backend.core.resources.attachments import index_attachment_file_resource
+from backend.core.resources.storage import build_attachment_url, get_attachments_dir
 from backend.db import get_session
 
 router = APIRouter()

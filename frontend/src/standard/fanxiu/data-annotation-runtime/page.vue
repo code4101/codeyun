@@ -5,6 +5,8 @@ import { ElMessage } from 'element-plus';
 import { QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
+  ensureFanxiuDataAnnotationDoctorWatch,
+  getFanxiuDataAnnotationDoctorWatchLatest,
   getFanxiuDataAnnotationRuntimeLogs,
   getFanxiuDataAnnotationRuntimeStatus,
   getFanxiuDataAnnotationSchedulerPlan,
@@ -14,6 +16,7 @@ import {
   setFanxiuDataAnnotationSchedulerSettings,
   setFanxiuDataAnnotationRuntimeGuard,
   setFanxiuDataAnnotationRuntimeGuardGroup,
+  type FanxiuDataAnnotationDoctorWatchLatestResponse,
   type FanxiuDataAnnotationRuntimeLogEntry,
   type FanxiuDataAnnotationRuntimeGuardItem,
   type FanxiuDataAnnotationRuntimeStatus,
@@ -28,6 +31,7 @@ const entryId = ref(String(route.query.entry_id || ''));
 const runtimeStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
 const schedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const schedulerPlan = ref<FanxiuDataAnnotationSchedulerPlanResponse | null>(null);
+const doctorWatchLatest = ref<FanxiuDataAnnotationDoctorWatchLatestResponse | null>(null);
 const schedulerJobGroupEnabled = ref(true);
 const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
@@ -114,6 +118,71 @@ const jobGroupTitle = computed(() => (
     ? '自动作业组已开启；到期作业会由常驻行为树执行'
     : '自动作业组已关闭；每个作业配置和下次触发仍保留，但到期时不自动执行'
 ));
+const schedulerBlockingMessage = computed(() => {
+  const blockers = schedulerPlan.value?.blocking_overlays || [];
+  const blocker = blockers.find((item) => Boolean(item.blocking));
+  return typeof blocker?.message === 'string' ? blocker.message : '';
+});
+const schedulerPlanMessage = computed(() => schedulerBlockingMessage.value || schedulerPlan.value?.message || machineName);
+const doctorSnapshot = computed(() => doctorWatchLatest.value?.snapshot || {});
+const doctorSeverity = computed(() => String(doctorSnapshot.value.severity || ''));
+const doctorSeverityText = computed(() => {
+  const labels: Record<string, string> = {
+    blocked: '阻塞',
+    error: '错误',
+    attention: '待执行',
+    ok: '正常',
+  };
+  return labels[doctorSeverity.value] || '未巡检';
+});
+const doctorSeverityClass = computed(() => (
+  ['blocked', 'error', 'attention', 'ok'].includes(doctorSeverity.value)
+    ? `is-${doctorSeverity.value}`
+    : 'is-unknown'
+));
+const doctorActionText = computed(() => {
+  const actions = doctorSnapshot.value.action_required || [];
+  return Array.isArray(actions) && actions.length ? String(actions[0]) : '';
+});
+const doctorFirstBlocker = computed(() => {
+  const blockers = doctorSnapshot.value.blocked_by || [];
+  return Array.isArray(blockers) && blockers.length && typeof blockers[0] === 'object'
+    ? blockers[0] as Record<string, unknown>
+    : null;
+});
+const doctorAnnotationTarget = computed(() => {
+  const targets = doctorSnapshot.value.annotation_targets || [];
+  return Array.isArray(targets) && targets.length && typeof targets[0] === 'object'
+    ? targets[0]
+    : null;
+});
+const doctorAnnotationTitle = computed(() => {
+  const targetTitle = String(doctorAnnotationTarget.value?.title || '').trim();
+  if (targetTitle) return targetTitle;
+  const title = String(doctorFirstBlocker.value?.title || '').trim();
+  return title === '游戏公告' || title === '灵祖奖励浮层' ? title : '';
+});
+const doctorSummaryText = computed(() => String(doctorSnapshot.value.summary || doctorWatchLatest.value?.message || ''));
+const doctorHeartbeat = computed(() => doctorWatchLatest.value?.heartbeat || {});
+const doctorHeartbeatText = computed(() => {
+  const heartbeat = doctorHeartbeat.value;
+  if (!doctorWatchLatest.value?.exists) return '';
+  if (heartbeat.active) return '巡检进程 在线';
+  const age = Number(heartbeat.age_seconds || 0);
+  return age > 0 ? `巡检进程 失联 ${Math.round(age)}s` : '巡检进程 未确认';
+});
+const doctorHeartbeatClass = computed(() => (doctorHeartbeat.value.active ? 'is-ok' : 'is-error'));
+const doctorStaleText = computed(() => {
+  const due = Number(doctorSnapshot.value.due_task_count || 0);
+  const stale = Number(doctorSnapshot.value.stale_due_count ?? doctorSnapshot.value.stale_due_success_count ?? 0);
+  const blocked = Number(doctorSnapshot.value.blocked_due_count || 0);
+  const oldSuccess = Number(doctorSnapshot.value.stale_due_success_count || 0);
+  if (!due && !stale && !blocked && !oldSuccess) return '';
+  const parts = [`到期 ${due}`, `未推进 ${stale}`];
+  if (blocked) parts.push(`阻断 ${blocked}`);
+  if (oldSuccess) parts.push(`旧成功 ${oldSuccess}`);
+  return parts.join(' / ');
+});
 
 const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   const labels: Record<string, string> = {
@@ -185,6 +254,29 @@ const openContextLogs = () => {
   });
 };
 
+const openDoctorAnnotationTarget = () => {
+  const target = doctorAnnotationTarget.value;
+  if (target?.path) {
+    void router.push({
+      path: target.path,
+      query: {
+        entry_id: entryId.value,
+        ...(target.query || {}),
+      },
+    });
+    return;
+  }
+  const title = doctorAnnotationTitle.value;
+  if (!title) return;
+  void router.push({
+    path: '/fanxiu/data-annotation',
+    query: {
+      entry_id: entryId.value,
+      focus_image_title: title,
+    },
+  });
+};
+
 const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
 };
@@ -209,14 +301,23 @@ const refreshScheduler = async () => {
   schedulerJobGroupEnabled.value = tasksResponse.job_group_enabled ?? planResponse.job_group_enabled ?? true;
 };
 
+const refreshDoctorWatchLatest = async () => {
+  try {
+    await ensureFanxiuDataAnnotationDoctorWatch();
+  } catch (error) {
+    console.warn('ensure doctor watch failed', error);
+  }
+  doctorWatchLatest.value = await getFanxiuDataAnnotationDoctorWatchLatest();
+};
+
 const refreshAll = async () => {
   loading.value = true;
   try {
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
     if (schedulerJobGroupEnabled.value && entryId.value) {
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
-      await Promise.all([refreshLogs(), refreshScheduler()]);
+      await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
     }
   } finally {
     loading.value = false;
@@ -232,7 +333,7 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
   try {
     const status = await action();
     if (status) applyStatus(status);
-    await Promise.all([refreshLogs(), refreshScheduler()]);
+    await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '操作失败');
   } finally {
@@ -267,7 +368,7 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
     }
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -286,7 +387,7 @@ const toggleJobGroupEnabled = async () => {
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
     }
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler()]);
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
   } finally {
@@ -310,7 +411,7 @@ const startPolling = () => {
       try {
         await refreshStatus();
         if (syncSlowState) {
-          await Promise.all([refreshLogs(), refreshScheduler()]);
+          await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
         }
       } finally {
         polling = false;
@@ -495,7 +596,7 @@ onUnmounted(() => {
         <div class="section-title">
           <h3>运行状态</h3>
           <div class="section-actions">
-            <span>{{ schedulerPlan?.message || machineName }}</span>
+            <span>{{ schedulerPlanMessage }}</span>
             <el-button
               v-if="runtimeStatus && !serviceRunning"
               size="small"
@@ -513,6 +614,31 @@ onUnmounted(() => {
           <span>场景 {{ currentSceneText }}</span>
           <span>阶段 {{ runtimePhaseText }}</span>
           <span v-if="taskProgressText">进度 {{ taskProgressText }}</span>
+        </div>
+        <div v-if="schedulerBlockingMessage" class="runtime-blocking" :title="schedulerBlockingMessage">
+          {{ schedulerBlockingMessage }}
+        </div>
+        <div
+          v-if="doctorWatchLatest?.exists"
+          class="runtime-doctor"
+          :class="doctorSeverityClass"
+          :title="doctorSummaryText"
+        >
+          <span>巡检 {{ doctorSeverityText }}</span>
+          <span v-if="doctorHeartbeatText" :class="doctorHeartbeatClass">{{ doctorHeartbeatText }}</span>
+          <span v-if="doctorStaleText">{{ doctorStaleText }}</span>
+          <span v-if="doctorSnapshot.checked_at">{{ doctorSnapshot.checked_at }}</span>
+        </div>
+        <div v-if="doctorActionText" class="runtime-blocking runtime-blocking-action" :title="doctorActionText">
+          <span>{{ doctorActionText }}</span>
+          <el-button
+            v-if="doctorAnnotationTitle"
+            size="small"
+            plain
+            @click="openDoctorAnnotationTarget"
+          >
+            打开补标
+          </el-button>
         </div>
         <div class="runtime-message" :title="runtimeMessage">{{ runtimeMessage }}</div>
       </section>
@@ -787,6 +913,71 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.runtime-blocking {
+  margin-top: 8px;
+  min-width: 0;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 8px;
+  color: #b45309;
+  font-size: 12px;
+  border: 1px solid #f5d08a;
+  background: #fff7ed;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-blocking-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-blocking-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-doctor {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.runtime-doctor span {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #374151;
+}
+
+.runtime-doctor.is-blocked span,
+.runtime-doctor.is-error span {
+  color: #991b1b;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.runtime-doctor.is-attention span {
+  color: #92400e;
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.runtime-doctor.is-ok span {
+  color: #166534;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
 }
 
 .empty-cell {

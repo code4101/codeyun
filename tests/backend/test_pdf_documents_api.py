@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from backend.app import app
-from backend.core.auth import get_current_active_user, get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.access.auth import get_current_active_user, get_current_user_from_token, get_optional_current_user_from_token
 from backend.models import PdfDocument, PdfPageNote, PdfUserState, User, UserDevice
 
 

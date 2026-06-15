@@ -1,4 +1,4 @@
-from backend.core import fanxiu_activity_catalog as catalog
+from backend.core.fanxiu.catalog import activity as catalog
 
 
 def test_filter_rows_for_activity_runtime_keeps_single_open_after_server_day_version():

@@ -11,12 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
 from backend.db import get_session, engine
-from backend.core.auth import get_current_active_superuser, get_password_hash
-from backend.core.auto_git_commit import (
+from backend.core.access.auth import get_current_active_superuser, get_password_hash
+from backend.core.ai.auto_git_commit import (
     create_auto_git_commit_run,
     get_auto_git_commit_status,
 )
-from backend.core.background_task_runner import (
+from backend.core.runtime.background_task_runner import (
     BACKGROUND_TASK_SPECS,
     get_background_task_runner_snapshot,
     get_background_task_spec,
@@ -29,29 +29,29 @@ from backend.core.background_task_runner import (
     set_background_task_deleted,
     set_background_task_enabled,
 )
-from backend.core.background_task_queue import background_task_queue
-from backend.core.device import get_device_id
-from backend.core.attachment_resources import index_attachment_file_resource
-from backend.core.note_metadata_feedback import (
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.devices.device import get_device_id
+from backend.core.resources.attachments import index_attachment_file_resource
+from backend.core.notes.metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
 )
-from backend.core.fanxiu_slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
+from backend.core.fanxiu.runtime.slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
 from backend.models import AppSetting, DeviceFile, User, NoteNode
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.storage import (
+from backend.core.resources.storage import (
     ATTACHMENT_URL_PATTERN,
     build_attachment_url,
     get_attachments_dir,
 )
-from backend.core.resource_backup_cleanup import (
+from backend.core.resources.backup_cleanup import (
     DEFAULT_RESOURCE_BACKUP_MAX_STORAGE_BYTES,
     load_resource_backup_storage_policy,
     run_resource_backup_storage_cleanup,
     save_resource_backup_storage_policy,
 )
-from backend.core.storage_usage import collect_directory_usage
-from backend.core.storage_health import build_storage_health_report
+from backend.core.resources.storage_usage import collect_directory_usage
+from backend.core.resources.storage_health import build_storage_health_report
 from backend.schemas import AdminAccountRead
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger

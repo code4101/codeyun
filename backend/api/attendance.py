@@ -14,7 +14,7 @@ from pyxllib.cv.rgbfmt import hash_text_to_hex_color
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from backend.core.attendance_service import (
+from backend.core.attendance.service import (
     AttendanceServiceError,
     apply_attendance_order_operation_password_env,
     build_attendance_course_data_step_runner_configs,
@@ -43,20 +43,20 @@ from backend.core.attendance_service import (
     update_attendance_course_data_flow_config,
     update_attendance_service_extra_config,
 )
-from backend.core.attendance_order import (
+from backend.core.attendance.order import (
     OrderAutomationError,
     execute_order_action,
     query_order_refund_details,
 )
-from backend.core.attendance_ai_precheck import build_attendance_wjx_ai_precheck
-from backend.core.ai_chat import OllamaClientError, chat_with_provider
-from backend.core.auth import get_current_user_from_token
-from backend.core.device import get_device_id
-from backend.core.feature_access_guard import (
+from backend.core.attendance.ai_precheck import build_attendance_wjx_ai_precheck
+from backend.core.ai.chat import OllamaClientError, chat_with_provider
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.devices.device import get_device_id
+from backend.core.access.feature_access_guard import (
     require_any_feature_access_dependency,
     require_feature_access_dependency,
 )
-from backend.core.ui_automation import ensure_ui_automation_thread_context
+from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
 from backend.db import get_session
 from backend.models import (
     AttendanceAccountAsset,
@@ -69,11 +69,11 @@ from backend.models import (
     WorkbookDocument,
     WorkbookSheetLink,
 )
-from backend.core.resource_identity import RESOURCE_TYPE_SHEET, allocate_resource_id
-from backend.core.note_sheet_access import ensure_sheet_anonymous_viewer
-from backend.core import note_sheet_inline_links
-from backend.core.sheet_identity import allocate_new_sheet_identity
-from backend.core.sheet_refs import (
+from backend.core.resources.identity import RESOURCE_TYPE_SHEET, allocate_resource_id
+from backend.core.notes.sheet_access import ensure_sheet_anonymous_viewer
+from backend.core.notes import sheet_inline_links as note_sheet_inline_links
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity
+from backend.core.resources.sheet_refs import (
     load_sheets_by_refs,
     load_workbooks_by_refs,
     sheet_public_id,
@@ -4343,14 +4343,14 @@ def _attendance_wjx_try_rebuild_after_user_id_repair(
         return {"attempted": False, "reason": "缺少考勤表 sheet_id"}
     try:
         if "梵呗" in course_name:
-            from backend.core.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
+            from backend.core.attendance.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
 
             summary = rebuild_fanbei_attendance_from_course_sheets(
                 session,
                 attendance_sheet_id=attendance_sheet_id,
             )
         elif "念住" in course_name or "觉观" in course_name:
-            from backend.core.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
+            from backend.core.attendance.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
 
             summary = rebuild_nianzhu_attendance_from_course_sheets(
                 session,

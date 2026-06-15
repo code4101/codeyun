@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 
-from backend.core.runtime_units import (
+from backend.core.runtime.units import (
     DEFAULT_JOB_CONCURRENCY_KEY,
+    DEFAULT_JOB_RESOURCE_LOCK,
     command_runtime_queue_name,
+    command_runtime_resource_lock,
     infer_command_runtime_kind,
     resolve_command_runtime_policy,
 )
@@ -48,6 +50,7 @@ def test_command_job_policy_uses_default_queue_group():
     assert policy.timeout_policy == "terminate"
     assert policy.timeout_seconds == 120
     assert policy.queue_key == DEFAULT_JOB_CONCURRENCY_KEY
+    assert policy.resource_lock == DEFAULT_JOB_RESOURCE_LOCK
     assert command_runtime_queue_name(task.id) == "command:task-1"
 
 
@@ -75,3 +78,17 @@ def test_schedule_policy_trigger_kind_replaces_legacy_cron_kind():
 
     assert policy.kind == "service"
     assert policy.schedule_kind == "monthly"
+
+
+def test_command_job_policy_marks_gui_resource_lock():
+    task = _task(
+        name="凡修画面检测",
+        runtime_kind="job",
+        command="uv run python scripts/fanxiu_bt.py watch-doctor --screenshot",
+    )
+
+    policy = resolve_command_runtime_policy(task)
+
+    assert policy.kind == "job"
+    assert policy.resource_lock == "resource:gui-automation"
+    assert command_runtime_resource_lock(task, "job") == "resource:gui-automation"

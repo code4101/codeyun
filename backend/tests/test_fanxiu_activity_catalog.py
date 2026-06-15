@@ -1,4 +1,4 @@
-from backend.core.fanxiu_activity_catalog import _active_task_resource_icon, _compact_active_task_row
+from backend.core.fanxiu.catalog.activity import _active_task_resource_icon, _compact_active_task_row
 
 
 def test_active_task_background_resource_is_not_icon():

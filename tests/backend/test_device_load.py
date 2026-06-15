@@ -1,4 +1,4 @@
-from backend.core.device import device_manager
+from backend.core.devices.device import device_manager
 
 def test_device_manager_load(test_device):
     # test_device fixture ensures device_manager is loaded with mock DB

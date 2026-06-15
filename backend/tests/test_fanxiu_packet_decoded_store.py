@@ -1,6 +1,6 @@
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from backend.core.fanxiu_packet_decoded_store import (
+from backend.core.fanxiu.packet.decoded_store import (
     decoded_record_rows_from_decode_result,
     upsert_fanxiu_packet_decoded_records,
 )

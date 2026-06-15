@@ -5,7 +5,7 @@ import os
 import time
 from pathlib import Path
 
-from backend.core import fanxiu_packet_insight_worker as worker
+from backend.core.fanxiu.packet import insight_worker as worker
 
 
 def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypatch, tmp_path):
@@ -199,7 +199,7 @@ def test_mail_business_backlog_records_mail_source_probe(monkeypatch, tmp_path):
             return False
 
     monkeypatch.setattr("sqlmodel.Session", FakeSession)
-    monkeypatch.setattr("backend.core.fanxiu_mail_packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr("backend.core.fanxiu.mail.packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
 
     result = worker.sync_fanxiu_mail_business_backlog(latest_limit=1, historical_limit=0)
 
@@ -255,7 +255,7 @@ def test_mail_business_backlog_processes_bounded_latest_and_historical_sources(m
         return {"ok": True, "record_count": len(decoded_sources)}
 
     monkeypatch.setattr("sqlmodel.Session", FakeSession)
-    monkeypatch.setattr("backend.core.fanxiu_mail_packet_sync.sync_fanxiu_mail_packets", fake_sync)
+    monkeypatch.setattr("backend.core.fanxiu.mail.packet_sync.sync_fanxiu_mail_packets", fake_sync)
 
     result = worker.sync_fanxiu_mail_business_backlog(latest_limit=2, historical_limit=3)
 
@@ -296,7 +296,7 @@ def test_batch_business_sync_passes_non_profile_runtime_protocols(monkeypatch):
             return False
 
     monkeypatch.setattr("sqlmodel.Session", FakeSession)
-    monkeypatch.setattr("backend.core.fanxiu_mail_packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr("backend.core.fanxiu.mail.packet_sync.sync_fanxiu_mail_packets", lambda *_args, **_kwargs: {"ok": True})
 
     runtime_sync, mail_sync = worker._sync_business_after_decoded(
         [{"decoded_sources": [{"decoded_path": "decoded.json", "record_id": "wallet-record", "stream": 0}]}]

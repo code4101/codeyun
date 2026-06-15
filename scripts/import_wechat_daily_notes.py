@@ -21,14 +21,14 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from backend.api.wechat_archive import _settings_wechat_db_storage_path
-from backend.core.ai_app_config import AI_APP_WECHAT_DAILY_SUMMARY, resolve_ai_app_runtime_config
-from backend.core.ai_chat import OllamaClientError, chat_with_provider
-from backend.core.note_identity import allocate_new_note_identity
-from backend.core.note_progress import (
+from backend.core.ai.app_config import AI_APP_WECHAT_DAILY_SUMMARY, resolve_ai_app_runtime_config
+from backend.core.ai.chat import OllamaClientError, chat_with_provider
+from backend.core.notes.identity import allocate_new_note_identity
+from backend.core.notes.progress import (
     NOTE_COMPLETION_PROGRESS_EXPR_FIELD,
     get_custom_field_value,
 )
-from backend.core.note_semantics import (
+from backend.core.notes.semantics import (
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DOCUMENT,
     NOTE_SCENE_DEFAULT,

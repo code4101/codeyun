@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.core.settings import get_settings
-from backend.core.note_sheet_inline_links import (
+from backend.core.notes.sheet_inline_links import (
     extract_inline_cell_value,
     inline_cell_link_url,
     strip_links_from_cell_meta,

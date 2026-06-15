@@ -11,7 +11,7 @@ from typing import Any
 
 from DrissionPage import Chromium
 
-from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
+from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 
 from .eastmoney_browser import build_chromium_options, ensure_eastmoney_browser_paths
 

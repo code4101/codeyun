@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.api.note_sheets import _extract_document_grid_rows, _extract_document_rows, _normalize_document_columns, _normalize_document_data_start_row
-from backend.core.attendance_progress_style import (
+from backend.core.attendance.progress_style import (
     highlight_threshold_refund_progress,
     parse_threshold_refund_rules,
     set_cell_background,

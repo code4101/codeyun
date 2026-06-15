@@ -4,8 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from backend.core import codeyun_watchdog_runtime
-from backend.core import runtime_management
+from backend.core.runtime import codeyun_watchdog as codeyun_watchdog_runtime
+from backend.core.runtime import management as runtime_management
 
 
 def test_codeyun_watchdog_default_paths_stay_outside_repo(monkeypatch):
@@ -71,3 +71,80 @@ def test_local_builtin_services_autostart_reports_errors(monkeypatch):
     result = runtime_management.ensure_local_builtin_services_on_startup()
 
     assert result["codeyun-watchdog"] == {"status": "error", "error": "boom"}
+
+
+def test_fanxiu_behavior_tree_start_also_ensures_doctor_watch(monkeypatch):
+    calls: list[str] = []
+
+    class Entry:
+        entry_id = "entry"
+
+    monkeypatch.delenv("FANXIU_DOCTOR_WATCH_AUTOSTART", raising=False)
+    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_fanxiu_behavior_tree_service",
+        lambda **kwargs: calls.append(f"bt:{kwargs['entry_id']}") or {"status": "started"},
+    )
+    monkeypatch.setattr(
+        runtime_management,
+        "_get_data_annotation_behavior_tree_status",
+        lambda: {"running": True},
+    )
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_doctor_watch_background",
+        lambda: calls.append("doctor") or {"ok": True, "started": True},
+    )
+
+    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
+
+    assert calls == ["bt:entry", "doctor"]
+    assert result["service"] == {"running": True}
+    assert result["doctor_watch"] == {"ok": True, "started": True}
+
+
+def test_fanxiu_behavior_tree_start_can_skip_doctor_watch(monkeypatch):
+    calls: list[str] = []
+
+    class Entry:
+        entry_id = "entry"
+
+    monkeypatch.setenv("FANXIU_DOCTOR_WATCH_AUTOSTART", "0")
+    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_fanxiu_behavior_tree_service",
+        lambda **kwargs: calls.append(f"bt:{kwargs['entry_id']}") or {"status": "started"},
+    )
+    monkeypatch.setattr(runtime_management, "_get_data_annotation_behavior_tree_status", lambda: {"running": True})
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_doctor_watch_background",
+        lambda: (_ for _ in ()).throw(AssertionError("doctor watch should not start")),
+    )
+
+    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
+
+    assert calls == ["bt:entry"]
+    assert "doctor_watch" not in result
+
+
+def test_fanxiu_behavior_tree_start_reports_doctor_watch_error(monkeypatch):
+    class Entry:
+        entry_id = "entry"
+
+    monkeypatch.delenv("FANXIU_DOCTOR_WATCH_AUTOSTART", raising=False)
+    monkeypatch.setattr(runtime_management, "_resolve_data_annotation_runtime_entry", lambda session: Entry())
+    monkeypatch.setattr(runtime_management, "ensure_fanxiu_behavior_tree_service", lambda **kwargs: {"status": "started"})
+    monkeypatch.setattr(runtime_management, "_get_data_annotation_behavior_tree_status", lambda: {"running": True})
+    monkeypatch.setattr(
+        runtime_management,
+        "ensure_doctor_watch_background",
+        lambda: (_ for _ in ()).throw(RuntimeError("watch boom")),
+    )
+
+    result = runtime_management.ensure_data_annotation_behavior_tree_service(object())
+
+    assert result["status"] == "started"
+    assert result["doctor_watch"] == {"ok": False, "started": False, "error": "watch boom"}

@@ -5,9 +5,9 @@ import subprocess
 import psutil
 import uuid
 import pytest
-import backend.core.device as device_core
+import backend.core.devices.device as device_core
 from types import SimpleNamespace
-from backend.core.device import device_manager, LocalDevice
+from backend.core.devices.device import device_manager, LocalDevice
 from backend.models import Task
 
 @pytest.fixture

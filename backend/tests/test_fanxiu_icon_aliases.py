@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.core.fanxiu_resources import _candidate_sprite_atlas_files, export_fanxiu_sprite_icon
+from backend.core.fanxiu.catalog.resources import _candidate_sprite_atlas_files, export_fanxiu_sprite_icon
 
 
 def test_fanxiu_icon_alias_metadata_survives_cached_export(tmp_path):

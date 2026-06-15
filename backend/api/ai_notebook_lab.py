@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
-from backend.core.auth import verify_api_token
-from backend.core.device import BaseDevice
+from backend.core.access.auth import verify_api_token
+from backend.core.devices.device import BaseDevice
 from backend.core.notebook_lab import (
     NotebookBindingUpdateRequest,
     NotebookLabError,

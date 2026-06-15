@@ -28,16 +28,16 @@ from backend.api.fanxiu import (
     _remove_data_annotation_manual_job,
     _write_data_annotation_world_facts,
 )
-from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner
-from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
-from backend.core.fanxiu_data_annotation_scheduler import (
+from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_scheduler_time_order_key,
     repair_data_annotation_scheduler_tasks,
 )
-from backend.core.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
-from backend.core.fanxiu_mumu_control import _compare_frame_crops
+from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
+from backend.core.fanxiu.runtime.mumu_control import _compare_frame_crops
 from backend.models import FanxiuMailRecord, UserDevice
-from backend.core import fanxiu_mumu_control as mumu_control
+from backend.core.fanxiu.runtime import mumu_control as mumu_control
 
 
 def _png_data_url(width: int = 900, height: int = 1600) -> str:
@@ -416,7 +416,7 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
 
     monkeypatch.setattr(runner, "_run_match", fake_match)
     monkeypatch.setattr(
-        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        "backend.core.fanxiu.data_annotation.runtime_runner._click_game_window2_service",
         lambda payload: clicked.append(payload) or {"ok": True},
     )
 
@@ -452,7 +452,7 @@ def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypa
         lambda *_args, **_kwargs: {"similarity": 0, "matches": [], "fixed_box": {"x": 450, "y": 1440, "w": 80, "h": 40}},
     )
     monkeypatch.setattr(
-        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        "backend.core.fanxiu.data_annotation.runtime_runner._click_game_window2_service",
         lambda payload: clicked.append(payload) or {"ok": True},
     )
 
@@ -490,7 +490,7 @@ def test_click_floating_optional_ocr_shape_still_requires_a_match(monkeypatch):
         lambda *_args, **_kwargs: {"similarity": 0, "matches": [], "fixed_box": {"x": 455, "y": 1460, "w": 83, "h": 105}},
     )
     monkeypatch.setattr(
-        "backend.core.fanxiu_data_annotation_runtime_runner._click_game_window2_service",
+        "backend.core.fanxiu.data_annotation.runtime_runner._click_game_window2_service",
         lambda payload: clicked.append(payload) or {"ok": True},
     )
 
@@ -1807,7 +1807,7 @@ def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch)
     assert popped["id"] == "manual-older-low-priority"
 
 
-def test_runtime_scene_candidates_use_primary_frames_before_popup_fallback():
+def test_runtime_scene_candidates_use_only_global_primary_frames_without_context():
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
@@ -1835,7 +1835,7 @@ def test_runtime_scene_candidates_use_primary_frames_before_popup_fallback():
     assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
 
 
-def test_identify_scene_number_tries_popup_fallback_when_primary_unknown(monkeypatch):
+def test_identify_scene_number_without_context_does_not_try_local_popup_fallback(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
@@ -1861,7 +1861,9 @@ def test_identify_scene_number_tries_popup_fallback_when_primary_unknown(monkeyp
 
     monkeypatch.setattr(runner, "_scene_recognizer", lambda: FakeRecognizer())
 
-    assert runner._identify_scene_number(ctx, "frame") == (47, 92.0)
+    assert runner._identify_scene_number(ctx, "frame") == (None, 0.0)
+    assert scanned == [[34, 204]]
+    assert runner._identify_scene_number(ctx, "frame", [47]) == (47, 92.0)
     assert scanned == [[34, 204], [47]]
 
 
@@ -3500,7 +3502,7 @@ def test_daily_assistant_tongyou_result_resets_wait_budget_after_211(monkeypatch
             pass
         return last_time["value"]
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.time.monotonic", fake_monotonic)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
     monkeypatch.setattr(
         runner,
@@ -3963,8 +3965,24 @@ def test_daily_assistant_entry_matches_bottom_tab_merged_ocr_line():
     assert matches
     x, y, text = matches[0]
     assert text == "活动报名小助手奖励找回新"
-    assert 330 <= x <= 340
+    assert 350 <= x <= 370
     assert y == 1407.5
+
+
+def test_daily_assistant_entry_matches_bottom_tab_real_ocr_width():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [
+        {"id": "list", "kind": "rect", "title": "滚动窗口", "x": 0.1, "y": 0.15, "w": 0.8, "h": 0.6},
+    ])
+    lines = [{"text": "活动报名小助手奖励找回", "x": 129.0, "y": 1384.0, "w": 425.0, "h": 33.0}]
+
+    matches = runner._daily_assistant_entry_matches(lines, image69)
+
+    assert matches
+    x, y, text = matches[0]
+    assert text == "活动报名小助手奖励找回"
+    assert 335 <= x <= 350
+    assert y == 1400.5
 
 
 def test_daily_assistant_accepts_world_like_text_without_storage_bag_word():
@@ -5535,6 +5553,58 @@ def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeyp
     )
 
     assert result == "seen"
+    assert clicked_shapes == ["空白-返回"]
+
+
+def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [])
+    image69 = _image("日常", "0069.png", [])
+    image121 = _image("邮件", "0121.png", [
+        {"id": "back", "kind": "rect", "title": "空白-返回", "x": 0.05, "y": 0.88, "w": 0.15, "h": 0.08},
+    ])
+    ctx = {
+        "images": {34: image34, 69: image69, 121: image121},
+        "asset_tree_path": Path("assets.json"),
+    }
+    clicked_shapes: list[str] = []
+    identify_calls = iter([(121, 100.0), (34, 100.0)])
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def fake_wait_scene(*_args, **_kwargs):
+        yield BehaviorTreeStatus.RUNNING
+        return 34, 100.0
+
+    def fake_enter_daily(*_args, **_kwargs):
+        yield BehaviorTreeStatus.RUNNING
+        return 69
+
+    def fake_open_daily_assistant(*_args, **_kwargs):
+        yield BehaviorTreeStatus.RUNNING
+        return "not_found"
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [])
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(identify_calls))
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None: clicked_shapes.append(shape["title"]))
+    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_enter_daily_from_world_like", fake_enter_daily)
+    monkeypatch.setattr(runner, "_open_daily_assistant_from_daily", fake_open_daily_assistant)
+    monkeypatch.setattr(runner, "_record_scheduler_task_discovered_next_time", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="未找到小助手入口"):
+        runner._run_direct_runtime_action(
+            lambda: runner._execute_daily_assistant_task(ctx, FakeStopEvent(), {}),
+            stop_event=FakeStopEvent(),
+            tick_seconds=0.01,
+        )
+
     assert clicked_shapes == ["空白-返回"]
 
 
@@ -7779,6 +7849,7 @@ def test_runtime_status_normalizes_guard_items_from_backend_definitions():
     assert set(status["guard_items"]) == {"close_popups", "wanling_invite"}
     assert status["guard_items"]["close_popups"]["label"] == "关闭弹窗"
     assert status["guard_items"]["wanling_invite"]["label"] == "万灵切磋邀请"
+
 
 
 

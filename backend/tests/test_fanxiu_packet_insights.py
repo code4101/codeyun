@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from backend.core import fanxiu_packet_insights as insights
+from backend.core.fanxiu.packet import insights as insights
 
 
 def _write_self_attr_decoded(decoded_path, *, pcap_name: str = "fanxiu_runtime_snapshot_self_attrs.pcap") -> None:

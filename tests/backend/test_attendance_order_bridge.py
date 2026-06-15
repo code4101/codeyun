@@ -1,6 +1,6 @@
 import pytest
 
-from backend.core import attendance_order
+from backend.core.attendance import order as attendance_order
 import kq5034.order_ops as order_ops
 from kq5034.weipay import Weipay
 

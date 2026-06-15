@@ -1,4 +1,4 @@
-from backend.core.hierarchical_reduction import (
+from backend.core.ai.hierarchical_reduction import (
     HierarchicalReductionError,
     ReductionModelResponse,
     ReductionProfile,

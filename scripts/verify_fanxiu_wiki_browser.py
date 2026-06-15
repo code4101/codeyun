@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_resources import resolve_fanxiu_export_root
+from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 
 
 DEFAULT_FRONTEND_BASE = "http://127.0.0.1:5173"
@@ -68,7 +68,7 @@ def _create_local_access_token(username: str) -> str:
     """Create a short-lived token for local browser verification."""
     from sqlmodel import Session, select
 
-    from backend.core.auth import create_access_token
+    from backend.core.access.auth import create_access_token
     from backend.db import engine
     from backend.models import User
 

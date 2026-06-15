@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from backend.core.ai_chat import OllamaClientError
-from backend.core.auth import verify_api_token
-from backend.core.codex_sessions import (
+from backend.core.ai.chat import OllamaClientError
+from backend.core.access.auth import verify_api_token
+from backend.core.codex.sessions import (
     build_codex_daily_summary,
     build_codex_overview,
     build_codex_thread_detail,
@@ -18,7 +18,7 @@ from backend.core.codex_sessions import (
     get_codex_daily_summary_run,
     start_codex_daily_summary_run,
 )
-from backend.core.device import BaseDevice
+from backend.core.devices.device import BaseDevice
 from backend.db import get_session
 
 

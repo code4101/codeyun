@@ -1,6 +1,6 @@
 from sqlmodel import Session, create_engine, select
 
-from backend.core.guest_notes import GUEST_NOTES_USERNAME, ensure_guest_notes_user, ensure_guest_star_notes_seed
+from backend.core.notes.guest import GUEST_NOTES_USERNAME, ensure_guest_notes_user, ensure_guest_star_notes_seed
 from backend.models import AppSetting, NoteEdge, NoteNode, ResourceIdentity, User
 
 

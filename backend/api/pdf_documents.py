@@ -17,14 +17,14 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from backend.api.filesystem import resolve_request_path
-from backend.core.auth import (
+from backend.core.access.auth import (
     ALGORITHM,
     SECRET_KEY,
     create_access_token,
     get_current_active_user,
     get_optional_current_user_from_token,
 )
-from backend.core.device_files import ensure_device_file_resource_identity
+from backend.core.devices.files import ensure_device_file_resource_identity
 from backend.db import get_session
 from backend.models import (
     DeviceFile,
@@ -36,7 +36,7 @@ from backend.models import (
     UserDevice,
     generate_sheet_document_id,
 )
-from backend.core.resource_identity import RESOURCE_TYPE_PDF, allocate_resource_id
+from backend.core.resources.identity import RESOURCE_TYPE_PDF, allocate_resource_id
 
 
 router = APIRouter()

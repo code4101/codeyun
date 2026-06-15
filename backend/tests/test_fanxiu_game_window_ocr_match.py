@@ -1,4 +1,4 @@
-from backend.core.fanxiu_mumu_control import _ocr_shape_box, _ocr_text_matches
+from backend.core.fanxiu.runtime.mumu_control import _ocr_shape_box, _ocr_text_matches
 
 
 def test_ocr_text_match_modes():

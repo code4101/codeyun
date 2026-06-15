@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu_audio_catalog import build_fanxiu_wwise_mp3_export
+from backend.core.fanxiu.catalog.audio import build_fanxiu_wwise_mp3_export
 
 
 def main() -> None:

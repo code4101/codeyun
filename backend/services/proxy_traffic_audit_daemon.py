@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
-from backend.core.proxy_traffic_audit import (
+from backend.core.runtime.proxy_traffic_audit import (
     DEFAULT_MIHOMO_PIPE,
     ProxyTrafficAuditCollector,
 )

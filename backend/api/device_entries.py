@@ -82,15 +82,15 @@ from backend.api.git_tools import (
 )
 from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_manager
 from backend.api.runtime_management import RuntimeJobScheduleRequest, RuntimeJobToggleRequest
-from backend.core.ai_git_commit import (
+from backend.core.ai.git_commit import (
     AiGitCommitError,
     generate_ai_git_commit_draft,
     resolve_ai_git_commit_runtime_config,
 )
-from backend.core.ai_chat import OllamaClientError
-from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
-from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
-from backend.core.codex_sessions import (
+from backend.core.ai.chat import OllamaClientError
+from backend.core.ai.git_reduction import generate_ai_git_commit_draft_hierarchical
+from backend.core.access.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
+from backend.core.codex.sessions import (
     build_codex_daily_summary,
     build_codex_overview,
     build_codex_thread_detail,
@@ -106,7 +106,7 @@ from backend.core.codex_sessions import (
     serialize_codex_daily_summary_run,
     start_codex_daily_summary_run,
 )
-from backend.core.codex_device_summary import (
+from backend.core.devices.codex_summary import (
     CODEX_REMOTE_READ_TIMEOUT_SECONDS,
     CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS,
     REMOTE_DEVICE_DIRECT_PROXIES,
@@ -117,9 +117,9 @@ from backend.core.codex_device_summary import (
     ensure_local_codex_entry,
     snapshot_codex_summary_entries,
 )
-from backend.core.device import BaseDevice, device_manager, get_device_id
-from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
-from backend.core.runtime_management import (
+from backend.core.devices.device import BaseDevice, device_manager, get_device_id
+from backend.core.access.feature_access_guard import ensure_any_feature_access, ensure_feature_access
+from backend.core.runtime.management import (
     add_builtin_runtime_job,
     build_runtime_status,
     configure_builtin_runtime_job_schedule,
@@ -135,7 +135,7 @@ from backend.core.runtime_management import (
     trigger_builtin_runtime_job,
     trigger_command_runtime_item,
 )
-from backend.core.system_metrics import get_system_metric_history
+from backend.core.runtime.system_metrics import get_system_metric_history
 from backend.core.notebook_lab import (
     NotebookBindingUpdateRequest,
     NotebookLabError,
@@ -153,14 +153,14 @@ from backend.core.notebook_lab import (
     update_notebook_cell,
 )
 from backend.core.notebook_lab.service import save_notebook
-from backend.core.device_file_cover import (
+from backend.core.devices.file_cover import (
     DeviceFileMetadataSnapshot,
     resolve_device_cover_path,
     save_device_cover,
     upsert_device_file_metadata_batch,
 )
-from backend.core.device_files import update_device_file_weight
-from backend.core.git_tools import (
+from backend.core.devices.files import update_device_file_weight
+from backend.core.ai.git_tools import (
     GitToolError,
     collect_git_history_stats,
     collect_git_commit_context,
@@ -169,8 +169,8 @@ from backend.core.git_tools import (
     create_git_commit,
     inspect_git_repository,
 )
-from backend.core.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
-from backend.core.rime_context_prediction import (
+from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.ai.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
     adjust_rime_context_weight_compare_candidate,

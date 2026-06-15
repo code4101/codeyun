@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.core.proxy_traffic_audit import _decode_chunked_http_body, is_proxy_connection
+from backend.core.runtime.proxy_traffic_audit import _decode_chunked_http_body, is_proxy_connection
 
 
 def test_decode_chunked_http_body():

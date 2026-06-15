@@ -1,8 +1,8 @@
 import json
 
 from backend.app import app
-from backend.core.auth import get_current_active_superuser
-from backend.core import feature_access as feature_access_module
+from backend.core.access.auth import get_current_active_superuser
+from backend.core.access import feature_access as feature_access_module
 from backend.models import User
 
 

@@ -153,7 +153,7 @@ def allocate_note_numeric_id(
 
 def resolve_local_device_id() -> str:
     try:
-        from backend.core.device import get_device_id
+        from backend.core.devices.device import get_device_id
 
         device_id = str(get_device_id() or "").strip()
         if device_id:

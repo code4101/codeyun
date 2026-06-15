@@ -2,7 +2,7 @@ import json
 import os
 import time
 
-from backend.core import fanxiu_packet_insight_worker as worker
+from backend.core.fanxiu.packet import insight_worker as worker
 
 
 def test_live_capture_backlog_decodes_stable_unprocessed_pcap(tmp_path, monkeypatch):

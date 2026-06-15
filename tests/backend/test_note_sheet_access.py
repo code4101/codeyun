@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlmodel import select
 
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
 from backend.models import ResourceAccessGrant, SheetDocument
 
 

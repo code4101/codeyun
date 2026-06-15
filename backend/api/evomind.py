@@ -6,14 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from backend.core.evomind import (
+from backend.core.ai.evomind import (
     clear_evomind_pending_imports,
     derive_evomind_case_card,
     generate_evomind_rule_proposal,
     read_evomind_pending_imports,
     scan_evomind_cases_from_codex,
 )
-from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.access.feature_access_guard import require_feature_access_dependency
 from backend.db import get_session
 
 

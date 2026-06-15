@@ -6,8 +6,8 @@ from datetime import datetime
 import pytest
 from sqlmodel import Session, select
 
-import backend.core.nianzhu_course_sheets as nianzhu_course_sheets
-from backend.core.nianzhu_course_sheets import (
+import backend.core.attendance.nianzhu_course_sheets as nianzhu_course_sheets
+from backend.core.attendance.nianzhu_course_sheets import (
     CLOCKIN_CONFIG_COLUMNS,
     CLOCKIN_CONFIG_SHEET_KEY,
     CLOCKIN_DATA_COLUMNS,

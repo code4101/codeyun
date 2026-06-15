@@ -7,7 +7,7 @@
 
 技术层沿用念住闯关框架：
 - 工作簿下保留/创建 考勤表、报名表、视频配置、视频数据、打卡配置、打卡数据；
-- 源数据与配置 sheet 由 `backend.core.nianzhu_course_sheets` 物化生成。
+- 源数据与配置 sheet 由 `backend.core.attendance.nianzhu_course_sheets` 物化生成。
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.nianzhu_course_sheets import (
+from backend.core.attendance.nianzhu_course_sheets import (
     CLOCKIN_CONFIG_COLUMNS,
     CLOCKIN_CONFIG_SHEET_KEY,
     CLOCKIN_DATA_COLUMNS,
@@ -37,9 +37,9 @@ from backend.core.nianzhu_course_sheets import (
     VIDEO_DATA_COLUMNS,
     VIDEO_DATA_SHEET_KEY,
 )
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
-from backend.core.sheet_identity import allocate_new_sheet_identity
-from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity
+from backend.core.resources.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.db import engine
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 from scripts.import_legacy_attendance_workbook import _attendance_document, _registration_document

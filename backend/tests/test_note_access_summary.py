@@ -1,4 +1,4 @@
-from backend.core.note_access import (
+from backend.core.notes.access import (
     note_list_mapping_to_response_dict,
     note_to_list_response_dict,
     note_to_response_dict,

@@ -4,7 +4,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, select
 
 from backend.api import admin as admin_api
-from backend.core.auth import verify_password
+from backend.core.access.auth import verify_password
 from backend.models import User
 
 

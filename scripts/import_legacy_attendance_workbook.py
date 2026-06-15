@@ -19,15 +19,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.db import engine
-from backend.core.resource_identity import (
+from backend.core.resources.identity import (
     RESOURCE_TYPE_SHEET,
     RESOURCE_TYPE_WORKBOOK,
     ensure_resource_identity,
 )
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
-from backend.core.note_sheet_inline_links import with_inline_cell_link
-from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
-from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.notes.sheet_inline_links import with_inline_cell_link
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.resources.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 

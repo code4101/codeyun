@@ -3,9 +3,9 @@ from datetime import datetime
 
 from sqlmodel import select
 
-from backend.core.ai_git_commit import AiGitCommitError
-from backend.core.ai_git_repos import save_user_ai_git_repos
-from backend.core.auto_git_commit import (
+from backend.core.ai.git_commit import AiGitCommitError
+from backend.core.ai.git_repos import save_user_ai_git_repos
+from backend.core.ai.auto_git_commit import (
     AUTO_GIT_COMMIT_CRON,
     AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY,
     AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS,
@@ -263,7 +263,7 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -323,7 +323,7 @@ def test_auto_git_commit_worker_uses_lightweight_ai_for_large_codeyun(session, a
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -383,7 +383,7 @@ def test_auto_git_commit_worker_records_summary_only_before_draft(session, auth_
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -436,7 +436,7 @@ def test_auto_git_commit_worker_auto_ignores_obvious_dot_tmp_directory(session, 
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -485,7 +485,7 @@ def test_auto_git_commit_worker_marks_run_failed_when_any_repo_fails(session, au
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -549,7 +549,7 @@ def test_auto_git_commit_worker_raises_for_queue_retry_when_repo_fails(session, 
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 
@@ -589,7 +589,7 @@ def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committin
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
 
     monkeypatch.setattr(
-        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        "backend.core.ai.auto_git_commit.resolve_ai_runtime_config",
         lambda **_: ("ollama", None, None, ()),
     )
 

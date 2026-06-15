@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from backend.core.auth import get_optional_current_user_from_token
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.wechat_ilink import (
+from backend.core.access.auth import get_optional_current_user_from_token
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.messaging.wechat_ilink import (
     WechatIlinkError,
     delete_account,
     get_runtime_status,

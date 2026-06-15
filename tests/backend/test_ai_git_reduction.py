@@ -1,8 +1,8 @@
 import json
 import subprocess
 
-from backend.core.ai_git_reduction import _build_reduce_system_prompt, generate_ai_git_commit_draft_hierarchical
-from backend.core.git_tools import collect_git_reduction_source_units
+from backend.core.ai.git_reduction import _build_reduce_system_prompt, generate_ai_git_commit_draft_hierarchical
+from backend.core.ai.git_tools import collect_git_reduction_source_units
 
 
 def _run_git(repo_path, *args):
@@ -71,7 +71,7 @@ def test_generate_ai_git_commit_draft_hierarchical_returns_final_draft_and_reduc
         relative.write_text(f"line {index}\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "backend.core.ai_git_reduction.chat_with_provider",
+        "backend.core.ai.git_reduction.chat_with_provider",
         lambda **_: {
             "model": "qwen3.5:4b-instruct",
             "content": json.dumps(
@@ -147,7 +147,7 @@ def test_generate_ai_git_commit_draft_hierarchical_repairs_invalid_json_response
             ),
         }
 
-    monkeypatch.setattr("backend.core.ai_git_reduction.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.ai.git_reduction.chat_with_provider", fake_chat_with_provider)
 
     payload = generate_ai_git_commit_draft_hierarchical(
         cwd=str(repo_path),

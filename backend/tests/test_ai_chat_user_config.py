@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
-from backend.core.ai_chat_user_config import (
+from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     activate_user_ai_chat_provider_api_key,
     activate_user_ai_chat_provider_base_url,

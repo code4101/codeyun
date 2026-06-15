@@ -10,9 +10,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.api import services as services_api
-from backend.core import ocr_preview
-from backend.core.ocr_preview import OcrPreviewError, PaddleOcrServiceManager, _build_runtime_config
-from backend.core.service_tokens import SERVICE_SCOPE_OCR_PREDICT, create_service_access_token, list_service_access_tokens
+from backend.core.ocr import preview as ocr_preview
+from backend.core.ocr.preview import OcrPreviewError, PaddleOcrServiceManager, _build_runtime_config
+from backend.core.access.service_tokens import SERVICE_SCOPE_OCR_PREDICT, create_service_access_token, list_service_access_tokens
 
 
 def _build_session() -> Session:

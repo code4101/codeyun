@@ -4,11 +4,11 @@ import sqlite3
 import pytest
 from sqlmodel import select
 
-from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
-from backend.core.document_reduction_cache import get_document_cache_db_path
-from backend.core.document_reduction_storage import get_document_assets_dir
-from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
-from backend.core.ollama_access_keys import create_ollama_access_key
+from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
+from backend.core.ai.document_reduction_cache import get_document_cache_db_path
+from backend.core.ai.document_reduction_storage import get_document_assets_dir
+from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.ai.ollama_access_keys import create_ollama_access_key
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun
 
 
@@ -78,7 +78,7 @@ def test_reduction_document_upload_index_and_query_flow(client, session, auth_us
             ),
         }
 
-    monkeypatch.setattr("backend.core.document_reduction.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.ai.document_reduction.chat_with_provider", fake_chat_with_provider)
 
     upload_response = client.post(
         "/api/reduction-documents/upload",
@@ -207,7 +207,7 @@ def test_reduction_document_index_repairs_non_json_response(client, auth_user, m
             ),
         }
 
-    monkeypatch.setattr("backend.core.document_reduction.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.ai.document_reduction.chat_with_provider", fake_chat_with_provider)
 
     long_text = ("\n\n".join(["第一段 " + ("甲" * 2200), "第二段 " + ("乙" * 2200), "第三段 " + ("丙" * 2200)])).encode("utf-8")
     upload_response = client.post(
@@ -276,7 +276,7 @@ def test_reduction_document_delete_cascades_metadata_cache_and_assets(client, au
             ),
         }
 
-    monkeypatch.setattr("backend.core.document_reduction.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.ai.document_reduction.chat_with_provider", fake_chat_with_provider)
 
     upload_response = client.post(
         "/api/reduction-documents/upload",

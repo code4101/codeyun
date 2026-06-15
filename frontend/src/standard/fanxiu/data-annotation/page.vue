@@ -3550,6 +3550,11 @@ const getQueryWindowKey = () => {
   return isWindowSceneKey(value) ? value : '';
 };
 
+const getQueryStringValue = (key: string) => {
+  const raw = route.query[key];
+  return String(Array.isArray(raw) ? raw[0] || '' : raw || '').trim();
+};
+
 const isMfDeviceEntry = (device: { id: string; device_id?: string; name?: string }) => {
   const haystack = `${device.id} ${device.device_id || ''} ${device.name || ''}`.toLowerCase();
   return haystack.includes('codepc_mf') || haystack.includes('codepc-mf') || haystack.includes(' mf');
@@ -7623,6 +7628,7 @@ const loadEntryAssetTree = async (entryId: string) => {
     }
     restoreDataAnnotationUiState();
     await syncAssetTreeExpansionFromState();
+    await focusImageFromRoute();
     void nextTick(syncCanvas);
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
@@ -8024,19 +8030,7 @@ const scrollCurrentTreeNodeIntoView = (treeClass: string) => {
     ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 };
 
-const searchAssetFrameById = async () => {
-  const text = assetFrameSearchText.value.trim().replace(/^#/, '');
-  const numericId = text ? Number(text) : NaN;
-  if (!Number.isInteger(numericId) || numericId < 0) {
-    ElMessage.warning('请输入帧编号');
-    return;
-  }
-  const image = findAssetImageByNumericId(assetTree.value, numericId);
-  if (!image) {
-    ElMessage.warning(`未找到 #${numericId}`);
-    return;
-  }
-
+const focusAssetImage = async (image: DataAnnotationAssetNode) => {
   const ancestorFolderIds = findAssetAncestorFolderIds(assetTree.value, image.id) ?? [];
   expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...ancestorFolderIds]));
   selectedAssetId.value = image.id;
@@ -8052,6 +8046,44 @@ const searchAssetFrameById = async () => {
   await syncShapeTreeExpansionFromState();
   await nextTick();
   scrollCurrentTreeNodeIntoView('shape-tree');
+};
+
+const searchAssetFrameById = async () => {
+  const text = assetFrameSearchText.value.trim().replace(/^#/, '');
+  const numericId = text ? Number(text) : NaN;
+  if (!Number.isInteger(numericId) || numericId < 0) {
+    ElMessage.warning('请输入帧编号');
+    return;
+  }
+  const image = findAssetImageByNumericId(assetTree.value, numericId);
+  if (!image) {
+    ElMessage.warning(`未找到 #${numericId}`);
+    return;
+  }
+
+  await focusAssetImage(image);
+};
+
+const findAssetImageByTitle = (nodes: DataAnnotationAssetNode[], title: string): DataAnnotationAssetNode | null => {
+  const needle = title.trim();
+  if (!needle) return null;
+  for (const node of nodes) {
+    if (node.type === 'image' && node.title.trim() === needle) return node;
+    const found = findAssetImageByTitle(node.children ?? [], needle);
+    if (found) return found;
+  }
+  return null;
+};
+
+const focusImageFromRoute = async () => {
+  const title = getQueryStringValue('focus_image_title');
+  if (!title) return;
+  const image = findAssetImageByTitle(assetTree.value, title);
+  if (!image) {
+    ElMessage.warning(`未找到「${title}」`);
+    return;
+  }
+  await focusAssetImage(image);
 };
 
 const findShapeParentChildren = (shapes: DataAnnotationShape[], id: string | null): DataAnnotationShape[] | null => {

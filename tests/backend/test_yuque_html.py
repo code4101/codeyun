@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from backend.core.note_access import note_to_response_dict
-from backend.core.yuque_html import looks_like_legacy_yuque_lake_html, normalize_legacy_yuque_lake_html
+from backend.core.notes.access import note_to_response_dict
+from backend.core.notes.yuque_html import looks_like_legacy_yuque_lake_html, normalize_legacy_yuque_lake_html
 from backend.models import NoteNode
 
 

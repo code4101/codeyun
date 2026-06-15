@@ -3,14 +3,14 @@ import re
 
 from sqlmodel import Session, select, text
 
-from backend.core import attachment_resources
+from backend.core.resources import attachments as attachment_resources
 from backend.api import note_docs as note_docs_api
-from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
-from backend.core.fanxiu_inventory import get_inventory_storage_path
-from backend.core.note_refs import load_notes_by_refs
-from backend.core.sheet_refs import load_sheets_by_refs, load_workbooks_by_refs
+from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.fanxiu.catalog.inventory import get_inventory_storage_path
+from backend.core.notes.refs import load_notes_by_refs
+from backend.core.resources.sheet_refs import load_sheets_by_refs, load_workbooks_by_refs
 from backend.api.notes import _get_accessible_note
-from backend.core.resource_identity import (
+from backend.core.resources.identity import (
     RESOURCE_TYPE_DEVICE_FILE,
     RESOURCE_TYPE_NOTE,
     RESOURCE_TYPE_PDF,

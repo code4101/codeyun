@@ -1,6 +1,6 @@
 from sqlmodel import Session, select
 
-from backend.core.auth import get_password_hash
+from backend.core.access.auth import get_password_hash
 from backend.core.settings import get_settings
 from backend.db import engine
 from backend.models import User

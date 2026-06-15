@@ -287,7 +287,7 @@ def _collect_note_id_refs(value: Any, refs: list[str]) -> None:
 
 def _fanxiu_inventory_note_ref_report(session: Session) -> dict[str, Any]:
     try:
-        from backend.core.fanxiu_inventory import get_inventory_storage_path
+        from backend.core.fanxiu.catalog.inventory import get_inventory_storage_path
     except Exception as exc:
         return {"exists": False, "error": str(exc), "total": 0, "non_numeric": 0, "dangling": 0}
 

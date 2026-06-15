@@ -22,10 +22,10 @@ from pyxllib.prog.schedule_policy import (
 )
 
 from backend.api.websocket_manager import manager as ws_manager
-from backend.core.auth import verify_api_token
-from backend.core.device import BaseDevice, device_manager, TaskStatus
-from backend.core.background_task_queue import background_task_queue
-from backend.core.runtime_units import (
+from backend.core.access.auth import verify_api_token
+from backend.core.devices.device import BaseDevice, device_manager, TaskStatus
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.runtime.units import (
     DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS,
     command_runtime_queue_name,
     infer_command_runtime_kind,
@@ -431,6 +431,8 @@ class TaskManager:
                 raise HTTPException(status_code=404, detail="Task not found")
             policy = resolve_command_runtime_policy(task)
             action = self._scheduled_action_for_task(task)
+            if policy.kind == "job" and action not in {"enqueue", "stop"}:
+                action = "enqueue"
 
         self._mark_scheduled_task_triggered(task_id)
 
@@ -622,7 +624,11 @@ class TaskManager:
                 "trigger_reason": trigger_reason,
                 "concurrency_key": policy.concurrency_key,
                 "overlap_policy": policy.overlap_policy,
+                "queue_key": policy.queue_key,
+                "resource_lock": policy.resource_lock,
+                "timeout_seconds": policy.timeout_seconds,
             },
+            resource_lock=policy.resource_lock,
         )
         if trigger_reason != "scheduled" and queued:
             self._reset_interval_schedule_after_manual_trigger(task_id)

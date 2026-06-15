@@ -9,38 +9,38 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session
 
-from backend.core.attendance_service import apply_attendance_order_operation_password_env
-from backend.core.auth import verify_api_token
-from backend.core.attendance_order import (
+from backend.core.attendance.service import apply_attendance_order_operation_password_env
+from backend.core.access.auth import verify_api_token
+from backend.core.attendance.order import (
     OrderAutomationError,
     execute_order_action,
     query_order_refund_details,
 )
-from backend.core.device import (
+from backend.core.devices.device import (
     build_background_popen_kwargs,
     device_manager,
     get_device_id,
     match_cmdline,
 )
-from backend.core.ui_automation import ensure_ui_automation_thread_context
-from backend.core.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
-from backend.core.clockin_link_detector import detect_clockin_links_browser
-from backend.core.fanbei_attendance_schedule import (
+from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
+from backend.core.devices.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
+from backend.core.attendance.clockin_link_detector import detect_clockin_links_browser
+from backend.core.attendance.fanbei_schedule import (
     FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
     FANBEI_ATTENDANCE_COURSE_NAME,
     _run_fanbei_attendance_step2_local,
     run_fanbei_attendance_step3_for_sheet,
 )
-from backend.core.fanbei_course_sheets import (
+from backend.core.attendance.fanbei_course_sheets import (
     FANBEI_WORKBOOK_NUMERIC_ID,
     materialize_fanbei_course_sheets,
     rebuild_fanbei_attendance_from_course_sheets,
 )
-from backend.core.nianzhu_attendance_schedule import (
+from backend.core.attendance.nianzhu_schedule import (
     NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID,
     NIANZHU_CHUANGGUAN_COURSE_NAME,
 )
-from backend.core.nianzhu_course_sheets import (
+from backend.core.attendance.nianzhu_course_sheets import (
     NIANZHU_WORKBOOK_NUMERIC_ID,
     compact_nianzhu_course_sheet_step2,
     materialize_nianzhu_course_sheets,

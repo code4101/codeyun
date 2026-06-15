@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner, ensure_fanxiu_runtime_jobs_registered
-from backend.core.fanxiu_data_annotation_runtime_runner import FanxiuRuntime
+from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, ensure_fanxiu_runtime_jobs_registered
+from backend.core.fanxiu.data_annotation.runtime_runner import FanxiuRuntime
 from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import (
     MatchRole,
@@ -237,7 +237,7 @@ def test_fanxiu_runtime_wait_view_timeout(monkeypatch):
     ctx = {"entry": object(), "images": {}}
     monotonic_values = iter([0.0, 0.5, 1.2])
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.time.monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.time.monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (None, 0.0))
 
@@ -316,8 +316,9 @@ def test_mail_cleanup_entry_prefers_view68_mail(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "_go_scene_task", lambda _ctx, _path, scene_id, _stop: "success" if scene_id == 34 else "unexpected")
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: runner.overlay_threshold + 1)
+    monkeypatch.setattr(runner, "_match_shape", lambda *_args, **_kwargs: {"matched": True, "similarity": 100, "matches": []})
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, *_args, **_kwargs: clicked.append((image["title"], shape["title"])))
+    monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda *_args, **_kwargs: False)
 
     class FakeStopEvent:
         def is_set(self):
@@ -393,11 +394,13 @@ def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_go_scene_task", lambda _ctx, _path, scene_id, _stop: "success" if scene_id == 34 else "unexpected")
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
 
-    def shape_score(_ctx, _image, shape, *_args, **_kwargs):
-        return 0.0 if shape.get("id") == "mail68" else runner.overlay_threshold + 1
+    def match_shape(_ctx, _image, shape, *_args, **_kwargs):
+        return {"matched": shape.get("id") != "mail68", "similarity": 0 if shape.get("id") == "mail68" else 100, "matches": []}
 
-    monkeypatch.setattr(runner, "_shape_score", shape_score)
+    monkeypatch.setattr(runner, "_match_shape", match_shape)
+    monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, shape, *_args, **_kwargs: 0.0 if shape.get("id") == "mail68" else runner.scene_threshold + 1)
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, *_args, **_kwargs: clicked.append((image["title"], shape["title"])))
+    monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda *_args, **_kwargs: False)
 
     class FakeStopEvent:
         def is_set(self):
@@ -414,7 +417,7 @@ def test_mail_cleanup_entry_falls_back_to_view35_mail(monkeypatch, tmp_path):
     )
 
     assert result == "success"
-    assert clicked == [("世界", "打开下方菜单"), ("世界下方菜单", "邮件")]
+    assert clicked == [("世界下方菜单", "邮件")]
 
 
 def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch, tmp_path):
@@ -475,6 +478,8 @@ def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch
 
     def match_shape(_ctx, _image, shape, frame, *, condition="auto"):
         frames.append((shape.get("title"), frame, condition))
+        if shape.get("title") == "邮件标识":
+            return {"matched": True, "similarity": 100, "matches": []}
         return {
             "matched": shape.get("title") == "邮件" and frame != "frame0" and condition == "ocr",
             "similarity": 100 if frame != "frame0" and condition == "ocr" else 0,
@@ -486,6 +491,7 @@ def test_mail_cleanup_entry_refreshes_frame_after_opening_world_menu(monkeypatch
     monkeypatch.setattr(runner, "_match_shape", match_shape)
     monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda *_args, **_kwargs: False)
 
     class FakeStopEvent:
         def is_set(self):
@@ -559,11 +565,18 @@ def test_mail_cleanup_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp
 
     monkeypatch.setattr(FanxiuRuntime, "wait_click_shape", timeout_wait_click)
     monkeypatch.setattr(runner, "_go_scene_task", lambda _ctx, _path, scene_id, _stop: "success" if scene_id == 34 else "unexpected")
-    monkeypatch.setattr(runner, "_match_shape", lambda *_args, **_kwargs: {"matched": False, "similarity": 0, "matches": []})
+    def fixed_match_shape(_ctx, _image, shape, *_args, **_kwargs):
+        if shape.get("title") == "邮件标识":
+            return {"matched": True, "similarity": 100, "matches": []}
+        return {"matched": False, "similarity": 0, "matches": []}
+
+    monkeypatch.setattr(runner, "_match_shape", fixed_match_shape)
     monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: fixed_clicks.append((image["title"], x, y)))
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(runner, "_close_mail_wait_popup_once", lambda *_args, **_kwargs: False)
 
     class FakeStopEvent:
         def is_set(self):
@@ -572,17 +585,20 @@ def test_mail_cleanup_entry_fixed_clicks_mail_after_ocr_timeout(monkeypatch, tmp
         def wait(self, _seconds):
             return False
 
+        def set(self):
+            return None
+
     runtime = runner._fanxiu_runtime(ctx, ctx["asset_tree_path"])
     result = runner._run_direct_runtime_action(
         lambda: runner._open_mail_cleanup_entry(runtime),
         stop_event=FakeStopEvent(),
-        max_runtime_seconds=5,
+        max_runtime_seconds=15,
         tick_seconds=0.01,
     )
 
     assert result == "success"
     assert fixed_clicks == [("世界下方菜单", 495.0, 1539.84)]
-    assert any("#35「邮件」OCR 未命中" in log["message"] for log in runner.status()["logs"])
+    assert any("#35「邮件」未命中" in log["message"] for log in runner.status()["logs"])
 
 
 def test_runtime_view_open_world_menu_falls_back_to_fixed_click(monkeypatch):
@@ -609,6 +625,32 @@ def test_runtime_view_open_world_menu_falls_back_to_fixed_click(monkeypatch):
 
     assert clicked == [("世界", 765.0, 1480.0)]
     assert runtime.cur_frame() == "frame"
+
+
+def test_runtime_view_mail_delete_falls_back_to_fixed_click(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [{"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08}],
+    }
+    clicked = []
+
+    def click_shape(*_args, **_kwargs):
+        raise RuntimeError("未能按图像定位浮动按钮「一键删除」")
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], x, y)))
+
+    runtime = runner._fanxiu_runtime({"entry": type("Entry", (), {"mode": "local"})(), "images": {121: image121}})
+    View(image121).get_shape("一键删除").click(runtime)
+
+    assert clicked == [("邮件", 270.0, 1344.0)]
+    assert any("#121「一键删除」图像定位失败，改按固定标注点击" in log["message"] for log in runner.status()["logs"])
 
 
 def test_fanxiu_runtime_wait_click_tries_ocr_after_image_miss(monkeypatch):
@@ -849,9 +891,8 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     }
     clicked = []
     updates = []
-    identify_results = iter([(122, 96.0), (121, 95.0)])
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
 
     def fake_open_entry(_runtime):
         if False:
@@ -860,7 +901,13 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(identify_results))
+
+    def identify_scene_number(_ctx, _frame, keys=None, *_args, **_kwargs):
+        if keys and 122 in keys:
+            return (122, 96.0)
+        return (121, 95.0)
+
+    monkeypatch.setattr(runner, "_identify_scene_number", identify_scene_number)
     monkeypatch.setattr(
         runner,
         "_recognize_visible_mail_rows",
@@ -869,6 +916,7 @@ def test_mail_cleanup_uses_runtime_view_shape_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_prepare_mail_row_policy", lambda row, **_kwargs: row.update({"policy": "claim", "mail_key": "mail-1"}))
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, *_args, **_kwargs: clicked.append((image["title"], shape["title"])))
     monkeypatch.setattr(runner, "_update_packet_mail_action_for_row", lambda row, **kwargs: updates.append((row["title"], kwargs["status"])))
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
 
     class FakeStopEvent:
         def is_set(self):
@@ -908,7 +956,7 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
     }
     clicked = []
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
 
     def fake_open_entry(_runtime):
         if False:
@@ -966,7 +1014,7 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     }
     clicked = []
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
 
     def fake_open_entry(_runtime):
         if False:
@@ -1022,7 +1070,7 @@ def test_legacy_mail_claim_check_task_type_runs_mail_cleanup(monkeypatch, tmp_pa
     }
     called = []
 
-    monkeypatch.setattr("backend.core.fanxiu_data_annotation_runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
     monkeypatch.setattr(runner, "_execute_mail_cleanup_task", lambda *_args, **_kwargs: called.append("cleanup") or "success")
 
     result = runner._execute_runtime_task(ctx, "mail_claim_check", {}, threading.Event())
@@ -1085,3 +1133,4 @@ def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatc
 
     assert result == "success"
     assert clicked == ["继续", "关闭"]
+

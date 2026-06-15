@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_resources import (  # noqa: E402
+from backend.core.fanxiu.catalog.resources import (  # noqa: E402
     DEFAULT_FANXIU_RESOURCE_EXPORT_ROOT,
     DEFAULT_FANXIU_RESOURCE_ROOT,
     DEFAULT_FANXIU_REVERSE_ROOT,

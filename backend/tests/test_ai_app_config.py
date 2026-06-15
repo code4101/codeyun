@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
-from backend.core.ai_app_config import (
+from backend.core.ai.app_config import (
     AI_APP_CODEX_DIARY,
     AI_APP_CODEX_DIARY_DEFAULT_MODEL,
     AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
@@ -17,8 +17,8 @@ from backend.core.ai_app_config import (
     resolve_ai_app_runtime_config,
     save_user_ai_app_config,
 )
-from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
-from backend.core.ai_git_repos import get_user_ai_git_commit_config, save_user_ai_git_commit_config
+from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
+from backend.core.ai.git_repos import get_user_ai_git_commit_config, save_user_ai_git_commit_config
 from backend.models import AppSetting, User
 
 

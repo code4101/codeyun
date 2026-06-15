@@ -6,6 +6,7 @@ import commonSitesPage from './common-sites'
 import eastmoneyPage from './eastmoney'
 import eastmoneyRobotHistoryPage from './eastmoney/robot-history'
 import freebillPage from './freebill'
+import githubProjectsPage from './github-projects'
 import notesCenterPage from './center'
 import notesTaskSystemPage from './task-system'
 import notesSheetEditorPage from './sheet-editor'
@@ -20,6 +21,7 @@ const pages: AppPageDefinition[] = [
   notesCenterPage,
   notesTaskSystemPage,
   notesChatDataPage,
+  githubProjectsPage,
   commonSitesPage,
   eastmoneyPage,
   eastmoneyRobotHistoryPage,

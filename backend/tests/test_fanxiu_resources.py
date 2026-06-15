@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.core import fanxiu_doupotd_catalog as doupotd_catalog_module
-from backend.core.fanxiu_resources import (
+from backend.core.fanxiu.catalog import doupotd as doupotd_catalog_module
+from backend.core.fanxiu.catalog.resources import (
     FANXIU_RESOURCE_EXPORT_ROOT_ENV,
     FANXIU_RESOURCE_ROOT_ENV,
     FanxiuResourceError,
@@ -18,26 +18,26 @@ from backend.core.fanxiu_resources import (
     resolve_fanxiu_asset_path,
     resolve_fanxiu_sprite_icon_path,
 )
-from backend.core.fanxiu_visual_catalog import (
+from backend.core.fanxiu.catalog.visual import (
     _coerce_visual_manifest_media_path,
     build_fanxiu_static_visual_catalog,
     load_fanxiu_static_visual_manifest,
     resolve_fanxiu_visual_media_path,
     search_fanxiu_static_visual_by_image,
 )
-from backend.core.fanxiu_asset_catalog import (
+from backend.core.fanxiu.catalog.asset import (
     build_fanxiu_static_asset_preview,
     build_fanxiu_static_asset_catalog,
     build_fanxiu_static_asset_preview_manifest,
     load_fanxiu_static_asset_manifest,
 )
-from backend.core.fanxiu_audio_catalog import (
+from backend.core.fanxiu.catalog.audio import (
     build_fanxiu_wwise_audio_catalog,
     build_fanxiu_wwise_mp3_export,
     load_fanxiu_wwise_mp3_manifest,
     resolve_fanxiu_audio_media_path,
 )
-from backend.core.fanxiu_apk_static import (
+from backend.core.fanxiu.catalog.apk_static import (
     _decode_dex_instruction_refs,
     build_fanxiu_apk_dex_login_surface_probe,
     build_fanxiu_apk_dex_login_payload_shape_probe,
@@ -72,22 +72,22 @@ from backend.core.fanxiu_apk_static import (
     build_fanxiu_resource_package_report,
     build_fanxiu_taptap_download_dat_package_probe,
 )
-from backend.core.fanxiu_game_luaconfig import (
+from backend.core.fanxiu.catalog.game_luaconfig import (
     build_fanxiu_gongfa_feature_probe,
     build_fanxiu_lingjie_feature_catalog,
     build_fanxiu_special_gongfa_feature_probe,
     get_fanxiu_lingjie_feature_card,
     search_fanxiu_lingjie_feature_cards,
 )
-from backend.core.fanxiu_il2cpp_metadata import (
+from backend.core.fanxiu.catalog.il2cpp_metadata import (
     build_fanxiu_il2cpp_gameplay_symbol_report,
     build_fanxiu_il2cpp_hot_update_report,
     build_fanxiu_il2cpp_metadata_probe,
 )
-from backend.core.fanxiu_download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
-from backend.core.fanxiu_item_catalog import _annotate_item_icon_reuse, build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
-from backend.core.fanxiu_item_catalog import _item_stone_value
-from backend.core.fanxiu_doupotd_catalog import (
+from backend.core.fanxiu.runtime.download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
+from backend.core.fanxiu.catalog.item import _annotate_item_icon_reuse, build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
+from backend.core.fanxiu.catalog.item import _item_stone_value
+from backend.core.fanxiu.catalog.doupotd import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
     build_fanxiu_doupotd_buff_class_flow_probe,
@@ -154,7 +154,7 @@ from backend.core.fanxiu_doupotd_catalog import (
     search_fanxiu_doupotd_reward_configs,
     search_fanxiu_doupotd_partner_cards,
 )
-from backend.core.fanxiu_digitdoor_catalog import (
+from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_activity_end_probe,
     build_fanxiu_digitdoor_buff_class_formula_probe,
     build_fanxiu_digitdoor_buff_effect_usage_probe,
@@ -214,7 +214,7 @@ from backend.core.fanxiu_digitdoor_catalog import (
     search_fanxiu_digitdoor_enhance_groups,
     search_fanxiu_digitdoor_level_configs,
 )
-from backend.core.fanxiu_hot_update import (
+from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_bluestarsea_authority_boundary_probe,
     build_fanxiu_bluestarsea_catalog_probe,
     build_fanxiu_bluestarsea_faze_effect_probe,
@@ -313,17 +313,17 @@ from backend.core.fanxiu_hot_update import (
     render_fanxiu_gongfa_homemake_static_detail,
     _parse_prefab_binder_variables_from_raw,
 )
-from backend.core.fanxiu_gongfa_catalog import build_fanxiu_gongfa_catalog, get_fanxiu_gongfa_card, search_fanxiu_gongfa_cards
-from backend.core.fanxiu_lua_config import (
+from backend.core.fanxiu.catalog.gongfa import build_fanxiu_gongfa_catalog, get_fanxiu_gongfa_card, search_fanxiu_gongfa_cards
+from backend.core.fanxiu.catalog.lua_config import (
     build_fanxiu_lua_config_batch_report,
     build_fanxiu_lua_config_report,
     parse_fanxiu_generated_lua_config,
 )
-from backend.core.fanxiu_lua_logic_index import (
+from backend.core.fanxiu.catalog.lua_logic_index import (
     build_fanxiu_lingjie_gongfa_runtime_report,
     build_fanxiu_lua_logic_index,
 )
-from backend.core.fanxiu_lua_packet_index import (
+from backend.core.fanxiu.catalog.lua_packet_index import (
     build_fanxiu_lua_lscript_module_netlogic_flow_probe,
     build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
     build_fanxiu_lua_lscript_module_protocol_schema_probe,
@@ -346,8 +346,8 @@ from backend.core.fanxiu_lua_packet_index import (
     build_fanxiu_lua_sm_login_nested_vo_probe,
     build_fanxiu_lua_packet_index,
 )
-from backend.core.fanxiu_protocol_semantics import load_fanxiu_protocol_semantics
-from backend.core.fanxiu_wiki import (
+from backend.core.fanxiu.catalog.protocol_semantics import load_fanxiu_protocol_semantics
+from backend.core.fanxiu.catalog.wiki import (
     build_fanxiu_wiki_catalog,
     get_fanxiu_wiki_text_entry,
     resolve_fanxiu_wiki_media_path,
@@ -618,10 +618,10 @@ def test_fanxiu_wwise_mp3_export_converts_manifest_and_media_path(tmp_path, monk
 
     monkeypatch.setenv(FANXIU_RESOURCE_ROOT_ENV, str(root))
     monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
-    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._resolve_vgmstream_cli", lambda path=None: fake_vgmstream)
-    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._resolve_ffmpeg", lambda path=None: "ffmpeg")
+    monkeypatch.setattr("backend.core.fanxiu.catalog.audio._resolve_vgmstream_cli", lambda path=None: fake_vgmstream)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.audio._resolve_ffmpeg", lambda path=None: "ffmpeg")
     monkeypatch.setattr(
-        "backend.core.fanxiu_audio_catalog._read_vgmstream_info",
+        "backend.core.fanxiu.catalog.audio._read_vgmstream_info",
         lambda cli, wem: {
             "sampleRate": 32000,
             "channels": 1,
@@ -638,8 +638,8 @@ def test_fanxiu_wwise_mp3_export_converts_manifest_and_media_path(tmp_path, monk
         mp3_path.parent.mkdir(parents=True, exist_ok=True)
         mp3_path.write_bytes(b"ID3fake")
 
-    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._decode_wem_to_wav", fake_decode)
-    monkeypatch.setattr("backend.core.fanxiu_audio_catalog._convert_wav_to_mp3", fake_mp3)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.audio._decode_wem_to_wav", fake_decode)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.audio._convert_wav_to_mp3", fake_mp3)
 
     result = build_fanxiu_wwise_mp3_export(max_entries=1, mp3_quality=5)
     output_dir = Path(result["output_dir"])
@@ -696,7 +696,7 @@ def test_fanxiu_unity_text_asset_export_uses_source_scoped_dir(tmp_path, monkeyp
         output_path.write_text("return {}", encoding="utf-8")
         return [FakeTextAssetExport(output_path)]
 
-    monkeypatch.setattr("backend.core.fanxiu_resources.export_unity_text_assets", fake_export_unity_text_assets)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.resources.export_unity_text_assets", fake_export_unity_text_assets)
 
     result = export_fanxiu_unity_text_assets("lscripts/generate/cfg/gongfa.bytes", max_assets=5)
 
@@ -916,7 +916,7 @@ def test_fanxiu_static_visual_catalog_exports_icon_logo_gallery(tmp_path, monkey
             return FakeEnv([FakeObject("mainui_logo_zw_5008", 2, 80, 42)])
         return FakeEnv([FakeObject("common_bg_0001", 3, 12, 12)])
 
-    monkeypatch.setattr("backend.core.fanxiu_visual_catalog.load_unity_environment", fake_load_unity_environment)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.visual.load_unity_environment", fake_load_unity_environment)
 
     result = build_fanxiu_static_visual_catalog(
         resource_root=resource_root,
@@ -1046,7 +1046,7 @@ def test_fanxiu_static_asset_catalog_indexes_modelish_bundles(tmp_path, monkeypa
             return FakeEnv([FakeObject("GameObject", "eff_fire"), FakeObject("ParticleSystem", "spark"), FakeObject("Material", "mat_fire")])
         return FakeEnv([FakeObject("GameObject", "win_notice"), FakeObject("RectTransform", ""), FakeObject("CanvasRenderer", ""), FakeObject("MonoScript", "NoticeView")])
 
-    monkeypatch.setattr("backend.core.fanxiu_asset_catalog.load_unity_environment", fake_load_unity_environment)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.asset.load_unity_environment", fake_load_unity_environment)
 
     result = build_fanxiu_static_asset_catalog(
         resource_root=resource_root,
@@ -18888,7 +18888,7 @@ def test_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe_exports_an
             "items": [{"name": name, "output_path": str(text_dir / name), "byte_size": len(text)} for name, text in files.items()],
         }
 
-    monkeypatch.setattr("backend.core.fanxiu_lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
 
     result = build_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe(
         resource_root=resource_root,
@@ -18969,7 +18969,7 @@ def test_fanxiu_lua_raw_lscript_missing_export_probe_exports_selected_missing_bu
             ],
         }
 
-    monkeypatch.setattr("backend.core.fanxiu_lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
+    monkeypatch.setattr("backend.core.fanxiu.catalog.lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
 
     result = build_fanxiu_lua_raw_lscript_missing_export_probe(
         resource_root=resource_root,
@@ -25104,7 +25104,7 @@ def test_fanxiu_resource_manifest_diff_report_compares_filelists(tmp_path):
 
 
 def test_fanxiu_hot_update_lscripts_report_exports_changed_lua_assets(tmp_path, monkeypatch):
-    import backend.core.fanxiu_hot_update as fanxiu_hot_update
+    import backend.core.fanxiu.catalog.hot_update as fanxiu_hot_update
 
     resource_root = tmp_path / "frxx_game_files"
     export_root = tmp_path / "exports"

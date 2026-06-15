@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from sqlmodel import select
 
-from backend.core import weekly_note_scheduler as weekly
+from backend.core.notes import weekly_scheduler as weekly
 from backend.models import NoteNode
 
 
