@@ -419,20 +419,6 @@ def terminate_pids(pids, reason):
                 check=False,
                 **hidden_subprocess_kwargs(),
             )
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Stop-Process -Id "
-                + ",".join(str(pid) for pid in pids)
-                + " -Force -ErrorAction SilentlyContinue",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            **hidden_subprocess_kwargs(),
-        )
         return
 
     for pid in pids:

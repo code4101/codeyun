@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -316,16 +317,17 @@ def _background_popen_kwargs() -> dict[str, Any]:
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
         creationflags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
         creationflags |= 0x08000000  # CREATE_NO_WINDOW
-        return {"creationflags": creationflags}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        return {"creationflags": creationflags, "startupinfo": startupinfo}
     return {"start_new_session": True}
 
 
 def _resolve_uv_command() -> list[str]:
     configured = os.getenv("CODEYUN_WATCHDOG_DEV_COMMAND")
     if configured and configured.strip():
-        if os.name == "nt":
-            return ["powershell", "-NoProfile", "-Command", configured]
-        return ["/bin/sh", "-lc", configured]
+        return shlex.split(configured, posix=os.name != "nt")
     if os.name == "nt":
         pythonw_path = PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe"
         if pythonw_path.is_file():
