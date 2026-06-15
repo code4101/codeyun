@@ -320,6 +320,14 @@ def _current_process_tree_pids():
     return pids
 
 
+def _path_mentions_root(text, root_dir):
+    if not text:
+        return False
+    normalized_text = str(text).lower().replace("/", "\\")
+    normalized_root = os.path.abspath(root_dir).lower().replace("/", "\\")
+    return normalized_root in normalized_text
+
+
 def _windows_processes():
     try:
         import psutil
@@ -330,22 +338,26 @@ def _windows_processes():
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             command_line = " ".join(proc.info.get("cmdline") or [])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            cwd = proc.cwd()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
             continue
         rows.append(
             {
                 "ProcessId": proc.info.get("pid"),
                 "Name": proc.info.get("name"),
                 "CommandLine": command_line,
+                "Cwd": cwd,
             }
         )
     return rows
 
 
-def _process_matches_dev_runner(name, command_line):
+def _process_matches_dev_runner(name, command_line, root_dir, cwd=""):
     name = (name or "").lower()
     command_line = (command_line or "").lower()
     if not command_line:
+        return False
+    if not (_path_mentions_root(command_line, root_dir) or _path_mentions_root(cwd, root_dir)):
         return False
 
     if "dev.py" in command_line:
@@ -361,6 +373,7 @@ def _process_matches_dev_runner(name, command_line):
 
 def find_stale_dev_process_pids():
     protected_pids = _current_process_tree_pids()
+    root_dir = os.path.dirname(os.path.abspath(__file__))
 
     if os.name == "nt":
         pids = set()
@@ -371,7 +384,7 @@ def find_stale_dev_process_pids():
                 continue
             if pid in protected_pids:
                 continue
-            if _process_matches_dev_runner(row.get("Name"), row.get("CommandLine")):
+            if _process_matches_dev_runner(row.get("Name"), row.get("CommandLine"), root_dir, row.get("Cwd")):
                 pids.add(pid)
         return sorted(pids)
 
@@ -387,7 +400,7 @@ def find_stale_dev_process_pids():
             continue
         if pid in protected_pids:
             continue
-        if _process_matches_dev_runner(parts[1], parts[2]):
+        if _process_matches_dev_runner(parts[1], parts[2], root_dir):
             pids.add(pid)
     return sorted(pids)
 

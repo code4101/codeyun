@@ -27,7 +27,19 @@ DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
 DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_STARTUP_GRACE_SECONDS = 180.0
+DEFAULT_RELOAD_QUIET_SECONDS = 120.0
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
+RELOAD_WATCH_TARGETS = ("backend", "scripts", "dev.py", "pyproject.toml", "uv.lock", ".env")
+RELOAD_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
+IGNORED_WATCH_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
 
 
 @dataclass(frozen=True)
@@ -36,6 +48,14 @@ class ProcessInfo:
     name: str
     cmdline: str
     started_at: float | None = None
+
+
+@dataclass
+class WatchdogState:
+    reload_snapshot: dict[str, tuple[int, int]] | None = None
+    pending_reload_reason: str | None = None
+    pending_reload_since: float | None = None
+    last_restart_at: float | None = None
 
 
 def _now() -> str:
@@ -324,6 +344,22 @@ def _background_popen_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def _hidden_run_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        ),
+        "startupinfo": startupinfo,
+    }
+
+
 def _resolve_uv_command() -> list[str]:
     configured = os.getenv("CODEYUN_WATCHDOG_DEV_COMMAND")
     if configured and configured.strip():
@@ -334,6 +370,16 @@ def _resolve_uv_command() -> list[str]:
             return [os.fspath(pythonw_path), "dev.py"]
     uv_path = shutil.which("uv") or "uv"
     return [uv_path, "run", "dev.py"]
+
+
+def _resolve_reload_check_command() -> list[str]:
+    configured = os.getenv("CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND")
+    if configured is not None:
+        if not configured.strip():
+            return []
+        return shlex.split(configured, posix=os.name != "nt")
+    uv_path = shutil.which("uv") or "uv"
+    return [uv_path, "run", "python", "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
 
 
 def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> int:
@@ -357,6 +403,87 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
         )
     _log(log_path, f"Started detached CodeYun dev runner PID {proc.pid}.")
     return int(proc.pid)
+
+
+def _watch_file_candidate(path: Path) -> bool:
+    name = path.name
+    if name.startswith(".env"):
+        return True
+    return path.suffix.lower() in RELOAD_WATCH_EXTENSIONS
+
+
+def _iter_reload_watch_files(root: Path = PROJECT_ROOT):
+    for rel_target in RELOAD_WATCH_TARGETS:
+        target = root / rel_target
+        if target.is_dir():
+            for current_root, dirnames, filenames in os.walk(target):
+                dirnames[:] = [name for name in dirnames if name not in IGNORED_WATCH_DIRS]
+                for filename in filenames:
+                    path = Path(current_root) / filename
+                    if _watch_file_candidate(path):
+                        yield path.resolve(strict=False)
+            continue
+        if target.is_file() and _watch_file_candidate(target):
+            yield target.resolve(strict=False)
+
+
+def build_reload_snapshot(root: Path = PROJECT_ROOT) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    for path in _iter_reload_watch_files(root):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        snapshot[os.fspath(path)] = (int(stat.st_mtime_ns), int(stat.st_size))
+    return snapshot
+
+
+def describe_reload_snapshot_change(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> str:
+    before_keys = set(before)
+    after_keys = set(after)
+    changed = sorted(path for path in before_keys & after_keys if before[path] != after[path])
+    added = sorted(after_keys - before_keys)
+    removed = sorted(before_keys - after_keys)
+    if changed:
+        return f"changed: {os.path.relpath(changed[0], PROJECT_ROOT)}"
+    if added:
+        return f"added: {os.path.relpath(added[0], PROJECT_ROOT)}"
+    if removed:
+        return f"removed: {os.path.relpath(removed[0], PROJECT_ROOT)}"
+    return "watched files changed"
+
+
+def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
+    command = _resolve_reload_check_command()
+    if not command:
+        _log(log_path, "Reload precheck skipped because CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND is empty.")
+        return True
+    _log(log_path, f"Reload precheck: {' '.join(command)}")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=os.fspath(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1.0, float(args.reload_check_timeout)),
+            check=False,
+            **_hidden_run_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _log(log_path, f"Reload precheck failed to run: {exc}")
+        return False
+    output = (result.stdout or "").strip()
+    if output:
+        for line in output.splitlines()[-40:]:
+            _log(log_path, f"precheck> {line}")
+    if result.returncode != 0:
+        _log(log_path, f"Reload precheck failed with exit code {result.returncode}; keeping current service.")
+        return False
+    _log(log_path, "Reload precheck passed.")
+    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -402,10 +529,81 @@ def release_lock(lock_path: Path) -> None:
         pass
 
 
-def run_once(args: argparse.Namespace) -> dict[str, Any]:
+def _restart_dev_runner(args: argparse.Namespace, log_path: Path, reason: str) -> dict[str, Any]:
+    _log(log_path, f"{reason}; restarting dev runner.")
+    stopped_pids = terminate_dev_processes(args.stop_timeout, log_path)
+    started_pid = start_detached_dev(log_path, Path(args.dev_stdout), Path(args.dev_stderr))
+    return {"stopped_pids": stopped_pids, "started_pid": started_pid}
+
+
+def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, log_path: Path) -> dict[str, Any] | None:
+    if not args.reload:
+        return None
+
+    latest_snapshot = build_reload_snapshot()
+    if state.reload_snapshot is None:
+        state.reload_snapshot = latest_snapshot
+        return None
+
+    now = time.time()
+    if latest_snapshot != state.reload_snapshot:
+        reason = describe_reload_snapshot_change(state.reload_snapshot, latest_snapshot)
+        state.reload_snapshot = latest_snapshot
+        state.pending_reload_reason = reason
+        state.pending_reload_since = now
+        _log(
+            log_path,
+            "Watched files changed "
+            f"({reason}); waiting {float(args.reload_quiet):.1f}s of quiet time before restart.",
+        )
+        return {
+            "status": "reload_pending",
+            "reason": reason,
+            "quiet_seconds": 0.0,
+            "started_pid": None,
+        }
+
+    if state.pending_reload_since is None:
+        return None
+
+    quiet_seconds = now - state.pending_reload_since
+    if quiet_seconds < float(args.reload_quiet):
+        return {
+            "status": "reload_pending",
+            "reason": state.pending_reload_reason,
+            "quiet_seconds": quiet_seconds,
+            "started_pid": None,
+        }
+
+    reason = state.pending_reload_reason or "watched files changed"
+    _log(log_path, f"Reload quiet period reached after {quiet_seconds:.1f}s for {reason}.")
+    if not run_reload_precheck(args, log_path):
+        state.pending_reload_since = time.time()
+        return {
+            "status": "reload_precheck_failed",
+            "reason": reason,
+            "started_pid": None,
+        }
+
+    restart = _restart_dev_runner(args, log_path, f"Reload precheck passed for {reason}")
+    state.pending_reload_reason = None
+    state.pending_reload_since = None
+    state.reload_snapshot = build_reload_snapshot()
+    state.last_restart_at = time.time()
+    return {
+        "status": "reloaded",
+        "reason": reason,
+        **restart,
+    }
+
+
+def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> dict[str, Any]:
     log_path = Path(args.log_path).resolve(strict=False)
     health = check_health(args.backend_url, args.frontend_url, args.timeout)
     if health["healthy"]:
+        reload_result = _maybe_handle_stable_reload(args, state, log_path) if state is not None else None
+        if reload_result is not None:
+            return {"health": health, **reload_result}
         _log(log_path, "Health check ok; no restart needed.")
         return {"status": "healthy", "health": health, "started_pid": None}
 
@@ -426,18 +624,21 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
             "started_pid": None,
         }
 
-    _log(
+    restart = _restart_dev_runner(
+        args,
         log_path,
-        "Health check failed; restarting dev runner. "
-        f"backend={health['backend']['message']} frontend={health['frontend']['message']}",
+        "Health check failed "
+        f"(backend={health['backend']['message']} frontend={health['frontend']['message']})",
     )
-    stopped_pids = terminate_dev_processes(args.stop_timeout, log_path)
-    started_pid = start_detached_dev(log_path, Path(args.dev_stdout), Path(args.dev_stderr))
+    if state is not None:
+        state.reload_snapshot = build_reload_snapshot()
+        state.pending_reload_reason = None
+        state.pending_reload_since = None
+        state.last_restart_at = time.time()
     return {
         "status": "restarted",
         "health": health,
-        "stopped_pids": stopped_pids,
-        "started_pid": started_pid,
+        **restart,
     }
 
 
@@ -446,11 +647,16 @@ def run_loop(args: argparse.Namespace) -> int:
     log_path = Path(args.log_path).resolve(strict=False)
     if not acquire_lock(lock_path, log_path):
         return 0
-    _log(log_path, f"CodeYun watchdog loop started. interval={args.interval}s")
+    state = WatchdogState(reload_snapshot=build_reload_snapshot() if args.reload else None)
+    _log(
+        log_path,
+        f"CodeYun watchdog loop started. interval={args.interval}s "
+        f"reload={'on' if args.reload else 'off'} quiet={float(args.reload_quiet):.1f}s",
+    )
     terminate_stale_watchdog_processes(lock_path, log_path)
     try:
         while True:
-            run_once(args)
+            run_once(args, state)
             time.sleep(max(1, int(args.interval)))
     finally:
         release_lock(lock_path)
@@ -463,6 +669,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=int, default=int(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS)))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_REQUEST_TIMEOUT", DEFAULT_TIMEOUT_SECONDS)))
     parser.add_argument("--stop-timeout", type=float, default=float(os.getenv("CODEYUN_WATCHDOG_STOP_TIMEOUT", "8")))
+    parser.add_argument(
+        "--reload",
+        action=argparse.BooleanOptionalAction,
+        default=str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() not in {"0", "false", "no", "off"},
+        help="Watch backend/dev files and restart after a quiet period when precheck passes.",
+    )
+    parser.add_argument(
+        "--reload-quiet",
+        type=float,
+        default=float(os.getenv("CODEYUN_WATCHDOG_RELOAD_QUIET_SECONDS", DEFAULT_RELOAD_QUIET_SECONDS)),
+    )
+    parser.add_argument(
+        "--reload-check-timeout",
+        type=float,
+        default=float(os.getenv("CODEYUN_WATCHDOG_RELOAD_CHECK_TIMEOUT_SECONDS", "120")),
+    )
     parser.add_argument(
         "--startup-grace",
         type=float,
