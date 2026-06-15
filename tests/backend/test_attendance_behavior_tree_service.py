@@ -1,6 +1,6 @@
 import sys
 
-from backend.core import attendance_behavior_tree_service as attendance_service
+from backend.core.attendance import behavior_tree_service as attendance_service
 
 
 class _FakeProcess:

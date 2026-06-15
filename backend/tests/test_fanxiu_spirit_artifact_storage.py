@@ -1,4 +1,4 @@
-from backend.core import fanxiu_inventory
+from backend.core.fanxiu.catalog import inventory as fanxiu_inventory
 
 
 def test_spirit_artifact_hall_defaults_to_fixed_artifacts(tmp_path, monkeypatch) -> None:

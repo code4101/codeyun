@@ -12,9 +12,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session
 
-from backend.core.auth import get_current_active_user
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
+from backend.core.access.auth import get_current_active_user
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.settings import get_settings
 from backend.core.stock import (
     EastmoneyTradeError,

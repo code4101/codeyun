@@ -5,7 +5,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import backend.models  # noqa: F401
 from backend.api import upload as upload_api
-from backend.core import attachment_resources
+from backend.core.resources import attachments as attachment_resources
 from backend.models import DeviceFile
 
 

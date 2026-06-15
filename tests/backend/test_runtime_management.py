@@ -1,8 +1,8 @@
 import time
 from types import SimpleNamespace
 
-from backend.core import runtime_management as runtime_core
-from backend.core import system_metrics as system_metrics_core
+from backend.core.runtime import management as runtime_core
+from backend.core.runtime import system_metrics as system_metrics_core
 from backend.models import Task
 
 
@@ -571,7 +571,7 @@ def test_disabled_fanxiu_behavior_tree_runtime_item_cannot_start_on_non_executio
 
 
 def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 
     monkeypatch.setenv("FX_CODEYUN_OCR_HOST", "http://192.168.31.15:8000")
 
@@ -583,7 +583,7 @@ def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
 
 
 def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
     monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
@@ -598,7 +598,7 @@ def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(mon
 
 
 def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
     monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
@@ -614,7 +614,7 @@ def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypat
 
 
 def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 
     monkeypatch.delenv("CODEYUN_OCR_DEVICE", raising=False)
     monkeypatch.delenv("FX_CODEYUN_OCR_DEVICE", raising=False)
@@ -631,7 +631,7 @@ def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
 
 
 def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monkeypatch):
-    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 
     class FakeSocket:
         def __enter__(self):

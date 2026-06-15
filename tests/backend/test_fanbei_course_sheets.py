@@ -4,8 +4,8 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
-import backend.core.fanbei_course_sheets as fanbei_course_sheets
-from backend.core.fanbei_course_sheets import (
+import backend.core.attendance.fanbei_course_sheets as fanbei_course_sheets
+from backend.core.attendance.fanbei_course_sheets import (
     CLOCKIN_CONFIG_SHEET_KEY,
     CLOCKIN_DATA_COLUMNS,
     CLOCKIN_DATA_SHEET_KEY,

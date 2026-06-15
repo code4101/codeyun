@@ -1,6 +1,6 @@
 import json
 
-from backend.core.fanxiu_inventory import (
+from backend.core.fanxiu.catalog.inventory import (
     _MAGIC_TREASURE_HALL_KEY,
     _MAGIC_TREASURE_SECTION_KEYS,
     _SPIRIT_BEAST_HALL_KEY,

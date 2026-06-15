@@ -48,30 +48,30 @@ from backend.schemas import (
     AiNoteCategorizeRequest,
     AiNoteCategorizeResponse,
 )
-from backend.core.ai_chat import (
+from backend.core.ai.chat import (
     OllamaClientError,
     chat_with_provider,
 )
-from backend.core.ai_app_config import (
+from backend.core.ai.app_config import (
     AI_APP_CODEX_DIARY,
     AI_APP_NOTE_TAXONOMY,
     AiAppConfigError,
     resolve_ai_app_runtime_config,
 )
-from backend.core.background_task_queue import background_task_queue
-from backend.core.ai_chat_user_config import (
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     list_user_ai_chat_custom_provider_configs,
 )
-from backend.core.auth import get_current_active_user
-from backend.core.codex_sessions import (
+from backend.core.access.auth import get_current_active_user
+from backend.core.codex.sessions import (
     resolve_codex_daily_summary_epoch_range,
 )
-from backend.core.codex_device_summary import collect_multi_codex_daily_summary_source
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.guest_notes import get_current_active_or_guest_notes_user
-from backend.core.note_access import note_list_mapping_to_response_dict, note_to_list_response_dict, note_to_response_dict
-from backend.core.note_semantics import (
+from backend.core.devices.codex_summary import collect_multi_codex_daily_summary_source
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.notes.guest import get_current_active_or_guest_notes_user
+from backend.core.notes.access import note_list_mapping_to_response_dict, note_to_list_response_dict, note_to_response_dict
+from backend.core.notes.semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DEFAULT,
@@ -98,13 +98,13 @@ from backend.core.note_semantics import (
     normalize_note_scene,
     normalize_note_types,
 )
-from backend.core.note_progress import (
+from backend.core.notes.progress import (
     get_completion_progress_expr,
     is_note_system_custom_field_key,
     normalize_completion_progress_expr,
     set_completion_progress_expr,
 )
-from backend.core.note_metadata_feedback import (
+from backend.core.notes.metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
     record_codex_maintenance_feedback,
@@ -112,7 +112,7 @@ from backend.core.note_metadata_feedback import (
     record_note_metadata_feedback_for_update,
     serialize_note_metadata_feedback_optimization_run,
 )
-from backend.core.note_refs import (
+from backend.core.notes.refs import (
     build_note_ref_map,
     load_notes_by_refs,
     note_edge_ref,
@@ -120,9 +120,9 @@ from backend.core.note_refs import (
     note_public_id,
     note_ref_aliases,
 )
-from backend.core.note_walker import NoteGraphContext, NoteWalker, _resolve_time_point_expr
-from backend.core.note_identity import allocate_new_note_identity
-from backend.core.resource_identity import RESOURCE_TYPE_NOTE
+from backend.core.notes.walker import NoteGraphContext, NoteWalker, _resolve_time_point_expr
+from backend.core.notes.identity import allocate_new_note_identity
+from backend.core.resources.identity import RESOURCE_TYPE_NOTE
 from backend.api.websocket_manager import manager as ws_manager
 import time
 import uuid

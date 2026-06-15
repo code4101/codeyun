@@ -1,7 +1,7 @@
 import threading
 import time
 
-from backend.core.background_task_queue import background_task_queue
+from backend.core.runtime.background_task_queue import background_task_queue
 
 
 def test_background_task_queue_runs_tasks_serially():
@@ -140,4 +140,28 @@ def test_background_task_queue_enqueue_once_reuses_active_task():
         if background_task_queue.snapshot()["is_idle"]:
             break
         time.sleep(0.02)
+    background_task_queue.reset_for_tests()
+
+
+def test_background_task_queue_exposes_resource_lock():
+    background_task_queue.reset_for_tests()
+
+    task_id = background_task_queue.enqueue(
+        "locked-task",
+        lambda: "ok",
+        resource_lock="resource:gui-automation",
+    )
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        snapshot = background_task_queue.snapshot()
+        if snapshot["is_idle"] and snapshot["recent"]:
+            break
+        time.sleep(0.02)
+
+    recent = background_task_queue.snapshot()["recent"][0]
+    assert recent["id"] == task_id
+    assert recent["resource_lock"] == "resource:gui-automation"
+    assert recent["metadata"]["resource_lock"] == "resource:gui-automation"
+
     background_task_queue.reset_for_tests()

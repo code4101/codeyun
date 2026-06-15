@@ -1,4 +1,4 @@
-from backend.core import fanxiu_activity_packet_sync as sync
+from backend.core.fanxiu.packet import activity_sync as sync
 
 
 def test_activity_item_merge_keeps_existing_when_new_value_is_empty() -> None:

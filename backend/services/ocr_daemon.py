@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core.ocr_preview import (
+from backend.core.ocr.preview import (
     OcrPreviewError,
     OcrShapeType,
     ocr_service_manager,

@@ -1,4 +1,4 @@
-from backend.core import nianzhu_attendance_schedule as schedule
+from backend.core.attendance import nianzhu_schedule as schedule
 from backend.models import SheetDocument
 
 

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from pathlib import Path
 
-import backend.core.fanxiu_mumu_control as mumu
+import backend.core.fanxiu.runtime.mumu_control as mumu
 
 
 class _Frame:
@@ -136,6 +136,87 @@ def test_mumu_adb_recovery_does_not_use_proxy_device_by_default(monkeypatch):
         raise AssertionError("expected adb unavailable")
 
     assert (str(Path("D:/adb.exe")), "connect", "192.168.31.181:5555") not in calls
+
+
+def test_mumu_adb_port_check_accepts_mumu_manager_remote_candidate(monkeypatch):
+    for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu.MUMU_ADB_PORT_PROBE_TIMEOUT_ENV, raising=False)
+    mumu._MUMU_ADB_SESSION.clear()
+    mumu._clear_mumu_adb_failure_cache()
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+
+    attempts = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_create_connection(address, timeout=0):
+        attempts.append((address, timeout))
+        if address[0] == "192.168.31.181":
+            return FakeSocket()
+        raise OSError("timed out")
+
+    monkeypatch.setattr(mumu.socket, "create_connection", fake_create_connection)
+
+    mumu._ensure_mumu_adb_port_available()
+
+    assert (("192.168.31.181", 5555), 0.75) in attempts
+
+
+def test_mumu_adb_failure_cache_does_not_block_fresh_mumu_manager_candidate(monkeypatch):
+    for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    mumu._MUMU_ADB_SESSION.clear()
+    mumu._clear_mumu_adb_failure_cache()
+    mumu._set_mumu_adb_failure_cache("ADB 端口不可用：127.0.0.1:7555: timed out")
+    monkeypatch.setattr(mumu, "_recover_mumu_adb_ports", lambda: False)
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+
+    attempts = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_create_connection(address, timeout=0):
+        attempts.append(address)
+        if address == ("192.168.31.181", 5555):
+            return FakeSocket()
+        raise OSError("timed out")
+
+    monkeypatch.setattr(mumu.socket, "create_connection", fake_create_connection)
+
+    mumu._ensure_mumu_adb_port_available()
+
+    assert ("192.168.31.181", 5555) in attempts
+
+
+def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
+    mumu._clear_mumu_adb_failure_cache()
+    mumu._set_mumu_adb_failure_cache("ADB 端口不可用：127.0.0.1:7555: timed out")
+
+    calls = []
+
+    def fake_session_shell(command, *, timeout_s=8):
+        calls.append((command, timeout_s))
+        return b"\x89PNG\r\n\x1a\nfake", {"input": "adb-session", "adb_serial": "192.168.31.181:5555"}
+
+    monkeypatch.setattr(mumu, "_mumu_adb_session_shell_bytes", fake_session_shell)
+
+    data, meta = mumu.screencap_mumu_adb_png()
+
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert meta["adb_serial"] == "192.168.31.181:5555"
+    assert calls == [("screencap -p", 10)]
+    assert mumu._get_mumu_adb_failure_cache() is None
 
 
 def test_mumu_adb_inject_events_error_is_treated_as_unavailable():

@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.nianzhu_course_sheets import (  # noqa: E402
+from backend.core.attendance.nianzhu_course_sheets import (  # noqa: E402
     CLOCKIN_CONFIG_COLUMNS,
     CLOCKIN_CONFIG_SHEET_KEY,
     CLOCKIN_DATA_COLUMNS,
@@ -28,10 +28,10 @@ from backend.core.nianzhu_course_sheets import (  # noqa: E402
     VIDEO_DATA_SHEET_KEY,
     video_config_url_from_lesson_id2,
 )
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer  # noqa: E402
-from backend.core.note_sheet_inline_links import with_inline_cell_link  # noqa: E402
-from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity  # noqa: E402
-from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases  # noqa: E402
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer  # noqa: E402
+from backend.core.notes.sheet_inline_links import with_inline_cell_link  # noqa: E402
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity  # noqa: E402
+from backend.core.resources.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases  # noqa: E402
 from backend.db import engine  # noqa: E402
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink  # noqa: E402
 from scripts.import_legacy_attendance_workbook import (  # noqa: E402

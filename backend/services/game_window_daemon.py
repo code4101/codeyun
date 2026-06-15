@@ -10,7 +10,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.core.fanxiu_mumu_control import (
+from backend.core.fanxiu.runtime.mumu_control import (
     activate_mumu_window,
     click_mumu_window_processed_point,
     drag_mumu_window_processed_points,

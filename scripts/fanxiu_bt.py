@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu_behavior_tree import (
+from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     FanxiuLocalEnqueueRequest,
     FanxiuLocalRunRequest,
@@ -27,15 +32,36 @@ from backend.core.fanxiu_behavior_tree import (
     fanxiu_data_annotation_runtime_logs,
     fanxiu_data_annotation_runtime_status,
     fanxiu_local_task_should_enqueue,
+    fanxiu_data_annotation_dir,
+    data_annotation_asset_tree_path,
     read_fanxiu_job_group_isolation,
     read_fanxiu_behavior_tree_service_owner,
     release_fanxiu_job_group_isolation,
     request_fanxiu_behavior_tree_stop,
+    resolve_fanxiu_entry,
     run_fanxiu_local_service,
     run_fanxiu_local_task,
     wait_fanxiu_local_manual_job,
 )
-from backend.core.fanxiu_data_annotation_jobs import parse_data_annotation_scene_id
+from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
+from backend.core.fanxiu.data_annotation.jobs import parse_data_annotation_scene_id
+from backend.core.fanxiu.data_annotation.runtime_control import build_scheduler_plan, read_doctor_watch_latest, read_scheduler_tasks, run_due_scheduler_tasks
+
+
+_DOCTOR_LOG_KEYWORDS = (
+    "开始到期任务",
+    "到期任务",
+    "Scheduler",
+    "失败",
+    "错误",
+    "超时",
+    "error",
+    "日常_游历",
+    "日常_灵祖",
+    "#186",
+    "奖励浮层",
+    "宝魄",
+)
 
 
 def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -73,6 +99,12 @@ def _print_log_entries(entries: list[dict[str, Any]]) -> None:
         prefix = " ".join(part for part in [str(item.get("time") or ""), str(kind), str(scope), str(item_id)] if part)
         message = item.get("message") or ""
         print(f"{prefix}: {message}".strip())
+
+
+def _configure_stdout() -> None:
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(errors="replace")
 
 
 def _print_status(status: dict[str, Any]) -> None:
@@ -161,6 +193,763 @@ def _print_job_catalog(items: list[dict[str, Any]]) -> None:
         print(f"{item.get('task_type')}  {item.get('label')}  {'/'.join(flags)}".rstrip())
 
 
+def _runtime_status_summary(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "service_running": status.get("service_running"),
+        "running": status.get("running"),
+        "status": status.get("status"),
+        "phase": status.get("phase"),
+        "current_scene": status.get("current_scene"),
+        "task_type": status.get("task_type"),
+        "current_task": status.get("current_task"),
+        "current_task_id": status.get("current_task_id"),
+        "message": status.get("message"),
+        "error": status.get("error") or "",
+    }
+
+
+def _scheduler_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": task.get("id"),
+        "task_type": task.get("task_type"),
+        "label": task.get("label"),
+        "enabled": task.get("enabled"),
+        "next_time": task.get("next_time"),
+        "retry_after": task.get("retry_after"),
+        "last_run_at": task.get("last_run_at"),
+        "last_result": task.get("last_result"),
+        "last_message": task.get("last_message"),
+    }
+
+
+def _doctor_relevant_logs(limit: int) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for scope in ("job", "manual_job", "guard", ""):
+        for item in fanxiu_data_annotation_runtime_logs(limit=limit, scope=scope):
+            if not isinstance(item, dict):
+                continue
+            key = (item.get("time"), item.get("kind"), item.get("scope"), item.get("item_id"), item.get("message"))
+            if key in seen:
+                continue
+            seen.add(key)
+            message = str(item.get("message") or "")
+            if any(keyword in message for keyword in _DOCTOR_LOG_KEYWORDS):
+                entries.append(item)
+    return entries[-limit:]
+
+
+def _doctor_screenshot() -> dict[str, Any]:
+    from backend.core.fanxiu.runtime.mumu_control import screencap_mumu_adb_png
+    from backend.core.temp_paths import codeyun_temp_root
+
+    out_dir = codeyun_temp_root("fanxiu-evidence")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    data, meta = screencap_mumu_adb_png()
+    path = out_dir / f"doctor_{stamp}.png"
+    path.write_bytes(data)
+    return {"path": str(path), "bytes": len(data), "meta": meta}
+
+
+def _doctor_blocking_overlays(screenshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(screenshot, dict):
+        return []
+    path_text = str(screenshot.get("path") or "")
+    if not path_text:
+        return []
+    path = Path(path_text)
+    if not path.exists():
+        return []
+    try:
+        def shape_titles(image: dict[str, Any] | None) -> list[str]:
+            if not isinstance(image, dict):
+                return []
+            titles: list[str] = []
+            for shape in image.get("shapes") or []:
+                if isinstance(shape, dict):
+                    title = str(shape.get("title") or "").strip()
+                    if title:
+                        titles.append(title)
+            return titles
+
+        data_url = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+        runner = create_fanxiu_runtime_runner()
+        text = runner._ocr_text(runner._ocr_lines(data_url))
+        asset_tree_path = fanxiu_data_annotation_dir() / "asset-trees" / f"{DEFAULT_FANXIU_ENTRY_ID}.json"
+        tree = runner._load_asset_tree(asset_tree_path)
+        ctx = {
+            "asset_tree": tree,
+            "asset_tree_path": asset_tree_path,
+            "images": runner._index_images(tree),
+        }
+        if "游戏公告" in text or ("更新公告" in text and "风险提醒" in text):
+            image = runner._find_asset_image_by_title(ctx, "游戏公告")
+            action_titles = []
+            if isinstance(image, dict):
+                for title in ("关闭", "空白", "返回", "退出"):
+                    if runner._find_shape(image, title):
+                        action_titles.append(title)
+            message = "检测到游戏公告遮挡"
+            if not action_titles:
+                message += "；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，自动作业无法安全进入游戏"
+            return [{
+                "scene_id": None,
+                "title": "游戏公告",
+                "keywords": [keyword for keyword in ("游戏公告", "更新公告", "风险提醒") if keyword in text],
+                "all_shapes": shape_titles(image),
+                "action_shapes": action_titles,
+                "blocking": not bool(action_titles),
+                "message": message,
+            }]
+        return []
+    except Exception as exc:
+        return [{"error": str(exc), "blocking": False, "message": "阻断浮层巡检失败"}]
+
+
+def _doctor_annotation_target(blocker: dict[str, Any], entry_id: str | None) -> dict[str, Any] | None:
+    title = str(blocker.get("title") or "")
+    normalized = str(title or "").strip()
+    if normalized == "游戏公告":
+        focus_title = "游戏公告"
+        acceptable_shapes = ["关闭", "空白", "返回", "退出"]
+        description = "在资产树「游戏公告」补充可安全关闭的动作标注"
+    elif normalized == "灵祖奖励浮层":
+        focus_title = "灵祖奖励浮层"
+        acceptable_shapes = ["关闭", "空白", "返回", "退出"]
+        description = "在 #186「灵祖奖励浮层」补充可安全关闭的动作标注"
+    else:
+        return None
+
+    existing_shapes = [
+        str(shape)
+        for shape in (blocker.get("action_shapes") or [])
+        if str(shape)
+    ]
+    all_shapes = [
+        str(shape)
+        for shape in (blocker.get("all_shapes") or [])
+        if str(shape)
+    ]
+    missing_shapes = [
+        shape
+        for shape in acceptable_shapes
+        if shape not in existing_shapes
+    ]
+    query = {
+        "entry_id": entry_id or DEFAULT_FANXIU_ENTRY_ID,
+        "focus_image_title": focus_title,
+    }
+    path = "/fanxiu/data-annotation"
+    return {
+        "title": focus_title,
+        "path": path,
+        "query": query,
+        "url": f"{path}?{urlencode(query)}",
+        "acceptable_shapes": acceptable_shapes,
+        "existing_shapes": existing_shapes,
+        "all_shapes": all_shapes,
+        "missing_shapes": missing_shapes,
+        "required_shapes": acceptable_shapes,
+        "description": description,
+    }
+
+
+def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
+    runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+    due_tasks = [task for task in (scheduler.get("due_tasks") or []) if isinstance(task, dict)]
+    screenshot_blockers = [item for item in (report.get("blocking_overlays") or []) if isinstance(item, dict)]
+    plan_blockers = [item for item in (scheduler.get("blocking_overlays") or []) if isinstance(item, dict)]
+    blockers = screenshot_blockers or plan_blockers
+    blocking_items = [item for item in blockers if bool(item.get("blocking"))]
+    enabled_by_id = {
+        str(task.get("id") or ""): task
+        for task in (scheduler.get("enabled_tasks") or [])
+        if isinstance(task, dict)
+    }
+    due_ids = {str(task.get("id") or "") for task in due_tasks}
+    due_state = [
+        {
+            "id": task_id,
+            "label": str(task.get("label") or task_id),
+            "next_time": task.get("next_time"),
+            "retry_after": task.get("retry_after"),
+            "last_run_at": task.get("last_run_at"),
+            "last_result": task.get("last_result"),
+        }
+        for task_id, task in enabled_by_id.items()
+        if task_id in due_ids
+    ]
+    stale_due = [
+        item
+        for item in due_state
+        if item.get("next_time") and item.get("last_run_at") != item.get("next_time")
+    ]
+    stale_due_success = [
+        item
+        for item in stale_due
+        if str(item.get("last_result") or "") == "success"
+    ]
+    blocked_due = [
+        item
+        for item in due_state
+        if str(item.get("last_result") or "") == "blocked"
+    ]
+    if blocking_items:
+        blocked_by_id = {str(item.get("id") or ""): item for item in blocked_due}
+        for item in due_state:
+            task_id = str(item.get("id") or "")
+            if task_id and task_id not in blocked_by_id:
+                blocked_by_id[task_id] = item
+        blocked_due = list(blocked_by_id.values())
+        stale_due_success = [
+            item
+            for item in stale_due_success
+            if str(item.get("id") or "") not in blocked_by_id
+        ]
+    action_required: list[str] = []
+    if blocking_items:
+        for item in blocking_items:
+            title = str(item.get("title") or "阻断浮层")
+            if title == "游戏公告":
+                action_required.append("在资产树「游戏公告」补充可安全关闭的「关闭/空白/返回/退出」动作标注")
+            elif title == "灵祖奖励浮层":
+                action_required.append("在 #186「灵祖奖励浮层」补充可安全关闭的「关闭/空白/返回/退出」动作标注")
+            else:
+                action_required.append(str(item.get("message") or f"处理阻断项：{title}"))
+    elif scheduler.get("next_action") == "run_due" and due_tasks:
+        action_required.append("当前有到期任务且未发现阻断，等待 resident service 执行或检查服务调度日志")
+    elif not due_tasks:
+        action_required.append("当前没有到期任务")
+
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    annotation_targets = [
+        target
+        for target in (
+            _doctor_annotation_target(item, entry_id)
+            for item in blocking_items
+        )
+        if target is not None
+    ]
+
+    if blocking_items:
+        severity = "blocked"
+        summary = str(blocking_items[0].get("message") or scheduler.get("message") or runtime.get("message") or "检测到阻断项")
+    elif str(runtime.get("status") or "") == "error":
+        severity = "error"
+        summary = str(runtime.get("error") or runtime.get("message") or "Runtime 错误")
+    elif due_tasks and scheduler.get("next_action") == "run_due":
+        severity = "attention"
+        summary = f"{len(due_tasks)} 个任务已到期，等待自动执行"
+    else:
+        severity = "ok"
+        summary = str(scheduler.get("message") or runtime.get("message") or "巡检未发现阻断")
+
+    return {
+        "severity": severity,
+        "summary": summary,
+        "automation_safe": not bool(blocking_items) and str(runtime.get("status") or "") != "error",
+        "needs_human_annotation": bool(blocking_items),
+        "blocked_by": blocking_items,
+        "due_task_count": len(due_tasks),
+        "due_task_ids": [str(task.get("id") or "") for task in due_tasks],
+        "due_task_state": due_state,
+        "state_clean": not any(str(item.get("last_result") or "") == "running" for item in due_state),
+        "stale_due_count": len(stale_due),
+        "stale_due_success_count": len(stale_due_success),
+        "blocked_due_count": len(blocked_due),
+        "blocked_due_ids": [str(item.get("id") or "") for item in blocked_due],
+        "action_required": action_required,
+        "annotation_targets": annotation_targets,
+        "retry_condition": "阻断浮层消失且对应资产树已有安全关闭动作标注" if blocking_items else "无需特殊条件",
+    }
+
+
+def _doctor_exit_code(report: dict[str, Any], *, strict: bool) -> int:
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    if not bool(owner.get("active")) or str(runtime_status.get("status") or "") in {"error", "stopped"}:
+        return 1
+    if not strict:
+        return 0
+    maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+    severity = str(maintenance.get("severity") or "")
+    if severity in {"blocked", "error"}:
+        return 2
+    if severity == "attention":
+        return 1
+    return 0
+
+
+def _print_doctor_summary(report: dict[str, Any]) -> None:
+    maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+    lines = [
+        f"checked_at: {report.get('checked_at') or ''}",
+        f"severity: {maintenance.get('severity') or 'unknown'}",
+        f"summary: {maintenance.get('summary') or ''}",
+        "owner: "
+        f"active={bool(owner.get('active'))} "
+        f"pid={owner.get('pid') or ''} "
+        f"step={owner.get('step') or ''}",
+        "runtime: "
+        f"status={runtime_status.get('status') or ''} "
+        f"phase={runtime_status.get('phase') or ''} "
+        f"scene={runtime_status.get('current_scene') or ''}",
+        "scheduler: "
+        f"next_action={scheduler.get('next_action') or ''} "
+        f"due_task_count={maintenance.get('due_task_count') or 0} "
+        f"stale_due_count={maintenance.get('stale_due_count') or 0} "
+        f"blocked_due_count={maintenance.get('blocked_due_count') or 0} "
+        f"stale_due_success_count={maintenance.get('stale_due_success_count') or 0}",
+        f"automation_safe: {bool(maintenance.get('automation_safe'))}",
+        f"needs_human_annotation: {bool(maintenance.get('needs_human_annotation'))}",
+    ]
+    blockers = [item for item in (maintenance.get("blocked_by") or []) if isinstance(item, dict)]
+    for item in blockers:
+        lines.append(f"blocked_by: {item.get('title') or '阻断项'} - {item.get('message') or ''}")
+    actions = [str(item) for item in (maintenance.get("action_required") or []) if str(item)]
+    for action in actions:
+        lines.append(f"action_required: {action}")
+    annotation_targets = [item for item in (maintenance.get("annotation_targets") or []) if isinstance(item, dict)]
+    for target in annotation_targets:
+        acceptable_shapes = target.get("acceptable_shapes") or target.get("required_shapes") or []
+        missing_shapes = target.get("missing_shapes") or []
+        existing_shapes = target.get("existing_shapes") or []
+        all_shapes = target.get("all_shapes") or []
+        lines.append(
+            "annotation_target: "
+            f"{target.get('title') or ''} "
+            f"url={target.get('url') or ''} "
+            f"all_shapes={','.join(str(shape) for shape in all_shapes)} "
+            f"existing_safe_shapes={','.join(str(shape) for shape in existing_shapes)} "
+            f"acceptable_shapes={','.join(str(shape) for shape in acceptable_shapes)} "
+            f"missing_shapes={','.join(str(shape) for shape in missing_shapes)}"
+        )
+    retry_condition = str(maintenance.get("retry_condition") or "")
+    if retry_condition:
+        lines.append(f"retry_condition: {retry_condition}")
+    screenshot = report.get("screenshot") if isinstance(report.get("screenshot"), dict) else {}
+    if screenshot.get("path"):
+        lines.append(f"screenshot: {screenshot.get('path')}")
+    elif report.get("screenshot_error"):
+        lines.append(f"screenshot_error: {report.get('screenshot_error')}")
+    print("\n".join(lines))
+
+
+def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, Any]:
+    maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+    screenshot = report.get("screenshot") if isinstance(report.get("screenshot"), dict) else {}
+    return {
+        "iteration": iteration,
+        "checked_at": report.get("checked_at"),
+        "severity": maintenance.get("severity") or "unknown",
+        "summary": maintenance.get("summary") or "",
+        "owner_active": bool(owner.get("active")),
+        "owner_pid": owner.get("pid"),
+        "owner_step": owner.get("step"),
+        "runtime_status": runtime_status.get("status"),
+        "runtime_phase": runtime_status.get("phase"),
+        "runtime_scene": runtime_status.get("current_scene"),
+        "scheduler_next_action": scheduler.get("next_action"),
+        "due_task_count": maintenance.get("due_task_count") or 0,
+        "due_task_ids": maintenance.get("due_task_ids") or [],
+        "stale_due_count": maintenance.get("stale_due_count") or 0,
+        "stale_due_success_count": maintenance.get("stale_due_success_count") or 0,
+        "blocked_due_count": maintenance.get("blocked_due_count") or 0,
+        "blocked_due_ids": maintenance.get("blocked_due_ids") or [],
+        "automation_safe": bool(maintenance.get("automation_safe")),
+        "needs_human_annotation": bool(maintenance.get("needs_human_annotation")),
+        "blocked_by": maintenance.get("blocked_by") or [],
+        "action_required": maintenance.get("action_required") or [],
+        "annotation_targets": maintenance.get("annotation_targets") or [],
+        "retry_condition": maintenance.get("retry_condition") or "",
+        "screenshot_path": screenshot.get("path") or "",
+        "screenshot_error": report.get("screenshot_error") or "",
+        "auto_run_due": report.get("auto_run_due") or {},
+    }
+
+
+def _watch_should_auto_run_due(report: dict[str, Any]) -> bool:
+    scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+    maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+    runtime_status = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    if str(scheduler.get("next_action") or "") != "run_due":
+        return False
+    if not [item for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict)]:
+        return False
+    if str(maintenance.get("severity") or "") in {"blocked", "error"}:
+        return False
+    if not bool(maintenance.get("automation_safe")):
+        return False
+    if str(runtime_status.get("status") or "") == "running":
+        return False
+    return True
+
+
+def _watch_auto_run_due(report: dict[str, Any]) -> dict[str, Any]:
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    status = run_due_scheduler_tasks(
+        entry=resolve_fanxiu_entry(entry_id),
+        entry_id=entry_id,
+        asset_tree_path=data_annotation_asset_tree_path(entry_id),
+    )
+    return {
+        "triggered": True,
+        "entry_id": entry_id,
+        "status": status.get("status"),
+        "phase": status.get("phase"),
+        "message": status.get("message"),
+        "current_task_id": status.get("current_task_id"),
+        "blocking_overlays": status.get("blocking_overlays") or [],
+    }
+
+
+def _asset_tree_signature_for_entry(entry_id: str | None) -> tuple[int, int]:
+    try:
+        path = data_annotation_asset_tree_path(entry_id or DEFAULT_FANXIU_ENTRY_ID)
+        stat = path.stat()
+        return int(stat.st_mtime_ns), int(stat.st_size)
+    except Exception:
+        return 0, 0
+
+
+def _watch_has_annotation_blocker(report: dict[str, Any]) -> bool:
+    maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+    if str(maintenance.get("severity") or "") != "blocked":
+        return False
+    return any(isinstance(item, dict) for item in (maintenance.get("annotation_targets") or []))
+
+
+def _watch_sleep_until_next_check(report: dict[str, Any], *, interval_seconds: float) -> None:
+    interval = max(1.0, float(interval_seconds or 60.0))
+    if not _watch_has_annotation_blocker(report):
+        time.sleep(interval)
+        return
+
+    owner = report.get("owner") if isinstance(report.get("owner"), dict) else {}
+    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    start_signature = _asset_tree_signature_for_entry(entry_id)
+    deadline = time.monotonic() + interval
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(2.0, max(0.1, remaining)))
+        if _asset_tree_signature_for_entry(entry_id) != start_signature:
+            return
+
+
+def _default_doctor_watch_path() -> Path:
+    from backend.core.temp_paths import codeyun_temp_root
+
+    out_dir = codeyun_temp_root("fanxiu-watch")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return out_dir / f"doctor_watch_{stamp}.ndjson"
+
+
+def _stable_doctor_watch_latest_path() -> Path:
+    from backend.core.temp_paths import codeyun_temp_root
+
+    return codeyun_temp_root("fanxiu-watch") / "doctor_watch_latest.json"
+
+
+def _doctor_watch_heartbeat_path() -> Path:
+    from backend.core.temp_paths import codeyun_temp_root
+
+    return codeyun_temp_root("fanxiu-watch") / "doctor_watch_heartbeat.json"
+
+
+def _write_doctor_watch_latest(path: Path, event: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(event, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _write_doctor_watch_heartbeat(
+    *,
+    output_path: Path,
+    latest_path: Path,
+    stable_latest_path: Path,
+    iteration: int,
+    event: dict[str, Any],
+) -> None:
+    path = _doctor_watch_heartbeat_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "updated_at": time.time(),
+        "updated_at_text": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "output_path": str(output_path),
+        "latest_path": str(latest_path),
+        "stable_latest_path": str(stable_latest_path),
+        "iteration": iteration,
+        "severity": event.get("severity"),
+        "auto_run_due_enabled": bool(event.get("auto_run_due_enabled")),
+        "due_task_count": event.get("due_task_count"),
+        "stale_due_count": event.get("stale_due_count"),
+        "stale_due_success_count": event.get("stale_due_success_count"),
+        "blocked_due_count": event.get("blocked_due_count"),
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _read_doctor_watch_heartbeat() -> dict[str, Any]:
+    path = _doctor_watch_heartbeat_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"exists": path.exists(), "path": str(path), "active": False, "age_seconds": None}
+    if not isinstance(payload, dict):
+        return {"exists": True, "path": str(path), "active": False, "age_seconds": None}
+    try:
+        age_seconds = max(0.0, time.time() - float(payload.get("updated_at") or 0))
+    except (TypeError, ValueError):
+        age_seconds = None
+    expected_stable_latest = str(_stable_doctor_watch_latest_path())
+    actual_stable_latest = str(payload.get("stable_latest_path") or "")
+    runtime_consistent = bool(actual_stable_latest) and actual_stable_latest == expected_stable_latest
+    return {
+        **payload,
+        "exists": True,
+        "path": str(path),
+        "age_seconds": age_seconds,
+        "runtime_consistent": runtime_consistent,
+        "expected_stable_latest_path": expected_stable_latest,
+    }
+
+
+def _ensure_doctor_watch_background(
+    *,
+    interval_seconds: float,
+    duration_seconds: float,
+    log_limit: int,
+    include_screenshot: bool,
+    screenshot_every: int,
+    stale_after_seconds: float,
+    auto_run_due: bool,
+) -> dict[str, Any]:
+    heartbeat = _read_doctor_watch_heartbeat()
+    age = heartbeat.get("age_seconds")
+    capability_consistent = (not auto_run_due) or bool(heartbeat.get("auto_run_due_enabled"))
+    if (
+        isinstance(age, (int, float))
+        and age <= stale_after_seconds
+        and bool(heartbeat.get("runtime_consistent"))
+        and capability_consistent
+    ):
+        return {
+            "started": False,
+            "reason": "heartbeat_recent",
+            "heartbeat": heartbeat,
+            "latest": read_doctor_watch_latest(),
+        }
+
+    from backend.core.temp_paths import codeyun_temp_root
+
+    watch_dir = codeyun_temp_root("fanxiu-watch")
+    watch_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = watch_dir / f"doctor_watch_background_{stamp}.ndjson"
+    stdout_path = watch_dir / f"doctor_watch_background_{stamp}.stdout.log"
+    stderr_path = watch_dir / f"doctor_watch_background_{stamp}.stderr.log"
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "watch-doctor",
+        "--interval-seconds",
+        str(max(1.0, float(interval_seconds or 60.0))),
+        "--duration-seconds",
+        str(max(0.0, float(duration_seconds or 0.0))),
+        "--log-limit",
+        str(max(1, int(log_limit or 80))),
+        "--screenshot-every",
+        str(max(1, int(screenshot_every or 1))),
+        "--output",
+        str(output_path),
+    ]
+    if include_screenshot:
+        command.append("--screenshot")
+    if auto_run_due:
+        command.append("--auto-run-due")
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    stdout_fh = stdout_path.open("ab")
+    stderr_fh = stderr_path.open("ab")
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_fh,
+            stderr=stderr_fh,
+            close_fds=(os.name != "nt"),
+            creationflags=creationflags,
+        )
+    finally:
+        stdout_fh.close()
+        stderr_fh.close()
+    return {
+        "started": True,
+        "pid": process.pid,
+        "reason": "heartbeat_missing_or_stale",
+        "previous_heartbeat": heartbeat,
+        "output_path": str(output_path),
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "command": command,
+    }
+
+
+def _run_doctor_watch(
+    *,
+    interval_seconds: float,
+    duration_seconds: float,
+    max_iterations: int,
+    log_limit: int,
+    include_screenshot: bool,
+    screenshot_every: int,
+    output_path: Path | None,
+    latest_json_path: Path | None,
+    stop_on_blocked: bool,
+    stop_on_ok_no_due: bool,
+    auto_run_due: bool,
+    auto_run_due_min_interval_seconds: float,
+) -> int:
+    path = output_path or _default_doctor_watch_path()
+    latest_path = latest_json_path or path.with_suffix(".latest.json")
+    stable_latest_path = _stable_doctor_watch_latest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    iteration = 0
+    worst_code = 0
+    last_auto_run_due_at = 0.0
+    last_auto_run_due_key = ""
+    while True:
+        iteration += 1
+        take_screenshot = bool(include_screenshot) and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
+        report = _build_doctor_report(log_limit=log_limit, include_screenshot=take_screenshot)
+        maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+        if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
+            report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
+        if auto_run_due and _watch_should_auto_run_due(report):
+            scheduler = report.get("scheduler") if isinstance(report.get("scheduler"), dict) else {}
+            due_ids = sorted(str(item.get("id") or "") for item in (scheduler.get("due_tasks") or []) if isinstance(item, dict))
+            due_key = "|".join(due_ids)
+            now_mono = time.monotonic()
+            if due_key != last_auto_run_due_key or now_mono - last_auto_run_due_at >= max(1.0, float(auto_run_due_min_interval_seconds or 300.0)):
+                try:
+                    auto_run_due_result = _watch_auto_run_due(report)
+                except Exception as exc:
+                    auto_run_due_result = {"triggered": False, "error": str(exc)}
+                last_auto_run_due_at = now_mono
+                last_auto_run_due_key = due_key
+                report = _build_doctor_report(log_limit=log_limit, include_screenshot=take_screenshot)
+                maintenance = report.get("maintenance") if isinstance(report.get("maintenance"), dict) else {}
+                if bool(include_screenshot) and not take_screenshot and str(maintenance.get("severity") or "") in {"blocked", "error"}:
+                    report = _build_doctor_report(log_limit=log_limit, include_screenshot=True)
+                report["auto_run_due"] = auto_run_due_result
+        event = _doctor_watch_event(report, iteration=iteration)
+        event["auto_run_due_enabled"] = bool(auto_run_due)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+        _write_doctor_watch_latest(latest_path, event)
+        if stable_latest_path != latest_path:
+            _write_doctor_watch_latest(stable_latest_path, event)
+        _write_doctor_watch_heartbeat(
+            output_path=path,
+            latest_path=latest_path,
+            stable_latest_path=stable_latest_path,
+            iteration=iteration,
+            event=event,
+        )
+        print(
+            "watch "
+            f"#{iteration} "
+            f"severity={event['severity']} "
+            f"due={event['due_task_count']} "
+            f"stale={event['stale_due_count']} "
+            f"blocked_due={event['blocked_due_count']} "
+            f"next={event['scheduler_next_action']} "
+            f"auto_run_due={bool((event.get('auto_run_due') or {}).get('triggered'))} "
+            f"path={path} "
+            f"latest={latest_path} "
+            f"stable_latest={stable_latest_path}",
+            flush=True,
+        )
+        code = _doctor_exit_code(report, strict=True)
+        worst_code = max(worst_code, code)
+        if stop_on_blocked and str(event["severity"]) in {"blocked", "error"}:
+            return code
+        if stop_on_ok_no_due and str(event["severity"]) == "ok" and int(event["due_task_count"] or 0) == 0:
+            return worst_code
+        if max_iterations > 0 and iteration >= max_iterations:
+            return worst_code
+        if duration_seconds > 0 and time.monotonic() - started >= duration_seconds:
+            return worst_code
+        _watch_sleep_until_next_check(report, interval_seconds=interval_seconds)
+
+
+def _build_doctor_report(*, log_limit: int, include_screenshot: bool) -> dict[str, Any]:
+    owner = read_fanxiu_behavior_tree_service_owner()
+    runtime_status = fanxiu_data_annotation_runtime_status()
+    jobs = fanxiu_data_annotation_manual_jobs()
+    isolation = read_fanxiu_job_group_isolation()
+    entry_id = str(owner.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
+    scheduler_plan = build_scheduler_plan(
+        entry=resolve_fanxiu_entry(entry_id),
+        entry_id=entry_id,
+        asset_tree_path=data_annotation_asset_tree_path(entry_id),
+    )
+    enabled_tasks = [
+        _scheduler_task_summary(task)
+        for task in read_scheduler_tasks()
+        if bool(task.get("enabled"))
+    ]
+    report: dict[str, Any] = {
+        "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "owner": owner,
+        "runtime": _runtime_status_summary(runtime_status),
+        "manual_jobs": jobs,
+        "isolation": isolation,
+        "scheduler": {
+            "next_action": scheduler_plan.get("next_action"),
+            "message": scheduler_plan.get("message"),
+            "job_group_enabled": scheduler_plan.get("job_group_enabled"),
+            "due_tasks": scheduler_plan.get("due_tasks") or [],
+            "enabled_tasks": enabled_tasks,
+        },
+        "relevant_logs": _doctor_relevant_logs(max(1, int(log_limit or 80))),
+    }
+    if include_screenshot:
+        try:
+            report["screenshot"] = _doctor_screenshot()
+            report["blocking_overlays"] = _doctor_blocking_overlays(report.get("screenshot"))
+        except Exception as exc:
+            report["screenshot_error"] = str(exc)
+    if "blocking_overlays" not in report:
+        plan_blockers = scheduler_plan.get("blocking_overlays")
+        if isinstance(plan_blockers, list):
+            report["blocking_overlays"] = plan_blockers
+    report["maintenance"] = _build_maintenance_summary(report)
+    return report
+
+
 def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--run-mode",
@@ -173,6 +962,7 @@ def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
 
 
 def main() -> int:
+    _configure_stdout()
     parser = argparse.ArgumentParser(description="本地运行凡修行为树任务，不经过前端手动作业队列。")
     parser.add_argument("--entry-id", default=os.environ.get("FANXIU_ENTRY_ID") or DEFAULT_FANXIU_ENTRY_ID)
     parser.add_argument("--no-isolate-jobs", action="store_true", help="本次运行期间不隔离普通作业组")
@@ -242,6 +1032,36 @@ def main() -> int:
     logs_parser.add_argument("--item-id", default="")
     logs_parser.add_argument("--json", action="store_true", help="输出 JSON")
 
+    doctor = subparsers.add_parser("doctor", help="只读巡检 owner/runtime/队列/Scheduler/关键日志")
+    doctor.add_argument("--log-limit", type=int, default=80)
+    doctor.add_argument("--screenshot", action="store_true", help="额外保存一张真实 ADB 当前帧")
+    doctor.add_argument("--json", action="store_true", help="输出完整 JSON")
+    doctor.add_argument("--summary", action="store_true", help="输出适合巡检脚本读取的摘要")
+    doctor.add_argument("--exit-code", action="store_true", help="按 maintenance.severity 返回退出码：ok=0 attention=1 blocked/error=2")
+
+    watch_doctor = subparsers.add_parser("watch-doctor", help="持续巡检并写入 NDJSON 留痕")
+    watch_doctor.add_argument("--interval-seconds", type=float, default=60.0)
+    watch_doctor.add_argument("--duration-seconds", type=float, default=0.0, help="默认不按时间停止")
+    watch_doctor.add_argument("--max-iterations", type=int, default=0, help="默认不按次数停止")
+    watch_doctor.add_argument("--log-limit", type=int, default=80)
+    watch_doctor.add_argument("--screenshot", action="store_true", help="巡检时保存真实 ADB 当前帧")
+    watch_doctor.add_argument("--screenshot-every", type=int, default=10, help="启用 --screenshot 后每 N 次保存一张，默认 10")
+    watch_doctor.add_argument("--output", default="", help="NDJSON 输出路径，默认写入系统临时目录")
+    watch_doctor.add_argument("--latest-json", default="", help="最新巡检快照 JSON 路径，默认与 NDJSON 同名 .latest.json")
+    watch_doctor.add_argument("--stop-on-blocked", action="store_true", help="发现 blocked/error 立即退出")
+    watch_doctor.add_argument("--stop-on-ok-no-due", action="store_true", help="severity=ok 且无到期任务时退出")
+    watch_doctor.add_argument("--auto-run-due", action="store_true", help="无阻断且有到期任务时调用 Scheduler run-due")
+    watch_doctor.add_argument("--auto-run-due-min-interval-seconds", type=float, default=300.0, help="同一批到期任务自动 run-due 的最小间隔")
+
+    ensure_watch_doctor = subparsers.add_parser("ensure-watch-doctor", help="确保后台巡检进程存在，心跳过期则自动拉起")
+    ensure_watch_doctor.add_argument("--interval-seconds", type=float, default=60.0)
+    ensure_watch_doctor.add_argument("--duration-seconds", type=float, default=0.0, help="后台巡检运行时长，默认一直运行")
+    ensure_watch_doctor.add_argument("--log-limit", type=int, default=80)
+    ensure_watch_doctor.add_argument("--screenshot", action="store_true", help="后台巡检保存真实 ADB 当前帧")
+    ensure_watch_doctor.add_argument("--screenshot-every", type=int, default=10)
+    ensure_watch_doctor.add_argument("--stale-after-seconds", type=float, default=180.0, help="心跳超过该时长视为后台巡检失效")
+    ensure_watch_doctor.add_argument("--no-auto-run-due", action="store_true", help="后台巡检只观察，不在无阻断时自动触发 run-due")
+
     owner_parser = subparsers.add_parser("owner", help="查看行为树全局单例 owner")
     owner_parser.add_argument("--stale-after-seconds", type=float, default=120.0)
     owner_parser.add_argument("--json", action="store_true", help="输出完整 JSON")
@@ -277,6 +1097,63 @@ def main() -> int:
             print(json.dumps(entries, ensure_ascii=False, indent=2, default=str))
         else:
             _print_log_entries(entries)
+        return 0
+    if args.command == "doctor":
+        report = _build_doctor_report(log_limit=int(args.log_limit or 80), include_screenshot=bool(args.screenshot))
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        elif args.summary:
+            _print_doctor_summary(report)
+        else:
+            print(json.dumps(
+                {
+                    "checked_at": report.get("checked_at"),
+                    "owner": {
+                        "active": bool((report.get("owner") or {}).get("active")),
+                        "stale": bool((report.get("owner") or {}).get("stale")),
+                        "pid": (report.get("owner") or {}).get("pid"),
+                        "step": (report.get("owner") or {}).get("step"),
+                    },
+                    "runtime": report.get("runtime"),
+                    "queue_size": len(report.get("manual_jobs") or []),
+                    "isolation_active": bool((report.get("isolation") or {}).get("active")),
+                    "scheduler": report.get("scheduler"),
+                    "screenshot": report.get("screenshot") or report.get("screenshot_error") or "",
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ))
+            _print_log_entries([item for item in report.get("relevant_logs") or [] if isinstance(item, dict)][-12:])
+        return _doctor_exit_code(report, strict=bool(args.exit_code))
+    if args.command == "watch-doctor":
+        output_path = Path(str(args.output)).expanduser() if str(args.output or "") else None
+        latest_json_path = Path(str(args.latest_json)).expanduser() if str(args.latest_json or "") else None
+        return _run_doctor_watch(
+            interval_seconds=float(args.interval_seconds or 60.0),
+            duration_seconds=float(args.duration_seconds or 0.0),
+            max_iterations=int(args.max_iterations or 0),
+            log_limit=int(args.log_limit or 80),
+            include_screenshot=bool(args.screenshot),
+            screenshot_every=max(1, int(args.screenshot_every or 1)),
+            output_path=output_path,
+            latest_json_path=latest_json_path,
+            stop_on_blocked=bool(args.stop_on_blocked),
+            stop_on_ok_no_due=bool(args.stop_on_ok_no_due),
+            auto_run_due=bool(args.auto_run_due),
+            auto_run_due_min_interval_seconds=max(1.0, float(args.auto_run_due_min_interval_seconds or 300.0)),
+        )
+    if args.command == "ensure-watch-doctor":
+        result = _ensure_doctor_watch_background(
+            interval_seconds=float(args.interval_seconds or 60.0),
+            duration_seconds=float(args.duration_seconds or 0.0),
+            log_limit=int(args.log_limit or 80),
+            include_screenshot=bool(args.screenshot),
+            screenshot_every=max(1, int(args.screenshot_every or 1)),
+            stale_after_seconds=max(1.0, float(args.stale_after_seconds or 180.0)),
+            auto_run_due=not bool(args.no_auto_run_due),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
         return 0
     if args.command == "owner":
         owner = read_fanxiu_behavior_tree_service_owner(stale_after_seconds=float(args.stale_after_seconds or 30.0))
@@ -397,3 +1274,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

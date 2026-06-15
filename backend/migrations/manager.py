@@ -663,7 +663,7 @@ def v18_add_note_types(session: Session):
         session.commit()
         columns.add("note_types")
 
-    from backend.core.note_semantics import NOTE_TYPE_DEFAULT, normalize_note_types
+    from backend.core.notes.semantics import NOTE_TYPE_DEFAULT, normalize_note_types
 
     select_sql = "SELECT id, note_types, node_type FROM notenode" if "node_type" in columns else "SELECT id, note_types, '' AS node_type FROM notenode"
     notes = session.exec(text(select_sql)).all()
@@ -725,7 +725,7 @@ def v19_add_note_taxonomy_fields(session: Session):
     if statements:
         session.commit()
 
-    from backend.core.note_semantics import derive_note_taxonomy_from_legacy
+    from backend.core.notes.semantics import derive_note_taxonomy_from_legacy
 
     select_sql = (
         "SELECT id, "
@@ -800,7 +800,7 @@ def v20_repair_note_category_drift(session: Session):
     print("Running System Upgrade V20: Repair note category drift...")
 
     from backend.models import AppSetting
-    from backend.core.note_semantics import (
+    from backend.core.notes.semantics import (
         NOTE_CATEGORY_DEFAULT,
         NOTE_FORM_DEFAULT,
         NOTE_LIFECYCLE_STAGE_DEFAULT,
@@ -3282,7 +3282,7 @@ def v54_index_attachment_file_resources(session: Session):
         print("  Device file numeric id column missing, skipping.")
         return
 
-    from backend.core.attachment_resources import index_existing_attachment_resources
+    from backend.core.resources.attachments import index_existing_attachment_resources
 
     indexed_count = index_existing_attachment_resources(session)
     print(f"  Indexed {indexed_count} attachment files as device resources.")
@@ -3530,7 +3530,7 @@ def _migration_recreate_documentasset_indexes(session: Session) -> None:
 
 def _migration_update_document_cache_document_ids(assignments: list[dict[str, Any]]) -> int:
     try:
-        from backend.core.document_reduction_cache import get_document_cache_db_path
+        from backend.core.ai.document_reduction_cache import get_document_cache_db_path
     except Exception:
         return 0
     cache_db_path = get_document_cache_db_path()
@@ -3557,7 +3557,7 @@ def _migration_update_document_cache_document_ids(assignments: list[dict[str, An
 
 def _migration_migrate_documentasset_dirs(assignments: list[dict[str, Any]]) -> int:
     try:
-        from backend.core.document_reduction_storage import migrate_document_asset_dir_id
+        from backend.core.ai.document_reduction_storage import migrate_document_asset_dir_id
     except Exception:
         return 0
     moved = 0
@@ -4016,7 +4016,7 @@ def v58_migrate_fanxiu_inventory_note_refs(session: Session):
         return
 
     try:
-        from backend.core.fanxiu_inventory import migrate_inventory_note_ids
+        from backend.core.fanxiu.catalog.inventory import migrate_inventory_note_ids
     except Exception as exc:
         print(f"  Unable to load Fanxiu inventory storage helper, skipping: {exc}")
         return
@@ -4565,7 +4565,7 @@ def v66_migrate_note_sheet_links_to_inline_cells(session: Session):
     if not _table_exists(session, "sheetdocument"):
         return
 
-    from backend.core.note_sheet_inline_links import canonicalize_sheet_document_inline_links
+    from backend.core.notes.sheet_inline_links import canonicalize_sheet_document_inline_links
 
     rows = session.exec(text("SELECT id, document_json FROM sheetdocument")).all()
     updated = 0
@@ -4980,6 +4980,22 @@ def v75_add_codex_maintenance_feedback_table(session: Session):
     print("  Added Codex maintenance feedback table.")
 
 
+def v76_add_github_project_created_at(session: Session):
+    """
+    Migration V76: Add GitHub repository creation time to project pool.
+    """
+    print("Running System Upgrade V76: Add GitHub project created_at column...")
+    if not _table_exists(session, "githubproject"):
+        print("  githubproject table not found, skipping.")
+        return
+    columns = _get_table_columns(session, "githubproject")
+    if "created_at_github" not in columns:
+        session.exec(text("ALTER TABLE githubproject ADD COLUMN created_at_github VARCHAR NOT NULL DEFAULT ''"))
+        session.exec(text("CREATE INDEX IF NOT EXISTS ix_githubproject_created_at_github ON githubproject (created_at_github)"))
+    session.commit()
+    print("  Added GitHub project created_at column.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -5058,6 +5074,7 @@ MIGRATIONS = [
     (73, "Add Fanxiu packet decoded records", v73_add_fanxiu_packet_decoded_records),
     (74, "Add note node version", v74_add_notenode_version),
     (75, "Add Codex maintenance feedback table", v75_add_codex_maintenance_feedback_table),
+    (76, "Add GitHub project creation time", v76_add_github_project_created_at),
 ]
 
 def get_current_version(session: Session) -> int:

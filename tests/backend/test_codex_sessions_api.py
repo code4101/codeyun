@@ -9,7 +9,7 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
-from backend.core.note_semantics import build_note_category_palette_setting_key
+from backend.core.notes.semantics import build_note_category_palette_setting_key
 from backend.models import (
     AppSetting,
     CodexDailySummaryRun,
@@ -614,7 +614,7 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
             "done_reason": "stop",
         }
 
-    monkeypatch.setattr("backend.core.codex_sessions.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.codex.sessions.chat_with_provider", fake_chat_with_provider)
 
     start_response = client.post(
         f"/api/device-entries/{entry_id}/codex/daily-summary/runs",
@@ -717,11 +717,11 @@ def test_multi_device_daily_summary_merges_local_and_remote_sources(
     tmp_path,
     monkeypatch,
 ):
-    from backend.core import codex_device_summary
+    from backend.core.devices import codex_summary as codex_device_summary
 
     local_entry_id = _create_local_entry(client)
     local_codex_root = _create_codex_root_for_daily_summary(tmp_path)
-    monkeypatch.setattr("backend.core.codex_sessions._default_codex_root_dir", lambda: local_codex_root)
+    monkeypatch.setattr("backend.core.codex.sessions._default_codex_root_dir", lambda: local_codex_root)
 
     remote_entry = UserDevice(
         user_id=auth_user.id,
@@ -832,7 +832,7 @@ def test_multi_device_daily_summary_merges_local_and_remote_sources(
             "done_reason": "stop",
         }
 
-    monkeypatch.setattr("backend.core.codex_sessions.chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr("backend.core.codex.sessions.chat_with_provider", fake_chat_with_provider)
 
     start_response = client.post(
         "/api/device-entries/codex/daily-summary/runs",

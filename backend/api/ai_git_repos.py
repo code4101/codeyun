@@ -8,16 +8,16 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from backend.api.git_tools import GitToolInspectRequest, GitToolInspectResponse
-from backend.core.ai_git_repos import (
+from backend.core.ai.git_repos import (
     get_user_ai_git_commit_config,
     list_user_ai_git_repos,
     save_user_ai_git_commit_config,
     save_user_ai_git_repos,
     touch_user_ai_git_repo,
 )
-from backend.core.auth import get_current_user_from_token
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.git_tools import GitToolError, inspect_git_repository
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.ai.git_tools import GitToolError, inspect_git_repository
 from backend.db import get_session
 from backend.models import User, UserDevice
 

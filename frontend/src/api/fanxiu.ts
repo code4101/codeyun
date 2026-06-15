@@ -472,6 +472,70 @@ export interface FanxiuDataAnnotationWorldFactsResponse {
   path: string;
 }
 
+export interface FanxiuDataAnnotationDoctorWatchLatestResponse {
+  ok: boolean;
+  exists: boolean;
+  path: string;
+  message: string;
+  heartbeat?: {
+    active?: boolean;
+    age_seconds?: number | null;
+    stale_after_seconds?: number;
+    runtime_consistent?: boolean;
+    updated_at_text?: string;
+    pid?: number;
+    message?: string;
+  } & Record<string, unknown>;
+  snapshot: {
+    checked_at?: string;
+    severity?: string;
+    summary?: string;
+    owner_active?: boolean;
+    runtime_status?: string;
+    runtime_phase?: string;
+    scheduler_next_action?: string;
+    due_task_count?: number;
+    due_task_ids?: string[];
+    stale_due_count?: number;
+    stale_due_success_count?: number;
+    blocked_due_count?: number;
+    blocked_due_ids?: string[];
+    automation_safe?: boolean;
+    needs_human_annotation?: boolean;
+    blocked_by?: Array<Record<string, unknown>>;
+    action_required?: string[];
+    annotation_targets?: Array<{
+      title?: string;
+      path?: string;
+      query?: Record<string, string>;
+      url?: string;
+      acceptable_shapes?: string[];
+      existing_shapes?: string[];
+      all_shapes?: string[];
+      missing_shapes?: string[];
+      required_shapes?: string[];
+      description?: string;
+    }>;
+    retry_condition?: string;
+    screenshot_path?: string;
+    screenshot_error?: string;
+  };
+}
+
+export interface FanxiuDataAnnotationDoctorWatchEnsureResponse {
+  ok: boolean;
+  started: boolean;
+  pid?: number | null;
+  reason: string;
+  heartbeat?: Record<string, unknown>;
+  previous_heartbeat?: Record<string, unknown>;
+  latest?: Record<string, unknown>;
+  output_path?: string;
+  stdout_path?: string;
+  stderr_path?: string;
+  command?: string[];
+}
+
 export interface FanxiuDataAnnotationRuntimeStatus {
   ok: boolean;
   service_running?: boolean;
@@ -555,6 +619,7 @@ export interface FanxiuDataAnnotationSchedulerPlanResponse {
   next_action: string;
   message: string;
   job_group_enabled?: boolean;
+  blocking_overlays?: Array<Record<string, unknown>>;
   runtime: Record<string, unknown>;
   facts_summary: Record<string, unknown>;
   due_tasks: FanxiuDataAnnotationSchedulerPlanItem[];
@@ -4983,6 +5048,18 @@ export const getFanxiuDataAnnotationRuntimeLogs = (limit = 500, scope = '', item
 export const getFanxiuDataAnnotationWorldFacts = () => {
   return api
     .get<FanxiuDataAnnotationWorldFactsResponse>('/fanxiu/data-annotation/runtime/world-facts')
+    .then(res => res.data);
+};
+
+export const getFanxiuDataAnnotationDoctorWatchLatest = () => {
+  return api
+    .get<FanxiuDataAnnotationDoctorWatchLatestResponse>('/fanxiu/data-annotation/runtime/doctor-watch/latest')
+    .then(res => res.data);
+};
+
+export const ensureFanxiuDataAnnotationDoctorWatch = () => {
+  return api
+    .post<FanxiuDataAnnotationDoctorWatchEnsureResponse>('/fanxiu/data-annotation/runtime/doctor-watch/ensure')
     .then(res => res.data);
 };
 

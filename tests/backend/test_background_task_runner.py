@@ -1,8 +1,8 @@
 import json
 import datetime
 
-from backend.core import background_task_runner as background_tasks
-from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
+from backend.core.runtime import background_task_runner as background_tasks
+from backend.core.runtime.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
 from backend.models import AppSetting
 from pyxllib.prog.behavior_tree import BehaviorTreeRunner, Status
 
@@ -25,7 +25,7 @@ def _runner_for_test(tmp_path):
 
 def _set_enabled(monkeypatch, enabled_by_key):
     monkeypatch.setattr(
-        "backend.core.background_task_runner._is_task_enabled",
+        "backend.core.runtime.background_task_runner._is_task_enabled",
         lambda task_key: bool(enabled_by_key.get(task_key, False)),
     )
 
@@ -153,10 +153,10 @@ def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_
         retry_label="失败后 10 分钟重试",
         action=lambda: "queue-1",
     )
-    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    monkeypatch.setattr("backend.core.runtime.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
     _set_enabled(monkeypatch, {"rime_config_sync": True})
     monkeypatch.setattr(
-        "backend.core.background_task_runner._effective_background_task_schedule_policy",
+        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
         lambda task_key, enabled=None: {
             "enabled": True,
             "trigger": {"type": "interval", "minutes": 60, "anchor": "last_finish"},
@@ -178,7 +178,7 @@ def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_
             "recent": [{"id": "queue-1", "status": "completed"}],
         }
 
-    monkeypatch.setattr("backend.core.background_task_runner.background_task_queue.snapshot", queue_snapshot)
+    monkeypatch.setattr("backend.core.runtime.background_task_runner.background_task_queue.snapshot", queue_snapshot)
 
     runner = _runner_for_test(tmp_path)
     _write_schedule_state(
@@ -212,10 +212,10 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
         retry_label="失败后 10 分钟重试",
         action=lambda: "queue-1",
     )
-    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    monkeypatch.setattr("backend.core.runtime.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
     _set_enabled(monkeypatch, {"ruanyf_weekly_note": True})
     monkeypatch.setattr(
-        "backend.core.background_task_runner._effective_background_task_schedule_policy",
+        "backend.core.runtime.background_task_runner._effective_background_task_schedule_policy",
         lambda task_key, enabled=None: {
             "enabled": True,
             "trigger": {"type": "weekly", "weekdays": [5], "time": "06:00"},
@@ -223,7 +223,7 @@ def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypa
         },
     )
     monkeypatch.setattr(
-        "backend.core.background_task_runner.background_task_queue.snapshot",
+        "backend.core.runtime.background_task_runner.background_task_queue.snapshot",
         lambda: {
             "running": None,
             "pending": [],

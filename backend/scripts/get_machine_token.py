@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from backend.core.device import get_device_id
+from backend.core.devices.device import get_device_id
 from backend.core.settings import get_settings
 
 settings = get_settings()

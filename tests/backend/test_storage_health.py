@@ -1,5 +1,5 @@
-from backend.core.storage_health import build_storage_health_report
-from backend.core.storage_usage import collect_directory_usage
+from backend.core.resources.storage_health import build_storage_health_report
+from backend.core.resources.storage_usage import collect_directory_usage
 
 
 def test_source_health_flags_misplaced_data_directory(tmp_path):

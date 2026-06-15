@@ -32,20 +32,20 @@ from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from backend.core.device import get_device_id
-from backend.core.device_files import (
+from backend.core.devices.device import get_device_id
+from backend.core.devices.files import (
     DeviceFileSyncSnapshot,
     get_device_file_public_id,
     reconcile_device_file_batch,
     update_device_file_weight,
 )
-from backend.core.ocr_preview import (
+from backend.core.ocr.preview import (
     OcrPreviewError,
     OcrShapeType,
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.db import engine, get_session
 from backend.models import DeviceFile
 
@@ -608,7 +608,7 @@ def _run_visual_hash_prewarm(
     candidates: list[VisualHashPrewarmCandidate],
 ) -> None:
     try:
-        from backend.core.device_file_cover import (
+        from backend.core.devices.file_cover import (
             DeviceFileMetadataSnapshot,
             upsert_device_file_metadata_batch,
         )
@@ -3114,8 +3114,8 @@ def _attach_cached_media_metadata(
     prewarm_requested = bool(not include_visual_hash and str(prewarm_visual_hash_key or "").strip())
 
     try:
-        from backend.core.device import get_device_id
-        from backend.core.device_file_cover import (
+        from backend.core.devices.device import get_device_id
+        from backend.core.devices.file_cover import (
             DeviceFileMetadataSnapshot,
             upsert_device_file_metadata_batch,
         )
@@ -3335,7 +3335,7 @@ def _attach_lightweight_cached_media_metadata(
         return _build_visual_hash_status(include_visual_hash=False, total_image_count=0, indexed_count=0)
 
     try:
-        from backend.core.device import get_device_id
+        from backend.core.devices.device import get_device_id
     except Exception:
         return _build_visual_hash_status(
             include_visual_hash=False,

@@ -22,9 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_resources import resolve_fanxiu_export_root
-from backend.core.fanxiu_mail_policy import fanxiu_mail_rewards_from_payload
-from backend.core.fanxiu_mail_store import ensure_fanxiu_mail_table
+from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
+from backend.core.fanxiu.mail.policy import fanxiu_mail_rewards_from_payload
+from backend.core.fanxiu.mail.store import ensure_fanxiu_mail_table
 from backend.db import engine
 from backend.models import FanxiuMailRecord
 

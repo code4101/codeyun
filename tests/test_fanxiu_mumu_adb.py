@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import time
 
-from backend.core import fanxiu_mumu_control as rotate
+from backend.core.fanxiu.runtime import mumu_control as rotate
 
 
 class _FakeSocket:

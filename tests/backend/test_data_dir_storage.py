@@ -5,7 +5,7 @@ from sqlmodel import SQLModel, Session, create_engine, select
 
 from backend import db as db_module
 from backend.api import admin as admin_module
-from backend.core import device as device_module
+from backend.core.devices import device as device_module
 from backend.models import AppSetting, TaskRuntime
 
 

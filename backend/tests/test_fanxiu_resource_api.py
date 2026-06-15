@@ -4,12 +4,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.api.fanxiu_resources import router as fanxiu_resources_router
-from backend.core.fanxiu_resources import FANXIU_RESOURCE_EXPORT_ROOT_ENV
+from backend.core.fanxiu.catalog.resources import FANXIU_RESOURCE_EXPORT_ROOT_ENV
 from backend.db import get_session
 
 
 def _build_client(monkeypatch) -> TestClient:
-    monkeypatch.setattr("backend.core.feature_access_guard.is_feature_access_allowed", lambda *args, **kwargs: True)
+    monkeypatch.setattr("backend.core.access.feature_access_guard.is_feature_access_allowed", lambda *args, **kwargs: True)
     app = FastAPI()
 
     def fake_session():

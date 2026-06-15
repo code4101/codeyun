@@ -21,9 +21,9 @@ from sqlalchemy.orm import object_session
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from backend.core.background_task_queue import background_task_queue
-from backend.core.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
-from backend.core.feature_access_guard import ensure_feature_access
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
+from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User, UserDevice
@@ -671,7 +671,7 @@ def _wechat_official_device_roots() -> list[Path]:
 
 def _tim_official_device_roots() -> list[Path]:
     try:
-        from backend.core.tim_legacy_db import tim_account_roots
+        from backend.core.messaging.tim_legacy_db import tim_account_roots
 
         return tim_account_roots()
     except Exception:
@@ -860,8 +860,8 @@ def _is_current_device_root(root: Path) -> bool:
 
 def _choose_wechat_storage_for_device(device_root: Path):
     from pyxllib.autogui.wechat_db import WeChatDbStorage
-    from backend.core.wechat_legacy_db import WeChatLegacyDbStorage, has_legacy_wechat_live_source
-    from backend.core.tim_legacy_db import TimLegacyDbStorage, has_tim_live_source
+    from backend.core.messaging.wechat_legacy_db import WeChatLegacyDbStorage, has_legacy_wechat_live_source
+    from backend.core.messaging.tim_legacy_db import TimLegacyDbStorage, has_tim_live_source
 
     is_current = _is_current_device_root(device_root)
     source = (os.environ.get("CODEYUN_WECHAT_DB_SOURCE") or "auto").strip().lower() if is_current else "auto"
@@ -1024,7 +1024,7 @@ def _merge_wechat_directory_usage_stats(target: Path, payload: dict, session: Se
         return
 
     try:
-        from backend.core.storage_usage import collect_directory_usage
+        from backend.core.resources.storage_usage import collect_directory_usage
 
         summary = collect_directory_usage(
             target,

@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
 
 import time
 import shutil
-from backend.core.device import LocalDevice, DATA_DIR
+from backend.core.devices.device import LocalDevice, DATA_DIR
 
 def test_start_task():
     print("Testing LocalDevice.start_task...")

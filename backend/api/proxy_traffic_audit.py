@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from backend.core.auth import verify_api_token
-from backend.core.proxy_traffic_audit import summarize_proxy_traffic
-from backend.core.device import BaseDevice
+from backend.core.access.auth import verify_api_token
+from backend.core.runtime.proxy_traffic_audit import summarize_proxy_traffic
+from backend.core.devices.device import BaseDevice
 
 
 router = APIRouter()

@@ -5,21 +5,21 @@ import time
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from backend.core.fanxiu_tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
-from backend.core.fanxiu_tcp_flow import _resolve_fanxiu_message_text_assets
-from backend.core.fanxiu_mail_store import (
+from backend.core.fanxiu.packet.tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
+from backend.core.fanxiu.packet.tcp_flow import _resolve_fanxiu_message_text_assets
+from backend.core.fanxiu.mail.store import (
     mark_fanxiu_mail_action,
     merge_duplicate_fanxiu_mail_records,
     upsert_fanxiu_mail_fact,
 )
-from backend.core.fanxiu_mail_policy import (
+from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
     fanxiu_mail_rewards_unresolved,
     fanxiu_mail_visible_group_action_policy,
 )
-from backend.core import fanxiu_mail_packet_sync
-from backend.core import fanxiu_packet_insight_worker
+from backend.core.fanxiu.mail import packet_sync as fanxiu_mail_packet_sync
+from backend.core.fanxiu.packet import insight_worker as fanxiu_packet_insight_worker
 from backend.api import fanxiu as fanxiu_api
 from backend.models import FanxiuMailRecord
 from scripts.verify_fanxiu_mail_records import _missing_reward_field_names

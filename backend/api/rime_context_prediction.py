@@ -5,9 +5,9 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from backend.core.auth import verify_api_token
-from backend.core.device import BaseDevice
-from backend.core.rime_context_prediction import (
+from backend.core.access.auth import verify_api_token
+from backend.core.devices.device import BaseDevice
+from backend.core.ai.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
     adjust_rime_context_weight_compare_candidate,

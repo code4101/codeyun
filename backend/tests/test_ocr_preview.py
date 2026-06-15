@@ -7,8 +7,8 @@ from fastapi import HTTPException
 from PIL import Image
 
 from backend.api import filesystem as filesystem_api
-from backend.core import ocr_preview
-from backend.core.ocr_preview import OcrPreviewError, build_ocr_labelme_document_from_payload
+from backend.core.ocr import preview as ocr_preview
+from backend.core.ocr.preview import OcrPreviewError, build_ocr_labelme_document_from_payload
 
 
 def test_build_ocr_labelme_document_from_payload_preserves_polygon_points_and_text_fields() -> None:

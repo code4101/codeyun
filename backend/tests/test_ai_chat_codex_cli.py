@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
 from backend.api.ai_chat import _get_extra_providers, _resolve_runtime_provider_config
-from backend.core.ai_chat import (
+from backend.core.ai.chat import (
     AiProviderConfig,
     CODEX_CLI_DEFAULT_MODEL,
     CODEX_CLI_MODELS,
@@ -19,8 +19,8 @@ from backend.core.ai_chat import (
     chat_with_provider,
     get_ai_provider_status,
 )
-from backend.core.codex_access_keys import create_codex_access_key
-from backend.core.ai_chat_user_config import (
+from backend.core.access.codex_access_keys import create_codex_access_key
+from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     list_public_ai_chat_custom_provider_configs,
     list_public_ai_chat_custom_providers,
@@ -61,7 +61,7 @@ def test_codex_cli_status_reports_available_when_version_succeeds(monkeypatch):
         assert command[-1] == "--version"
         return subprocess.CompletedProcess(command, 0, stdout="OpenAI Codex v0.121.0\n", stderr="")
 
-    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
 
     status = get_ai_provider_status(
         provider_id="custom-codex",
@@ -84,9 +84,9 @@ def test_codex_cli_command_resolution_skips_incomplete_repo_node_shim(monkeypatc
     global_shim.parent.mkdir()
     global_shim.write_text("@echo off\necho codex\n", encoding="utf-8")
 
-    monkeypatch.setattr("backend.core.ai_chat._codex_tools_node_dir", lambda: tools_node_dir)
-    monkeypatch.setattr("backend.core.ai_chat._get_preferred_codex_command_candidates", lambda: [broken_shim])
-    monkeypatch.setattr("backend.core.ai_chat.shutil.which", lambda executable: str(global_shim))
+    monkeypatch.setattr("backend.core.ai.chat._codex_tools_node_dir", lambda: tools_node_dir)
+    monkeypatch.setattr("backend.core.ai.chat._get_preferred_codex_command_candidates", lambda: [broken_shim])
+    monkeypatch.setattr("backend.core.ai.chat.shutil.which", lambda executable: str(global_shim))
 
     command = _resolve_command_path(["codex", "--version"])
 
@@ -121,7 +121,7 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
             stderr="",
         )
 
-    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
 
     response = chat_with_provider(
         provider_id="custom-codex",
@@ -174,7 +174,7 @@ def test_codex_cli_chat_resumes_explicit_session(monkeypatch, tmp_path):
             stderr="",
         )
 
-    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
 
     response = chat_with_provider(
         provider_id="custom-codex",
@@ -211,9 +211,9 @@ def test_codex_cli_chat_attaches_images(monkeypatch, tmp_path):
         output_path.write_text("image reply", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
     monkeypatch.setattr(
-        "backend.core.ai_chat._build_codex_workspace_dir",
+        "backend.core.ai.chat._build_codex_workspace_dir",
         lambda workspace_dir=None: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,
     )
 

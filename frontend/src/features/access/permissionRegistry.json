@@ -600,6 +600,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "notes.github-projects",
+      "title": "开源项目池",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 13,
+      "route_paths": ["/notes/github-projects"],
+      "menu_paths": ["/notes/github-projects"],
+      "api_scopes": ["note-tools.github-projects"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "notes.task-system",
       "title": "任务系统",
       "node_type": "feature",

@@ -1,9 +1,9 @@
 import uuid
 
 from backend.app import app
-from backend.core.auth import get_current_active_superuser
-from backend.core.resource_identity import RESOURCE_TYPE_NOTE, allocate_resource_id
-from backend.core.storage import get_attachments_dir
+from backend.core.access.auth import get_current_active_superuser
+from backend.core.resources.identity import RESOURCE_TYPE_NOTE, allocate_resource_id
+from backend.core.resources.storage import get_attachments_dir
 from backend.models import NoteNode, User
 
 

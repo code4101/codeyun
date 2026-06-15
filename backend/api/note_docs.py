@@ -14,13 +14,13 @@ from backend.api.notes import (
     _record_note_metadata_feedback_safely,
     _serialize_note_read,
 )
-from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
-from backend.core.note_refs import load_notes_by_refs, note_public_id, note_ref_aliases
-from backend.core.note_progress import is_note_system_custom_field_key
+from backend.core.access.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.notes.refs import load_notes_by_refs, note_public_id, note_ref_aliases
+from backend.core.notes.progress import is_note_system_custom_field_key
 from backend.db import get_session
 from backend.models import NoteEdge, NoteNode, ResourceAccessGrant, User
 from backend.schemas import NoteRead
-from backend.core.resource_identity import RESOURCE_TYPE_NOTE
+from backend.core.resources.identity import RESOURCE_TYPE_NOTE
 from backend.api.websocket_manager import manager as ws_manager
 
 

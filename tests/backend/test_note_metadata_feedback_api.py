@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 from sqlmodel import Session, select
 
-from backend.core.ai_chat import OllamaClientError
-from backend.core.note_metadata_feedback import (
+from backend.core.ai.chat import OllamaClientError
+from backend.core.notes.metadata_feedback import (
     NOTE_METADATA_FEEDBACK_COMPRESS_AFTER_SECONDS,
     create_note_metadata_feedback_optimization_run,
     record_codex_maintenance_feedback,

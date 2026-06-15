@@ -1,4 +1,4 @@
-from backend.core.nianzhu_course_sheets import (
+from backend.core.attendance.nianzhu_course_sheets import (
     _ensure_nianzhu_attendance_schema,
     _requires_attendance_tracking_meta_columns,
     _sync_row_local_managed_formulas,

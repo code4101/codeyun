@@ -1,6 +1,6 @@
 import time
 
-from backend.core.fanxiu_capture_runtime import FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON, FanxiuCaptureRuntimeService
+from backend.core.fanxiu.runtime.capture_runtime import FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON, FanxiuCaptureRuntimeService
 
 
 def test_capture_runtime_tracks_multiple_reasons(monkeypatch):
@@ -36,13 +36,14 @@ def test_capture_runtime_finalizes_idle_nonempty_capture(monkeypatch):
     events: list[str] = []
 
     monkeypatch.setattr(service, "_remote_capture_size", lambda _remote_path: 2048)
-    monkeypatch.setattr(service, "_stop_tcpdump_locked", lambda: events.append("stop"))
+    monkeypatch.setattr(service, "_stop_tcpdump_locked", lambda **_kwargs: events.append("stop"))
     monkeypatch.setattr(service, "_start_tcpdump_locked", lambda: events.append("start"))
 
     with service._lock:
         service._current_remote_pcap_path = "/data/local/tmp/current.pcap"
         service._last_remote_pcap_size = 2048
         service._last_remote_pcap_size_seen_at = time.monotonic() - 2
+        service._active_reasons.add("packet-capture")
         service._finalize_idle_capture_locked()
 
     assert events == ["stop", "start"]
@@ -53,7 +54,7 @@ def test_capture_runtime_keeps_growing_capture_open(monkeypatch):
     events: list[str] = []
 
     monkeypatch.setattr(service, "_remote_capture_size", lambda _remote_path: 4096)
-    monkeypatch.setattr(service, "_stop_tcpdump_locked", lambda: events.append("stop"))
+    monkeypatch.setattr(service, "_stop_tcpdump_locked", lambda **_kwargs: events.append("stop"))
     monkeypatch.setattr(service, "_start_tcpdump_locked", lambda: events.append("start"))
 
     with service._lock:

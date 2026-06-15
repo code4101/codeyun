@@ -5,8 +5,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core.auth import verify_api_token
-from backend.core.git_tools import (
+from backend.core.access.auth import verify_api_token
+from backend.core.ai.git_tools import (
     GitToolError,
     collect_git_history_stats,
     collect_git_commit_context,

@@ -1,9 +1,9 @@
 import time
 
 from backend.app import app
-from backend.core.auth import get_current_active_superuser
-from backend.core.background_task_queue import background_task_queue
-from backend.core.background_task_runner import set_background_task_deleted
+from backend.core.access.auth import get_current_active_superuser
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.runtime.background_task_runner import set_background_task_deleted
 from backend.models import User
 
 

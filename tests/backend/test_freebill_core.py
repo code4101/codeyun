@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from sqlmodel import select
 
-from backend.core.freebill import (
+from backend.core.freebill.core import (
     archive_freebill_raw_directory,
     clear_freebill_record_overrides,
     deduplicate_freebill_records,
@@ -32,7 +32,7 @@ from backend.core.freebill import (
     upsert_freebill_record_manual_overrides,
     upsert_freebill_record_overrides,
 )
-from backend.core.freebill_sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
+from backend.core.freebill.sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 

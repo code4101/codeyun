@@ -13,12 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from backend.core.auth import verify_api_token
-from backend.core.device import get_device_id
-from backend.core.game_window_service_runtime import get_game_window_service_status
-from backend.core.ocr_preview import OcrPreviewError, OcrShapeType, run_paddle_ocr_preview
-from backend.core.ocr_service_runtime import get_ocr_service_status, reset_ocr_service
-from backend.core.service_tokens import (
+from backend.core.access.auth import verify_api_token
+from backend.core.devices.device import get_device_id
+from backend.core.runtime.game_window_service import get_game_window_service_status
+from backend.core.ocr.preview import OcrPreviewError, OcrShapeType, run_paddle_ocr_preview
+from backend.core.runtime.ocr_service import get_ocr_service_status, reset_ocr_service
+from backend.core.access.service_tokens import (
     SERVICE_SCOPE_OCR_PREDICT,
     SERVICE_SCOPE_OCR_STATUS,
     ServiceTokenError,

@@ -4,8 +4,8 @@ from sqlmodel import select
 
 from backend.app import app
 from backend.api.fanxiu import FANXIU_CHAR_KIND, FANXIU_CHAR_TYPE, get_fanxiu_user
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.note_semantics import NOTE_WEIGHT_MODE_LINEAR
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.notes.semantics import NOTE_WEIGHT_MODE_LINEAR
 from backend.models import NoteEdge, NoteNode
 
 

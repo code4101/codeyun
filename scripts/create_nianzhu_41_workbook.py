@@ -15,8 +15,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from sqlmodel import Session
 
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
-from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
 from backend.db import engine
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 

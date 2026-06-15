@@ -1,7 +1,7 @@
 import json
 
-from backend.core import fanxiu_packet_insights as insights
-from backend.core.fanxiu_server_mapping import resolve_fanxiu_region_server_by_id
+from backend.core.fanxiu.packet import insights as insights
+from backend.core.fanxiu.catalog.server_mapping import resolve_fanxiu_region_server_by_id
 
 
 def test_packet_runtime_insights_extracts_account_wallet_bag_and_rank(tmp_path, monkeypatch):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.core.trusted_python_runs import get_trusted_python_run
+from backend.core.devices.trusted_python_runs import get_trusted_python_run
 
 
 def test_device_control_python_run_script_returns_result(client, test_device):

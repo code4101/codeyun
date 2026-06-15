@@ -5,7 +5,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 
-from backend.core.device_files import DeviceFileSyncSnapshot, reconcile_device_file_batch
+from backend.core.devices.files import DeviceFileSyncSnapshot, reconcile_device_file_batch
 from backend.migrations.manager import run_migrations
 from backend.models import DeviceFile, ResourceIdentity
 

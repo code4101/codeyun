@@ -19,8 +19,8 @@ from backend.api.services import (
     control_reset_ocr_service,
     control_update_token,
 )
-from backend.core.auth import get_current_user_from_token
-from backend.core.feature_access_guard import ensure_feature_access
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.db import get_session
 from backend.models import User, UserDevice
 

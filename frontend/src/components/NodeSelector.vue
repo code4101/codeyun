@@ -16,9 +16,13 @@
       :disabled="disabled"
     >
       <template #reference>
-        <div class="selector-trigger" :class="{ 'is-disabled': disabled }" :style="triggerStyle">
+        <div
+          class="selector-trigger"
+          :class="{ 'is-disabled': disabled, 'is-form-selector': mode === 'form' }"
+          :style="triggerStyle"
+        >
           <div v-if="mode === 'form'" class="trigger-form-content">
-            <NoteFormBadge :form="modelValue || 'note'" :show-label="true" />
+            <NoteFormBadge :form="modelValue || 'note'" :show-label="true" text-color="#303133" />
           </div>
           <div v-else-if="mode === 'status' && useSplitCurrentPreview" class="trigger-status-content trigger-status-content--split">
             <span class="trigger-status-layer" :style="getCurrentStatusLayerStyle('fill')">{{ currentLabel }}</span>
@@ -34,14 +38,19 @@
           v-for="item in options" 
           :key="item.id"
           class="selector-item"
-          :class="{ active: modelValue === item.id }"
+          :class="{ active: modelValue === item.id, 'is-form-selector': mode === 'form' }"
           @click="selectItem(item.id)"
         >
-          <div class="item-preview" :class="{ 'item-preview--split': mode === 'status' && useSplitItemPreview(item) }" :style="getItemStyle(item)">
+          <div
+            class="item-preview"
+            :class="{ 'item-preview--split': mode === 'status' && useSplitItemPreview(item), 'is-form-selector': mode === 'form' }"
+            :style="getItemStyle(item)"
+          >
             <NoteFormBadge
               v-if="mode === 'form'"
               :form="item.id"
               :show-label="true"
+              text-color="#303133"
             />
             <template v-else-if="mode === 'status' && useSplitItemPreview(item)">
               <span class="item-preview-layer" :style="getStatusItemLayerStyle(item, 'fill')">
@@ -101,6 +110,15 @@ const emit = defineEmits<{
 }>();
 
 const popoverVisible = ref(false);
+
+const FORM_SELECTOR_STYLE = {
+  borderColor: '#dcdfe6',
+  color: '#303133',
+  backgroundColor: '#ffffff',
+  borderWidth: '1px',
+  borderStyle: 'solid',
+  opacity: '1'
+};
 
 const options = computed(() => {
   if (props.mode === 'type') {
@@ -198,13 +216,8 @@ const triggerStyle = computed(() => {
       minWidth
     };
   } else if (props.mode === 'form') {
-    const style = getNodeStyle(typeId, 'idea', props.customColor, props.noteTypes);
     return {
-      borderColor: style.borderColor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      borderWidth: style.borderWidth,
-      borderStyle: style.borderStyle,
+      ...FORM_SELECTOR_STYLE,
       minWidth
     };
   } else {
@@ -239,16 +252,7 @@ const getItemStyle = (item: NodeTypeItem | NodeStatusItem | NoteFormItem) => {
       backgroundColor: style.backgroundColor
     };
   } else if (props.mode === 'form') {
-    const typeId = props.relatedType || 'general';
-    const style = getNodeStyle(typeId, 'idea', props.customColor, props.noteTypes);
-    return {
-      borderColor: style.borderColor,
-      color: style.color,
-      backgroundColor: style.backgroundColor,
-      borderWidth: style.borderWidth,
-      borderStyle: style.borderStyle,
-      opacity: style.opacity
-    };
+    return FORM_SELECTOR_STYLE;
   } else {
     // Status Preview
     // Use relatedType if available, else use a default type (e.g. 'task' or 'note') for context
@@ -324,6 +328,23 @@ const selectItem = (id: string) => {
 
 .selector-trigger.is-disabled:hover {
   filter: none;
+}
+
+.selector-trigger.is-form-selector,
+.item-preview.is-form-selector {
+  color: #303133 !important;
+  background: #ffffff !important;
+  border-color: #dcdfe6 !important;
+  opacity: 1 !important;
+}
+
+.selector-trigger.is-form-selector :deep(.note-form-badge),
+.selector-trigger.is-form-selector :deep(.form-icon),
+.selector-trigger.is-form-selector :deep(.form-label),
+.item-preview.is-form-selector :deep(.note-form-badge),
+.item-preview.is-form-selector :deep(.form-icon),
+.item-preview.is-form-selector :deep(.form-label) {
+  color: #303133 !important;
 }
 
 .trigger-text {

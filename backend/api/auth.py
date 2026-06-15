@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..core.auth import (
+from backend.core.access.auth import (
     create_access_token,
     verify_password,
     get_password_hash,

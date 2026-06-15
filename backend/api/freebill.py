@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from backend.core.auth import get_current_active_user
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.freebill import (
+from backend.core.access.auth import get_current_active_user
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.freebill.core import (
     clear_freebill_record_overrides,
     get_freebill_dashboard,
     get_freebill_status,
@@ -26,7 +26,7 @@ from backend.core.freebill import (
     upsert_freebill_record_manual_overrides,
     upsert_freebill_record_overrides,
 )
-from backend.core.freebill_sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
+from backend.core.freebill.sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
 from backend.db import get_session
 from backend.models import User
 

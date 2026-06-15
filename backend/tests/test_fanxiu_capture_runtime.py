@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from backend.core.fanxiu_capture_runtime import (
+from backend.core.fanxiu.runtime.capture_runtime import (
     DEFAULT_FANXIU_DEVICE_ID,
     FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
     FanxiuCaptureRuntimeService,
@@ -138,11 +138,11 @@ def test_capture_runtime_starts_local_stream_tcpdump_by_default(monkeypatch, tmp
         def poll(self):
             return None
 
-    monkeypatch.setattr("backend.core.fanxiu_capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
     monkeypatch.setattr(service, "_adb_path", lambda: Path("adb.exe"))
     monkeypatch.setattr(service, "_cleanup_stale_codeyun_tcpdump_locked", lambda: None)
     monkeypatch.setattr(service, "_verify_local_stream_capture", lambda _path: None)
-    monkeypatch.setattr("backend.core.fanxiu_capture_runtime.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.subprocess.Popen", FakeProcess)
 
     service._start_tcpdump_locked()
 
@@ -300,7 +300,7 @@ def test_capture_runtime_snapshots_running_pcap_without_stopping_tcpdump(monkeyp
     queued: list[str] = []
     adb_calls: list[tuple[str, ...]] = []
 
-    monkeypatch.setattr("backend.core.fanxiu_capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
+    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)
     monkeypatch.setattr(service, "_remote_capture_size", lambda remote_path: 4096)
     monkeypatch.setattr(service, "_start_runtime_packet_sync_thread", lambda local_path: queued.append(local_path))
 

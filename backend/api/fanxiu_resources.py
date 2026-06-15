@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from backend.core.fanxiu_apk_static import (
+from backend.core.fanxiu.catalog.apk_static import (
     build_fanxiu_apk_dex_login_body_probe,
     build_fanxiu_apk_dex_login_payload_shape_probe,
     build_fanxiu_apk_dex_login_surface_probe,
@@ -45,22 +45,22 @@ from backend.core.fanxiu_apk_static import (
     build_fanxiu_resource_package_report,
     build_fanxiu_taptap_download_dat_package_probe,
 )
-from backend.core.fanxiu_audio_catalog import (
+from backend.core.fanxiu.catalog.audio import (
     build_fanxiu_wwise_audio_catalog,
     build_fanxiu_wwise_mp3_export,
     load_fanxiu_wwise_mp3_manifest,
     resolve_fanxiu_audio_media_path,
 )
-from backend.core.fanxiu_il2cpp_metadata import (
+from backend.core.fanxiu.catalog.il2cpp_metadata import (
     build_fanxiu_il2cpp_gameplay_symbol_report,
     build_fanxiu_il2cpp_hot_update_report,
     build_fanxiu_il2cpp_metadata_probe,
 )
-from backend.core.fanxiu_download_bridge import (
+from backend.core.fanxiu.runtime.download_bridge import (
     build_fanxiu_il2cpp_download_inventory,
     build_fanxiu_lua_download_bridge_report,
 )
-from backend.core.fanxiu_hot_update import (
+from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_bluestarsea_authority_boundary_probe,
     build_fanxiu_bluestarsea_catalog_probe,
     build_fanxiu_bluestarsea_faze_effect_probe,
@@ -158,13 +158,13 @@ from backend.core.fanxiu_hot_update import (
     query_fanxiu_gongfa_special_faze_catalog,
     render_fanxiu_gongfa_homemake_static_detail,
 )
-from backend.core.fanxiu_item_catalog import (
+from backend.core.fanxiu.catalog.item import (
     get_fanxiu_item_card,
     load_fanxiu_item_runtime_index,
     search_fanxiu_item_cards,
 )
-from backend.core.fanxiu_item_icon_quality import load_item_icon_quality_review
-from backend.core.fanxiu_doupotd_catalog import (
+from backend.core.fanxiu.catalog.item_icon_quality import load_item_icon_quality_review
+from backend.core.fanxiu.catalog.doupotd import (
     build_fanxiu_doupotd_buff_effect_probe,
     build_fanxiu_doupotd_buff_class_semantics_probe,
     build_fanxiu_doupotd_buff_class_flow_probe,
@@ -231,7 +231,7 @@ from backend.core.fanxiu_doupotd_catalog import (
     search_fanxiu_doupotd_reward_configs,
     search_fanxiu_doupotd_partner_cards,
 )
-from backend.core.fanxiu_digitdoor_catalog import (
+from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_activity_end_probe,
     build_fanxiu_digitdoor_buff_class_formula_probe,
     build_fanxiu_digitdoor_buff_effect_usage_probe,
@@ -290,29 +290,29 @@ from backend.core.fanxiu_digitdoor_catalog import (
     search_fanxiu_digitdoor_level_configs,
     build_fanxiu_pvp_report_family_reuse_probe,
 )
-from backend.core.fanxiu_activity_catalog import (
+from backend.core.fanxiu.catalog.activity import (
     get_fanxiu_activity_card,
     search_fanxiu_activity_cards,
 )
-from backend.core.fanxiu_gongfa_catalog import (
+from backend.core.fanxiu.catalog.gongfa import (
     build_fanxiu_gongfa_catalog,
     get_fanxiu_gongfa_card,
     load_fanxiu_gongfa_runtime_index,
     search_fanxiu_gongfa_cards,
 )
-from backend.core.fanxiu_game_luaconfig import (
+from backend.core.fanxiu.catalog.game_luaconfig import (
     build_fanxiu_gongfa_feature_probe,
     build_fanxiu_lingjie_feature_catalog,
     build_fanxiu_special_gongfa_feature_probe,
     get_fanxiu_lingjie_feature_card,
     search_fanxiu_lingjie_feature_cards,
 )
-from backend.core.fanxiu_lua_config import build_fanxiu_lua_config_batch_report, build_fanxiu_lua_config_report
-from backend.core.fanxiu_lua_logic_index import (
+from backend.core.fanxiu.catalog.lua_config import build_fanxiu_lua_config_batch_report, build_fanxiu_lua_config_report
+from backend.core.fanxiu.catalog.lua_logic_index import (
     build_fanxiu_lingjie_gongfa_runtime_report,
     build_fanxiu_lua_logic_index,
 )
-from backend.core.fanxiu_lua_packet_index import (
+from backend.core.fanxiu.catalog.lua_packet_index import (
     build_fanxiu_lua_lscript_module_netlogic_flow_probe,
     build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
     build_fanxiu_lua_lscript_module_protocol_schema_probe,
@@ -335,8 +335,8 @@ from backend.core.fanxiu_lua_packet_index import (
     build_fanxiu_lua_sm_login_nested_vo_probe,
     build_fanxiu_lua_packet_index,
 )
-from backend.core.fanxiu_protocol_semantics import load_fanxiu_protocol_semantics
-from backend.core.fanxiu_resources import (
+from backend.core.fanxiu.catalog.protocol_semantics import load_fanxiu_protocol_semantics
+from backend.core.fanxiu.catalog.resources import (
     FanxiuResourceError,
     build_fanxiu_resource_summary,
     export_fanxiu_unity_text_assets,
@@ -348,13 +348,13 @@ from backend.core.fanxiu_resources import (
     resolve_fanxiu_export_root,
     resolve_fanxiu_sprite_icon_path,
 )
-from backend.core.fanxiu_visual_catalog import (
+from backend.core.fanxiu.catalog.visual import (
     build_fanxiu_static_visual_catalog,
     load_fanxiu_static_visual_manifest,
     resolve_fanxiu_visual_media_path,
     search_fanxiu_static_visual_by_image,
 )
-from backend.core.fanxiu_asset_catalog import (
+from backend.core.fanxiu.catalog.asset import (
     ASSET_PREVIEW_CACHE_VERSION,
     build_fanxiu_static_asset_preview,
     build_fanxiu_static_asset_catalog,
@@ -362,14 +362,14 @@ from backend.core.fanxiu_asset_catalog import (
     load_fanxiu_static_asset_manifest,
     resolve_fanxiu_static_asset_preview_media_path,
 )
-from backend.core.fanxiu_wiki import (
+from backend.core.fanxiu.catalog.wiki import (
     build_fanxiu_wiki_catalog,
     get_fanxiu_wiki_text_entry,
     resolve_fanxiu_wiki_media_path,
     search_fanxiu_wiki_gallery,
     search_fanxiu_wiki_texts,
 )
-from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.access.feature_access_guard import require_feature_access_dependency
 
 
 router = APIRouter(

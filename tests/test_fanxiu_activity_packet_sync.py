@@ -1,4 +1,4 @@
-from backend.core import fanxiu_activity_packet_sync as sync_mod
+from backend.core.fanxiu.packet import activity_sync as sync_mod
 
 
 def test_activity_packet_sync_persists_cursor_and_skips_duplicates(tmp_path, monkeypatch):

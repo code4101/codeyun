@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from backend.core.auth import verify_api_token
-from backend.core.runtime_management import (
+from backend.core.access.auth import verify_api_token
+from backend.core.runtime.management import (
     add_builtin_runtime_job,
     build_runtime_status,
     configure_builtin_runtime_job_schedule,
@@ -21,9 +21,9 @@ from backend.core.runtime_management import (
     trigger_builtin_runtime_item,
     trigger_builtin_runtime_job,
 )
-from backend.core.system_metrics import get_system_metric_history
+from backend.core.runtime.system_metrics import get_system_metric_history
 from backend.db import get_session
-from backend.core.device import BaseDevice
+from backend.core.devices.device import BaseDevice
 
 
 router = APIRouter()

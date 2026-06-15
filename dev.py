@@ -262,6 +262,49 @@ def find_tcp_listener_pids(port):
     return sorted(pids)
 
 
+def _process_parent_map():
+    if os.name == "nt":
+        import json
+
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"
+        )
+        output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
+        if not output:
+            return {}
+
+        try:
+            rows = json.loads(output)
+        except json.JSONDecodeError:
+            return {}
+
+        if isinstance(rows, dict):
+            rows = [rows]
+        parents = {}
+        for row in rows:
+            try:
+                pid = int(row["ProcessId"])
+                parent_pid = int(row["ParentProcessId"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            parents[pid] = parent_pid
+        return parents
+
+    output = _run_text_command(["ps", "-eo", "pid=,ppid="])
+    parents = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid, parent_pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        parents[pid] = parent_pid
+    return parents
+
+
 def _run_text_command(cmd):
     try:
         result = subprocess.run(
@@ -283,47 +326,7 @@ def _current_process_tree_pids():
     current_pid = os.getpid()
     pids = {current_pid}
 
-    if os.name == "nt":
-        import json
-
-        script = (
-            "Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"
-        )
-        output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
-        if not output:
-            return pids
-
-        try:
-            rows = json.loads(output)
-        except json.JSONDecodeError:
-            return pids
-
-        if isinstance(rows, dict):
-            rows = [rows]
-        parents = {
-            int(row["ProcessId"]): int(row["ParentProcessId"])
-            for row in rows
-            if row.get("ProcessId") is not None and row.get("ParentProcessId") is not None
-        }
-        pid = current_pid
-        while pid in parents and parents[pid] not in pids:
-            pid = parents[pid]
-            pids.add(pid)
-        return pids
-
-    output = _run_text_command(["ps", "-eo", "pid=,ppid="])
-    parents = {}
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) != 2:
-            continue
-        try:
-            pid, parent_pid = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        parents[pid] = parent_pid
-
+    parents = _process_parent_map()
     pid = current_pid
     while pid in parents and parents[pid] not in pids:
         pid = parents[pid]
@@ -417,6 +420,20 @@ def terminate_pids(pids, reason):
                 check=False,
                 **hidden_subprocess_kwargs(),
             )
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Stop-Process -Id "
+                + ",".join(str(pid) for pid in pids)
+                + " -Force -ErrorAction SilentlyContinue",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            **hidden_subprocess_kwargs(),
+        )
         return
 
     for pid in pids:
@@ -466,6 +483,11 @@ def cleanup_port_listeners(port):
     protected_pids = _current_process_tree_pids()
     pids = [pid for pid in find_tcp_listener_pids(port) if pid not in protected_pids]
     terminate_pids(pids, f"listeners on port {port}")
+
+
+def cleanup_unmanaged_port_listeners(port, protected_pids):
+    pids = [pid for pid in find_tcp_listener_pids(port) if pid not in protected_pids]
+    terminate_pids(pids, f"unmanaged listeners on port {port}")
 
 
 def wait_for_backend_port_release(host, port, timeout_seconds=10.0):
@@ -1042,6 +1064,9 @@ def main():
 
             if backend_watcher is not None:
                 change_reason = backend_watcher.poll()
+
+            frontend_service_pids = {frontend_proc.pid} if frontend_proc.poll() is None else set()
+            cleanup_unmanaged_port_listeners(DEFAULT_FRONTEND_PORT, frontend_service_pids)
 
             now = time.monotonic()
             if change_reason:

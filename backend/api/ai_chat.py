@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from backend.core.ai_chat import (
+from backend.core.ai.chat import (
     AiProviderConfig,
     OllamaClientError,
     chat_with_provider,
@@ -19,34 +19,34 @@ from backend.core.ai_chat import (
     list_ai_provider_summaries,
     stream_chat_with_provider,
 )
-from backend.core.ai_app_config import (
+from backend.core.ai.app_config import (
     AiAppConfigError,
     list_user_ai_app_configs,
     save_user_ai_app_config,
 )
-from backend.core.codex_access_keys import (
+from backend.core.access.codex_access_keys import (
     create_codex_access_key,
     delete_codex_access_key,
     ensure_codex_access_key_allowed,
     list_codex_access_keys,
     reveal_codex_access_key,
 )
-from backend.core.ai_chat_prompt_cards import (
+from backend.core.ai.chat_prompt_cards import (
     list_user_ai_chat_prompt_cards,
     save_user_ai_chat_prompt_cards,
 )
-from backend.core.ai_chat_session import (
+from backend.core.ai.chat_session import (
     get_user_ai_chat_sessions,
     save_user_ai_chat_sessions,
 )
-from backend.core.ollama_access_keys import (
+from backend.core.ai.ollama_access_keys import (
     create_ollama_access_key,
     delete_ollama_access_key,
     ensure_ollama_access_key_allowed,
     list_ollama_access_keys,
     reveal_ollama_access_key,
 )
-from backend.core.ai_chat_user_config import (
+from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     activate_user_ai_chat_provider_api_key,
     activate_user_ai_chat_provider_base_url,
@@ -64,8 +64,8 @@ from backend.core.ai_chat_user_config import (
     update_user_ai_chat_provider_api_key,
     update_user_ai_chat_provider_base_url,
 )
-from backend.core.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.access.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.access.feature_access_guard import require_feature_access_dependency
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User

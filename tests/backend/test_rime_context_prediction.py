@@ -186,7 +186,7 @@ def test_local_entry_reads_and_updates_rime_runtime_config(client, auth_user, te
         deploy_calls.append(True)
         return {"ok": True, "status": "deployed", "message": "小狼毫已重新部署。"}
 
-    monkeypatch.setattr("backend.core.rime_context_prediction.deploy_rime_weasel", fake_deploy)
+    monkeypatch.setattr("backend.core.ai.rime_context_prediction.deploy_rime_weasel", fake_deploy)
     entry_id = _create_local_entry(client)
 
     read_response = client.get(f"/api/device-entries/{entry_id}/rime/context-prediction/runtime-config")

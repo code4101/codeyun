@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from backend.core.device import DeviceManager, LocalDevice
+from backend.core.devices.device import DeviceManager, LocalDevice
 
 
 class TestDeviceManagerLocal(unittest.TestCase):
@@ -38,9 +38,9 @@ class TestDeviceManagerLocal(unittest.TestCase):
 
     def test_load_uses_env_device_token(self):
         with (
-            patch("backend.core.device.get_device_id", return_value=self.local_id),
+            patch("backend.core.devices.device.get_device_id", return_value=self.local_id),
             patch("socket.gethostname", return_value="Host Name"),
-            patch("backend.core.device.get_device_token", return_value="env-token"),
+            patch("backend.core.devices.device.get_device_token", return_value="env-token"),
         ):
             self.dm.load()
 

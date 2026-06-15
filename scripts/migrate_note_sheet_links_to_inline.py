@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from backend.core.note_sheet_inline_links import canonicalize_sheet_document_inline_links
+from backend.core.notes.sheet_inline_links import canonicalize_sheet_document_inline_links
 from backend.db import engine
 from backend.models import SheetDocument
 

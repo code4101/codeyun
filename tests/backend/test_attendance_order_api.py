@@ -8,11 +8,11 @@ from pyxllib.cv.rgbfmt import hash_text_to_hex_color
 from pyxllib.prog.xlenv import XlEnv
 
 from backend.api import attendance
-from backend.core.attendance_service import (
+from backend.core.attendance.service import (
     get_or_create_attendance_service_config,
     update_attendance_service_extra_config,
 )
-from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.models import AttendanceOrderRefundHistory, User, UserDevice
 
 

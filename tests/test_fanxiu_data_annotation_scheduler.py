@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from backend.api import fanxiu
-from backend.core import fanxiu_behavior_tree
-from backend.core import fanxiu_data_annotation_runtime_control as runtime_control
-from backend.core import fanxiu_data_annotation_runtime_runner as runtime_runner_core
-from backend.core.fanxiu_behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
-from backend.core.fanxiu_runtime_errors import FanxiuRuntimeError
+from backend.core.fanxiu.runtime import behavior_tree
+from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
+from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner, get_fanxiu_runtime_runner_class
+from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 
 
 def _scheduler_state_path(tmp_path):
@@ -38,7 +38,11 @@ def _patch_data_annotation_api_common(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_job_group_isolation_path", lambda: tmp_path / "job_group_isolation.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [])
     monkeypatch.setattr(runtime_runner_core, "_behavior_tree_control_path", lambda: tmp_path / "behavior_tree_control.json")
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_behavior_tree_service_owner_path", lambda: tmp_path / "behavior_tree_service_owner.json")
     monkeypatch.setattr(fanxiu, "ensure_feature_access", lambda *args, **kwargs: None)
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda *args, **kwargs: object())
 
@@ -403,6 +407,44 @@ def test_data_annotation_scheduler_read_clears_failed_task_stale_next_time_when_
     assert lingta["last_result"] == "error"
     assert lingta["next_time"] is None
     assert lingta["retry_after"] == "2026-06-02 06:10:00"
+
+
+def test_data_annotation_scheduler_read_retries_stopped_task_with_stale_next_time(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    fixed_now = datetime(2026, 6, 2, 6, 0, 0)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(fanxiu, "datetime", FixedDatetime)
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["00:05"],
+            "last_result": "stopped",
+            "last_run_at": "2026-06-02 00:16:35",
+            "next_time": "2026-06-03 00:05:00",
+            "retry_after": None,
+            "cooldown_seconds": 600,
+            "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+        }
+    ])
+
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+    mail = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert mail["last_result"] == "stopped"
+    assert mail["next_time"] is None
+    assert mail["retry_after"] == "2026-06-02 06:10:00"
 
 
 def test_data_annotation_scheduler_read_keeps_manual_check_pending_unscheduled(tmp_path, monkeypatch):
@@ -815,6 +857,8 @@ def test_data_annotation_runtime_indexes_nested_frame_tree_images_and_guard_cand
 def test_data_annotation_scheduler_plan_uses_world_facts_and_due_tasks(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [])
     runner = _FakeRuntimeRunner({"running": False, "status": "idle"}, can_preempt=True)
     monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", runner)
     fanxiu._write_data_annotation_scheduler_tasks([
@@ -848,7 +892,7 @@ def test_data_annotation_scheduler_plan_uses_world_facts_and_due_tasks(tmp_path,
     assert plan["due_tasks"][0]["fact"]["last_result"] == "success"
     assert plan["facts_summary"]["task_fact_count"] == 1
     legacy_item = next(item for item in plan["tasks"] if item["id"] == "legacy-daily-youli")
-    assert legacy_item["supported"] is False
+    assert legacy_item["supported"] is True
 
 
 def test_scheduler_job_group_settings_default_enabled_and_persisted(tmp_path):
@@ -888,6 +932,125 @@ def test_scheduler_plan_keeps_due_tasks_but_marks_job_group_disabled(tmp_path, m
     assert plan["due_tasks"][0]["id"] == "due-gift"
 
 
+def test_scheduler_plan_reports_blocking_overlays(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", lambda: {"running": False, "status": "idle"})
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [
+        {
+            "scene_id": 186,
+            "title": "灵祖奖励浮层",
+            "blocking": True,
+            "message": "检测到灵祖奖励浮层；缺少关闭动作标注",
+        }
+    ])
+
+    plan = runtime_control.build_scheduler_plan(
+        entry_id="entry",
+        asset_tree_path=tmp_path / "asset-tree.json",
+        scheduler_state_path=_scheduler_state_path(tmp_path),
+        scheduler_settings_path=_scheduler_settings_path(tmp_path),
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+
+    assert plan["blocking_overlays"][0]["scene_id"] == 186
+    assert plan["blocking_overlays"][0]["blocking"] is True
+    assert plan["message"] == "检测到灵祖奖励浮层；缺少关闭动作标注"
+
+
+def test_scheduler_plan_marks_due_tasks_blocked_by_overlay(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_status", lambda: {"running": False, "status": "idle"})
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [
+        {
+            "scene_id": 186,
+            "title": "灵祖奖励浮层",
+            "blocking": True,
+            "message": "检测到灵祖奖励浮层；缺少关闭动作标注",
+        }
+    ])
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "due-gift",
+            "task_type": "gift_code_redeem",
+            "label": "礼包",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "enabled": True,
+            "interruptible": True,
+            "next_time": "2000-01-01 00:00:00",
+            "payload": {"codes": []},
+        }
+    ])
+
+    plan = runtime_control.build_scheduler_plan(
+        entry_id="entry",
+        asset_tree_path=tmp_path / "asset-tree.json",
+        scheduler_state_path=_scheduler_state_path(tmp_path),
+        scheduler_settings_path=_scheduler_settings_path(tmp_path),
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+
+    assert plan["next_action"] == "blocked"
+    assert plan["due_tasks"][0]["id"] == "due-gift"
+    assert plan["message"] == "检测到灵祖奖励浮层；缺少关闭动作标注"
+
+
+def test_run_due_scheduler_tasks_stops_before_submit_when_overlay_blocks(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime_control, "ensure_fanxiu_behavior_tree_service", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runtime_control, "fanxiu_runtime_runner_wake", lambda: (_ for _ in ()).throw(AssertionError("blocked scheduler must not wake service")))
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [
+        {
+            "scene_id": 186,
+            "title": "灵祖奖励浮层",
+            "blocking": True,
+            "message": "检测到灵祖奖励浮层；缺少关闭动作标注",
+        }
+    ])
+    fanxiu._write_data_annotation_scheduler_tasks([
+        {
+            "id": "due-gift",
+            "task_type": "gift_code_redeem",
+            "label": "礼包",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "enabled": True,
+            "interruptible": True,
+            "next_time": "2000-01-01 00:00:00",
+            "last_result": "",
+            "payload": {"codes": []},
+            "checkpoint": {"manual_inspection_note": "旧人工备注：今日按成功处理"},
+        }
+    ])
+
+    status = runtime_control.run_due_scheduler_tasks(
+        entry=object(),
+        entry_id="entry",
+        scheduler_state_path=_scheduler_state_path(tmp_path),
+        scheduler_settings_path=_scheduler_settings_path(tmp_path),
+        runtime_state_path=tmp_path / "runtime_state.json",
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+        asset_tree_path=tmp_path / "entry.json",
+    )
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=_scheduler_state_path(tmp_path),
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    due_task = next(item for item in tasks if item["id"] == "due-gift")
+
+    assert status["phase"] == "scheduler_blocked"
+    assert status["blocking_overlays"][0]["scene_id"] == 186
+    assert due_task["last_result"] == "blocked"
+    assert due_task["checkpoint"]["blocked_message"] == "检测到灵祖奖励浮层；缺少关闭动作标注"
+    assert "manual_inspection_note" not in due_task["checkpoint"]
+    assert due_task["checkpoint"]["previous_manual_inspection_note"] == "旧人工备注：今日按成功处理"
+    assert due_task["next_time"] == "2000-01-01 00:00:00"
+
+
 def test_run_due_scheduler_tasks_skips_when_job_group_disabled(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
@@ -925,6 +1088,8 @@ def test_run_due_scheduler_tasks_skips_when_job_group_disabled(tmp_path, monkeyp
 def test_data_annotation_scheduler_plan_waits_for_non_interruptible_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(fanxiu, "_data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(runtime_control, "scheduler_blocking_overlays", lambda **kwargs: [])
     runner = _FakeRuntimeRunner(
         {
             "running": True,
@@ -1407,6 +1572,25 @@ def test_fanxiu_runtime_wait_click_path_selector(monkeypatch):
     _drain_generator(runtime.wait_click("#247", "[下方菜单/秘藏阁]"))
 
     assert clicks == [(850, 1700)]
+
+
+def test_fanxiu_runtime_wait_click_none_frame_uses_current_scene(monkeypatch):
+    image = {
+        "id": 247,
+        "title": "仙市",
+        "width": 1000,
+        "height": 2000,
+        "shapes": [{"title": "秘藏阁", "x": 0.8, "y": 0.8, "w": 0.1, "h": 0.1}],
+    }
+    runner, runtime = _wait_click_runtime(image)
+    clicks = []
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _candidates=None: (247, 100.0))
+    monkeypatch.setattr(runner, "_click_frame_point", lambda ctx, img, x, y: clicks.append((img["id"], round(x), round(y))))
+
+    _drain_generator(runtime.wait_click(None, "[秘藏阁]"))
+
+    assert clicks == [(247, 850, 1700)]
 
 
 def test_fanxiu_runtime_wait_click_floating_without_condition_uses_fixed_click(monkeypatch):
@@ -2280,6 +2464,195 @@ def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
     actions: list[str] = []
 
     class FakeRuntime:
+        ctx = {"images": images}
+
+        def get_view(self, view_id):
+            return runtime_runner_core.View(images[int(view_id)])
+
+        def goto_view(self, view_id):
+            actions.append(f"goto:{view_id}")
+            state["page"] = int(view_id)
+            if False:
+                yield None
+            return "success"
+
+        def wait_click(self, view_id, shape, **kwargs):
+            actions.append(f"wait_click:{view_id}:{shape}")
+            if view_id == 34 and shape == "打开下方菜单":
+                state["page"] = 35
+            elif view_id == 35 and shape == "菜单/异火":
+                state["page"] = 259
+            elif view_id == 259 and shape == "异火":
+                state["page"] = 260
+            elif view_id == 260 and shape == "净莲":
+                state["page"] = 261
+            elif view_id == 261 and shape == "返回":
+                state["page"] = 260
+            elif view_id == 260 and shape == "返回":
+                state["page"] = 259
+            elif view_id == 259 and shape == "返回":
+                state["page"] = 34
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            actions.append(f"wait_view:{view_ids}")
+            if False:
+                yield None
+            return runtime_runner_core.View(images[int(view_ids[0])])
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(runner, "_screencap", lambda ctx: str(state["page"]))
+    monkeypatch.setattr(runner, "_shape_score", lambda ctx, image, shape, frame: 97.0 if int(frame) == image["id"] and shape["title"] in {"异火", "净莲", "箱子", "返回"} else 0.0)
+
+    def click_shape(ctx, image, shape, frame=None, match_result=None):
+        actions.append(f"click:{image['id']}:{shape['title']}")
+        if image["id"] == 259 and shape["title"] == "异火":
+            state["page"] = 260
+        elif image["id"] == 260 and shape["title"] == "净莲":
+            state["page"] = 261
+        elif image["id"] == 260 and shape["title"] == "返回":
+            state["page"] = 259
+        elif image["id"] == 261 and shape["title"] == "返回":
+            state["page"] = 260
+        elif image["id"] == 259 and shape["title"] == "返回":
+            state["page"] = 34
+
+    monkeypatch.setattr(runner, "_click_shape", click_shape)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (34, 100.0) if str(frame) == "34" else (None, 0.0))
+    monkeypatch.setattr(runner, "_record_scheduler_task_discovered_next_time", lambda *args, **kwargs: None)
+
+    result = _drain_generator(
+        runner._execute_daily_yihuo_task(
+            {"asset_tree_path": tmp_path / "asset-tree.json", "images": images},
+            fanxiu.threading.Event(),
+            {},
+        )
+    )
+
+    assert result == "success"
+    assert actions == [
+        "goto:34",
+        "wait_click:34:打开下方菜单",
+        "wait_view:(35,)",
+        "wait_click:35:菜单/异火",
+        "wait_click:259:异火",
+        "wait_click:260:净莲",
+        "wait_click:261:箱子",
+        "wait_click:261:返回",
+        "wait_click:260:返回",
+        "wait_click:259:返回",
+        "wait_view:(34,)",
+    ]
+
+
+def test_daily_yihuo_return_wait_accepts_direct_world(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image259 = {
+        "id": 259,
+        "title": "0259.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "返回", "x": 0.05, "y": 0.91, "w": 0.07, "h": 0.04},
+        ],
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda ctx: "world-frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (34, 100.0))
+    monkeypatch.setattr(runner, "_shape_score", lambda ctx, image, shape, frame: 0.0)
+
+    class FakeRuntime:
+        ctx = {"images": {259: image259}}
+
+        def get_view(self, view_id):
+            return runtime_runner_core.View(self.ctx["images"][int(view_id)])
+
+    returned_world = _drain_generator(
+        runner._wait_daily_yihuo_world_or_shape_visible(
+            FakeRuntime(),
+            fanxiu.threading.Event(),
+            259,
+            "返回",
+            timeout=1.0,
+        )
+    )
+
+    assert returned_world is True
+
+
+def test_daily_yihuo_recovers_from_local_jinglian_page(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    images = {
+        34: {
+            "id": 34,
+            "title": "世界",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {"title": "打开下方菜单", "x": 0.89, "y": 0.88, "w": 0.08, "h": 0.07},
+            ],
+        },
+        35: {
+            "id": 35,
+            "title": "世界下方菜单",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {
+                    "title": "菜单",
+                    "x": 0.38,
+                    "y": 0.70,
+                    "w": 0.5,
+                    "h": 0.28,
+                    "children": [
+                        {"title": "异火", "x": 0.63, "y": 0.71, "w": 0.1, "h": 0.06},
+                    ],
+                },
+            ],
+        },
+        259: {
+            "id": 259,
+            "title": "0259.png",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {"title": "异火", "isSceneIdentity": True, "imageMatchRole": "required", "x": 0.84, "y": 0.81, "w": 0.09, "h": 0.04},
+                {"title": "返回", "x": 0.05, "y": 0.91, "w": 0.07, "h": 0.04},
+            ],
+        },
+        260: {
+            "id": 260,
+            "title": "0260.png",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {"title": "净莲", "isSceneIdentity": True, "imageMatchRole": "required", "x": 0.78, "y": 0.16, "w": 0.14, "h": 0.09},
+                {"title": "返回", "imageMatchRole": "required", "x": 0.05, "y": 0.91, "w": 0.07, "h": 0.04},
+            ],
+        },
+        261: {
+            "id": 261,
+            "title": "0261.png",
+            "width": 900,
+            "height": 1600,
+            "shapes": [
+                {"title": "箱子", "imageMatchRole": "required", "x": 0.83, "y": 0.05, "w": 0.08, "h": 0.04},
+                {"title": "返回", "x": 0.05, "y": 0.90, "w": 0.08, "h": 0.04},
+            ],
+        },
+    }
+    state = {"page": 260}
+    actions: list[str] = []
+
+    class FakeRuntime:
+        ctx = {"images": images}
+
+        def get_view(self, view_id):
+            return runtime_runner_core.View(images[int(view_id)])
+
         def goto_view(self, view_id):
             actions.append(f"goto:{view_id}")
             state["page"] = int(view_id)
@@ -2334,18 +2707,52 @@ def test_daily_yihuo_opens_xinghai_from_world_menu(tmp_path, monkeypatch):
 
     assert result == "success"
     assert actions == [
-        "goto:34",
-        "wait_click:34:打开下方菜单",
-        "wait_view:(35,)",
-        "wait_click:35:菜单/异火",
-        "click:259:异火",
-        "click:260:净莲",
-        "click:261:箱子",
-        "click:261:返回",
         "click:260:返回",
         "click:259:返回",
         "wait_view:(34,)",
     ]
+
+
+def test_daily_yihuo_box_wait_accepts_already_claimed_detail(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image261 = {
+        "id": 261,
+        "title": "0261.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "箱子", "imageMatchRole": "required", "x": 0.83, "y": 0.05, "w": 0.08, "h": 0.04},
+            {"title": "返回", "imageMatchRole": "required", "x": 0.05, "y": 0.90, "w": 0.08, "h": 0.04},
+        ],
+    }
+    monkeypatch.setattr(runner, "_screencap", lambda ctx: "claimed-frame")
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(
+        runner,
+        "_shape_score",
+        lambda ctx, image, shape, frame: 37.0 if shape["title"] == "箱子" else 90.0,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: [{"text": "异火 已领取 次日5点刷新 净莲妖火"}],
+    )
+
+    class FakeRuntime:
+        ctx = {"images": {261: image261}}
+
+        def get_view(self, view_id):
+            return runtime_runner_core.View(self.ctx["images"][int(view_id)])
+
+    already_claimed = _drain_generator(
+        runner._wait_daily_yihuo_box_or_claimed(
+            FakeRuntime(),
+            fanxiu.threading.Event(),
+            timeout=1.0,
+        )
+    )
+
+    assert already_claimed is True
 
 
 def test_guard_enabled_service_restarts_on_stale_heartbeat_without_pending_jobs(monkeypatch):
@@ -2498,6 +2905,264 @@ def test_daily_lingzu_return_uses_lingzu_scene_fallback_from_boss(tmp_path, monk
     assert clicked[:3] == [("圣雷龙妖祖", "返回"), ("战灵长老", "空白"), ("灵祖活动列表", "返回")]
 
 
+def test_daily_lingzu_return_fails_when_reward_popup_has_no_close_shape(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            34: {"title": "世界"},
+            69: {"title": "日常", "shapes": [{"title": "退出", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            183: {"title": "灵祖活动列表", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            184: {"title": "灵祖挑战详情", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "奖励浮层标识", "x": 0.49, "y": 0.58, "w": 0.31, "h": 0.22}]},
+            187: {"title": "战灵长老", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            188: {"title": "圣雷龙妖祖", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+        },
+    }
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: (34, 100.0, "reward-frame"))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}])
+
+    gen = runner._return_daily_lingzu_to_world(ctx, fanxiu.threading.Event())
+    with pytest.raises(RuntimeError, match="#186 奖励浮层缺少"):
+        while True:
+            next(gen)
+
+
+def test_scheduler_preflight_ignores_reward_popup_words_without_context(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "images": {
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "奖励浮层标识"}]},
+        },
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "reward-frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}])
+
+    assert runner._known_blocking_overlay_message(ctx) is None
+
+
+def test_scheduler_preflight_does_not_promote_reward_popup_to_global_blocker(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "images": {
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "关闭"}]},
+        },
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "reward-frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}])
+
+    assert runner._known_blocking_overlay_message(ctx) is None
+
+
+def test_scheduler_preflight_ignores_world_activity_reward_words(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "images": {
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "奖励浮层标识"}]},
+        },
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "world-frame")
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: [
+            {"text": "百脉宝魄O", "x": 530, "y": 990, "w": 331, "h": 34},
+            {"text": "点击查看", "x": 519, "y": 1200, "w": 134, "h": 39},
+            {"text": "角色 装备 星海 功法书", "x": 400, "y": 1526, "w": 300, "h": 45},
+        ],
+    )
+
+    assert runner._known_blocking_overlay_message(ctx) is None
+
+
+def test_scheduler_preflight_reports_game_announcement_without_close_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree": [
+            {
+                "type": "folder",
+                "title": "登录",
+                "children": [
+                    {
+                        "type": "image",
+                        "title": "游戏公告",
+                        "shapes": [{"title": "公告"}],
+                    }
+                ],
+            }
+        ],
+        "images": {},
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "announcement-frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "游戏公告 更新公告 风险提醒"}])
+
+    info = runner._known_blocking_overlay_info(ctx)
+
+    assert info == {
+        "scene_id": None,
+        "title": "游戏公告",
+        "blocking": True,
+        "all_shapes": ["公告"],
+        "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，无法安全进入游戏",
+    }
+
+
+def test_scheduler_preflight_allows_game_announcement_with_close_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree": [
+            {
+                "type": "folder",
+                "title": "登录",
+                "children": [
+                    {
+                        "type": "image",
+                        "title": "游戏公告",
+                        "shapes": [{"title": "关闭", "x": 0.9, "y": 0.1, "w": 0.05, "h": 0.05}],
+                    }
+                ],
+            }
+        ],
+        "images": {},
+    }
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "announcement-frame")
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "游戏公告 更新公告 风险提醒"}])
+
+    info = runner._known_blocking_overlay_info(ctx)
+
+    assert info == {
+        "scene_id": None,
+        "title": "游戏公告",
+        "blocking": False,
+        "all_shapes": ["关闭"],
+        "action_shapes": ["关闭"],
+        "message": "检测到游戏公告遮挡，已有安全关闭动作标注",
+    }
+    assert runner._known_blocking_overlay_message(ctx) is None
+
+
+def test_runtime_clears_known_game_announcement_with_safe_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree": [
+            {
+                "type": "folder",
+                "title": "登录",
+                "children": [
+                    {
+                        "type": "image",
+                        "title": "游戏公告",
+                        "shapes": [{"title": "关闭", "x": 0.9, "y": 0.1, "w": 0.05, "h": 0.05}],
+                    }
+                ],
+            }
+        ],
+        "images": {},
+    }
+    frames = iter(["announcement-frame", "click-frame", "clean-frame"])
+    clicked = []
+
+    def wait_settle(*args, **kwargs):
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: [{"text": "游戏公告 更新公告 风险提醒"}] if frame != "clean-frame" else [{"text": "世界 储物袋 角色"}],
+    )
+    monkeypatch.setattr(runner, "_click_shape", lambda ctx, image, shape, **kwargs: clicked.append((image["title"], shape["title"])))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", wait_settle)
+
+    gen = runner._clear_known_blocking_overlay_if_possible(ctx, fanxiu.threading.Event(), label="Scheduler")
+    with pytest.raises(StopIteration) as exc_info:
+        while True:
+            next(gen)
+
+    assert exc_info.value.value is True
+    assert clicked == [("游戏公告", "关闭")]
+
+
+def test_daily_lingzu_reward_popup_cleanup_failure_is_not_marked_done(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            34: {"title": "世界"},
+            69: {"title": "日常", "shapes": [{"title": "退出", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            183: {"title": "灵祖活动列表", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            184: {"title": "灵祖挑战详情", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            185: {"title": "灵祖挑战过场"},
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "奖励浮层标识", "x": 0.49, "y": 0.58, "w": 0.31, "h": 0.22}]},
+            187: {"title": "战灵长老", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            188: {"title": "圣雷龙妖祖", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            189: {"title": "灵祖挑战结算"},
+        },
+    }
+    recorded = []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *args, **kwargs: object())
+    monkeypatch.setattr(runner, "_daily_lingzu_discovered_next_time_is_future", lambda payload: None)
+    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: (34, 100.0, "reward-frame"))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}])
+    monkeypatch.setattr(runner, "_record_daily_lingzu_done", lambda *args, **kwargs: recorded.append(kwargs))
+
+    gen = runner._execute_daily_lingzu_task(ctx, fanxiu.threading.Event(), {"__scheduler_task_id": "legacy-daily-lingzu"})
+    with pytest.raises(RuntimeError, match="#186 奖励浮层缺少"):
+        while True:
+            next(gen)
+
+    assert recorded == []
+
+
+def test_daily_lingzu_return_closes_reward_popup_before_success(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    ctx = {
+        "asset_tree_path": tmp_path / "asset-tree.json",
+        "images": {
+            34: {"title": "世界"},
+            69: {"title": "日常", "shapes": [{"title": "退出", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            183: {"title": "灵祖活动列表", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+            184: {"title": "灵祖挑战详情", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            186: {"title": "灵祖奖励浮层", "shapes": [{"title": "关闭", "x": 0.72, "y": 0.58, "w": 0.08, "h": 0.08}]},
+            187: {"title": "战灵长老", "shapes": [{"title": "空白", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.05}]},
+            188: {"title": "圣雷龙妖祖", "shapes": [{"title": "返回", "x": 0.1, "y": 0.9, "w": 0.1, "h": 0.05}]},
+        },
+    }
+    current_scenes = iter([(34, 100.0, "reward-frame"), (34, 100.0, "clean-frame")])
+    frames = iter(["reward-frame", "clean-frame"])
+    clicked = []
+
+    def wait_settle(*args, **kwargs):
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_current_scene_number", lambda ctx: next(current_scenes))
+    monkeypatch.setattr(runner, "_screencap", lambda ctx: next(frames))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "百脉宝魄 点击查看"}] if frame == "reward-frame" else [{"text": "世界 储物袋 角色"}])
+    monkeypatch.setattr(runner, "_click_shape", lambda ctx, image, shape, **kwargs: clicked.append((image["title"], shape["title"])))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (34, 100.0))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", wait_settle)
+    monkeypatch.setattr(runner, "_ensure_daily_lingzu_outer_world", lambda *args, **kwargs: iter(()))
+
+    gen = runner._return_daily_lingzu_to_world(ctx, fanxiu.threading.Event())
+    with pytest.raises(StopIteration) as exc_info:
+        while True:
+            next(gen)
+
+    assert exc_info.value.value == "success"
+    assert clicked == [("灵祖奖励浮层", "关闭")]
+
+
 def test_daily_lingzu_outer_world_confirms_leave_dialog(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     ctx = {
@@ -2624,12 +3289,109 @@ def test_data_annotation_runtime_status_overlays_active_resident_owner(tmp_path,
     monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_behavior_tree_service_owner_path", lambda: owner_path)
     monkeypatch.setattr(fanxiu_behavior_tree.time, "time", lambda: 1781374330.0)
     monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_exists", lambda pid: True)
+    monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_matches_service_owner", lambda pid: True)
 
     status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status()
 
     assert status["service_running"] is True
     assert status["phase"] == "scheduler_poll"
     assert "53420" in status["message"]
+
+
+def test_data_annotation_runtime_status_preserves_scheduler_blocked_phase(tmp_path, monkeypatch):
+    runtime_state_path = tmp_path / "runtime_state.json"
+    world_facts_path = tmp_path / "world_facts.json"
+    owner_path = tmp_path / "behavior_tree_service_owner.json"
+    blocker_message = "检测到游戏公告遮挡"
+    fanxiu_behavior_tree.persist_fanxiu_runtime_status(
+        {
+            "status": "idle",
+            "phase": "scheduler_blocked",
+            "running": False,
+            "service_running": True,
+            "message": blocker_message,
+            "blocking_overlays": [{"title": "游戏公告", "blocking": True, "message": blocker_message}],
+            "logs": [],
+        },
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    owner_path.write_text(
+        json.dumps(
+            {
+                "pid": 53420,
+                "token": "token",
+                "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
+                "step": "scheduler_poll",
+                "updated_at": 1781374327.0,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_state_path)
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_world_facts_path", lambda: world_facts_path)
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_behavior_tree_service_owner_path", lambda: owner_path)
+    monkeypatch.setattr(fanxiu_behavior_tree.time, "time", lambda: 1781374330.0)
+    monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_exists", lambda pid: True)
+    monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_matches_service_owner", lambda pid: True)
+
+    status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status()
+
+    assert status["service_running"] is True
+    assert status["phase"] == "scheduler_blocked"
+    assert status["message"] == blocker_message
+
+
+def test_data_annotation_runtime_status_uses_persisted_scheduler_block_when_live_poll_overwrites(tmp_path, monkeypatch):
+    runtime_state_path = tmp_path / "runtime_state.json"
+    world_facts_path = tmp_path / "world_facts.json"
+    blocker_message = "检测到游戏公告遮挡"
+    fanxiu_behavior_tree.persist_fanxiu_runtime_status(
+        {
+            "status": "idle",
+            "phase": "scheduler_blocked",
+            "running": False,
+            "service_running": True,
+            "message": blocker_message,
+            "blocking_overlays": [{"title": "游戏公告", "blocking": True, "message": blocker_message}],
+            "last_scheduler_block_message": blocker_message,
+            "logs": [],
+        },
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+    class PollingRunner:
+        guard_definitions = {}
+
+        def status(self):
+            return {
+                "status": "idle",
+                "phase": "scheduler_poll",
+                "running": False,
+                "service_running": True,
+                "message": "行为树常驻服务运行中",
+                "logs": [],
+            }
+
+    monkeypatch.setattr(fanxiu_behavior_tree, "get_fanxiu_runtime_runner", lambda: PollingRunner())
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_state_path)
+    monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_data_annotation_world_facts_path", lambda: world_facts_path)
+    monkeypatch.setattr(fanxiu_behavior_tree, "read_fanxiu_behavior_tree_service_owner", lambda: {
+        "active": True,
+        "stale": False,
+        "pid": os.getpid(),
+        "step": "scheduler_poll",
+    })
+    monkeypatch.setattr(fanxiu_behavior_tree.time, "time", lambda: 1781374330.0)
+
+    status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status()
+
+    assert status["service_running"] is True
+    assert status["phase"] == "scheduler_blocked"
+    assert status["message"] == blocker_message
+    assert status["blocking_overlays"][0]["title"] == "游戏公告"
 
 
 def test_data_annotation_runtime_status_preserves_persisted_logs_from_active_owner(tmp_path, monkeypatch):
@@ -2675,6 +3437,7 @@ def test_data_annotation_runtime_status_preserves_persisted_logs_from_active_own
     monkeypatch.setattr(fanxiu_behavior_tree, "fanxiu_behavior_tree_service_owner_path", lambda: owner_path)
     monkeypatch.setattr(fanxiu_behavior_tree.time, "time", lambda: 1781374331.0)
     monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_exists", lambda pid: True)
+    monkeypatch.setattr(fanxiu_behavior_tree, "_fanxiu_process_matches_service_owner", lambda pid: True)
 
     status = fanxiu_behavior_tree.fanxiu_data_annotation_runtime_status()
 
@@ -3219,15 +3982,17 @@ def test_due_scheduler_is_skipped_when_job_group_isolated(tmp_path, monkeypatch)
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runner = create_fanxiu_runtime_runner()
     task = {
-        "id": "hide-floating",
-        "task_type": "hide_floating_window",
-        "label": "隐藏浮窗",
+        "id": "mail-cleanup",
+        "task_type": "mail_cleanup",
+        "label": "邮件_清理",
         "schedule_kind": "daily",
         "enabled": True,
         "interruptible": True,
         "payload": {},
         "schedule_times": ["00:00"],
+        "next_time": "2000-01-01 00:00:00",
         "last_result": "",
+        "checkpoint": {"manual_inspection_note": "旧人工备注：今日按成功处理"},
     }
     fanxiu._write_data_annotation_scheduler_tasks([task])
     runner._acquire_job_group_isolation(reason="test")
@@ -3246,15 +4011,17 @@ def test_due_scheduler_is_skipped_when_job_group_disabled(tmp_path, monkeypatch)
     runner = create_fanxiu_runtime_runner()
     runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
     task = {
-        "id": "hide-floating",
-        "task_type": "hide_floating_window",
-        "label": "隐藏浮窗",
+        "id": "mail-cleanup",
+        "task_type": "mail_cleanup",
+        "label": "邮件_清理",
         "schedule_kind": "daily",
         "enabled": True,
         "interruptible": True,
         "payload": {},
         "schedule_times": ["00:00"],
+        "next_time": "2000-01-01 00:00:00",
         "last_result": "",
+        "checkpoint": {"manual_inspection_note": "旧人工备注：今日按成功处理"},
     }
     fanxiu._write_data_annotation_scheduler_tasks([task])
     monkeypatch.setattr(
@@ -3272,30 +4039,84 @@ def test_due_scheduler_is_skipped_when_job_group_disabled(tmp_path, monkeypatch)
     assert started is False
 
 
+def test_due_scheduler_is_blocked_by_unclearable_overlay_before_start(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runner = create_fanxiu_runtime_runner()
+    task = {
+        "id": "mail-cleanup",
+        "task_type": "mail_cleanup",
+        "label": "邮件_清理",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "interruptible": True,
+        "payload": {},
+        "schedule_times": ["00:00"],
+        "next_time": "2000-01-01 00:00:00",
+        "last_result": "",
+        "checkpoint": {"manual_inspection_note": "旧人工备注：今日按成功处理"},
+    }
+    fanxiu._write_data_annotation_scheduler_tasks([task])
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(
+        runner,
+        "_known_blocking_overlay_info",
+        lambda _ctx: {
+            "scene_id": 186,
+            "title": "灵祖奖励浮层",
+            "blocking": True,
+            "message": "检测到灵祖奖励浮层；缺少关闭动作标注",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "start_scheduler_tasks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("blocked overlay must not start due tasks")),
+    )
+
+    started = runner._start_due_scheduler_tasks_if_idle(
+        entry=object(),
+        entry_id="entry",
+        asset_tree_path=tmp_path / "entry.json",
+    )
+    status = runner.status()
+    tasks = fanxiu._read_data_annotation_scheduler_tasks()
+
+    assert started is False
+    assert status["phase"] == "scheduler_blocked"
+    assert status["blocking_overlays"][0]["scene_id"] == 186
+    assert tasks[0]["last_result"] == "blocked"
+    assert tasks[0]["checkpoint"]["blocked_message"] == "检测到灵祖奖励浮层；缺少关闭动作标注"
+    assert "manual_inspection_note" not in tasks[0]["checkpoint"]
+    assert tasks[0]["checkpoint"]["previous_manual_inspection_note"] == "旧人工备注：今日按成功处理"
+
+
 def test_due_scheduler_starts_only_first_due_task_per_idle_poll(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     runner = create_fanxiu_runtime_runner()
     tasks = [
         {
-            "id": "first-due",
-            "task_type": "hide_floating_window",
+            "id": "legacy-daily-youli",
+            "task_type": "daily_youli",
             "label": "第一个到期",
             "schedule_kind": "daily",
             "enabled": True,
             "interruptible": True,
             "payload": {},
             "schedule_times": ["00:00"],
+            "next_time": "2000-01-01 00:00:00",
             "last_result": "",
         },
         {
-            "id": "second-due",
-            "task_type": "hide_floating_window",
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
             "label": "第二个到期",
             "schedule_kind": "daily",
             "enabled": True,
             "interruptible": True,
             "payload": {},
             "schedule_times": ["00:00"],
+            "next_time": "2000-01-01 00:00:01",
             "last_result": "",
         },
     ]
@@ -3306,6 +4127,9 @@ def test_due_scheduler_starts_only_first_due_task_per_idle_poll(tmp_path, monkey
         started_batches.append([str(item.get("id") or "") for item in kwargs["tasks"]])
 
     monkeypatch.setattr(runner, "start_scheduler_tasks", fake_start_scheduler_tasks)
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_known_blocking_overlay_message", lambda _ctx: None)
 
     started = runner._start_due_scheduler_tasks_if_idle(
         entry=object(),
@@ -3314,7 +4138,7 @@ def test_due_scheduler_starts_only_first_due_task_per_idle_poll(tmp_path, monkey
     )
 
     assert started is True
-    assert started_batches == [["first-due"]]
+    assert started_batches == [["legacy-daily-youli"]]
 
 
 def test_data_annotation_scheduler_tasks_run_inside_resident_service_without_worker_thread(tmp_path, monkeypatch):
@@ -3953,11 +4777,193 @@ def test_data_annotation_scheduler_repairs_orphaned_queued_run(tmp_path, monkeyp
     fanxiu._write_data_annotation_json(tmp_path / "manual_jobs.json", [])
 
     tasks = fanxiu._read_data_annotation_scheduler_tasks()
-    repaired = next(item for item in tasks if item["id"] == "mail-claim-check")
+    repaired = next(item for item in tasks if item["id"] == "mail-cleanup")
 
+    assert repaired["task_type"] == "mail_cleanup"
     assert repaired["last_result"] == "stopped"
     assert repaired["retry_after"] is None
     assert repaired["checkpoint"]["recovered_from_orphaned_run_at"]
+
+
+def test_data_annotation_scheduler_repairs_orphaned_daily_run_with_retry(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    path = _scheduler_state_path(tmp_path)
+    task = {
+        "id": "mail-cleanup",
+        "task_type": "mail_cleanup",
+        "label": "邮件_清理",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "schedule_times": ["00:05"],
+        "interruptible": True,
+        "last_run_at": "2026-06-01 10:00:00",
+        "last_result": "running",
+        "next_time": "2026-06-02 00:05:00",
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+    }
+    fanxiu._write_data_annotation_json(path, [task])
+    fanxiu._write_data_annotation_json(tmp_path / "manual_jobs.json", [])
+    monkeypatch.setattr(runtime_control, "read_runtime_status", lambda _path=None: {})
+    monkeypatch.setattr(runtime_control.time, "time", lambda: datetime(2026, 6, 1, 10, 5, 0).timestamp())
+
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    repaired = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert repaired["last_result"] == "stopped"
+    assert repaired["next_time"] is None
+    assert repaired["retry_after"] == "2026-06-01 10:15:00"
+    assert repaired["checkpoint"]["recovered_from_orphaned_run_at"]
+
+
+def test_data_annotation_scheduler_does_not_repair_fresh_persisted_running_task(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    path = _scheduler_state_path(tmp_path)
+    runtime_state_path = tmp_path / "runtime_state.json"
+    task = {
+        "id": "mail-cleanup",
+        "task_type": "mail_cleanup",
+        "label": "邮件_清理",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "schedule_times": ["00:05"],
+        "interruptible": True,
+        "last_run_at": "2026-06-01 10:00:00",
+        "last_result": "running",
+        "next_time": None,
+        "retry_after": None,
+        "cooldown_seconds": 600,
+        "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+    }
+    fanxiu._write_data_annotation_json(path, [task])
+    fanxiu._write_data_annotation_json(tmp_path / "manual_jobs.json", [])
+    fanxiu._write_data_annotation_json(runtime_state_path, {
+        "running": True,
+        "status": "running",
+        "current_task_id": "mail-cleanup",
+        "updated_at": datetime(2026, 6, 1, 10, 4, 30).timestamp(),
+    })
+    monkeypatch.setattr(runtime_control, "read_runtime_status", lambda _path=None: fanxiu._read_data_annotation_json(runtime_state_path, {}))
+    monkeypatch.setattr(runtime_control.time, "time", lambda: datetime(2026, 6, 1, 10, 5, 0).timestamp())
+
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    running = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert running["last_result"] == "running"
+    assert running["retry_after"] is None
+    checkpoint = running.get("checkpoint") if isinstance(running.get("checkpoint"), dict) else {}
+    assert "recovered_from_orphaned_run_at" not in checkpoint
+
+
+def test_data_annotation_scheduler_ignores_equal_time_stale_running_fact(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    path = _scheduler_state_path(tmp_path)
+    fixed_now = datetime(2026, 6, 1, 10, 5, 0)
+    last_run = datetime(2026, 6, 1, 10, 0, 0)
+    fanxiu._write_data_annotation_json(path, [
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["00:05"],
+            "interruptible": True,
+            "last_run_at": "2026-06-01 10:00:00",
+            "last_result": "stopped",
+            "next_time": None,
+            "retry_after": "2026-06-01 10:10:00",
+            "cooldown_seconds": 600,
+            "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+        }
+    ])
+    fanxiu._write_data_annotation_json(tmp_path / "world_facts.json", {
+        "discoveries": {
+            "task": {
+                "mail-cleanup": {
+                    "id": "mail-cleanup",
+                    "task_type": "mail_cleanup",
+                    "last_result": "running",
+                    "last_run_at": "2026-06-01 10:00:00",
+                    "updated_at": last_run.timestamp(),
+                }
+            }
+        }
+    })
+    monkeypatch.setattr(runtime_control.time, "time", lambda: fixed_now.timestamp())
+
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    repaired = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert repaired["last_result"] == "stopped"
+    assert repaired["retry_after"] == "2026-06-01 10:10:00"
+    assert repaired["next_time"] is None
+
+
+def test_data_annotation_scheduler_ignores_same_run_stale_running_fact_with_update_skew(tmp_path, monkeypatch):
+    _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    path = _scheduler_state_path(tmp_path)
+    fixed_now = datetime(2026, 6, 1, 10, 5, 0)
+    last_run = datetime(2026, 6, 1, 10, 0, 0)
+    fanxiu._write_data_annotation_json(path, [
+        {
+            "id": "mail-cleanup",
+            "task_type": "mail_cleanup",
+            "label": "邮件_清理",
+            "source": "data_annotation_runtime",
+            "schedule_kind": "daily",
+            "enabled": True,
+            "schedule_times": ["00:05"],
+            "interruptible": True,
+            "last_run_at": "2026-06-01 10:00:00",
+            "last_result": "stopped",
+            "next_time": None,
+            "retry_after": "2026-06-01 10:10:00",
+            "cooldown_seconds": 600,
+            "payload": {"__scheduler_definition_task_type": "mail_cleanup"},
+        }
+    ])
+    fanxiu._write_data_annotation_json(tmp_path / "world_facts.json", {
+        "discoveries": {
+            "task": {
+                "mail-cleanup": {
+                    "id": "mail-cleanup",
+                    "task_type": "mail_cleanup",
+                    "last_result": "running",
+                    "last_run_at": "2026-06-01 10:00:00",
+                    "updated_at": last_run.timestamp() + 0.25,
+                }
+            }
+        }
+    })
+    monkeypatch.setattr(runtime_control.time, "time", lambda: fixed_now.timestamp())
+
+    tasks = runtime_control.read_scheduler_tasks(
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        manual_job_path=tmp_path / "manual_jobs.json",
+    )
+    repaired = next(item for item in tasks if item["id"] == "mail-cleanup")
+
+    assert repaired["last_result"] == "stopped"
+    assert repaired["retry_after"] == "2026-06-01 10:10:00"
+    assert repaired["next_time"] is None
 
 
 def test_data_annotation_scheduler_keeps_queued_run_with_pending_manual_job(tmp_path, monkeypatch):
@@ -4043,4 +5049,5 @@ def test_data_annotation_ocr_centers_in_shape_filters_signup_button_text():
     centers = runner._ocr_centers_in_shape(lines, image, "报名", include=("报名",), exclude=("已报名",))
 
     assert centers == [(740.0, 486.0, "报名")]
+
 

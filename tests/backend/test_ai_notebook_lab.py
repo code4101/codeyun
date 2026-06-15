@@ -2,8 +2,8 @@ import nbformat
 import pytest
 
 from backend.app import app
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
-from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.core.notebook_lab import reset_notebook_lab_runtime
 from backend.core.settings import get_settings
 from backend.models import User, UserDevice

@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_resources import resolve_fanxiu_export_root
+from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 
 
 DEFAULT_API_BASE = "http://127.0.0.1:8000/api"

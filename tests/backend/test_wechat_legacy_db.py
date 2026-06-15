@@ -5,9 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from backend.api import wechat_archive
-from backend.core import wechat_legacy_db as legacy_db
+from backend.core.messaging import wechat_legacy_db as legacy_db
 from backend.models import UserDevice
-from backend.core.wechat_legacy_db import WeChatLegacyDbStorage
+from backend.core.messaging.wechat_legacy_db import WeChatLegacyDbStorage
 
 
 def _init_micro_msg(path):

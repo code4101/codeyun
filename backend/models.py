@@ -336,6 +336,44 @@ class ResourceAccessGrant(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
 
 
+class GithubProject(SQLModel, table=True):
+    __tablename__ = "githubproject"
+    __table_args__ = (
+        UniqueConstraint("github_repo_id", name="uq_githubproject_repo_id"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    github_repo_id: int = Field(index=True)
+    full_name: str = Field(index=True)
+    html_url: str = Field(default="")
+    default_branch: str = Field(default="")
+    description: str = Field(default="", sa_column=Column(Text))
+    homepage: str = Field(default="")
+    language: str = Field(default="", index=True)
+    license_spdx_id: str = Field(default="", index=True)
+    topics: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    stars: int = Field(default=0, index=True)
+    forks: int = Field(default=0, index=True)
+    open_issues: int = Field(default=0, index=True)
+    archived: bool = Field(default=False, index=True)
+    disabled: bool = Field(default=False, index=True)
+    private: bool = Field(default=False, index=True)
+    created_at_github: str = Field(default="", index=True)
+    pushed_at: str = Field(default="", index=True)
+    updated_at_github: str = Field(default="", index=True)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    last_checked_at: Optional[float] = Field(default=None, index=True)
+    needs_review: bool = Field(default=True, index=True)
+    analysis_note: str = Field(default="", sa_column=Column(Text))
+    source_refs: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    update_notes: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+
+
 class PdfDocument(SQLModel, table=True):
     __tablename__ = "pdfdocument"
     __table_args__ = (

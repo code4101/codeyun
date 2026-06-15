@@ -1,6 +1,6 @@
 from sqlmodel import select
 
-from backend.core.guest_notes import GUEST_NOTES_USERNAME, RUANYF_WEEKLY_ISSUE_FIELD
+from backend.core.notes.guest import GUEST_NOTES_USERNAME, RUANYF_WEEKLY_ISSUE_FIELD
 from backend.models import NoteNode, User
 
 

@@ -1,4 +1,4 @@
-from backend.core.storage_usage import collect_directory_usage
+from backend.core.resources.storage_usage import collect_directory_usage
 
 
 def test_collect_directory_usage_counts_whole_tree(tmp_path):

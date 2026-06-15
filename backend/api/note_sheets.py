@@ -25,34 +25,34 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlmodel import Session, delete, func, select
 
-from backend.core.ai_app_config import (
+from backend.core.ai.app_config import (
     AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION,
     AI_APP_NOTE_SHEET_EXCEL_IMPORT,
     resolve_ai_app_runtime_config,
 )
-from backend.core.ai_chat import OllamaClientError, chat_with_provider
-from backend.core.auth import (
+from backend.core.ai.chat import OllamaClientError, chat_with_provider
+from backend.core.access.auth import (
     extract_api_token,
     get_current_active_user,
     get_optional_current_user_from_token,
     validate_api_token_value,
 )
 from backend.api.websocket_manager import manager as ws_manager
-from backend.core.attendance_service import (
+from backend.core.attendance.service import (
     get_attendance_service_extra_config,
     get_or_create_attendance_service_config,
 )
-from backend.core.attendance_progress_style import (
+from backend.core.attendance.progress_style import (
     highlight_presence_progress,
     highlight_text_refund_progress,
     highlight_threshold_refund_progress,
     parse_compact_refund_rules,
     parse_threshold_refund_rules,
 )
-from backend.core.background_task_queue import background_task_queue
-from backend.core.feature_access_guard import ensure_feature_access
-from backend.core.note_sheet_access import ensure_attendance_sheet_anonymous_viewer
-from backend.core import note_sheet_inline_links
+from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.access.feature_access_guard import ensure_feature_access
+from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.notes import sheet_inline_links as note_sheet_inline_links
 from backend.core.settings import get_settings
 from backend.db import engine, get_session
 from backend.models import (
@@ -64,13 +64,13 @@ from backend.models import (
     WorkbookDocument,
     WorkbookSheetLink,
 )
-from backend.core.resource_identity import (
+from backend.core.resources.identity import (
     RESOURCE_TYPE_SHEET,
     RESOURCE_TYPE_WORKBOOK,
     ensure_resource_identity,
 )
-from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
-from backend.core.sheet_refs import (
+from backend.core.resources.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.resources.sheet_refs import (
     load_sheets_by_refs,
     load_workbooks_by_refs,
     sheet_public_id,
@@ -6340,14 +6340,14 @@ def _rebuild_registration_attendance_after_user_id_detection(
     attendance_sheet_id = int(attendance.numeric_id or attendance.id)
     course_text = _normalize_sheet_text(course_name)
     if "梵呗" in course_text:
-        from backend.core.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
+        from backend.core.attendance.fanbei_course_sheets import rebuild_fanbei_attendance_from_course_sheets
 
         return rebuild_fanbei_attendance_from_course_sheets(
             session,
             attendance_sheet_id=attendance_sheet_id,
         )
 
-    from backend.core.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
+    from backend.core.attendance.nianzhu_course_sheets import rebuild_nianzhu_attendance_from_course_sheets
 
     return rebuild_nianzhu_attendance_from_course_sheets(
         session,
@@ -7683,7 +7683,7 @@ def _apply_course_attendance_header_links_for_response(
     next_document = document_json
     total_count = 0
     try:
-        from backend.core.nianzhu_course_sheets import apply_course_attendance_header_links_for_response as apply_nianzhu_links
+        from backend.core.attendance.nianzhu_course_sheets import apply_course_attendance_header_links_for_response as apply_nianzhu_links
     except Exception:
         apply_nianzhu_links = None
     if apply_nianzhu_links is not None:
@@ -7695,7 +7695,7 @@ def _apply_course_attendance_header_links_for_response(
         total_count += count
 
     try:
-        from backend.core.fanbei_course_sheets import apply_course_attendance_header_links_for_response as apply_fanbei_links
+        from backend.core.attendance.fanbei_course_sheets import apply_course_attendance_header_links_for_response as apply_fanbei_links
     except Exception:
         apply_fanbei_links = None
     if apply_fanbei_links is not None:
@@ -14888,7 +14888,7 @@ def update_note_sheet_attendance_course_data(
         raise HTTPException(status_code=403, detail="没有执行表格动作的权限")
 
     if payload.course_type == "nianzhu":
-        from backend.core.nianzhu_course_sheets import (
+        from backend.core.attendance.nianzhu_course_sheets import (
             compact_nianzhu_course_sheet_step2,
             rebuild_nianzhu_attendance_from_course_sheets,
         )
@@ -14919,7 +14919,7 @@ def update_note_sheet_attendance_course_data(
         }
         return {"step2": {"step2": step2_summary, "rebuild": None}, "step3": step3_response}
 
-    from backend.core.fanbei_attendance_schedule import (
+    from backend.core.attendance.fanbei_schedule import (
         _run_fanbei_attendance_step2_local,
         run_fanbei_attendance_step3_for_sheet,
     )
@@ -16472,7 +16472,7 @@ def revise_attendance_video_progress(
         raise HTTPException(status_code=400, detail="修订类型不能为空")
 
     try:
-        from backend.core.nianzhu_course_sheets import apply_nianzhu_attendance_video_revision
+        from backend.core.attendance.nianzhu_course_sheets import apply_nianzhu_attendance_video_revision
 
         recalculation = apply_nianzhu_attendance_video_revision(
             session,

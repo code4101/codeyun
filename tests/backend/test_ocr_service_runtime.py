@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from backend.core import ocr_service_runtime as ocr_runtime
+from backend.core.runtime import ocr_service as ocr_runtime
 
 
 class _FakeResponse:

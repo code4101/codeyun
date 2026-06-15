@@ -8,8 +8,8 @@ import pytest
 from sqlmodel import select
 
 from backend.models import NoteNode
-from backend.core import wechat_ilink
-from backend.core.ai_app_config import AI_APP_CODECLAW, save_user_ai_app_config
+from backend.core.messaging import wechat_ilink
+from backend.core.ai.app_config import AI_APP_CODECLAW, save_user_ai_app_config
 
 
 @pytest.fixture()

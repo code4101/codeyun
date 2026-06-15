@@ -12,8 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu_item_catalog import get_fanxiu_item_card
-from backend.core.fanxiu_resources import export_fanxiu_sprite_icon, resolve_fanxiu_export_root
+from backend.core.fanxiu.catalog.item import get_fanxiu_item_card
+from backend.core.fanxiu.catalog.resources import export_fanxiu_sprite_icon, resolve_fanxiu_export_root
 
 
 def _load_cards(export_root: Path) -> list[dict[str, Any]]:

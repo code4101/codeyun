@@ -7,8 +7,8 @@ from fastapi import HTTPException
 from sqlmodel import Session, select
 
 from backend.api import device_entries as device_entries_api
-from backend.core import codex_device_summary
-from backend.core.note_semantics import build_note_category_palette_setting_key
+from backend.core.devices import codex_summary as codex_device_summary
+from backend.core.notes.semantics import build_note_category_palette_setting_key
 from backend.api.notes import (
     CODEX_DIARY_STALE_HEARTBEAT_SECONDS,
     _build_codex_diary_body_html,

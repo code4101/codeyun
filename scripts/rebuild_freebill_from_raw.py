@@ -9,7 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from backend.core.freebill import rebuild_freebill_records_from_raw_files
+from backend.core.freebill.core import rebuild_freebill_records_from_raw_files
 
 
 def main() -> None:

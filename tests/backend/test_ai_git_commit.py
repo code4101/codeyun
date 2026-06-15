@@ -1,7 +1,7 @@
 import json
 
-from backend.core.ai_git_commit import _build_system_prompt, generate_ai_git_commit_draft
-from backend.core.git_tools import format_git_commit_message, normalize_commit_body_lines
+from backend.core.ai.git_commit import _build_system_prompt, generate_ai_git_commit_draft
+from backend.core.ai.git_tools import format_git_commit_message, normalize_commit_body_lines
 
 
 def test_build_system_prompt_mentions_numbered_body_format():
@@ -35,7 +35,7 @@ def test_normalize_commit_body_lines_and_format_message_use_numbered_items():
 
 def test_generate_ai_git_commit_draft_normalizes_prefixed_body_lines(monkeypatch):
     monkeypatch.setattr(
-        "backend.core.ai_git_commit.chat_with_provider",
+        "backend.core.ai.git_commit.chat_with_provider",
         lambda **_: {
             "model": "deepseek-chat",
             "content": json.dumps(

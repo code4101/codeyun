@@ -18,7 +18,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from backend.core.rime_context_prediction import (  # noqa: E402
+from backend.core.ai.rime_context_prediction import (  # noqa: E402
     RimeContextPredictionError,
     import_rime_context_prediction_article,
     refresh_rime_context_prediction_tree,

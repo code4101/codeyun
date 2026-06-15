@@ -9,19 +9,19 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from backend.core.ai_git_commit import AiGitCommitError, resolve_ai_runtime_config
-from backend.core.document_reduction import (
+from backend.core.ai.git_commit import AiGitCommitError, resolve_ai_runtime_config
+from backend.core.ai.document_reduction import (
     DOCUMENT_REDUCTION_BRANCH_FACTOR,
     DocumentReductionError,
     answer_document_question,
     generate_document_index,
 )
-from backend.core.document_reduction_cache import (
+from backend.core.ai.document_reduction_cache import (
     delete_document_nodes,
     replace_document_run_nodes,
     search_document_run_nodes,
 )
-from backend.core.document_reduction_storage import (
+from backend.core.ai.document_reduction_storage import (
     DocumentReductionStorageError,
     delete_document_asset_dir,
     load_document_run_result,
@@ -32,9 +32,9 @@ from backend.core.document_reduction_storage import (
     save_document_source_text,
     sha256_hexdigest,
 )
-from backend.core.auth import get_current_user_from_token
-from backend.core.feature_access_guard import require_feature_access_dependency
-from backend.core.resource_identity import RESOURCE_TYPE_DOCUMENT_ASSET, allocate_resource_id
+from backend.core.access.auth import get_current_user_from_token
+from backend.core.access.feature_access_guard import require_feature_access_dependency
+from backend.core.resources.identity import RESOURCE_TYPE_DOCUMENT_ASSET, allocate_resource_id
 from backend.db import get_session
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun, User
 
