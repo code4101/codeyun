@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import GeneratorType
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Mapping
 
 from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta, select_due_scheduled_tasks
 
@@ -187,6 +187,20 @@ class _FanxiuMatchedView:
     score: float
     folder_path: str
     action_shape: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _FanxiuWaitResult:
+    matched: bool
+    detail: str = ""
+    score: float | None = None
+    current_scene: int | None = None
+
+
+@dataclass(frozen=True)
+class _FanxiuWaitCondition:
+    label: str
+    check: Callable[["FanxiuRuntime", str], _FanxiuWaitResult]
 
 
 class FanxiuRuntime(Runtime):
@@ -396,6 +410,22 @@ class FanxiuRuntime(Runtime):
                 return view
         return self.get_cur_view(update=False)
 
+    def _emit_runtime_action(
+        self,
+        message: str,
+        *,
+        phase: str,
+        current_scene: int | None = None,
+    ) -> None:
+        with self.runner._lock:
+            self.runner._set_status_locked(
+                "running",
+                message,
+                phase=phase,
+                current_scene=current_scene,
+            )
+            self.runner._log_locked("action", message)
+
     def wait_click(
         self,
         frame: View | int | str | None,
@@ -423,6 +453,11 @@ class FanxiuRuntime(Runtime):
             self.runner._log("detail", f"wait_click：#{view.id or '?'} 无场景标识，跳过场景等待")
         target = self.resolve_shape_selector(view, shape)
         label = f"wait_click #{view.id or '?'} {self._shape_path(target)}"
+        self._emit_runtime_action(
+            f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
+            phase="runtime_wait_click",
+            current_scene=view.id,
+        )
         if self.runner._shape_has_runtime_click_condition(target.raw):
             match_shape = self._shape_match_search_shape(target)
             if isinstance(target.parent_shape, Shape):
@@ -454,6 +489,11 @@ class FanxiuRuntime(Runtime):
         target_scene_id = view.id if isinstance(view, View) else int(view)
         if not isinstance(self.asset_tree_path, Path):
             raise RuntimeError("缺少场景移动资产树路径")
+        self._emit_runtime_action(
+            f"前往 #{target_scene_id}",
+            phase="runtime_goto_view",
+            current_scene=target_scene_id,
+        )
         stop_event = self.stop_event or threading.Event()
         result = self.runner._go_scene_task(self.ctx, self.asset_tree_path, target_scene_id, stop_event)
         return (yield from result) if isinstance(result, GeneratorType) else result
@@ -517,6 +557,130 @@ class FanxiuRuntime(Runtime):
                     "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
                     "updated_at": time.time(),
                 })
+
+    def view_visible(self, view: View | int, *, threshold: float = 80.0) -> _FanxiuWaitCondition:
+        target = view if isinstance(view, View) else self.get_view(int(view))
+        if not isinstance(target, View):
+            raise RuntimeError(f"无法解析等待场景：{view}")
+        view_id = target.id
+        label = f"#{view_id}「{target.title}」" if view_id is not None else f"View「{target.title}」"
+
+        def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
+            if target.is_match(runtime):
+                return _FanxiuWaitResult(True, f"{label} View 已匹配", 100.0, view_id)
+            scene_id, score = runtime.runner._identify_scene_number(runtime.ctx, frame, [int(view_id)] if view_id is not None else None)
+            score = float(score or 0.0)
+            matched = scene_id == view_id and score >= float(threshold)
+            return _FanxiuWaitResult(matched, f"{label} {score:.0f}%", score, scene_id)
+
+        return _FanxiuWaitCondition(label=label, check=check)
+
+    def shape_visible(self, view: View | int, shape: Shape | str, *, threshold: float = 80.0) -> _FanxiuWaitCondition:
+        target_view = view if isinstance(view, View) else self.get_view(int(view))
+        if not isinstance(target_view, View) or not isinstance(target_view.raw, dict):
+            raise RuntimeError(f"无法解析等待 shape 所在场景：{view}")
+        target_shape = self.resolve_shape_selector(target_view, shape)
+        view_id = target_view.id
+        label = f"#{view_id or '?'} {self._shape_path(target_shape)}"
+
+        def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
+            score = float(runtime.runner._shape_score(runtime.ctx, target_view.raw, target_shape.raw, frame) or 0.0)
+            return _FanxiuWaitResult(score >= float(threshold), f"{label} {score:.0f}%", score, view_id)
+
+        return _FanxiuWaitCondition(label=label, check=check)
+
+    def ocr_contains(
+        self,
+        *,
+        all_of: Iterable[str] = (),
+        any_of: Iterable[str] = (),
+        normalize: bool = True,
+        label: str = "OCR 文本",
+    ) -> _FanxiuWaitCondition:
+        required = [str(item) for item in all_of if str(item)]
+        optional = [str(item) for item in any_of if str(item)]
+
+        def clean(text: str) -> str:
+            compact = re.sub(r"\s+", "", _sanitize_ocr_text(text)) if normalize else text
+            return compact
+
+        required_clean = [clean(item) for item in required]
+        optional_clean = [clean(item) for item in optional]
+
+        def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
+            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_lines(runtime.ctx, frame))
+            haystack = clean(text)
+            required_ok = all(item in haystack for item in required_clean)
+            optional_ok = True if not optional_clean else any(item in haystack for item in optional_clean)
+            matched = required_ok and optional_ok
+            display = " ".join(required + optional) or label
+            return _FanxiuWaitResult(matched, f"{label} {'命中' if matched else '未命中'}：{display}")
+
+        return _FanxiuWaitCondition(label=label, check=check)
+
+    def all_of(self, *conditions: _FanxiuWaitCondition, label: str | None = None) -> _FanxiuWaitCondition:
+        condition_list = [condition for condition in conditions if isinstance(condition, _FanxiuWaitCondition)]
+        if not condition_list:
+            raise RuntimeError("all_of 至少需要一个等待条件")
+        title = label or " + ".join(condition.label for condition in condition_list)
+
+        def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
+            details: list[str] = []
+            score: float | None = None
+            current_scene: int | None = None
+            for condition in condition_list:
+                result = condition.check(runtime, frame)
+                details.append(result.detail or condition.label)
+                if result.score is not None:
+                    score = result.score
+                if result.current_scene is not None:
+                    current_scene = result.current_scene
+                if not result.matched:
+                    return _FanxiuWaitResult(False, "；".join(details), score, current_scene)
+            return _FanxiuWaitResult(True, "；".join(details), score, current_scene)
+
+        return _FanxiuWaitCondition(label=title, check=check)
+
+    def wait_any(
+        self,
+        conditions: Mapping[str, _FanxiuWaitCondition],
+        *,
+        timeout: float,
+        label: str = "等待任一条件",
+        interval: float = 0.5,
+    ):
+        if not conditions:
+            raise RuntimeError("wait_any 至少需要一个等待条件")
+        start = time.monotonic()
+        last_details: dict[str, str] = {}
+        while True:
+            if self.stop_event is not None:
+                self.runner._raise_if_stopped(self.stop_event)
+            self.runner._clear_tick_frame(self.ctx)
+            yield BehaviorTreeStatus.RUNNING
+            frame = self.cur_frame(update=True)
+            for key, condition in conditions.items():
+                result = condition.check(self, frame)
+                last_details[str(key)] = result.detail or condition.label
+                if result.matched:
+                    with self.runner._lock:
+                        self.runner._status.update({
+                            "phase": "wait_any",
+                            "current_scene": result.current_scene,
+                            "message": f"{label}：命中 {key}，{last_details[str(key)]}",
+                            "updated_at": time.time(),
+                        })
+                    self.runner._log("success", self.runner._status["message"])
+                    return key
+            if time.monotonic() - start >= max(1.0, float(timeout)):
+                detail = "；".join(f"{key}: {value}" for key, value in last_details.items())
+                raise TimeoutError(f"{label} 超时：{detail or '无匹配结果'}")
+            if self.runner._auto_close_popup_guard_step(self):
+                self.clear_frame()
+                continue
+            if interval > 0:
+                stop_event = self.stop_event or threading.Event()
+                stop_event.wait(float(interval))
 
     def match_shape(self, shape: Shape) -> bool:
         view = shape.parent_view
@@ -2258,7 +2422,11 @@ class DataAnnotationRuntimeRunner(
                 task_id = str(task.get("id") or "")
                 label = str(task.get("label") or task_id or task.get("task_type") or "未命名任务")
                 try:
-                    while (yield from self._clear_known_blocking_overlay_if_possible(ctx, stop_event, label="Scheduler")):
+                    while self._run_direct_runtime_action(
+                        lambda: self._clear_known_blocking_overlay_if_possible(ctx, stop_event, label="Scheduler"),
+                        stop_event=stop_event,
+                        max_runtime_seconds=60.0,
+                    ):
                         pass
                 except RuntimeError as exc:
                     blocking_message = str(exc)
@@ -2596,6 +2764,7 @@ class DataAnnotationRuntimeRunner(
             legacy_name = str(payload.get("legacy_name") or task_type)
             self._log("skip", f"旧版任务「{legacy_name}」尚未迁移，已跳过")
             return "unsupported"
+        ensure_fanxiu_runtime_jobs_registered()
         definition = _data_annotation_manual_job_definition(task_type)
         if definition is None:
             raise RuntimeError(f"暂不支持的任务类型：{task_type}")

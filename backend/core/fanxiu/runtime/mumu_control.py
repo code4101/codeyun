@@ -79,6 +79,18 @@ _MUMU_ADB_RECOVERY_LOCK = threading.Lock()
 _mumu_adb_failure_cache: tuple[float, str] | None = None
 
 
+def _hidden_subprocess_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "startupinfo": startupinfo,
+    }
+
+
 def _is_mumu_adb_unavailable_error(message: str) -> bool:
     normalized = message.lower()
     return any(
@@ -194,7 +206,7 @@ def _mumu_manager_adb_serial_candidates() -> list[str]:
             encoding="utf-8",
             errors="replace",
             timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **_hidden_subprocess_kwargs(),
         )
     except Exception:
         return []
@@ -305,7 +317,6 @@ def _recover_mumu_adb_ports() -> bool:
             adb_path = fanxiu_android_proxy_service.adb_path()
         except Exception:
             return False
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         for command in (["kill-server"], ["start-server"]):
             try:
                 subprocess.run(
@@ -315,7 +326,7 @@ def _recover_mumu_adb_ports() -> bool:
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    creationflags=creationflags,
+                    **_hidden_subprocess_kwargs(),
                 )
             except Exception:
                 pass
@@ -333,7 +344,7 @@ def _recover_mumu_adb_ports() -> bool:
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    creationflags=creationflags,
+                    **_hidden_subprocess_kwargs(),
                 )
             except Exception:
                 continue
@@ -400,7 +411,7 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
                 encoding="utf-8",
                 errors="replace",
                 timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                **_hidden_subprocess_kwargs(),
             )
             if size_process.returncode != 0:
                 raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
@@ -411,7 +422,7 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout_s,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                **_hidden_subprocess_kwargs(),
             )
             if input_process.returncode != 0:
                 raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
@@ -566,7 +577,7 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
             capture_output=True,
             timeout=6,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **_hidden_subprocess_kwargs(),
         )
         if process.returncode == 0 and process.stdout:
             data = process.stdout
@@ -1287,8 +1298,16 @@ def start_window_capture_preview() -> dict[str, Any]:
     stderr_path.write_text("", encoding="utf-8")
 
     creationflags = 0
+    startupinfo = None
     if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
 
     command = _build_preview_command()
     with stdout_path.open("a", encoding="utf-8", errors="replace") as stdout_file, stderr_path.open(
@@ -1305,6 +1324,7 @@ def start_window_capture_preview() -> dict[str, Any]:
             stderr=stderr_file,
             text=True,
             creationflags=creationflags,
+            startupinfo=startupinfo,
         )
 
     time.sleep(0.8)

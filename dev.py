@@ -21,13 +21,13 @@ except ImportError:
     dotenv_values = None
 
 
-BACKEND_RELOAD_MODES = ("outer", "uvicorn")
+BACKEND_RELOAD_MODES = ("off", "outer", "uvicorn")
 BACKEND_RELOAD_MODE_ENV = "CODEYUN_DEV_BACKEND_RELOAD_MODE"
 LEGACY_BACKEND_RELOAD_MODE_ENV = "CODEYUN_BACKEND_RELOAD_MODE"
 CHECK_INTERVAL_ENV = "CODEYUN_DEV_CHECK_INTERVAL_SECONDS"
 BACKEND_RELOAD_COOLDOWN_ENV = "CODEYUN_DEV_BACKEND_RELOAD_COOLDOWN_SECONDS"
 
-DEFAULT_BACKEND_RELOAD_MODE = "outer"
+DEFAULT_BACKEND_RELOAD_MODE = "off"
 DEFAULT_CHECK_INTERVAL_SECONDS = 5.0
 DEFAULT_BACKEND_RELOAD_COOLDOWN_SECONDS = 60.0
 DEFAULT_BACKEND_HOST = "0.0.0.0"
@@ -51,12 +51,26 @@ WINDOWS_CREATE_NO_WINDOW = 0x08000000
 
 def hidden_subprocess_kwargs():
     if os.name == "nt":
-        return {"creationflags": WINDOWS_CREATE_NO_WINDOW}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        return {"creationflags": WINDOWS_CREATE_NO_WINDOW, "startupinfo": startupinfo}
     return {}
 
 
 def log(message):
-    print(message, flush=True)
+    text = str(message)
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
+    log_path = os.environ.get("CODEYUN_DEV_SUPERVISOR_LOG")
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as file:
+                file.write(text + "\n")
+        except OSError:
+            pass
 
 
 class PortInUseError(RuntimeError):
@@ -136,6 +150,7 @@ def setup_env(root_dir):
     python_executable = sys.executable
     env["CODEYUN_ENV"] = "development"
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("CODEYUN_WATCHDOG_AUTOSTART", "0")
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):
@@ -264,32 +279,15 @@ def find_tcp_listener_pids(port):
 
 def _process_parent_map():
     if os.name == "nt":
-        import json
-
-        script = (
-            "Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"
-        )
-        output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
-        if not output:
-            return {}
-
         try:
-            rows = json.loads(output)
-        except json.JSONDecodeError:
+            import psutil
+        except ImportError:
             return {}
-
-        if isinstance(rows, dict):
-            rows = [rows]
-        parents = {}
-        for row in rows:
-            try:
-                pid = int(row["ProcessId"])
-                parent_pid = int(row["ParentProcessId"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            parents[pid] = parent_pid
-        return parents
+        return {
+            proc.info["pid"]: proc.info["ppid"]
+            for proc in psutil.process_iter(["pid", "ppid"])
+            if proc.info.get("pid") is not None and proc.info.get("ppid") is not None
+        }
 
     output = _run_text_command(["ps", "-eo", "pid=,ppid="])
     parents = {}
@@ -335,23 +333,24 @@ def _current_process_tree_pids():
 
 
 def _windows_processes():
-    import json
-
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
-    )
-    output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
-    if not output:
-        return []
-
     try:
-        rows = json.loads(output)
-    except json.JSONDecodeError:
+        import psutil
+    except ImportError:
         return []
 
-    if isinstance(rows, dict):
-        rows = [rows]
+    rows = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            command_line = " ".join(proc.info.get("cmdline") or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        rows.append(
+            {
+                "ProcessId": proc.info.get("pid"),
+                "Name": proc.info.get("name"),
+                "CommandLine": command_line,
+            }
+        )
     return rows
 
 
@@ -554,11 +553,15 @@ def popen_kwargs():
         "stdin": subprocess.DEVNULL,
     }
     if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
         kwargs["creationflags"] = (
             subprocess.CREATE_NEW_PROCESS_GROUP
             | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
             | WINDOWS_CREATE_NO_WINDOW
         )
+        kwargs["startupinfo"] = startupinfo
     else:
         kwargs["start_new_session"] = True
     return kwargs
@@ -734,8 +737,10 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
 
     if reload_mode == "uvicorn":
         log("Launching backend with uvicorn --reload ...")
-    else:
+    elif reload_mode == "outer":
         log("Launching backend with uvicorn (outer-supervised delayed reload) ...")
+    else:
+        log("Launching backend with uvicorn (reload disabled) ...")
 
     cmd = [
         python_executable,
