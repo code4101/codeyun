@@ -150,7 +150,6 @@ def setup_env(root_dir):
     python_executable = sys.executable
     env["CODEYUN_ENV"] = "development"
     env["PYTHONUNBUFFERED"] = "1"
-    env.setdefault("CODEYUN_WATCHDOG_AUTOSTART", "0")
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):

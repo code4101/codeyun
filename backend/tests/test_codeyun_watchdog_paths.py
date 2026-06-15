@@ -4,6 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import dev
 from backend.core.runtime import codeyun_watchdog as codeyun_watchdog_runtime
 from backend.core.runtime import management as runtime_management
 
@@ -23,6 +24,27 @@ def test_codeyun_watchdog_default_paths_stay_outside_repo(monkeypatch):
     assert not lock_path.is_relative_to(repo_root)
     assert os.fspath(log_path).endswith(os.path.join("codeyun", "codeyun-watchdog", "codeyun-watchdog.log"))
     assert os.fspath(lock_path).endswith(os.path.join("codeyun", "codeyun-watchdog", "codeyun-watchdog.pid"))
+
+
+def test_dev_setup_env_does_not_disable_watchdog_autostart(monkeypatch):
+    monkeypatch.delenv("CODEYUN_WATCHDOG_AUTOSTART", raising=False)
+
+    env, _python_executable, _npm_exec = dev.setup_env(os.fspath(codeyun_watchdog_runtime.ROOT_DIR))
+
+    assert "CODEYUN_WATCHDOG_AUTOSTART" not in env
+
+
+def test_watchdog_launcher_prefers_repo_pythonw_on_windows(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    pythonw = scripts_dir / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(codeyun_watchdog_runtime, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
+    monkeypatch.setattr(codeyun_watchdog_runtime.sys, "executable", os.fspath(scripts_dir / "python.exe"))
+
+    assert codeyun_watchdog_runtime._resolve_watchdog_python_executable() == os.fspath(pythonw)
 
 
 def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):
