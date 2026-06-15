@@ -219,7 +219,11 @@ def _hidden_subprocess_kwargs() -> dict[str, Any]:
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
     return {
-        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        "creationflags": (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        ),
         "startupinfo": startupinfo,
     }
 
