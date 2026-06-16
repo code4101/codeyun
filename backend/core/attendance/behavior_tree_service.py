@@ -13,7 +13,7 @@ from typing import Any
 import psutil
 
 from backend.core.devices.device import process_candidates_by_name
-from backend.core.runtime.subprocess_utils import popen_python_script_background
+from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.settings import ROOT_DIR
 
 
@@ -499,7 +499,7 @@ def start_attendance_behavior_tree_service(*, replace_existing: bool = True) -> 
 
     with service_log_path.open("ab") as log_file:
         log_file.write(f"\n[{_now_text()}] CodeYun start attendance behavior tree\n".encode("utf-8"))
-        proc = popen_python_script_background(
+        proc = popen_python_script_service(
             script_path,
             executable=python_path,
             cwd=os.fspath(cwd),

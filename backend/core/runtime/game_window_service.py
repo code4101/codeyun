@@ -12,7 +12,7 @@ import requests
 
 from pyxllib.prog import process_runtime
 
-from backend.core.runtime.subprocess_utils import popen_python_module_background
+from backend.core.runtime.process_launcher import popen_python_module_service
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -247,7 +247,7 @@ def start_game_window_service(
             log_file.write(
                 f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] CodeYun start game window service\n".encode("utf-8")
             )
-            proc = popen_python_module_background(
+            proc = popen_python_module_service(
                 GAME_WINDOW_SERVICE_MODULE,
                 *command_args,
                 preferred_root=ROOT_DIR,

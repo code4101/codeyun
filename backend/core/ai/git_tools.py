@@ -9,7 +9,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 
 
 LOCKFILE_NAMES = {
@@ -287,7 +287,7 @@ def _run_git(
     _ensure_git_available()
     command = ["git", "-c", "core.quotepath=false", *args]
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             command,
             cwd=str(cwd),
             capture_output=True,
@@ -296,7 +296,6 @@ def _run_git(
             errors="replace",
             timeout=timeout,
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise GitToolError(f"Git 命令执行超时：{' '.join(command)}") from exc

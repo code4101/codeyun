@@ -14,7 +14,7 @@ import psutil
 
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background
+from backend.core.runtime.process_launcher import popen_service, run_quiet
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
@@ -31,7 +31,7 @@ MIN_CAPTURE_PCAP_BYTES = 24
 
 
 def _hidden_process_kwargs() -> dict[str, Any]:
-    return hidden_subprocess_kwargs()
+    return ()
 
 
 def _now_label() -> str:
@@ -448,7 +448,7 @@ class FanxiuCaptureRuntimeService:
             "port",
             "5555",
         ]
-        self._tcpdump_process = popen_background(
+        self._tcpdump_process = popen_service(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -477,7 +477,7 @@ class FanxiuCaptureRuntimeService:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         shell_command = "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555 2>/dev/null"
         command = [str(self._adb_path()), "-s", self.device_id, "shell", "-T", shell_command]
-        process = popen_background(
+        process = popen_service(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -840,7 +840,7 @@ class FanxiuCaptureRuntimeService:
         raise RuntimeError("找不到 adb.exe。可设置 FANXIU_ADB_PATH 指向 MuMu/TapTap 的 adb.exe。")
 
     def _run_adb(self, args: list[str], timeout: float = 8) -> str:
-        process = subprocess.run(
+        process = run_quiet(
             [str(self._adb_path()), *args],
             capture_output=True,
             text=True,

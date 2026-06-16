@@ -23,7 +23,7 @@ from backend.core.ai.chat import (
     chat_with_provider,
 )
 from backend.core.runtime.background_task_queue import background_task_queue
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 from backend.core.notes.progress import get_completion_progress_expr, is_note_system_custom_field_key
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import (
@@ -660,7 +660,7 @@ def _restore_changed_files(backups: dict[str, dict[str, Any]], changed_files: li
 
 
 def _run_test_command(command: str) -> dict[str, Any]:
-    completed = subprocess.run(
+    completed = run_quiet(
         command,
         cwd=ROOT_DIR,
         shell=True,
@@ -670,7 +670,6 @@ def _run_test_command(command: str) -> dict[str, Any]:
         errors="replace",
         timeout=300,
         check=False,
-        **hidden_subprocess_kwargs(),
     )
     return {
         "command": command,

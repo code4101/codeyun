@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 from backend.core.freebill.open_score_library import MidiParseError, get_open_score_work, list_open_score_works
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root
@@ -661,7 +661,7 @@ def _probe_audio_duration(path: Path) -> float | None:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe or not path.exists():
         return None
-    completed = subprocess.run(
+    completed = run_quiet(
         [
             ffprobe,
             "-v",
@@ -676,7 +676,6 @@ def _probe_audio_duration(path: Path) -> float | None:
         text=True,
         timeout=20,
         check=False,
-        **hidden_subprocess_kwargs(),
     )
     try:
         return round(float((completed.stdout or "").strip()), 3)
@@ -691,7 +690,7 @@ def _analyze_audio_features(path: Path, *, max_seconds: int = 120, sample_rate: 
     output_dir = codeyun_temp_root("music_audio_features")
     raw_path = output_dir / f"{uuid4().hex}.s16le"
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             [
                 ffmpeg,
                 "-y",
@@ -713,7 +712,6 @@ def _analyze_audio_features(path: Path, *, max_seconds: int = 120, sample_rate: 
             text=True,
             timeout=max_seconds + 60,
             check=False,
-            **hidden_subprocess_kwargs(),
         )
         if completed.returncode != 0 or not raw_path.exists():
             return {"available": False, "reason": (completed.stderr or completed.stdout or "ffmpeg decode failed").strip()[:300]}
@@ -1634,7 +1632,7 @@ def _clear_separated_stem_files(job_id: str) -> None:
 
 def _extract_video_audio(input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
+    completed = run_quiet(
         [
             _resolve_ffmpeg(),
             "-y",
@@ -1652,7 +1650,6 @@ def _extract_video_audio(input_path: Path, output_path: Path) -> None:
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
     )
     if completed.returncode != 0:
@@ -1854,7 +1851,7 @@ def _guess_multitrack_role(label: str) -> str:
 
 def _convert_audio_to_mp3(input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
+    completed = run_quiet(
         [
             _resolve_ffmpeg(),
             "-y",
@@ -1873,7 +1870,6 @@ def _convert_audio_to_mp3(input_path: Path, output_path: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
         check=False,
     )
@@ -1891,7 +1887,7 @@ def _mix_multitrack_original(stem_paths: list[Path], output_path: Path) -> None:
     for path in stem_paths:
         inputs.extend(["-i", os.fspath(path)])
     filter_complex = f"amix=inputs={len(stem_paths)}:duration=longest:normalize=1"
-    completed = subprocess.run(
+    completed = run_quiet(
         [
             _resolve_ffmpeg(),
             "-y",
@@ -1910,7 +1906,6 @@ def _mix_multitrack_original(stem_paths: list[Path], output_path: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=45 * 60,
         check=False,
     )
@@ -2092,7 +2087,7 @@ def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-    completed = subprocess.run(
+    completed = run_quiet(
         command,
         cwd=os.fspath(MUSIC_TOOLS_ROOT),
         env=env,
@@ -2101,7 +2096,6 @@ def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, 
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=20 * 60,
     )
     log_text = completed.stdout or ""
@@ -2169,7 +2163,7 @@ def _run_humming_transcription(
     env["PYTHONIOENCODING"] = "utf-8"
     env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     started_at = time.time()
-    completed = subprocess.run(
+    completed = run_quiet(
         command,
         cwd=os.fspath(MUSIC_TOOLS_ROOT),
         env=env,
@@ -2178,7 +2172,6 @@ def _run_humming_transcription(
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=HUMMING_TRANSCRIPTION_TIMEOUT_SECONDS,
     )
     log_text = completed.stdout or ""
@@ -2234,7 +2227,7 @@ def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict
         os.fspath(input_path),
     ]
     started_at = time.time()
-    completed = subprocess.run(
+    completed = run_quiet(
         command,
         cwd=os.fspath(MUSIC_TOOLS_ROOT),
         text=True,
@@ -2242,7 +2235,6 @@ def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
     )
     log_text = completed.stdout or ""
@@ -2304,7 +2296,7 @@ def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskCont
         os.fspath(input_path),
     ]
     started_at = time.time()
-    completed = subprocess.run(
+    completed = run_quiet(
         command,
         cwd=os.fspath(MUSIC_TOOLS_ROOT),
         text=True,
@@ -2312,7 +2304,6 @@ def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskCont
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        **hidden_subprocess_kwargs(),
         timeout=60 * 60,
     )
     log_text = completed.stdout or ""

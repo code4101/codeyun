@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -355,7 +355,7 @@ def _resolve_command_path(command: list[str]) -> list[str]:
             if _is_usable_preferred_codex_command(candidate):
                 return [os.fspath(candidate), *command[1:]]
 
-    # On Windows, `subprocess.run(["codex", ...])` may hit an extensionless shim
+    # On Windows, `run_quiet(["codex", ...])` may hit an extensionless shim
     # before the real `.cmd/.exe` launcher. Resolve once up front to the concrete
     # runnable path that `shutil.which()` selects.
     resolved_executable = shutil.which(executable)
@@ -419,7 +419,7 @@ def _probe_codex_cli(provider: AiProviderConfig) -> None:
         raise OllamaClientError("Codex CLI 未填写命令")
 
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             [*command, "--version"],
             capture_output=True,
             text=True,
@@ -427,7 +427,6 @@ def _probe_codex_cli(provider: AiProviderConfig) -> None:
             errors="replace",
             timeout=min(15.0, max(1.0, provider.timeout_seconds)),
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as exc:
         raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc
@@ -579,7 +578,7 @@ def _chat_with_codex_cli(
         command_args.append("-")
 
         try:
-            completed = subprocess.run(
+            completed = run_quiet(
                 command_args,
                 input=prompt,
                 capture_output=True,
@@ -589,7 +588,6 @@ def _chat_with_codex_cli(
                 cwd=os.fspath(workspace_dir),
                 timeout=timeout_seconds or provider.timeout_seconds,
                 check=False,
-                **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exc:
             raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc

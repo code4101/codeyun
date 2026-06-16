@@ -10,15 +10,15 @@ import threading
 import time
 from dataclasses import dataclass
 
-from backend.core.runtime.subprocess_utils import (
-    apply_node_windows_hide_env,
+from backend.core.runtime.process_launcher import (
+    apply_background_node_env,
     background_popen_kwargs,
-    hidden_subprocess_kwargs,
+    check_call_quiet,
     node_npm_command,
-    popen_background,
+    popen_service,
     resolve_npm_executable,
     resolve_pythonw,
-    run_hidden,
+    run_quiet,
 )
 
 try:
@@ -133,7 +133,7 @@ def setup_env(root_dir):
     python_executable = sys.executable
     env["CODEYUN_ENV"] = "development"
     env["PYTHONUNBUFFERED"] = "1"
-    apply_node_windows_hide_env(env, root_dir=root_dir)
+    apply_background_node_env(env, root_dir=root_dir)
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):
@@ -273,7 +273,7 @@ def _process_parent_map():
 
 def _run_text_command(cmd):
     try:
-        result = run_hidden(
+        result = run_quiet(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -750,7 +750,7 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
                 "backend",
             ]
         )
-    return popen_background(cmd, cwd=root_dir, env=env)
+    return popen_service(cmd, cwd=root_dir, env=env)
 
 
 def ensure_frontend_deps(frontend_dir, env, npm_exec):
@@ -759,12 +759,10 @@ def ensure_frontend_deps(frontend_dir, env, npm_exec):
         return
 
     log("Installing frontend dependencies ...")
-    subprocess.check_call(
+    check_call_quiet(
         node_npm_command("install", npm_executable=npm_exec),
         cwd=frontend_dir,
         env=env,
-        shell=False,
-        **hidden_subprocess_kwargs(),
     )
 
 
@@ -778,7 +776,7 @@ def resolve_vite_command(frontend_dir, npm_exec):
 
 def start_frontend(frontend_dir, env, npm_exec):
     log("Launching frontend with Vite ...")
-    return popen_background(
+    return popen_service(
         resolve_vite_command(frontend_dir, npm_exec),
         cwd=frontend_dir,
         env=env,

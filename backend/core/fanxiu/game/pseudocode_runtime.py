@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.core.ai.chat import OllamaClientError, chat_with_provider
 from backend.core.fanxiu.runtime.mumu_control import get_fanxiu_mainwin_root
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 
 
 PSEUDOCODE_DIRNAME = "伪代码"
@@ -444,7 +444,7 @@ def start_fanxiu_pseudocode_script(*, timeout: int = 120) -> dict[str, Any]:
     env["PYTHONIOENCODING"] = "utf-8"
     command = [sys.executable, os.fspath(script_path)]
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             command,
             capture_output=True,
             text=True,
@@ -454,7 +454,6 @@ def start_fanxiu_pseudocode_script(*, timeout: int = 120) -> dict[str, Any]:
             env=env,
             timeout=timeout,
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("伪代码脚本运行超时") from exc

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 
 
 DEFAULT_ADB_CANDIDATES = (
@@ -24,14 +24,13 @@ def _completed_text(process: subprocess.CompletedProcess[str]) -> str:
 
 
 def _run_command(command: list[str], timeout: float = 8) -> str:
-    process = subprocess.run(
+    process = run_quiet(
         command,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        **hidden_subprocess_kwargs(),
     )
     output = _completed_text(process)
     if process.returncode != 0:

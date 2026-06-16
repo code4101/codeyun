@@ -45,7 +45,7 @@ from backend.core.ocr.preview import (
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background, pythonw_command
+from backend.core.runtime.process_launcher import popen_service, python_service_command, run_quiet
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.db import engine, get_session
 from backend.models import DeviceFile
@@ -1458,13 +1458,12 @@ def _load_duplicate_candidates_from_everything(
         args[1:1] = ["-instance", instance_name]
 
     try:
-        result = subprocess.run(
+        result = run_quiet(
             args,
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
-            **hidden_subprocess_kwargs(),
         )
         if result.returncode not in {0, 1}:
             return None
@@ -3056,7 +3055,7 @@ def _probe_image_dimensions(path: Path) -> tuple[int | None, int | None]:
 
 def _probe_video_metadata(path: Path, ffprobe_bin: str) -> tuple[int | None, int | None, int | None]:
     try:
-        result = subprocess.run(
+        result = run_quiet(
             [
                 ffprobe_bin,
                 "-v",
@@ -3071,7 +3070,6 @@ def _probe_video_metadata(path: Path, ffprobe_bin: str) -> tuple[int | None, int
             check=True,
             timeout=8,
             text=True,
-            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         return None, None, None
@@ -4927,7 +4925,7 @@ def enqueue_delete_scoped_entry(
         },
     )
     state_path = _delete_tasks_state_path()
-    command = pythonw_command(
+    command = python_service_command(
         "-c",
         _DELETE_SCOPED_ENTRY_PROCESS_CODE,
         task_id,
@@ -4938,7 +4936,7 @@ def enqueue_delete_scoped_entry(
         executable=sys.executable,
     )
     try:
-        process = popen_background(
+        process = popen_service(
             command,
             cwd=os.fspath(ROOT_DIR),
             stdin=subprocess.DEVNULL,
@@ -4998,7 +4996,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
                 if normalized_target_path.is_dir()
                 else ["explorer", "/select,", os.fspath(normalized_target_path)]
             )
-            popen_background(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            popen_service(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, True, "explorer", ""
 
         if sys.platform == "darwin":
@@ -5007,7 +5005,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
                 if normalized_target_path.is_dir()
                 else ["open", "-R", os.fspath(normalized_target_path)]
             )
-            popen_background(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            popen_service(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, True, "open", ""
 
         if not _has_desktop_session():
@@ -5018,7 +5016,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
             return False, False, "", "当前设备没有可用的桌面文件管理器"
 
         open_path = normalized_target_path if normalized_target_path.is_dir() else normalized_target_path.parent
-        popen_background([opener, os.fspath(open_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        popen_service([opener, os.fspath(open_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True, True, "xdg-open", ""
     except OSError as exc:
         return False, False, "", str(exc)
@@ -5313,7 +5311,7 @@ def build_thumbnail_response(
             raise HTTPException(status_code=501, detail="Video thumbnail generation requires ffmpeg")
 
         try:
-            result = subprocess.run(
+            result = run_quiet(
                 [
                     ffmpeg_bin,
                     "-hide_banner",
@@ -5336,7 +5334,6 @@ def build_thumbnail_response(
                 capture_output=True,
                 check=True,
                 timeout=8,
-                **hidden_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(status_code=504, detail="Timed out generating video thumbnail") from exc

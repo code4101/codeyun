@@ -17,6 +17,7 @@ def _args(tmp_path: Path, **overrides):
         "reload": True,
         "reload_quiet": 1.0,
         "reload_check_timeout": 1.0,
+        "visible_console_monitor": False,
         "log_path": str(tmp_path / "watchdog.log"),
         "dev_stdout": str(tmp_path / "dev.out.log"),
         "dev_stderr": str(tmp_path / "dev.err.log"),
@@ -162,3 +163,98 @@ def test_default_reload_precheck_uses_pythonw_on_windows(monkeypatch, tmp_path):
     command = codeyun_watchdog._resolve_reload_check_command()
 
     assert command[:4] == [str(pythonw), "-m", "compileall", "-q"]
+
+
+def test_run_once_keeps_visible_console_monitor_alive(tmp_path, monkeypatch):
+    args = _args(tmp_path, visible_console_monitor=True)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "check_health",
+        lambda *_args, **_kwargs: {
+            "healthy": True,
+            "backend": {"ok": True, "message": "HTTP 200"},
+            "frontend": {"ok": True, "message": "HTTP 200"},
+        },
+    )
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "ensure_monitor_running",
+        lambda: calls.append("monitor") or {"pid": 123, "alive": True, "started_now": False},
+    )
+
+    result = codeyun_watchdog.run_once(args, codeyun_watchdog.WatchdogState())
+
+    assert calls == ["monitor"]
+    assert result["visible_console_monitor"]["pid"] == 123
+
+
+def test_visible_console_monitor_can_be_disabled(tmp_path, monkeypatch):
+    args = _args(tmp_path, visible_console_monitor=False)
+
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "check_health",
+        lambda *_args, **_kwargs: {
+            "healthy": True,
+            "backend": {"ok": True, "message": "HTTP 200"},
+            "frontend": {"ok": True, "message": "HTTP 200"},
+        },
+    )
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "ensure_monitor_running",
+        lambda: (_ for _ in ()).throw(AssertionError("monitor should be skipped")),
+    )
+
+    result = codeyun_watchdog.run_once(args, codeyun_watchdog.WatchdogState())
+
+    assert result["visible_console_monitor"] is None
+
+
+def test_visible_console_monitor_restart_is_logged(tmp_path, monkeypatch):
+    args = _args(tmp_path, visible_console_monitor=True)
+
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "ensure_monitor_running",
+        lambda: {"pid": 456, "alive": True, "started_now": True},
+    )
+
+    result = codeyun_watchdog._ensure_visible_console_monitor(args, tmp_path / "watchdog.log")
+
+    assert result["pid"] == 456
+    assert "Visible console monitor started: PID 456" in (tmp_path / "watchdog.log").read_text(encoding="utf-8")
+
+
+def test_vite_build_is_not_classified_as_dev_runner(monkeypatch):
+    class Proc:
+        pid = 1
+
+    proc = Proc()
+    monkeypatch.setattr(codeyun_watchdog, "_safe_name", lambda _proc: "cmd.exe")
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "_cmdline_text",
+        lambda _proc: r"C:\WINDOWS\system32\cmd.exe /d /s /c vite build",
+    )
+    monkeypatch.setattr(codeyun_watchdog, "_process_in_project", lambda _proc: True)
+
+    assert codeyun_watchdog._matches_codeyun_dev(proc) is False
+
+
+def test_vite_dev_server_is_classified_as_dev_runner(monkeypatch):
+    class Proc:
+        pid = 1
+
+    proc = Proc()
+    monkeypatch.setattr(codeyun_watchdog, "_safe_name", lambda _proc: "node.exe")
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "_cmdline_text",
+        lambda _proc: r"C:\node.exe D:\home\chenkunze\slns\codeyun\frontend\node_modules\vite\bin\vite.js",
+    )
+    monkeypatch.setattr(codeyun_watchdog, "_process_in_project", lambda _proc: True)
+
+    assert codeyun_watchdog._matches_codeyun_dev(proc) is True
