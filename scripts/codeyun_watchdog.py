@@ -172,7 +172,7 @@ def _matches_codeyun_dev(proc: Any) -> bool:
         return True
     if name in {"uv.exe", "uv"} and "run" in cmdline and "dev.py" in cmdline:
         return True
-    if "uvicorn" in cmdline and "backend.app:app" in cmdline:
+    if "uvicorn" in cmdline and ("backend.app:app" in cmdline or "backend.core.runtime.uvicorn_hidden" in cmdline):
         return True
     if name in {"node.exe", "node"} and "vite" in cmdline:
         return True
@@ -297,6 +297,8 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
         try:
             stopped.append(int(proc.pid))
             for child in proc.children(recursive=True):
+                if _matches_watchdog(child):
+                    continue
                 try:
                     child.terminate()
                 except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
@@ -309,6 +311,8 @@ def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
     for proc in alive:
         try:
             for child in proc.children(recursive=True):
+                if _matches_watchdog(child):
+                    continue
                 try:
                     child.kill()
                 except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):

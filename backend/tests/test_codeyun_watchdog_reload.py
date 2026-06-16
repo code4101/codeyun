@@ -114,6 +114,41 @@ def test_unhealthy_service_restarts_without_reload_precheck(tmp_path, monkeypatc
     assert state.pending_reload_reason is None
 
 
+def test_terminate_dev_processes_keeps_watchdog_child(tmp_path, monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid, children=None, watchdog=False):
+            self.pid = pid
+            self._children = children or []
+            self.watchdog = watchdog
+            self.terminated = False
+            self.killed = False
+
+        def children(self, recursive=False):
+            return list(self._children)
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    backend_child = FakeProcess(101)
+    watchdog_child = FakeProcess(102, watchdog=True)
+    dev_proc = FakeProcess(100, [backend_child, watchdog_child])
+
+    monkeypatch.setattr(codeyun_watchdog, "list_dev_processes", lambda: [{"pid": 100}])
+    monkeypatch.setattr(codeyun_watchdog.psutil, "Process", lambda pid: dev_proc)
+    monkeypatch.setattr(codeyun_watchdog.psutil, "wait_procs", lambda processes, timeout: (list(processes), []))
+    monkeypatch.setattr(codeyun_watchdog, "_matches_watchdog", lambda proc: bool(getattr(proc, "watchdog", False)))
+
+    stopped = codeyun_watchdog.terminate_dev_processes(0.1, tmp_path / "watchdog.log")
+
+    assert stopped == [100]
+    assert backend_child.terminated is True
+    assert watchdog_child.terminated is False
+    assert dev_proc.terminated is True
+
+
 def test_default_reload_precheck_uses_pythonw_on_windows(monkeypatch, tmp_path):
     scripts_dir = tmp_path / ".venv" / "Scripts"
     scripts_dir.mkdir(parents=True)
