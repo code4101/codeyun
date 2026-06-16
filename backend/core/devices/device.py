@@ -22,7 +22,7 @@ from pyxllib.prog import process_runtime
 import uuid
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import resolve_pythonw
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background, resolve_python, resolve_pythonw
 
 # --- Shared Constants (Consider moving to a config file) ---
 settings = get_settings()
@@ -107,7 +107,7 @@ def _taskkill_process_tree(pid: int, timeout: float = 8.0) -> bool:
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
-            creationflags=WINDOWS_CREATE_NO_WINDOW,
+            **hidden_subprocess_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return not _pid_exists(pid)
@@ -635,6 +635,9 @@ class WindowsCommandResolver(CommandResolver):
 
     def _pythonw(self) -> str:
         return resolve_pythonw(ROOT_DIR, sys.executable)
+
+    def _python(self) -> str:
+        return resolve_python(ROOT_DIR, sys.executable)
 
     def _normalize_background_command(self, args: List[str]) -> List[str]:
         if not args:
@@ -1324,13 +1327,12 @@ class LocalDevice(BaseDevice):
                 follow_offset = log_f.tell()
 
             with open(log_file_path, 'ab', buffering=0) as log_sink:
-                proc = subprocess.Popen(
+                proc = popen_background(
                     cmd_args,
                     cwd=actual_cwd,
                     env=run_env,
                     stdout=log_sink,
                     stderr=subprocess.STDOUT,
-                    **build_background_popen_kwargs(independent=True),
                 )
             
             self.processes[task_id] = psutil.Process(proc.pid)

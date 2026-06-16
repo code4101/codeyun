@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from backend.core.devices.device import build_background_popen_kwargs
+from backend.core.runtime.subprocess_utils import popen_background, pythonw_command, run_hidden
 from backend.core.settings import get_settings
 
 
@@ -288,19 +288,18 @@ def start_trusted_python_run(
     run_env = os.environ.copy()
     run_env["PYTHONIOENCODING"] = "utf-8"
     run_env.update(sanitized_env)
-    cmd = [sys.executable, os.fspath(runner_path)]
+    cmd = pythonw_command(os.fspath(runner_path), executable=sys.executable)
 
     if not async_run:
         try:
             with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
-                proc = subprocess.run(
+                proc = run_hidden(
                     cmd,
                     cwd=os.fspath(cwd_path),
                     env=run_env,
                     stdout=stdout_file,
                     stderr=stderr_file,
                     timeout=timeout,
-                    **build_background_popen_kwargs(),
                 )
             _update_finished_status(run_dir, returncode=proc.returncode, started_at=started_at)
         except subprocess.TimeoutExpired:
@@ -310,13 +309,12 @@ def start_trusted_python_run(
     stdout_file = stdout_path.open("wb")
     stderr_file = stderr_path.open("wb")
     try:
-        proc = subprocess.Popen(
+        proc = popen_background(
             cmd,
             cwd=os.fspath(cwd_path),
             env=run_env,
             stdout=stdout_file,
             stderr=stderr_file,
-            **build_background_popen_kwargs(independent=True),
         )
     except Exception:
         stdout_file.close()

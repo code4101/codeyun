@@ -17,6 +17,8 @@ import uuid
 import jieba
 from pypinyin import Style, lazy_pinyin
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background
+
 
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"
 RUNTIME_FILE = "context_prediction_runtime.tsv"
@@ -564,6 +566,7 @@ def _restart_weasel_server(deployer: Path | None) -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=10,
+            **hidden_subprocess_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {
@@ -574,19 +577,12 @@ def _restart_weasel_server(deployer: Path | None) -> dict[str, Any]:
         }
 
     time.sleep(0.5)
-    creationflags = 0
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        creationflags |= subprocess.CREATE_NO_WINDOW
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creationflags |= subprocess.DETACHED_PROCESS
     try:
-        subprocess.Popen(
+        popen_background(
             [str(server)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
         )
     except OSError as exc:
         output = "\n".join(
@@ -629,6 +625,7 @@ def deploy_rime_weasel() -> dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=180,
+            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return {

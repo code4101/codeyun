@@ -72,6 +72,22 @@ def resolve_pythonw(preferred_root: str | Path | None = None, executable: str | 
     return os.fspath(current)
 
 
+def resolve_python(preferred_root: str | Path | None = None, executable: str | Path | None = None) -> str:
+    """Prefer python.exe for hidden services that still need normal stdio semantics."""
+
+    current = Path(executable or sys.executable)
+    if os.name == "nt":
+        if preferred_root is not None:
+            venv_python = Path(preferred_root) / ".venv" / "Scripts" / "python.exe"
+            if venv_python.is_file():
+                return os.fspath(venv_python)
+        if current.name.lower() == "pythonw.exe":
+            sibling_python = current.with_name("python.exe")
+            if sibling_python.is_file():
+                return os.fspath(sibling_python)
+    return os.fspath(current)
+
+
 def resolve_npm_executable() -> str:
     if os.name != "nt":
         return shutil.which("npm") or "npm"
@@ -113,4 +129,59 @@ def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess
 
 
 def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    kwargs.setdefault("stdout", subprocess.DEVNULL)
+    kwargs.setdefault("stderr", subprocess.DEVNULL)
     return subprocess.Popen(command, shell=False, **kwargs, **background_popen_kwargs(independent=True))
+
+
+def pythonw_command(
+    *args: str,
+    preferred_root: str | Path | None = None,
+    executable: str | Path | None = None,
+) -> list[str]:
+    return [resolve_pythonw(preferred_root=preferred_root, executable=executable), *args]
+
+
+def python_module_command(
+    module: str,
+    *args: str,
+    preferred_root: str | Path | None = None,
+    executable: str | Path | None = None,
+) -> list[str]:
+    return pythonw_command("-m", module, *args, preferred_root=preferred_root, executable=executable)
+
+
+def python_script_command(
+    script_path: str | Path,
+    *args: str,
+    preferred_root: str | Path | None = None,
+    executable: str | Path | None = None,
+) -> list[str]:
+    return pythonw_command(os.fspath(script_path), *args, preferred_root=preferred_root, executable=executable)
+
+
+def popen_python_module_background(
+    module: str,
+    *args: str,
+    preferred_root: str | Path | None = None,
+    executable: str | Path | None = None,
+    **kwargs: Any,
+) -> subprocess.Popen[Any]:
+    return popen_background(
+        python_module_command(module, *args, preferred_root=preferred_root, executable=executable),
+        **kwargs,
+    )
+
+
+def popen_python_script_background(
+    script_path: str | Path,
+    *args: str,
+    preferred_root: str | Path | None = None,
+    executable: str | Path | None = None,
+    **kwargs: Any,
+) -> subprocess.Popen[Any]:
+    return popen_background(
+        python_script_command(script_path, *args, preferred_root=preferred_root, executable=executable),
+        **kwargs,
+    )

@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 from backend.core.freebill.open_score_library import MidiParseError, get_open_score_work, list_open_score_works
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root
@@ -1649,7 +1650,7 @@ def _extract_video_audio(input_path: Path, output_path: Path) -> None:
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
     )
     if completed.returncode != 0:
@@ -1870,7 +1871,7 @@ def _convert_audio_to_mp3(input_path: Path, output_path: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
         check=False,
     )
@@ -1907,7 +1908,7 @@ def _mix_multitrack_original(stem_paths: list[Path], output_path: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=45 * 60,
         check=False,
     )
@@ -2098,7 +2099,7 @@ def _run_piano_stem_transcription(job_id: str, piano_path: Path, job: dict[str, 
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=20 * 60,
     )
     log_text = completed.stdout or ""
@@ -2175,7 +2176,7 @@ def _run_humming_transcription(
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=HUMMING_TRANSCRIPTION_TIMEOUT_SECONDS,
     )
     log_text = completed.stdout or ""
@@ -2239,7 +2240,7 @@ def _run_demucs(job_id: str, input_path: Path, context: LongTaskContext) -> dict
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=30 * 60,
     )
     log_text = completed.stdout or ""
@@ -2309,7 +2310,7 @@ def _run_audio_separator_6s(job_id: str, input_path: Path, context: LongTaskCont
         stderr=subprocess.STDOUT,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        **hidden_subprocess_kwargs(),
         timeout=60 * 60,
     )
     log_text = completed.stdout or ""

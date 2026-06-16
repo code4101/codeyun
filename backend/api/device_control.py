@@ -17,11 +17,11 @@ from backend.core.attendance.order import (
     query_order_refund_details,
 )
 from backend.core.devices.device import (
-    build_background_popen_kwargs,
     device_manager,
     get_device_id,
     match_cmdline,
 )
+from backend.core.runtime.subprocess_utils import popen_background
 from backend.core.devices.ui_automation import ensure_ui_automation_thread_context
 from backend.core.devices.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
 from backend.core.attendance.clockin_link_detector import detect_clockin_links_browser
@@ -156,13 +156,12 @@ def execute_command(req: ExecCmdRequest):
         except Exception:
             cmd_args = req.command.split()
 
-        proc = subprocess.Popen(
+        proc = popen_background(
             cmd_args,
             cwd=req.cwd,
             env=run_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            **build_background_popen_kwargs(independent=True),
         )
 
         return {

@@ -45,6 +45,7 @@ from backend.core.ocr.preview import (
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.runtime.subprocess_utils import popen_background, pythonw_command
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.db import engine, get_session
 from backend.models import DeviceFile
@@ -4924,26 +4925,23 @@ def enqueue_delete_scoped_entry(
         },
     )
     state_path = _delete_tasks_state_path()
-    command = [
-        sys.executable,
+    command = pythonw_command(
         "-c",
         _DELETE_SCOPED_ENTRY_PROCESS_CODE,
         task_id,
         os.fspath(target_path),
         "1" if recursive else "0",
         os.fspath(state_path),
-    ]
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        preferred_root=ROOT_DIR,
+        executable=sys.executable,
+    )
     try:
-        process = subprocess.Popen(  # noqa: S603 - arguments are explicit, no shell is used.
+        process = popen_background(
             command,
             cwd=os.fspath(ROOT_DIR),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
         )
     except OSError as exc:
         _update_delete_task_record(
@@ -4998,7 +4996,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
                 if normalized_target_path.is_dir()
                 else ["explorer", "/select,", os.fspath(normalized_target_path)]
             )
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            popen_background(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, True, "explorer", ""
 
         if sys.platform == "darwin":
@@ -5007,7 +5005,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
                 if normalized_target_path.is_dir()
                 else ["open", "-R", os.fspath(normalized_target_path)]
             )
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            popen_background(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True, True, "open", ""
 
         if not _has_desktop_session():
@@ -5018,7 +5016,7 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
             return False, False, "", "当前设备没有可用的桌面文件管理器"
 
         open_path = normalized_target_path if normalized_target_path.is_dir() else normalized_target_path.parent
-        subprocess.Popen([opener, os.fspath(open_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        popen_background([opener, os.fspath(open_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True, True, "xdg-open", ""
     except OSError as exc:
         return False, False, "", str(exc)

@@ -32,6 +32,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_runtime_runner_status,
     fanxiu_runtime_runner_wake,
     fanxiu_runtime_task_label,
+    read_fanxiu_behavior_tree_service_owner,
     replace_fanxiu_runtime_logs,
     set_fanxiu_runtime_guard,
     set_fanxiu_runtime_guard_group_enabled,
@@ -74,6 +75,7 @@ from backend.core.fanxiu.data_annotation.state import (
     write_data_annotation_json,
     write_data_annotation_world_facts,
 )
+from backend.core.runtime.subprocess_utils import popen_python_script_background
 from backend.core.temp_paths import codeyun_temp_root
 
 
@@ -211,14 +213,7 @@ def ensure_doctor_watch_background(
     stderr_path = watch_dir / f"doctor_watch_api_{stamp}.stderr.log"
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / "scripts" / "fanxiu_bt.py"
-    python_executable = Path(sys.executable)
-    if os.name == "nt" and python_executable.name.lower() == "python.exe":
-        pythonw_executable = python_executable.with_name("pythonw.exe")
-        if pythonw_executable.is_file():
-            python_executable = pythonw_executable
-    command = [
-        str(python_executable),
-        str(script_path),
+    command_args = [
         "watch-doctor",
         "--interval-seconds",
         str(max(1.0, float(interval_seconds or 60.0))),
@@ -232,31 +227,22 @@ def ensure_doctor_watch_background(
         str(output_path),
     ]
     if include_screenshot:
-        command.append("--screenshot")
+        command_args.append("--screenshot")
     if auto_run_due:
-        command.append("--auto-run-due")
+        command_args.append("--auto-run-due")
 
-    creationflags = 0
-    startupinfo = None
-    if os.name == "nt":
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
     stdout_fh = stdout_path.open("ab")
     stderr_fh = stderr_path.open("ab")
     try:
-        process = subprocess.Popen(
-            command,
+        process = popen_python_script_background(
+            script_path,
+            *command_args,
+            preferred_root=repo_root,
+            executable=sys.executable,
             cwd=str(repo_root),
             stdin=subprocess.DEVNULL,
             stdout=stdout_fh,
             stderr=stderr_fh,
-            close_fds=(os.name != "nt"),
-            creationflags=creationflags,
-            startupinfo=startupinfo,
         )
     finally:
         stdout_fh.close()
@@ -270,7 +256,7 @@ def ensure_doctor_watch_background(
         "output_path": str(output_path),
         "stdout_path": str(stdout_path),
         "stderr_path": str(stderr_path),
-        "command": command,
+        "command": [str(script_path), *command_args],
     }
 
 
@@ -507,9 +493,35 @@ def runtime_status(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    status = fanxiu_runtime_runner_status()
+    owner = read_fanxiu_behavior_tree_service_owner() if runtime_state_path is None else {}
+    owner_active_elsewhere = (
+        bool(owner.get("active"))
+        and not bool(owner.get("stale"))
+        and int(owner.get("pid") or 0) != os.getpid()
+    )
     persisted = read_runtime_status(runtime_state_path)
-    if persisted and is_data_annotation_runtime_live_empty(status):
+    if owner_active_elsewhere and isinstance(persisted, dict) and persisted:
+        status = dict(persisted)
+        owner_step = str(owner.get("step") or "")
+        if bool(status.get("running")) and owner_step in {
+            "idle_guard",
+            "idle_guard_done",
+            "manual_job_poll",
+            "scheduler_poll",
+            "scheduler_isolated",
+            "waiting_context",
+        }:
+            status["running"] = False
+            status["status"] = "idle"
+            status["phase"] = owner_step
+            status["message"] = f"行为树常驻服务运行中：进程 {owner.get('pid')} {owner_step}"
+            status["current_task"] = ""
+            status["current_task_id"] = ""
+            status["task_type"] = ""
+            status["updated_at"] = time.time()
+    else:
+        status = fanxiu_runtime_runner_status()
+    if persisted and not owner_active_elsewhere and is_data_annotation_runtime_live_empty(status):
         status.update(persisted)
         status["running"] = False
         status["guard_running"] = False
@@ -527,6 +539,8 @@ def runtime_status(
             append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
     normalize_runtime_guard_items(status)
     status.pop("priority", None)
+    if owner_active_elsewhere:
+        return status
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 

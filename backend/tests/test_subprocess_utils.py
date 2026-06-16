@@ -49,6 +49,17 @@ def test_resolve_pythonw_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
     assert subprocess_utils.resolve_pythonw(tmp_path, scripts_dir / "python.exe") == str(pythonw)
 
 
+def test_resolve_python_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    python = scripts_dir / "python.exe"
+    python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    assert subprocess_utils.resolve_python(tmp_path, scripts_dir / "pythonw.exe") == str(python)
+
+
 def test_node_script_command_uses_node_without_cmd(monkeypatch, tmp_path):
     node = tmp_path / "node.exe"
     node.write_text("", encoding="utf-8")
@@ -59,3 +70,38 @@ def test_node_script_command_uses_node_without_cmd(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess_utils.shutil, "which", lambda name: str(node) if name == "node.exe" else None)
 
     assert subprocess_utils.node_script_command(script, "build") == [str(node), str(script), "build"]
+
+
+def test_python_module_command_prefers_pythonw(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    pythonw = scripts_dir / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    assert subprocess_utils.python_module_command("backend.app", "--host", "127.0.0.1", preferred_root=tmp_path) == [
+        str(pythonw),
+        "-m",
+        "backend.app",
+        "--host",
+        "127.0.0.1",
+    ]
+
+
+def test_python_script_command_prefers_explicit_pythonw_sibling(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    python = scripts_dir / "python.exe"
+    python.write_text("", encoding="utf-8")
+    pythonw = scripts_dir / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+    script = tmp_path / "worker.py"
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    assert subprocess_utils.python_script_command(script, "--loop", executable=python) == [
+        str(pythonw),
+        str(script),
+        "--loop",
+    ]

@@ -113,12 +113,29 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 
 - 短命令使用 `hidden_subprocess_kwargs()`，用于 `subprocess.run/check_call`，禁止弹出控制台。
 - 长驻进程使用 `background_popen_kwargs(independent=True)`，用于 `subprocess.Popen`，默认独立进程组、脱离控制台和当前 job。
+- 业务代码优先使用更高层封装：
+  - `run_hidden(...)`：一次性短命令。
+  - `popen_background(...)`：非 Python 的后台长驻进程。
+  - `python_module_command(...)` / `popen_python_module_background(...)`：后台 Python 模块服务。
+  - `python_script_command(...)` / `popen_python_script_background(...)`：后台 Python 脚本服务。
 - 后台 Python 优先用 `resolve_pythonw(ROOT_DIR, sys.executable)`，Windows 下优先 `.venv/Scripts/pythonw.exe`。
+- `dev.py` 监督器本身属于后台 Python 服务，必须用 `pythonw.exe dev.py` 启动，避免 Windows Terminal 为监督器分配伪控制台。
+- `dev.py` 内部拉起 `uvicorn` 后端时例外：必须用 `resolve_python(ROOT_DIR, sys.executable)` 选择 `python.exe`，
+  再通过隐藏启动 flags 和断开的 stdio 禁止弹窗。不要用 `pythonw.exe` 运行 uvicorn；它可能丢失正常 stdio 语义并卡在启动期。
 - 后台 npm 不直接执行 `npm.cmd`；使用 `node_npm_command(...)`，Windows 下优先转成 `node.exe npm-cli.js ...`。
 
 新增后台调用时，不要在业务文件里重新手写 `STARTUPINFO`、`CREATE_NO_WINDOW`、`DETACHED_PROCESS`、
 `CREATE_BREAKAWAY_FROM_JOB` 或 `npm.cmd` 规避逻辑。确实需要可见控制台的诊断工具，必须显式命名为
 monitor/debug，并写入系统临时目录日志，不能混入常驻服务路径。
+
+### 分层调用口径
+
+- `dev.py` 和 `scripts/codeyun_watchdog.py` 是本机启动/守护层，可以直接使用底层 `hidden_subprocess_kwargs()` 和
+  `background_popen_kwargs()`，但必须保持 `pythonw`、`node vite.js` 和 `node npm-cli.js` 规则。
+- `backend/core/runtime/**`、`backend/core/fanxiu/**`、`backend/api/**` 这类业务运行时代码，默认不要直接调用
+  `subprocess.Popen` 启动后台服务；应使用 `subprocess_utils` 的高层封装。
+- `subprocess.run` 只有在调用方本身已经是前台 CLI、测试或一次性维护脚本时可以裸用。后端服务路径里的短命令必须显式使用
+  `run_hidden(...)` 或 `hidden_subprocess_kwargs()`。
 
 ## 单实例原则
 
