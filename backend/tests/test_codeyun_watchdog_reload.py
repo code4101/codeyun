@@ -112,3 +112,18 @@ def test_unhealthy_service_restarts_without_reload_precheck(tmp_path, monkeypatc
     assert result["stopped_pids"] == [10, 11]
     assert result["started_pid"] == 22
     assert state.pending_reload_reason is None
+
+
+def test_default_reload_precheck_uses_pythonw_on_windows(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    pythonw = scripts_dir / "pythonw.exe"
+    pythonw.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(codeyun_watchdog, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(codeyun_watchdog.os, "name", "nt")
+    monkeypatch.delenv("CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND", raising=False)
+
+    command = codeyun_watchdog._resolve_reload_check_command()
+
+    assert command[:4] == [str(pythonw), "-m", "compileall", "-q"]
