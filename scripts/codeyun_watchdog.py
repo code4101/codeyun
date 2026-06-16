@@ -378,8 +378,11 @@ def _resolve_reload_check_command() -> list[str]:
         if not configured.strip():
             return []
         return shlex.split(configured, posix=os.name != "nt")
-    uv_path = shutil.which("uv") or "uv"
-    return [uv_path, "run", "python", "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
+    if os.name == "nt":
+        pythonw_path = PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe"
+        if pythonw_path.is_file():
+            return [os.fspath(pythonw_path), "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
+    return [sys.executable, "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
 
 
 def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> int:
