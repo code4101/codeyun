@@ -14,8 +14,10 @@ from backend.core.runtime.subprocess_utils import (
     background_popen_kwargs,
     hidden_subprocess_kwargs,
     node_npm_command,
+    popen_background,
     resolve_npm_executable,
     resolve_pythonw,
+    run_hidden,
 )
 
 try:
@@ -269,7 +271,7 @@ def _process_parent_map():
 
 def _run_text_command(cmd):
     try:
-        result = subprocess.run(
+        result = run_hidden(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -277,7 +279,6 @@ def _run_text_command(cmd):
             encoding="utf-8",
             errors="replace",
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except OSError:
         return ""
@@ -747,7 +748,7 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
                 "backend",
             ]
         )
-    return subprocess.Popen(cmd, cwd=root_dir, env=env, **popen_kwargs())
+    return popen_background(cmd, cwd=root_dir, env=env)
 
 
 def ensure_frontend_deps(frontend_dir, env, npm_exec):
@@ -775,11 +776,10 @@ def resolve_vite_command(frontend_dir, npm_exec):
 
 def start_frontend(frontend_dir, env, npm_exec):
     log("Launching frontend with Vite ...")
-    return subprocess.Popen(
+    return popen_background(
         resolve_vite_command(frontend_dir, npm_exec),
         cwd=frontend_dir,
         env=env,
-        **popen_kwargs(),
     )
 
 

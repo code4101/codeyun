@@ -105,3 +105,40 @@ def test_python_script_command_prefers_explicit_pythonw_sibling(monkeypatch, tmp
         str(script),
         "--loop",
     ]
+
+
+def test_run_hidden_merges_hidden_kwargs_without_duplicate_shell(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.subprocess, "run", fake_run)
+
+    subprocess_utils.run_hidden(["tool"], stdout=subprocess.PIPE)
+
+    assert calls[0][1]["shell"] is False
+    assert calls[0][1]["stdout"] == subprocess.PIPE
+    assert calls[0][1]["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+
+
+def test_popen_background_defaults_to_devnull_and_hidden(monkeypatch):
+    calls = []
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", FakePopen)
+
+    subprocess_utils.popen_background(["tool"])
+
+    kwargs = calls[0][1]
+    assert kwargs["shell"] is False
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.DEVNULL
+    assert kwargs["stderr"] == subprocess.DEVNULL
+    assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW

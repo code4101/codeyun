@@ -125,14 +125,18 @@ def node_script_command(script_path: str | Path, *args: str) -> list[str]:
 
 
 def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-    return subprocess.run(command, shell=False, **kwargs, **hidden_subprocess_kwargs())
+    kwargs.setdefault("shell", False)
+    kwargs.update(hidden_subprocess_kwargs())
+    return subprocess.run(command, **kwargs)
 
 
 def popen_background(command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
     kwargs.setdefault("stdin", subprocess.DEVNULL)
     kwargs.setdefault("stdout", subprocess.DEVNULL)
     kwargs.setdefault("stderr", subprocess.DEVNULL)
-    return subprocess.Popen(command, shell=False, **kwargs, **background_popen_kwargs(independent=True))
+    kwargs.setdefault("shell", False)
+    kwargs.update(background_popen_kwargs(independent=True))
+    return subprocess.Popen(command, **kwargs)
 
 
 def pythonw_command(

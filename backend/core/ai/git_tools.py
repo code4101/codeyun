@@ -9,6 +9,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+
 
 LOCKFILE_NAMES = {
     "package-lock.json",
@@ -294,6 +296,7 @@ def _run_git(
             errors="replace",
             timeout=timeout,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise GitToolError(f"Git 命令执行超时：{' '.join(command)}") from exc

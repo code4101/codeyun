@@ -45,7 +45,7 @@ from backend.core.ocr.preview import (
     run_paddle_ocr_preview,
 )
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import popen_background, pythonw_command
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background, pythonw_command
 from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
 from backend.db import engine, get_session
 from backend.models import DeviceFile
@@ -1464,6 +1464,7 @@ def _load_duplicate_candidates_from_everything(
             text=True,
             timeout=60,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
         if result.returncode not in {0, 1}:
             return None
@@ -3070,6 +3071,7 @@ def _probe_video_metadata(path: Path, ffprobe_bin: str) -> tuple[int | None, int
             check=True,
             timeout=8,
             text=True,
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         return None, None, None
@@ -5334,6 +5336,7 @@ def build_thumbnail_response(
                 capture_output=True,
                 check=True,
                 timeout=8,
+                **hidden_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise HTTPException(status_code=504, detail="Timed out generating video thumbnail") from exc

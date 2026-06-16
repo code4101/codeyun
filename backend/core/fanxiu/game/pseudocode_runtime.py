@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.ai.chat import OllamaClientError, chat_with_provider
-from backend.core.devices.device import build_background_popen_kwargs
 from backend.core.fanxiu.runtime.mumu_control import get_fanxiu_mainwin_root
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 
 PSEUDOCODE_DIRNAME = "伪代码"
@@ -454,7 +454,7 @@ def start_fanxiu_pseudocode_script(*, timeout: int = 120) -> dict[str, Any]:
             env=env,
             timeout=timeout,
             check=False,
-            **build_background_popen_kwargs(),
+            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("伪代码脚本运行超时") from exc
