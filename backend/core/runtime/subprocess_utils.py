@@ -13,6 +13,10 @@ WINDOWS_CREATE_NO_WINDOW = 0x08000000
 WINDOWS_DETACHED_PROCESS = 0x00000008
 
 
+def _repo_root_from_runtime() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
 def _windows_startupinfo_hidden() -> Any:
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -122,6 +126,23 @@ def node_script_command(script_path: str | Path, *args: str) -> list[str]:
     if node:
         return [node, os.fspath(script_path), *args]
     return ["node", os.fspath(script_path), *args]
+
+
+def apply_node_windows_hide_env(env: dict[str, str], *, root_dir: str | Path | None = None) -> dict[str, str]:
+    """Ensure background Node tools hide their own Windows child processes."""
+
+    if os.name != "nt":
+        return env
+    root = Path(root_dir).resolve(strict=False) if root_dir is not None else _repo_root_from_runtime()
+    preload = (root / "scripts" / "node_windows_hide_child_processes.cjs").resolve(strict=False)
+    if not preload.is_file():
+        return env
+    option = f"--require={preload.as_posix()}"
+    existing = str(env.get("NODE_OPTIONS") or "").strip()
+    if option in existing.split():
+        return env
+    env["NODE_OPTIONS"] = f"{option} {existing}".strip()
+    return env
 
 
 def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:

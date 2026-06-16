@@ -142,3 +142,18 @@ def test_popen_background_defaults_to_devnull_and_hidden(monkeypatch):
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
     assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+
+
+def test_apply_node_windows_hide_env_injects_node_options(monkeypatch, tmp_path):
+    preload = tmp_path / "scripts" / "node_windows_hide_child_processes.cjs"
+    preload.parent.mkdir()
+    preload.write_text("", encoding="utf-8")
+    env = {"NODE_OPTIONS": "--max-old-space-size=2048"}
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    result = subprocess_utils.apply_node_windows_hide_env(env, root_dir=tmp_path)
+
+    assert result is env
+    assert f"--require={preload.as_posix()}" in env["NODE_OPTIONS"]
+    assert "--max-old-space-size=2048" in env["NODE_OPTIONS"]
