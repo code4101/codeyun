@@ -21,7 +21,8 @@ from pyxllib.prog import process_runtime
 
 import uuid
 
-from backend.core.settings import get_settings
+from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.runtime.subprocess_utils import resolve_pythonw
 
 # --- Shared Constants (Consider moving to a config file) ---
 settings = get_settings()
@@ -628,9 +629,32 @@ class CommandResolver(ABC):
 class WindowsCommandResolver(CommandResolver):
     def resolve(self, command: str) -> List[str]:
         try:
-            return parse_cmdline(command)
+            return self._normalize_background_command(parse_cmdline(command))
         except Exception:
-            return command.split()
+            return self._normalize_background_command(command.split())
+
+    def _pythonw(self) -> str:
+        return resolve_pythonw(ROOT_DIR, sys.executable)
+
+    def _normalize_background_command(self, args: List[str]) -> List[str]:
+        if not args:
+            return args
+        exe_name = os.path.basename(str(args[0])).lower()
+        lowered = [str(arg).lower() for arg in args]
+        if exe_name in {"uv", "uv.exe"} and len(args) >= 3 and lowered[1] == "run":
+            if lowered[2] == "dev.py":
+                return [self._pythonw(), "dev.py", *args[3:]]
+            if lowered[2] in {"python", "python.exe", "pythonw", "pythonw.exe"} and len(args) >= 4:
+                script = str(args[3])
+                if script.lower().endswith((".py", ".pyw")):
+                    return [self._pythonw(), script, *args[4:]]
+        if exe_name in {"python", "python.exe", "py", "py.exe"} and len(args) >= 2:
+            script = str(args[1])
+            if script.lower().endswith((".py", ".pyw")):
+                return [self._pythonw(), script, *args[2:]]
+            if script == "-m":
+                return [self._pythonw(), *args[1:]]
+        return args
 
 class PosixCommandResolver(CommandResolver):
     def resolve(self, command: str) -> List[str]:

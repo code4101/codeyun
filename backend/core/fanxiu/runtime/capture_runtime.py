@@ -14,6 +14,7 @@ import psutil
 
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
@@ -30,19 +31,7 @@ MIN_CAPTURE_PCAP_BYTES = 24
 
 
 def _hidden_process_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
+    return hidden_subprocess_kwargs()
 
 
 def _now_label() -> str:
