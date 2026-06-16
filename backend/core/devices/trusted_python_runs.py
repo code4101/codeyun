@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.subprocess_utils import popen_background, pythonw_command, run_hidden
+from backend.core.runtime.process_launcher import popen_service, python_service_command, run_quiet
 from backend.core.settings import get_settings
 
 
@@ -288,12 +288,12 @@ def start_trusted_python_run(
     run_env = os.environ.copy()
     run_env["PYTHONIOENCODING"] = "utf-8"
     run_env.update(sanitized_env)
-    cmd = pythonw_command(os.fspath(runner_path), executable=sys.executable)
+    cmd = python_service_command(os.fspath(runner_path), executable=sys.executable)
 
     if not async_run:
         try:
             with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
-                proc = run_hidden(
+                proc = run_quiet(
                     cmd,
                     cwd=os.fspath(cwd_path),
                     env=run_env,
@@ -309,7 +309,7 @@ def start_trusted_python_run(
     stdout_file = stdout_path.open("wb")
     stderr_file = stderr_path.open("wb")
     try:
-        proc = popen_background(
+        proc = popen_service(
             cmd,
             cwd=os.fspath(cwd_path),
             env=run_env,

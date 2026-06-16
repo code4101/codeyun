@@ -22,7 +22,7 @@ from pyxllib.prog import (
 )
 
 from backend.core.runtime.ocr_service import get_ocr_service_base_url, get_ocr_service_status, start_ocr_service
-from backend.core.runtime.subprocess_utils import popen_python_script_background
+from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.access.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
 
@@ -411,7 +411,7 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
 
     with service_log_path.open("ab") as log_file:
         log_file.write(f"\n[{_now_text()}] CodeYun start behavior tree\n".encode("utf-8"))
-        proc = popen_python_script_background(
+        proc = popen_python_script_service(
             script_path,
             executable=python_path,
             cwd=os.fspath(fx_root),

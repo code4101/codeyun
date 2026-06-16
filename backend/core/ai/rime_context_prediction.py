@@ -17,7 +17,7 @@ import uuid
 import jieba
 from pypinyin import Style, lazy_pinyin
 
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background
+from backend.core.runtime.process_launcher import popen_service, run_quiet
 
 
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"
@@ -560,13 +560,12 @@ def _restart_weasel_server(deployer: Path | None) -> dict[str, Any]:
         }
 
     try:
-        stop_completed = subprocess.run(
+        stop_completed = run_quiet(
             ["taskkill", "/F", "/IM", "WeaselServer.exe"],
             check=False,
             capture_output=True,
             text=True,
             timeout=10,
-            **hidden_subprocess_kwargs(),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {
@@ -578,7 +577,7 @@ def _restart_weasel_server(deployer: Path | None) -> dict[str, Any]:
 
     time.sleep(0.5)
     try:
-        popen_background(
+        popen_service(
             [str(server)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -619,13 +618,12 @@ def deploy_rime_weasel() -> dict[str, Any]:
         }
 
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             [str(deployer), "/deploy"],
             check=False,
             capture_output=True,
             text=True,
             timeout=180,
-            **hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return {

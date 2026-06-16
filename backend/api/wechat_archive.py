@@ -22,7 +22,7 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from backend.core.runtime.background_task_queue import background_task_queue
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
 from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
@@ -684,7 +684,7 @@ def _wechat_live_process_device_roots() -> tuple[Path, ...]:
     if os.name != "nt":
         return ()
     try:
-        completed = subprocess.run(
+        completed = run_quiet(
             [
                 "powershell",
                 "-NoProfile",
@@ -699,7 +699,6 @@ def _wechat_live_process_device_roots() -> tuple[Path, ...]:
             capture_output=True,
             text=True,
             timeout=3,
-            **hidden_subprocess_kwargs(),
         )
     except Exception:
         return ()

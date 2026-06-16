@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -10,10 +11,17 @@ from typing import Any
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if os.fspath(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, os.fspath(ROOT_DIR))
+
+from backend.core.runtime.process_launcher import popen_python_script_service
+
 MONITOR_DIR = Path(tempfile.gettempdir()) / "codeyun" / "visible-console-monitor"
 EVENTS_PATH = MONITOR_DIR / "events_24h.jsonl"
 BASELINE_PATH = MONITOR_DIR / "codeyun_popup_24h_baseline.json"
 STATUS_PATH = MONITOR_DIR / "codeyun_popup_24h_status.json"
+MONITOR_SCRIPT = ROOT_DIR / "scripts" / "codeyun_visible_console_monitor.py"
+MONITOR_STATUS_PATH = MONITOR_DIR / "codeyun_visible_console_monitor_status.json"
 
 
 def _event_time(event: dict[str, Any]) -> str:
@@ -42,6 +50,62 @@ def _load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _load_monitor_status() -> dict[str, Any]:
+    try:
+        data = json.loads(MONITOR_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    status = data if isinstance(data, dict) else {}
+    pid = int(status.get("pid") or 0)
+    status["alive"] = _pid_alive(pid)
+    status["status_path"] = os.fspath(MONITOR_STATUS_PATH)
+    status["script"] = os.fspath(MONITOR_SCRIPT)
+    return status
+
+
+def ensure_monitor_running() -> dict[str, Any]:
+    status = _load_monitor_status()
+    if status.get("alive"):
+        status["started_now"] = False
+        return status
+
+    MONITOR_DIR.mkdir(parents=True, exist_ok=True)
+    proc = popen_python_script_service(
+        MONITOR_SCRIPT,
+        "--loop",
+        "--duration-seconds",
+        str(24 * 60 * 60),
+        preferred_root=ROOT_DIR,
+        executable=sys.executable,
+        cwd=os.fspath(ROOT_DIR),
+    )
+    status = {
+        "pid": int(proc.pid),
+        "alive": True,
+        "started_now": True,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status_path": os.fspath(MONITOR_STATUS_PATH),
+        "script": os.fspath(MONITOR_SCRIPT),
+    }
+    return status
 
 
 def _chain_text(event: dict[str, Any]) -> str:
@@ -102,7 +166,7 @@ def _summarize_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def audit_since(started_at: str) -> dict[str, Any]:
+def audit_since(started_at: str, *, monitor_status: dict[str, Any] | None = None) -> dict[str, Any]:
     events = [event for event in _load_events() if _event_time(event) >= started_at]
     codeyun_events = [event for event in events if is_codeyun_event(event)]
     external_events = [event for event in events if not is_codeyun_event(event)]
@@ -110,6 +174,8 @@ def audit_since(started_at: str) -> dict[str, Any]:
     status = {
         "baseline_started_at": started_at,
         "checked_at": now,
+        "coverage_valid": bool((monitor_status or _load_monitor_status()).get("alive")),
+        "monitor": monitor_status or _load_monitor_status(),
         "total_events": len(events),
         "codeyun_events": len(codeyun_events),
         "external_events": len(external_events),
@@ -122,32 +188,36 @@ def audit_since(started_at: str) -> dict[str, Any]:
 
 
 def reset_baseline() -> dict[str, Any]:
+    monitor_status = ensure_monitor_running()
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     baseline = {
         "started_at": started_at,
         "events_path": os.fspath(EVENTS_PATH),
         "status_path": os.fspath(STATUS_PATH),
+        "monitor_status_path": os.fspath(MONITOR_STATUS_PATH),
         "root_dir": os.fspath(ROOT_DIR),
     }
     BASELINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     BASELINE_PATH.write_text(json.dumps(baseline, ensure_ascii=False, indent=2), encoding="utf-8")
-    return audit_since(started_at)
+    return audit_since(started_at, monitor_status=monitor_status)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit visible console popup events for CodeYun process chains.")
     parser.add_argument("--reset-baseline", action="store_true")
+    parser.add_argument("--ensure-monitor", action="store_true")
     args = parser.parse_args()
 
     if args.reset_baseline:
         status = reset_baseline()
     else:
+        monitor_status = ensure_monitor_running() if args.ensure_monitor else _load_monitor_status()
         baseline = _load_baseline()
         started_at = str(baseline.get("started_at") or "")
         if not started_at:
             status = reset_baseline()
         else:
-            status = audit_since(started_at)
+            status = audit_since(started_at, monitor_status=monitor_status)
     print(json.dumps(status, ensure_ascii=False, indent=2))
 
 

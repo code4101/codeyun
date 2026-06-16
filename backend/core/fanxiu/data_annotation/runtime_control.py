@@ -75,7 +75,7 @@ from backend.core.fanxiu.data_annotation.state import (
     write_data_annotation_json,
     write_data_annotation_world_facts,
 )
-from backend.core.runtime.subprocess_utils import popen_python_script_background
+from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
 
 
@@ -234,7 +234,7 @@ def ensure_doctor_watch_background(
     stdout_fh = stdout_path.open("ab")
     stderr_fh = stderr_path.open("ab")
     try:
-        process = popen_python_script_background(
+        process = popen_python_script_service(
             script_path,
             *command_args,
             preferred_root=repo_root,

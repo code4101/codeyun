@@ -13,7 +13,7 @@ from typing import Any
 from pyxllib.file.game_assets import extract_wwise_wem_entries, parse_wwise_bnk_chunks, parse_wwise_didx_entries
 
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root, resolve_fanxiu_resource_root
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.process_launcher import run_quiet
 
 
 FANXIU_VGMSTREAM_CLI_ENV = "FANXIU_VGMSTREAM_CLI"
@@ -81,13 +81,12 @@ def _resolve_ffmpeg(path: str | Path | None = None) -> str:
 
 
 def _run_command(args: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return run_quiet(
         args,
         check=False,
         capture_output=True,
         text=True,
         timeout=timeout,
-        **hidden_subprocess_kwargs(),
     )
 
 

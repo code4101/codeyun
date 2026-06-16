@@ -26,7 +26,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background
+from backend.core.runtime.process_launcher import popen_service, run_quiet
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
@@ -188,14 +188,13 @@ def _mumu_manager_adb_serial_candidates() -> list[str]:
     if manager_path is None:
         return []
     try:
-        process = subprocess.run(
+        process = run_quiet(
             [str(manager_path), "info", "--vmindex", "all"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=5,
-            **hidden_subprocess_kwargs(),
         )
     except Exception:
         return []
@@ -308,14 +307,13 @@ def _recover_mumu_adb_ports() -> bool:
             return False
         for command in (["kill-server"], ["start-server"]):
             try:
-                subprocess.run(
+                run_quiet(
                     [str(adb_path), *command],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    **hidden_subprocess_kwargs(),
                 )
             except Exception:
                 pass
@@ -326,14 +324,13 @@ def _recover_mumu_adb_ports() -> bool:
             if not _is_local_mumu_adb_serial(serial):
                 continue
             try:
-                subprocess.run(
+                run_quiet(
                     [str(adb_path), "connect", serial],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    **hidden_subprocess_kwargs(),
                 )
             except Exception:
                 continue
@@ -393,25 +390,23 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
         if parsed is None:
             continue
         try:
-            size_process = subprocess.run(
+            size_process = run_quiet(
                 [str(adb_path), "-s", serial, "shell", "wm size"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=5,
-                **hidden_subprocess_kwargs(),
             )
             if size_process.returncode != 0:
                 raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
-            input_process = subprocess.run(
+            input_process = run_quiet(
                 [str(adb_path), "-s", serial, "shell", command],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout_s,
-                **hidden_subprocess_kwargs(),
             )
             if input_process.returncode != 0:
                 raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
@@ -562,11 +557,10 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             raise RuntimeError(session_error) from session_exc
         adb_path = fanxiu_android_proxy_service.adb_path()
         serial = (_mumu_adb_serial_candidates() or [f"127.0.0.1:{MUMU_ADB_PORTS[0]}"])[0]
-        process = subprocess.run(
+        process = run_quiet(
             [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
             capture_output=True,
             timeout=6,
-            **hidden_subprocess_kwargs(),
         )
         if process.returncode == 0 and process.stdout:
             data = process.stdout
@@ -1292,7 +1286,7 @@ def start_window_capture_preview() -> dict[str, Any]:
         encoding="utf-8",
         errors="replace",
     ) as stderr_file:
-        process = popen_background(
+        process = popen_service(
             command,
             cwd=os.fspath(ROOT_DIR),
             env=_build_child_env(),

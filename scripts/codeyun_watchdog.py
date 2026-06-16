@@ -19,7 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if os.fspath(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, os.fspath(PROJECT_ROOT))
 
-from backend.core.runtime.subprocess_utils import popen_background, resolve_pythonw, run_hidden
+from backend.core.runtime.process_launcher import popen_service, resolve_pythonw, run_quiet
+from scripts.codeyun_popup_audit import ensure_monitor_running
 
 try:
     import psutil
@@ -33,6 +34,7 @@ DEFAULT_INTERVAL_SECONDS = 60
 DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_STARTUP_GRACE_SECONDS = 180.0
 DEFAULT_RELOAD_QUIET_SECONDS = 120.0
+DEFAULT_VISIBLE_CONSOLE_MONITOR_ENABLED = True
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw", "uv.exe", "uv"}
 RELOAD_WATCH_TARGETS = ("backend", "scripts", "dev.py", "pyproject.toml", "uv.lock", ".env")
 RELOAD_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
@@ -177,9 +179,12 @@ def _matches_codeyun_dev(proc: Any) -> bool:
         return True
     if "uvicorn" in cmdline and ("backend.app:app" in cmdline or "backend.core.runtime.uvicorn_hidden" in cmdline):
         return True
-    if name in {"node.exe", "node"} and "vite" in cmdline:
+    if name in {"node.exe", "node"} and "vite" in cmdline and " build" not in cmdline:
         return True
-    if name in {"cmd.exe", "cmd"} and ("vite" in cmdline or ("npm" in cmdline and "dev" in cmdline)):
+    if name in {"cmd.exe", "cmd"} and (
+        ("vite" in cmdline and " build" not in cmdline)
+        or ("npm" in cmdline and " dev" in cmdline)
+    ):
         return True
     return False
 
@@ -369,7 +374,7 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
     env.setdefault("PYTHONIOENCODING", "utf-8")
     with stdout_path.open("ab") as stdout_file, stderr_path.open("ab") as stderr_file:
         stdout_file.write(f"\n[{_now()}] CodeYun watchdog detached start: {' '.join(command)}\n".encode("utf-8"))
-        proc = popen_background(
+        proc = popen_service(
             command,
             cwd=os.fspath(PROJECT_ROOT),
             env=env,
@@ -435,7 +440,7 @@ def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
         return True
     _log(log_path, f"Reload precheck: {' '.join(command)}")
     try:
-        result = run_hidden(
+        result = run_quiet(
             command,
             cwd=os.fspath(PROJECT_ROOT),
             stdout=subprocess.PIPE,
@@ -510,6 +515,19 @@ def _restart_dev_runner(args: argparse.Namespace, log_path: Path, reason: str) -
     return {"stopped_pids": stopped_pids, "started_pid": started_pid}
 
 
+def _ensure_visible_console_monitor(args: argparse.Namespace, log_path: Path) -> dict[str, Any] | None:
+    if not getattr(args, "visible_console_monitor", DEFAULT_VISIBLE_CONSOLE_MONITOR_ENABLED):
+        return None
+    try:
+        status = ensure_monitor_running()
+    except Exception as exc:
+        _log(log_path, f"Visible console monitor check failed: {exc}")
+        return {"ok": False, "error": str(exc)}
+    if status.get("started_now"):
+        _log(log_path, f"Visible console monitor started: PID {status.get('pid')}")
+    return {"ok": True, **status}
+
+
 def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, log_path: Path) -> dict[str, Any] | None:
     if not args.reload:
         return None
@@ -573,13 +591,19 @@ def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, 
 
 def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> dict[str, Any]:
     log_path = Path(args.log_path).resolve(strict=False)
+    monitor_status = _ensure_visible_console_monitor(args, log_path)
     health = check_health(args.backend_url, args.frontend_url, args.timeout)
     if health["healthy"]:
         reload_result = _maybe_handle_stable_reload(args, state, log_path) if state is not None else None
         if reload_result is not None:
-            return {"health": health, **reload_result}
+            return {"health": health, "visible_console_monitor": monitor_status, **reload_result}
         _log(log_path, "Health check ok; no restart needed.")
-        return {"status": "healthy", "health": health, "started_pid": None}
+        return {
+            "status": "healthy",
+            "health": health,
+            "visible_console_monitor": monitor_status,
+            "started_pid": None,
+        }
 
     dev_processes = list_dev_processes()
     startup_age = _dev_process_startup_age(dev_processes)
@@ -593,6 +617,7 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
         return {
             "status": "starting",
             "health": health,
+            "visible_console_monitor": monitor_status,
             "dev_processes": dev_processes,
             "startup_age": startup_age,
             "started_pid": None,
@@ -612,6 +637,7 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
     return {
         "status": "restarted",
         "health": health,
+        "visible_console_monitor": monitor_status,
         **restart,
     }
 
@@ -663,6 +689,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--startup-grace",
         type=float,
         default=float(os.getenv("CODEYUN_WATCHDOG_STARTUP_GRACE_SECONDS", DEFAULT_STARTUP_GRACE_SECONDS)),
+    )
+    parser.add_argument(
+        "--visible-console-monitor",
+        action=argparse.BooleanOptionalAction,
+        default=str(os.getenv("CODEYUN_VISIBLE_CONSOLE_MONITOR", "1")).strip().lower()
+        not in {"0", "false", "no", "off"},
+        help="Keep the visible console popup monitor alive while the watchdog is running.",
     )
     parser.add_argument("--log-path", default=os.getenv("CODEYUN_WATCHDOG_LOG", os.fspath(_default_log_path())))
     parser.add_argument("--dev-stdout", default=os.getenv("CODEYUN_DEV_STDOUT_LOG", os.fspath(_default_dev_stdout_path())))

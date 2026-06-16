@@ -22,7 +22,7 @@ from pyxllib.prog import process_runtime
 import uuid
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background, resolve_python, resolve_pythonw
+from backend.core.runtime.process_launcher import background_popen_kwargs, popen_service, resolve_python, resolve_pythonw, run_quiet
 
 # --- Shared Constants (Consider moving to a config file) ---
 settings = get_settings()
@@ -58,7 +58,7 @@ class WindowsProcessEntry32(ctypes.Structure):
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
-    from backend.core.runtime.subprocess_utils import background_popen_kwargs
+    from backend.core.runtime.process_launcher import background_popen_kwargs
 
     return background_popen_kwargs(independent=independent)
 
@@ -101,13 +101,12 @@ def _taskkill_process_tree(pid: int, timeout: float = 8.0) -> bool:
         return False
 
     try:
-        result = subprocess.run(
+        result = run_quiet(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return not _pid_exists(pid)
@@ -1327,7 +1326,7 @@ class LocalDevice(BaseDevice):
                 follow_offset = log_f.tell()
 
             with open(log_file_path, 'ab', buffering=0) as log_sink:
-                proc = popen_background(
+                proc = popen_service(
                     cmd_args,
                     cwd=actual_cwd,
                     env=run_env,

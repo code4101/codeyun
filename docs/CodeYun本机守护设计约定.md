@@ -22,6 +22,7 @@ CodeYun 后端启动
 
 CodeYun 本机守护
   -> 独立进程，使用系统临时目录中的 pid/log
+  -> 确认可见控制台弹窗监控器存活
   -> 定期检查后端和前端健康状态
   -> 服务不可用时调用 dev.py 重新拉起
   -> 服务健康时监控源码变化
@@ -54,6 +55,7 @@ CodeYun 后端只负责自举守护：
 - 不依赖 CodeYun 后端 API 管理自己。
 - 后端或前端异常时负责恢复 CodeYun。
 - 代码变化时负责判断是否适合重启。
+- 24 小时弹窗观察期内负责保持可见控制台监控器存活；监控器消失时重新拉起。
 - 自身必须足够保守，避免重启风暴。
 
 ### dev.py
@@ -109,33 +111,53 @@ pythonw.exe -m compileall -q backend scripts dev.py
 ## 后台子进程启动规范
 
 CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和公网前端构建，必须统一使用
-`backend.core.runtime.subprocess_utils`：
+`backend.core.runtime.process_launcher`：
 
-- 短命令使用 `hidden_subprocess_kwargs()`，用于 `subprocess.run/check_call`，禁止弹出控制台。
-- 长驻进程使用 `background_popen_kwargs(independent=True)`，用于 `subprocess.Popen`，默认独立进程组、脱离控制台和当前 job。
-- 业务代码优先使用更高层封装：
-  - `run_hidden(...)`：一次性短命令。
-  - `popen_background(...)`：非 Python 的后台长驻进程。
-  - `python_module_command(...)` / `popen_python_module_background(...)`：后台 Python 模块服务。
-  - `python_script_command(...)` / `popen_python_script_background(...)`：后台 Python 脚本服务。
+- `run_quiet(...)`：一次性短命令，默认禁止 Windows 控制台弹出。
+- `check_call_quiet(...)`：需要失败即抛出的短命令。
+- `check_output_quiet(...)`：需要读取 stdout 的短命令。
+- `popen_service(...)`：非 Python 的后台长驻进程，默认独立进程组、脱离控制台和当前 job。
+- `python_module_service_command(...)` / `popen_python_module_service(...)`：后台 Python 模块服务。
+- `python_script_service_command(...)` / `popen_python_script_service(...)`：后台 Python 脚本服务。
+- `node_npm_command(...)` / `node_script_command(...)`：后台 Node/NPM 命令，Windows 下绕开 `npm.cmd`。
+- `apply_background_node_env(...)`：为后台 Node 工具注入 child_process 隐藏窗口补丁。
+
+`backend.core.runtime.subprocess_utils` 是底层实现层，只保存 Windows flags、`pythonw` 解析、`node npm-cli.js`
+解析等细节。业务模块、API 模块、守护脚本和 `dev.py` 不应直接导入它；新增调用必须走
+`process_launcher`。
+
+底层默认策略：
+
 - 后台 Python 优先用 `resolve_pythonw(ROOT_DIR, sys.executable)`，Windows 下优先 `.venv/Scripts/pythonw.exe`。
 - `dev.py` 监督器本身属于后台 Python 服务，必须用 `pythonw.exe dev.py` 启动，避免 Windows Terminal 为监督器分配伪控制台。
 - `dev.py` 内部拉起 `uvicorn` 后端时例外：必须用 `resolve_python(ROOT_DIR, sys.executable)` 选择 `python.exe`，
   再通过隐藏启动 flags 和断开的 stdio 禁止弹窗。不要用 `pythonw.exe` 运行 uvicorn；它可能丢失正常 stdio 语义并卡在启动期。
 - 后台 npm 不直接执行 `npm.cmd`；使用 `node_npm_command(...)`，Windows 下优先转成 `node.exe npm-cli.js ...`。
 
-新增后台调用时，不要在业务文件里重新手写 `STARTUPINFO`、`CREATE_NO_WINDOW`、`DETACHED_PROCESS`、
-`CREATE_BREAKAWAY_FROM_JOB` 或 `npm.cmd` 规避逻辑。确实需要可见控制台的诊断工具，必须显式命名为
-monitor/debug，并写入系统临时目录日志，不能混入常驻服务路径。
+新增后台调用时，不要在业务文件里重新手写 `subprocess.run/Popen`、`STARTUPINFO`、`CREATE_NO_WINDOW`、
+`DETACHED_PROCESS`、`CREATE_BREAKAWAY_FROM_JOB` 或 `npm.cmd` 规避逻辑。确实需要可见控制台的诊断工具，
+必须显式命名为 monitor/debug，并写入系统临时目录日志，不能混入常驻服务路径。
 
 ### 分层调用口径
 
-- `dev.py` 和 `scripts/codeyun_watchdog.py` 是本机启动/守护层，可以直接使用底层 `hidden_subprocess_kwargs()` 和
-  `background_popen_kwargs()`，但必须保持 `pythonw`、`node vite.js` 和 `node npm-cli.js` 规则。
+- `dev.py` 和 `scripts/codeyun_watchdog.py` 是本机启动/守护层，也统一使用 `process_launcher`。
 - `backend/core/runtime/**`、`backend/core/fanxiu/**`、`backend/api/**` 这类业务运行时代码，默认不要直接调用
-  `subprocess.Popen` 启动后台服务；应使用 `subprocess_utils` 的高层封装。
-- `subprocess.run` 只有在调用方本身已经是前台 CLI、测试或一次性维护脚本时可以裸用。后端服务路径里的短命令必须显式使用
-  `run_hidden(...)` 或 `hidden_subprocess_kwargs()`。
+  `subprocess.Popen` 启动后台服务；应使用 `process_launcher`。
+- `subprocess.run/check_output/check_call` 只有在调用方本身已经是前台 CLI、测试或一次性维护脚本时可以裸用。
+  后端服务路径里的短命令必须使用 `run_quiet(...)`、`check_call_quiet(...)` 或 `check_output_quiet(...)`。
+- `backend/tests/test_subprocess_usage_policy.py` 会审计后端、`dev.py` 和本机守护脚本，阻止运行时路径重新绕回
+  裸 `subprocess` 或底层 `subprocess_utils`。
+
+## 可见控制台监控
+
+弹窗问题的 24 小时观察不能只看“日志里没有事件”，还必须证明监控器本身持续有效。
+
+- 正式监控脚本为 `scripts/codeyun_visible_console_monitor.py`。
+- 审计入口为 `scripts/codeyun_popup_audit.py --ensure-monitor`。
+- 审计状态中的 `coverage_valid=true` 才表示监控覆盖有效。
+- 如果监控器死亡，审计入口和 CodeYun 本机守护都会用无窗口方式重新拉起。
+- 监控器死亡后重新拉起时，24 小时无弹窗的有效观察窗口必须重新计算；不能把监控断档前后的时间拼起来当作连续证据。
+- 当前 24 小时基线写在系统临时目录 `codeyun/visible-console-monitor/codeyun_popup_24h_baseline.json`。
 
 ## 单实例原则
 
