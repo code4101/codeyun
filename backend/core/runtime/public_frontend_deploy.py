@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, node_script_command
+from backend.core.runtime.subprocess_utils import apply_node_windows_hide_env, hidden_subprocess_kwargs, node_script_command
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -166,6 +166,7 @@ def _build_frontend(timeout_seconds: float = 300.0) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    apply_node_windows_hide_env(env, root_dir=ROOT_DIR)
     vite_entry = _frontend_dir() / "node_modules" / "vite" / "bin" / "vite.js"
     if not vite_entry.is_file():
         raise PublicFrontendDeployError(f"前端构建失败：缺少 Vite 入口 {vite_entry}，请先安装前端依赖。")

@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 
 from backend.core.runtime.subprocess_utils import (
+    apply_node_windows_hide_env,
     background_popen_kwargs,
     hidden_subprocess_kwargs,
     node_npm_command,
@@ -132,6 +133,7 @@ def setup_env(root_dir):
     python_executable = sys.executable
     env["CODEYUN_ENV"] = "development"
     env["PYTHONUNBUFFERED"] = "1"
+    apply_node_windows_hide_env(env, root_dir=root_dir)
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):
