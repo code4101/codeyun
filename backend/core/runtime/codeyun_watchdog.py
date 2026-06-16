@@ -211,7 +211,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
         str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60"),
     ]
     if str(os.getenv("CODEYUN_WATCHDOG_RELOAD", "1")).strip().lower() in {"0", "false", "no", "off"}:
-        command.append("--no-reload")
+        command_args.append("--no-reload")
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")

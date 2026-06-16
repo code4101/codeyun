@@ -15,6 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -426,6 +427,7 @@ def _probe_codex_cli(provider: AiProviderConfig) -> None:
             errors="replace",
             timeout=min(15.0, max(1.0, provider.timeout_seconds)),
             check=False,
+            **hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as exc:
         raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc
@@ -587,6 +589,7 @@ def _chat_with_codex_cli(
                 cwd=os.fspath(workspace_dir),
                 timeout=timeout_seconds or provider.timeout_seconds,
                 check=False,
+                **hidden_subprocess_kwargs(),
             )
         except FileNotFoundError as exc:
             raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc

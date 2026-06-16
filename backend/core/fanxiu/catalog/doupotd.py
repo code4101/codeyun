@@ -22,6 +22,7 @@ from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.catalog.lua_config import load_fanxiu_lang_map, parse_fanxiu_generated_lua_config
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root
 from backend.core.fanxiu.catalog.wiki import strip_fanxiu_rich_text
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 
 
 DOUPOTD_CATALOG_SCHEMA_VERSION = 2
@@ -6189,6 +6190,7 @@ def _resolve_tshark_candidate(tshark_path: str | Path | None = None) -> tuple[st
                     encoding="utf-8",
                     errors="replace",
                     timeout=20,
+                    **hidden_subprocess_kwargs(),
                 )
                 version = next((line.strip() for line in output.splitlines() if line.strip()), "")
                 selected = str(candidate)

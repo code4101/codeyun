@@ -23,6 +23,7 @@ from backend.core.ai.chat import (
     chat_with_provider,
 )
 from backend.core.runtime.background_task_queue import background_task_queue
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 from backend.core.notes.progress import get_completion_progress_expr, is_note_system_custom_field_key
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import (
@@ -669,6 +670,7 @@ def _run_test_command(command: str) -> dict[str, Any]:
         errors="replace",
         timeout=300,
         check=False,
+        **hidden_subprocess_kwargs(),
     )
     return {
         "command": command,

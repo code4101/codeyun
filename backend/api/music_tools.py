@@ -676,6 +676,7 @@ def _probe_audio_duration(path: Path) -> float | None:
         text=True,
         timeout=20,
         check=False,
+        **hidden_subprocess_kwargs(),
     )
     try:
         return round(float((completed.stdout or "").strip()), 3)
@@ -712,6 +713,7 @@ def _analyze_audio_features(path: Path, *, max_seconds: int = 120, sample_rate: 
             text=True,
             timeout=max_seconds + 60,
             check=False,
+            **hidden_subprocess_kwargs(),
         )
         if completed.returncode != 0 or not raw_path.exists():
             return {"available": False, "reason": (completed.stderr or completed.stdout or "ffmpeg decode failed").strip()[:300]}

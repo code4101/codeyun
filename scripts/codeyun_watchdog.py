@@ -15,7 +15,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.core.runtime.subprocess_utils import background_popen_kwargs, hidden_subprocess_kwargs, resolve_pythonw
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if os.fspath(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, os.fspath(PROJECT_ROOT))
+
+from backend.core.runtime.subprocess_utils import popen_background, resolve_pythonw, run_hidden
 
 try:
     import psutil
@@ -23,7 +27,6 @@ except ImportError:  # pragma: no cover - CodeYun runtime includes psutil.
     psutil = None
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000/api/health"
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173/"
 DEFAULT_INTERVAL_SECONDS = 60
@@ -366,15 +369,12 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
     env.setdefault("PYTHONIOENCODING", "utf-8")
     with stdout_path.open("ab") as stdout_file, stderr_path.open("ab") as stderr_file:
         stdout_file.write(f"\n[{_now()}] CodeYun watchdog detached start: {' '.join(command)}\n".encode("utf-8"))
-        proc = subprocess.Popen(
+        proc = popen_background(
             command,
             cwd=os.fspath(PROJECT_ROOT),
             env=env,
-            stdin=subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,
-            shell=False,
-            **background_popen_kwargs(independent=True),
         )
     _log(log_path, f"Started detached CodeYun dev runner PID {proc.pid}.")
     return int(proc.pid)
@@ -435,7 +435,7 @@ def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
         return True
     _log(log_path, f"Reload precheck: {' '.join(command)}")
     try:
-        result = subprocess.run(
+        result = run_hidden(
             command,
             cwd=os.fspath(PROJECT_ROOT),
             stdout=subprocess.PIPE,
@@ -445,7 +445,6 @@ def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
             errors="replace",
             timeout=max(1.0, float(args.reload_check_timeout)),
             check=False,
-            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _log(log_path, f"Reload precheck failed to run: {exc}")
