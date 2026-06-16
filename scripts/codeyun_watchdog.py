@@ -174,6 +174,8 @@ def _matches_codeyun_dev(proc: Any) -> bool:
         return False
     if "codeyun_watchdog.py" in cmdline:
         return False
+    if "compileall" in cmdline:
+        return False
     if "dev.py" in cmdline:
         return True
     if name in {"uv.exe", "uv"} and "run" in cmdline and "dev.py" in cmdline:
