@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,6 +12,7 @@ import psutil
 from pyxllib.prog import process_runtime
 
 from backend.core.runtime.proxy_traffic_audit import get_proxy_traffic_audit_db_path, summarize_proxy_traffic
+from backend.core.runtime.subprocess_utils import popen_python_module_background
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -153,10 +153,7 @@ def start_proxy_traffic_audit(wait_seconds: float = 2.0) -> dict[str, Any]:
             "no_proxy": "*",
         }
     )
-    command = [
-        sys.executable,
-        "-m",
-        PROXY_TRAFFIC_AUDIT_MODULE,
+    command_args = [
         "--interval",
         str(get_proxy_traffic_audit_interval_seconds()),
         "--db",
@@ -167,13 +164,14 @@ def start_proxy_traffic_audit(wait_seconds: float = 2.0) -> dict[str, Any]:
             log_file.write(
                 f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] CodeYun start proxy traffic audit\n".encode("utf-8")
             )
-            proc = subprocess.Popen(
-                command,
+            proc = popen_python_module_background(
+                PROXY_TRAFFIC_AUDIT_MODULE,
+                *command_args,
+                preferred_root=ROOT_DIR,
                 cwd=os.fspath(ROOT_DIR),
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                **process_runtime.build_background_popen_kwargs(independent=True),
             )
     except OSError as exc:
         raise ProxyTrafficAuditError(f"启动代理流量审计失败：{exc}") from exc

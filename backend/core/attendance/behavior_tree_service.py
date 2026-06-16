@@ -12,7 +12,8 @@ from typing import Any
 
 import psutil
 
-from backend.core.devices.device import build_background_popen_kwargs, process_candidates_by_name
+from backend.core.devices.device import process_candidates_by_name
+from backend.core.runtime.subprocess_utils import popen_python_script_background
 from backend.core.settings import ROOT_DIR
 
 
@@ -498,13 +499,13 @@ def start_attendance_behavior_tree_service(*, replace_existing: bool = True) -> 
 
     with service_log_path.open("ab") as log_file:
         log_file.write(f"\n[{_now_text()}] CodeYun start attendance behavior tree\n".encode("utf-8"))
-        proc = subprocess.Popen(  # noqa: S603 - explicit local Python and script paths.
-            [os.fspath(python_path), os.fspath(script_path)],
+        proc = popen_python_script_background(
+            script_path,
+            executable=python_path,
             cwd=os.fspath(cwd),
             env=env,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            **build_background_popen_kwargs(independent=True),
         )
 
     time.sleep(0.5)

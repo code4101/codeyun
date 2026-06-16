@@ -4,7 +4,6 @@ import base64
 import os
 import socket
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,6 +15,7 @@ import requests
 from pyxllib.prog import process_runtime
 
 from backend.core.ocr.preview import OcrPreviewError, OcrShapeType
+from backend.core.runtime.subprocess_utils import popen_python_module_background
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -269,18 +269,18 @@ def start_ocr_service(
     )
     if env_overrides:
         env.update({key: str(value) for key, value in env_overrides.items() if value is not None})
-    python_path = sys.executable
-    command = [python_path, "-m", OCR_SERVICE_MODULE, "--host", host, "--port", str(port)]
+    command_args = ["--host", host, "--port", str(port)]
     try:
         with log_path.open("ab") as log_file:
             log_file.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] CodeYun start OCR service\n".encode("utf-8"))
-            proc = subprocess.Popen(
-                command,
+            proc = popen_python_module_background(
+                OCR_SERVICE_MODULE,
+                *command_args,
+                preferred_root=ROOT_DIR,
                 cwd=os.fspath(ROOT_DIR),
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                **process_runtime.build_background_popen_kwargs(independent=True),
             )
     except OSError as exc:
         raise OcrPreviewError(f"启动 OCR 服务失败：{exc}") from exc

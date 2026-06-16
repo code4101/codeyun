@@ -15,6 +15,7 @@ from backend.core.runtime.subprocess_utils import (
     hidden_subprocess_kwargs,
     node_npm_command,
     resolve_npm_executable,
+    resolve_pythonw,
 )
 
 try:
@@ -132,10 +133,7 @@ def setup_env(root_dir):
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):
-        if os.name == "nt" and os.path.basename(sys.executable).lower() == "pythonw.exe":
-            python_name = "pythonw.exe"
-        else:
-            python_name = "python.exe" if os.name == "nt" else "python"
+        python_name = "python.exe" if os.name == "nt" else "python"
         candidate = os.path.join(venv_scripts, python_name)
         if os.path.exists(candidate):
             python_executable = candidate
@@ -538,6 +536,8 @@ def popen_kwargs():
     kwargs = {
         "shell": False,
         "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
     }
     kwargs.update(background_popen_kwargs(independent=True))
     return kwargs
@@ -718,16 +718,27 @@ def start_backend(root_dir, env, python_executable, reload_mode, backend_host, b
     else:
         log("Launching backend with uvicorn (reload disabled) ...")
 
-    cmd = [
-        python_executable,
-        "-m",
-        "uvicorn",
-        "backend.app:app",
-        "--host",
-        backend_host,
-        "--port",
-        str(backend_port),
-    ]
+    if os.name == "nt":
+        cmd = [
+            resolve_pythonw(root_dir, python_executable),
+            "-m",
+            "backend.core.runtime.uvicorn_hidden",
+            "--host",
+            backend_host,
+            "--port",
+            str(backend_port),
+        ]
+    else:
+        cmd = [
+            python_executable,
+            "-m",
+            "uvicorn",
+            "backend.app:app",
+            "--host",
+            backend_host,
+            "--port",
+            str(backend_port),
+        ]
     if reload_mode == "uvicorn":
         cmd.extend(
             [

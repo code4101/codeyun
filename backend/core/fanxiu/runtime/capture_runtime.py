@@ -14,7 +14,7 @@ import psutil
 
 from backend.core.fanxiu.runtime.android_proxy import DEFAULT_ADB_CANDIDATES
 from backend.core.fanxiu.packet.tcp_flow import resolve_fanxiu_tcp_live_capture_dir
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, popen_background
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
@@ -448,14 +448,13 @@ class FanxiuCaptureRuntimeService:
             "port",
             "5555",
         ]
-        self._tcpdump_process = subprocess.Popen(
+        self._tcpdump_process = popen_background(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            **_hidden_process_kwargs(),
         )
         self._current_remote_pcap_path = remote_path
         self._current_pcap_path = str(local_path)
@@ -478,11 +477,10 @@ class FanxiuCaptureRuntimeService:
         local_path.parent.mkdir(parents=True, exist_ok=True)
         shell_command = "tcpdump -U -i wlan0 -s 0 -w - tcp and not port 5555 2>/dev/null"
         command = [str(self._adb_path()), "-s", self.device_id, "shell", "-T", shell_command]
-        process = subprocess.Popen(
+        process = popen_background(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            **_hidden_process_kwargs(),
         )
         self._tcpdump_process = process
         self._current_remote_pcap_path = ""

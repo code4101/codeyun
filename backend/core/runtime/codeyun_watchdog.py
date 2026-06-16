@@ -11,7 +11,7 @@ from typing import Any
 
 import psutil
 
-from backend.core.runtime.subprocess_utils import background_popen_kwargs, resolve_pythonw
+from backend.core.runtime.subprocess_utils import popen_python_script_background, python_script_command
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -193,7 +193,7 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
 
 
 def _resolve_watchdog_python_executable() -> str:
-    return resolve_pythonw(ROOT_DIR, sys.executable)
+    return python_script_command(WATCHDOG_SCRIPT, preferred_root=ROOT_DIR, executable=sys.executable)[0]
 
 
 def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
@@ -205,9 +205,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
 
     log_path = get_codeyun_watchdog_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [
-        _resolve_watchdog_python_executable(),
-        os.fspath(WATCHDOG_SCRIPT),
+    command_args = [
         "--loop",
         "--interval",
         str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60"),
@@ -222,13 +220,15 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
             log_file.write(
                 f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] CodeYun start watchdog service\n".encode("utf-8")
             )
-            proc = subprocess.Popen(
-                command,
+            proc = popen_python_script_background(
+                WATCHDOG_SCRIPT,
+                *command_args,
+                preferred_root=ROOT_DIR,
+                executable=sys.executable,
                 cwd=os.fspath(ROOT_DIR),
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                **background_popen_kwargs(independent=True),
             )
     except OSError as exc:
         raise CodeYunWatchdogError(f"启动 CodeYun 本机守护失败：{exc}") from exc
