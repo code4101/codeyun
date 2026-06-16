@@ -21,6 +21,7 @@ if os.fspath(PROJECT_ROOT) not in sys.path:
 
 from backend.core.runtime.process_launcher import popen_service, resolve_pythonw, run_quiet
 from scripts.codeyun_popup_audit import ensure_monitor_running
+from scripts.codeyun_visible_console_monitor import read_status as read_visible_console_monitor_status
 
 try:
     import psutil
@@ -729,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                     "processes": watchdog_processes,
                 },
+                "visible_console_monitor": read_visible_console_monitor_status(),
                 "dev_processes": list_dev_processes(),
             }
         )

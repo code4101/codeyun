@@ -258,3 +258,21 @@ def test_vite_dev_server_is_classified_as_dev_runner(monkeypatch):
     monkeypatch.setattr(codeyun_watchdog, "_process_in_project", lambda _proc: True)
 
     assert codeyun_watchdog._matches_codeyun_dev(proc) is True
+
+
+def test_status_output_includes_visible_console_monitor(monkeypatch, capsys):
+    monkeypatch.setattr(codeyun_watchdog, "_read_lock_pid", lambda _path: 123)
+    monkeypatch.setattr(codeyun_watchdog, "_watchdog_ancestor_pids", lambda _pid: set())
+    monkeypatch.setattr(codeyun_watchdog, "list_watchdog_processes", lambda: [])
+    monkeypatch.setattr(codeyun_watchdog, "list_dev_processes", lambda: [])
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "read_visible_console_monitor_status",
+        lambda: {"pid": 456, "alive": True, "heartbeat_at": "2026-06-16 14:00:00"},
+    )
+
+    assert codeyun_watchdog.main(["--status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "visible_console_monitor" in output
+    assert "456" in output
