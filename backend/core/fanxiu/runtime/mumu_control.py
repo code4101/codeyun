@@ -26,7 +26,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+from backend.core.runtime.subprocess_utils import background_popen_kwargs, hidden_subprocess_kwargs
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
@@ -1286,18 +1286,6 @@ def start_window_capture_preview() -> dict[str, Any]:
     stdout_path.write_text("", encoding="utf-8")
     stderr_path.write_text("", encoding="utf-8")
 
-    creationflags = 0
-    startupinfo = None
-    if os.name == "nt":
-        creationflags = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-
     command = _build_preview_command()
     with stdout_path.open("a", encoding="utf-8", errors="replace") as stdout_file, stderr_path.open(
         "a",
@@ -1312,8 +1300,7 @@ def start_window_capture_preview() -> dict[str, Any]:
             stdout=stdout_file,
             stderr=stderr_file,
             text=True,
-            creationflags=creationflags,
-            startupinfo=startupinfo,
+            **background_popen_kwargs(independent=True),
         )
 
     time.sleep(0.8)

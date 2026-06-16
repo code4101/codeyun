@@ -47,3 +47,15 @@ def test_resolve_pythonw_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess_utils.os, "name", "nt")
 
     assert subprocess_utils.resolve_pythonw(tmp_path, scripts_dir / "python.exe") == str(pythonw)
+
+
+def test_node_script_command_uses_node_without_cmd(monkeypatch, tmp_path):
+    node = tmp_path / "node.exe"
+    node.write_text("", encoding="utf-8")
+    script = tmp_path / "vite.js"
+    script.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.shutil, "which", lambda name: str(node) if name == "node.exe" else None)
+
+    assert subprocess_utils.node_script_command(script, "build") == [str(node), str(script), "build"]

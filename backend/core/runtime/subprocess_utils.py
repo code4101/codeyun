@@ -101,6 +101,13 @@ def node_npm_command(*args: str, npm_executable: str | Path | None = None) -> li
     return [npm, *args]
 
 
+def node_script_command(script_path: str | Path, *args: str) -> list[str]:
+    node = shutil.which("node.exe" if os.name == "nt" else "node") or shutil.which("node")
+    if node:
+        return [node, os.fspath(script_path), *args]
+    return ["node", os.fspath(script_path), *args]
+
+
 def run_hidden(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(command, shell=False, **kwargs, **hidden_subprocess_kwargs())
 
