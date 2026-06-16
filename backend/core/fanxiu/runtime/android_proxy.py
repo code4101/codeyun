@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+
 
 DEFAULT_ADB_CANDIDATES = (
     r"D:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe",
@@ -21,22 +23,6 @@ def _completed_text(process: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(part.strip() for part in (process.stdout, process.stderr) if part and part.strip())
 
 
-def _hidden_subprocess_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
-
-
 def _run_command(command: list[str], timeout: float = 8) -> str:
     process = subprocess.run(
         command,
@@ -45,7 +31,7 @@ def _run_command(command: list[str], timeout: float = 8) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        **_hidden_subprocess_kwargs(),
+        **hidden_subprocess_kwargs(),
     )
     output = _completed_text(process)
     if process.returncode != 0:

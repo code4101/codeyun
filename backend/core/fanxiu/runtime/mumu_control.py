@@ -26,6 +26,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
 from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
@@ -77,22 +78,6 @@ _MUMU_ADB_FAILURE_CACHE_TTL = 3.0
 _MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
 _MUMU_ADB_RECOVERY_LOCK = threading.Lock()
 _mumu_adb_failure_cache: tuple[float, str] | None = None
-
-
-def _hidden_subprocess_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
 
 
 def _is_mumu_adb_unavailable_error(message: str) -> bool:
@@ -210,7 +195,7 @@ def _mumu_manager_adb_serial_candidates() -> list[str]:
             encoding="utf-8",
             errors="replace",
             timeout=5,
-            **_hidden_subprocess_kwargs(),
+            **hidden_subprocess_kwargs(),
         )
     except Exception:
         return []
@@ -330,7 +315,7 @@ def _recover_mumu_adb_ports() -> bool:
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    **_hidden_subprocess_kwargs(),
+                    **hidden_subprocess_kwargs(),
                 )
             except Exception:
                 pass
@@ -348,7 +333,7 @@ def _recover_mumu_adb_ports() -> bool:
                     encoding="utf-8",
                     errors="replace",
                     timeout=5,
-                    **_hidden_subprocess_kwargs(),
+                    **hidden_subprocess_kwargs(),
                 )
             except Exception:
                 continue
@@ -415,7 +400,7 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
                 encoding="utf-8",
                 errors="replace",
                 timeout=5,
-                **_hidden_subprocess_kwargs(),
+                **hidden_subprocess_kwargs(),
             )
             if size_process.returncode != 0:
                 raise RuntimeError(_completed_text(size_process) or f"wm size 退出码 {size_process.returncode}")
@@ -426,7 +411,7 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout_s,
-                **_hidden_subprocess_kwargs(),
+                **hidden_subprocess_kwargs(),
             )
             if input_process.returncode != 0:
                 raise RuntimeError(_completed_text(input_process) or f"input 退出码 {input_process.returncode}")
@@ -581,7 +566,7 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
             [str(adb_path), "-s", serial, "exec-out", "screencap", "-p"],
             capture_output=True,
             timeout=6,
-            **_hidden_subprocess_kwargs(),
+            **hidden_subprocess_kwargs(),
         )
         if process.returncode == 0 and process.stdout:
             data = process.stdout

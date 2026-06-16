@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.core.runtime.subprocess_utils import background_popen_kwargs, hidden_subprocess_kwargs, resolve_pythonw
+
 try:
     import psutil
 except ImportError:  # pragma: no cover - CodeYun runtime includes psutil.
@@ -331,43 +333,13 @@ def _dev_process_startup_age(dev_processes: list[dict[str, Any]]) -> float | Non
     return max(0.0, time.time() - max(started_at_values))
 
 
-def _background_popen_kwargs() -> dict[str, Any]:
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        creationflags |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
-        creationflags |= 0x08000000  # CREATE_NO_WINDOW
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        return {"creationflags": creationflags, "startupinfo": startupinfo}
-    return {"start_new_session": True}
-
-
-def _hidden_run_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
-
-
 def _resolve_uv_command() -> list[str]:
     configured = os.getenv("CODEYUN_WATCHDOG_DEV_COMMAND")
     if configured and configured.strip():
         return shlex.split(configured, posix=os.name != "nt")
-    if os.name == "nt":
-        pythonw_path = PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe"
-        if pythonw_path.is_file():
-            return [os.fspath(pythonw_path), "dev.py"]
+    python_executable = resolve_pythonw(PROJECT_ROOT, sys.executable)
+    if os.name == "nt" and Path(python_executable).name.lower() == "pythonw.exe":
+        return [python_executable, "dev.py"]
     uv_path = shutil.which("uv") or "uv"
     return [uv_path, "run", "dev.py"]
 
@@ -378,11 +350,7 @@ def _resolve_reload_check_command() -> list[str]:
         if not configured.strip():
             return []
         return shlex.split(configured, posix=os.name != "nt")
-    if os.name == "nt":
-        pythonw_path = PROJECT_ROOT / ".venv" / "Scripts" / "pythonw.exe"
-        if pythonw_path.is_file():
-            return [os.fspath(pythonw_path), "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
-    return [sys.executable, "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
+    return [resolve_pythonw(PROJECT_ROOT, sys.executable), "-m", "compileall", "-q", "backend", "scripts", "dev.py"]
 
 
 def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> int:
@@ -402,7 +370,7 @@ def start_detached_dev(log_path: Path, stdout_path: Path, stderr_path: Path) -> 
             stdout=stdout_file,
             stderr=stderr_file,
             shell=False,
-            **_background_popen_kwargs(),
+            **background_popen_kwargs(independent=True),
         )
     _log(log_path, f"Started detached CodeYun dev runner PID {proc.pid}.")
     return int(proc.pid)
@@ -473,7 +441,7 @@ def run_reload_precheck(args: argparse.Namespace, log_path: Path) -> bool:
             errors="replace",
             timeout=max(1.0, float(args.reload_check_timeout)),
             check=False,
-            **_hidden_run_kwargs(),
+            **hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _log(log_path, f"Reload precheck failed to run: {exc}")

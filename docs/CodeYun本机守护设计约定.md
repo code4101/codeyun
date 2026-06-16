@@ -101,10 +101,24 @@ CodeYun 后端只负责自举守护：
 默认预检查：
 
 ```bash
-uv run python -m compileall -q backend scripts dev.py
+pythonw.exe -m compileall -q backend scripts dev.py
 ```
 
 可通过 `CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND` 覆盖；设为空字符串表示跳过预检查。
+
+## 后台子进程启动规范
+
+CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和公网前端构建，必须统一使用
+`backend.core.runtime.subprocess_utils`：
+
+- 短命令使用 `hidden_subprocess_kwargs()`，用于 `subprocess.run/check_call`，禁止弹出控制台。
+- 长驻进程使用 `background_popen_kwargs(independent=True)`，用于 `subprocess.Popen`，默认独立进程组、脱离控制台和当前 job。
+- 后台 Python 优先用 `resolve_pythonw(ROOT_DIR, sys.executable)`，Windows 下优先 `.venv/Scripts/pythonw.exe`。
+- 后台 npm 不直接执行 `npm.cmd`；使用 `node_npm_command(...)`，Windows 下优先转成 `node.exe npm-cli.js ...`。
+
+新增后台调用时，不要在业务文件里重新手写 `STARTUPINFO`、`CREATE_NO_WINDOW`、`DETACHED_PROCESS`、
+`CREATE_BREAKAWAY_FROM_JOB` 或 `npm.cmd` 规避逻辑。确实需要可见控制台的诊断工具，必须显式命名为
+monitor/debug，并写入系统临时目录日志，不能混入常驻服务路径。
 
 ## 单实例原则
 
