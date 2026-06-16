@@ -244,6 +244,22 @@ def test_vite_build_is_not_classified_as_dev_runner(monkeypatch):
     assert codeyun_watchdog._matches_codeyun_dev(proc) is False
 
 
+def test_compileall_precheck_is_not_classified_as_dev_runner(monkeypatch):
+    class Proc:
+        pid = 1
+
+    proc = Proc()
+    monkeypatch.setattr(codeyun_watchdog, "_safe_name", lambda _proc: "pythonw.exe")
+    monkeypatch.setattr(
+        codeyun_watchdog,
+        "_cmdline_text",
+        lambda _proc: r"D:\repo\.venv\Scripts\pythonw.exe -m compileall -q backend scripts dev.py",
+    )
+    monkeypatch.setattr(codeyun_watchdog, "_process_in_project", lambda _proc: True)
+
+    assert codeyun_watchdog._matches_codeyun_dev(proc) is False
+
+
 def test_vite_dev_server_is_classified_as_dev_runner(monkeypatch):
     class Proc:
         pid = 1
