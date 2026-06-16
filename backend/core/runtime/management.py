@@ -74,6 +74,7 @@ from backend.core.runtime.units import (
     command_runtime_group,
     command_runtime_queue_name,
     infer_command_runtime_kind,
+    is_legacy_codeyun_command_task,
     resolve_builtin_job_runtime_policy,
     resolve_command_runtime_policy,
     runtime_policy_payload,
@@ -1330,7 +1331,11 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
     }
     builtin_services = _collect_builtin_services() if target_device_id == local_device_id else {"items": []}
     queue = builtin["queue"] if target_device_id == local_device_id else None
-    command_items = [_serialize_command_runtime_item(task, queue=queue) for task in session.exec(stmt).all()]
+    command_items = [
+        _serialize_command_runtime_item(task, queue=queue)
+        for task in session.exec(stmt).all()
+        if not (target_device_id == local_device_id and is_legacy_codeyun_command_task(task))
+    ]
 
     items = command_items + builtin_services["items"] + builtin["items"]
     runtime_queue = _enrich_runtime_queue(builtin["queue"], items) if target_device_id == local_device_id else None
@@ -1530,6 +1535,8 @@ def trigger_command_runtime_item(task_key: str, session: Session) -> dict[str, A
     task = session.get(TaskModel, task_key)
     if task is None:
         raise HTTPException(status_code=404, detail="运行单元不存在")
+    if task.device_id == get_device_id() and is_legacy_codeyun_command_task(task):
+        return trigger_builtin_runtime_item(CODEYUN_WATCHDOG_SERVICE_KEY, session)
     policy = resolve_command_runtime_policy(task)
     if policy.kind == "job":
         return task_manager.enqueue_task_run(task_key, trigger_reason="manual_runtime")

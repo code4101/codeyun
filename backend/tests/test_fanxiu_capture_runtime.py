@@ -203,6 +203,54 @@ def test_capture_runtime_local_stream_stop_queues_sealed_pcap(monkeypatch, tmp_p
     assert service._capture_mode == ""
 
 
+def test_capture_runtime_packet_sync_is_serialized(monkeypatch):
+    service = FanxiuCaptureRuntimeService()
+    started: list[str] = []
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    class FakeThread:
+        def __init__(self, *, target, args, name, daemon):
+            del target, name, daemon
+            self.args = args
+
+        def start(self):
+            started.append(self.args[0])
+
+        def is_alive(self):
+            return False
+
+    service._packet_sync_thread = AliveThread()
+    service._packet_sync_active_path = "busy.pcap"
+    service._start_runtime_packet_sync_thread("next.pcap")
+
+    assert started == []
+    assert service._packet_sync_skipped_count == 1
+    assert any("runtime packet sync skipped" in line for line in service.log_lines())
+
+    service._packet_sync_thread = None
+    monkeypatch.setattr("backend.core.fanxiu.runtime.capture_runtime.threading.Thread", FakeThread)
+    service._start_runtime_packet_sync_thread("next.pcap")
+
+    assert started == ["next.pcap"]
+    assert service._packet_sync_active_path == "next.pcap"
+
+
+def test_capture_runtime_packet_sync_clears_active_path(monkeypatch):
+    service = FanxiuCaptureRuntimeService()
+    service._packet_sync_active_path = "done.pcap"
+    monkeypatch.setattr(
+        "backend.core.fanxiu.packet.insight_worker.sync_fanxiu_capture_paths",
+        lambda *_args, **_kwargs: {"decoded": [], "decoded_count": 0, "skipped_count": 0, "error_count": 0},
+    )
+
+    service._decode_and_sync_runtime_packets("done.pcap")
+
+    assert service._packet_sync_active_path == ""
+
+
 def test_capture_runtime_idle_seals_and_restarts_tcpdump(monkeypatch):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=1)
     service._active_reasons.add("test")

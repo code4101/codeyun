@@ -41,11 +41,24 @@ class XianfuTaskMixin:
         raw_max_continue = payload.get("max_continue", 20)
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        frame = self._screencap(ctx)
-        scene_id, score = self._identify_scene_number(ctx, frame, [175, 174, 173, 172, 171, 34])
+        scene_id, score, _frame = runtime.current_scene([177, 176, 175, 174, 173, 172, 171, 34], update=True)
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
+
+        if scene_id in {177, 176}:
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"仙府_寻访仙侣：起点停在领悟绝技页 #{scene_id}，先返回世界 #34",
+                    phase="xianfu_visit_restore_from_skill",
+                    current_scene=scene_id,
+                )
+                self._log_locked("warning", f"仙府_寻访仙侣：起点停在领悟绝技页 #{scene_id}，先走领悟绝技收尾链路")
+            if scene_id == 177:
+                yield from self._handle_xianfu_learn_skill_result_popup(runtime)
+            yield from self._return_xianfu_learn_skill_to_world(runtime)
+            scene_id = 34
 
         if scene_id == 175:
             yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=max_continue)
@@ -218,8 +231,7 @@ class XianfuTaskMixin:
         current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 34),
     ):
         for _attempt in range(6):
-            frame = runtime.cur_frame(update=True)
-            scene_id, score = self._identify_scene_number(runtime.ctx, frame, list(current_candidates))
+            scene_id, score, _frame = runtime.current_scene(current_candidates, update=True)
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
             if scene_id == 34:
@@ -293,8 +305,7 @@ class XianfuTaskMixin:
             return "skipped"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         preferred = [177, 176, 172, 171, 34]
-        frame = self._screencap(ctx)
-        scene_id, score = self._identify_scene_number(ctx, frame, preferred)
+        scene_id, score, _frame = runtime.current_scene(preferred, update=True)
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})

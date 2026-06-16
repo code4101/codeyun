@@ -78,6 +78,9 @@ class FanxiuCaptureRuntimeService:
         self._capture_mode = ""
         self._stream_writer_thread: threading.Thread | None = None
         self._stream_writer_error = ""
+        self._packet_sync_thread: threading.Thread | None = None
+        self._packet_sync_active_path = ""
+        self._packet_sync_skipped_count = 0
         self._current_remote_pcap_path = ""
         self._current_pcap_path = ""
         self._current_pcap_size = 0
@@ -199,6 +202,9 @@ class FanxiuCaptureRuntimeService:
                 "capture_mode": self._capture_mode,
                 "stream_writer_alive": bool(self._stream_writer_thread and self._stream_writer_thread.is_alive()),
                 "stream_writer_error": self._stream_writer_error,
+                "packet_sync_alive": bool(self._packet_sync_thread and self._packet_sync_thread.is_alive()),
+                "packet_sync_active_path": self._packet_sync_active_path,
+                "packet_sync_skipped_count": self._packet_sync_skipped_count,
                 "started_at": self._started_at,
                 "last_error": self._last_error,
                 "last_recover_at": self._last_recover_at,
@@ -670,12 +676,21 @@ class FanxiuCaptureRuntimeService:
             self._log(f"stale local adb tcpdump cleanup warning: {'; '.join(warnings[:3])}")
 
     def _start_runtime_packet_sync_thread(self, local_path: str) -> None:
+        if self._packet_sync_thread and self._packet_sync_thread.is_alive():
+            self._packet_sync_skipped_count += 1
+            self._log(
+                "runtime packet sync skipped: "
+                f"busy={self._packet_sync_active_path or '?'} next={local_path}"
+            )
+            return
+        self._packet_sync_active_path = str(local_path)
         thread = threading.Thread(
             target=self._decode_and_sync_runtime_packets,
             args=(local_path,),
             name="fanxiu-runtime-packet-sync",
             daemon=True,
         )
+        self._packet_sync_thread = thread
         thread.start()
         self._log(f"runtime packet sync queued: {local_path}")
 
@@ -703,6 +718,10 @@ class FanxiuCaptureRuntimeService:
             )
         except Exception as exc:
             self._log(f"runtime packet sync failed: {exc}")
+        finally:
+            with self._lock:
+                if self._packet_sync_active_path == str(local_path):
+                    self._packet_sync_active_path = ""
 
     def _force_stop_locked(self, *, clear_reasons: bool, state: str) -> None:
         self._stop_event.set()

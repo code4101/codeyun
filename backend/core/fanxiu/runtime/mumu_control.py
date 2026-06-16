@@ -12,6 +12,7 @@ import threading
 import time
 import base64
 import tempfile
+import ctypes
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -55,8 +56,8 @@ DEFAULT_FPS = "15"
 DEFAULT_CROP = "0,49,4,4"
 DEFAULT_TRIM_BORDER = "0,0,0,0"
 DEFAULT_ROTATE = "0"
-DEFAULT_FIXED_WIDTH = "0"
-DEFAULT_FIXED_HEIGHT = "0"
+DEFAULT_FIXED_WIDTH = "900"
+DEFAULT_FIXED_HEIGHT = "1600"
 SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
 BURST_FRAME_DIRNAME = "连拍缓存"
@@ -74,10 +75,359 @@ MUMU_ADB_PORTS = (7555, 16416, 5555)
 MUMU_ADB_SERIAL_ENV_KEYS = ("FANXIU_MUMU_ADB_SERIAL",)
 MUMU_ADB_ALLOW_PROXY_DEVICES_ENV = "FANXIU_MUMU_ADB_ALLOW_PROXY_DEVICES"
 MUMU_ADB_PORT_PROBE_TIMEOUT_ENV = "FANXIU_MUMU_ADB_PORT_PROBE_TIMEOUT"
+MUMU_DEVICE_HEALTH_CHECK_INTERVAL_ENV = "FANXIU_MUMU_DEVICE_HEALTH_CHECK_INTERVAL"
+MUMU_DEVICE_AUTO_RECOVERY_ENV = "FANXIU_MUMU_DEVICE_AUTO_RECOVERY"
+FANXIU_ANDROID_PACKAGE = "com.frxxcrjpwssc3.ggws"
 _MUMU_ADB_FAILURE_CACHE_TTL = 3.0
 _MUMU_ADB_FAILURE_CACHE_LOCK = threading.Lock()
 _MUMU_ADB_RECOVERY_LOCK = threading.Lock()
+_MUMU_DEVICE_HEALTH_LOCK = threading.Lock()
 _mumu_adb_failure_cache: tuple[float, str] | None = None
+_mumu_device_health_state: dict[str, Any] = {
+    "status": "unknown",
+    "checked_at": 0.0,
+    "checked_monotonic": 0.0,
+    "last_error": "",
+    "failure_count": 0,
+    "recovery_count": 0,
+    "last_recovery_at": 0.0,
+    "last_recovery_reason": "",
+    "vmindex": "1",
+}
+
+
+def _mumu_device_recovery_state_path() -> Path:
+    return Path(tempfile.gettempdir()) / "codeyun" / "fanxiu_mumu_device_health" / "recovery_state.json"
+
+
+def _mumu_device_health_log_dir() -> Path:
+    path = get_settings().data_dir / "fanxiu" / "mumu-device-health"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _mumu_device_health_log_path(now: float | None = None) -> Path:
+    stamp = datetime.fromtimestamp(now or time.time()).strftime("%Y%m%d")
+    return _mumu_device_health_log_dir() / f"device-health-{stamp}.jsonl"
+
+
+def _compact_for_log(value: Any, *, max_chars: int = 1000) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= max_chars else value[:max_chars] + "...[truncated]"
+    if isinstance(value, dict):
+        return {str(key): _compact_for_log(item, max_chars=max_chars) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_for_log(item, max_chars=max_chars) for item in value[:50]]
+    return value
+
+
+def _collect_windows_commit_snapshot() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return {}
+    commit_limit = int(status.ullTotalPageFile)
+    commit_available = int(status.ullAvailPageFile)
+    committed = max(0, commit_limit - commit_available)
+    return {
+        "committed_mb": int(committed / 1024 / 1024),
+        "commit_limit_mb": int(commit_limit / 1024 / 1024),
+        "commit_available_mb": int(commit_available / 1024 / 1024),
+        "commit_percent": round(committed * 100.0 / commit_limit, 2) if commit_limit else 0.0,
+        "physical_total_mb": int(status.ullTotalPhys / 1024 / 1024),
+        "physical_available_mb": int(status.ullAvailPhys / 1024 / 1024),
+        "memory_load_percent": int(status.dwMemoryLoad),
+    }
+
+
+def _windows_services_for_pid_from_sc(pid: int) -> list[str]:
+    if os.name != "nt" or int(pid or 0) <= 0:
+        return []
+    try:
+        result = run_quiet(
+            ["sc.exe", "queryex", "type=", "service", "state=", "all"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    services: list[str] = []
+    service_name = ""
+    for line in result.stdout.splitlines():
+        service_match = re.match(r"^\s*SERVICE_NAME:\s*(.+?)\s*$", line)
+        if service_match:
+            service_name = service_match.group(1).strip()
+            continue
+        pid_match = re.match(r"^\s*PID\s*:\s*(\d+)\s*$", line)
+        if pid_match and pid_match.group(1) == str(int(pid)) and service_name:
+            services.append(service_name)
+    return sorted(set(services))
+
+
+def _windows_services_for_pid_from_tasklist(pid: int) -> list[str]:
+    if os.name != "nt" or int(pid or 0) <= 0:
+        return []
+    try:
+        result = run_quiet(
+            ["tasklist.exe", "/svc", "/fi", f"PID eq {int(pid)}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    services: list[str] = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"^\S+\s+(\d+)\s+(.+)$", line.strip())
+        if not match or match.group(1) != str(int(pid)):
+            continue
+        services_text = match.group(2).strip()
+        if not services_text or services_text.upper() == "N/A":
+            continue
+        services.extend(service.strip() for service in services_text.split(",") if service.strip())
+    return sorted(set(services))
+
+
+def _windows_services_for_pid(pid: int) -> list[str]:
+    services = _windows_services_for_pid_from_sc(pid)
+    if services:
+        return services
+    return _windows_services_for_pid_from_tasklist(pid)
+
+
+def _annotate_windows_service_hosts(items: list[dict[str, Any]]) -> None:
+    if os.name != "nt":
+        return
+    for item in items:
+        if str(item.get("name") or "").lower() != "svchost.exe":
+            continue
+        services = _windows_services_for_pid(int(item.get("pid") or 0))
+        if services:
+            item["services"] = services
+
+
+def _host_resource_pressure_hints(snapshot: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    commit = snapshot.get("commit")
+    if isinstance(commit, dict):
+        commit_percent = float(commit.get("commit_percent") or 0.0)
+        commit_available_mb = int(commit.get("commit_available_mb") or 0)
+        if commit_percent >= 95 or commit_available_mb < 4096:
+            hints.append("windows_commit_nearly_exhausted")
+        elif commit_percent >= 90 or commit_available_mb < 8192:
+            hints.append("windows_commit_pressure")
+    for item in snapshot.get("top_private_processes") or []:
+        if not isinstance(item, dict):
+            continue
+        private_mb = int(item.get("private_mb") or 0)
+        name = str(item.get("name") or "").lower()
+        services = {str(service).lower() for service in item.get("services") or []}
+        if name == "svchost.exe" and private_mb >= 8192:
+            hints.append("large_svchost_commit")
+        if name == "svchost.exe" and "winmgmt" in services and private_mb >= 4096:
+            hints.append("winmgmt_wmi_commit_growth")
+        if name.startswith("mumu") and private_mb >= 8192:
+            hints.append("mumu_commit_high")
+        if name.startswith("python") and private_mb >= 4096:
+            hints.append("python_commit_high")
+    return sorted(set(hints))
+
+
+def _collect_mumu_host_resource_snapshot() -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    commit = _collect_windows_commit_snapshot()
+    if commit:
+        snapshot["commit"] = commit
+    try:
+        vm = psutil.virtual_memory()
+        snapshot["memory"] = {
+            "total_mb": int(vm.total / 1024 / 1024),
+            "available_mb": int(vm.available / 1024 / 1024),
+            "used_mb": int(vm.used / 1024 / 1024),
+            "percent": float(vm.percent),
+        }
+    except Exception as exc:
+        snapshot["memory_error"] = str(exc)
+    try:
+        swap = psutil.swap_memory()
+        snapshot["swap"] = {
+            "total_mb": int(swap.total / 1024 / 1024),
+            "used_mb": int(swap.used / 1024 / 1024),
+            "free_mb": int(swap.free / 1024 / 1024),
+            "percent": float(swap.percent),
+        }
+    except Exception as exc:
+        snapshot["swap_error"] = str(exc)
+
+    top: list[dict[str, Any]] = []
+    mumu: list[dict[str, Any]] = []
+    for proc in psutil.process_iter(["pid", "name", "create_time"]):
+        try:
+            info = proc.info
+            name = str(info.get("name") or "")
+            try:
+                mem = proc.memory_full_info()
+            except (psutil.AccessDenied, OSError):
+                mem = proc.memory_info()
+            item = {
+                "pid": int(info.get("pid") or 0),
+                "name": name,
+                "rss_mb": int(getattr(mem, "rss", 0) / 1024 / 1024),
+                "vms_mb": int(getattr(mem, "vms", 0) / 1024 / 1024),
+                "private_mb": int(getattr(mem, "private", getattr(mem, "uss", 0)) / 1024 / 1024),
+                "started_at": datetime.fromtimestamp(float(info.get("create_time") or 0)).isoformat(timespec="seconds"),
+            }
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
+            continue
+        top.append(item)
+        if any(marker in name.lower() for marker in ("mumu", "nemu", "taptap")):
+            mumu.append(item)
+    top_private = sorted(top, key=lambda item: int(item.get("private_mb") or 0), reverse=True)[:10]
+    _annotate_windows_service_hosts(top_private)
+    snapshot["top_private_processes"] = top_private
+    snapshot["mumu_processes"] = sorted(mumu, key=lambda item: int(item.get("private_mb") or 0), reverse=True)
+    hints = _host_resource_pressure_hints(snapshot)
+    if hints:
+        snapshot["pressure_hints"] = hints
+    return snapshot
+
+
+def _mumu_vm_root() -> Path:
+    return Path(r"D:\TapTap\Support\android_emulator\engine\vms\EGTapTap-12.0-1")
+
+
+def _tail_text_lines(path: Path, *, max_bytes: int = 120_000, max_lines: int = 80) -> list[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    if not data:
+        return []
+    text = data[-max_bytes:].decode("utf-8", errors="replace")
+    return [line for line in text.splitlines() if line][-max_lines:]
+
+
+def _collect_mumu_native_diagnostics() -> dict[str, Any]:
+    root = _mumu_vm_root()
+    candidates = [
+        root / "logs" / "shell.log",
+        root / "logs" / "vm_vboxmanager.log",
+        root / "data" / "exportLogs" / "vm_shell.log",
+        root / "data" / "exportLogs" / "vm_vboxmanager.log",
+    ]
+    markers = (
+        "GRAPHIC_CRASH",
+        "VERR_",
+        "showRuntimeError",
+        "onPlayerHeadlessCrash",
+        "Android error",
+        "handleStartupError",
+        "RuntimeError",
+        "crash",
+        "fatal",
+        "error",
+    )
+    marker_lines: list[dict[str, str]] = []
+    tails: dict[str, list[str]] = {}
+    for path in candidates:
+        lines = _tail_text_lines(path)
+        if not lines:
+            continue
+        key = os.fspath(path.relative_to(root)) if path.is_relative_to(root) else os.fspath(path)
+        tails[key] = lines[-25:]
+        for line in lines:
+            if any(marker.lower() in line.lower() for marker in markers):
+                marker_lines.append({"file": key, "line": line})
+    marker_text = "\n".join(item["line"] for item in marker_lines[-40:]).lower()
+    suspected: list[str] = []
+    if "graphic_crash" in marker_text or "renderer" in marker_text:
+        suspected.append("renderer_or_graphic_crash")
+    if "verr_need_no_admin" in marker_text or "verr_ole" in marker_text or "vbox" in marker_text:
+        suspected.append("virtualbox_or_hypervisor_error")
+    if "resource-exhaustion" in marker_text or "memory" in marker_text:
+        suspected.append("host_memory_pressure")
+    if "timed out" in marker_text or "connection refused" in marker_text:
+        suspected.append("adb_or_rpc_timeout")
+    return {
+        "root": os.fspath(root),
+        "suspected_causes": suspected,
+        "marker_lines": marker_lines[-40:],
+        "tails": tails,
+    }
+
+
+def _append_mumu_device_health_event(
+    event: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    include_resources: bool = False,
+    include_native: bool = False,
+) -> None:
+    now = time.time()
+    item: dict[str, Any] = {
+        "time": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+        "event": str(event or "unknown"),
+    }
+    if payload:
+        item.update(_compact_for_log(payload))
+    if include_resources:
+        item["host_resources"] = _collect_mumu_host_resource_snapshot()
+    if include_native:
+        item["mumu_native"] = _compact_for_log(_collect_mumu_native_diagnostics(), max_chars=2000)
+    try:
+        path = _mumu_device_health_log_path(now)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _read_mumu_device_recovery_state() -> dict[str, Any]:
+    path = _mumu_device_recovery_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_mumu_device_recovery_state(state: dict[str, Any]) -> None:
+    path = _mumu_device_recovery_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_recovery_at": float(state.get("last_recovery_at") or 0.0),
+        "last_recovery_reason": str(state.get("last_recovery_reason") or ""),
+        "vmindex": str(state.get("vmindex") or "1"),
+        "updated_at": time.time(),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _is_mumu_adb_unavailable_error(message: str) -> bool:
@@ -90,7 +440,9 @@ def _is_mumu_adb_unavailable_error(message: str) -> bool:
             "connection refused",
             "actively refused",
             "winerror 10061",
+            "winerror 10054",
             "目标计算机积极拒绝",
+            "远程主机强迫关闭",
             "no connection could be made",
             "failed to connect",
             "timed out",
@@ -167,6 +519,20 @@ def _mumu_adb_port_probe_timeout(default: float = 0.75) -> float:
         return default
 
 
+def _mumu_device_health_check_interval(default: float = 60.0) -> float:
+    try:
+        return max(10.0, min(600.0, float(os.environ.get(MUMU_DEVICE_HEALTH_CHECK_INTERVAL_ENV) or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _mumu_device_auto_recovery_enabled() -> bool:
+    value = os.environ.get(MUMU_DEVICE_AUTO_RECOVERY_ENV)
+    if value is None:
+        return True
+    return _is_truthy_env(value)
+
+
 def _mumu_manager_path() -> Path | None:
     try:
         adb_path = fanxiu_android_proxy_service.adb_path()
@@ -220,6 +586,297 @@ def _mumu_manager_adb_serial_candidates() -> list[str]:
         if host and port_int > 0:
             candidates.append(f"{host}:{port_int}")
     return _dedupe_mumu_adb_serials(candidates)
+
+
+def _run_mumu_manager_json(args: list[str], *, timeout: float = 8.0) -> Any:
+    manager_path = _mumu_manager_path()
+    if manager_path is None:
+        raise RuntimeError("未找到 MuMuManager.exe")
+    process = run_quiet(
+        [str(manager_path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    output = str(process.stdout or "").strip()
+    if output:
+        try:
+            return json.loads(output)
+        except Exception as exc:
+            if process.returncode != 0:
+                detail = "\n".join(
+                    part.strip() for part in (process.stdout or "", process.stderr or "") if part and part.strip()
+                )
+                raise RuntimeError(detail or f"MuMuManager 退出码 {process.returncode}") from exc
+            raise RuntimeError(f"MuMuManager 输出不是 JSON：{output[:200]}") from exc
+    if process.returncode != 0:
+        detail = "\n".join(part.strip() for part in (process.stdout or "", process.stderr or "") if part and part.strip())
+        raise RuntimeError(detail or f"MuMuManager 退出码 {process.returncode}")
+    if not output:
+        return {}
+
+
+def _mumu_manager_player_info(vmindex: str = "1") -> dict[str, Any]:
+    payload = _run_mumu_manager_json(["info", "--vmindex", str(vmindex or "1")], timeout=8)
+    if isinstance(payload, dict):
+        if str(payload.get("index") or "") == str(vmindex or "1") or "is_android_started" in payload:
+            return payload
+        item = payload.get(str(vmindex or "1"))
+        if isinstance(item, dict):
+            return item
+    raise RuntimeError(f"MuMuManager 未返回实例 {vmindex} 状态")
+
+
+def _mumu_manager_control(vmindex: str, command: str, *, timeout: float = 12.0) -> dict[str, Any]:
+    payload = _run_mumu_manager_json(["control", "--vmindex", str(vmindex or "1"), command], timeout=timeout)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _mumu_manager_launch_app(vmindex: str, package: str = FANXIU_ANDROID_PACKAGE) -> dict[str, Any]:
+    payload = _run_mumu_manager_json(
+        ["control", "--vmindex", str(vmindex or "1"), "app", "launch", "--package", str(package or FANXIU_ANDROID_PACKAGE)],
+        timeout=12,
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
+def _mumu_device_health_status_from_info(info: dict[str, Any]) -> str:
+    if not bool(info.get("is_process_started")):
+        return "stopped"
+    if not bool(info.get("is_android_started")):
+        return "broken"
+    if str(info.get("player_state") or "") == "start_finished":
+        return "healthy"
+    return "suspect"
+
+
+def _clone_mumu_device_health_state() -> dict[str, Any]:
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        return json.loads(json.dumps(_mumu_device_health_state, ensure_ascii=False, default=str))
+
+
+def reset_mumu_device_health_state() -> None:
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        _mumu_device_health_state.clear()
+        _mumu_device_health_state.update({
+            "status": "unknown",
+            "checked_at": 0.0,
+            "checked_monotonic": 0.0,
+            "last_error": "",
+            "failure_count": 0,
+            "recovery_count": 0,
+            "last_recovery_at": 0.0,
+            "last_recovery_reason": "",
+            "vmindex": "1",
+        })
+
+
+def mumu_device_health_check(*, vmindex: str = "1", force: bool = False) -> dict[str, Any]:
+    now_mono = time.monotonic()
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        cached = dict(_mumu_device_health_state)
+        if (
+            not force
+            and cached.get("status") != "unknown"
+            and now_mono - float(cached.get("checked_monotonic") or 0.0) < _mumu_device_health_check_interval()
+        ):
+            return json.loads(json.dumps(cached, ensure_ascii=False, default=str))
+
+    try:
+        info = _mumu_manager_player_info(str(vmindex or "1"))
+        status = _mumu_device_health_status_from_info(info)
+        error = ""
+    except Exception as exc:
+        info = {}
+        status = "suspect"
+        error = str(exc)
+
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        if status == "healthy":
+            _mumu_device_health_state["failure_count"] = 0
+            _clear_mumu_adb_failure_cache()
+        _mumu_device_health_state.update({
+            "status": status,
+            "checked_at": time.time(),
+            "checked_monotonic": now_mono,
+            "last_error": error,
+            "vmindex": str(vmindex or "1"),
+            "info": info,
+        })
+        state = json.loads(json.dumps(_mumu_device_health_state, ensure_ascii=False, default=str))
+    previous_status = str(cached.get("status") or "unknown")
+    if force or status != previous_status or status != "healthy":
+        _append_mumu_device_health_event(
+            "health_check",
+            {
+                "vmindex": str(vmindex or "1"),
+                "status": status,
+                "previous_status": previous_status,
+                "force": bool(force),
+                "error": error,
+                "info": info,
+            },
+            include_resources=status != "healthy",
+            include_native=status != "healthy",
+        )
+    return state
+
+
+def _mumu_device_recovery_cooldown_seconds(status: str, *, default: float = 600.0) -> float:
+    return 45.0 if status in {"stopped", "broken"} else default
+
+
+def _mumu_device_recovery_cooling_down(now: float, *, status: str = "unknown", cooldown_seconds: float | None = None) -> bool:
+    resolved_cooldown = (
+        float(cooldown_seconds)
+        if cooldown_seconds is not None
+        else _mumu_device_recovery_cooldown_seconds(str(status or "unknown"))
+    )
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        last_recovery_at = float(_mumu_device_health_state.get("last_recovery_at") or 0.0)
+    persisted = _read_mumu_device_recovery_state()
+    try:
+        last_recovery_at = max(last_recovery_at, float(persisted.get("last_recovery_at") or 0.0))
+    except (TypeError, ValueError):
+        pass
+    return last_recovery_at > 0 and now - last_recovery_at < resolved_cooldown
+
+
+def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", force_restart: bool = False) -> dict[str, Any]:
+    if not _mumu_device_auto_recovery_enabled():
+        state = mumu_device_health_check(vmindex=vmindex, force=True)
+        state["recovered"] = False
+        state["recovery_skipped"] = "auto_recovery_disabled"
+        _append_mumu_device_health_event(
+            "recovery_skipped",
+            {"reason": reason, "skip": "auto_recovery_disabled", "state": state},
+            include_resources=True,
+            include_native=True,
+        )
+        return state
+
+    with _MUMU_ADB_RECOVERY_LOCK:
+        now = time.time()
+        _close_mumu_adb_session()
+        try:
+            before = mumu_device_health_check(vmindex=vmindex, force=True)
+            if before.get("status") in {"healthy"} and not force_restart:
+                before["recovered"] = False
+                before["recovery_skipped"] = "already_healthy"
+                _append_mumu_device_health_event(
+                    "recovery_skipped",
+                    {"reason": reason, "skip": "already_healthy", "state": before},
+                    include_resources=False,
+                    include_native=False,
+                )
+                return before
+            before_status = str(before.get("status") or "unknown")
+            if _mumu_device_recovery_cooling_down(now, status=before_status):
+                state = _clone_mumu_device_health_state()
+                state["recovered"] = False
+                state["recovery_skipped"] = "cooldown"
+                state["recovery_cooldown_seconds"] = _mumu_device_recovery_cooldown_seconds(before_status)
+                _append_mumu_device_health_event(
+                    "recovery_skipped",
+                    {"reason": reason, "skip": "cooldown", "state": state},
+                    include_resources=True,
+                    include_native=True,
+                )
+                return state
+            with _MUMU_DEVICE_HEALTH_LOCK:
+                _mumu_device_health_state.update({
+                    "status": "recovering",
+                    "last_recovery_at": now,
+                    "last_recovery_reason": str(reason or "device_health"),
+                })
+                _write_mumu_device_recovery_state(_mumu_device_health_state)
+            _append_mumu_device_health_event(
+                "recovery_start",
+                {"reason": reason, "force_restart": bool(force_restart), "before": before},
+                include_resources=True,
+                include_native=True,
+            )
+            if bool((before.get("info") or {}).get("is_process_started")):
+                _mumu_manager_control(str(vmindex or "1"), "shutdown", timeout=15)
+                time.sleep(5)
+            _mumu_manager_control(str(vmindex or "1"), "launch", timeout=15)
+            deadline = time.monotonic() + 90.0
+            state: dict[str, Any] = {}
+            while time.monotonic() < deadline:
+                time.sleep(5)
+                state = mumu_device_health_check(vmindex=vmindex, force=True)
+                if state.get("status") == "healthy":
+                    break
+            if state.get("status") != "healthy":
+                raise RuntimeError(f"MuMu 恢复后仍未启动 Android：{state.get('status')}")
+            try:
+                app_result = _mumu_manager_launch_app(str(vmindex or "1"), FANXIU_ANDROID_PACKAGE)
+            except Exception as exc:
+                app_result = {"errcode": -1, "errmsg": str(exc)}
+            with _MUMU_DEVICE_HEALTH_LOCK:
+                _mumu_device_health_state["failure_count"] = 0
+                _mumu_device_health_state["recovery_count"] = int(_mumu_device_health_state.get("recovery_count") or 0) + 1
+                _mumu_device_health_state["app_launch"] = app_result
+            _clear_mumu_adb_failure_cache()
+            final_state = mumu_device_health_check(vmindex=vmindex, force=True)
+            final_state["recovered"] = True
+            _append_mumu_device_health_event(
+                "recovery_success",
+                {"reason": reason, "state": final_state},
+                include_resources=True,
+                include_native=True,
+            )
+            return final_state
+        except Exception as exc:
+            with _MUMU_DEVICE_HEALTH_LOCK:
+                _mumu_device_health_state.update({
+                    "status": "broken",
+                    "last_error": str(exc),
+                    "checked_at": time.time(),
+                    "checked_monotonic": time.monotonic(),
+                })
+            state = _clone_mumu_device_health_state()
+            state["recovered"] = False
+            _append_mumu_device_health_event(
+                "recovery_failed",
+                {"reason": reason, "error": str(exc), "state": state},
+                include_resources=True,
+                include_native=True,
+            )
+            return state
+
+
+def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = True) -> dict[str, Any]:
+    message = str(error or "")
+    now_mono = time.monotonic()
+    with _MUMU_DEVICE_HEALTH_LOCK:
+        _mumu_device_health_state["failure_count"] = int(_mumu_device_health_state.get("failure_count") or 0) + 1
+        _mumu_device_health_state["last_error"] = message
+        _mumu_device_health_state["status"] = "suspect"
+        _mumu_device_health_state["checked_at"] = time.time()
+        failure_count = int(_mumu_device_health_state.get("failure_count") or 0)
+        checked_mono = float(_mumu_device_health_state.get("checked_monotonic") or 0.0)
+    _append_mumu_device_health_event(
+        "adb_failure",
+        {"vmindex": vmindex, "failure_count": failure_count, "recover": bool(recover), "error": message},
+        include_resources=failure_count >= 3 or _is_mumu_adb_unavailable_error(message),
+        include_native=failure_count >= 3 or _is_mumu_adb_unavailable_error(message),
+    )
+    if failure_count < 3 and now_mono - checked_mono < _mumu_device_health_check_interval():
+        return _clone_mumu_device_health_state()
+    state = mumu_device_health_check(vmindex=vmindex, force=True)
+    if recover and (state.get("status") in {"broken", "stopped"} or _is_mumu_adb_unavailable_error(message)):
+        return recover_mumu_device(vmindex=vmindex, reason=f"adb_failure:{message[:80]}", force_restart=True)
+    return state
+
+
+def ensure_mumu_device_healthy(*, vmindex: str = "1", recover: bool = True, force: bool = False, reason: str = "heartbeat") -> dict[str, Any]:
+    state = mumu_device_health_check(vmindex=vmindex, force=force)
+    if recover and state.get("status") in {"broken", "stopped"}:
+        return recover_mumu_device(vmindex=vmindex, reason=reason)
+    return state
 
 
 def _mumu_adb_serial_candidates() -> list[str]:
@@ -390,6 +1047,14 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
         if parsed is None:
             continue
         try:
+            run_quiet(
+                [str(adb_path), "connect", serial],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+            )
             size_process = run_quiet(
                 [str(adb_path), "-s", serial, "shell", "wm size"],
                 capture_output=True,
@@ -2762,7 +3427,7 @@ def click_mumu_window_processed_point(
     fixed_height: int | None = None,
     frame_width: int | None = None,
     frame_height: int | None = None,
-    input_backend: str = "desktop",
+    input_backend: str = "adb",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
@@ -2776,26 +3441,21 @@ def click_mumu_window_processed_point(
     normalized_input_backend = str(input_backend or "desktop").strip().lower()
     adb_input_error = ""
     if normalized_input_backend == "adb":
-        try:
-            input_result = _tap_mumu_adb(
-                frame_x,
-                frame_y,
-                frame_width=frame_width or resolved_fixed_width or None,
-                frame_height=frame_height or resolved_fixed_height or None,
-            )
-            return {
-                "ok": True,
-                "title": normalized_title,
-                **input_result,
-                "frame_x": frame_x,
-                "frame_y": frame_y,
-                "frame_width": frame_width,
-                "frame_height": frame_height,
-            }
-        except Exception as exc:
-            if not _is_mumu_adb_unavailable_error(str(exc)):
-                raise
-            adb_input_error = str(exc)
+        input_result = _tap_mumu_adb(
+            frame_x,
+            frame_y,
+            frame_width=frame_width or resolved_fixed_width or None,
+            frame_height=frame_height or resolved_fixed_height or None,
+        )
+        return {
+            "ok": True,
+            "title": normalized_title,
+            **input_result,
+            "frame_x": frame_x,
+            "frame_y": frame_y,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+        }
 
     target, capturer, raw_frame, frame, resolved_area, resolved_mode, resolved_crop, resolved_trim_border, resolved_rotate = (
         _processed_window_target(
@@ -2901,7 +3561,7 @@ def drag_mumu_window_processed_points(
     fixed_height: int | None = None,
     frame_width: int | None = None,
     frame_height: int | None = None,
-    input_backend: str = "desktop",
+    input_backend: str = "adb",
 ) -> dict[str, Any]:
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
@@ -2917,32 +3577,27 @@ def drag_mumu_window_processed_points(
     normalized_input_backend = str(input_backend or "desktop").strip().lower()
     adb_input_error = ""
     if normalized_input_backend == "adb":
-        try:
-            input_result = _swipe_mumu_adb(
-                frame_start_x,
-                frame_start_y,
-                frame_end_x,
-                frame_end_y,
-                duration_ms=duration_ms,
-                frame_width=frame_width or resolved_fixed_width or None,
-                frame_height=frame_height or resolved_fixed_height or None,
-            )
-            return {
-                "ok": True,
-                "title": normalized_title,
-                **input_result,
-                "frame_start_x": frame_start_x,
-                "frame_start_y": frame_start_y,
-                "frame_end_x": frame_end_x,
-                "frame_end_y": frame_end_y,
-                "frame_width": frame_width,
-                "frame_height": frame_height,
-                "duration_ms": duration_ms,
-            }
-        except Exception as exc:
-            if not _is_mumu_adb_unavailable_error(str(exc)):
-                raise
-            adb_input_error = str(exc)
+        input_result = _swipe_mumu_adb(
+            frame_start_x,
+            frame_start_y,
+            frame_end_x,
+            frame_end_y,
+            duration_ms=duration_ms,
+            frame_width=frame_width or resolved_fixed_width or None,
+            frame_height=frame_height or resolved_fixed_height or None,
+        )
+        return {
+            "ok": True,
+            "title": normalized_title,
+            **input_result,
+            "frame_start_x": frame_start_x,
+            "frame_start_y": frame_start_y,
+            "frame_end_x": frame_end_x,
+            "frame_end_y": frame_end_y,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+            "duration_ms": duration_ms,
+        }
 
     target, capturer, raw_frame, frame, resolved_area, resolved_mode, resolved_crop, resolved_trim_border, resolved_rotate = (
         _processed_window_target(

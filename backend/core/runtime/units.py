@@ -39,6 +39,21 @@ COMMAND_SERVICE_NAME_HINTS = {
 }
 
 
+def is_legacy_codeyun_command_task(task: Any) -> bool:
+    """Return True for the old local CodeYun service row superseded by the watchdog."""
+
+    name = _normalized_task_text(task, "name").lower()
+    command = _normalized_task_text(task, "command").lower().replace("\\", "/")
+    if name != "codeyun":
+        return False
+    return (
+        command.endswith(" dev.py")
+        or command.endswith("/dev.py")
+        or " uv run dev.py" in f" {command}"
+        or command == "uv run dev.py"
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeExecutionPolicy:
     kind: RuntimeKind

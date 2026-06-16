@@ -5,7 +5,14 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from backend.core.fanxiu.packet import insight_worker as worker
+
+
+@pytest.fixture(autouse=True)
+def _no_host_commit_pressure(monkeypatch):
+    monkeypatch.setattr(worker, "_host_commit_pressure_for_packet_decode", lambda: {"skip": False})
 
 
 def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypatch, tmp_path):
@@ -69,6 +76,27 @@ def test_capture_paths_skips_only_when_target_streams_are_decoded(monkeypatch, t
     assert result["skipped"][0]["decoded_stream_ids"] == [0, 1]
 
 
+def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_path):
+    pcap = tmp_path / "capture.pcap"
+    pcap.write_bytes(b"x" * 128)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(
+        worker,
+        "_host_commit_pressure_for_packet_decode",
+        lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_percent": 94.0}},
+    )
+    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda path, **kwargs: calls.append(Path(path)))
+
+    result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
+
+    assert calls == []
+    assert result["ok"] is True
+    assert result["skipped_count"] == 1
+    assert result["skipped"][0]["reason"] == "host_commit_pressure"
+    assert result["host_commit_pressure"]["commit"]["commit_percent"] == 94.0
+
+
 def test_decode_max_streams_default_matches_runtime_flush_budget():
     assert worker.DEFAULT_DECODE_MAX_STREAMS == 4
 
@@ -111,6 +139,27 @@ def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
     assert calls[0]["limit"] == 2
     assert result["decoded_record_db_sync"]["skipped"] is True
     assert result["activity_packet_sync"]["skipped"] is True
+
+
+def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatch, tmp_path):
+    monkeypatch.setattr(worker, "_worker_state_path", lambda _data_dir=None: tmp_path / "worker_state.json")
+    monkeypatch.setattr(worker, "_decoded_capture_digests", lambda _data_dir=None: set())
+    monkeypatch.setattr(worker, "_decoded_capture_streams_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(worker, "_decoded_capture_sources_by_digest", lambda _data_dir=None: {})
+    monkeypatch.setattr(
+        worker,
+        "_host_commit_pressure_for_packet_decode",
+        lambda: {"skip": True, "reason": "host_commit_pressure", "commit": {"commit_available_mb": 4096}},
+    )
+    monkeypatch.setattr(worker, "_iter_stable_live_pcaps", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not scan")))
+
+    result = worker.sync_fanxiu_live_capture_backlog(data_dir=tmp_path)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "host_commit_pressure"
+    assert result["decode_attempts"] == 0
+    assert result["host_commit_pressure"]["commit"]["commit_available_mb"] == 4096
 
 
 def test_realtime_loop_scans_before_wait(monkeypatch):

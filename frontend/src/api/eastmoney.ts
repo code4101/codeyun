@@ -247,78 +247,6 @@ export interface EastmoneyAkshareIntradayPage {
   items: EastmoneyAkshareIntradayItem[]
 }
 
-export interface EastmoneyEtfRotationHolding {
-  market: string
-  symbol: string
-  name: string
-  weight: number
-  fast_momentum: number
-  forward_return: number | null
-}
-
-export interface EastmoneyEtfRotationPeriod {
-  date: string
-  year: string
-  cash_fraction: number
-  return: number
-  holdings: EastmoneyEtfRotationHolding[]
-}
-
-export interface EastmoneyEtfRotationBacktestResult {
-  strategy_id: string
-  source: string
-  parameters: Record<string, unknown>
-  annual_returns: Record<string, number>
-  total_return: number
-  latest_signal: EastmoneyEtfRotationPeriod | null
-  period_count: number
-  periods: EastmoneyEtfRotationPeriod[]
-}
-
-export type EastmoneyStrategyJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | EastmoneyStrategyJsonValue[]
-  | { [key: string]: EastmoneyStrategyJsonValue }
-
-export interface EastmoneyStrategyResearchSourceGroup {
-  id: string
-  name?: string
-  title?: string
-  summary?: string
-  notes?: string
-  urls?: string[]
-}
-
-export interface EastmoneyStrategyResearchItem {
-  id: string
-  title: string
-  family: string[]
-  market_scope: string[]
-  instrument_scope: string[]
-  timeframe: string
-  status: string
-  priority: number
-  hypothesis: string
-  rules: Record<string, EastmoneyStrategyJsonValue>
-  data_requirements: string[]
-  existing_mapping?: Record<string, EastmoneyStrategyJsonValue>
-  validation_plan: string[]
-  sources: string[]
-  notes?: string
-}
-
-export interface EastmoneyStrategyResearchCatalog {
-  schema_version: number
-  updated_at: string
-  purpose: string
-  source_groups: EastmoneyStrategyResearchSourceGroup[]
-  count: number
-  items: EastmoneyStrategyResearchItem[]
-}
-
 export interface EastmoneyQlibExportItem {
   market: string
   symbol: string
@@ -367,303 +295,188 @@ export interface EastmoneyQlibAnalysis {
   error: string
 }
 
-export interface EastmoneyQlibScreenItem {
-  pool: string
-  market: string
-  symbol: string
-  name: string
-  qlib_symbol: string
-  score: number | null
-  signal: string
-  row_count: number
-  source: string
+export type EastmoneyTradeAdviceAction = 'hold' | 'sell_plan' | 'buy_watch' | 'buy' | 'risk_reduce' | 'no_data'
+
+export interface EastmoneyTradeAdviceStep {
+  label: string
+  value: string
+  note: string
+}
+
+export interface EastmoneyTradeAdvicePosition {
+  quantity: number
+  cost_price: number | null
+  current_price: number | null
+  market_value: number | null
+  quantity_text: string
+  cost_price_text: string
+  current_price_text: string
+  market_value_text: string
+}
+
+export interface EastmoneyTradeAdviceAccount {
+  total_asset: number | null
+  cash_available: number | null
+  position_weight_percent: number | null
+  max_single_position_percent: number | null
+  first_lot_budget: number | null
+  summary: string
+}
+
+export interface EastmoneyTradeAdviceBacktest {
+  strategy_id: string
+  strategy_name: string
   start_date: string
   end_date: string
-  latest_close: number | null
-  latest_change_percent: number | null
-  return_5: number | null
-  return_20: number | null
-  return_60: number | null
-  ma_20_distance: number | null
-  volatility_20: number | null
-  max_drawdown: number | null
-  volume_ratio_5_20: number | null
-  error: string
-}
-
-export interface EastmoneyQlibScreenResult {
-  pool: string
-  source: string
-  target_count: number
-  analyzed_count: number
-  failed_count: number
-  error: string
-  scoring_rules?: string[]
-  items: EastmoneyQlibScreenItem[]
-}
-
-export interface EastmoneyQlibBacktestPoint {
-  date: string
-  close: number
-  score: number | null
-  cash: number
-  position_value: number
-  equity: number
-  action: string
-}
-
-export interface EastmoneyQlibBacktestTrade {
-  trigger_date: string
-  trigger_score: number
-  buy_date: string
-  buy_price: number
-  sell_date: string
-  sell_price: number | null
-  lot_size: number
-  shares: number
-  buy_cost: number
-  sell_proceeds: number | null
-  realized_profit: number | null
-  realized_return_percent: number | null
-  holding_days: number
-  status: string
-}
-
-export interface EastmoneyQlibBacktestResult {
-  market: string
-  symbol: string
-  name: string
-  start_date: string
-  end_date: string
-  lot_size: number
-  score_threshold: number
-  score_profile: string
-  take_profit_percent: number
-  stop_loss_percent: number
-  max_holding_days: number
-  cost_rate: number
-  capital_mode: string
-  initial_capital: number
-  total_invested: number
-  total_fee: number
-  max_capital_used: number
-  final_equity: number
-  total_profit: number
-  total_return_percent: number
-  trade_count: number
-  closed_trade_count: number
-  open_position_shares: number
-  source: string
-  force_liquidate_end: boolean
-  rules: string[]
-  error: string
-  points: EastmoneyQlibBacktestPoint[]
-  trades: EastmoneyQlibBacktestTrade[]
-}
-
-export interface EastmoneyQlibPoolBacktestItem {
-  market: string
-  symbol: string
-  name: string
-  lot_size: number | null
-  total_profit: number
-  total_return_percent: number
-  total_invested: number
-  max_capital_used: number
-  trade_count: number
-  closed_trade_count: number
-  open_position_shares: number
-  start_date: string
-  end_date: string
-  error: string
-}
-
-export interface EastmoneyQlibBenchmark {
-  market: string
-  symbol: string
-  name: string
-  start_date: string
-  end_date: string
-  start_close: number | null
-  end_close: number | null
-  return_percent: number | null
-  excess_return_percent: number | null
-  source: string
-  error: string
-}
-
-export interface EastmoneyQlibPoolBacktestResult {
-  pool: string
-  source: string
-  target_count: number
-  tested_count: number
-  skipped_count: number
-  start_date: string
-  end_date: string
-  score_threshold: number
-  score_profile: string
-  take_profit_percent: number
-  stop_loss_percent: number
-  max_holding_days: number
-  cost_rate: number
-  total_profit: number
-  total_invested: number
-  total_fee: number
-  max_capital_used: number
-  trade_count: number
-  closed_trade_count: number
-  open_position_count: number
-  force_liquidate_end: boolean
-  benchmarks: EastmoneyQlibBenchmark[]
-  error: string
-  items: EastmoneyQlibPoolBacktestItem[]
-}
-
-export interface EastmoneyQlibStrategyYearResult {
-  year: number
-  start_date: string
-  end_date: string
-  total_profit: number
-  return_percent: number | null
-  max_capital_used: number
-  total_fee: number
-  trade_count: number
-  tested_count: number
-  skipped_count: number
+  total_return_percent: number | null
   benchmark_name: string
   benchmark_return_percent: number | null
   excess_return_percent: number | null
+  trade_count: number
+  summary: string
+  error: string
 }
 
-export interface EastmoneyQlibStrategySearchItem {
+export interface EastmoneyTradeEventEvidence {
+  title: string
+  event_date: string
+  source: string
+  url: string
+  impact: 'support' | 'risk' | 'neutral' | string
+  summary: string
+}
+
+export interface EastmoneyTradeOperation {
+  intent: string
+  side: string
+  order_type: string
+  price: number | null
+  price_text: string
+  trigger_price: number | null
+  trigger_price_text: string
+  quantity: number
+  quantity_text: string
+  amount: number | null
+  amount_text: string
+  cash_budget: number | null
+  cash_budget_text: string
+  stop_price: number | null
+  stop_price_text: string
+  recovery_price: number | null
+  recovery_price_text: string
+  lot_size: number
+  summary: string
+  guardrail_text: string
+}
+
+export interface EastmoneyTradeAdvice {
+  market: string
+  symbol: string
+  name: string
+  action: EastmoneyTradeAdviceAction
+  action_text: string
+  headline: string
+  primary_order: string
+  next_trigger: string
+  risk_line: string
+  recovery_line: string
+  operation: EastmoneyTradeOperation
+  evidence: string[]
+  steps: EastmoneyTradeAdviceStep[]
+  event_evidence: EastmoneyTradeEventEvidence[]
+  strategy_status: string
+  strategy_score: number | null
+  strategy_rules: string[]
+  backtests: EastmoneyTradeAdviceBacktest[]
+  position: EastmoneyTradeAdvicePosition
+  account: EastmoneyTradeAdviceAccount
+  source: string
+}
+
+export interface EastmoneyTradeCandidateAdvice {
+  market: string
+  symbol: string
+  name: string
+  action: EastmoneyTradeAdviceAction
+  action_text: string
+  headline: string
+  primary_order: string
+  next_trigger: string
+  risk_line: string
+  operation: EastmoneyTradeOperation
+  evidence: string[]
+  steps: EastmoneyTradeAdviceStep[]
+  event_evidence: EastmoneyTradeEventEvidence[]
+  strategy_score: number | null
+  backtests: EastmoneyTradeAdviceBacktest[]
+  current_price: number | null
+  rank_score: number
+  account: EastmoneyTradeAdviceAccount
+  source: string
+}
+
+export interface EastmoneyTradeCandidateResult {
+  pool: string
+  source: string
+  total: number
+  items: EastmoneyTradeCandidateAdvice[]
+}
+
+export interface EastmoneyTradeWorkbenchSummary {
+  action_counts: Record<string, number>
+  active_action_count: number
+  headline: string
+}
+
+export interface EastmoneyTradeWorkbenchPolicy {
   key: string
   name: string
+  max_single_position_percent: number
+  first_lot_cash_percent: number
+  first_lot_asset_percent: number
+  max_first_lot_budget: number
   score_threshold: number
   score_profile: string
   take_profit_percent: number
   stop_loss_percent: number
-  max_holding_days: number
-  cost_rate: number
-  total_profit: number
-  average_return_percent: number | null
-  min_return_percent: number | null
-  average_excess_return_percent: number | null
-  min_excess_return_percent: number | null
-  profitable_year_count: number
-  beat_benchmark_year_count: number
-  tested_year_count: number
-  all_years_profitable: boolean
-  all_years_beat_benchmark: boolean
-  is_qualified: boolean
-  qualification_note: string
-  years: EastmoneyQlibStrategyYearResult[]
+  cost_rate_percent: number
+  rules: string[]
 }
 
-export interface EastmoneyQlibStrategySearchResult {
-  pool: string
-  source: string
-  years: number[]
-  limit: number | null
-  benchmark_name: string
-  min_annual_return_percent: number
-  require_beat_benchmark: boolean
-  qualified_count: number
-  done_count: number
-  candidate_count: number
-  status: string
-  error: string
-  items: EastmoneyQlibStrategySearchItem[]
-}
-
-export interface EastmoneyQlibRotationStrategySearchItem {
+export interface EastmoneyTradeCandidatePoolDefinition {
   key: string
   name: string
-  score_profile: string
-  rank_metric: string
-  market_filter: string
-  score_threshold: number
-  min_amount: number
-  top_n: number
-  rebalance: string
-  cost_rate: number
-  total_profit: number
-  average_return_percent: number | null
-  min_return_percent: number | null
-  average_excess_return_percent: number | null
-  min_excess_return_percent: number | null
-  profitable_year_count: number
-  beat_benchmark_year_count: number
-  tested_year_count: number
-  all_years_profitable: boolean
-  all_years_beat_benchmark: boolean
-  is_qualified: boolean
-  qualification_note: string
-  years: EastmoneyQlibStrategyYearResult[]
+  source: string
+  description: string
+  start_date: string
+  targets: Array<{
+    market: string
+    symbol: string
+    name: string
+    start_date: string
+  }>
 }
 
-export interface EastmoneyQlibRotationStrategySearchResult {
-  pool: string
+export interface EastmoneyTradeWorkbench {
   source: string
-  years: number[]
-  limit: number | null
-  benchmark_name: string
-  min_annual_return_percent: number
-  require_beat_benchmark: boolean
-  qualified_count: number
-  done_count: number
+  candidate_pool: string
+  policy: EastmoneyTradeWorkbenchPolicy
+  candidate_pool_definition: EastmoneyTradeCandidatePoolDefinition
+  account: {
+    total_asset: number | null
+    cash_available: number | null
+    max_single_position_percent: number
+    first_lot_cash_percent: number
+    first_lot_asset_percent: number
+    max_first_lot_budget: number
+    captured_at: number | null
+    account_label: string
+  }
+  holding_count: number
   candidate_count: number
-  status: string
-  error: string
-  items: EastmoneyQlibRotationStrategySearchItem[]
-}
-
-export interface EastmoneyHkConnectMomentumCandidate {
-  rank: number
-  market: string
-  symbol: string
-  name: string
-  signal_score: number
-  return_10_percent: number
-  amount: number
-  average_amount_20: number
-  close: number
-  lot_size: number
-  lot_value: number
-  budget_lots: number
-  estimated_cash: number
-  market_cap: number
-  selected: boolean
-}
-
-export interface EastmoneyHkConnectMomentumReviewResult {
-  strategy_key: string
-  strategy_name: string
-  source: string
-  status: string
-  generated_at: string
-  signal_date: string
-  hsi_date: string
-  hsi_close: number | null
-  hsi_ma60: number | null
-  hsi_filter_passed: boolean
-  action: string
-  summary: string
-  pool_count: number
-  usable_count: number
-  capital: number
-  max_position_percent: number
-  single_position_budget: number
-  cost_rate: number
-  universe_limit: number
-  min_market_cap: number
-  min_amount: number
-  top_n: number
-  lookback_days: number
-  volume_window_days: number
-  hold_days: number
-  error: string
-  candidates: EastmoneyHkConnectMomentumCandidate[]
-  selected: EastmoneyHkConnectMomentumCandidate[]
+  summary: EastmoneyTradeWorkbenchSummary
+  holdings: EastmoneyTradeAdvice[]
+  candidates: EastmoneyTradeCandidateAdvice[]
 }
 
 export interface EastmoneyFundFlowFilterOptions {
@@ -907,39 +720,21 @@ export async function fetchEastmoneyQlibAnalysis(params: {
   return response.data
 }
 
-export async function fetchEastmoneyQlibHkPoolScreen(params: {
-  refresh?: boolean
-  limit?: number
-  start_date?: string
-} = {}) {
-  const response = await api.get<EastmoneyQlibScreenResult>(
-    '/eastmoney/qlib/screen/hk-pool',
-    {
-      params,
-      timeout: 120000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyQlibOneLotScoreBacktest(params: {
+export async function fetchEastmoneyTradeAdvice(params: {
   market?: string
   symbol?: string
   name?: string
   start_date?: string
-  end_date?: string
-  lot_size?: number
-  score_threshold?: number
-  score_profile?: string
-  take_profit_percent?: number
-  stop_loss_percent?: number
-  max_holding_days?: number
-  cost_rate?: number
-  force_liquidate_end?: boolean
   refresh?: boolean
+  quantity?: number
+  cost_price?: number
+  current_price?: number
+  total_asset?: number
+  cash_available?: number
+  _ts?: number
 } = {}) {
-  const response = await api.get<EastmoneyQlibBacktestResult>(
-    '/eastmoney/qlib/backtest/one-lot-score',
+  const response = await api.get<EastmoneyTradeAdvice>(
+    '/eastmoney/trade-advice',
     {
       params,
       timeout: 120000,
@@ -948,148 +743,44 @@ export async function fetchEastmoneyQlibOneLotScoreBacktest(params: {
   return response.data
 }
 
-export async function fetchEastmoneyQlibHkPoolOneLotScoreBacktest(params: {
-  refresh?: boolean
-  background?: boolean
-  progress?: boolean
+export async function fetchEastmoneyTradeCandidates(params: {
+  pool?: string
   limit?: number
-  detail_limit?: number
-  start_date?: string
-  end_date?: string
-  score_threshold?: number
-  score_profile?: string
-  take_profit_percent?: number
-  stop_loss_percent?: number
-  max_holding_days?: number
-  cost_rate?: number
-  force_liquidate_end?: boolean
-} = {}) {
-  const response = await api.get<EastmoneyQlibPoolBacktestResult>(
-    '/eastmoney/qlib/backtest/hk-pool-one-lot-score',
-    {
-      params,
-      timeout: 300000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyQlibHkPoolStrategySearch(params: {
-  years?: string
-  limit?: number
-  score_thresholds?: string
-  score_profiles?: string
-  take_profit_percents?: string
-  stop_loss_percents?: string
-  max_holding_days?: string
-  cost_rate?: number
-  min_annual_return_percent?: number
-  require_beat_benchmark?: boolean
-  background?: boolean
-  progress?: boolean
-} = {}) {
-  const response = await api.get<EastmoneyQlibStrategySearchResult>(
-    '/eastmoney/qlib/backtest/hk-pool-strategy-search',
-    {
-      params,
-      timeout: 300000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyQlibHkPoolRotationStrategySearch(params: {
-  years?: string
-  limit?: number
-  score_profiles?: string
-  rank_metrics?: string
-  market_filters?: string
-  score_thresholds?: string
-  min_amounts?: string
-  top_n_values?: string
-  rebalances?: string
-  cost_rate?: number
-  min_annual_return_percent?: number
-  require_beat_benchmark?: boolean
-  background?: boolean
-  progress?: boolean
-} = {}) {
-  const response = await api.get<EastmoneyQlibRotationStrategySearchResult>(
-    '/eastmoney/qlib/backtest/hk-pool-rotation-strategy-search',
-    {
-      params,
-      timeout: 300000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyCrossAssetEtfCanaryRotation(params: {
+  screen_limit?: number
   refresh?: boolean
-  progress?: boolean
-  start_date?: string
-  hold_days?: number
-  top_n?: number
-  cost?: number
-  canary_threshold?: number
+  exclude_positions?: boolean
 } = {}) {
-  const response = await api.get<EastmoneyEtfRotationBacktestResult>(
-    '/eastmoney/qlib/backtest/cross-asset-etf-canary-rotation',
+  const response = await api.get<EastmoneyTradeCandidateResult>(
+    '/eastmoney/trade-candidates',
     {
       params,
-      timeout: 60000,
+      timeout: 120000,
     },
   )
   return response.data
 }
 
-export async function fetchEastmoneyStrategyResearchCatalog(params: {
-  family?: string
-  status?: string
-  market?: string
-  min_priority?: number
-} = {}) {
-  const response = await api.get<EastmoneyStrategyResearchCatalog>(
-    '/eastmoney/strategy-research',
-    {
-      params,
-      timeout: 60000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyStrategyResearchItem(strategyId: string) {
-  const response = await api.get<EastmoneyStrategyResearchItem>(
-    `/eastmoney/strategy-research/${encodeURIComponent(strategyId)}`,
-    {
-      timeout: 60000,
-    },
-  )
-  return response.data
-}
-
-export async function fetchEastmoneyHkConnectMomentumReview(params: {
+export async function fetchEastmoneyTradeWorkbench(params: {
+  candidate_pool?: string
+  holding_limit?: number
+  candidate_limit?: number
+  screen_limit?: number
   refresh?: boolean
-  background?: boolean
-  progress?: boolean
-  end_date?: string
-  capital?: number
-  max_position_percent?: number
-  universe_limit?: number
-  min_market_cap?: number
-  min_amount?: number
-  top_n?: number
-  lookback_days?: number
-  volume_window_days?: number
-  hold_days?: number
-  cost_rate?: number
+  focus_market?: string
+  focus_symbol?: string
+  focus_name?: string
+  focus_quantity?: number
+  focus_cost_price?: number
+  focus_current_price?: number
+  total_asset?: number
+  cash_available?: number
+  _ts?: number
 } = {}) {
-  const response = await api.get<EastmoneyHkConnectMomentumReviewResult>(
-    '/eastmoney/qlib/hk-connect-momentum-review',
+  const response = await api.get<EastmoneyTradeWorkbench>(
+    '/eastmoney/trade-workbench',
     {
       params,
-      timeout: 300000,
+      timeout: 120000,
     },
   )
   return response.data

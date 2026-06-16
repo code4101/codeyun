@@ -6,6 +6,7 @@ from backend.core.runtime.units import (
     command_runtime_queue_name,
     command_runtime_resource_lock,
     infer_command_runtime_kind,
+    is_legacy_codeyun_command_task,
     resolve_command_runtime_policy,
 )
 
@@ -92,3 +93,12 @@ def test_command_job_policy_marks_gui_resource_lock():
     assert policy.kind == "job"
     assert policy.resource_lock == "resource:gui-automation"
     assert command_runtime_resource_lock(task, "job") == "resource:gui-automation"
+
+
+def test_legacy_codeyun_command_task_is_superseded_by_watchdog():
+    assert is_legacy_codeyun_command_task(_task(name="codeyun", command="uv run dev.py"))
+    assert is_legacy_codeyun_command_task(
+        _task(name="codeyun", command=r"D:\home\chenkunze\slns\codeyun\.venv\Scripts\python.exe dev.py")
+    )
+    assert not is_legacy_codeyun_command_task(_task(name="capture", command="uv run dev.py"))
+    assert not is_legacy_codeyun_command_task(_task(name="codeyun", command="uv run python scripts/job.py"))

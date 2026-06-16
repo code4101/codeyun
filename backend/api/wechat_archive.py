@@ -8,11 +8,11 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import subprocess
 import time
 from urllib.parse import quote, unquote, urlparse
 from typing import Annotated, Any, Literal
 
+import psutil
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,7 +22,6 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from backend.core.runtime.background_task_queue import background_task_queue
-from backend.core.runtime.process_launcher import run_quiet
 from backend.core.access.auth import extract_api_token, get_optional_current_user_from_token, validate_api_token_value
 from backend.core.access.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
@@ -683,33 +682,26 @@ def _tim_official_device_roots() -> list[Path]:
 def _wechat_live_process_device_roots() -> tuple[Path, ...]:
     if os.name != "nt":
         return ()
-    try:
-        completed = run_quiet(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -match '^(Weixin|WeChat|WeChatAppEx)\\.exe$' } | "
-                    "ForEach-Object { $_.CommandLine }"
-                ),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-    except Exception:
-        return ()
-    if completed.returncode != 0:
-        return ()
-
+    command_lines: list[str] = []
+    process_names = {"weixin.exe", "wechat.exe", "wechatappex.exe"}
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = str(proc.info.get("name") or "").lower()
+            if name not in process_names:
+                continue
+            cmdline = proc.info.get("cmdline") or []
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+        if isinstance(cmdline, list):
+            command_lines.append(" ".join(str(part) for part in cmdline))
+        elif cmdline:
+            command_lines.append(str(cmdline))
     paths: list[Path] = []
-    for match in re.finditer(r'--wechat-files-path=(?:"([^"]+)"|(\S+))', completed.stdout or "", re.IGNORECASE):
-        raw = (match.group(1) or match.group(2) or "").strip()
-        if raw:
-            paths.append(Path(raw).expanduser())
+    for command_line in command_lines:
+        for match in re.finditer(r'--wechat-files-path=(?:"([^"]+)"|(\S+))', command_line, re.IGNORECASE):
+            raw = (match.group(1) or match.group(2) or "").strip()
+            if raw:
+                paths.append(Path(raw).expanduser())
     return tuple(paths)
 
 

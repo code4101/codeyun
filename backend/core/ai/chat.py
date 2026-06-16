@@ -338,6 +338,32 @@ def _is_usable_preferred_codex_command(candidate: Path) -> bool:
     return True
 
 
+def _codex_script_for_command(candidate: Path) -> Path | None:
+    suffix = candidate.suffix.lower()
+    if suffix not in {".cmd", ".ps1"}:
+        return None
+    package_script = candidate.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    if package_script.is_file():
+        return package_script
+    return None
+
+
+def _node_command_for_codex_script(command_path: Path) -> list[str] | None:
+    script = _codex_script_for_command(command_path)
+    if script is None:
+        return None
+    sibling_node = command_path.parent / "node.exe"
+    node = os.fspath(sibling_node) if sibling_node.is_file() else (shutil.which("node.exe") or shutil.which("node") or "node")
+    return [node, os.fspath(script)]
+
+
+def _resolved_codex_candidate_command(candidate: Path, args: list[str]) -> list[str]:
+    node_command = _node_command_for_codex_script(candidate)
+    if node_command is not None:
+        return [*node_command, *args]
+    return [os.fspath(candidate), *args]
+
+
 def _resolve_command_path(command: list[str]) -> list[str]:
     if not command or os.name != "nt":
         return command
@@ -346,21 +372,22 @@ def _resolve_command_path(command: list[str]) -> list[str]:
     if not executable:
         return command
 
+    args = command[1:]
     if os.path.isabs(executable) and Path(executable).exists():
-        return [executable, *command[1:]]
+        return _resolved_codex_candidate_command(Path(executable), args)
 
     executable_name = Path(executable).name.lower()
     if executable_name in {"codex", "codex.cmd", "codex.exe", "codex.ps1"}:
         for candidate in _get_preferred_codex_command_candidates():
             if _is_usable_preferred_codex_command(candidate):
-                return [os.fspath(candidate), *command[1:]]
+                return _resolved_codex_candidate_command(candidate, args)
 
     # On Windows, `run_quiet(["codex", ...])` may hit an extensionless shim
     # before the real `.cmd/.exe` launcher. Resolve once up front to the concrete
     # runnable path that `shutil.which()` selects.
     resolved_executable = shutil.which(executable)
     if resolved_executable:
-        return [resolved_executable, *command[1:]]
+        return _resolved_codex_candidate_command(Path(resolved_executable), args)
     return command
 
 

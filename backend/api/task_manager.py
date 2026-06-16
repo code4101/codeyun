@@ -29,6 +29,7 @@ from backend.core.runtime.units import (
     DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS,
     command_runtime_queue_name,
     infer_command_runtime_kind,
+    is_legacy_codeyun_command_task,
     resolve_command_runtime_policy,
 )
 from backend.db import engine
@@ -472,7 +473,11 @@ class TaskManager:
             # Note: We need to filter by device_id.
             # Assuming TaskModel has device_id.
             stmt = select(TaskModel).where(TaskModel.device_id == local_id)
-            local_tasks = session.exec(stmt).all()
+            local_tasks = [
+                task
+                for task in session.exec(stmt).all()
+                if not is_legacy_codeyun_command_task(task)
+            ]
 
         device = device_manager.get_device(local_id)
         if device:

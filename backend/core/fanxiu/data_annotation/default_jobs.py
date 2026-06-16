@@ -129,7 +129,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_daily_signup_task(ctx, stop_event, payload)
+        return runner._execute_daily_runtime_task(
+            ctx,
+            stop_event,
+            payload,
+            task_type="daily_signup",
+            label="日常_报名",
+            flow=runner.日常报名流程,
+        )
 
     @register_fanxiu_data_annotation_manual_job("daily_boss", "日常_首领", scheduler_supported=True)
     def _run_data_annotation_daily_boss_manual_job(
@@ -226,7 +233,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_daily_gongfeng_task(ctx, stop_event, payload)
+        return runner._execute_daily_runtime_task(
+            ctx,
+            stop_event,
+            payload,
+            task_type="daily_gongfeng",
+            label="日常_供奉",
+            flow=runner.日常供奉流程,
+        )
 
     @register_fanxiu_data_annotation_manual_job("daily_xianshi", "日常_仙市", scheduler_supported=True)
     def _run_data_annotation_daily_xianshi_manual_job(

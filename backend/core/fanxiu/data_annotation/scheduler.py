@@ -433,6 +433,15 @@ def repair_data_annotation_scheduler_tasks(
         if str(task.get("schedule_kind") or "") == "manual" and task.get("enabled"):
             task["enabled"] = False
             changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("last_result") or "") == "success"
+            and task.get("retry_after")
+        ):
+            next_ts = parse_data_annotation_task_time(task.get("next_time"))
+            if next_ts is not None and next_ts > current_ts:
+                task["retry_after"] = None
+                changed = True
         if task.get("enabled") and task.get("retry_after"):
             deferred_next_time = _daily_retry_should_defer_to_next_trigger(task, current_time)
             if deferred_next_time:

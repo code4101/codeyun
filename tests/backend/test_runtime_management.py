@@ -630,6 +630,63 @@ def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
     assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="cpu")) == "gpu"
 
 
+def test_fanxiu_behavior_tree_skips_ocr_prewarm_under_commit_pressure(monkeypatch):
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+
+    monkeypatch.setattr(
+        fanxiu_service,
+        "_collect_windows_commit_snapshot",
+        lambda: {"commit_percent": 91.0, "commit_available_mb": 12000},
+    )
+
+    assert fanxiu_service._host_commit_pressure_should_skip_ocr_prewarm() is True
+
+    monkeypatch.setattr(
+        fanxiu_service,
+        "_collect_windows_commit_snapshot",
+        lambda: {"commit_percent": 70.0, "commit_available_mb": 17000},
+    )
+
+    assert fanxiu_service._host_commit_pressure_should_skip_ocr_prewarm() is False
+
+
+def test_fanxiu_behavior_tree_does_not_force_codeyun_ocr_under_commit_pressure(tmp_path, monkeypatch):
+    from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
+
+    fx_root = tmp_path / "fx"
+    script_path = fx_root / "tools" / "凡修手游.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# test\n", encoding="utf-8")
+    python_path = tmp_path / "python.exe"
+    python_path.write_text("", encoding="utf-8")
+    mainwin = tmp_path / "mainwin"
+    mainwin.mkdir()
+
+    captured: dict[str, str] = {}
+
+    def fake_popen(_script_path, **kwargs):
+        captured.update(kwargs.get("env") or {})
+        return SimpleNamespace(pid=2468)
+
+    monkeypatch.setenv("FX_PROJECT_ROOT", str(fx_root))
+    monkeypatch.setenv("FX_PYTHON", str(python_path))
+    monkeypatch.setenv("FX_MAINWIN_ROOT", str(mainwin))
+    monkeypatch.setattr(fanxiu_service, "terminate_behavior_tree_processes", lambda timeout=5.0: {"terminated": []})
+    monkeypatch.setattr(
+        fanxiu_service,
+        "_collect_windows_commit_snapshot",
+        lambda: {"commit_percent": 91.0, "commit_available_mb": 12000},
+    )
+    monkeypatch.setattr(fanxiu_service, "get_settings", lambda: SimpleNamespace(ocr_device="gpu"))
+    monkeypatch.setattr(fanxiu_service, "popen_python_script_service", fake_popen)
+    monkeypatch.setattr(fanxiu_service.time, "sleep", lambda _seconds: None)
+
+    result = fanxiu_service.start_behavior_tree_service(replace_existing=False)
+
+    assert result["service"]["registry"]["ocr_service"]["skipped"] == "host_commit_pressure"
+    assert captured["FX_FORCE_CODEYUN_OCR"] == "0"
+
+
 def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monkeypatch):
     from backend.core.fanxiu.runtime import behavior_tree_service as fanxiu_service
 

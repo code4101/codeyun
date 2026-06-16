@@ -52,6 +52,14 @@ def game_window2_desktop_title(title: str | None) -> str:
     return normalize_game_window2_title(title) or "MuMu"
 
 
+def positive_int_or_none(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def extract_stream_error(response: requests.Response) -> str:
     try:
         payload = response.json()
@@ -165,11 +173,11 @@ def click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             crop=payload.get("crop"),
             trim_border=payload.get("trim_border"),
             rotate=payload.get("rotate"),
-            fixed_width=int(payload.get("fixed_width") or 0),
-            fixed_height=int(payload.get("fixed_height") or 0),
+            fixed_width=positive_int_or_none(payload.get("fixed_width")),
+            fixed_height=positive_int_or_none(payload.get("fixed_height")),
             frame_width=int(payload.get("frame_width") or 0) or None,
             frame_height=int(payload.get("frame_height") or 0) or None,
-            input_backend=payload.get("input_backend") or "desktop",
+            input_backend=payload.get("input_backend") or "adb",
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -190,11 +198,11 @@ def drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
             crop=payload.get("crop"),
             trim_border=payload.get("trim_border"),
             rotate=payload.get("rotate"),
-            fixed_width=int(payload.get("fixed_width") or 0),
-            fixed_height=int(payload.get("fixed_height") or 0),
+            fixed_width=positive_int_or_none(payload.get("fixed_width")),
+            fixed_height=positive_int_or_none(payload.get("fixed_height")),
             frame_width=int(payload.get("frame_width") or 0) or None,
             frame_height=int(payload.get("frame_height") or 0) or None,
-            input_backend=payload.get("input_backend") or "desktop",
+            input_backend=payload.get("input_backend") or "adb",
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -337,8 +345,8 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
                 crop=payload.get("crop"),
                 trim_border=payload.get("trim_border"),
                 rotate=payload.get("rotate"),
-                fixed_width=int(payload.get("fixed_width") or 0),
-                fixed_height=int(payload.get("fixed_height") or 0),
+                fixed_width=positive_int_or_none(payload.get("fixed_width")),
+                fixed_height=positive_int_or_none(payload.get("fixed_height")),
                 quality=int(payload.get("quality") or 82),
                 current_frame_data_url=payload.get("current_frame_data_url"),
                 prefer_cached=bool(payload.get("prefer_cached", True)),

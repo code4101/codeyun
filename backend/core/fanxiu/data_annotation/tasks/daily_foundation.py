@@ -31,6 +31,16 @@ from backend.core.fanxiu.data_annotation.state import parse_data_annotation_task
 
 
 class DailyFoundationTaskMixin:
+    def _payload_int(self, payload: dict[str, Any], *keys: str, default: int) -> int:
+        for key in keys:
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if value is None or value == "":
+                continue
+            return int(value)
+        return int(default)
+
     def _execute_daily_boss_task(
         self,
         ctx: dict[str, Any],
@@ -97,14 +107,13 @@ class DailyFoundationTaskMixin:
         list_shape = self._find_shape(image69, "滚动窗口")
         if list_shape is None:
             raise RuntimeError("缺少 #69「滚动窗口」标注，无法滚动查找击败首领")
-        last_signature = ""
-        max_scrolls = 30
-        for scroll_index in range(max_scrolls + 1):
+        scroll_index = 0
+        while True:
             self._raise_if_stopped(stop_event)
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"日常_首领：查找日常任务「击败首领」 {scroll_index}/{max_scrolls}",
+                    f"日常_首领：查找日常任务「击败首领」 {scroll_index}",
                     phase="daily_boss_find_daily_entry",
                     current_scene=69,
                 )
@@ -126,14 +135,12 @@ class DailyFoundationTaskMixin:
                 yield from self._wait_scene_id(ctx, stop_event, 178, timeout=18.0, label="日常_首领：等待首领列表 #178")
                 return "success"
 
-            signature = self._vertical_text_signature_in_shape(lines, image69, "滚动窗口", exclude_boxes=self._occlusion_marker_boxes(ctx, image69))
-            if signature and signature == last_signature:
-                break
-            last_signature = signature
             with self._lock:
                 self._log_locked("action", f"日常_首领：未找到「击败首领」，滚动日常列表 {scroll_index + 1}")
-            self._scroll_shape_content(ctx, image69, list_shape)
-            yield from self._wait_scroll_settle(ctx, stop_event)
+            changed = yield from self._scroll_shape_content_changed(ctx, image69, list_shape, stop_event)
+            if not changed:
+                break
+            scroll_index += 1
         raise RuntimeError("日常_首领：#69 日常列表未找到「击败首领」")
 
     def _open_watched_daily_boss_detail(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
@@ -185,14 +192,13 @@ class DailyFoundationTaskMixin:
                     self._log_locked("success", self._status["message"])
                 return "done"
 
-        last_signature = ""
-        max_scrolls = 8
-        for scroll_index in range(max_scrolls + 1):
+        scroll_index = 0
+        while True:
             self._raise_if_stopped(stop_event)
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"日常_首领：查找仙界注视中首领 {scroll_index}/{max_scrolls}",
+                    f"日常_首领：查找仙界注视中首领 {scroll_index}",
                     phase="daily_boss_find_watched",
                     current_scene=178,
                 )
@@ -214,14 +220,12 @@ class DailyFoundationTaskMixin:
                 yield from self._wait_scene_id(ctx, stop_event, 179, timeout=18.0, label="日常_首领：等待首领详情 #179")
                 return "opened"
 
-            signature = self._vertical_text_signature_in_shape(lines, image178, "首领列表")
-            if signature and signature == last_signature:
-                break
-            last_signature = signature
             with self._lock:
                 self._log_locked("action", f"日常_首领：未找到「注视中」，滚动首领列表 {scroll_index + 1}")
-            self._scroll_shape_content(ctx, image178, list_shape)
-            yield from self._wait_scroll_settle(ctx, stop_event)
+            changed = yield from self._scroll_shape_content_changed(ctx, image178, list_shape, stop_event)
+            if not changed:
+                break
+            scroll_index += 1
         raise RuntimeError("日常_首领：仙界首领列表未找到「注视中」目标")
 
     def _handle_daily_boss_detail(
@@ -1057,11 +1061,20 @@ class DailyFoundationTaskMixin:
     def _daily_jianling_remaining_zero(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         normalized = re.sub(r"\s+", "", normalized)
-        return bool(re.search(r"剩余次数[:：]?(?:0|O)(?:\\+)?", normalized, re.IGNORECASE))
+        return bool(
+            re.search(r"剩余次数[:：]?(?:0|O)(?:\\+)?", normalized, re.IGNORECASE)
+            or "已通关" in normalized
+            or "当前秘境已全通" in normalized
+        )
 
     def _daily_jianling_text_is_result(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
-        return "扫荡奖励" in normalized or "点击屏幕继续" in normalized or "点击继续" in normalized
+        return (
+            "扫荡奖励" in normalized
+            or "点击屏幕继续" in normalized
+            or "点击继续" in normalized
+            or ("获得了" in normalized and ("仙侣神通" in normalized or "修为境界" in normalized))
+        )
 
     def _daily_jianling_text_is_main(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -1116,7 +1129,21 @@ class DailyFoundationTaskMixin:
                 label="日常_剑灵",
             )
 
-        daily_status = yield from self._open_daily_jianling_from_daily(ctx, stop_event, payload)
+        daily_status = yield from runtime.open_daily_entry(
+            label="日常_剑灵",
+            title_pattern=r"挑战或扫荡淬剑试炼|淬剑试炼|淬剑|剑试",
+            max_scrolls=self._payload_int(payload, "max_scrolls", "jianling_max_scrolls", default=10),
+            reverse_scrolls=self._payload_int(
+                payload,
+                "reverse_scrolls",
+                "jianling_reverse_scrolls",
+                "max_scrolls",
+                "jianling_max_scrolls",
+                default=10,
+            ),
+        )
+        if daily_status == "not_found":
+            raise RuntimeError("日常_剑灵：日常列表未找到「淬剑试炼」任务")
         if daily_status == "done":
             self._record_daily_jianling_done(payload, message="日常列表显示已完成")
             yield from self._safe_daily_done_cleanup(
@@ -1125,52 +1152,32 @@ class DailyFoundationTaskMixin:
                 repeat_risk="重复扫荡",
             )
             return "success"
+        yield from runtime.wait_view(190, label="日常_剑灵：等待淬剑试炼 #190")
         yield from self._run_daily_jianling_sweep(ctx, stop_event, payload)
         return "success"
 
     def _open_daily_jianling_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
-        image69 = ctx.get("images", {}).get(69)
-        if not isinstance(image69, dict):
-            raise RuntimeError("缺少 #69「日常」标注，无法查找淬剑试炼")
-        max_scrolls = int(payload.get("max_scrolls") or payload.get("jianling_max_scrolls") or 10)
-        reverse_scrolls = int(payload.get("reverse_scrolls") or payload.get("jianling_reverse_scrolls") or max_scrolls)
-        for direction, scroll_count in [("down", max_scrolls), ("up", reverse_scrolls)]:
-            for scroll_index in range(scroll_count + 1):
-                self._raise_if_stopped(stop_event)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"日常_剑灵：查找日常任务「淬剑试炼」 {direction} {scroll_index}/{scroll_count}",
-                        phase="daily_jianling_find_daily_entry",
-                        current_scene=69,
-                )
-                frame = self._screencap(ctx)
-                lines = self._ocr_lines(frame)
-                self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_剑灵")
-                matches = self._daily_entry_matches(
-                    lines,
-                    image69,
-                    title_pattern=r"挑战或扫荡淬剑试炼|淬剑试炼|淬剑|剑试",
-                )
-                if matches:
-                    x, y, matched_text = matches[0]
-                    progress = self._daily_task_row_progress(lines, y)
-                    if progress is not None and progress[0] >= progress[1]:
-                        return "done"
-                    with self._lock:
-                        self._set_status_locked("running", f"日常_剑灵：点击日常任务 {matched_text}", phase="daily_jianling_click_daily_entry", current_scene=69)
-                        self._log_locked("action", f"日常_剑灵：点击 #69「{matched_text}」")
-                    self._click_frame_point(ctx, image69, x, y)
-                    yield from self._wait_scene_id(ctx, stop_event, 190, timeout=18.0, label="日常_剑灵：等待淬剑试炼 #190")
-                    return "open"
-                if scroll_index >= scroll_count:
-                    break
-                with self._lock:
-                    self._log_locked("action", f"日常_剑灵：未找到「淬剑试炼」，{direction} 滚动日常列表 {scroll_index + 1}")
-                changed = yield from self._scroll_daily_xianyuan_list(ctx, stop_event, image69, direction=direction)
-                if not changed:
-                    break
-        raise RuntimeError("日常_剑灵：日常列表未找到「淬剑试炼」任务")
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        status = yield from runtime.open_daily_entry(
+            label="日常_剑灵",
+            title_pattern=r"挑战或扫荡淬剑试炼|淬剑试炼|淬剑|剑试",
+            max_scrolls=self._payload_int(payload, "max_scrolls", "jianling_max_scrolls", default=10),
+            reverse_scrolls=self._payload_int(
+                payload,
+                "reverse_scrolls",
+                "jianling_reverse_scrolls",
+                "max_scrolls",
+                "jianling_max_scrolls",
+                default=10,
+            ),
+        )
+        if status == "not_found":
+            raise RuntimeError("日常_剑灵：日常列表未找到「淬剑试炼」任务")
+        if status != "open":
+            return status
+        yield from self._wait_scene_id(ctx, stop_event, 190, timeout=18.0, label="日常_剑灵：等待淬剑试炼 #190")
+        return "open"
 
     def _run_daily_jianling_sweep(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         image190 = ctx.get("images", {}).get(190)
@@ -1256,7 +1263,7 @@ class DailyFoundationTaskMixin:
             scene_id, _score = self._identify_scene_number(ctx, frame, [190, 192])
             if scene_id == 190 or ("淬剑试炼" in text and "通关进度" in text):
                 return "success"
-            if scene_id == 192 or "点击" in text or "扫荡奖励" in text:
+            if scene_id == 192 or "点击" in text or self._daily_jianling_text_is_result(text):
                 with self._lock:
                     self._set_status_locked("running", f"日常_剑灵：关闭扫荡结果 {index + 1}", phase="daily_jianling_continue_result", current_scene=192)
                     self._log_locked("action", "日常_剑灵：点击 #192「点击继续」")
@@ -1604,7 +1611,21 @@ class DailyFoundationTaskMixin:
                 label="日常_灵塔",
             )
 
-        daily_status = yield from self._open_daily_lingta_from_daily(ctx, stop_event, payload)
+        daily_status = yield from runtime.open_daily_entry(
+            label="日常_灵塔",
+            title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
+            max_scrolls=self._payload_int(payload, "max_scrolls", "lingta_max_scrolls", default=10),
+            reverse_scrolls=self._payload_int(
+                payload,
+                "reverse_scrolls",
+                "lingta_reverse_scrolls",
+                "max_scrolls",
+                "lingta_max_scrolls",
+                default=10,
+            ),
+        )
+        if daily_status == "not_found":
+            raise RuntimeError("日常_灵塔：日常列表未找到「混沌灵塔」任务")
         if daily_status == "done":
             self._record_daily_lingta_done(payload, message="日常列表显示已完成")
             yield from self._safe_daily_done_cleanup(
@@ -1613,60 +1634,42 @@ class DailyFoundationTaskMixin:
                 repeat_risk="重复扫荡",
             )
             return "success"
+        view = yield from runtime.wait_view(193, 194, label="日常_灵塔：等待区域入口 #193 或混沌灵塔 #194")
+        if getattr(view, "id", view) == 193:
+            yield from self._open_daily_lingta_main_from_entry(ctx, stop_event)
         yield from self._run_daily_lingta_sweep(ctx, stop_event, payload)
         return "success"
 
     def _open_daily_lingta_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
-        image69 = ctx.get("images", {}).get(69)
-        if not isinstance(image69, dict):
-            raise RuntimeError("缺少 #69「日常」标注，无法查找混沌灵塔")
-        max_scrolls = int(payload.get("max_scrolls") or payload.get("lingta_max_scrolls") or 10)
-        reverse_scrolls = int(payload.get("reverse_scrolls") or payload.get("lingta_reverse_scrolls") or max_scrolls)
-        for direction, scroll_count in [("down", max_scrolls), ("up", reverse_scrolls)]:
-            for scroll_index in range(scroll_count + 1):
-                self._raise_if_stopped(stop_event)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"日常_灵塔：查找日常任务「混沌灵塔」 {direction} {scroll_index}/{scroll_count}",
-                        phase="daily_lingta_find_daily_entry",
-                        current_scene=69,
-                )
-                frame = self._screencap(ctx)
-                lines = self._ocr_lines(frame)
-                self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_灵塔")
-                matches = self._daily_entry_matches(
-                    lines,
-                    image69,
-                    title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
-                )
-                if matches:
-                    x, y, matched_text = matches[0]
-                    progress = self._daily_task_row_progress(lines, y)
-                    if progress is not None and progress[0] >= progress[1]:
-                        return "done"
-                    with self._lock:
-                        self._set_status_locked("running", f"日常_灵塔：点击日常任务 {matched_text}", phase="daily_lingta_click_daily_entry", current_scene=69)
-                        self._log_locked("action", f"日常_灵塔：点击 #69「{matched_text}」")
-                    self._click_frame_point(ctx, image69, x, y)
-                    scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
-                        ctx,
-                        stop_event,
-                        [193, 194],
-                        timeout=24.0,
-                        label="日常_灵塔：等待区域入口 #193 或混沌灵塔 #194",
-                    )
-                    if scene_id == 193:
-                        yield from self._open_daily_lingta_main_from_entry(ctx, stop_event)
-                    return "open"
-                if scroll_index >= scroll_count:
-                    break
-                with self._lock:
-                    self._log_locked("action", f"日常_灵塔：未找到「混沌灵塔」，{direction} 滚动日常列表 {scroll_index + 1}")
-                changed = yield from self._scroll_daily_xianyuan_list(ctx, stop_event, image69, direction=direction)
-                if not changed:
-                    break
-        raise RuntimeError("日常_灵塔：日常列表未找到「混沌灵塔」任务")
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        status = yield from runtime.open_daily_entry(
+            label="日常_灵塔",
+            title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
+            max_scrolls=self._payload_int(payload, "max_scrolls", "lingta_max_scrolls", default=10),
+            reverse_scrolls=self._payload_int(
+                payload,
+                "reverse_scrolls",
+                "lingta_reverse_scrolls",
+                "max_scrolls",
+                "lingta_max_scrolls",
+                default=10,
+            ),
+        )
+        if status == "not_found":
+            raise RuntimeError("日常_灵塔：日常列表未找到「混沌灵塔」任务")
+        if status != "open":
+            return status
+        scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
+            ctx,
+            stop_event,
+            [193, 194],
+            timeout=24.0,
+            label="日常_灵塔：等待区域入口 #193 或混沌灵塔 #194",
+        )
+        if scene_id == 193:
+            yield from self._open_daily_lingta_main_from_entry(ctx, stop_event)
+        return "open"
 
     def _open_daily_lingta_main_from_entry(self, ctx: dict[str, Any], stop_event: threading.Event):
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
@@ -2130,64 +2133,16 @@ class DailyFoundationTaskMixin:
         exclude_pattern: str | None = None,
         progress_can_mark_done: bool = True,
     ):
-        image69 = ctx.get("images", {}).get(69)
-        if not isinstance(image69, dict):
-            raise RuntimeError(f"缺少 #69「日常」标注，无法查找{task_label}")
-        list_shape = self._find_shape(image69, "滚动窗口")
-        if list_shape is None:
-            raise RuntimeError(f"缺少 #69「滚动窗口」标注，无法滚动查找{task_label}")
-        max_scrolls = int(payload.get("max_scrolls") or 10)
-        reverse_scrolls = int(payload.get("reverse_scrolls") or 0)
-        passes: list[tuple[str, int]] = [("down", max_scrolls)]
-        if reverse_scrolls > 0:
-            passes.append(("up", reverse_scrolls))
-        for direction, scroll_count in passes:
-            for scroll_index in range(scroll_count + 1):
-                self._raise_if_stopped(stop_event)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"{task_label}：查找日常任务入口 {direction} {scroll_index}/{scroll_count}",
-                        phase="daily_entry_find",
-                        current_scene=69,
-                )
-                frame = self._screencap(ctx)
-                lines = self._ocr_lines(frame)
-                self._ensure_daily_list_frame(ctx, frame, lines, task_label=task_label)
-                matches = self._daily_entry_matches(
-                    lines,
-                    image69,
-                    title_pattern=title_pattern,
-                    exclude_pattern=exclude_pattern,
-                )
-                if matches:
-                    x, y, matched_text = matches[0]
-                    progress = self._daily_task_row_progress(lines, y)
-                    if progress_can_mark_done and progress is not None and progress[0] >= progress[1]:
-                        return "done"
-                    with self._lock:
-                        self._set_status_locked(
-                            "running",
-                            f"{task_label}：点击日常任务 {matched_text}",
-                            phase="daily_entry_click",
-                            current_scene=69,
-                        )
-                        self._log_locked("action", f"{task_label}：点击 #69「{matched_text}」")
-                    self._click_frame_point(ctx, image69, x, y)
-                    yield from self._wait_runtime_action_settle(
-                        ctx,
-                        stop_event,
-                        seconds=float(payload.get("entry_click_settle_seconds") or 2.0),
-                    )
-                    return "open"
-                if scroll_index >= scroll_count:
-                    break
-                with self._lock:
-                    self._log_locked("action", f"{task_label}：未找到入口，{direction} 滚动日常列表 {scroll_index + 1}")
-                changed = yield from self._scroll_daily_xianyuan_list(ctx, stop_event, image69, direction=direction)
-                if not changed:
-                    break
-        return "not_found"
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        return (yield from runtime.open_daily_entry(
+            label=task_label,
+            title_pattern=title_pattern,
+            exclude_pattern=exclude_pattern,
+            progress_can_mark_done=progress_can_mark_done,
+            max_scrolls=self._payload_int(payload, "max_scrolls", default=10),
+            reverse_scrolls=self._payload_int(payload, "reverse_scrolls", default=0),
+        ))
 
     def _record_daily_entry_done(self, payload: dict[str, Any], *, task_id: str, task_type: str, label: str, message: str) -> str:
         scheduler_task_id = str(payload.get("__scheduler_task_id") or task_id)

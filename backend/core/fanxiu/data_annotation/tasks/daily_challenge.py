@@ -261,7 +261,7 @@ class DailyChallengeTaskMixin:
             timeout=float(payload.get("purchase_timeout") or 10.0),
             label=f"{task_label}：等待购买结果",
         )
-        if result_scene_id == 225:
+        if result_scene_id in {223, 225}:
             return (yield from self._click_daily_dungeon_sweep(ctx, stop_event, payload, image223, task_label=task_label))
         yield from self._click_daily_dungeon_purchase_uses(ctx, stop_event, payload, image224, task_label=task_label)
         yield from self._wait_scene_id(
@@ -371,6 +371,14 @@ class DailyChallengeTaskMixin:
         normalized = _sanitize_ocr_text(text)
         return "恭喜获得" in normalized and ("点击屏幕继续" in normalized or "点击继续" in normalized)
 
+    def _daily_dungeon_text_is_completed(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return (
+            "已完成所有挑战" in compact
+            or "今日可挑战次数:0/3" in compact
+            or "今日可挑战次数：0/3" in compact
+        )
+
     def _finish_daily_dungeon_result(
         self,
         ctx: dict[str, Any],
@@ -412,6 +420,15 @@ class DailyChallengeTaskMixin:
                 )
                 self._log("success", f"{task_label}：已点击扫荡结果继续")
                 self._record_daily_dungeon_done(payload, message="扫荡奖励已领取")
+                yield from self._safe_daily_done_cleanup(
+                    lambda: self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label),
+                    label=task_label,
+                    repeat_risk="重复扫荡",
+                )
+                return "success"
+            if self._daily_dungeon_text_is_completed(text):
+                self._log("success", f"{task_label}：副本挑战已完成，OCR={text[:120]}")
+                self._record_daily_dungeon_done(payload, message="副本挑战已完成")
                 yield from self._safe_daily_done_cleanup(
                     lambda: self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label),
                     label=task_label,
@@ -1413,6 +1430,40 @@ class DailyChallengeTaskMixin:
                     f"最后 {scene_text} {last_score:.0f}%，OCR={last_text[:120]}"
                 )
 
+    def _wait_daily_assistant_list_state(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        timeout: float,
+        label: str,
+    ) -> tuple[int, float]:
+        start = time.monotonic()
+        last_scene_id: int | None = None
+        last_score = 0.0
+        last_text = ""
+        while True:
+            self._raise_if_stopped(stop_event)
+            self._clear_tick_frame(ctx)
+            yield BehaviorTreeStatus.RUNNING
+            frame = self._screencap(ctx)
+            scene_id, score = self._identify_scene_number(ctx, frame, [204, 69, 34])
+            text = self._ocr_text(self._ocr_lines(frame))
+            last_scene_id, last_score, last_text = scene_id, score, text
+            if scene_id == 204 or self._daily_assistant_text_is_list(text):
+                return 204, float(score or 100.0)
+            if time.monotonic() - start >= timeout:
+                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
+                raise TimeoutError(f"{label} 超时，未检测到 #204，最后 {scene_text} {last_score:.0f}% OCR={last_text[:160]}")
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"{label}，当前 {'#' + str(scene_id) if scene_id else 'unknown'} {score:.0f}%",
+                    phase="daily_assistant_wait_list_state",
+                    current_scene=scene_id,
+                )
+            yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=0.5)
+
     def _run_daily_assistant_from_list(
         self,
         ctx: dict[str, Any],
@@ -1886,18 +1937,10 @@ class DailyChallengeTaskMixin:
         )
 
     def _daily_assistant_is_tongyou_result_text(self, assistant_label: str, action_label: str, text: str) -> bool:
-        label = str(assistant_label or "")
-        action = str(action_label or "")
-        if "同游传道" not in label or action != "执行":
-            return False
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text or ""))
         return "同游结果" in compact and "确定" in compact
 
     def _daily_assistant_is_tongyou_new_disciple_text(self, assistant_label: str, action_label: str, text: str) -> bool:
-        label = str(assistant_label or "")
-        action = str(action_label or "")
-        if "同游传道" not in label or action != "执行":
-            return False
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text or ""))
         return "喜纳弟子" in compact and "点击空白处关闭" in compact
 
@@ -1957,7 +2000,12 @@ class DailyChallengeTaskMixin:
                     )
                     self._log_locked("action", "日常_助手：点击 #212「空白关闭」")
                 self._click_frame_point(ctx, image212, x, y)
-                yield from self._wait_scene_id(ctx, stop_event, 204, timeout=timeout, label="日常_助手：等待喜纳弟子返回小助手清单")
+                yield from self._wait_daily_assistant_list_state(
+                    ctx,
+                    stop_event,
+                    timeout=timeout,
+                    label="日常_助手：等待喜纳弟子返回小助手清单",
+                )
                 return "result_closed"
             if scene_id == 204 or self._daily_assistant_text_is_list(text):
                 return "confirmed_no_result"
@@ -2082,24 +2130,64 @@ class DailyChallengeTaskMixin:
                 yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("assistant_no_action_settle_seconds") or 1.0))
                 return "no_action"
 
-            if scene_id in {205, 209}:
-                result_image = image209 if scene_id == 209 else image205
+            zongmen_info_page = (
+                "宗门助手" in str(assistant_label or "")
+                and "功能" in compact
+                and "职位" in compact
+                and "宗门俸禄" in compact
+                and "宗门祈福" in compact
+                and "道藏阁" in compact
+            )
+            if zongmen_info_page:
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        "日常_助手：宗门助手进入功能说明页，点击返回",
+                        phase="daily_assistant_zongmen_info_return",
+                        current_scene=scene_id,
+                    )
+                    self._log_locked("action", "日常_助手：宗门助手进入功能说明页，点击左下返回")
+                self._click_frame_point(ctx, {"width": 900, "height": 1600}, 45, 1510)
+                yield from self._wait_scene_id(ctx, stop_event, 204, timeout=detail_timeout, label="日常_助手：等待宗门功能页返回小助手清单")
+                return "no_action"
+
+            shenwuyuan_result_by_ocr = (
+                scene_id is None
+                and "神物园" in compact
+                and ("获得神物园" in compact or "神物园产出效率" in compact or "神物园效率加成" in compact)
+            )
+            assistant_reward_result_by_ocr = (
+                scene_id is None
+                and (
+                    ("灵力" in compact and "气血" in compact and ("+" in compact or "＋" in compact))
+                    or "授业结果" in compact
+                    or ("弟子评分" in compact and "消耗" in compact)
+                )
+            )
+            if scene_id in {205, 209} or shenwuyuan_result_by_ocr or assistant_reward_result_by_ocr:
+                result_scene_id = 205 if shenwuyuan_result_by_ocr or assistant_reward_result_by_ocr else scene_id
+                result_image = image209 if result_scene_id == 209 else image205
                 if not isinstance(result_image, dict):
-                    raise RuntimeError(f"日常_助手：已进入 #{scene_id} 小助手执行结果，但缺少 #{scene_id} 资产标注")
+                    raise RuntimeError(f"日常_助手：已进入 #{result_scene_id} 小助手执行结果，但缺少 #{result_scene_id} 资产标注")
                 continue_shape = self._find_shape(result_image, "点击屏幕继续")
                 if continue_shape is None:
-                    raise RuntimeError(f"日常_助手：#{scene_id} 缺少「点击屏幕继续」标注，无法回到 #204")
+                    raise RuntimeError(f"日常_助手：#{result_scene_id} 缺少「点击屏幕继续」标注，无法回到 #204")
                 x, y = ActionPlanner().shape_center(result_image, continue_shape)
                 with self._lock:
                     self._set_status_locked(
                         "running",
                         f"日常_助手：关闭 {assistant_label} 执行结果",
                         phase="daily_assistant_item_close_detail",
-                        current_scene=scene_id,
+                        current_scene=result_scene_id,
                     )
-                    self._log_locked("action", f"日常_助手：点击 #{scene_id}「点击屏幕继续」")
+                    self._log_locked("action", f"日常_助手：点击 #{result_scene_id}「点击屏幕继续」")
                 self._click_frame_point(ctx, result_image, x, y)
-                yield from self._wait_scene_id(ctx, stop_event, 204, timeout=detail_timeout, label="日常_助手：等待回到小助手清单")
+                yield from self._wait_daily_assistant_list_state(
+                    ctx,
+                    stop_event,
+                    timeout=detail_timeout,
+                    label="日常_助手：等待回到小助手清单",
+                )
                 return "detail_closed"
 
             if scene_id == 214:
@@ -2361,32 +2449,13 @@ class DailyChallengeTaskMixin:
         list_shape = self._find_shape(image69, "滚动窗口")
         if list_shape is None:
             raise RuntimeError("缺少 #69「滚动窗口」标注，无法滚动查找挑战仙缘")
-        before_frame = self._screencap(ctx)
-        before_signature = self._daily_scroll_window_signature(ctx, image69, before_frame)
-        self._scroll_shape_content(ctx, image69, list_shape, reverse=(direction == "up"))
-        yield from self._wait_scroll_settle(ctx, stop_event)
-        after_frame = self._screencap(ctx)
-        after_signature = self._daily_scroll_window_signature(ctx, image69, after_frame)
-        if before_signature and before_signature == after_signature:
+        changed = yield from self._scroll_shape_content_changed(ctx, image69, list_shape, stop_event, reverse=(direction == "up"))
+        if not changed:
             boundary = "顶部" if direction == "up" else "底部"
             with self._lock:
                 self._log_locked("action", f"#69「滚动窗口」{direction} 拖拽后签名未变化，判定已到{boundary}")
             return False
         return True
-
-    def _daily_scroll_window_signature(
-        self,
-        ctx: dict[str, Any] | None,
-        image69: dict[str, Any],
-        frame_data_url: str,
-    ) -> str:
-        lines = self._ocr_lines(frame_data_url)
-        return self._vertical_text_signature_in_shape(
-            lines,
-            image69,
-            "滚动窗口",
-            exclude_boxes=self._occlusion_marker_boxes(ctx, image69),
-        )
 
     def _daily_xianyuan_people_list_box(self, image197: dict[str, Any]) -> dict[str, Any]:
         list_shape = self._find_shape(image197, "人物列表")
@@ -2461,20 +2530,10 @@ class DailyChallengeTaskMixin:
         *,
         direction: str = "down",
     ):
-        box = self._daily_xianyuan_people_list_box(image197)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        width = float(box.get("w") or 0)
-        height = float(box.get("h") or 0)
-        x = left + width * 0.5
-        if direction == "up":
-            start_y = top + height * 0.25
-            end_y = top + height * 0.75
-        else:
-            start_y = top + height * 0.75
-            end_y = top + height * 0.25
-        self._drag_frame_point(ctx, image197, x, start_y, x, end_y, duration_ms=380)
-        yield from self._wait_scroll_settle(ctx, stop_event)
+        list_shape = self._find_shape(image197, "人物列表")
+        if list_shape is None:
+            raise RuntimeError("日常_挑战仙缘：#197 缺少「人物列表」标注，无法滚动查找仙缘人物")
+        return (yield from self._scroll_shape_content_changed(ctx, image197, list_shape, stop_event, reverse=(direction == "up")))
 
     def _run_daily_xianyuan_from_list(
         self,

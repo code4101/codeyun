@@ -240,6 +240,7 @@ def initial_data_annotation_runtime_status() -> dict[str, Any]:
         "guard_entry_id": "",
         "guard_interval_seconds": 2.0,
         "guard_items": {},
+        "device_health": {},
         "status": "idle",
         "entry_id": "",
         "task_type": "",
@@ -304,6 +305,19 @@ def normalize_data_annotation_runtime_guard_items(
     status: dict[str, Any],
     guard_definitions: dict[str, dict[str, Any]],
 ) -> None:
+    raw_guard_items = status.get("guard_items")
+    guard_items = dict(raw_guard_items) if isinstance(raw_guard_items, dict) else {}
+    for guard_id, definition in guard_definitions.items():
+        if guard_id == "close_popups":
+            continue
+        default_enabled = bool(definition.get("default_enabled", definition.get("enabled", False)))
+        raw_item = guard_items.get(guard_id)
+        if not isinstance(raw_item, dict):
+            guard_items[guard_id] = {"enabled": default_enabled}
+            continue
+        if "enabled" not in raw_item or (not bool(raw_item.get("enabled")) and not float(raw_item.get("updated_at") or 0)):
+            guard_items[guard_id] = {**raw_item, "enabled": default_enabled}
+
     close_popups_enabled = close_popups_guard_enabled_from_status(status)
     status["guard_enabled"] = close_popups_enabled
     status["close_popups_guard_config_version"] = CLOSE_POPUPS_GUARD_CONFIG_VERSION
@@ -317,7 +331,7 @@ def normalize_data_annotation_runtime_guard_items(
         close_popups_override["message"] = str(last_guard_event.get("title") or "")
     status["guard_items"] = normalize_guard_items(
         guard_definitions,
-        status.get("guard_items"),
+        guard_items,
         overrides={"close_popups": close_popups_override},
     )
 
@@ -357,4 +371,8 @@ def next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | No
 
 
 def data_annotation_task_due(task: dict[str, Any]) -> bool:
+    if str(task.get("last_result") or "") == "success":
+        next_ts = parse_schedule_time(task.get("next_time"))
+        if next_ts is not None and next_ts > time.time():
+            return False
     return schedule_task_due(task, now=time.time())
