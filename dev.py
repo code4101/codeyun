@@ -37,6 +37,8 @@ BACKEND_RELOAD_MODE_ENV = "CODEYUN_DEV_BACKEND_RELOAD_MODE"
 LEGACY_BACKEND_RELOAD_MODE_ENV = "CODEYUN_BACKEND_RELOAD_MODE"
 CHECK_INTERVAL_ENV = "CODEYUN_DEV_CHECK_INTERVAL_SECONDS"
 BACKEND_RELOAD_COOLDOWN_ENV = "CODEYUN_DEV_BACKEND_RELOAD_COOLDOWN_SECONDS"
+DEV_REEXEC_ENV = "CODEYUN_DEV_PYTHONW_REEXEC"
+DEV_ALLOW_CONSOLE_ENV = "CODEYUN_DEV_ALLOW_CONSOLE"
 
 DEFAULT_BACKEND_RELOAD_MODE = "off"
 DEFAULT_CHECK_INTERVAL_SECONDS = 5.0
@@ -71,6 +73,32 @@ def log(message):
                 file.write(text + "\n")
         except OSError:
             pass
+
+
+def reexec_windows_dev_runner_to_pythonw():
+    """Delegate Windows console launches to the hidden pythonw service runner."""
+
+    if os.name != "nt":
+        return False
+    if _env_flag_value(os.environ.get(DEV_ALLOW_CONSOLE_ENV), default=False):
+        return False
+    if os.environ.get(DEV_REEXEC_ENV) == "1":
+        return False
+    if os.path.basename(sys.executable).lower() == "pythonw.exe":
+        return False
+
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    pythonw = resolve_pythonw(root_dir, sys.executable)
+    if os.path.abspath(pythonw).lower() == os.path.abspath(sys.executable).lower():
+        return False
+
+    env = os.environ.copy()
+    env[DEV_REEXEC_ENV] = "1"
+    command = [pythonw, os.path.abspath(__file__), *sys.argv[1:]]
+    popen_service(command, cwd=root_dir, env=env)
+    log(f"Delegated CodeYun dev runner to hidden pythonw service: {pythonw}")
+    os._exit(0)
+    return True
 
 
 class PortInUseError(RuntimeError):
@@ -251,11 +279,20 @@ def _process_parent_map():
             import psutil
         except ImportError:
             return {}
-        return {
-            proc.info["pid"]: proc.info["ppid"]
-            for proc in psutil.process_iter(["pid", "ppid"])
-            if proc.info.get("pid") is not None and proc.info.get("ppid") is not None
-        }
+        parents = {}
+        try:
+            iterator = psutil.process_iter(["pid", "ppid"])
+            for proc in iterator:
+                try:
+                    pid = proc.info.get("pid")
+                    ppid = proc.info.get("ppid")
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+                    continue
+                if pid is not None and ppid is not None:
+                    parents[int(pid)] = int(ppid)
+        except OSError as exc:
+            log(f"Skipping parent process map scan: {exc}")
+        return parents
 
     output = _run_text_command(["ps", "-eo", "pid=,ppid="])
     parents = {}
@@ -314,20 +351,24 @@ def _windows_processes():
         return []
 
     rows = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            command_line = " ".join(proc.info.get("cmdline") or [])
-            cwd = proc.cwd()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
-            continue
-        rows.append(
-            {
-                "ProcessId": proc.info.get("pid"),
-                "Name": proc.info.get("name"),
-                "CommandLine": command_line,
-                "Cwd": cwd,
-            }
-        )
+    try:
+        iterator = psutil.process_iter(["pid", "name", "cmdline"])
+        for proc in iterator:
+            try:
+                command_line = " ".join(proc.info.get("cmdline") or [])
+                cwd = proc.cwd()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
+                continue
+            rows.append(
+                {
+                    "ProcessId": proc.info.get("pid"),
+                    "Name": proc.info.get("name"),
+                    "CommandLine": command_line,
+                    "Cwd": cwd,
+                }
+            )
+    except OSError as exc:
+        log(f"Skipping Windows process scan: {exc}")
     return rows
 
 
@@ -998,6 +1039,9 @@ def restart_backend(root_dir, env, python_executable, process_guard, reload_mode
 
 
 def main():
+    if reexec_windows_dev_runner_to_pythonw():
+        return
+
     args = parse_args(sys.argv[1:])
     config = load_config(args)
     root_dir = os.path.dirname(os.path.abspath(__file__))

@@ -496,6 +496,23 @@ def fanxiu_data_annotation_runtime_status(
     )
     if owner_active_elsewhere and isinstance(persisted, dict) and persisted:
         status = dict(persisted)
+        owner_step = str(owner.get("step") or "")
+        if bool(status.get("running")) and owner_step in {
+            "idle_guard",
+            "idle_guard_done",
+            "manual_job_poll",
+            "scheduler_poll",
+            "scheduler_isolated",
+            "waiting_context",
+        }:
+            status["running"] = False
+            status["status"] = "idle"
+            status["phase"] = owner_step
+            status["message"] = f"行为树常驻服务运行中：进程 {owner.get('pid')} {owner_step}"
+            status["current_task"] = ""
+            status["current_task_id"] = ""
+            status["task_type"] = ""
+            status["updated_at"] = time.time()
     else:
         status = runner.status()
     owner_error = str(owner.get("error") or "") if isinstance(owner, dict) else ""
@@ -583,6 +600,8 @@ def fanxiu_data_annotation_runtime_status(
                     )
     normalize_data_annotation_runtime_guard_items(status, runner.guard_definitions)
     status.pop("priority", None)
+    if owner_active_elsewhere:
+        return status
     if runtime_state_path is None and world_facts_path is None:
         persist_fanxiu_runtime_status(status)
     else:

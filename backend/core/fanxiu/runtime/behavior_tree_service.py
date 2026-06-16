@@ -25,6 +25,7 @@ from backend.core.runtime.ocr_service import get_ocr_service_base_url, get_ocr_s
 from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.access.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.fanxiu.runtime.mumu_control import _collect_windows_commit_snapshot
 
 
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
@@ -40,6 +41,17 @@ _RFC1918_LAN_NETWORKS = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 )
+OCR_PREWARM_COMMIT_PRESSURE_PERCENT = 85.0
+OCR_PREWARM_COMMIT_PRESSURE_AVAILABLE_MB = 16 * 1024
+
+
+def _host_commit_pressure_should_skip_ocr_prewarm() -> bool:
+    commit = _collect_windows_commit_snapshot()
+    if not commit:
+        return False
+    commit_percent = float(commit.get("commit_percent") or 0.0)
+    commit_available_mb = int(commit.get("commit_available_mb") or 0)
+    return commit_percent >= OCR_PREWARM_COMMIT_PRESSURE_PERCENT or commit_available_mb < OCR_PREWARM_COMMIT_PRESSURE_AVAILABLE_MB
 
 
 def _home_root() -> Path:
@@ -370,6 +382,15 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
     if (os.getenv("FX_CODEYUN_OCR_HOST") or "").strip():
         codeyun_ocr_host = _resolve_codeyun_ocr_host(settings)
         ocr_start_status: dict[str, Any] | None = None
+        force_codeyun_ocr = True
+    elif _host_commit_pressure_should_skip_ocr_prewarm():
+        codeyun_ocr_host = _resolve_codeyun_ocr_host(settings)
+        ocr_start_status = {
+            "running": False,
+            "skipped": "host_commit_pressure",
+            "url": codeyun_ocr_host,
+        }
+        force_codeyun_ocr = False
     else:
         current_ocr_status = get_ocr_service_status()
         current_ocr_device = str(current_ocr_status.get("device") or "").strip().lower()
@@ -383,11 +404,12 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
         )
         ocr_start_status = ocr_start.get("service") if isinstance(ocr_start, dict) else None
         codeyun_ocr_host = str((ocr_start_status or {}).get("url") or _resolve_codeyun_ocr_host(settings))
+        force_codeyun_ocr = True
     env.update(
         {
             "FX_BEHAVIOR_TREE_REGISTRY": os.fspath(get_registry_path()),
             "FX_BEHAVIOR_TREE_SERVICE_SOURCE": "codeyun",
-            "FX_FORCE_CODEYUN_OCR": "1",
+            "FX_FORCE_CODEYUN_OCR": "1" if force_codeyun_ocr else "0",
             "FX_CODEYUN_OCR_HOST": codeyun_ocr_host,
             "FX_CODEYUN_OCR_PROBE_MODE": os.getenv("FX_CODEYUN_OCR_PROBE_MODE", "predict"),
             "FX_CODEYUN_OCR_PROBE_TIMEOUT": os.getenv("FX_CODEYUN_OCR_PROBE_TIMEOUT", "300"),

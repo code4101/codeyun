@@ -5,6 +5,7 @@ import csv
 import json
 import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 
@@ -17,12 +18,19 @@ from backend.core.access.feature_access_guard import require_feature_access_depe
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.settings import get_settings
 from backend.core.stock import (
+    DEFAULT_TRADE_WORKBENCH_POLICY,
     EastmoneyTradeError,
+    AccountTradingContext,
+    StockPositionInput,
     analyze_qlib_daily_target,
     backtest_qlib_one_lot_score_strategy,
     backtest_hk_pool_one_lot_score,
+    account_context_from_snapshot,
+    build_backtest_evidence,
     build_qlib_rotation_strategy_candidates,
     build_qlib_strategy_candidates,
+    build_trade_candidate_advice,
+    build_trade_advice,
     compute_cross_asset_etf_canary_rotation,
     compute_hk_connect_momentum_review,
     export_qlib_daily_dataset,
@@ -30,6 +38,7 @@ from backend.core.stock import (
     fetch_akshare_stock_history,
     get_market_data_db_path,
     get_latest_asset_snapshot,
+    get_trade_candidate_pool,
     import_mobile_trade_detail_record,
     get_strategy_research_item,
     list_strategy_research_backlog,
@@ -42,6 +51,7 @@ from backend.core.stock import (
     list_trade_records,
     list_strategy_research_items,
     open_trade_account_page,
+    position_input_from_snapshot,
     read_trade_snapshot,
     refresh_market_quotes_from_akshare,
     refresh_eastmoney_sheet_workbook,
@@ -59,11 +69,17 @@ from backend.core.stock import (
     screen_hk_pool,
     serialize_qlib_screen_result,
     serialize_qlib_strategy_search_result,
+    serialize_trade_candidate_advice,
+    serialize_trade_candidate_pool,
+    serialize_trade_advice_result,
+    serialize_trade_workbench_policy,
     search_hk_pool_ranked_rotation_strategies,
     search_hk_pool_one_lot_score_strategies,
     snapshot_to_dict,
     sync_trade_data,
 )
+from backend.core.stock.qlib_screening import QlibScreenItem, QlibScreenResult, QlibScreenTarget
+from backend.core.stock.index_benchmark import load_index_benchmark
 from backend.core.stock.qlib_screening import (
     _read_hk_pool_backtest_cache,
     _hk_pool_backtest_cache_path,
@@ -189,7 +205,7 @@ class EastmoneySyncRequest(BaseModel):
     end_date: str | None = PydanticField(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
-@router.get("/strategy-research")
+@router.get("/strategy-research", include_in_schema=False)
 def get_eastmoney_strategy_research_catalog(
     family: str | None = Query(default=None, max_length=80),
     status: str | None = Query(default=None, max_length=80),
@@ -207,7 +223,7 @@ def get_eastmoney_strategy_research_catalog(
         raise HTTPException(status_code=502, detail=f"读取策略研究库失败：{exc}") from exc
 
 
-@router.get("/strategy-research/{strategy_id}")
+@router.get("/strategy-research/{strategy_id}", include_in_schema=False)
 def get_eastmoney_strategy_research_item(strategy_id: str):
     try:
         item = get_strategy_research_item(strategy_id)
@@ -218,7 +234,7 @@ def get_eastmoney_strategy_research_item(strategy_id: str):
     return item
 
 
-@router.get("/strategy-research-backlog")
+@router.get("/strategy-research-backlog", include_in_schema=False)
 def get_eastmoney_strategy_research_backlog(
     max_priority: int = Query(default=3, ge=1, le=9),
 ):
@@ -258,7 +274,562 @@ def get_eastmoney_qlib_analysis(
         raise HTTPException(status_code=502, detail=f"读取 Qlib 分析失败：{exc}") from exc
 
 
-@router.get("/qlib/screen/hk-pool")
+@router.get("/trade-advice")
+def get_eastmoney_trade_advice(
+    market: str = Query(default="SH", max_length=8),
+    symbol: str = Query(default="562500", min_length=1, max_length=12),
+    name: str = Query(default="机器人ETF华夏", max_length=80),
+    start_date: str = Query(default="1990-01-01"),
+    refresh: bool = Query(default=False),
+    quantity: float | None = Query(default=None, ge=0),
+    cost_price: float | None = Query(default=None, ge=0),
+    current_price: float | None = Query(default=None, gt=0),
+    total_asset: float | None = Query(default=None, ge=0),
+    cash_available: float | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        analysis = analyze_qlib_daily_target(
+            market=market,
+            symbol=symbol,
+            name=name,
+            start_date=start_date,
+            refresh=refresh,
+        )
+        positions = _dedupe_position_snapshots(list_latest_position_snapshots(session, user_id=int(current_user.id)).get("items", []))
+        normalized_target = normalize_market_code(market, symbol)
+        target_market, target_symbol = normalized_target if normalized_target is not None else ((market or "").strip().upper(), symbol)
+        snapshot = next(
+            (
+                item
+                for item in positions
+                if normalize_market_code(str(item.get("market") or ""), str(item.get("security_code") or "")) == (target_market, target_symbol)
+            ),
+            None,
+        )
+        position = position_input_from_snapshot(
+            snapshot,
+            market=market,
+            symbol=symbol,
+            name=name,
+            current_price=current_price or analysis.latest_close,
+        )
+        position = _apply_manual_position_override(
+            position,
+            market=market,
+            symbol=symbol,
+            name=name,
+            quantity=quantity,
+            cost_price=cost_price,
+            current_price=current_price,
+        )
+        account_context = _apply_manual_account_override(
+            _account_context_from_latest_snapshot(session, user_id=int(current_user.id)),
+            total_asset=total_asset,
+            cash_available=cash_available,
+        )
+        backtests = _build_trade_advice_backtests(
+            market=market,
+            symbol=symbol,
+            name=name,
+            start_date=start_date,
+            refresh=refresh,
+        )
+        return serialize_trade_advice_result(build_trade_advice(position, analysis, backtests=backtests, account=account_context))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"生成交易建议失败：{exc}") from exc
+
+
+@router.get("/trade-candidates")
+def get_eastmoney_trade_candidates(
+    pool: str = Query(default="watchlist", max_length=40),
+    limit: int = Query(default=8, ge=1, le=50),
+    screen_limit: int = Query(default=120, ge=10, le=5000),
+    refresh: bool = Query(default=False),
+    exclude_positions: bool = Query(default=True),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        if pool not in {"watchlist", "hk_pool"}:
+            raise HTTPException(status_code=400, detail="当前只支持 watchlist / hk_pool 候选池")
+        positions = _dedupe_position_snapshots(list_latest_position_snapshots(session, user_id=int(current_user.id)).get("items", []))
+        account_context = _account_context_from_latest_snapshot(session, user_id=int(current_user.id))
+        position_map = _position_quantity_by_key(positions)
+        screen = _build_trade_candidate_screen(pool=pool, refresh=refresh, limit=screen_limit)
+        candidates = []
+        for item in screen.items:
+            key = normalize_market_code(item.target.market, item.target.symbol)
+            quantity = position_map.get(key, 0) if key is not None else 0
+            if exclude_positions and quantity > 0:
+                continue
+            candidates.append(
+                build_trade_candidate_advice(
+                    item.analysis,
+                    has_position=quantity > 0,
+                    position_quantity=quantity,
+                    account=account_context,
+                )
+            )
+        selected_candidates = sorted(candidates, key=lambda item: item.rank_score, reverse=True)[:limit]
+        candidates_with_backtests = [
+            replace(
+                candidate,
+                backtests=_build_trade_advice_backtests(
+                    market=candidate.market,
+                    symbol=candidate.symbol,
+                    name=candidate.name,
+                    start_date="1990-01-01",
+                    refresh=False,
+                ),
+            )
+            for candidate in selected_candidates
+        ]
+        return {
+            "pool": pool,
+            "source": screen.source,
+            "total": len(candidates_with_backtests),
+            "items": [serialize_trade_candidate_advice(item) for item in candidates_with_backtests],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"生成候选买入建议失败：{exc}") from exc
+
+
+@router.get("/trade-workbench")
+def get_eastmoney_trade_workbench(
+    candidate_pool: str = Query(default="watchlist", max_length=40),
+    holding_limit: int = Query(default=12, ge=1, le=50),
+    candidate_limit: int = Query(default=6, ge=1, le=30),
+    screen_limit: int = Query(default=120, ge=10, le=5000),
+    refresh: bool = Query(default=False),
+    focus_market: str | None = Query(default=None, max_length=8),
+    focus_symbol: str | None = Query(default=None, min_length=1, max_length=12),
+    focus_name: str | None = Query(default=None, max_length=80),
+    focus_quantity: float | None = Query(default=None, ge=0),
+    focus_cost_price: float | None = Query(default=None, ge=0),
+    focus_current_price: float | None = Query(default=None, gt=0),
+    total_asset: float | None = Query(default=None, ge=0),
+    cash_available: float | None = Query(default=None, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        if candidate_pool not in {"watchlist", "hk_pool"}:
+            raise HTTPException(status_code=400, detail="当前只支持 watchlist / hk_pool 候选池")
+        positions = _dedupe_position_snapshots(list_latest_position_snapshots(session, user_id=int(current_user.id)).get("items", []))
+        asset_snapshot = get_latest_asset_snapshot(session, user_id=int(current_user.id))
+        account_context = _apply_manual_account_override(
+            _account_context_with_policy(account_context_from_snapshot(asset_snapshot)),
+            total_asset=total_asset,
+            cash_available=cash_available,
+        )
+        position_map = _position_quantity_by_key(positions)
+        holding_items = []
+        consumed_focus_key = None
+        focus_key = (
+            normalize_market_code(focus_market or "", focus_symbol or "")
+            if focus_market and focus_symbol
+            else None
+        )
+        for snapshot in positions[:holding_limit]:
+            market = str(snapshot.get("market") or "").strip().upper()
+            symbol = str(snapshot.get("security_code") or "").strip()
+            name = str(snapshot.get("security_name") or "").strip()
+            if not market or not symbol:
+                continue
+            normalized_key = normalize_market_code(market, symbol)
+            is_focus = focus_key is not None and normalized_key == focus_key
+            if is_focus:
+                consumed_focus_key = focus_key
+            analysis = analyze_qlib_daily_target(
+                market=market,
+                symbol=symbol,
+                name=name,
+                start_date=_default_trade_start_date(market, symbol),
+                refresh=refresh,
+            )
+            position = position_input_from_snapshot(
+                snapshot,
+                market=market,
+                symbol=symbol,
+                name=name,
+                current_price=(focus_current_price or analysis.latest_close) if is_focus else analysis.latest_close,
+            )
+            if is_focus:
+                position = _apply_manual_position_override(
+                    position,
+                    market=market,
+                    symbol=symbol,
+                    name=focus_name or name,
+                    quantity=focus_quantity,
+                    cost_price=focus_cost_price,
+                    current_price=focus_current_price,
+                )
+                if normalized_key is not None:
+                    position_map[normalized_key] = position.quantity or 0
+            holding_items.append(
+                serialize_trade_advice_result(
+                    build_trade_advice(
+                        position,
+                        analysis,
+                        account=account_context,
+                        backtests=_build_trade_advice_backtests(
+                            market=market,
+                            symbol=symbol,
+                            name=name,
+                            start_date=_default_trade_start_date(market, symbol),
+                            refresh=False,
+                        ),
+                    )
+                )
+            )
+
+        if focus_key is not None and consumed_focus_key != focus_key and (focus_quantity or 0) > 0:
+            market = (focus_market or "").strip().upper()
+            symbol = (focus_symbol or "").strip()
+            name = (focus_name or "").strip()
+            analysis = analyze_qlib_daily_target(
+                market=market,
+                symbol=symbol,
+                name=name,
+                start_date=_default_trade_start_date(market, symbol),
+                refresh=refresh,
+            )
+            position = _apply_manual_position_override(
+                StockPositionInput(market=market, symbol=symbol, name=name, current_price=analysis.latest_close),
+                market=market,
+                symbol=symbol,
+                name=name,
+                quantity=focus_quantity,
+                cost_price=focus_cost_price,
+                current_price=focus_current_price,
+            )
+            holding_items.append(
+                serialize_trade_advice_result(
+                    build_trade_advice(
+                        position,
+                        analysis,
+                        account=account_context,
+                        backtests=_build_trade_advice_backtests(
+                            market=market,
+                            symbol=symbol,
+                            name=name,
+                            start_date=_default_trade_start_date(market, symbol),
+                            refresh=False,
+                        ),
+                    )
+                )
+            )
+            position_map[focus_key] = position.quantity or 0
+
+        screen = _build_trade_candidate_screen(pool=candidate_pool, refresh=refresh, limit=screen_limit)
+        candidate_items = []
+        for item in screen.items:
+            key = normalize_market_code(item.target.market, item.target.symbol)
+            quantity = position_map.get(key, 0) if key is not None else 0
+            if quantity > 0:
+                continue
+            candidate_items.append(build_trade_candidate_advice(item.analysis, has_position=False, account=account_context))
+        selected_candidates = sorted(candidate_items, key=lambda item: item.rank_score, reverse=True)[:candidate_limit]
+        candidate_payloads = [
+            serialize_trade_candidate_advice(
+                replace(
+                    candidate,
+                    backtests=_build_trade_advice_backtests(
+                        market=candidate.market,
+                        symbol=candidate.symbol,
+                        name=candidate.name,
+                        start_date=_default_trade_start_date(candidate.market, candidate.symbol),
+                        refresh=False,
+                    ),
+                )
+            )
+            for candidate in selected_candidates
+        ]
+        return {
+            "source": f"trade_workbench.v1:{candidate_pool}",
+            "candidate_pool": candidate_pool,
+            "policy": serialize_trade_workbench_policy(DEFAULT_TRADE_WORKBENCH_POLICY),
+            "candidate_pool_definition": serialize_trade_candidate_pool(get_trade_candidate_pool(candidate_pool)),
+            "account": _trade_workbench_account_payload(asset_snapshot, context=account_context),
+            "holding_count": len(holding_items),
+            "candidate_count": len(candidate_payloads),
+            "summary": _trade_workbench_summary(holding_items, candidate_payloads),
+            "holdings": holding_items,
+            "candidates": candidate_payloads,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"生成交易工作台失败：{exc}") from exc
+
+
+def _build_trade_candidate_screen(*, pool: str, refresh: bool, limit: int) -> QlibScreenResult:
+    definition = get_trade_candidate_pool(pool)
+    if pool == "hk_pool":
+        return screen_hk_pool(refresh=refresh, limit=limit, start_date=definition.start_date)
+    targets = definition.targets
+    items = []
+    for target in targets[:limit]:
+        analysis = analyze_qlib_daily_target(
+            market=target.market,
+            symbol=target.symbol,
+            name=target.name,
+            start_date=target.start_date,
+            refresh=refresh,
+        )
+        screen_target = QlibScreenTarget(
+            market=target.market,
+            symbol=target.symbol,
+            name=target.name,
+            pool="watchlist",
+            start_date=target.start_date,
+        )
+        items.append(QlibScreenItem(target=screen_target, analysis=analysis))
+    return QlibScreenResult(
+        pool=definition.key,
+        source=definition.source,
+        target_count=len(targets),
+        analyzed_count=sum(1 for item in items if item.analysis.row_count > 0),
+        failed_count=sum(1 for item in items if item.analysis.row_count <= 0),
+        items=tuple(items),
+    )
+
+
+def _default_trade_start_date(market: str, symbol: str) -> str:
+    normalized = normalize_market_code(market, symbol)
+    if normalized == ("SH", "562500"):
+        return "2024-01-01"
+    return "1990-01-01"
+
+
+def _trade_workbench_summary(
+    holdings: list[dict[str, object]],
+    candidates: list[dict[str, object]],
+) -> dict[str, object]:
+    action_counts: dict[str, int] = {}
+    for item in [*holdings, *candidates]:
+        action = str(item.get("action") or "unknown")
+        action_counts[action] = action_counts.get(action, 0) + 1
+    active_actions = action_counts.get("risk_reduce", 0) + action_counts.get("sell_plan", 0) + action_counts.get("buy", 0)
+    return {
+        "action_counts": action_counts,
+        "active_action_count": active_actions,
+        "headline": _trade_workbench_headline(action_counts),
+    }
+
+
+def _trade_workbench_headline(action_counts: dict[str, int]) -> str:
+    if action_counts.get("risk_reduce", 0):
+        return f"{action_counts['risk_reduce']} 个持仓触发风险减仓，先处理风险。"
+    if action_counts.get("buy", 0):
+        return f"{action_counts['buy']} 个候选满足首仓条件，持仓按计划维护。"
+    if action_counts.get("hold", 0):
+        return "持仓以维护为主，暂无必须卖出的信号。"
+    return "暂无明确交易动作，等待策略分或价格触发。"
+
+
+def _apply_manual_position_override(
+    position: StockPositionInput,
+    *,
+    market: str,
+    symbol: str,
+    name: str,
+    quantity: float | None,
+    cost_price: float | None,
+    current_price: float | None,
+) -> StockPositionInput:
+    if quantity is None and cost_price is None and current_price is None:
+        return position
+    effective_current = current_price if current_price is not None else position.current_price
+    effective_quantity = quantity if quantity is not None else position.quantity
+    market_value = (
+        effective_quantity * effective_current
+        if effective_quantity is not None and effective_current is not None
+        else position.market_value
+    )
+    return StockPositionInput(
+        market=market,
+        symbol=symbol,
+        name=name or position.name,
+        quantity=effective_quantity,
+        cost_price=cost_price if cost_price is not None else position.cost_price,
+        current_price=effective_current,
+        market_value=market_value,
+    )
+
+
+def _apply_manual_account_override(
+    context: AccountTradingContext,
+    *,
+    total_asset: float | None,
+    cash_available: float | None,
+) -> AccountTradingContext:
+    if total_asset is None and cash_available is None:
+        return context
+    return AccountTradingContext(
+        total_asset=total_asset if total_asset is not None else context.total_asset,
+        cash_available=cash_available if cash_available is not None else context.cash_available,
+        max_single_position_percent=context.max_single_position_percent,
+        first_lot_cash_percent=context.first_lot_cash_percent,
+        first_lot_asset_percent=context.first_lot_asset_percent,
+        max_first_lot_budget=context.max_first_lot_budget,
+    )
+
+
+def _trade_workbench_account_payload(
+    snapshot: dict[str, object] | None,
+    *,
+    context: AccountTradingContext | None = None,
+) -> dict[str, object]:
+    context = context or _account_context_with_policy(account_context_from_snapshot(snapshot))
+    return {
+        "total_asset": context.total_asset,
+        "cash_available": context.cash_available,
+        "max_single_position_percent": context.max_single_position_percent * 100,
+        "first_lot_cash_percent": context.first_lot_cash_percent * 100,
+        "first_lot_asset_percent": context.first_lot_asset_percent * 100,
+        "max_first_lot_budget": context.max_first_lot_budget,
+        "captured_at": snapshot.get("captured_at") if snapshot else None,
+        "account_label": snapshot.get("account_label") if snapshot else "",
+    }
+
+
+def _account_context_from_latest_snapshot(session: Session, *, user_id: int):
+    return _account_context_with_policy(account_context_from_snapshot(get_latest_asset_snapshot(session, user_id=user_id)))
+
+
+def _account_context_with_policy(context):
+    policy = DEFAULT_TRADE_WORKBENCH_POLICY
+    return context.with_policy(
+        max_single_position_percent=policy.max_single_position_percent,
+        first_lot_cash_percent=policy.first_lot_cash_percent,
+        first_lot_asset_percent=policy.first_lot_asset_percent,
+        max_first_lot_budget=policy.max_first_lot_budget,
+    )
+
+
+def _dedupe_position_snapshots(positions: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[tuple[str, str], list[dict[str, object]]] = {}
+    passthrough: list[dict[str, object]] = []
+    for item in positions:
+        key = normalize_market_code(str(item.get("market") or ""), str(item.get("security_code") or ""))
+        if key is None:
+            passthrough.append(item)
+            continue
+        grouped.setdefault(key, []).append(item)
+
+    merged: list[dict[str, object]] = [*passthrough]
+    for items in grouped.values():
+        if len(items) == 1:
+            merged.append(items[0])
+            continue
+        quantities = [_float_or_none(item.get("quantity")) or 0 for item in items]
+        positive_quantities = [value for value in quantities if value > 0]
+        if positive_quantities and len({round(value, 6) for value in positive_quantities}) == 1:
+            merged.append(_best_position_snapshot(items))
+            continue
+        merged.append(_merge_position_snapshots(items))
+    return merged
+
+
+def _best_position_snapshot(items: list[dict[str, object]]) -> dict[str, object]:
+    return max(
+        items,
+        key=lambda item: (
+            _float_or_none(item.get("market_value")) or 0,
+            _float_or_none(item.get("current_price")) or 0,
+            len(str(item.get("security_name") or "")),
+        ),
+    )
+
+
+def _merge_position_snapshots(items: list[dict[str, object]]) -> dict[str, object]:
+    base = dict(_best_position_snapshot(items))
+    quantity = sum(_float_or_none(item.get("quantity")) or 0 for item in items)
+    market_value = sum(_float_or_none(item.get("market_value")) or 0 for item in items)
+    cost_amount = sum(
+        (_float_or_none(item.get("quantity")) or 0) * (_float_or_none(item.get("cost_price")) or 0)
+        for item in items
+    )
+    base["quantity"] = quantity
+    if market_value > 0:
+        base["market_value"] = market_value
+    if quantity > 0 and cost_amount > 0:
+        base["cost_price"] = cost_amount / quantity
+    return base
+
+
+def _position_quantity_by_key(positions: list[dict[str, object]]) -> dict[tuple[str, str], float]:
+    result: dict[tuple[str, str], float] = {}
+    for item in positions:
+        key = normalize_market_code(str(item.get("market") or ""), str(item.get("security_code") or ""))
+        if key is None:
+            continue
+        result[key] = result.get(key, 0) + (_float_or_none(item.get("quantity")) or 0)
+    return result
+
+
+def _build_trade_advice_backtests(
+    *,
+    market: str,
+    symbol: str,
+    name: str,
+    start_date: str,
+    refresh: bool,
+):
+    normalized_market = (market or "").strip().upper()
+    lot_size = 200 if normalized_market == "HK" else 100
+    policy = DEFAULT_TRADE_WORKBENCH_POLICY
+    result = backtest_qlib_one_lot_score_strategy(
+        market=market,
+        symbol=symbol,
+        name=name,
+        start_date=start_date,
+        lot_size=lot_size,
+        score_threshold=policy.score_threshold,
+        score_profile=policy.score_profile,
+        take_profit_percent=policy.take_profit_percent,
+        stop_loss_percent=policy.stop_loss_percent,
+        max_holding_days=0,
+        cost_rate=policy.cost_rate,
+        force_liquidate_end=True,
+        refresh=refresh,
+    )
+    benchmark_market, benchmark_symbol, benchmark_name = _trade_advice_benchmark(normalized_market)
+    benchmark = load_index_benchmark(
+        market=benchmark_market,
+        symbol=benchmark_symbol,
+        name=benchmark_name,
+        start_date=result.start_date or start_date,
+        end_date=result.end_date or None,
+        refresh=refresh,
+    )
+    return (
+        build_backtest_evidence(
+        strategy_id="qlib_one_lot_score_balanced_70_tp8_sl8",
+        strategy_name=f"Qlib综合分一手评分（{policy.score_profile}/{policy.score_threshold}）",
+            start_date=result.start_date,
+            end_date=result.end_date,
+            total_return_percent=result.total_return_percent if not result.error else None,
+            benchmark_name=benchmark.name,
+            benchmark_return_percent=benchmark.return_percent,
+            trade_count=result.trade_count,
+            error=result.error,
+        ),
+    )
+
+
+def _trade_advice_benchmark(market: str) -> tuple[str, str, str]:
+    if market == "HK":
+        return "HK", "HSI", "恒生指数"
+    return "CN", "sh000001", "上证指数"
+
+
+@router.get("/qlib/screen/hk-pool", include_in_schema=False)
 def get_eastmoney_qlib_hk_pool_screen(
     refresh: bool = Query(default=False),
     limit: int | None = Query(default=None, ge=1, le=5000),
@@ -276,7 +847,7 @@ def get_eastmoney_qlib_hk_pool_screen(
         raise HTTPException(status_code=502, detail=f"读取港股股票池评分失败：{exc}") from exc
 
 
-@router.get("/qlib/backtest/one-lot-score")
+@router.get("/qlib/backtest/one-lot-score", include_in_schema=False)
 def get_eastmoney_qlib_one_lot_score_backtest(
     market: str = Query(default="HK", max_length=8),
     symbol: str = Query(default="01810", min_length=1, max_length=12),
@@ -965,7 +1536,7 @@ def _collect_market_intraday_persist_targets(
     return targets
 
 
-@router.get("/qlib/hk-connect-momentum-review")
+@router.get("/qlib/hk-connect-momentum-review", include_in_schema=False)
 def get_eastmoney_qlib_hk_connect_momentum_review(
     refresh: bool = Query(default=False),
     background: bool = Query(default=False),
@@ -1108,7 +1679,7 @@ def get_eastmoney_qlib_hk_connect_momentum_review(
         raise HTTPException(status_code=502, detail=f"读取港股通策略复盘失败：{exc}") from exc
 
 
-@router.get("/qlib/backtest/hk-pool-one-lot-score")
+@router.get("/qlib/backtest/hk-pool-one-lot-score", include_in_schema=False)
 def get_eastmoney_qlib_hk_pool_one_lot_score_backtest(
     refresh: bool = Query(default=False),
     background: bool = Query(default=False),
@@ -1236,7 +1807,7 @@ def get_eastmoney_qlib_hk_pool_one_lot_score_backtest(
         raise HTTPException(status_code=502, detail=f"读取港股池 Qlib 回测失败：{exc}") from exc
 
 
-@router.get("/qlib/backtest/hk-pool-strategy-search")
+@router.get("/qlib/backtest/hk-pool-strategy-search", include_in_schema=False)
 def get_eastmoney_qlib_hk_pool_strategy_search(
     years: str = Query(default="2023,2024,2025", max_length=80),
     limit: int | None = Query(default=300, ge=1, le=5000),
@@ -1331,7 +1902,7 @@ def get_eastmoney_qlib_hk_pool_strategy_search(
         raise HTTPException(status_code=502, detail=f"搜索港股池策略失败：{exc}") from exc
 
 
-@router.get("/qlib/backtest/hk-pool-rotation-strategy-search")
+@router.get("/qlib/backtest/hk-pool-rotation-strategy-search", include_in_schema=False)
 def get_eastmoney_qlib_hk_pool_rotation_strategy_search(
     years: str = Query(default="2023,2024,2025", max_length=80),
     limit: int | None = Query(default=300, ge=1, le=5000),
@@ -1431,7 +2002,7 @@ def get_eastmoney_qlib_hk_pool_rotation_strategy_search(
         raise HTTPException(status_code=502, detail=f"搜索港股池轮动策略失败：{exc}") from exc
 
 
-@router.get("/qlib/backtest/cross-asset-etf-canary-rotation")
+@router.get("/qlib/backtest/cross-asset-etf-canary-rotation", include_in_schema=False)
 def get_eastmoney_cross_asset_etf_canary_rotation_backtest(
     refresh: bool = Query(default=False),
     progress: bool = Query(default=False),

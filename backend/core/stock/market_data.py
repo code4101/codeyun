@@ -247,7 +247,7 @@ def normalize_market_code(market: str | None, symbol: str | None) -> tuple[str, 
 
     normalized_market = (market or "").strip().upper()
     if normalized_market in {"HK", "HKG"}:
-        return "HK", code.zfill(5)
+        return "HK", _normalize_hk_symbol(code)
     if normalized_market in {"SH", "SHA", "SSE"}:
         return "SH", code.zfill(6)
     if normalized_market in {"SZ", "SZA", "SZSE"}:
@@ -258,6 +258,12 @@ def normalize_market_code(market: str | None, symbol: str | None) -> tuple[str, 
     if code.startswith(("5", "6", "9")):
         return "SH", code.zfill(6)
     return "SZ", code.zfill(6)
+
+
+def _normalize_hk_symbol(code: str) -> str:
+    if code.isdigit():
+        return (code.lstrip("0") or "0").zfill(5)
+    return code
 
 
 def normalize_symbol(symbol: str | None) -> str:

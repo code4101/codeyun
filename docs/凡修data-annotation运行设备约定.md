@@ -16,6 +16,7 @@
 - 后端 Runtime、Scheduler、守护和调试验证都应使用 `codepc_mf` 入口。
 - Runtime/守护截图与点击默认只使用本机 MuMu ADB 通道：优先尝试常规本机端口，例如 `127.0.0.1:7555/16416/5555`，也允许 `MuMuManager.exe info --vmindex all` 返回的当前本机实例 `adb_host_ip:adb_port`。抓包或 Android proxy 服务从普通 `adb devices` 发现的远端设备（如非 MuMuManager 返回的 `192.168.*:5555`）不是凡修 Runtime 的默认截图/点击目标。抓包服务可以使用 ADB 做代理配置或设备发现，但它发现到的设备不能自动进入 Runtime 截图/点击候选。确需调试远端设备时必须显式设置环境变量，不得由抓包服务自动混入。
 - ADB 是 Runtime 的主通道；桌面窗口捕获只允许作为显式调试兜底，目标也必须是本机 `MuMu` 窗口，不再使用向日葵窗口标题或向日葵投屏通道。
+- 桌面窗口捕获、窗口预览和窗口点击兜底必须默认归一到 `900x1600` 标注坐标系；MuMu 恢复后外层窗口尺寸或缩放可能变化，不得让截图输出跟随窗口实际像素漂移。
 - 当前 Runtime 底层模块边界：
   - `backend/core/fanxiu_mumu_control.py`：MuMu ADB、MuMu 窗口捕获兜底、截图匹配、点击/拖拽/输入。
   - `backend/core/window_capture_preview.py`：通用 Windows 窗口捕获工具。
@@ -28,3 +29,7 @@
 
 - 不要把考勤、小鹅通等其它业务里仍可能使用 `mi15` 的说明套到凡修 data-annotation。
 - 不要把每设备一份资产树理解为凡修当前有多套有效标注。凡修当前只保留 mf 这套。
+
+## 运维恢复
+
+- TapTap 内置 MuMu 出现「运行异常，请重启安卓设备尝试解决」时，优先按 [凡修 MuMu 模拟器异常恢复手册](./凡修MuMu模拟器异常恢复手册.md) 处理。此时 `ADB截图失败` 通常是模拟器/安卓容器崩溃后的下游症状，不应先按 Runtime 截图链路判断根因。

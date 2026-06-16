@@ -39,6 +39,9 @@ DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER = 40
 DEFAULT_DECODE_TIMEOUT_SECONDS = 30.0
 MIN_PCAP_BYTES = 24
 PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
+PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV = "CODEYUN_PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE"
+PACKET_DECODE_COMMIT_PRESSURE_PERCENT = 85.0
+PACKET_DECODE_COMMIT_PRESSURE_AVAILABLE_MB = 16 * 1024
 MAIL_SOURCE_PROTOCOL_NAMES = {"SM_MailBox", "SM_NewMail"}
 MAIL_ACTION_PROTOCOL_NAMES = {"CM_ReadMail", "SM_ReadMail", "CM_GetMailReward", "SM_GetMailReward", "CM_DeleteMail", "SM_DeleteMail"}
 
@@ -67,6 +70,27 @@ def _write_json(path: Path, payload: Any) -> None:
     temp_path = path.with_suffix(path.suffix + ".tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(path)
+
+
+def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
+    if os.getenv(PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return {"skip": False}
+    try:
+        from backend.core.runtime.ocr_service import _windows_commit_snapshot
+
+        commit = _windows_commit_snapshot()
+    except Exception:
+        return {"skip": False}
+    if not commit:
+        return {"skip": False}
+    commit_percent = float(commit.get("commit_percent") or 0.0)
+    commit_available_mb = int(commit.get("commit_available_mb") or 0)
+    skip = commit_percent >= PACKET_DECODE_COMMIT_PRESSURE_PERCENT or commit_available_mb < PACKET_DECODE_COMMIT_PRESSURE_AVAILABLE_MB
+    return {
+        "skip": skip,
+        "reason": "host_commit_pressure",
+        "commit": commit,
+    }
 
 
 def _worker_state_path(data_dir: str | Path | None = None) -> Path:
@@ -796,6 +820,28 @@ def sync_fanxiu_capture_paths(
     walking the historical live-capture backlog while keeping decode/upsert
     responsibilities inside the packet service.
     """
+    pressure = _host_commit_pressure_for_packet_decode()
+    if pressure.get("skip"):
+        return {
+            "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+            "ok": True,
+            "updated_at": _now_text(),
+            "input_count": len(paths),
+            "decoded_count": 0,
+            "new_decode_count": 0,
+            "business_backfill_count": 0,
+            "skipped_count": len(paths),
+            "error_count": 0,
+            "decoded": [],
+            "skipped": [
+                {"path": str(Path(raw_path).expanduser()), "reason": "host_commit_pressure"}
+                for raw_path in paths
+            ],
+            "errors": [],
+            "mail_packet_sync": {"ok": True, "skipped": True, "reason": "host_commit_pressure"},
+            "host_commit_pressure": pressure,
+        }
+
     decoded_digests = _decoded_capture_digests(data_dir)
     decoded_streams_by_digest = _decoded_capture_streams_by_digest(data_dir)
     decoded_sources_by_digest = _decoded_capture_sources_by_digest(data_dir)
@@ -936,6 +982,37 @@ def sync_fanxiu_live_capture_backlog(
     latest_scanned_mtime = float(previous_state.get("latest_scanned_mtime") or previous_cursor_mtime) if isinstance(previous_state, dict) else previous_cursor_mtime
     latest_scanned_pcap = str(previous_state.get("latest_scanned_pcap") or "") if isinstance(previous_state, dict) else ""
     cursor_blocked = False
+    pressure = _host_commit_pressure_for_packet_decode()
+    if pressure.get("skip"):
+        payload = {
+            "schema_version": PACKET_INSIGHT_WORKER_SCHEMA_VERSION,
+            "ok": True,
+            "updated_at": _now_text(),
+            "skipped": True,
+            "skip_reason": "host_commit_pressure",
+            "host_commit_pressure": pressure,
+            "cursor_mtime": confirmed_cursor_mtime,
+            "cursor_pcap": confirmed_cursor_pcap,
+            "confirmed_cursor_mtime": confirmed_cursor_mtime,
+            "confirmed_cursor_pcap": confirmed_cursor_pcap,
+            "latest_scanned_mtime": latest_scanned_mtime,
+            "latest_scanned_pcap": latest_scanned_pcap,
+            "has_unconfirmed_gap": bool(previous_errors),
+            "scanned": 0,
+            "decode_attempts": 0,
+            "business_backfill_attempts": 0,
+            "decoded_count": 0,
+            "new_decode_count": 0,
+            "business_backfill_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "known_error_count": len(previous_errors),
+            "decoded": [],
+            "errors": list(previous_errors.values())[-20:],
+            "pcap_states": previous_state.get("pcap_states", []) if isinstance(previous_state, dict) else [],
+        }
+        _write_json(_worker_state_path(data_dir), payload)
+        return payload
 
     for path in _iter_stable_live_pcaps(
         data_dir=data_dir,

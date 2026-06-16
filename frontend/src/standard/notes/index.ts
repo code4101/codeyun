@@ -5,6 +5,8 @@ import notesChatDataPage from './chat-data'
 import commonSitesPage from './common-sites'
 import eastmoneyPage from './eastmoney'
 import eastmoneyRobotHistoryPage from './eastmoney/robot-history'
+import eastmoneySyncPage from './eastmoney/sync'
+import eastmoneyTradePage from './eastmoney/trade'
 import freebillPage from './freebill'
 import githubProjectsPage from './github-projects'
 import notesCenterPage from './center'
@@ -16,6 +18,7 @@ import notesWorkbookViewPage from './workbook-view'
 import notesWechatPage from './wechat'
 import notesQqPage from './qq'
 import notesWechatStoragePage from './wechat/storage'
+import notesMobileSmsPage from './mobile-sms'
 
 const pages: AppPageDefinition[] = [
   notesCenterPage,
@@ -24,7 +27,9 @@ const pages: AppPageDefinition[] = [
   githubProjectsPage,
   commonSitesPage,
   eastmoneyPage,
+  eastmoneyTradePage,
   eastmoneyRobotHistoryPage,
+  eastmoneySyncPage,
   freebillPage,
   infiniteCanvasPage,
   notesSheetsManagerPage,
@@ -32,6 +37,7 @@ const pages: AppPageDefinition[] = [
   notesWechatPage,
   notesQqPage,
   notesWechatStoragePage,
+  notesMobileSmsPage,
   notesWorkbookViewPage,
   notesSheetEditorPage,
 ]

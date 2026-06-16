@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from backend.core.runtime import ocr_service as ocr_runtime
 
 
@@ -75,3 +77,71 @@ def test_predict_via_ocr_service_posts_image_to_external_daemon(tmp_path: Path, 
         "image": "cG5nLWJ5dGVz",
     }
     assert result["document"] == {"shapes": []}
+
+
+def test_start_ocr_service_skips_under_commit_pressure(monkeypatch):
+    monkeypatch.delenv(ocr_runtime.OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
+    monkeypatch.setattr(ocr_runtime, "get_ocr_service_status", lambda: {"running": False})
+    monkeypatch.setattr(
+        ocr_runtime,
+        "_windows_commit_snapshot",
+        lambda: {"committed_mb": 94000, "commit_limit_mb": 100000, "commit_available_mb": 6000, "commit_percent": 94.0},
+    )
+
+    with pytest.raises(ocr_runtime.OcrPreviewError, match="提交内存压力过高"):
+        ocr_runtime.start_ocr_service()
+
+
+def test_start_ocr_service_skips_before_near_exhaustion(monkeypatch):
+    monkeypatch.delenv(ocr_runtime.OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
+    monkeypatch.setattr(ocr_runtime, "list_ocr_service_processes", lambda: [])
+    monkeypatch.setattr(
+        ocr_runtime,
+        "_windows_commit_snapshot",
+        lambda: {"committed_mb": 85000, "commit_limit_mb": 100000, "commit_available_mb": 15000, "commit_percent": 85.0},
+    )
+
+    with pytest.raises(ocr_runtime.OcrPreviewError, match="提交内存压力过高"):
+        ocr_runtime.start_ocr_service()
+
+
+def test_start_ocr_service_stops_existing_processes_under_commit_pressure(monkeypatch):
+    stopped = {"called": False}
+    monkeypatch.delenv(ocr_runtime.OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
+    monkeypatch.setattr(
+        ocr_runtime,
+        "list_ocr_service_processes",
+        lambda: [{"pid": 2233, "name": "python.exe", "cmdline": "python -m backend.services.ocr_daemon"}],
+    )
+    monkeypatch.setattr(
+        ocr_runtime,
+        "_windows_commit_snapshot",
+        lambda: {"committed_mb": 94000, "commit_limit_mb": 100000, "commit_available_mb": 6000, "commit_percent": 94.0},
+    )
+    monkeypatch.setattr(ocr_runtime, "stop_ocr_service", lambda: stopped.update(called=True))
+
+    with pytest.raises(ocr_runtime.OcrPreviewError, match="提交内存压力过高"):
+        ocr_runtime.start_ocr_service()
+
+    assert stopped["called"] is True
+
+
+def test_ensure_ocr_service_stops_existing_processes_under_commit_pressure(monkeypatch):
+    stopped = {"called": False}
+    monkeypatch.delenv(ocr_runtime.OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
+    monkeypatch.setattr(
+        ocr_runtime,
+        "list_ocr_service_processes",
+        lambda: [{"pid": 2233, "name": "python.exe", "cmdline": "python -m backend.services.ocr_daemon"}],
+    )
+    monkeypatch.setattr(
+        ocr_runtime,
+        "_windows_commit_snapshot",
+        lambda: {"committed_mb": 94000, "commit_limit_mb": 100000, "commit_available_mb": 6000, "commit_percent": 94.0},
+    )
+    monkeypatch.setattr(ocr_runtime, "stop_ocr_service", lambda: stopped.update(called=True))
+
+    with pytest.raises(ocr_runtime.OcrPreviewError, match="提交内存压力过高"):
+        ocr_runtime.ensure_ocr_service_running()
+
+    assert stopped["called"] is True

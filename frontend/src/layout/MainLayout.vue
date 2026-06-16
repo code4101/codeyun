@@ -114,12 +114,13 @@ const NOTES_GITHUB_PROJECTS_PATH = requirePageMenuPath('NotesGithubProjects');
 const NOTES_TASK_SYSTEM_PATH = requirePageMenuPath('NotesTaskSystem');
 const NOTES_COMMON_SITES_PATH = requirePageMenuPath('NotesCommonSites');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
-const EASTMONEY_ROBOT_HISTORY_PATH = requirePageMenuPath('EastmoneyRobotHistory');
+const EASTMONEY_TRADE_PATH = requirePageMenuPath('EastmoneyTrade');
 const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_QQ_PATH = requirePageMenuPath('NotesQq');
 const NOTES_WECHAT_STORAGE_PATH = requirePageMenuPath('NotesWechatStorage');
+const NOTES_MOBILE_SMS_PATH = requirePageMenuPath('NotesMobileSms');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('RuntimeManagement');
 const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
@@ -193,13 +194,14 @@ const NOTES_CHAT_DATA_TITLE = requirePermissionTitleByMenuPath(NOTES_CHAT_DATA_P
 const NOTES_GITHUB_PROJECTS_TITLE = requirePermissionTitleByMenuPath(NOTES_GITHUB_PROJECTS_PATH);
 const NOTES_TASK_SYSTEM_TITLE = requirePermissionTitleByMenuPath(NOTES_TASK_SYSTEM_PATH);
 const NOTES_COMMON_SITES_TITLE = requirePermissionTitleByMenuPath(NOTES_COMMON_SITES_PATH);
-const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
-const EASTMONEY_ROBOT_HISTORY_TITLE = '股票量化分析';
+const EASTMONEY_TITLE = requirePermissionTitle('notes.eastmoney');
+const EASTMONEY_TRADE_TITLE = '股票操作建议';
 const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
 const NOTES_QQ_TITLE = requirePermissionTitleByMenuPath(NOTES_QQ_PATH);
 const NOTES_WECHAT_STORAGE_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_STORAGE_PATH);
+const NOTES_MOBILE_SMS_TITLE = requirePermissionTitleByMenuPath(NOTES_MOBILE_SMS_PATH);
 const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
@@ -472,13 +474,13 @@ const noteToolsMenuVisible = computed(() =>
     NOTES_CHAT_DATA_PATH,
     NOTES_TASK_SYSTEM_PATH,
     NOTES_COMMON_SITES_PATH,
-    EASTMONEY_PATH,
-    EASTMONEY_ROBOT_HISTORY_PATH,
+    EASTMONEY_TRADE_PATH,
     FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
     NOTES_WECHAT_PATH,
     NOTES_QQ_PATH,
     NOTES_WECHAT_STORAGE_PATH,
+    NOTES_MOBILE_SMS_PATH,
     NOTES_INFINITE_CANVAS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -496,9 +498,7 @@ const notesCenterMenuEntryPath = computed(() =>
 );
 
 const eastmoneyMenuEntryPath = computed(() =>
-  canAccessMenuPath(EASTMONEY_PATH)
-    ? EASTMONEY_PATH
-    : EASTMONEY_ROBOT_HISTORY_PATH,
+  EASTMONEY_TRADE_PATH,
 );
 
 const clusterFilesMenuVisible = computed(() =>
@@ -952,7 +952,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(NOTES_COMMON_SITES_PATH)" :index="NOTES_COMMON_SITES_PATH">{{ NOTES_COMMON_SITES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-sub-menu
-              v-if="canAccessMenuPath(EASTMONEY_PATH) || canAccessMenuPath(EASTMONEY_ROBOT_HISTORY_PATH)"
+              v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)"
               :index="EASTMONEY_SUBMENU_INDEX"
             >
               <template #title>
@@ -960,8 +960,8 @@ watch(
                   {{ EASTMONEY_TITLE }}
                 </span>
               </template>
-              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_ROBOT_HISTORY_PATH)" :index="EASTMONEY_ROBOT_HISTORY_PATH">
-                {{ EASTMONEY_ROBOT_HISTORY_TITLE }}
+              <el-menu-item v-if="canAccessMenuPath(EASTMONEY_TRADE_PATH)" :index="EASTMONEY_TRADE_PATH">
+                {{ EASTMONEY_TRADE_TITLE }}
               </el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>
@@ -979,6 +979,7 @@ watch(
               </el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(NOTES_QQ_PATH)" :index="NOTES_QQ_PATH">{{ NOTES_QQ_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_MOBILE_SMS_PATH)" :index="NOTES_MOBILE_SMS_PATH">{{ NOTES_MOBILE_SMS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
 

@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ BASELINE_PATH = MONITOR_DIR / "codeyun_popup_24h_baseline.json"
 STATUS_PATH = MONITOR_DIR / "codeyun_popup_24h_status.json"
 MONITOR_SCRIPT = ROOT_DIR / "scripts" / "codeyun_visible_console_monitor.py"
 MONITOR_STATUS_PATH = MONITOR_DIR / "codeyun_visible_console_monitor_status.json"
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _event_time(event: dict[str, Any]) -> str:
@@ -68,6 +70,16 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _parse_time(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, TIME_FORMAT)
+    except ValueError:
+        return None
+
+
 def _load_monitor_status() -> dict[str, Any]:
     try:
         data = json.loads(MONITOR_STATUS_PATH.read_text(encoding="utf-8"))
@@ -81,18 +93,51 @@ def _load_monitor_status() -> dict[str, Any]:
     return status
 
 
-def ensure_monitor_running() -> dict[str, Any]:
+def _stop_monitor(pid: int) -> None:
+    if pid <= 0:
+        return
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        children = proc.children(recursive=True)
+        for child in children:
+            child.terminate()
+        proc.terminate()
+        psutil.wait_procs([*children, proc], timeout=3.0)
+        for item in [*children, proc]:
+            try:
+                if item.is_running():
+                    item.kill()
+            except psutil.Error:
+                pass
+        return
+    except Exception:
+        pass
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        pass
+
+
+def ensure_monitor_running(*, min_covered_until: datetime | None = None) -> dict[str, Any]:
     status = _load_monitor_status()
     if status.get("alive"):
-        status["started_now"] = False
-        return status
+        expires_at = _parse_time(status.get("expires_at"))
+        if min_covered_until is None or (expires_at is not None and expires_at >= min_covered_until):
+            status["started_now"] = False
+            return status
+        _stop_monitor(int(status.get("pid") or 0))
 
     MONITOR_DIR.mkdir(parents=True, exist_ok=True)
+    duration_seconds = 24 * 60 * 60
+    if min_covered_until is not None:
+        duration_seconds = max(duration_seconds, int((min_covered_until - datetime.now()).total_seconds()) + 60)
     proc = popen_python_script_service(
         MONITOR_SCRIPT,
         "--loop",
         "--duration-seconds",
-        str(24 * 60 * 60),
+        str(duration_seconds),
         preferred_root=ROOT_DIR,
         executable=sys.executable,
         cwd=os.fspath(ROOT_DIR),
@@ -188,8 +233,9 @@ def audit_since(started_at: str, *, monitor_status: dict[str, Any] | None = None
 
 
 def reset_baseline() -> dict[str, Any]:
-    monitor_status = ensure_monitor_running()
-    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    baseline_at = datetime.now()
+    monitor_status = ensure_monitor_running(min_covered_until=baseline_at + timedelta(hours=24))
+    started_at = baseline_at.strftime(TIME_FORMAT)
     baseline = {
         "started_at": started_at,
         "events_path": os.fspath(EVENTS_PATH),

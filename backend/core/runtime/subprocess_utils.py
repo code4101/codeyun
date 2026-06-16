@@ -40,6 +40,43 @@ def hidden_subprocess_kwargs(*, new_process_group: bool = True, detached: bool =
     }
 
 
+def no_window_subprocess_kwargs() -> dict[str, Any]:
+    """Return minimal no-window kwargs for child commands inside a long-running process."""
+
+    if os.name != "nt":
+        return {}
+    return {
+        "creationflags": WINDOWS_CREATE_NO_WINDOW,
+        "startupinfo": _windows_startupinfo_hidden(),
+    }
+
+
+def install_no_window_popen_default() -> bool:
+    """Make subprocess.Popen calls in the current process hide Windows consoles by default.
+
+    This is intentionally narrower than background_popen_kwargs(): it does not
+    detach or create a new process group, so third-party libraries can keep
+    their normal pipes and return-code behavior while avoiding console flashes.
+    """
+
+    if os.name != "nt":
+        return False
+    if getattr(subprocess.Popen, "_codeyun_no_window_default", False):
+        return False
+
+    original_popen = subprocess.Popen
+
+    def codeyun_no_window_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+        kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | WINDOWS_CREATE_NO_WINDOW
+        if kwargs.get("startupinfo") is None:
+            kwargs["startupinfo"] = _windows_startupinfo_hidden()
+        return original_popen(*args, **kwargs)
+
+    setattr(codeyun_no_window_popen, "_codeyun_no_window_default", True)
+    subprocess.Popen = codeyun_no_window_popen  # type: ignore[assignment]
+    return True
+
+
 def background_popen_kwargs(*, independent: bool = True) -> dict[str, Any]:
     """Return kwargs for long-running background children.
 

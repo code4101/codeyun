@@ -558,8 +558,8 @@ onUnmounted(() => {
                 @contextmenu.prevent.stop="openLogMenu($event, 'guard', item.id, item.label)"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
-                <td><strong>{{ item.label }}</strong></td>
-                <td>{{ item.message }}</td>
+                <td :title="item.label"><strong>{{ item.label }}</strong></td>
+                <td :title="item.message">{{ item.message }}</td>
                 <td>
                   <button
                     class="enable-dot"
@@ -616,8 +616,8 @@ onUnmounted(() => {
                 @contextmenu.prevent.stop="openTaskMenu($event, task)"
               >
                 <td><span class="index-pill">{{ index + 1 }}</span></td>
-                <td><strong>{{ task.label }}</strong></td>
-                <td>{{ taskMetaText(task) }}</td>
+                <td :title="task.label"><strong>{{ task.label }}</strong></td>
+                <td :title="taskMetaText(task)">{{ taskMetaText(task) }}</td>
                 <td>
                   <button
                     class="enable-dot"
@@ -879,6 +879,14 @@ onUnmounted(() => {
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
+}
+
+.runtime-native-table th:nth-child(2),
+.runtime-native-table td:nth-child(2),
+.runtime-native-table th:nth-child(3),
+.runtime-native-table td:nth-child(3) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .runtime-native-table th {

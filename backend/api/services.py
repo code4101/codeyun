@@ -21,6 +21,7 @@ from backend.core.runtime.ocr_service import get_ocr_service_status, reset_ocr_s
 from backend.core.access.service_tokens import (
     SERVICE_SCOPE_OCR_PREDICT,
     SERVICE_SCOPE_OCR_STATUS,
+    SERVICE_SCOPE_MOBILE_SMS_UPLOAD,
     ServiceTokenError,
     create_service_access_token,
     delete_service_access_token,
@@ -210,6 +211,13 @@ def build_service_docs_response() -> dict[str, Any]:
                 "endpoint": "/api/services/ocr/predict",
                 "method": "POST",
                 "scopes": [SERVICE_SCOPE_OCR_PREDICT, SERVICE_SCOPE_OCR_STATUS],
+            },
+            {
+                "key": "mobile-sms",
+                "title": "短信上传",
+                "endpoint": "/api/mobile-sms/batch",
+                "method": "POST",
+                "scopes": [SERVICE_SCOPE_MOBILE_SMS_UPLOAD],
             }
         ],
         "connections": connections,

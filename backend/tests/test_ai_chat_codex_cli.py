@@ -93,6 +93,22 @@ def test_codex_cli_command_resolution_skips_incomplete_repo_node_shim(monkeypatc
     assert command == [str(global_shim), "--version"]
 
 
+def test_codex_cli_command_resolution_uses_node_script_for_cmd(monkeypatch, tmp_path):
+    shim = tmp_path / "node-bin" / "codex.cmd"
+    script = shim.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    node = shim.parent / "node.exe"
+    script.parent.mkdir(parents=True)
+    shim.write_text("@echo off\nnode codex.js %*\n", encoding="utf-8")
+    script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    node.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("backend.core.ai.chat._get_preferred_codex_command_candidates", lambda: [shim])
+
+    command = _resolve_command_path(["codex", "-p", "myprofile", "--version"])
+
+    assert command == [str(node), str(script), "-p", "myprofile", "--version"]
+
+
 def test_summarize_process_output_skips_trailing_node_version():
     detail = _summarize_process_output(
         "Error: Cannot find module 'missing-codex.js'\nNode.js v24.14.0\n"
@@ -136,8 +152,8 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
 
     assert response["content"] == "wrapped reply"
     assert response["model"] == "gpt-5.4-mini"
-    assert Path(command[0]).name.lower() in {"codex", "codex.cmd", "codex.exe", "codex.ps1"}
-    assert command[1:4] == ["-p", "myprofile", "exec"]
+    exec_index = command.index("exec")
+    assert command[exec_index - 2:exec_index] == ["-p", "myprofile"]
     assert "--ignore-user-config" in command
     assert command[command.index("--disable") + 1] == "image_generation"
     assert "--dangerously-bypass-approvals-and-sandbox" in command

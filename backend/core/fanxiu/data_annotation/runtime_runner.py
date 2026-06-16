@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import inspect
 import io
 import json
@@ -65,6 +66,7 @@ from backend.core.fanxiu.data_annotation.state import (
     initial_data_annotation_runtime_status,
     next_data_annotation_scheduler_time as _core_next_data_annotation_scheduler_time,
     normalize_data_annotation_scheduler_settings,
+    normalize_data_annotation_runtime_guard_items,
     parse_data_annotation_task_time,
     persist_data_annotation_runtime_status as _persist_data_annotation_runtime_status_core,
     read_data_annotation_json as _read_data_annotation_json,
@@ -96,7 +98,11 @@ from backend.core.fanxiu.mail.runtime_store import (
     trace_packet_mail_gap,
     update_packet_mail_action,
 )
-from backend.core.fanxiu.runtime.mumu_control import screencap_mumu_adb_png
+from backend.core.fanxiu.runtime.mumu_control import (
+    ensure_mumu_device_healthy,
+    record_mumu_adb_failure,
+    screencap_mumu_adb_png,
+)
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 from backend.core.temp_paths import codeyun_temp_root
@@ -241,6 +247,14 @@ class FanxiuRuntime(Runtime):
             ctx["attrs"] = attrs
         self.attrs = attrs
 
+    @property
+    def payload(self) -> dict[str, Any]:
+        payload = self.attrs.get("payload")
+        return payload if isinstance(payload, dict) else {}
+
+    def set_completion_message(self, message: str) -> None:
+        self.attrs["completion_message"] = str(message or "").strip()
+
     def cur_frame(self, update: bool = False) -> str:
         if update:
             self.clear_frame()
@@ -249,6 +263,25 @@ class FanxiuRuntime(Runtime):
             return self.frame_data_url
         self.frame_data_url = self.runner._screencap(self.ctx)
         return self.frame_data_url
+
+    def current_scene(
+        self,
+        views: Iterable[View | int] | None = None,
+        *,
+        frame_data_url: str | None = None,
+        update: bool = False,
+    ) -> tuple[int | None, float, str]:
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+        view_ids: list[int] | None = None
+        if views is not None:
+            view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
+            view_ids = [view_id for view_id in view_ids if view_id is not None]
+        scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
+        return scene_id, float(score or 0.0), frame
+
+    def ocr_text(self, frame_data_url: str | None = None, *, update: bool = False) -> str:
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+        return self.runner._ocr_text(self.runner._cached_ocr_lines(self.ctx, frame))
 
     def clear_frame(self) -> None:
         self.frame_data_url = None
@@ -343,6 +376,15 @@ class FanxiuRuntime(Runtime):
                 if isinstance(image, dict) and str(image.get("title") or "").strip() == text:
                     return View(image)
         return None
+
+    def view(self, selector: View | int | str) -> View:
+        view = self.resolve_view_selector(selector)
+        if not isinstance(view, View) or not isinstance(view.raw, dict):
+            raise RuntimeError(f"无法解析帧选择器：{selector}")
+        return view
+
+    def shape(self, view: View | int | str, shape: Shape | str) -> Shape:
+        return self.resolve_shape_selector(self.view(view), shape)
 
     def _selector_text(self, selector: Any) -> str:
         text = str(selector or "").strip()
@@ -542,6 +584,58 @@ class FanxiuRuntime(Runtime):
             source_info = self._runtime_source_info("wait_click", self._format_runtime_call("wait_click", frame, shape))
             yield from self.wait_click(frame, shape, _source_info=source_info)
 
+    def wait_click_and_ocr(
+        self,
+        frame: View | int | str | None,
+        shape: Shape | str,
+        *,
+        settle_seconds: float = 1.0,
+        **options: Any,
+    ) -> str:
+        yield from self.wait_click(frame, shape, **options)
+        yield from self.wait_action_settle(settle_seconds)
+        return self.ocr_text(update=True)
+
+    def wait_click_then_shape(
+        self,
+        frame: View | int | str | None,
+        shape: Shape | str,
+        target_frame: View | int | str,
+        target_shape: Shape | str,
+        *,
+        settle_seconds: float = 1.0,
+        timeout: float | None = None,
+        label: str = "点击后等待目标",
+        **options: Any,
+    ) -> str:
+        yield from self.wait_click(frame, shape, **options)
+        yield from self.wait_action_settle(settle_seconds)
+        return (yield from self.wait_shape(
+            target_frame,
+            target_shape,
+            timeout=self.default_wait_condition_timeout if timeout is None else float(timeout),
+            label=label,
+        ))
+
+    def wait_click_then_any(
+        self,
+        frame: View | int | str | None,
+        shape: Shape | str,
+        conditions: Mapping[str, _FanxiuWaitCondition],
+        *,
+        settle_seconds: float = 1.0,
+        timeout: float | None = None,
+        label: str = "点击后等待结果",
+        **options: Any,
+    ) -> str:
+        yield from self.wait_click(frame, shape, **options)
+        yield from self.wait_action_settle(settle_seconds)
+        return (yield from self.wait_any(
+            conditions,
+            timeout=timeout,
+            label=label,
+        ))
+
     def goto_view(self, view: View | int) -> Any:
         target_scene_id = view.id if isinstance(view, View) else int(view)
         if not isinstance(self.asset_tree_path, Path):
@@ -555,7 +649,10 @@ class FanxiuRuntime(Runtime):
         )
         stop_event = self.stop_event or threading.Event()
         result = self.runner._go_scene_task(self.ctx, self.asset_tree_path, target_scene_id, stop_event)
-        return (yield from result) if isinstance(result, GeneratorType) else result
+        status = (yield from result) if isinstance(result, GeneratorType) else result
+        if str(status or "").lower() in {"error", "failure", "failed"}:
+            raise RuntimeError(f"前往 #{target_scene_id} 失败")
+        return status
 
     def wait_view(
         self,
@@ -683,6 +780,21 @@ class FanxiuRuntime(Runtime):
             matched = required_ok and optional_ok
             display = " ".join(required + optional) or label
             return _FanxiuWaitResult(matched, f"{label} {'命中' if matched else '未命中'}：{display}")
+
+        return _FanxiuWaitCondition(label=label, check=check)
+
+    def ocr_matches(
+        self,
+        predicate: Callable[[str], bool],
+        *,
+        label: str = "OCR 文本",
+        preview_chars: int = 60,
+    ) -> _FanxiuWaitCondition:
+        def check(runtime: "FanxiuRuntime", frame: str) -> _FanxiuWaitResult:
+            text = runtime.runner._ocr_text(runtime.runner._cached_ocr_lines(runtime.ctx, frame))
+            matched = bool(predicate(text))
+            preview = _sanitize_ocr_text(text)[: max(0, int(preview_chars))]
+            return _FanxiuWaitResult(matched, f"{label} {'命中' if matched else '未命中'}：{preview}")
 
         return _FanxiuWaitCondition(label=label, check=check)
 
@@ -820,14 +932,216 @@ class FanxiuRuntime(Runtime):
             ),
         )
 
-    def drag_shape_content(self, shape: Shape, *, ratio: float = 0.5, duration: float = 1.5) -> Any:
-        view = shape.parent_view
+    def click_frame_point(self, view: View | int | str, x: float, y: float) -> Any:
+        target_view = self.view(view)
+        result = self.runner._click_frame_point(self.ctx, target_view.raw, x, y)
+        self.clear_frame()
+        return result
+
+    def click_shape_center(
+        self,
+        view: View | int | str,
+        shape: Shape | str,
+        *,
+        x_ratio: float = 0.5,
+        y_ratio: float = 0.5,
+    ) -> Any:
+        target_view = self.view(view)
+        target_shape = self.resolve_shape_selector(target_view, shape)
+        width, height = self.runner._frame_size(target_view.raw)
+        click_x = (float(target_shape.raw.get("x") or 0) + float(target_shape.raw.get("w") or 0) * float(x_ratio)) * width
+        click_y = (float(target_shape.raw.get("y") or 0) + float(target_shape.raw.get("h") or 0) * float(y_ratio)) * height
+        self._emit_runtime_action(
+            f"固定点击 #{target_view.id or '?'}「{self._shape_path(target_shape)}」",
+            phase="runtime_click_shape",
+            kind="click",
+            current_scene=target_view.id,
+        )
+        result = self.runner._click_frame_point(self.ctx, target_view.raw, click_x, click_y)
+        self.clear_frame()
+        return result
+
+    def ocr_row_clicks_in_shape(
+        self,
+        view: View | int | str,
+        shape_title: str,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+        frame_data_url: str | None = None,
+    ) -> list[tuple[float, float, str]]:
+        target_view = self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        return self.runner._ocr_row_clicks_in_shape(
+            lines,
+            target_view.raw,
+            shape_title,
+            include=include,
+            exclude=exclude,
+        )
+
+    def ocr_lines_in_shapes(
+        self,
+        view: View | int | str,
+        shape_titles: Iterable[str],
+        *,
+        padding: int = 16,
+        frame_data_url: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_view = self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding)
+
+    def ocr_text_in_shapes(
+        self,
+        view: View | int | str,
+        shape_titles: Iterable[str],
+        *,
+        padding: int = 16,
+        frame_data_url: str | None = None,
+    ) -> str:
+        lines = self.ocr_lines_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url)
+        return self.runner._ocr_text(lines)
+
+    def ocr_numbers_in_shapes(
+        self,
+        view: View | int | str,
+        shape_titles: Iterable[str],
+        *,
+        padding: int = 16,
+        frame_data_url: str | None = None,
+    ) -> tuple[list[int], str]:
+        text = self.ocr_text_in_shapes(view, shape_titles, padding=padding, frame_data_url=frame_data_url)
+        normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
+        return [int(match) for match in re.findall(r"\d+", normalized)], normalized
+
+    def shape_score(
+        self,
+        view: View | int | str,
+        shape: Shape | str,
+        *,
+        frame_data_url: str | None = None,
+    ) -> float:
+        target_view = self.view(view)
+        target_shape = self.resolve_shape_selector(target_view, shape)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame()
+        return float(self.runner._shape_score(self.ctx, target_view.raw, target_shape.raw, frame) or 0.0)
+
+    def wait_shape(
+        self,
+        view: View | int | str,
+        shape: Shape | str,
+        *,
+        timeout: float | None = None,
+        threshold: float | None = None,
+        label: str = "等待 shape",
+    ) -> str:
+        target_view = self.view(view)
+        target_shape = self.resolve_shape_selector(target_view, shape)
+        wait_timeout = self.default_wait_condition_timeout if timeout is None else float(timeout)
+        min_score = self.runner.overlay_threshold if threshold is None else float(threshold)
+        start = time.monotonic()
+        last_score = 0.0
+        while True:
+            if self.stop_event is not None:
+                self.runner._raise_if_stopped(self.stop_event)
+            self.clear_frame()
+            yield BehaviorTreeStatus.RUNNING
+            frame = self.cur_frame()
+            last_score = self.shape_score(target_view, target_shape, frame_data_url=frame)
+            if last_score >= min_score:
+                self.runner._log(
+                    "success",
+                    f"{label}：#{target_view.id or '?'} {self._shape_path(target_shape)} {last_score:.0f}%",
+                )
+                return frame
+            if time.monotonic() - start >= max(1.0, wait_timeout):
+                raise TimeoutError(
+                    f"{label} 超时：#{target_view.id or '?'} {self._shape_path(target_shape)} {last_score:.0f}%"
+                )
+            if self.runner._auto_close_popup_guard_step(self):
+                self.clear_frame()
+
+    def image_signature_in_shape(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape: Shape | str | None = None,
+        *,
+        frame_data_url: str | None = None,
+    ) -> str:
+        data = self.image_signature_bytes_in_shape(view_or_shape, shape, frame_data_url=frame_data_url)
+        return hashlib.sha256(data).hexdigest() if data else ""
+
+    def image_signature_bytes_in_shape(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape: Shape | str | None = None,
+        *,
+        frame_data_url: str | None = None,
+    ) -> bytes:
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
+        view = target_shape.parent_view
+        if not isinstance(view, View) or not isinstance(view.raw, dict):
+            raise RuntimeError("shape 缺少 parent_view，无法计算内容签名")
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame()
+        png_data = self.runner._decode_frame_data_url(frame)
+        from PIL import Image, ImageDraw
+
+        with Image.open(io.BytesIO(png_data)) as source:
+            image = source.convert("RGB")
+            target_box = self.runner._box(target_shape.raw, view.raw)
+            raw_left = float(target_box.get("x") or 0)
+            raw_top = float(target_box.get("y") or 0)
+            left = max(0, min(image.width, int(round(raw_left))))
+            top = max(0, min(image.height, int(round(raw_top))))
+            right = max(left, min(image.width, int(round(raw_left + float(target_box.get("w") or 0)))))
+            bottom = max(top, min(image.height, int(round(raw_top + float(target_box.get("h") or 0)))))
+            if right <= left or bottom <= top:
+                return b""
+            crop = image.crop((left, top, right, bottom))
+            draw = ImageDraw.Draw(crop)
+            for box in self.runner._occlusion_marker_boxes(self.ctx, view.raw):
+                box_left = float(box.get("x") or 0)
+                box_top = float(box.get("y") or 0)
+                box_right = box_left + float(box.get("w") or 0)
+                box_bottom = box_top + float(box.get("h") or 0)
+                inter_left = max(left, int(round(box_left)))
+                inter_top = max(top, int(round(box_top)))
+                inter_right = min(right, int(round(box_right)))
+                inter_bottom = min(bottom, int(round(box_bottom)))
+                if inter_left < inter_right and inter_top < inter_bottom:
+                    draw.rectangle(
+                        (inter_left - left, inter_top - top, inter_right - left, inter_bottom - top),
+                        fill=(0, 0, 0),
+                    )
+            resampling = getattr(Image, "Resampling", Image).LANCZOS
+            normalized = crop.convert("L").resize((32, 32), resampling)
+            return normalized.tobytes()
+
+    def image_signature_similarity(self, left: bytes, right: bytes) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+        total_delta = sum(abs(a - b) for a, b in zip(left, right))
+        return max(0.0, 100.0 * (1.0 - total_delta / (255.0 * len(left))))
+
+    def drag_shape_content(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape: Shape | str | None = None,
+        *,
+        direction: str | None = None,
+        ratio: float = 0.5,
+        duration: float = 1.5,
+    ) -> Any:
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
+        view = target_shape.parent_view
         if not isinstance(view, View) or not isinstance(view.raw, dict):
             raise RuntimeError("shape 缺少 parent_view，无法滚动加载")
         start_x, start_y, end_x, end_y = ActionPlanner().drag_shape_content_points(
             view.raw,
-            shape.raw,
-            direction=shape.content_direction or "down",
+            target_shape.raw,
+            direction=str(direction or target_shape.content_direction or "down"),
             ratio=ratio,
         )
         self.runner._drag_frame_point(
@@ -840,6 +1154,209 @@ class FanxiuRuntime(Runtime):
             duration_ms=max(0, int(float(duration) * 1000)),
         )
         self.clear_frame()
+
+    def drag_shape_to_shape(
+        self,
+        view: View | int | str,
+        start_shape: Shape | str,
+        end_shape: Shape | str,
+        *,
+        duration: float = 0.35,
+        frame_data_url: str | None = None,
+    ) -> None:
+        target_view = self.view(view)
+        start = self.resolve_shape_selector(target_view, start_shape)
+        end = self.resolve_shape_selector(target_view, end_shape)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame()
+        start_x, start_y = self.runner._shape_center(start.raw, target_view.raw, frame, self.ctx)
+        end_x, end_y = self.runner._shape_center(end.raw, target_view.raw)
+        self.runner._drag_frame_point(
+            self.ctx,
+            target_view.raw,
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            duration_ms=max(0, int(float(duration) * 1000)),
+        )
+        self.clear_frame()
+
+    def wait_action_settle(self, seconds: float = 1.0):
+        self.clear_frame()
+        stop_event = self.stop_event or threading.Event()
+        if stop_event.wait(max(0.0, float(seconds))):
+            self.runner._raise_if_stopped(stop_event)
+        self.clear_frame()
+        yield BehaviorTreeStatus.RUNNING
+
+    def scroll_shape_content(
+        self,
+        view_or_shape: View | int | str | Shape,
+        shape: Shape | str | None = None,
+        *,
+        direction: str | None = None,
+        ratio: float = 0.5,
+        duration: float = 1.5,
+        settle_seconds: float = 1.0,
+        unchanged_threshold: float = 95.0,
+    ) -> bool:
+        target_shape = view_or_shape if isinstance(view_or_shape, Shape) and shape is None else self.shape(view_or_shape, shape or "")
+        before_signature = self.image_signature_bytes_in_shape(target_shape)
+        self.drag_shape_content(target_shape, direction=direction, ratio=ratio, duration=duration)
+        yield from self.wait_action_settle(settle_seconds)
+        after_signature = self.image_signature_bytes_in_shape(target_shape)
+        similarity = self.image_signature_similarity(before_signature, after_signature)
+        return bool(after_signature and similarity < float(unchanged_threshold))
+
+    def _daily_entry_row_progress(
+        self,
+        lines: list[dict[str, Any]],
+        title_y: float,
+        *,
+        y_tolerance: float = 130.0,
+    ) -> tuple[int, int] | None:
+        fragments: list[str] = []
+        for line in lines:
+            cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+            if abs(cy - title_y) > y_tolerance:
+                continue
+            text = _sanitize_ocr_text(line.get("text")).translate(FULLWIDTH_DIGIT_TRANSLATION)
+            if text:
+                fragments.append(text)
+        row_text = "".join(fragments)
+        fractions = re.findall(r"(\d{1,2})/(\d{1,2})", row_text)
+        if not fractions:
+            return None
+        current, total = fractions[-1]
+        total_int = int(total)
+        current_int = int(current)
+        if total_int > 0 and current_int > total_int and len(current) >= 2:
+            suffix_int = int(current[-1])
+            if suffix_int <= total_int:
+                current_int = suffix_int
+        return (current_int, total_int) if total_int > 0 else None
+
+    def _daily_entry_matches(
+        self,
+        lines: list[dict[str, Any]],
+        view69: View,
+        *,
+        title_pattern: str,
+        exclude_pattern: str | None = None,
+    ) -> list[tuple[float, float, str]]:
+        list_shape = self.resolve_shape_selector(view69, "滚动窗口")
+        box = self.runner._box(list_shape.raw, view69.raw)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        matches: list[tuple[float, float, str]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text:
+                continue
+            if exclude_pattern and re.search(exclude_pattern, text):
+                continue
+            if not re.search(title_pattern, text):
+                continue
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            cx = x + w / 2
+            cy = y + h / 2
+            if left <= cx <= right and top <= cy <= bottom:
+                matches.append((cx, cy, text))
+        return sorted(matches, key=lambda item: (item[1], item[0]))
+
+    def _daily_text_is_daily_list(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if (
+            "日常" in compact
+            and "活跃度" in compact
+            and ("活动报名" in compact or "周常" in compact or "奖励找回" in compact)
+        ):
+            return True
+        daily_row_markers = (
+            "完成双人修炼",
+            "双人修炼",
+            "双修",
+            "副本探险",
+            "每日副本",
+            "小助手",
+            "完成修仙传游历",
+            "击败首领",
+            "活动报名",
+            "混沌灵塔",
+            "淬剑试炼",
+            "灵祖",
+            "挑战仙缘",
+        )
+        return bool(any(marker in compact for marker in daily_row_markers) and re.search(r"\d+/\d+", compact))
+
+    def _ensure_daily_list_frame(self, frame: str, lines: list[dict[str, Any]], *, label: str) -> None:
+        scene_id, score = self.runner._identify_scene_number(self.ctx, frame, [69, 34])
+        text = self.runner._ocr_text(lines)
+        if scene_id == 69 and self._daily_text_is_daily_list(text):
+            return
+        scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
+        raise RuntimeError(f"{label}：未确认当前在 #69 日常列表，禁止滚动查找；当前 {scene_text} {score:.0f}% OCR={text[:120]}")
+
+    def open_daily_entry(
+        self,
+        *,
+        label: str,
+        title_pattern: str,
+        exclude_pattern: str | None = None,
+        progress_can_mark_done: bool = True,
+        max_scrolls: int = 10,
+        reverse_scrolls: int = 0,
+    ):
+        view69 = self.view(69)
+        list_shape = self.shape(view69, "滚动窗口")
+        passes: list[tuple[str, int]] = [("down", max(0, int(max_scrolls)))]
+        if int(reverse_scrolls) > 0:
+            passes.append(("up", int(reverse_scrolls)))
+        for direction, scroll_count in passes:
+            for scroll_index in range(scroll_count + 1):
+                if self.stop_event is not None:
+                    self.runner._raise_if_stopped(self.stop_event)
+                self._emit_runtime_action(
+                    f"{label}：查找日常任务入口 {direction} {scroll_index}/{scroll_count}",
+                    phase="daily_entry_find",
+                    kind="wait",
+                    current_scene=69,
+                )
+                frame = self.cur_frame(update=True)
+                lines = self.runner._cached_ocr_lines(self.ctx, frame)
+                self._ensure_daily_list_frame(frame, lines, label=label)
+                matches = self._daily_entry_matches(
+                    lines,
+                    view69,
+                    title_pattern=title_pattern,
+                    exclude_pattern=exclude_pattern,
+                )
+                if matches:
+                    x, y, matched_text = matches[0]
+                    progress = self._daily_entry_row_progress(lines, y)
+                    if progress_can_mark_done and progress is not None and progress[0] >= progress[1]:
+                        return "done"
+                    self._emit_runtime_action(
+                        f"{label}：点击日常任务 {matched_text}",
+                        phase="daily_entry_click",
+                        kind="click",
+                        current_scene=69,
+                    )
+                    self.click_frame_point(view69, x, y)
+                    yield from self.wait_action_settle()
+                    return "open"
+                if scroll_index >= scroll_count:
+                    break
+                self.runner._log("action", f"{label}：未找到入口，{direction} 滚动日常列表 {scroll_index + 1}")
+                changed = yield from self.scroll_shape_content(view69, list_shape, direction=direction)
+                if not changed:
+                    break
+        return "not_found"
 
     def popup_score(self, view: View | None) -> float:
         if not isinstance(view, View) or not isinstance(view.raw, dict):
@@ -1147,7 +1664,9 @@ def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, A
 from backend.core.fanxiu.data_annotation.tasks.daily_challenge import DailyChallengeTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoundationTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.gift_code import GiftCodeTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.misc_actions import MiscActionTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.signup_misc import SignupMiscTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianfu import XianfuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mixin
@@ -1160,23 +1679,34 @@ class DataAnnotationRuntimeRunner(
     DailyChallengeTaskMixin,
     XianfuTaskMixin,
     SignupMiscTaskMixin,
+    GiftCodeTaskMixin,
+    MiscActionTaskMixin,
     MailTaskMixin,
 ):
     default_guard_enabled = True
     default_guard_interval_seconds = 2.0
     default_guard_items = {
+        "device_health": {"enabled": True, "entry_id": "", "updated_at": 0.0},
         "close_popups": {"enabled": True, "entry_id": "", "updated_at": 0.0},
         "wanling_invite": {"enabled": False, "entry_id": "", "updated_at": 0.0},
     }
     guard_definitions = {
+        "device_health": {
+            "id": "device_health",
+            "label": "设备健康",
+            "default_enabled": True,
+            "message": "低频检查 MuMu/安卓容器，异常时恢复模拟器和游戏",
+        },
         "close_popups": {
             "id": "close_popups",
             "label": "关闭弹窗",
+            "default_enabled": True,
             "message": "常驻处理已标注弹窗和遮挡",
         },
         "wanling_invite": {
             "id": "wanling_invite",
             "label": "万灵切磋邀请",
+            "default_enabled": False,
             "message": "占位触发守护，当前仅保留开关",
         },
     }
@@ -1282,6 +1812,82 @@ class DataAnnotationRuntimeRunner(
         self._log_item_id = ""
         self._status: dict[str, Any] = self._initial_status()
 
+    def _wait_runtime_action_settle(self, ctx: dict[str, Any], stop_event: threading.Event, seconds: float = 2.0):
+        self._clear_tick_frame(ctx)
+        if stop_event.wait(max(0.0, float(seconds))):
+            self._raise_if_stopped(stop_event)
+        self._clear_tick_frame(ctx)
+        yield BehaviorTreeStatus.RUNNING
+
+    def _runtime_view_for_image(self, image: dict[str, Any]) -> View:
+        return View(image)
+
+    def _runtime_shape_for_legacy_shape(self, image: dict[str, Any], shape: dict[str, Any]) -> Shape:
+        return Shape(shape, parent_view=self._runtime_view_for_image(image))
+
+    def _scroll_shape_content_changed(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        reverse: bool = False,
+        settle_seconds: float = 1.0,
+        unchanged_threshold: float = 95.0,
+    ):
+        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
+        runtime_shape = self._runtime_shape_for_legacy_shape(image, shape)
+        original_direction = runtime_shape.raw.get("contentDirection")
+        if reverse:
+            direction = str(original_direction or runtime_shape.content_direction or "down").strip().lower()
+            runtime_shape.raw["contentDirection"] = "down" if direction == "up" else "up"
+        try:
+            return (yield from runtime.scroll_shape_content(
+                runtime_shape,
+                settle_seconds=settle_seconds,
+                unchanged_threshold=unchanged_threshold,
+            ))
+        finally:
+            if reverse:
+                if original_direction is None:
+                    runtime_shape.raw.pop("contentDirection", None)
+                else:
+                    runtime_shape.raw["contentDirection"] = original_direction
+
+    def _occlusion_marker_boxes(self, ctx: dict[str, Any] | None, image: dict[str, Any]) -> list[dict[str, float]]:
+        if not ctx:
+            return []
+        tree = ctx.get("asset_tree")
+        if not isinstance(tree, list):
+            return []
+        boxes: list[dict[str, float]] = []
+
+        def visit(nodes: list[dict[str, Any]], in_occlusion_folder: bool = False) -> None:
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                node_type = str(node.get("type") or "").strip()
+                title = str(node.get("title") or "").strip()
+                current_in_occlusion = in_occlusion_folder or (node_type == "folder" and title == "遮挡标记")
+                if current_in_occlusion and node_type == "image":
+                    for shape in self._flatten_shapes(node.get("shapes")):
+                        if shape.get("kind") == "group":
+                            continue
+                        box = self._box(shape, image)
+                        boxes.append({
+                            "x": float(box.get("x") or 0),
+                            "y": float(box.get("y") or 0),
+                            "w": float(box.get("w") or 0),
+                            "h": float(box.get("h") or 0),
+                        })
+                children = node.get("children")
+                if isinstance(children, list):
+                    visit([child for child in children if isinstance(child, dict)], current_in_occlusion)
+
+        visit(tree)
+        return boxes
+
     def _initial_status(self) -> dict[str, Any]:
         return initial_data_annotation_runtime_status()
 
@@ -1347,6 +1953,13 @@ class DataAnnotationRuntimeRunner(
                 last_guard_event = self._status.get("last_guard_event")
                 if isinstance(last_guard_event, dict) and last_guard_event.get("title"):
                     message = str(last_guard_event.get("title") or "")
+            elif guard_id == "device_health":
+                running = bool(service_running and self._guard_group_enabled and enabled)
+                device_health = self._status.get("device_health")
+                if isinstance(device_health, dict):
+                    state_text = str(device_health.get("status") or "")
+                    if state_text:
+                        message = f"设备状态：{state_text}"
             guard_items[guard_id] = {
                 **definition,
                 "enabled": enabled,
@@ -1628,6 +2241,7 @@ class DataAnnotationRuntimeRunner(
         persisted = _read_data_annotation_runtime_status()
         if not persisted:
             return
+        normalize_data_annotation_runtime_guard_items(persisted, self.guard_definitions)
         self._guard_group_enabled = bool(persisted.get("guard_group_enabled", True))
         self._guard_enabled = close_popups_guard_enabled_from_status(persisted)
         self._guard_entry_id = str(persisted.get("guard_entry_id") or "")
@@ -1743,6 +2357,7 @@ class DataAnnotationRuntimeRunner(
                 continue
             entry, entry_id, asset_tree_path = context
             try:
+                self._run_device_health_guard_tick(entry_id)
                 if not self.status().get("running"):
                     self._mark_service_heartbeat("manual_job_poll")
                     if self._start_next_manual_job_if_idle(entry, entry_id) is not None:
@@ -1893,6 +2508,29 @@ class DataAnnotationRuntimeRunner(
         except Exception as exc:
             with self._lock:
                 self._log_locked("error", f"守护空转失败：{exc}", scope="guard", item_id="close_popups")
+
+    def _run_device_health_guard_tick(self, entry_id: str) -> None:
+        if not self._runtime_guard_enabled("device_health"):
+            return
+        try:
+            state = ensure_mumu_device_healthy(recover=True, reason="resident_heartbeat")
+        except Exception as exc:
+            state = {"status": "suspect", "last_error": str(exc)}
+        status_text = str(state.get("status") or "unknown")
+        recovered = bool(state.get("recovered"))
+        with self._lock:
+            previous = self._status.get("device_health")
+            previous_status = str(previous.get("status") or "") if isinstance(previous, dict) else ""
+            self._status["device_health"] = state
+            if recovered:
+                self._log_locked("warning", "设备健康守护已恢复 MuMu 安卓容器并拉起凡修游戏", scope="guard", item_id="device_health")
+            elif status_text and status_text != previous_status and status_text != "healthy":
+                self._log_locked("warning", f"设备健康异常：{status_text}", scope="guard", item_id="device_health")
+            if entry_id and not self._status.get("entry_id"):
+                self._status["entry_id"] = entry_id
+            self._sync_guard_status_locked()
+        if recovered:
+            self._persist_status()
 
     def stop_current_task(self, entry_id: str) -> dict[str, Any]:
         with self._lock:
@@ -2273,15 +2911,20 @@ class DataAnnotationRuntimeRunner(
             raise RuntimeError(f"缺少{label}资产树路径，无法执行作业")
 
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        runtime_attrs = getattr(runtime, "attrs", None)
+        if isinstance(runtime_attrs, dict):
+            runtime_attrs["payload"] = payload
         result = flow(runtime)
         if isinstance(result, GeneratorType):
             yield from result
         yield from self._wait_runtime_action_settle(ctx, stop_event)
+        runtime_attrs = getattr(runtime, "attrs", None)
+        completion_message = str(runtime_attrs.get("completion_message") or "").strip() if isinstance(runtime_attrs, dict) else ""
         self._finish_daily_runtime_task(
             payload,
             task_type=task_type,
             label=label,
-            message=f"{label}完成，已回到世界",
+            message=completion_message or f"{label}完成，已回到世界",
         )
         return "success"
 
@@ -2761,9 +3404,17 @@ class DataAnnotationRuntimeRunner(
     def _mark_scheduler_task(self, tasks: list[dict[str, Any]], task_id: str, result: str) -> None:
         if not task_id:
             return
+        task_ids = {str(item.get("id") or "") for item in tasks if isinstance(item, dict)}
+        write_tasks = tasks
+        scheduler_state_path = _data_annotation_scheduler_state_path()
+        if scheduler_state_path.exists():
+            persisted_tasks = _read_data_annotation_scheduler_tasks()
+            persisted_ids = {str(item.get("id") or "") for item in persisted_tasks if isinstance(item, dict)}
+            if task_id in persisted_ids and task_ids != persisted_ids:
+                write_tasks = persisted_tasks
         now_text = _now().strftime("%Y-%m-%d %H:%M:%S")
         changed = False
-        for item in tasks:
+        for item in write_tasks:
             if str(item.get("id") or "") != task_id:
                 continue
             if result == "running":
@@ -2796,7 +3447,13 @@ class DataAnnotationRuntimeRunner(
             changed = True
             break
         if changed:
-            _write_data_annotation_scheduler_tasks(tasks)
+            _write_data_annotation_scheduler_tasks(write_tasks)
+            if write_tasks is not tasks:
+                for original in tasks:
+                    if str(original.get("id") or "") == task_id:
+                        original.clear()
+                        original.update(item)
+                        break
             _record_data_annotation_scheduler_task_fact(item, result)
 
     def _mark_scheduler_tasks_blocked(self, tasks: list[dict[str, Any]], due_tasks: list[dict[str, Any]], message: str) -> None:
@@ -3148,47 +3805,26 @@ class DataAnnotationRuntimeRunner(
         *,
         task_label: str,
     ):
-        xianshi_shape = self._find_shape(image34, "仙市")
-        if xianshi_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #34「仙市」入口标注，无法进入仙市")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image34,
-            xianshi_shape,
-            payload,
-            label=f"{task_label}：进入仙市",
-            timeout_key="xianshi_entry_timeout",
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click_then_shape(
+            34,
+            "仙市",
+            247,
+            "秘藏阁",
+            settle_seconds=2.0,
+            label=f"{task_label}：等待仙市入口页",
         )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("enter_xianshi_settle_seconds") or 2.0))
-
-        secret_shape = self._find_shape(image247, "秘藏阁")
-        if secret_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #247「秘藏阁」标注，无法进入秘藏阁")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image247,
-            secret_shape,
-            payload,
-            label=f"{task_label}：进入秘藏阁",
-            timeout_key="secret_tab_timeout",
+        yield from runtime.wait_click_then_shape(
+            247,
+            "秘藏阁",
+            248,
+            "仙币",
+            settle_seconds=1.5,
+            label=f"{task_label}：等待秘藏阁仙币页",
         )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("secret_tab_settle_seconds") or 1.5))
-
-        coin_shape = self._find_shape(image248, "仙币")
-        if coin_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #248「仙币」标注，无法切换仙币分类")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image248,
-            coin_shape,
-            payload,
-            label=f"{task_label}：切换仙币",
-            timeout_key="coin_tab_timeout",
-        )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("coin_tab_settle_seconds") or 1.5))
+        yield from runtime.wait_click(248, "仙币")
+        yield from runtime.wait_action_settle(1.5)
 
     def _click_daily_xianshi_free_coin_box(
         self,
@@ -3200,27 +3836,19 @@ class DataAnnotationRuntimeRunner(
         *,
         task_label: str,
     ):
-        box_shape = self._find_shape(image249, "灵石仙币宝匣")
-        if box_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #249「灵石仙币宝匣」标注，无法领取免费宝匣")
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         timeout = float(payload.get("coin_box_timeout") or 60.0)
         start = time.monotonic()
         last_error = ""
         while True:
             self._raise_if_stopped(stop_event)
             try:
-                yield from self._click_shape_respecting_conditions(
-                    ctx,
-                    stop_event,
-                    image249,
-                    box_shape,
-                    payload,
-                    label=f"{task_label}：点击免费灵石仙币宝匣",
-                    timeout_key="coin_box_probe_timeout",
+                text = yield from runtime.wait_click_and_ocr(
+                    249,
+                    "灵石仙币宝匣",
+                    settle_seconds=float(payload.get("coin_box_settle_seconds") or 1.5),
                 )
-                yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("coin_box_settle_seconds") or 1.5))
-                frame = self._screencap(ctx)
-                text = self._ocr_text(self._ocr_lines(frame))
                 if self._daily_xianshi_text_is_box_detail(text):
                     return (yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label))
                 last_error = f"点击后未进入宝匣详情，OCR={text[:120]}"
@@ -3238,7 +3866,7 @@ class DataAnnotationRuntimeRunner(
                     "message": f"{task_label}：等待免费灵石仙币宝匣可点击",
                     "updated_at": time.time(),
                 })
-            yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("coin_box_retry_interval_seconds") or 2.0))
+            yield from runtime.wait_action_settle(float(payload.get("coin_box_retry_interval_seconds") or 2.0))
 
     def _daily_xianshi_text_indicates_no_free_coin_box(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -3257,21 +3885,11 @@ class DataAnnotationRuntimeRunner(
         *,
         task_label: str,
     ):
-        claim_shape = self._find_shape(image250, "领取")
-        if claim_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #250「领取」标注，无法领取宝匣")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image250,
-            claim_shape,
-            payload,
-            label=f"{task_label}：领取灵石仙币宝匣",
-            timeout_key="claim_timeout",
-        )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("claim_settle_seconds") or 1.5))
-        frame = self._screencap(ctx)
-        text = self._ocr_text(self._ocr_lines(frame))
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click(250, "领取")
+        yield from runtime.wait_action_settle(float(payload.get("claim_settle_seconds") or 1.5))
+        text = runtime.ocr_text(update=True)
         self._log("success", f"{task_label}：领取后 OCR={text[:120]}")
         return True
 
@@ -3284,23 +3902,11 @@ class DataAnnotationRuntimeRunner(
         *,
         task_label: str,
     ):
-        back_shape = self._find_shape(image249, "返回")
-        if back_shape is None:
-            raise RuntimeError("日常_仙市：缺少 #249「返回」标注，无法返回世界")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image249,
-            back_shape,
-            payload,
-            label=f"{task_label}：返回世界",
-            timeout_key="return_timeout",
-        )
-        yield from self._wait_scene_id(
-            ctx,
-            stop_event,
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click(249, "返回")
+        yield from runtime.wait_view(
             34,
-            timeout=float(payload.get("return_world_timeout") or 18.0),
             label=f"{task_label}：等待世界 #34",
         )
 
@@ -4936,7 +5542,27 @@ class DataAnnotationRuntimeRunner(
 
     def _capture_frame(self, ctx: dict[str, Any]) -> str:
         entry: Any = ctx["entry"]
-        response = _screencap_game_window2_service() if entry.mode == "local" else _remote_game_window2_screencap(entry)
+        try:
+            response = _screencap_game_window2_service() if entry.mode == "local" else _remote_game_window2_screencap(entry)
+        except Exception as exc:
+            if entry.mode == "local":
+                state = record_mumu_adb_failure(exc, recover=True)
+                with self._lock:
+                    self._status["device_health"] = state
+                    if state.get("recovered"):
+                        self._log_locked(
+                            "warning",
+                            "ADB 取帧失败后已恢复 MuMu 安卓容器，重试截图",
+                            scope="guard",
+                            item_id="device_health",
+                        )
+                        self._sync_guard_status_locked()
+                if state.get("recovered"):
+                    response = _screencap_game_window2_service()
+                else:
+                    raise
+            else:
+                raise
         return self._data_url(bytes(response.body or b""))
 
     def _screencap(self, ctx: dict[str, Any]) -> str:
@@ -5089,7 +5715,14 @@ class DataAnnotationRuntimeRunner(
                 result["flags"] = flags
                 result["resolved_box"] = result.get("box") if isinstance(result.get("box"), dict) else self._box(shape, image)
                 return result
-            if bool(ctx.get("_prefer_full_frame_ocr")):
+            cache = ctx.get("_ocr_lines_cache")
+            has_full_frame_lines = (
+                isinstance(cache, dict)
+                and cache.get("frame") == frame_data_url
+                and isinstance(cache.get("lines"), list)
+                and bool(cache.get("lines"))
+            )
+            if bool(ctx.get("_prefer_full_frame_ocr")) and has_full_frame_lines:
                 result["flags"] = flags
                 return result
         try:
@@ -5515,7 +6148,11 @@ class DataAnnotationRuntimeRunner(
             },
             frame_data_url=frame_data_url,
         )
-        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
+        if entry.mode == "local":
+            payload["input_backend"] = "adb"
+            _click_game_window2_service(payload)
+        else:
+            _click_remote_game_window2(entry, payload)
         self._clear_tick_frame(ctx)
 
     def _click_scene_route_shape(
@@ -5660,7 +6297,11 @@ class DataAnnotationRuntimeRunner(
                 "label": f"click #{self._image_number(image) or '?'} ({float(x):.0f},{float(y):.0f})",
             },
         )
-        (_click_game_window2_service(payload) if entry.mode == "local" else _click_remote_game_window2(entry, payload))
+        if entry.mode == "local":
+            payload["input_backend"] = "adb"
+            _click_game_window2_service(payload)
+        else:
+            _click_remote_game_window2(entry, payload)
         self._clear_tick_frame(ctx)
 
     def _drag_frame_point(
@@ -5696,7 +6337,11 @@ class DataAnnotationRuntimeRunner(
                 ),
             },
         )
-        (_drag_game_window2_service(payload) if entry.mode == "local" else _drag_remote_game_window2(entry, payload))
+        if entry.mode == "local":
+            payload["input_backend"] = "adb"
+            _drag_game_window2_service(payload)
+        else:
+            _drag_remote_game_window2(entry, payload)
         self._clear_tick_frame(ctx)
 
     def _shape_center(self, shape: dict[str, Any], image: dict[str, Any], frame_data_url: str | None = None, ctx: dict[str, Any] | None = None) -> tuple[float, float]:
@@ -6021,6 +6666,40 @@ class DataAnnotationRuntimeRunner(
             cy = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
             if left <= cx <= right and top <= cy <= bottom:
                 matches.append((cx, cy, text))
+        return sorted(matches, key=lambda item: (item[1], item[0]))
+
+    def _ocr_row_clicks_in_shape(
+        self,
+        lines: list[dict[str, Any]],
+        image: dict[str, Any] | None,
+        shape_title: str,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+    ) -> list[tuple[float, float, str]]:
+        shape = self._find_shape(image, shape_title) if image else None
+        if not shape or not image:
+            return []
+        box = self._box(shape, image)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        width = float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        click_x = left + width / 2
+        matches: list[tuple[float, float, str]] = []
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text:
+                continue
+            if include and not all(fragment in text for fragment in include):
+                continue
+            if exclude and any(fragment in text for fragment in exclude):
+                continue
+            y = float(line.get("y") or 0)
+            h = float(line.get("h") or 0)
+            cy = y + h / 2
+            if top <= cy <= bottom:
+                matches.append((click_x, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
 
     def _parse_fraction(self, text: str) -> tuple[int, int] | None:

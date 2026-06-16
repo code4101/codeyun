@@ -14,6 +14,10 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.core.runtime.process_launcher import install_child_process_no_window_default
+
+install_child_process_no_window_default()
+
 from backend.core.ocr.preview import (
     OcrPreviewError,
     OcrShapeType,

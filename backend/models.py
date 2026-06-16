@@ -156,6 +156,39 @@ class ServiceAccessToken(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class MobileSmsMessage(SQLModel, table=True):
+    __tablename__ = "mobilesmsmessage"
+    __table_args__ = (
+        UniqueConstraint("device_id", "sms_id", name="uq_mobilesmsmessage_device_sms"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    device_id: str = Field(index=True)
+    sms_id: str = Field(index=True)
+    thread_id: str = Field(default="", index=True)
+    address: str = Field(default="", index=True)
+    person: str = Field(default="")
+    body: str = Field(default="", sa_column=Column(Text))
+    date_ms: int = Field(default=0, index=True)
+    date_sent_ms: Optional[int] = Field(default=None, index=True)
+    message_type: str = Field(default="inbox", index=True)
+    read: Optional[bool] = Field(default=None, index=True)
+    seen: Optional[bool] = Field(default=None, index=True)
+    status: Optional[int] = Field(default=None, index=True)
+    service_center: str = Field(default="")
+    subscription_id: Optional[int] = Field(default=None, index=True)
+    sim_slot_index: Optional[int] = Field(default=None, index=True)
+    sim_display_name: str = Field(default="")
+    sim_carrier_name: str = Field(default="")
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    source: str = Field(default="android", index=True)
+    first_seen_at: float = Field(default_factory=time.time, index=True)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class FanxiuPseudoCodeCard(SQLModel, table=True):
     __tablename__ = "fanxiupseudocodecard"
     __table_args__ = {"extend_existing": True}

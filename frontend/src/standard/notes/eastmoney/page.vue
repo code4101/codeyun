@@ -229,7 +229,7 @@ const summaryItems = computed(() => {
 const lastUpdatedAtText = computed(() => {
   return formatTime(latestAssetSnapshot.value?.captured_at)
 })
-const workbookId = computed(() => sheetWorkbook.value?.workbook.id ?? null)
+const workbookId = computed(() => sheetWorkbook.value?.workbook?.id ?? null)
 const sheetTabs = computed(() => EASTMONEY_SHEET_TABS.map((tab) => ({
   ...tab,
   sheet: getSheetItem(tab.key),
@@ -1430,7 +1430,7 @@ function getErrorMessage(error: unknown) {
 }
 
 function applySheetWorkbook(payload: EastmoneySheetWorkbook | undefined) {
-  if (!payload) return
+  if (!payload?.workbook || !Array.isArray(payload.sheets)) return
   sheetWorkbook.value = payload
   sheetReloadToken.value += 1
 }
@@ -1451,7 +1451,7 @@ async function refreshSheetWorkbook(options: { silent?: boolean } = {}) {
 }
 
 function getSheetItem(key: string): EastmoneySheetWorkbookSheet | null {
-  return sheetWorkbook.value?.sheets.find((sheet) => sheet.key === key) ?? null
+  return sheetWorkbook.value?.sheets?.find((sheet) => sheet.key === key) ?? null
 }
 
 function getSheetWorkspaceKey(key: string) {
@@ -1849,7 +1849,7 @@ onBeforeUnmount(() => {
   <div class="eastmoney-page">
     <header class="page-toolbar">
       <div class="title-line">
-        <h1>东方财富</h1>
+        <h1>东方财富数据同步维护</h1>
         <el-tooltip placement="bottom-start">
           <template #content>
             <div class="tooltip-content">
@@ -1861,6 +1861,11 @@ onBeforeUnmount(() => {
         <el-tag v-if="accountLabel" size="small" effect="plain">{{ accountLabel }}</el-tag>
       </div>
       <div class="toolbar-actions">
+        <div class="action-group">
+          <el-button size="small" @click="$router.push('/notes/eastmoney/trade')">
+            返回操作建议
+          </el-button>
+        </div>
         <div class="action-group">
           <el-button
             :icon="Link"

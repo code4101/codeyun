@@ -81,6 +81,14 @@
             <span class="section-meta">{{ tokens.length }} 个，{{ enabledTokenCount }} 启用</span>
             <el-button
               text
+              :icon="Message"
+              :loading="creatingSmsToken"
+              title="新增短信上传 Token"
+              aria-label="新增短信上传 Token"
+              @click="createSmsToken"
+            />
+            <el-button
+              text
               :icon="Plus"
               :loading="creatingToken"
               title="新增 Token"
@@ -168,7 +176,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Hide, Minus, Plus, Refresh, View } from '@element-plus/icons-vue'
+import { Document, Hide, Message, Minus, Plus, Refresh, View } from '@element-plus/icons-vue'
 import {
   createClusterServiceToken,
   deleteClusterServiceToken,
@@ -203,6 +211,7 @@ const tokensLoading = ref(false)
 const docsLoading = ref(false)
 const resetLoading = ref(false)
 const creatingToken = ref(false)
+const creatingSmsToken = ref(false)
 const updatingTokenId = ref('')
 const deletingTokenId = ref('')
 const revealingTokenId = ref('')
@@ -353,6 +362,27 @@ async function createToken() {
     }
   } finally {
     creatingToken.value = false
+  }
+}
+
+async function createSmsToken() {
+  if (!currentEntryId.value) return
+  creatingSmsToken.value = true
+  try {
+    const token = await createClusterServiceToken(currentEntryId.value, {
+      label: '小米短信上传',
+      scopes: ['mobile.sms:upload'],
+      notes: 'Android 短信采集 App 上传专用 Token',
+    })
+    tokens.value = [...tokens.value, token]
+    tokenPlaintexts.value = { ...tokenPlaintexts.value, [token.id]: token.plaintext_value || '' }
+    ElMessage.success('已新增短信上传 Token')
+  } catch (error) {
+    if (error instanceof Error || (typeof error === 'object' && error && 'response' in error)) {
+      ElMessage.error(getErrorMessage(error))
+    }
+  } finally {
+    creatingSmsToken.value = false
   }
 }
 

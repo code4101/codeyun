@@ -10,6 +10,11 @@ from backend.models import UserDevice
 from backend.core.messaging.wechat_legacy_db import WeChatLegacyDbStorage
 
 
+class _FakeProcess:
+    def __init__(self, name: str, cmdline: list[str]):
+        self.info = {"name": name, "cmdline": cmdline}
+
+
 def _init_micro_msg(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -322,6 +327,25 @@ def test_wechat_archive_db_devices_include_extra_roots(monkeypatch, tmp_path):
     chats = wechat_archive.list_wechat_db_chats(device_id="codepc_extra", limit=1)
     assert chats["device_id"] == "codepc_extra"
     assert chats["total"] == 2
+
+
+def test_wechat_live_process_device_roots_reads_cmdline_without_wmi(monkeypatch, tmp_path):
+    live_root = tmp_path / "wechat files"
+    wechat_archive._wechat_live_process_device_roots.cache_clear()
+    monkeypatch.setattr(wechat_archive.os, "name", "nt")
+    monkeypatch.setattr(
+        wechat_archive.psutil,
+        "process_iter",
+        lambda _attrs: [
+            _FakeProcess("Weixin.exe", ["Weixin.exe", f'--wechat-files-path="{live_root}"']),
+            _FakeProcess("Other.exe", ["Other.exe", "--wechat-files-path=C:\\ignore"]),
+        ],
+    )
+
+    try:
+        assert wechat_archive._wechat_live_process_device_roots() == (live_root,)
+    finally:
+        wechat_archive._wechat_live_process_device_roots.cache_clear()
 
 
 def test_wechat_archive_remote_device_proxy_keeps_pagination(monkeypatch):

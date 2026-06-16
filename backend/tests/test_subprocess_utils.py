@@ -38,6 +38,38 @@ def test_background_popen_kwargs_detaches_windows_process(monkeypatch):
     )
 
 
+def test_no_window_subprocess_kwargs_do_not_detach(monkeypatch):
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    kwargs = subprocess_utils.no_window_subprocess_kwargs()
+
+    assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_DETACHED_PROCESS
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NEW_PROCESS_GROUP
+
+
+def test_install_no_window_popen_default_merges_creationflags(monkeypatch):
+    calls = []
+
+    class FakePopen:
+        pass
+
+    def fake_popen(command, **kwargs):
+        calls.append((command, kwargs))
+        return FakePopen()
+
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+    monkeypatch.setattr(subprocess_utils.subprocess, "Popen", fake_popen)
+
+    assert subprocess_utils.install_no_window_popen_default() is True
+    proc = subprocess_utils.subprocess.Popen(["tool"], creationflags=0x20)
+
+    assert isinstance(proc, FakePopen)
+    assert calls[0][1]["creationflags"] & 0x20
+    assert calls[0][1]["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+    assert calls[0][1]["startupinfo"].wShowWindow == subprocess.SW_HIDE
+
+
 def test_resolve_pythonw_prefers_repo_venv_on_windows(monkeypatch, tmp_path):
     scripts_dir = tmp_path / ".venv" / "Scripts"
     scripts_dir.mkdir(parents=True)

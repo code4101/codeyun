@@ -29,7 +29,7 @@ class FanxiuGameWindow2ClickRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
-    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
+    input_backend: str = Field("adb", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ServiceClickRequest(BaseModel):
@@ -46,7 +46,7 @@ class FanxiuGameWindow2ServiceClickRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
-    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
+    input_backend: str = Field("adb", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ActivateRequest(BaseModel):
@@ -80,7 +80,7 @@ class FanxiuGameWindow2DragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
-    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
+    input_backend: str = Field("adb", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2ServiceDragRequest(BaseModel):
@@ -100,7 +100,7 @@ class FanxiuGameWindow2ServiceDragRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
-    input_backend: str = Field("desktop", pattern="^(desktop|adb)$")
+    input_backend: str = Field("adb", pattern="^(desktop|adb)$")
 
 
 class FanxiuGameWindow2KeyeventRequest(BaseModel):

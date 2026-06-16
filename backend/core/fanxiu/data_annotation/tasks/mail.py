@@ -648,7 +648,7 @@ class MailTaskMixin:
             self._set_status_locked("running", "邮件_历史扫描：打开 #68 邮件入口", phase="mail_claim_open_mail", current_scene=34)
             self._log_locked("action", f"邮件_历史扫描：识别到 #68「邮件」{similarity:.0f}%，点击打开")
         self._click_shape(ctx, image68, mail_shape, frame)
-        yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+        yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
         return "success"
 
     def _open_mail_stable_entry(self, ctx: dict[str, Any], stop_event: threading.Event, asset_tree_path: Path) -> str:
@@ -712,13 +712,13 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_历史扫描：按 #35 邮件固定标注点击", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35「邮件」未命中，按资产树标注点击 ({x:.0f},{y:.0f})")
                 self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
             with self._lock:
                 self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
                 self._log_locked("action", "邮件_历史扫描：按 #35「邮件」标注点击")
             self._click_shape(ctx, image35, mail_shape, frame, match_result=match_result)
-            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
             return "success"
         deadline = time.time() + 8.0
         last_score = 0.0
@@ -737,7 +737,7 @@ class MailTaskMixin:
                         self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
                         self._log_locked("action", f"邮件_历史扫描：#35「邮件」标注命中 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
                     self._click_frame_point(ctx, image35, x, y)
-                    yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                     return "success"
 
             ocr_lines = self._ocr_lines(frame)
@@ -750,7 +750,7 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
                 self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
 
             with self._lock:
@@ -767,7 +767,7 @@ class MailTaskMixin:
                 self._set_status_locked("running", "邮件_历史扫描：按 #35 邮件固定标注点击", phase="mail_claim_click_world_menu_mail", current_scene=35)
                 self._log_locked("action", f"邮件_历史扫描：#35 邮件入口未命中，按资产树标注点击 ({x:.0f},{y:.0f})")
             self._click_frame_point(ctx, image35, x, y)
-            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
             return "success"
         raise RuntimeError(f"邮件_历史扫描：等待 #35 邮件入口超时，最后 {last_score:.0f}% OCR={last_ocr}")
 
@@ -777,6 +777,42 @@ class MailTaskMixin:
             box = self._box(mail_shape, image35)
             return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) * 0.78
         return x, y
+
+    def _wait_mail_list_ready_or_restore_world(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        timeout: float,
+        label: str,
+    ):
+        try:
+            yield from self._wait_mail_list_ready(ctx, stop_event, timeout=timeout, label=label)
+            return
+        except RuntimeError as exc:
+            original_error = exc
+        with self._lock:
+            self._log_locked("warning", f"{label} 超时，尝试恢复到 #34，避免污染后续作业起点")
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        try:
+            yield from runtime.goto_view(34)
+            raise original_error
+        except RuntimeError as restore_error:
+            if restore_error is original_error:
+                raise
+            image34 = ctx.get("images", {}).get(34)
+            if not isinstance(image34, dict):
+                raise original_error from restore_error
+            with self._lock:
+                self._log_locked("warning", f"{label}：场景图恢复失败，点击左下返回兜底：{restore_error}")
+            self._click_frame_point(ctx, image34, 70, 1490)
+            try:
+                yield from runtime.wait_view(34, timeout=18.0, label="邮件_历史扫描：恢复世界 #34")
+                raise original_error
+            except RuntimeError as fallback_error:
+                if fallback_error is original_error:
+                    raise
+                raise original_error from fallback_error
 
     def _try_open_mail_from_visible_world_menu(
         self,
@@ -808,7 +844,7 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35 无「邮件」shape，点击菜单 OCR「{text}」({x:.0f},{y:.0f})")
                 self._click_frame_point(ctx, image35, x, y)
-                yield from self._wait_mail_list_ready(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
             with self._lock:
                 self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
@@ -843,13 +879,10 @@ class MailTaskMixin:
         seen_count = 0
         scroll_count = 0
         scan_started_at = time.monotonic()
-        last_signature = ""
-        stable_same_pages = 0
         empty_pages = 0
         max_scrolls = 80
         configured_max_actions = max_actions is not None
         max_actions = max(1, min(int(max_actions or 200), 200))
-        max_stable_same_pages = 5
         max_empty_pages = 5
         mode = str(scan_mode or "incremental").strip().lower()
         full_scan = mode in {"full", "full_scan", "observe", "observe_only"}
@@ -977,16 +1010,8 @@ class MailTaskMixin:
                     self._log_locked("success", f"邮件_历史扫描：已扫到早于水位 {watermark_time} 的邮件，增量段完整接回")
                 break
 
-            signature = self._mail_rows_signature(rows)
             if rows:
                 empty_pages = 0
-                if signature and signature == last_signature:
-                    stable_same_pages += 1
-                    if stable_same_pages >= max_stable_same_pages:
-                        break
-                else:
-                    stable_same_pages = 0
-                    last_signature = signature
             else:
                 empty_pages += 1
                 if empty_pages >= max_empty_pages:
@@ -1000,8 +1025,9 @@ class MailTaskMixin:
                     current_scene=121,
                 )
                 self._log_locked("action", f"邮件_历史扫描：当前页无可处理邮件，滚动邮件清单2 {scroll_count}")
-            self._scroll_shape_content(ctx, image121, list_shape)
-            yield from self._wait_scroll_settle(ctx, stop_event)
+            changed = yield from self._scroll_shape_content_changed(ctx, image121, list_shape, stop_event)
+            if not changed:
+                break
 
         if processed_count >= max_actions and not configured_max_actions:
             raise RuntimeError(f"邮件_历史扫描：达到单轮处理上限 {max_actions}，为避免异常循环已停止")
@@ -1995,9 +2021,6 @@ class MailTaskMixin:
         if self._looks_like_mail_time(normalized):
             return False
         return bool(re.search(r"[\u4e00-\u9fff]", normalized))
-
-    def _mail_rows_signature(self, rows: list[dict[str, Any]]) -> str:
-        return "|".join(f"{row.get('title') or ''}@{row.get('time_text') or ''}" for row in rows[:4])
 
     def _merge_visible_mail_rows_by_position(
         self,

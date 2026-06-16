@@ -23,6 +23,7 @@ from backend.models import ServiceAccessToken
 SERVICE_SCOPE_OCR_PREDICT = "services.ocr:predict"
 SERVICE_SCOPE_OCR_STATUS = "services.ocr:status"
 SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL = "fanxiu.runtime:control"
+SERVICE_SCOPE_MOBILE_SMS_UPLOAD = "mobile.sms:upload"
 DEFAULT_OCR_SERVICE_SCOPES = (SERVICE_SCOPE_OCR_PREDICT, SERVICE_SCOPE_OCR_STATUS)
 SERVICE_TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 

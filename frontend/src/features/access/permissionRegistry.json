@@ -634,12 +634,12 @@
     },
     {
       "key": "notes.eastmoney",
-      "title": "东方财富",
+      "title": "股票操作建议",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 35,
-      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/robot-history"],
-      "menu_paths": ["/notes/eastmoney", "/notes/eastmoney/robot-history"],
+      "route_paths": ["/notes/eastmoney", "/notes/eastmoney/trade", "/notes/eastmoney/robot-history", "/notes/eastmoney/sync"],
+      "menu_paths": ["/notes/eastmoney/trade"],
       "api_scopes": ["note-tools.eastmoney"],
       "default_anonymous_allow": false
     },
@@ -685,6 +685,17 @@
       "route_paths": ["/notes/qq-data"],
       "menu_paths": ["/notes/qq-data"],
       "api_scopes": ["note-tools.wechat"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "notes.mobile-sms",
+      "title": "短信数据",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 43,
+      "route_paths": ["/notes/mobile-sms"],
+      "menu_paths": ["/notes/mobile-sms"],
+      "api_scopes": ["note-tools.mobile-sms"],
       "default_anonymous_allow": false
     },
     {
