@@ -11,7 +11,7 @@ from typing import Any
 
 import psutil
 
-from backend.core.devices.device import build_background_popen_kwargs
+from backend.core.runtime.subprocess_utils import background_popen_kwargs, resolve_pythonw
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -193,16 +193,7 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
 
 
 def _resolve_watchdog_python_executable() -> str:
-    executable = Path(sys.executable)
-    if os.name == "nt":
-        venv_pythonw = ROOT_DIR / ".venv" / "Scripts" / "pythonw.exe"
-        if venv_pythonw.is_file():
-            return os.fspath(venv_pythonw)
-        if executable.name.lower() == "python.exe":
-            sibling_pythonw = executable.with_name("pythonw.exe")
-            if sibling_pythonw.is_file():
-                return os.fspath(sibling_pythonw)
-    return os.fspath(executable)
+    return resolve_pythonw(ROOT_DIR, sys.executable)
 
 
 def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
@@ -237,7 +228,7 @@ def start_codeyun_watchdog(wait_seconds: float = 1.0) -> dict[str, Any]:
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                **build_background_popen_kwargs(independent=True),
+                **background_popen_kwargs(independent=True),
             )
     except OSError as exc:
         raise CodeYunWatchdogError(f"启动 CodeYun 本机守护失败：{exc}") from exc

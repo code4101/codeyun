@@ -57,7 +57,9 @@ class WindowsProcessEntry32(ctypes.Structure):
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
-    return process_runtime.build_background_popen_kwargs(independent=independent)
+    from backend.core.runtime.subprocess_utils import background_popen_kwargs
+
+    return background_popen_kwargs(independent=independent)
 
 
 def _get_machine_state_dir() -> str:

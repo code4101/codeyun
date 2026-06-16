@@ -10,6 +10,13 @@ import threading
 import time
 from dataclasses import dataclass
 
+from backend.core.runtime.subprocess_utils import (
+    background_popen_kwargs,
+    hidden_subprocess_kwargs,
+    node_npm_command,
+    resolve_npm_executable,
+)
+
 try:
     from watchfiles import watch
 except ImportError:
@@ -45,17 +52,6 @@ IGNORED_DIRS = {
     "__pycache__",
     "node_modules",
 }
-WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-WINDOWS_CREATE_NO_WINDOW = 0x08000000
-
-
-def hidden_subprocess_kwargs():
-    if os.name == "nt":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        return {"creationflags": WINDOWS_CREATE_NO_WINDOW, "startupinfo": startupinfo}
-    return {}
 
 
 def log(message):
@@ -85,24 +81,7 @@ class SupervisorConfig:
 
 
 def get_npm_path():
-    if os.name != "nt":
-        return shutil.which("npm") or "npm"
-
-    npm_path = shutil.which("npm.cmd") or shutil.which("npm")
-    if npm_path:
-        return npm_path
-
-    node_path = shutil.which("node") or shutil.which("node.exe")
-    if node_path:
-        npm_candidate = os.path.join(os.path.dirname(node_path), "npm.cmd")
-        if os.path.exists(npm_candidate):
-            return npm_candidate
-
-    trae_npm = os.path.expanduser(r"~/.trae/sdks/versions/node/current/npm.cmd")
-    if os.path.exists(trae_npm):
-        return trae_npm
-
-    return "npm.cmd"
+    return resolve_npm_executable()
 
 
 def _env_flag_value(value, default=True):
@@ -560,19 +539,7 @@ def popen_kwargs():
         "shell": False,
         "stdin": subprocess.DEVNULL,
     }
-    if os.name == "nt":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
-            | WINDOWS_CREATE_NO_WINDOW
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        )
-        kwargs["startupinfo"] = startupinfo
-    else:
-        kwargs["start_new_session"] = True
+    kwargs.update(background_popen_kwargs(independent=True))
     return kwargs
 
 
@@ -779,7 +746,7 @@ def ensure_frontend_deps(frontend_dir, env, npm_exec):
 
     log("Installing frontend dependencies ...")
     subprocess.check_call(
-        [npm_exec, "install"],
+        node_npm_command("install", npm_executable=npm_exec),
         cwd=frontend_dir,
         env=env,
         shell=False,
@@ -792,7 +759,7 @@ def resolve_vite_command(frontend_dir, npm_exec):
     node_exec = shutil.which("node.exe" if os.name == "nt" else "node") or shutil.which("node")
     if node_exec and os.path.isfile(vite_entry):
         return [node_exec, vite_entry]
-    return [npm_exec, "run", "dev"]
+    return node_npm_command("run", "dev", npm_executable=npm_exec)
 
 
 def start_frontend(frontend_dir, env, npm_exec):

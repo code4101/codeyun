@@ -14,6 +14,8 @@ from typing import Any
 from threading import Lock
 from types import MethodType
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs
+
 _TTL_CACHE: dict[str, tuple[float, Any]] = {}
 _TTL_CACHE_LOCK = Lock()
 _TTL_CACHE_SECONDS: float = 60.0
@@ -212,22 +214,6 @@ def extract_tcp_stream_payloads_with_tshark(
     return bytes(client), bytes(server)
 
 
-def _hidden_subprocess_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
-
-
 def _run_tshark_allow_partial_stdout(cmd: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         cmd,
@@ -237,7 +223,7 @@ def _run_tshark_allow_partial_stdout(cmd: list[str], *, timeout_seconds: float) 
         capture_output=True,
         timeout=max(1.0, float(timeout_seconds)),
         check=False,
-        **_hidden_subprocess_kwargs(),
+        **hidden_subprocess_kwargs(),
     )
     if completed.returncode == 0 or completed.stdout.strip():
         return completed

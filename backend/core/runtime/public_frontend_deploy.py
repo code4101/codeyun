@@ -6,15 +6,14 @@ import json
 import os
 import posixpath
 import shlex
-import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import zipfile
 from pathlib import Path
 from typing import Any
 
+from backend.core.runtime.subprocess_utils import hidden_subprocess_kwargs, node_npm_command
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -75,39 +74,6 @@ def _frontend_dir() -> Path:
 
 def _dist_dir() -> Path:
     return (_frontend_dir() / "dist").resolve(strict=False)
-
-
-def _npm_executable() -> str:
-    if os.name == "nt":
-        return shutil.which("npm.cmd") or shutil.which("npm") or "npm.cmd"
-    return shutil.which("npm") or "npm"
-
-
-def _node_npm_command(*args: str) -> list[str]:
-    if os.name == "nt":
-        node = shutil.which("node.exe") or shutil.which("node")
-        npm = _npm_executable()
-        npm_dir = Path(npm).resolve(strict=False).parent if npm else Path()
-        npm_cli = npm_dir / "node_modules" / "npm" / "bin" / "npm-cli.js"
-        if node and npm_cli.is_file():
-            return [node, os.fspath(npm_cli), *args]
-    return [_npm_executable(), *args]
-
-
-def _hidden_subprocess_kwargs() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = subprocess.SW_HIDE
-    return {
-        "creationflags": (
-            getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        ),
-        "startupinfo": startupinfo,
-    }
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -200,7 +166,7 @@ def _build_frontend(timeout_seconds: float = 300.0) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-    command = _node_npm_command("run", "build", "--", "--manifest")
+    command = node_npm_command("run", "build", "--", "--manifest")
     with log_path.open("ab") as log_file:
         log_file.write(f"\n[{_now_text()}] npm run build -- --manifest\n".encode("utf-8"))
         log_file.flush()
@@ -214,7 +180,7 @@ def _build_frontend(timeout_seconds: float = 300.0) -> None:
                 shell=False,
                 timeout=max(1.0, float(timeout_seconds)),
                 check=False,
-                **_hidden_subprocess_kwargs(),
+                **hidden_subprocess_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise PublicFrontendDeployError(f"前端构建失败：{exc}") from exc
