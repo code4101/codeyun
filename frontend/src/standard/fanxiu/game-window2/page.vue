@@ -1362,7 +1362,7 @@ const windowScenes: WindowScene[] = [
     defaults: {
       targetTitle: 'MuMu',
       titleMatch: 'contains',
-      cropText: '0,60,0,0',
+      cropText: '0,60,4,4',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
       rotateDegrees: '0',

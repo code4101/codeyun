@@ -13,6 +13,7 @@ import time
 import base64
 import tempfile
 import ctypes
+from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,11 +54,14 @@ PREVIEW_MODULE = "backend.core.devices.window_capture_preview"
 DEFAULT_TARGET_TITLE = "MuMu"
 DEFAULT_PREVIEW_TITLE = "codeyun-mumu-window"
 DEFAULT_FPS = "15"
-DEFAULT_CROP = "0,49,4,4"
+DEFAULT_CROP = "0,60,4,4"
 DEFAULT_TRIM_BORDER = "0,0,0,0"
 DEFAULT_ROTATE = "0"
 DEFAULT_FIXED_WIDTH = "900"
 DEFAULT_FIXED_HEIGHT = "1600"
+DEFAULT_FIXED_DPI = "320"
+DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI = 607
+DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI = 1111
 SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
 BURST_FRAME_DIRNAME = "连拍缓存"
@@ -186,40 +190,8 @@ def _windows_services_for_pid_from_sc(pid: int) -> list[str]:
     return sorted(set(services))
 
 
-def _windows_services_for_pid_from_tasklist(pid: int) -> list[str]:
-    if os.name != "nt" or int(pid or 0) <= 0:
-        return []
-    try:
-        result = run_quiet(
-            ["tasklist.exe", "/svc", "/fi", f"PID eq {int(pid)}"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=3,
-            check=False,
-        )
-    except Exception:
-        return []
-    if result.returncode != 0 or not result.stdout.strip():
-        return []
-    services: list[str] = []
-    for line in result.stdout.splitlines():
-        match = re.match(r"^\S+\s+(\d+)\s+(.+)$", line.strip())
-        if not match or match.group(1) != str(int(pid)):
-            continue
-        services_text = match.group(2).strip()
-        if not services_text or services_text.upper() == "N/A":
-            continue
-        services.extend(service.strip() for service in services_text.split(",") if service.strip())
-    return sorted(set(services))
-
-
 def _windows_services_for_pid(pid: int) -> list[str]:
-    services = _windows_services_for_pid_from_sc(pid)
-    if services:
-        return services
-    return _windows_services_for_pid_from_tasklist(pid)
+    return _windows_services_for_pid_from_sc(pid)
 
 
 def _annotate_windows_service_hosts(items: list[dict[str, Any]]) -> None:
@@ -642,6 +614,179 @@ def _mumu_manager_launch_app(vmindex: str, package: str = FANXIU_ANDROID_PACKAGE
     return payload if isinstance(payload, dict) else {}
 
 
+def _mumu_window_extended_rect(hwnd: int, win32gui: Any) -> tuple[int, int, int, int]:
+    rect = wintypes.RECT()
+    try:
+        hr = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            hwnd,
+            9,
+            ctypes.byref(rect),
+            ctypes.sizeof(rect),
+        )
+        if hr == 0:
+            return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+    return tuple(int(part) for part in win32gui.GetWindowRect(hwnd))
+
+
+def _mumu_window_dpi(hwnd: int) -> int:
+    try:
+        return int(ctypes.windll.user32.GetDpiForWindow(hwnd))
+    except Exception:
+        return 96
+
+
+def _mumu_window_info(hwnd: int, win32gui: Any) -> dict[str, Any]:
+    window_rect = tuple(int(part) for part in win32gui.GetWindowRect(hwnd))
+    extended_rect = _mumu_window_extended_rect(hwnd, win32gui)
+    client_rect = win32gui.GetClientRect(hwnd)
+    client_top_left = win32gui.ClientToScreen(hwnd, (client_rect[0], client_rect[1]))
+    client_bottom_right = win32gui.ClientToScreen(hwnd, (client_rect[2], client_rect[3]))
+    dpi = _mumu_window_dpi(hwnd)
+    return {
+        "hwnd": int(hwnd),
+        "title": win32gui.GetWindowText(hwnd).strip(),
+        "class": win32gui.GetClassName(hwnd),
+        "window_rect": list(window_rect),
+        "window_size_logical": [window_rect[2] - window_rect[0], window_rect[3] - window_rect[1]],
+        "extended_rect_physical": list(extended_rect),
+        "extended_size_physical": [extended_rect[2] - extended_rect[0], extended_rect[3] - extended_rect[1]],
+        "client_screen_rect_logical": [
+            int(client_top_left[0]),
+            int(client_top_left[1]),
+            int(client_bottom_right[0]),
+            int(client_bottom_right[1]),
+        ],
+        "client_size_logical": [
+            int(client_bottom_right[0]) - int(client_top_left[0]),
+            int(client_bottom_right[1]) - int(client_top_left[1]),
+        ],
+        "dpi": dpi,
+        "scale": round(dpi / 96, 4),
+    }
+
+
+def _iter_mumu_desktop_windows() -> list[dict[str, Any]]:
+    if os.name != "nt":
+        return []
+    import win32gui
+
+    items: list[dict[str, Any]] = []
+
+    def callback(hwnd: int, _: object) -> bool:
+        if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+            return True
+        title = win32gui.GetWindowText(hwnd).strip()
+        if "凡人修仙传" not in title and "MuMu" not in title:
+            return True
+        items.append(_mumu_window_info(hwnd, win32gui))
+        return True
+
+    win32gui.EnumWindows(callback, None)
+    items.sort(
+        key=lambda item: (
+            0 if "凡人修仙传" in item["title"] else 1,
+            0 if str(item["class"]).endswith("WindowIcon") else 1,
+            -int(item["window_size_logical"][0]) * int(item["window_size_logical"][1]),
+            item["title"],
+        )
+    )
+    return items
+
+
+def _find_mumu_desktop_main_window() -> dict[str, Any]:
+    windows = _iter_mumu_desktop_windows()
+    for item in windows:
+        if "凡人修仙传" in item["title"] and str(item["class"]).endswith("WindowIcon"):
+            return item
+    for item in windows:
+        if "凡人修仙传" in item["title"]:
+            return item
+    for item in windows:
+        if str(item["class"]).endswith("WindowIcon"):
+            return item
+    raise RuntimeError("未找到凡修 MuMu 主窗口")
+
+
+def _target_mumu_main_window_size(hwnd: int, current_info: dict[str, Any] | None = None) -> tuple[int, int, str]:
+    dpi = _mumu_window_dpi(hwnd)
+    scale = dpi / 96 if dpi > 0 else 1.0
+    coordinate_scale = 1.0
+    coordinate_mode = "logical"
+    if current_info:
+        window_size = current_info.get("window_size_logical") or [0, 0]
+        extended_size = current_info.get("extended_size_physical") or [0, 0]
+        try:
+            window_width = int(window_size[0])
+            extended_width = int(extended_size[0])
+        except (TypeError, ValueError, IndexError):
+            window_width = 0
+            extended_width = 0
+        if scale > 1.01 and extended_width > 0 and abs(window_width - extended_width) <= 20:
+            coordinate_scale = scale
+            coordinate_mode = "physical"
+    if abs(scale - 1.5) < 0.05:
+        return (
+            int(round(DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI * coordinate_scale)),
+            int(round(DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI * coordinate_scale)),
+            coordinate_mode,
+        )
+    render_width = int(round(int(DEFAULT_FIXED_WIDTH) / scale))
+    render_height = int(round(int(DEFAULT_FIXED_HEIGHT) / scale))
+    return (
+        int(round((render_width + 7) * coordinate_scale)),
+        int(round((render_height + 44) * coordinate_scale)),
+        coordinate_mode,
+    )
+
+
+def normalize_mumu_desktop_window_size(*, apply: bool = False, timeout_s: float = 0.0) -> dict[str, Any]:
+    deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.0)
+    while True:
+        try:
+            import win32con
+            import win32gui
+
+            before = _find_mumu_desktop_main_window()
+            hwnd = int(before["hwnd"])
+            target_width, target_height, coordinate_mode = _target_mumu_main_window_size(hwnd, before)
+            current_width, current_height = before["window_size_logical"]
+            already_target = abs(int(current_width) - target_width) <= 1 and abs(int(current_height) - target_height) <= 1
+            result: dict[str, Any] = {
+                "ok": True,
+                "target_main_size": [target_width, target_height],
+                "target_main_size_logical_at_150_dpi": [
+                    DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI,
+                    DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI,
+                ],
+                "target_render_size_physical": [int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT)],
+                "coordinate_mode": coordinate_mode,
+                "before": before,
+                "already_target": already_target,
+                "applied": False,
+            }
+            if apply and not already_target:
+                left, top, _right, _bottom = before["window_rect"]
+                win32gui.SetWindowPos(
+                    hwnd,
+                    None,
+                    int(left),
+                    int(top),
+                    int(target_width),
+                    int(target_height),
+                    win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
+                )
+                time.sleep(0.2)
+                result["applied"] = True
+                result["after"] = _find_mumu_desktop_main_window()
+            return result
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(1.0)
+
+
 def _mumu_device_health_status_from_info(info: dict[str, Any]) -> str:
     if not bool(info.get("is_process_started")):
         return "stopped"
@@ -811,16 +956,32 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                     break
             if state.get("status") != "healthy":
                 raise RuntimeError(f"MuMu 恢复后仍未启动 Android：{state.get('status')}")
+            adb_online = wait_mumu_adb_online(vmindex=str(vmindex or "1"), timeout_s=45)
+            try:
+                resolution_result = ensure_mumu_adb_resolution(vmindex=str(vmindex or "1"))
+            except Exception as exc:
+                resolution_result = {"ok": False, "error": str(exc)}
+                raise RuntimeError(f"MuMu 恢复后分辨率未对齐 900x1600：{exc}") from exc
             try:
                 app_result = _mumu_manager_launch_app(str(vmindex or "1"), FANXIU_ANDROID_PACKAGE)
             except Exception as exc:
                 app_result = {"errcode": -1, "errmsg": str(exc)}
+            try:
+                window_size_result = normalize_mumu_desktop_window_size(apply=True, timeout_s=20.0)
+            except Exception as exc:
+                window_size_result = {"ok": False, "error": str(exc)}
             with _MUMU_DEVICE_HEALTH_LOCK:
                 _mumu_device_health_state["failure_count"] = 0
                 _mumu_device_health_state["recovery_count"] = int(_mumu_device_health_state.get("recovery_count") or 0) + 1
                 _mumu_device_health_state["app_launch"] = app_result
+                _mumu_device_health_state["adb_online"] = adb_online
+                _mumu_device_health_state["resolution"] = resolution_result
+                _mumu_device_health_state["window_size"] = window_size_result
             _clear_mumu_adb_failure_cache()
             final_state = mumu_device_health_check(vmindex=vmindex, force=True)
+            final_state["adb_online"] = adb_online
+            final_state["resolution"] = resolution_result
+            final_state["window_size"] = window_size_result
             final_state["recovered"] = True
             _append_mumu_device_health_event(
                 "recovery_success",
@@ -1079,6 +1240,137 @@ def _run_mumu_adb_input(command: str, *, timeout_s: int = 5) -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"{serial}: {exc}")
     raise RuntimeError("ADB 输入失败：" + "; ".join(errors))
+
+
+def _run_mumu_adb_shell_text(
+    command: str,
+    *,
+    timeout_s: int = 5,
+    preferred_serials: list[str] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    adb_path = fanxiu_android_proxy_service.adb_path()
+    errors: list[str] = []
+    candidate_serials = _dedupe_mumu_adb_serials([*(preferred_serials or []), *_mumu_adb_serial_candidates()])
+    for attempt in range(2):
+        for serial in candidate_serials:
+            parsed = _parse_adb_serial_host_port(serial)
+            if parsed is None:
+                continue
+            try:
+                run_quiet(
+                    [str(adb_path), "connect", serial],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=3,
+                )
+                process = run_quiet(
+                    [str(adb_path), "-s", serial, "shell", command],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout_s,
+                )
+                if process.returncode != 0:
+                    raise RuntimeError(_completed_text(process) or f"adb shell 退出码 {process.returncode}")
+                return str(process.stdout or "").strip(), _mumu_adb_meta(serial, input_name="adb-cli")
+            except Exception as exc:
+                errors.append(f"{serial}: {exc}")
+                if "offline" in str(exc).lower():
+                    try:
+                        run_quiet(
+                            [str(adb_path), "disconnect", serial],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=3,
+                        )
+                    except Exception:
+                        pass
+        if attempt == 0:
+            time.sleep(0.5)
+            candidate_serials = _dedupe_mumu_adb_serials(
+                [*candidate_serials, *_mumu_manager_adb_serial_candidates(), *_mumu_adb_serial_candidates()]
+            )
+    raise RuntimeError("ADB shell 失败：" + "; ".join(errors))
+
+
+def _parse_wm_size_text(text: str) -> tuple[int, int] | None:
+    matches = re.findall(r"(\d+)\s*x\s*(\d+)", str(text or ""))
+    if not matches:
+        return None
+    width, height = matches[-1]
+    return int(width), int(height)
+
+
+def _parse_wm_density_text(text: str) -> int | None:
+    matches = re.findall(r"(\d+)", str(text or ""))
+    if not matches:
+        return None
+    return int(matches[-1])
+
+
+def ensure_mumu_adb_resolution(*, vmindex: str = "1") -> dict[str, Any]:
+    expected_width = int(DEFAULT_FIXED_WIDTH)
+    expected_height = int(DEFAULT_FIXED_HEIGHT)
+    expected_dpi = int(DEFAULT_FIXED_DPI)
+    result: dict[str, Any] = {
+        "expected": {"width": expected_width, "height": expected_height, "dpi": expected_dpi},
+        "changed": False,
+    }
+    preferred_serials = _mumu_adb_serial_candidates()
+
+    size_text, meta = _run_mumu_adb_shell_text("wm size", timeout_s=5, preferred_serials=preferred_serials)
+    density_text, _ = _run_mumu_adb_shell_text("wm density", timeout_s=5, preferred_serials=preferred_serials)
+    result["adb"] = meta
+    result["before"] = {"size": size_text, "density": density_text}
+
+    size = _parse_wm_size_text(size_text)
+    density = _parse_wm_density_text(density_text)
+    if size != (expected_width, expected_height):
+        _run_mumu_adb_shell_text(
+            f"wm size {expected_width}x{expected_height}",
+            timeout_s=5,
+            preferred_serials=preferred_serials,
+        )
+        result["changed"] = True
+    if density != expected_dpi:
+        _run_mumu_adb_shell_text(f"wm density {expected_dpi}", timeout_s=5, preferred_serials=preferred_serials)
+        result["changed"] = True
+
+    final_size_text, _ = _run_mumu_adb_shell_text("wm size", timeout_s=5, preferred_serials=preferred_serials)
+    final_density_text, _ = _run_mumu_adb_shell_text("wm density", timeout_s=5, preferred_serials=preferred_serials)
+    result["after"] = {"size": final_size_text, "density": final_density_text}
+    final_size = _parse_wm_size_text(final_size_text)
+    final_density = _parse_wm_density_text(final_density_text)
+    result["ok"] = final_size == (expected_width, expected_height) and final_density == expected_dpi
+    if not result["ok"]:
+        raise RuntimeError(
+            "MuMu 分辨率校正失败："
+            f"size={final_size_text!r}, density={final_density_text!r}, "
+            f"expected={expected_width}x{expected_height}@{expected_dpi}"
+        )
+    return result
+
+
+def wait_mumu_adb_online(*, vmindex: str = "1", timeout_s: float = 45.0) -> dict[str, Any]:
+    deadline = time.monotonic() + max(1.0, float(timeout_s))
+    last_error = ""
+    preferred_serials = _mumu_adb_serial_candidates()
+    while time.monotonic() < deadline:
+        try:
+            text, meta = _run_mumu_adb_shell_text("getprop sys.boot_completed", timeout_s=5, preferred_serials=preferred_serials)
+            if str(text).strip() == "1":
+                return {"ok": True, "boot_completed": text, "adb": meta}
+            last_error = f"boot_completed={text!r}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(2)
+        preferred_serials = _dedupe_mumu_adb_serials([*preferred_serials, *_mumu_manager_adb_serial_candidates()])
+    raise RuntimeError(f"MuMu ADB 未在 {timeout_s:.0f}s 内 online：{last_error}")
 
 
 def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
@@ -3438,7 +3730,9 @@ def click_mumu_window_processed_point(
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     frame_x = int(round(x))
     frame_y = int(round(y))
-    normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    normalized_input_backend = str(input_backend or "adb").strip().lower()
+    if normalized_input_backend not in {"adb", "desktop"}:
+        raise RuntimeError(f"不支持的输入后端：{input_backend!r}")
     adb_input_error = ""
     if normalized_input_backend == "adb":
         input_result = _tap_mumu_adb(
@@ -3574,7 +3868,9 @@ def drag_mumu_window_processed_points(
     frame_start_y = int(round(start_y))
     frame_end_x = int(round(end_x))
     frame_end_y = int(round(end_y))
-    normalized_input_backend = str(input_backend or "desktop").strip().lower()
+    normalized_input_backend = str(input_backend or "adb").strip().lower()
+    if normalized_input_backend not in {"adb", "desktop"}:
+        raise RuntimeError(f"不支持的输入后端：{input_backend!r}")
     adb_input_error = ""
     if normalized_input_backend == "adb":
         input_result = _swipe_mumu_adb(

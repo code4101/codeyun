@@ -133,7 +133,13 @@ class DataAnnotationRuntimeContainer:
             if max_runtime_seconds is not None and time.monotonic() - started_at > max_runtime_seconds:
                 self.stop_event.set()
                 raise RuntimeError(f"行为树任务超时：{label} 超过 {max_runtime_seconds:.0f} 秒")
+            tick_started_at = time.monotonic()
             status = runner.run_once()
+            tick_elapsed = time.monotonic() - tick_started_at
+            if tick_elapsed >= 10.0:
+                log = getattr(self.owner, "_log", None)
+                if callable(log):
+                    log("detail", f"{label}：行为树tick耗时 {tick_elapsed:.2f}s status={status}")
             if status == BehaviorTreeStatus.SUCCESS:
                 return result_holder.get("value")
             if status == BehaviorTreeStatus.FAILURE:

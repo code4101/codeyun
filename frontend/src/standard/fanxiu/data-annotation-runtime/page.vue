@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
+import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
 import {
   ensureFanxiuDataAnnotationDoctorWatch,
@@ -15,6 +15,7 @@ import {
   runNowFanxiuDataAnnotationSchedulerTask,
   saveFanxiuDataAnnotationSchedulerTasks,
   setFanxiuDataAnnotationSchedulerSettings,
+  setFanxiuDataAnnotationRuntimeBehaviorTree,
   setFanxiuDataAnnotationRuntimeGuard,
   setFanxiuDataAnnotationRuntimeGuardGroup,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
@@ -49,8 +50,10 @@ const contextMenu = ref({
 let pollTimer: number | null = null;
 let pollTick = 0;
 let polling = false;
+const LOG_PREVIEW_LIMIT = 80;
 
 const devices = computed(() => taskStore.devices);
+const behaviorTreeEnabled = computed(() => runtimeStatus.value?.behavior_tree_enabled ?? true);
 const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enabled ?? true);
 const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
@@ -58,7 +61,8 @@ const machineName = 'codepc_mf';
 const serviceRunning = computed(() => Boolean(runtimeStatus.value?.service_running));
 const serviceStateText = computed(() => {
   if (!runtimeStatus.value) return '未连接';
-  return serviceRunning.value ? '常驻' : '待恢复';
+  if (!behaviorTreeEnabled.value) return '已关闭';
+  return serviceRunning.value ? '常驻' : '未运行';
 });
 const currentSceneText = computed(() => {
   const scene = runtimeStatus.value?.current_scene;
@@ -66,6 +70,7 @@ const currentSceneText = computed(() => {
 });
 const runtimeStateText = computed(() => {
   if (!runtimeStatus.value) return '未连接';
+  if (!behaviorTreeEnabled.value) return '已关闭';
   if (runtimeStatus.value.running) return '运行中';
   if (runtimeStatus.value.status === 'stopping') return '停止中';
   if (runtimeStatus.value.service_running) return '空转';
@@ -130,7 +135,6 @@ const schedulerBlockingMessage = computed(() => {
   const blocker = blockers.find((item) => Boolean(item.blocking));
   return typeof blocker?.message === 'string' ? blocker.message : '';
 });
-const schedulerPlanMessage = computed(() => schedulerBlockingMessage.value || schedulerPlan.value?.message || machineName);
 const doctorSnapshot = computed(() => doctorWatchLatest.value?.snapshot || {});
 const doctorSeverity = computed(() => String(doctorSnapshot.value.severity || ''));
 const doctorSeverityText = computed(() => {
@@ -251,6 +255,21 @@ const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
   return file && expr ? `${file}${line}  ${expr}` : '';
 };
 
+const logEntryKey = (entry: FanxiuDataAnnotationRuntimeLogEntry, index: number) => (
+  entry.id || `${entry.ts || ''}-${entry.time}-${entry.kind}-${entry.scope || ''}-${entry.item_id || ''}-${entry.message}-${index}`
+);
+
+const sameLogEntries = (left: FanxiuDataAnnotationRuntimeLogEntry[], right: FanxiuDataAnnotationRuntimeLogEntry[]) => (
+  left.length === right.length
+  && left.every((item, index) => {
+    const other = right[index];
+    return item.id === other.id
+      && item.time === other.time
+      && item.kind === other.kind
+      && item.message === other.message;
+  })
+);
+
 const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: string) => {
   contextMenu.value = {
     visible: true,
@@ -333,8 +352,11 @@ const refreshStatus = async () => {
 };
 
 const refreshLogs = async () => {
-  const response = await getFanxiuDataAnnotationRuntimeLogs(500);
-  logs.value = response.entries || [];
+  const response = await getFanxiuDataAnnotationRuntimeLogs(LOG_PREVIEW_LIMIT);
+  const nextLogs = [...(response.entries || [])].reverse();
+  if (!sameLogEntries(logs.value, nextLogs)) {
+    logs.value = nextLogs;
+  }
 };
 
 const refreshScheduler = async () => {
@@ -360,7 +382,7 @@ const refreshAll = async () => {
   loading.value = true;
   try {
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
-    if (schedulerJobGroupEnabled.value && entryId.value) {
+    if (behaviorTreeEnabled.value && schedulerJobGroupEnabled.value && entryId.value) {
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
       await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
@@ -391,6 +413,8 @@ const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntim
 
 const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
 
+const toggleBehaviorTreeEnabled = () => runAction('behavior-tree', () => setFanxiuDataAnnotationRuntimeBehaviorTree(entryId.value, !behaviorTreeEnabled.value));
+
 const toggleGuardItem = (itemId: string) => {
   if (itemId === 'close_popups') {
     void toggleGuard();
@@ -410,7 +434,7 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    if (willEnable && schedulerJobGroupEnabled.value && entryId.value) {
+    if (willEnable && behaviorTreeEnabled.value && schedulerJobGroupEnabled.value && entryId.value) {
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
     }
@@ -429,7 +453,7 @@ const toggleJobGroupEnabled = async () => {
     const response = await setFanxiuDataAnnotationSchedulerSettings(willEnable);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
-    if (willEnable && entryId.value) {
+    if (willEnable && behaviorTreeEnabled.value && entryId.value) {
       const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
       applyStatus(status);
     }
@@ -440,11 +464,6 @@ const toggleJobGroupEnabled = async () => {
     actionLoading.value = '';
   }
 };
-
-const recoverRuntimeService = () => runAction('service', async () => {
-  await refreshStatus();
-  return runtimeStatus.value || undefined;
-});
 
 const startPolling = () => {
   if (pollTimer !== null) return;
@@ -642,16 +661,14 @@ onUnmounted(() => {
         <div class="section-title">
           <h3>运行状态</h3>
           <div class="section-actions">
-            <span>{{ schedulerPlanMessage }}</span>
-            <el-button
-              v-if="runtimeStatus && !serviceRunning"
-              size="small"
-              :icon="RefreshRight"
-              :loading="actionLoading === 'service'"
-              @click="recoverRuntimeService"
-            >
-              恢复
-            </el-button>
+            <button
+              class="enable-dot group-enable-dot"
+              :class="{ enabled: behaviorTreeEnabled }"
+              type="button"
+              :disabled="actionLoading === 'behavior-tree'"
+              :title="behaviorTreeEnabled ? '关闭行为树' : '开启行为树'"
+              @click="toggleBehaviorTreeEnabled"
+            />
           </div>
         </div>
         <div class="runtime-facts">
@@ -695,7 +712,7 @@ onUnmounted(() => {
           <span>{{ logs.length }} 条</span>
         </div>
         <div class="log-list">
-          <div v-for="(entry, index) in logs" :key="`${entry.time}-${index}`" class="log-row" :class="`is-${entry.kind}`">
+          <div v-for="(entry, index) in logs" :key="logEntryKey(entry, index)" class="log-row" :class="`is-${entry.kind}`">
             <span>{{ entry.time }}</span>
             <b>{{ entry.kind }}</b>
             <p>

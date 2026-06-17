@@ -54,6 +54,7 @@ def test_capture_mumu_window_frame_defaults_to_annotation_canvas(monkeypatch):
     assert frame.shape == (1600, 900, 3)
     assert kwargs_list[-1]["fixed_width"] == 900
     assert kwargs_list[-1]["fixed_height"] == 1600
+    assert mumu.DEFAULT_CROP == "0,60,4,4"
 
 
 def test_click_processed_point_does_not_fallback_to_window_when_adb_is_unavailable(monkeypatch):
@@ -447,25 +448,15 @@ def test_windows_services_for_pid_parses_sc_queryex_output(monkeypatch):
     assert mumu._windows_services_for_pid(4312) == ["Winmgmt"]
 
 
-def test_windows_services_for_pid_falls_back_to_tasklist(monkeypatch):
+def test_windows_services_for_pid_returns_empty_when_sc_queryex_fails(monkeypatch):
     class ScResult:
         stdout = ""
         returncode = 1
 
-    class TasklistResult:
-        stdout = (
-            "Image Name                     PID Services\n"
-            "========================= ======== ============================================\n"
-            "svchost.exe                   4312 Winmgmt, EventLog\n"
-        )
-        returncode = 0
-
-    results = [ScResult(), TasklistResult()]
-
     monkeypatch.setattr(mumu.os, "name", "nt")
-    monkeypatch.setattr(mumu.subprocess, "run", lambda *_args, **_kwargs: results.pop(0))
+    monkeypatch.setattr(mumu.subprocess, "run", lambda *_args, **_kwargs: ScResult())
 
-    assert mumu._windows_services_for_pid(4312) == ["EventLog", "Winmgmt"]
+    assert mumu._windows_services_for_pid(4312) == []
 
 
 def test_recover_mumu_device_does_not_cooldown_when_already_healthy(monkeypatch):
@@ -572,6 +563,9 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
     monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
     monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *args, **kwargs: controls.append((args, kwargs)) or {})
     monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
+    monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "ensure_mumu_adb_resolution", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "normalize_mumu_desktop_window_size", lambda **_kwargs: {"ok": True, "already_target": True})
     monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
     monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
 
@@ -579,6 +573,89 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
 
     assert result["recovered"] is True
     assert controls == [(("1", "launch"), {"timeout": 15})]
+
+
+def test_ensure_mumu_adb_resolution_repairs_wrong_wm_size(monkeypatch):
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:7555"])
+    commands = []
+    state = {"size": "Physical size: 720x1280", "density": "Physical density: 240"}
+
+    def fake_run(command, **_kwargs):
+        commands.append(tuple(str(part) for part in command))
+        shell = " ".join(str(part) for part in command)
+        if "wm size 900x1600" in shell:
+            state["size"] = "Physical size: 900x1600"
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "wm density 320" in shell:
+            state["density"] = "Physical density: 320"
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if shell.endswith("shell wm size"):
+            return SimpleNamespace(returncode=0, stdout=state["size"], stderr="")
+        if shell.endswith("shell wm density"):
+            return SimpleNamespace(returncode=0, stdout=state["density"], stderr="")
+        return SimpleNamespace(returncode=0, stdout="connected", stderr="")
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = mumu.ensure_mumu_adb_resolution(vmindex="1")
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["before"]["size"] == "Physical size: 720x1280"
+    assert result["after"]["size"] == "Physical size: 900x1600"
+    assert any("wm size 900x1600" in " ".join(command) for command in commands)
+    assert any("wm density 320" in " ".join(command) for command in commands)
+
+
+def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
+    mumu.reset_mumu_device_health_state()
+    monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
+    monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
+    checks = {"count": 0}
+
+    def fake_player_info(vmindex="1"):
+        checks["count"] += 1
+        if checks["count"] == 1:
+            return {
+                "index": str(vmindex),
+                "is_process_started": False,
+                "is_android_started": False,
+                "player_state": "stopped",
+            }
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+        }
+
+    monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
+    monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
+    monkeypatch.setattr(
+        mumu,
+        "ensure_mumu_adb_resolution",
+        lambda **_kwargs: {"ok": True, "changed": False, "after": {"size": "Physical size: 900x1600"}},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "normalize_mumu_desktop_window_size",
+        lambda **_kwargs: {"ok": True, "already_target": False, "applied": True},
+    )
+    monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = mumu.recover_mumu_device(reason="resolution_probe")
+
+    assert result["recovered"] is True
+    assert result["resolution"]["ok"] is True
+    assert result["window_size"]["applied"] is True
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        assert mumu._mumu_device_health_state["resolution"]["ok"] is True
+        assert mumu._mumu_device_health_state["window_size"]["ok"] is True
 
 
 def test_recover_mumu_device_skips_auto_recovery_when_disabled(monkeypatch):

@@ -108,8 +108,7 @@ class XianfuTaskMixin:
         if not isinstance(image174, dict):
             raise RuntimeError("缺少 #174 绝品仙侣标注，无法读取寻访状态")
         frame = runtime.cur_frame(update=True)
-        lines = self._ocr_lines_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
-        status_text = self._ocr_text(lines)
+        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds is None:
             raise RuntimeError(f"仙府_寻访仙侣：无法识别免费寻访倒计时：{status_text or '空'}")
@@ -148,8 +147,7 @@ class XianfuTaskMixin:
         visit_shape.click(runtime)
         yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=max_continue)
         frame = runtime.cur_frame(update=True)
-        lines = self._ocr_lines_in_shapes(frame, image174, ("状态", "免费提示"), padding=16)
-        status_text = self._ocr_text(lines)
+        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
             next_time = (_runtime_runner._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
@@ -183,8 +181,7 @@ class XianfuTaskMixin:
         while True:
             yield from runtime.wait_view(175, timeout=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
             frame = runtime.cur_frame(update=True)
-            half_lines = self._ocr_lines_in_shapes(frame, view175.raw, ("半价",), padding=24)
-            half_text = self._ocr_text(half_lines)
+            half_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, view175, ("半价",), frame_data_url=frame, padding=24)
             half_value = _parse_first_int(half_text)
             if half_value is not None and half_value < 100 and continue_count < max_continue_count:
                 continue_shape = view175.get_shape("继续")
@@ -347,8 +344,7 @@ class XianfuTaskMixin:
         if not isinstance(image176, dict):
             raise RuntimeError("缺少 #176 绝技标注，无法读取领悟状态")
         frame = yield from self._ensure_xianfu_learn_skill_xianpin_tab(runtime, image176)
-        status_lines = self._ocr_lines_in_shapes(frame, image176, ("状态", "价格"), padding=16)
-        status_text = self._ocr_text(status_lines)
+        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image176, ("状态", "价格"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds is None:
             fallback_seconds = int(payload.get("fallback_seconds") or 1800)
@@ -397,8 +393,7 @@ class XianfuTaskMixin:
         yield from self._handle_xianfu_learn_skill_result_popup(runtime)
 
         frame = runtime.cur_frame(update=True)
-        status_lines = self._ocr_lines_in_shapes(frame, image176, ("状态", "价格"), padding=16)
-        status_text = self._ocr_text(status_lines)
+        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image176, ("状态", "价格"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
             next_time = (_runtime_runner._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")

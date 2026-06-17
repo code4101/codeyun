@@ -12,7 +12,7 @@ class SignupMiscTaskMixin:
             return
 
         yield from self._日常报名处理报名列(runtime)
-        yield from runtime.wait_click(23, "返回")
+        yield from self._日常报名返回日常页(runtime)
         yield from runtime.goto_view(34)
 
     def _日常报名打开活动报名(self, runtime: Any) -> str:
@@ -37,12 +37,9 @@ class SignupMiscTaskMixin:
                 exclude=("已报名",),
             )
             if matches:
-                x, y, text = matches[0]
+                x, y, _text = matches[0]
                 runtime.click_frame_point(23, x, y)
-                try:
-                    yield from runtime.wait_view(24)
-                except TimeoutError:
-                    yield from runtime.scroll_shape_content(23, "报名列")
+                if not (yield from self._日常报名等待领取页(runtime)):
                     continue
                 yield from runtime.wait_click(24, "领取")
                 yield from runtime.wait_view(23)
@@ -53,3 +50,17 @@ class SignupMiscTaskMixin:
             if not 滚动有变化:
                 break
         return 领取数量
+
+    def _日常报名等待领取页(self, runtime: Any) -> bool:
+        try:
+            yield from runtime.wait_view(24)
+            return True
+        except TimeoutError:
+            return False
+
+    def _日常报名返回日常页(self, runtime: Any):
+        if all(hasattr(runtime, name) for name in ("click_shape_center", "wait_action_settle")):
+            runtime.click_shape_center(23, "返回")
+            yield from runtime.wait_action_settle(1.0)
+            return
+        yield from runtime.wait_click(23, "返回")

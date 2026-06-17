@@ -25,7 +25,6 @@ from backend.core.runtime.ocr_service import get_ocr_service_base_url, get_ocr_s
 from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.access.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.fanxiu.runtime.mumu_control import _collect_windows_commit_snapshot
 
 
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
@@ -41,19 +40,6 @@ _RFC1918_LAN_NETWORKS = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 )
-OCR_PREWARM_COMMIT_PRESSURE_PERCENT = 85.0
-OCR_PREWARM_COMMIT_PRESSURE_AVAILABLE_MB = 16 * 1024
-
-
-def _host_commit_pressure_should_skip_ocr_prewarm() -> bool:
-    commit = _collect_windows_commit_snapshot()
-    if not commit:
-        return False
-    commit_percent = float(commit.get("commit_percent") or 0.0)
-    commit_available_mb = int(commit.get("commit_available_mb") or 0)
-    return commit_percent >= OCR_PREWARM_COMMIT_PRESSURE_PERCENT or commit_available_mb < OCR_PREWARM_COMMIT_PRESSURE_AVAILABLE_MB
-
-
 def _home_root() -> Path:
     return ROOT_DIR.parent.parent if ROOT_DIR.parent.name.lower() == "slns" else ROOT_DIR.parent
 
@@ -383,14 +369,6 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
         codeyun_ocr_host = _resolve_codeyun_ocr_host(settings)
         ocr_start_status: dict[str, Any] | None = None
         force_codeyun_ocr = True
-    elif _host_commit_pressure_should_skip_ocr_prewarm():
-        codeyun_ocr_host = _resolve_codeyun_ocr_host(settings)
-        ocr_start_status = {
-            "running": False,
-            "skipped": "host_commit_pressure",
-            "url": codeyun_ocr_host,
-        }
-        force_codeyun_ocr = False
     else:
         current_ocr_status = get_ocr_service_status()
         current_ocr_device = str(current_ocr_status.get("device") or "").strip().lower()
@@ -399,7 +377,10 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
             replace_existing=replace_ocr_service,
             env_overrides={
                 "CODEYUN_OCR_DEVICE": fanxiu_ocr_device,
-                "CODEYUN_OCR_IDLE_TIMEOUT_SECONDS": os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS", "3600"),
+                "CODEYUN_OCR_IDLE_TIMEOUT_SECONDS": os.getenv(
+                    "CODEYUN_OCR_IDLE_TIMEOUT_SECONDS",
+                    str(settings.ocr_idle_timeout_seconds),
+                ),
             },
         )
         ocr_start_status = ocr_start.get("service") if isinstance(ocr_start, dict) else None
@@ -411,7 +392,7 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
             "FX_BEHAVIOR_TREE_SERVICE_SOURCE": "codeyun",
             "FX_FORCE_CODEYUN_OCR": "1" if force_codeyun_ocr else "0",
             "FX_CODEYUN_OCR_HOST": codeyun_ocr_host,
-            "FX_CODEYUN_OCR_PROBE_MODE": os.getenv("FX_CODEYUN_OCR_PROBE_MODE", "predict"),
+            "FX_CODEYUN_OCR_PROBE_MODE": os.getenv("FX_CODEYUN_OCR_PROBE_MODE", "status"),
             "FX_CODEYUN_OCR_PROBE_TIMEOUT": os.getenv("FX_CODEYUN_OCR_PROBE_TIMEOUT", "300"),
             "FX_MAINWIN_ROOT": os.fspath(mainwin),
             "MAIN_WEBSITE": codeyun_ocr_host,

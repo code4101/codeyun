@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-import ctypes
+import inspect
 import os
 import socket
 import subprocess
@@ -9,6 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import psutil
 import requests
@@ -26,9 +27,6 @@ DEFAULT_OCR_SERVICE_HOST = "127.0.0.1"
 DEFAULT_OCR_SERVICE_PORT = 8765
 OCR_SERVICE_MODULE = "backend.services.ocr_daemon"
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
-OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV = "CODEYUN_OCR_ALLOW_UNDER_COMMIT_PRESSURE"
-OCR_COMMIT_PRESSURE_PERCENT = 85.0
-OCR_COMMIT_PRESSURE_AVAILABLE_MB = 16 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,61 +43,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
-
-
-def _windows_commit_snapshot() -> dict[str, Any]:
-    if os.name != "nt":
-        return {}
-
-    class MEMORYSTATUSEX(ctypes.Structure):
-        _fields_ = [
-            ("dwLength", ctypes.c_ulong),
-            ("dwMemoryLoad", ctypes.c_ulong),
-            ("ullTotalPhys", ctypes.c_ulonglong),
-            ("ullAvailPhys", ctypes.c_ulonglong),
-            ("ullTotalPageFile", ctypes.c_ulonglong),
-            ("ullAvailPageFile", ctypes.c_ulonglong),
-            ("ullTotalVirtual", ctypes.c_ulonglong),
-            ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-        ]
-
-    status = MEMORYSTATUSEX()
-    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-        return {}
-    commit_limit = int(status.ullTotalPageFile)
-    commit_available = int(status.ullAvailPageFile)
-    committed = max(0, commit_limit - commit_available)
-    return {
-        "committed_mb": int(committed / 1024 / 1024),
-        "commit_limit_mb": int(commit_limit / 1024 / 1024),
-        "commit_available_mb": int(commit_available / 1024 / 1024),
-        "commit_percent": round(committed * 100.0 / commit_limit, 2) if commit_limit else 0.0,
-    }
-
-
-def _host_commit_pressure_should_skip_ocr_start() -> bool:
-    if _env_flag(OCR_ALLOW_UNDER_COMMIT_PRESSURE_ENV, default=False):
-        return False
-    commit = _windows_commit_snapshot()
-    if not commit:
-        return False
-    commit_percent = float(commit.get("commit_percent") or 0.0)
-    commit_available_mb = int(commit.get("commit_available_mb") or 0)
-    return commit_percent >= OCR_COMMIT_PRESSURE_PERCENT or commit_available_mb < OCR_COMMIT_PRESSURE_AVAILABLE_MB
-
-
-def _raise_ocr_commit_pressure_error() -> None:
-    processes = list_ocr_service_processes()
-    if processes:
-        stop_ocr_service()
-    commit = _windows_commit_snapshot()
-    raise OcrPreviewError(
-        "宿主机提交内存压力过高，已跳过 OCR 服务启动："
-        f"{commit.get('committed_mb')} / {commit.get('commit_limit_mb')} MB "
-        f"({commit.get('commit_percent')}%)"
-    )
 
 
 def get_ocr_service_host() -> str:
@@ -300,8 +243,6 @@ def start_ocr_service(
     wait_seconds: float = 20.0,
     env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if _host_commit_pressure_should_skip_ocr_start():
-        _raise_ocr_commit_pressure_error()
     if replace_existing:
         stop_ocr_service()
     else:
@@ -364,8 +305,6 @@ def start_ocr_service(
 
 
 def ensure_ocr_service_running() -> dict[str, Any]:
-    if _host_commit_pressure_should_skip_ocr_start():
-        _raise_ocr_commit_pressure_error()
     status = get_ocr_service_status()
     if status.get("running"):
         return status
@@ -399,6 +338,31 @@ def reset_ocr_service() -> dict[str, Any]:
     return service if isinstance(service, dict) else get_ocr_service_status()
 
 
+def _infer_ocr_request_caller() -> str:
+    root = ROOT_DIR.resolve(strict=False)
+    ignored_suffixes = {
+        os.fspath((root / "backend" / "core" / "runtime" / "ocr_service.py").resolve(strict=False)).lower(),
+        os.fspath((root / "backend" / "core" / "ocr" / "preview.py").resolve(strict=False)).lower(),
+        os.fspath((root / "backend" / "core" / "fanxiu" / "game" / "macro_annotation.py").resolve(strict=False)).lower(),
+        os.fspath((root / "backend" / "core" / "fanxiu" / "data_annotation" / "runtime_runner.py").resolve(strict=False)).lower(),
+    }
+    for frame in inspect.stack(context=0)[1:]:
+        filename = os.fspath(Path(frame.filename).resolve(strict=False))
+        filename_key = filename.lower()
+        if filename_key in ignored_suffixes:
+            continue
+        try:
+            relative = os.fspath(Path(filename).relative_to(root))
+        except ValueError:
+            relative = filename
+        return f"{relative}:{frame.function}:{frame.lineno}"[:500]
+    return "unknown"
+
+
+def _ocr_request_caller_header() -> str:
+    return quote(_infer_ocr_request_caller(), safe="/:._-")[:500]
+
+
 def predict_via_ocr_service(
     image_path: Path,
     *,
@@ -422,6 +386,7 @@ def predict_via_ocr_service(
         response = requests.post(
             _endpoint("/api/services/ocr/predict"),
             json=payload,
+            headers={"X-CodeYun-OCR-Caller": _ocr_request_caller_header()},
             timeout=_predict_timeout(),
         )
     except requests.RequestException as exc:

@@ -1113,6 +1113,31 @@ def test_core_job_group_isolation_expires_stale_lock(tmp_path, monkeypatch):
     assert not path.exists()
 
 
+def test_core_job_group_isolation_clears_dead_owner_before_ttl(tmp_path, monkeypatch):
+    path = tmp_path / "job_group_isolation.json"
+    monkeypatch.setattr(bt.time, "time", lambda: 1000.0)
+    bt.acquire_fanxiu_job_group_isolation(reason="local_run:detect_scene", ttl_seconds=300.0, path=path)
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda _pid: False)
+    monkeypatch.setattr(bt.time, "time", lambda: 1001.0)
+
+    assert bt.fanxiu_job_group_isolated(path) is False
+    assert not path.exists()
+
+
+def test_core_job_group_isolation_clear_stale_handles_dead_owner(tmp_path, monkeypatch):
+    path = tmp_path / "job_group_isolation.json"
+    monkeypatch.setattr(bt.time, "time", lambda: 1000.0)
+    bt.acquire_fanxiu_job_group_isolation(reason="local_run:detect_scene", ttl_seconds=300.0, path=path)
+    monkeypatch.setattr(bt, "_fanxiu_process_exists", lambda _pid: False)
+    monkeypatch.setattr(bt.time, "time", lambda: 1001.0)
+
+    result = bt.clear_stale_fanxiu_job_group_isolation(path)
+
+    assert result["cleared"] is True
+    assert result["reason"] == "owner_dead"
+    assert not path.exists()
+
+
 def test_core_job_group_isolation_clear_stale(tmp_path, monkeypatch):
     path = tmp_path / "job_group_isolation.json"
     monkeypatch.setattr(bt.time, "time", lambda: 1000.0)
@@ -1297,32 +1322,32 @@ def test_fanxiu_bt_doctor_summary_reports_blocked_action_and_exit_code(monkeypat
         "screenshot": {"path": "C:/Temp/codeyun/fanxiu-evidence/doctor.png"},
         "maintenance": {
             "severity": "blocked",
-            "summary": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，自动作业无法安全进入游戏",
+            "summary": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭公告」动作标注，自动作业无法安全进入游戏",
             "automation_safe": False,
             "needs_human_annotation": True,
             "blocked_by": [
                 {
                     "title": "游戏公告",
-                    "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少安全关闭动作标注",
+                    "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少安全推进动作标注",
                 }
             ],
             "due_task_count": 13,
             "stale_due_count": 13,
             "stale_due_success_count": 0,
             "blocked_due_count": 13,
-            "action_required": ["在资产树「游戏公告」补充可安全关闭的「关闭/空白/返回/退出」动作标注"],
+            "action_required": ["在资产树「游戏公告」补充「关闭公告」动作标注"],
             "annotation_targets": [
                 {
                     "title": "游戏公告",
                     "url": "/fanxiu/data-annotation?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2&focus_image_title=%E6%B8%B8%E6%88%8F%E5%85%AC%E5%91%8A",
-                    "acceptable_shapes": ["关闭", "空白", "返回", "退出"],
+                    "acceptable_shapes": ["关闭公告"],
                     "existing_shapes": [],
                     "all_shapes": ["公告"],
-                    "missing_shapes": ["关闭", "空白", "返回", "退出"],
-                    "required_shapes": ["关闭", "空白", "返回", "退出"],
+                    "missing_shapes": ["关闭公告"],
+                    "required_shapes": ["关闭公告"],
                 }
             ],
-            "retry_condition": "阻断浮层消失且对应资产树已有安全关闭动作标注",
+            "retry_condition": "阻断浮层消失且对应资产树已有安全推进动作标注",
         },
     }
     monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: report)
@@ -1338,13 +1363,13 @@ def test_fanxiu_bt_doctor_summary_reports_blocked_action_and_exit_code(monkeypat
     assert "stale_due_success_count=0" in output
     assert "needs_human_annotation: True" in output
     assert "blocked_by: 游戏公告" in output
-    assert "action_required: 在资产树「游戏公告」补充可安全关闭" in output
+    assert "action_required: 在资产树「游戏公告」补充「关闭公告」动作标注" in output
     assert "annotation_target: 游戏公告" in output
     assert "focus_image_title=%E6%B8%B8%E6%88%8F%E5%85%AC%E5%91%8A" in output
     assert "all_shapes=公告" in output
     assert "existing_safe_shapes=" in output
-    assert "acceptable_shapes=关闭,空白,返回,退出" in output
-    assert "missing_shapes=关闭,空白,返回,退出" in output
+    assert "acceptable_shapes=关闭公告" in output
+    assert "missing_shapes=关闭公告" in output
     assert "screenshot: C:/Temp/codeyun/fanxiu-evidence/doctor.png" in output
 
 
@@ -1402,19 +1427,19 @@ def test_fanxiu_bt_watch_doctor_writes_ndjson_and_returns_blocked(monkeypatch, t
             "stale_due_success_count": 0,
             "blocked_due_count": 13,
             "blocked_due_ids": ["legacy-daily-youli"],
-            "action_required": ["在资产树「游戏公告」补充可安全关闭动作标注"],
+            "action_required": ["在资产树「游戏公告」补充「关闭公告」动作标注"],
             "annotation_targets": [
                 {
                     "title": "游戏公告",
                     "url": "/fanxiu/data-annotation?entry_id=30b82d72-8a76-4a74-be4b-4fc1591c6ce2&focus_image_title=%E6%B8%B8%E6%88%8F%E5%85%AC%E5%91%8A",
-                    "acceptable_shapes": ["关闭", "空白", "返回", "退出"],
+                    "acceptable_shapes": ["关闭公告"],
                     "existing_shapes": [],
                     "all_shapes": ["公告"],
-                    "missing_shapes": ["关闭", "空白", "返回", "退出"],
-                    "required_shapes": ["关闭", "空白", "返回", "退出"],
+                    "missing_shapes": ["关闭公告"],
+                    "required_shapes": ["关闭公告"],
                 }
             ],
-            "retry_condition": "阻断浮层消失且对应资产树已有安全关闭动作标注",
+            "retry_condition": "阻断浮层消失且对应资产树已有安全推进动作标注",
         },
     }
     monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: report)
@@ -2056,7 +2081,7 @@ def test_fanxiu_bt_doctor_maintenance_reports_blocking_annotation_action():
                 "title": "游戏公告",
                 "blocking": True,
                 "all_shapes": ["公告"],
-                "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少关闭动作标注",
+                "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少安全推进动作标注",
             }
         ],
     }
@@ -2075,12 +2100,12 @@ def test_fanxiu_bt_doctor_maintenance_reports_blocking_annotation_action():
     assert "资产树「游戏公告」" in summary["action_required"][0]
     assert summary["annotation_targets"][0]["title"] == "游戏公告"
     assert summary["annotation_targets"][0]["query"]["focus_image_title"] == "游戏公告"
-    assert summary["annotation_targets"][0]["acceptable_shapes"] == ["关闭", "空白", "返回", "退出"]
+    assert summary["annotation_targets"][0]["acceptable_shapes"] == ["关闭公告"]
     assert summary["annotation_targets"][0]["existing_shapes"] == []
     assert summary["annotation_targets"][0]["all_shapes"] == ["公告"]
-    assert summary["annotation_targets"][0]["missing_shapes"] == ["关闭", "空白", "返回", "退出"]
-    assert summary["annotation_targets"][0]["required_shapes"] == ["关闭", "空白", "返回", "退出"]
-    assert "安全关闭动作标注" in summary["retry_condition"]
+    assert summary["annotation_targets"][0]["missing_shapes"] == ["关闭公告"]
+    assert summary["annotation_targets"][0]["required_shapes"] == ["关闭公告"]
+    assert "安全处理动作标注" in summary["retry_condition"]
 
 
 def test_fanxiu_bt_doctor_maintenance_distinguishes_blocked_due_from_old_success():
@@ -2106,7 +2131,7 @@ def test_fanxiu_bt_doctor_maintenance_distinguishes_blocked_due_from_old_success
             {
                 "title": "游戏公告",
                 "blocking": True,
-                "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少关闭动作标注",
+                "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少安全推进动作标注",
             }
         ],
     }
@@ -2195,7 +2220,53 @@ def test_fanxiu_bt_doctor_reports_game_announcement_blocker(tmp_path, monkeypatc
         "all_shapes": ["公告"],
         "action_shapes": [],
         "blocking": True,
-        "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，自动作业无法安全进入游戏",
+        "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭公告」动作标注，自动作业无法安全进入游戏",
+    }]
+
+
+def test_fanxiu_bt_doctor_does_not_infer_game_announcement_action_from_jump_target(tmp_path, monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    class FakeRunner:
+        def _ocr_lines(self, frame):
+            return [{"text": "游戏公告 更新公告 风险提醒"}]
+
+        def _ocr_text(self, lines):
+            return "".join(item["text"] for item in lines)
+
+        def _load_asset_tree(self, path):
+            return [{"type": "image", "title": "游戏公告", "shapes": [{"title": "公告", "sceneJumpTarget": "18"}]}]
+
+        def _index_images(self, tree):
+            return {}
+
+        def _find_asset_image_by_title(self, ctx, title):
+            for item in ctx.get("asset_tree") or []:
+                if item.get("title") == title:
+                    return item
+            return None
+
+        def _find_shape(self, image, title):
+            for shape in image.get("shapes") or []:
+                if shape.get("title") == title:
+                    return shape
+            return None
+
+    screenshot = tmp_path / "frame.png"
+    screenshot.write_bytes(b"fake-png")
+
+    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+
+    blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
+
+    assert blockers == [{
+        "scene_id": None,
+        "title": "游戏公告",
+        "keywords": ["游戏公告", "更新公告", "风险提醒"],
+        "all_shapes": ["公告"],
+        "action_shapes": [],
+        "blocking": True,
+        "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭公告」动作标注，自动作业无法安全进入游戏",
     }]
 
 

@@ -558,6 +558,9 @@
                     >
                       {{ shapeDetectingId === selectedShape.id ? (shapeDetectStopRequestedRef ? '停止中' : '停止') : '检测' }}
                     </el-button>
+                    <el-checkbox v-model="shapeDetectLoopEnabled" size="small">
+                      循环
+                    </el-checkbox>
                     <span v-if="selectedShapeDetectResult" class="shape-detect-result">
                       {{ selectedShapeDetectResult }}
                     </span>
@@ -1500,7 +1503,7 @@ const windowScenes: WindowScene[] = [
     defaults: {
       targetTitle: 'MuMu',
       titleMatch: 'contains',
-      cropText: '0,60,0,0',
+      cropText: '0,60,4,4',
       trimBorderText: '0,0,0,0',
       captureArea: 'client',
       rotateDegrees: '0',
@@ -6783,6 +6786,7 @@ const getDataAnnotationUiStateStorageKey = (entryId = selectedEntryId.value) => 
 );
 const GAME_MACRO_FRAME_MATCH_THRESHOLD = 80;
 const RUNTIME_LOG_PAGE_SIZE = 20;
+const RUNTIME_LOG_PREVIEW_LIMIT = 80;
 const annotationCanvasRef = ref<HTMLElement | null>(null);
 const selectedAssetId = ref<string | null>(null);
 const selectedShapeId = ref<string | null>(null);
@@ -6845,8 +6849,8 @@ const runtimeLogPageEnd = computed(() => Math.min(runtimeLogs.value.length, runt
 const pagedRuntimeLogs = computed(() => (
   runtimeLogs.value.slice((runtimeLogPage.value - 1) * RUNTIME_LOG_PAGE_SIZE, runtimeLogPage.value * RUNTIME_LOG_PAGE_SIZE)
 ));
-const goRuntimeLogLastPage = () => {
-  runtimeLogPage.value = runtimeLogPageCount.value;
+const goRuntimeLogFirstPage = () => {
+  runtimeLogPage.value = 1;
 };
 const runtimeLogKindLabel = (kind: RuntimeLogKind | string) => {
   const labels: Record<string, string> = {
@@ -6978,6 +6982,7 @@ const shapeDetectDebugCurrent = ref<FanxiuGameWindow2MatchDebug | null>(null);
 const shapeDetectLiveBoxes = ref<FanxiuGameWindow2MatchBox[]>([]);
 const shapeDetectSeq = ref(0);
 const shapeDetectStopRequestedRef = ref(false);
+const shapeDetectLoopEnabled = ref(false);
 let shapeDetectStopRequested = false;
 let shapeDetectAbortController: AbortController | null = null;
 const shapeMaskDialogVisible = ref(false);
@@ -8507,6 +8512,7 @@ const detectSelectedShape = async () => {
       };
       shapeDetectLiveBoxes.value = [best.box];
       drawOverlay();
+      if (!shapeDetectLoopEnabled.value) break;
       const shouldContinue = await waitShapeDetectLoopInterval(seq, currentId);
       if (!shouldContinue) break;
     }
@@ -8618,12 +8624,12 @@ watch(expandedAssetNodeIds, queueAssetTreeExpansionSync, { deep: true });
 watch(expandedShapeNodeIds, queueShapeTreeExpansionSync, { deep: true });
 
 watch(runtimeLogs, () => {
-  if (runtimeLogPage.value > runtimeLogPageCount.value) goRuntimeLogLastPage();
+  if (runtimeLogPage.value > runtimeLogPageCount.value) goRuntimeLogFirstPage();
 }, { deep: true });
 
 watch(runtimeLogDialogVisible, (visible) => {
   if (visible && !runtimeLogs.value.length) void loadRuntimeLogs();
-  if (visible) goRuntimeLogLastPage();
+  if (visible) goRuntimeLogFirstPage();
 });
 
 watch(shapeDiscriminatorNewImageId, () => {
@@ -9642,9 +9648,9 @@ const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, 
 
 const loadRuntimeLogs = async () => {
   try {
-    const response = await getFanxiuDataAnnotationRuntimeLogs(500);
-    runtimeLogs.value = response.entries;
-    goRuntimeLogLastPage();
+    const response = await getFanxiuDataAnnotationRuntimeLogs(RUNTIME_LOG_PREVIEW_LIMIT);
+    runtimeLogs.value = [...response.entries].reverse();
+    goRuntimeLogFirstPage();
   } catch {
     // 日志读取失败不影响页面主体功能。
   }
@@ -9652,8 +9658,8 @@ const loadRuntimeLogs = async () => {
 
 const clearRuntimeLogs = async () => {
   const response = await clearFanxiuDataAnnotationRuntimeLogs();
-  runtimeLogs.value = response.entries;
-  goRuntimeLogLastPage();
+  runtimeLogs.value = [...response.entries].reverse();
+  goRuntimeLogFirstPage();
 };
 
 const loadRuntimeFacts = async () => {
@@ -9701,13 +9707,13 @@ const applyRuntimeTaskStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeRunStatus.value = status.message || status.status || '';
   if (status.logs?.length) {
     runtimeLogs.value = status.logs.map((entry, index) => ({
-      id: `runtime-${index}`,
+      id: entry.id || `runtime-${index}`,
       time: entry.time,
       kind: entry.kind as RuntimeLogKind,
       message: entry.message,
-      ts: '',
-    }));
-    goRuntimeLogLastPage();
+      ts: entry.ts || '',
+    })).reverse();
+    goRuntimeLogFirstPage();
   }
 };
 

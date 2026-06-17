@@ -165,6 +165,16 @@ def read_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
     return read_json_lease(isolation_path, invalid_message="isolation 文件不是 JSON object")
 
 
+def _fanxiu_job_group_isolation_owner_dead(status: dict[str, Any]) -> bool:
+    if not bool(status.get("active")):
+        return False
+    try:
+        pid = int(status.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return bool(pid and not _fanxiu_process_exists(pid))
+
+
 def fanxiu_behavior_tree_service_owner_path() -> Path:
     return fanxiu_data_annotation_runtime_dir() / "behavior_tree_service_owner.json"
 
@@ -292,11 +302,25 @@ def read_fanxiu_behavior_tree_service_owner(
 
 def fanxiu_job_group_isolated(path: Path | None = None) -> bool:
     isolation_path = path or fanxiu_job_group_isolation_path()
+    status = read_fanxiu_job_group_isolation(isolation_path)
+    if _fanxiu_job_group_isolation_owner_dead(status):
+        try:
+            isolation_path.unlink()
+        except FileNotFoundError:
+            pass
+        return False
     return is_json_lease_active(isolation_path)
 
 
 def clear_stale_fanxiu_job_group_isolation(path: Path | None = None) -> dict[str, Any]:
     isolation_path = path or fanxiu_job_group_isolation_path()
+    status = read_fanxiu_job_group_isolation(isolation_path)
+    if _fanxiu_job_group_isolation_owner_dead(status):
+        try:
+            isolation_path.unlink()
+        except FileNotFoundError:
+            pass
+        return {"cleared": True, "reason": "owner_dead", "path": str(isolation_path)}
     return clear_stale_json_lease(isolation_path)
 
 

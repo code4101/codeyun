@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -293,6 +294,46 @@ def list_dev_processes() -> list[dict[str, Any]]:
             )
         )
     return [asdict(item) for item in sorted(items, key=lambda item: (item.started_at or 0, item.pid))]
+
+
+def _dev_process_role(item: dict[str, Any]) -> str:
+    name = str(item.get("name") or "").lower()
+    cmdline = str(item.get("cmdline") or "").lower()
+    if "dev.py" in cmdline:
+        return "dev_runner"
+    if "uvicorn" in cmdline or "backend.core.runtime.uvicorn_hidden" in cmdline or "backend.app:app" in cmdline:
+        return "backend"
+    if name in {"node.exe", "node"} and "vite" in cmdline and " build" not in cmdline:
+        return "frontend"
+    if name in {"cmd.exe", "cmd"}:
+        return "shell_wrapper"
+    return "other"
+
+
+def summarize_codeyun_dev_instance(dev_processes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize raw component processes as the single local CodeYun instance.
+
+    Windows pythonw/uvicorn launchers can appear as parent/child pairs, so raw
+    process count is not the same thing as instance count.
+    """
+
+    role_pids: dict[str, list[int]] = {}
+    for item in dev_processes:
+        role = _dev_process_role(item)
+        role_pids.setdefault(role, []).append(int(item["pid"]))
+
+    return {
+        "running": bool(dev_processes),
+        "instance_count": 1 if dev_processes else 0,
+        "single_instance_ok": bool(dev_processes),
+        "raw_component_process_count": len(dev_processes),
+        "component_pids": role_pids,
+        "note": (
+            "raw_component_process_count includes dev.py wrappers, backend uvicorn workers, "
+            "and the Vite frontend; use instance_count to decide whether CodeYun is single-instance. "
+            "Do not count component PIDs as separate CodeYun instances."
+        ),
+    }
 
 
 def terminate_dev_processes(timeout: float, log_path: Path) -> list[int]:
@@ -718,24 +759,34 @@ def main(argv: list[str] | None = None) -> int:
         active_pid = _read_lock_pid(lock_path)
         launcher_pids = _watchdog_ancestor_pids(active_pid)
         watchdog_processes = list_watchdog_processes()
-        print(
-            {
-                "watchdog": {
-                    "active_pid": active_pid,
-                    "launcher_pids": [
-                        item["pid"] for item in watchdog_processes if item.get("pid") in launcher_pids
-                    ],
-                    "stale_pids": [
-                        item["pid"]
-                        for item in watchdog_processes
-                        if item.get("pid") != active_pid and item.get("pid") not in launcher_pids
-                    ],
-                    "processes": watchdog_processes,
-                },
-                "visible_console_monitor": read_visible_console_monitor_status(),
-                "dev_processes": list_dev_processes(),
-            }
-        )
+        dev_processes = list_dev_processes()
+        codeyun_instance = summarize_codeyun_dev_instance(dev_processes)
+        status = {
+            "watchdog": {
+                "active_pid": active_pid,
+                "instance_count": 1 if active_pid else 0,
+                "launcher_pids": [
+                    item["pid"] for item in watchdog_processes if item.get("pid") in launcher_pids
+                ],
+                "stale_pids": [
+                    item["pid"]
+                    for item in watchdog_processes
+                    if item.get("pid") != active_pid and item.get("pid") not in launcher_pids
+                ],
+                "processes": watchdog_processes,
+                "note": "launcher_pids are wrapper parents of the active watchdog, not extra watchdog instances.",
+            },
+            "visible_console_monitor": read_visible_console_monitor_status(),
+            "codeyun_instance": codeyun_instance,
+            "dev_component_processes": dev_processes,
+            "dev_processes": {
+                "deprecated": True,
+                "summary": codeyun_instance,
+                "raw_list_field": "dev_component_processes",
+                "note": "This is an instance summary, not a raw process list.",
+            },
+        }
+        print(json.dumps(status, ensure_ascii=False))
         return 0
     if args.loop:
         return run_loop(args)

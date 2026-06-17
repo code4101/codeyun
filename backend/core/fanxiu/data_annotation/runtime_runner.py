@@ -12,7 +12,6 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,6 +56,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
     repair_data_annotation_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
+from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
     CLOSE_POPUPS_GUARD_CONFIG_VERSION,
@@ -108,7 +108,6 @@ from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 from backend.core.temp_paths import codeyun_temp_root
 from pyxllib.autogui import (
     ActionPlanner,
-    CloseActionPlanner,
     SceneNavigator,
     SceneRecognizer,
     SceneScorer,
@@ -283,6 +282,10 @@ class FanxiuRuntime(Runtime):
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
         return self.runner._ocr_text(self.runner._cached_ocr_lines(self.ctx, frame))
 
+    def ocr_lines(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+        return self.runner._cached_ocr_lines(self.ctx, frame)
+
     def clear_frame(self) -> None:
         self.frame_data_url = None
         self.runner._clear_tick_frame(self.ctx)
@@ -357,11 +360,13 @@ class FanxiuRuntime(Runtime):
                 return View(found)
         return None
 
-    def resolve_view_selector(self, selector: View | int | str | None) -> View | None:
+    def resolve_view_selector(self, selector: View | int | str | dict[str, Any] | None) -> View | None:
         if selector is None:
             return None
         if isinstance(selector, View):
             return selector
+        if isinstance(selector, dict):
+            return View(selector)
         text = str(selector or "").strip()
         if text.startswith("#"):
             text = text[1:].strip()
@@ -377,7 +382,7 @@ class FanxiuRuntime(Runtime):
                     return View(image)
         return None
 
-    def view(self, selector: View | int | str) -> View:
+    def view(self, selector: View | int | str | dict[str, Any]) -> View:
         view = self.resolve_view_selector(selector)
         if not isinstance(view, View) or not isinstance(view.raw, dict):
             raise RuntimeError(f"无法解析帧选择器：{selector}")
@@ -663,12 +668,12 @@ class FanxiuRuntime(Runtime):
         view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
         view_ids = [view_id for view_id in view_ids if view_id is not None]
         images = self.ctx.get("images")
-        target_views: list[View] = [view for view in views if isinstance(view, View)]
+        target_views_by_id: dict[int, View] = {int(view.id): view for view in views if isinstance(view, View) and view.id is not None}
         if isinstance(images, dict):
             for view_id in view_ids:
                 image = images.get(view_id)
                 if isinstance(image, dict):
-                    target_views.append(View(image))
+                    target_views_by_id.setdefault(int(view_id), View(image))
         start = time.monotonic()
         wait_timeout = self.default_wait_view_timeout if timeout is None else float(timeout)
         source_info = self._runtime_source_info("wait_view", self._format_runtime_call("wait_view", *view_ids))
@@ -686,19 +691,22 @@ class FanxiuRuntime(Runtime):
                 self.runner._raise_if_stopped(self.stop_event)
             self.runner._clear_tick_frame(self.ctx)
             yield BehaviorTreeStatus.RUNNING
+            frame_started_at = time.monotonic()
             frame = self.cur_frame(update=True)
+            frame_elapsed = time.monotonic() - frame_started_at
             elapsed = time.monotonic() - start
-            for view in target_views:
-                if view.is_match(self):
-                    scene_id = view.id
-                    with self.runner._lock:
-                        self.runner._status.update({
-                            "current_scene": scene_id,
-                            "updated_at": time.time(),
-                        })
-                    self.runner._log("success", f"{label}：View 已匹配 #{scene_id}")
-                    return view
+            identify_started_at = time.monotonic()
             scene_id, score = self.runner._identify_scene_number(self.ctx, frame, view_ids)
+            identify_elapsed = time.monotonic() - identify_started_at
+            if elapsed >= 10.0 or frame_elapsed + identify_elapsed >= 1.0:
+                self.runner._log(
+                    "detail",
+                    (
+                        f"{label}：wait_view轮询 elapsed={elapsed:.1f}s "
+                        f"frame={frame_elapsed:.2f}s identify={identify_elapsed:.2f}s "
+                        f"scene={'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%"
+                    ),
+                )
             last_scene_id, last_score = scene_id, score
             if scene_id in view_ids:
                 with self.runner._lock:
@@ -707,7 +715,7 @@ class FanxiuRuntime(Runtime):
                         "updated_at": time.time(),
                     })
                 self.runner._log("success", f"{label}：已到达 #{scene_id} {score:.0f}%")
-                return self.get_view(scene_id) or scene_id
+                return target_views_by_id.get(int(scene_id)) or self.get_view(scene_id) or scene_id
             if elapsed >= float(wait_timeout):
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 expected = "/".join(f"#{view_id}" for view_id in view_ids)
@@ -722,6 +730,22 @@ class FanxiuRuntime(Runtime):
                     "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
                     "updated_at": time.time(),
                 })
+
+    def wait_view_id(
+        self,
+        *views: View | int,
+        timeout: float | None = None,
+        label: str = "等待场景",
+    ):
+        waited = yield from self.wait_view(*views, timeout=timeout, label=label)
+        if isinstance(waited, View) and waited.id is not None:
+            return int(waited.id), 100.0
+        try:
+            return int(waited), 100.0
+        except (TypeError, ValueError):
+            view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
+            scene_id, score, _frame = self.current_scene(view_ids)
+            return scene_id, score
 
     def view_visible(self, view: View | int, *, threshold: float = 80.0) -> _FanxiuWaitCondition:
         target = view if isinstance(view, View) else self.get_view(int(view))
@@ -797,6 +821,29 @@ class FanxiuRuntime(Runtime):
             return _FanxiuWaitResult(matched, f"{label} {'命中' if matched else '未命中'}：{preview}")
 
         return _FanxiuWaitCondition(label=label, check=check)
+
+    def wait_view_or_ocr(
+        self,
+        view: View | int,
+        predicate: Callable[[str], bool],
+        *,
+        view_threshold: float = 80.0,
+        timeout: float | None = None,
+        label: str = "等待场景或 OCR",
+    ):
+        result = yield from self.wait_any(
+            {
+                "scene": self.view_visible(view, threshold=view_threshold),
+                "text": self.ocr_matches(predicate, label=f"{label} OCR"),
+            },
+            timeout=timeout,
+            label=label,
+        )
+        target_view = view.id if isinstance(view, View) else int(view)
+        scene_id, score, _frame = self.current_scene([target_view])
+        if scene_id != target_view:
+            scene_id, score = target_view, 0.0
+        return result, scene_id, score
 
     def all_of(self, *conditions: _FanxiuWaitCondition, label: str | None = None) -> _FanxiuWaitCondition:
         condition_list = [condition for condition in conditions if isinstance(condition, _FanxiuWaitCondition)]
@@ -891,29 +938,47 @@ class FanxiuRuntime(Runtime):
             self._shape_match_results.pop(id(shape.raw), None)
         return matched
 
-    def click_shape(self, view: View, shape: Shape) -> Any:
-        if not isinstance(view.raw, dict):
+    def click_shape(
+        self,
+        view: View | int | str | dict[str, Any],
+        shape: Shape | str | dict[str, Any],
+        *,
+        frame_data_url: str | None = None,
+        match_result: dict[str, Any] | None = None,
+    ) -> Any:
+        target_view = self.view(view)
+        if not isinstance(target_view.raw, dict):
             raise RuntimeError("缺少可点击 view")
-        self.last_clicked_shape = shape
-        match_result = self._shape_match_results.get(id(shape.raw))
-        frame = self.cur_frame() if match_result is not None or self.runner._shape_click_needs_frame(shape.raw) else None
+        target_shape = shape if isinstance(shape, Shape) else None
+        raw_shape = target_shape.raw if isinstance(target_shape, Shape) else shape
+        if not isinstance(raw_shape, dict):
+            target_shape = self.resolve_shape_selector(target_view, raw_shape)
+            raw_shape = target_shape.raw
+        if isinstance(target_shape, Shape):
+            self.last_clicked_shape = target_shape
+        action_match_result = match_result
+        if action_match_result is None and isinstance(target_shape, Shape):
+            action_match_result = self._shape_match_results.get(id(target_shape.raw))
+        frame = frame_data_url
+        if not isinstance(frame, str) or not frame:
+            frame = self.cur_frame() if action_match_result is not None or self.runner._shape_click_needs_frame(raw_shape) else None
         try:
             result = self.runner._click_shape(
                 self.ctx,
-                view.raw,
-                shape.raw,
+                target_view.raw,
+                raw_shape,
                 frame,
-                match_result=match_result,
+                match_result=action_match_result,
             )
         except RuntimeError as exc:
-            if not self.runner._scene_route_fixed_click_fallback_allowed(view.raw, shape.raw, exc):
+            if not self.runner._scene_route_fixed_click_fallback_allowed(target_view.raw, raw_shape, exc):
                 raise
-            x, y = ActionPlanner().shape_center(view.raw, shape.raw)
+            x, y = ActionPlanner().shape_center(target_view.raw, raw_shape)
             self.runner._log(
                 "info",
-                f"Runtime View：#{self.runner._image_number(view.raw) or '?'}「{shape.raw.get('title') or shape.raw.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
+                f"Runtime View：#{self.runner._image_number(target_view.raw) or '?'}「{raw_shape.get('title') or raw_shape.get('id')}」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})",
             )
-            result = self.runner._click_frame_point(self.ctx, view.raw, x, y)
+            result = self.runner._click_frame_point(self.ctx, target_view.raw, x, y)
         self.clear_frame()
         return result
 
@@ -932,8 +997,14 @@ class FanxiuRuntime(Runtime):
             ),
         )
 
-    def click_frame_point(self, view: View | int | str, x: float, y: float) -> Any:
+    def click_frame_point(self, view: View | int | str | dict[str, Any], x: float, y: float) -> Any:
         target_view = self.view(view)
+        self._emit_runtime_action(
+            f"固定点击 #{target_view.id or '?'} ({float(x):.0f},{float(y):.0f})",
+            phase="runtime_click_point",
+            kind="click",
+            current_scene=target_view.id,
+        )
         result = self.runner._click_frame_point(self.ctx, target_view.raw, x, y)
         self.clear_frame()
         return result
@@ -983,19 +1054,19 @@ class FanxiuRuntime(Runtime):
 
     def ocr_lines_in_shapes(
         self,
-        view: View | int | str,
+        view: View | int | str | dict[str, Any],
         shape_titles: Iterable[str],
         *,
         padding: int = 16,
         frame_data_url: str | None = None,
     ) -> list[dict[str, Any]]:
-        target_view = self.view(view)
+        target_view = View(view) if isinstance(view, dict) else self.view(view)
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         return self.runner._ocr_lines_in_shapes(frame, target_view.raw, tuple(shape_titles), padding=padding)
 
     def ocr_text_in_shapes(
         self,
-        view: View | int | str,
+        view: View | int | str | dict[str, Any],
         shape_titles: Iterable[str],
         *,
         padding: int = 16,
@@ -1182,12 +1253,11 @@ class FanxiuRuntime(Runtime):
         self.clear_frame()
 
     def wait_action_settle(self, seconds: float = 1.0):
-        self.clear_frame()
-        stop_event = self.stop_event or threading.Event()
-        if stop_event.wait(max(0.0, float(seconds))):
-            self.runner._raise_if_stopped(stop_event)
-        self.clear_frame()
-        yield BehaviorTreeStatus.RUNNING
+        yield from self.runner._wait_runtime_action_settle(
+            self.ctx,
+            self.stop_event or threading.Event(),
+            seconds=max(0.0, float(seconds)),
+        )
 
     def scroll_shape_content(
         self,
@@ -1268,6 +1338,42 @@ class FanxiuRuntime(Runtime):
             if left <= cx <= right and top <= cy <= bottom:
                 matches.append((cx, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
+
+    def daily_entry_matches(
+        self,
+        view: View | int | str = 69,
+        *,
+        title_pattern: str,
+        exclude_pattern: str | None = None,
+        frame_data_url: str | None = None,
+    ) -> list[tuple[float, float, str]]:
+        target_view = self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        return self._daily_entry_matches(
+            self.ocr_lines(frame),
+            target_view,
+            title_pattern=title_pattern,
+            exclude_pattern=exclude_pattern,
+        )
+
+    def ocr_centers_in_shape(
+        self,
+        view: View | int | str,
+        shape_title: str,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+        frame_data_url: str | None = None,
+    ) -> list[tuple[float, float, str]]:
+        target_view = self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        return self.runner._ocr_centers_in_shape(
+            self.ocr_lines(frame),
+            target_view.raw,
+            shape_title,
+            include=include,
+            exclude=exclude,
+        )
 
     def _daily_text_is_daily_list(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
@@ -1673,6 +1779,7 @@ from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mi
 
 
 class DataAnnotationRuntimeRunner(
+    PopupGuardMixin,
     日常异火任务Mixin,
     DailyFoundationTaskMixin,
     DailyResourceTaskMixin,
@@ -1808,6 +1915,7 @@ class DataAnnotationRuntimeRunner(
         self._guard_interval_seconds = self.default_guard_interval_seconds
         self._guard_items: dict[str, dict[str, Any]] = json.loads(json.dumps(self.default_guard_items, ensure_ascii=False))
         self._auto_close_candidates_cache: dict[str, tuple[int, int, list[dict[str, Any]]]] = {}
+        self._missing_match_source_filenames: set[str] = set()
         self._log_scope = ""
         self._log_item_id = ""
         self._status: dict[str, Any] = self._initial_status()
@@ -2959,6 +3067,137 @@ class DataAnnotationRuntimeRunner(
     ) -> FanxiuRuntime:
         return FanxiuRuntime(self, ctx, asset_tree_path=asset_tree_path, frame_data_url=frame_data_url, stop_event=stop_event)
 
+    def _fanxiu_observer(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        frame_data_url: str | None = None,
+    ):
+        asset_tree_path = ctx.get("asset_tree_path")
+        if isinstance(asset_tree_path, Path):
+            runtime = self._fanxiu_runtime(ctx, asset_tree_path, frame_data_url=frame_data_url, stop_event=stop_event)
+            required_methods = ("cur_frame", "current_scene", "ocr_lines", "ocr_text", "clear_frame")
+            if all(hasattr(runtime, name) for name in required_methods):
+                return runtime
+
+        runner = self
+
+        class _FallbackObserver:
+            def __init__(self, initial_frame: str | None = None) -> None:
+                self.frame_data_url = initial_frame
+
+            def cur_frame(self, update: bool = False) -> str:
+                if update:
+                    self.clear_frame()
+                if isinstance(self.frame_data_url, str) and self.frame_data_url:
+                    return self.frame_data_url
+                self.frame_data_url = runner._screencap(ctx)
+                return self.frame_data_url
+
+            def current_scene(
+                self,
+                views: list[int] | None = None,
+                *,
+                frame_data_url: str | None = None,
+                update: bool = False,
+            ) -> tuple[int | None, float, str]:
+                frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+                scene_id, score = runner._identify_scene_number(ctx, frame, views)
+                return scene_id, float(score or 0.0), frame
+
+            def ocr_lines(self, frame_data_url: str | None = None, *, update: bool = False) -> list[dict[str, Any]]:
+                frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+                return runner._cached_ocr_lines(ctx, frame)
+
+            def ocr_text(self, frame_data_url: str | None = None, *, update: bool = False) -> str:
+                frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+                return runner._ocr_text(self.ocr_lines(frame))
+
+            def click_frame_point(self, view: View | dict[str, Any], x: float, y: float) -> None:
+                image = view.raw if isinstance(view, View) else view
+                runner._click_frame_point(ctx, image, x, y)
+                self.clear_frame()
+
+            def click_shape_center(self, view: View | dict[str, Any], shape: Shape | str) -> None:
+                image = view.raw if isinstance(view, View) else view
+                if not isinstance(image, dict):
+                    raise RuntimeError("缺少可点击 view")
+                raw_shape = shape.raw if isinstance(shape, Shape) else runner._find_shape(image, str(shape))
+                if not isinstance(raw_shape, dict):
+                    raise RuntimeError(f"缺少 #{runner._image_number(image) or '?'}「{shape}」标注")
+                x, y = ActionPlanner().shape_center(image, raw_shape)
+                self.click_frame_point(image, x, y)
+
+            def wait_click(self, view: View | int | str | dict[str, Any], shape: Shape | str, **_options: Any):
+                if False:
+                    yield BehaviorTreeStatus.RUNNING
+                if isinstance(view, View):
+                    image = view.raw
+                elif isinstance(view, dict):
+                    image = view
+                else:
+                    images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+                    view_id = int(str(view).lstrip("#"))
+                    image = images.get(view_id)
+                if not isinstance(image, dict):
+                    raise RuntimeError(f"无法解析帧选择器：{view}")
+                raw_shape = shape.raw if isinstance(shape, Shape) else runner._find_shape(image, str(shape))
+                if not isinstance(raw_shape, dict):
+                    raise RuntimeError(f"缺少 #{runner._image_number(image) or '?'}「{shape}」标注")
+                x, y = ActionPlanner().shape_center(image, raw_shape)
+                self.click_frame_point(image, x, y)
+
+            def wait_action_settle(self, seconds: float = 1.0):
+                yield from runner._wait_runtime_action_settle(ctx, stop_event, seconds=float(seconds or 0))
+
+            def clear_frame(self) -> None:
+                self.frame_data_url = None
+                runner._clear_tick_frame(ctx)
+
+        return _FallbackObserver(frame_data_url)
+
+    def _fanxiu_runtime_scene_text(
+        self,
+        ctx: dict[str, Any],
+        runtime: Any,
+        scene_ids: list[int] | None = None,
+        *,
+        frame: str | None = None,
+        update: bool = False,
+    ) -> tuple[int | None, float, str, str]:
+        if "entry" not in ctx and (not isinstance(frame, str) or not frame):
+            if scene_ids is None:
+                scene_id, score, frame = self._current_scene_number(ctx)
+            else:
+                frame = self._screencap(ctx)
+                scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
+        elif hasattr(runtime, "current_scene"):
+            scene_id, score, frame = runtime.current_scene(scene_ids, frame_data_url=frame, update=update)
+        else:
+            if not isinstance(frame, str) or not frame:
+                frame = runtime.cur_frame(update=update) if hasattr(runtime, "cur_frame") else self._screencap(ctx)
+            scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
+        try:
+            text = runtime.ocr_text(frame) if hasattr(runtime, "ocr_text") else self._ocr_text(self._ocr_lines(frame))
+        except Exception:
+            text = ""
+        return scene_id, float(score or 0.0), frame, text
+
+    def _fanxiu_runtime_ocr_text_in_shapes(
+        self,
+        runtime: Any,
+        view: View | dict[str, Any],
+        shape_titles: Iterable[str],
+        *,
+        frame_data_url: str,
+        padding: int = 16,
+    ) -> str:
+        if hasattr(runtime, "ocr_text_in_shapes"):
+            return runtime.ocr_text_in_shapes(view, tuple(shape_titles), frame_data_url=frame_data_url, padding=padding)
+        image = view.raw if isinstance(view, View) else view
+        return self._ocr_text(self._ocr_lines_in_shapes(frame_data_url, image, tuple(shape_titles), padding=padding))
+
     def _runtime_guard_enabled(self, guard_id: str) -> bool:
         guard_id = str(guard_id or "").strip()
         with self._lock:
@@ -2988,13 +3227,20 @@ class DataAnnotationRuntimeRunner(
             with self._lock:
                 if bool(self._status.get("running")) or str(self._status.get("phase") or "") in {"manual_job", "local_run"}:
                     return BehaviorTreeStatus.SKIP
+        tick_started_at = time.monotonic()
         previous_log_context = self._set_log_context("guard", "close_popups")
         try:
             runtime = self._fanxiu_runtime(runtime_ctx, asset_tree_path)
             if not self._auto_close_popup_guard_step(runtime):
+                elapsed = time.monotonic() - tick_started_at
+                if elapsed >= 5.0:
+                    self._log("detail", f"弹窗守护tick耗时 {elapsed:.2f}s result=skip")
                 return BehaviorTreeStatus.SKIP
             self._persist_status()
             runtime.clear_frame()
+            elapsed = time.monotonic() - tick_started_at
+            if elapsed >= 5.0:
+                self._log("detail", f"弹窗守护tick耗时 {elapsed:.2f}s result=handled")
             return BehaviorTreeStatus.RUNNING
         finally:
             self._restore_log_context(previous_log_context)
@@ -3321,14 +3567,14 @@ class DataAnnotationRuntimeRunner(
         text = self._ocr_text(ocr_lines)
         if "游戏公告" in text or ("更新公告" in text and "风险提醒" in text):
             image = self._find_asset_image_by_title(ctx, "游戏公告")
-            close_shape = self._find_shape(image, "关闭") or self._find_shape(image, "空白") or self._find_shape(image, "返回") or self._find_shape(image, "退出")
+            close_shape = self._known_game_announcement_action_shape(image)
             if close_shape is None:
                 return {
                     "scene_id": None,
                     "title": "游戏公告",
                     "blocking": True,
                     "all_shapes": shape_titles(image),
-                    "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，无法安全进入游戏",
+                    "message": "检测到游戏公告遮挡；资产树「游戏公告」缺少「关闭公告」动作标注，无法安全进入游戏",
                 }
             return {
                 "scene_id": None,
@@ -3357,10 +3603,19 @@ class DataAnnotationRuntimeRunner(
             image = self._find_asset_image_by_title(ctx, "游戏公告")
         if not isinstance(image, dict):
             return None
-        shape = self._find_shape(image, "关闭") or self._find_shape(image, "空白") or self._find_shape(image, "返回") or self._find_shape(image, "退出")
+        if title == "游戏公告":
+            shape = self._known_game_announcement_action_shape(image)
+        else:
+            shape = self._find_shape(image, "关闭") or self._find_shape(image, "空白") or self._find_shape(image, "返回") or self._find_shape(image, "退出")
         if not isinstance(shape, dict):
             return None
         return image, shape
+
+    def _known_game_announcement_action_shape(self, image: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(image, dict):
+            return None
+        shape = self._find_shape(image, "关闭公告")
+        return shape if isinstance(shape, dict) else None
 
     def _clear_known_blocking_overlay_if_possible(
         self,
@@ -3386,7 +3641,10 @@ class DataAnnotationRuntimeRunner(
         with self._lock:
             self._set_status_locked("running", f"{label}：关闭{title}", phase="clear_blocking_overlay")
             self._log_locked("action", f"{label}：点击「{title}/{shape_title}」清理阻断浮层", scope="job", item_id="scheduler")
-        self._click_shape(ctx, image, shape, frame_data_url=frame)
+        x, y = ActionPlanner().shape_center(image, shape)
+        click_ref = dict(image)
+        click_ref["title"] = (title, shape_title)
+        self._click_frame_point(ctx, click_ref, x, y)
         deadline = time.monotonic() + max(0.5, float(timeout or 12.0))
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
@@ -4706,37 +4964,27 @@ class DataAnnotationRuntimeRunner(
         frame_data_url: str,
         preferred_scene_ids: list[int] | None = None,
     ) -> tuple[int | None, float]:
-        previous_prefer_ocr = ctx.get("_prefer_full_frame_ocr")
-        if self._scene_number_scan_has_ocr_identity(ctx):
-            ctx["_prefer_full_frame_ocr"] = True
-            try:
-                self._cached_ocr_lines(ctx, frame_data_url)
-            except Exception as exc:
-                self._log("detail", f"场景识别预取 OCR 失败：{exc}")
-        try:
-            if preferred_scene_ids is not None:
-                return self._identify_scene_number_from_candidates(
-                    ctx,
-                    frame_data_url,
-                    preferred_scene_ids,
-                    scene_identity_scope_filter="local_or_global",
-                )
-
-            scene_id, score = self._identify_scene_number_from_candidates(
+        candidate_scene_ids = preferred_scene_ids
+        if candidate_scene_ids is None:
+            candidate_scene_ids = self._runtime_scene_candidate_ids(ctx)
+        if preferred_scene_ids is not None:
+            return self._identify_scene_number_from_candidates(
                 ctx,
                 frame_data_url,
-                self._runtime_scene_candidate_ids(ctx),
-                scene_identity_scope_filter="global",
+                preferred_scene_ids,
+                scene_identity_scope_filter="local_or_global",
             )
-            if scene_id is not None:
-                return scene_id, score
 
+        scene_id, score = self._identify_scene_number_from_candidates(
+            ctx,
+            frame_data_url,
+            candidate_scene_ids,
+            scene_identity_scope_filter="global",
+        )
+        if scene_id is not None:
             return scene_id, score
-        finally:
-            if previous_prefer_ocr is None:
-                ctx.pop("_prefer_full_frame_ocr", None)
-            else:
-                ctx["_prefer_full_frame_ocr"] = previous_prefer_ocr
+
+        return scene_id, score
 
     def _identify_scene_number_from_candidates(
         self,
@@ -4796,7 +5044,6 @@ class DataAnnotationRuntimeRunner(
         images = ctx.get("images") or {}
         if not isinstance(tree, list) or not isinstance(images, dict):
             return []
-        scene_id_set = {int(scene_id) for scene_id in self.scene_ids.values()}
         candidates: list[int] = []
 
         def add_candidate(image_id: int) -> None:
@@ -4816,7 +5063,6 @@ class DataAnnotationRuntimeRunner(
                     if (
                         image_id is not None
                         and not inside_image
-                        and (include_popups or int(image_id) in scene_id_set)
                         and int(image_id) in images
                         and isinstance(images.get(int(image_id)), dict)
                         and in_popup_path == include_popups
@@ -4833,25 +5079,7 @@ class DataAnnotationRuntimeRunner(
         visit([item for item in tree if isinstance(item, dict)], [], False)
         if not candidates:
             return []
-        ordered = [
-            int(scene_id)
-            for scene_id in self.scene_ids.values()
-            if int(scene_id) in candidates
-        ]
-        ordered.extend(scene_id for scene_id in candidates if scene_id not in ordered)
-        return ordered
-
-    def _scene_number_scan_has_ocr_identity(self, ctx: dict[str, Any]) -> bool:
-        images = ctx.get("images") or {}
-        if not isinstance(images, dict):
-            return False
-        for image in images.values():
-            if not isinstance(image, dict):
-                continue
-            for shape in self._scene_identity_shapes(image):
-                if self._shape_ocr_fallback_enabled(shape):
-                    return True
-        return False
+        return candidates
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         return SceneNavigator(tree).scene_jump_edges()
@@ -4964,387 +5192,6 @@ class DataAnnotationRuntimeRunner(
         ])
         self._log("error", f"场景跳转缺少可靠标注，已中断：{detail}")
         raise RuntimeError(f"场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：{detail}")
-
-    def _is_independent_exit_shape(self, shape: dict[str, Any]) -> bool:
-        return CloseActionPlanner().is_independent_exit_shape(shape)
-
-    def _auto_close_guard_action_shape(self, image: dict[str, Any]) -> dict[str, Any] | None:
-        # Fanxiu annotation convention: in the top-level popup group, "空白" means
-        # the background/overlay area that closes the popup when tapped. Prefer it
-        # over tiny close buttons and "确定", which may trigger extra scene changes.
-        planner = CloseActionPlanner(title_priorities=("空白", "关闭"))
-        action_shape = planner.choose_close_shape(image.get("shapes"), include_independent_exit=True)
-        if action_shape is not None:
-            return action_shape
-        return CloseActionPlanner(title_priorities=("确定",)).choose_close_shape(image.get("shapes"))
-
-    def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        candidates: list[dict[str, Any]] = []
-        seen_image_ids: set[int] = set()
-
-        def add_candidate(image: dict[str, Any], folder_path: str, action_shape: dict[str, Any] | None) -> None:
-            identity = id(image)
-            if identity in seen_image_ids:
-                return
-            seen_image_ids.add(identity)
-            candidates.append({
-                "image": image,
-                "folder_path": folder_path,
-                "action_shape": action_shape,
-            })
-
-        def add_first_level_popup_images(folder: dict[str, Any]) -> None:
-            children = folder.get("children")
-            if not isinstance(children, list):
-                return
-            folder_title = str(folder.get("title") or "").strip()
-            for child in children:
-                if not isinstance(child, dict) or child.get("type") != "image":
-                    continue
-                add_candidate(child, folder_title, self._auto_close_guard_action_shape(child))
-
-        def visit(items: list[dict[str, Any]], path: list[str]) -> None:
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                node_type = str(item.get("type") or "")
-                title = str(item.get("title") or "").strip()
-                current_path = [*path, title] if title else path
-                if node_type == "folder" and title == "弹窗":
-                    add_first_level_popup_images(item)
-                    continue
-                if node_type == "image":
-                    action_shape = self._auto_close_guard_action_shape(item)
-                    if action_shape is not None and self._is_independent_exit_shape(action_shape):
-                        add_candidate(item, "/".join(path), action_shape)
-                children = item.get("children")
-                if isinstance(children, list):
-                    visit([child for child in children if isinstance(child, dict)], current_path)
-
-        visit(nodes, [])
-        return candidates
-
-    def _best_popup_47_child(self, runtime: FanxiuRuntime, popup_view: View) -> tuple[View | None, float]:
-        children = popup_view.raw.get("children") if isinstance(popup_view.raw, dict) else None
-        if not isinstance(children, list):
-            return None, 0.0
-        best_view: View | None = None
-        best_score = 0.0
-        for child in children:
-            if not isinstance(child, dict) or child.get("type") != "image":
-                continue
-            child_view = View(child)
-            child_score = runtime.popup_score(child_view)
-            if child_score > best_score:
-                best_view = child_view
-                best_score = child_score
-        return best_view, best_score
-
-    def _handle_auto_close_popup_47_child(
-        self,
-        runtime: FanxiuRuntime,
-        popup_view: View,
-        event: dict[str, Any],
-        *,
-        allow_confirm_actions: bool = True,
-    ) -> bool:
-        child_view, child_score = self._best_popup_47_child(runtime, popup_view)
-        if child_view is None or child_score < self.overlay_threshold:
-            return False
-        if child_view.id == 84:
-            return self._handle_auto_close_popup_47_child_84(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-        if child_view.id == 86:
-            return self._handle_auto_close_popup_47_child_86(
-                runtime,
-                popup_view,
-                event,
-                child_view=child_view,
-                child_score=child_score,
-                allow_confirm_actions=allow_confirm_actions,
-            )
-
-        child_label = f"#{child_view.id}" if child_view.id is not None else child_view.title or "unknown"
-        child_event = {
-            **event,
-            "image": child_label,
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        try:
-            child_view.close(runtime)
-        except RuntimeError:
-            self._record_popup_guard_missing(
-                child_view.id,
-                f"守护命中：#47/{child_label} {event.get('score', 0):.0f}%/{child_score:.0f}%，缺少关闭标注",
-                child_event,
-                "missing_action",
-            )
-            return True
-        action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
-        self._record_popup_guard_click(
-            child_view.id,
-            f"守护处理：#47/{child_label} 点击「{action_title or 'shape'}」 {event.get('score', 0):.0f}%/{child_score:.0f}%",
-            child_event,
-            action_title or "shape",
-        )
-        return True
-
-    def _handle_auto_close_popup_47_child_84(
-        self,
-        runtime: FanxiuRuntime,
-        popup_view: View,
-        event: dict[str, Any],
-        *,
-        child_view: View | None = None,
-        child_score: float | None = None,
-        allow_confirm_actions: bool = True,
-    ) -> bool:
-        child_view = child_view or runtime.get_view(84, root=popup_view)
-        child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self.overlay_threshold:
-            return False
-        child_event = {
-            **event,
-            "image": "#84",
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-
-        no_more_prompt = child_view.get_shape("不再提示")
-        if no_more_prompt is not None and not no_more_prompt.is_match(runtime):
-            runtime.click_shape(child_view, no_more_prompt)
-            self._record_popup_guard_click(84, f"守护处理：#47/#84 点击「不再提示」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "不再提示")
-            return True
-
-        confirm_shape = child_view.get_shape("确认")
-        if confirm_shape is None:
-            self._record_popup_guard_missing(84, f"守护命中：#84 {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
-            return True
-        if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(84, f"守护处理：#47/#84 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
-        return True
-
-    def _handle_auto_close_popup_47_child_86(
-        self,
-        runtime: FanxiuRuntime,
-        popup_view: View,
-        event: dict[str, Any],
-        *,
-        child_view: View | None = None,
-        child_score: float | None = None,
-        allow_confirm_actions: bool = True,
-    ) -> bool:
-        child_view = child_view or runtime.get_view(86, root=popup_view)
-        child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self.overlay_threshold:
-            return False
-        child_event = {
-            **event,
-            "image": "#86",
-            "title": child_view.title,
-            "score": round(child_score, 1),
-            "parent_score": event.get("score"),
-        }
-        confirm_shape = child_view.get_shape("确认")
-        if not confirm_shape:
-            self._record_popup_guard_missing(86, f"守护命中：#86 {child_score:.0f}%，缺少「确认」标注", child_event, "missing_confirm")
-            return True
-        if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, popup_view, event)
-        runtime.click_shape(child_view, confirm_shape)
-        self._record_popup_guard_click(86, f"守护处理：#47/#86 点击「确认」 {event.get('score', 0):.0f}%/{child_score:.0f}%", child_event, "确认")
-        return True
-
-    def _record_popup_guard_missing(self, scene_id: int | None, message: str, event: dict[str, Any], action: str) -> None:
-        with self._lock:
-            self._status.update({
-                "current_scene": scene_id,
-                "message": message,
-                "last_guard_event": {**event, "action": action},
-                "updated_at": time.time(),
-            })
-            self._log_locked("error", self._status["message"])
-
-    def _record_popup_guard_click(self, scene_id: int | None, message: str, event: dict[str, Any], action_title: str) -> None:
-        with self._lock:
-            self._status.update({
-                "current_scene": scene_id,
-                "message": message,
-                "last_guard_event": {**event, "action": f"click:{action_title or 'shape'}"},
-                "updated_at": time.time(),
-            })
-            self._log_locked("guardClick", self._status["message"])
-
-    def _close_popup_view_without_confirm(self, runtime: FanxiuRuntime, view: View, event: dict[str, Any]) -> bool:
-        action_shape = runtime.matched_view.action_shape if runtime.matched_view is not None else None
-        if not isinstance(action_shape, dict) or str(action_shape.get("title") or "").strip() == "确定":
-            return False
-        shape = Shape(action_shape, parent_view=view)
-        runtime.click_shape(view, shape)
-        scene_id = view.id
-        image_label = f"#{scene_id}" if scene_id is not None else view.title or view.filename or "unknown"
-        action_title = shape.title or "shape"
-        self._record_popup_guard_click(
-            scene_id,
-            f"守护处理：{image_label} 点击「{action_title}」 {event.get('score', 0):.0f}%",
-            event,
-            action_title,
-        )
-        return True
-
-    def _auto_close_guard_images(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return self._index_guard_candidates(nodes)
-
-    def _auto_close_guard_candidates_for_path(self, asset_tree_path: Path) -> list[dict[str, Any]]:
-        try:
-            stat = asset_tree_path.stat()
-            signature = (int(stat.st_mtime_ns), int(stat.st_size))
-        except OSError:
-            signature = (0, 0)
-        cache_key = str(asset_tree_path)
-        cached = self._auto_close_candidates_cache.get(cache_key)
-        if cached and cached[0] == signature[0] and cached[1] == signature[1]:
-            return cached[2]
-        tree = self._load_asset_tree(asset_tree_path)
-        candidates = self._auto_close_guard_images(tree)
-        self._auto_close_candidates_cache[cache_key] = (signature[0], signature[1], candidates)
-        return candidates
-
-    def _auto_close_popup_candidate_score(self, ctx: dict[str, Any], candidate: dict[str, Any], frame_data_url: str) -> float:
-        image = candidate.get("image")
-        if not isinstance(image, dict):
-            return 0.0
-        return self._popup_score(ctx, image, frame_data_url)
-
-    def _auto_close_popup_candidate_scores_serial(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        return [self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url) for candidate in candidates]
-
-    def _auto_close_popup_candidate_scores_parallel(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        if len(candidates) <= 1:
-            return self._auto_close_popup_candidate_scores_serial(ctx, candidates, frame_data_url)
-        if any(self._popup_candidate_has_ocr_match(candidate) for candidate in candidates):
-            ctx["_prefer_full_frame_ocr"] = True
-            try:
-                self._cached_ocr_lines(ctx, frame_data_url)
-            except Exception as exc:
-                self._log("detail", f"弹窗守护预取 OCR 失败：{exc}")
-        workers = len(candidates)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="fanxiu-popup-match") as executor:
-            return list(executor.map(lambda candidate: self._auto_close_popup_candidate_score(ctx, candidate, frame_data_url), candidates))
-
-    def _popup_candidate_has_ocr_match(self, candidate: dict[str, Any]) -> bool:
-        image = candidate.get("image")
-        if not isinstance(image, dict):
-            return False
-        return any(self._shape_ocr_fallback_enabled(shape) for shape in self._popup_match_shapes(image))
-
-    def _auto_close_popup_candidate_scores(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> list[float]:
-        return self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-
-    def _auto_close_popup_first_match(
-        self,
-        ctx: dict[str, Any],
-        candidates: list[dict[str, Any]],
-        frame_data_url: str,
-    ) -> tuple[dict[str, Any] | None, float]:
-        if not candidates:
-            return None, 0.0
-        previous_fast_match = ctx.get("_popup_fast_match_only")
-        ctx["_popup_fast_match_only"] = True
-        try:
-            scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-        finally:
-            if previous_fast_match is None:
-                ctx.pop("_popup_fast_match_only", None)
-            else:
-                ctx["_popup_fast_match_only"] = previous_fast_match
-        for candidate, score in zip(candidates, scores):
-            if score >= self.overlay_threshold:
-                return candidate, score
-        scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
-        for candidate, score in zip(candidates, scores):
-            if score >= self.overlay_threshold:
-                return candidate, score
-        return None, 0.0
-
-    def _auto_close_popup_guard_step(
-        self,
-        runtime: FanxiuRuntime,
-        *,
-        allow_confirm_actions: bool = True,
-    ) -> bool:
-        view = runtime.find_view("弹窗")
-        matched = runtime.matched_view
-        if view is None or matched is None:
-            return False
-
-        image_label = f"#{view.id}" if view.id is not None else view.title or view.filename or "unknown"
-        event = {
-            "time": time.time(),
-            "kind": "popup",
-            "image": image_label,
-            "title": view.title,
-            "folder_path": matched.folder_path,
-            "score": round(matched.score, 1),
-            "action": "",
-        }
-
-        if view.id == 47 and self._handle_auto_close_popup_47_child(
-            runtime,
-            view,
-            event,
-            allow_confirm_actions=allow_confirm_actions,
-        ):
-            return True
-
-        try:
-            if not allow_confirm_actions:
-                return self._close_popup_view_without_confirm(runtime, view, event)
-            view.close(runtime)
-        except RuntimeError:
-            self._record_popup_guard_missing(
-                view.id,
-                f"守护命中：{image_label} {matched.score:.0f}%，缺少关闭标注",
-                event,
-                "missing_action",
-            )
-            return False
-        action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
-        self._record_popup_guard_click(
-            view.id,
-            f"守护处理：{image_label} 点击「{action_title or 'shape'}」 {matched.score:.0f}%",
-            event,
-            action_title or "shape",
-        )
-        return True
 
     def _require_assets(self, ctx: dict[str, Any]) -> None:
         images: dict[int, dict[str, Any]] = ctx["images"]
@@ -5640,6 +5487,23 @@ class DataAnnotationRuntimeRunner(
         flags = self._shape_runtime_match_payload_flags(shape)
         return str(flags.get("image_role") or "") != "off" or bool(flags.get("ocr_enabled"))
 
+    def _match_source_filename(self, image: dict[str, Any]) -> str:
+        return str(image.get("filename") or "").strip()
+
+    def _match_source_missing_cached(self, image: dict[str, Any]) -> bool:
+        filename = self._match_source_filename(image)
+        return bool(filename and filename in self._missing_match_source_filenames)
+
+    def _record_missing_match_source(self, image: dict[str, Any], exc: Exception) -> bool:
+        message = str(exc)
+        if "截图不存在" not in message:
+            return False
+        filename = self._match_source_filename(image)
+        if not filename:
+            return False
+        self._missing_match_source_filenames.add(filename)
+        return True
+
     def _shape_score(
         self,
         ctx: dict[str, Any],
@@ -5650,6 +5514,8 @@ class DataAnnotationRuntimeRunner(
         match_strategy: str = "anchor_pixel",
         ocr_fallback: bool = True,
     ) -> float:
+        if self._match_source_missing_cached(image):
+            return 0
         try:
             condition = "image" if match_strategy == "anchor_pixel" else "auto"
             score = float(self._match_shape(ctx, image, shape, frame_data_url, condition=condition).get("similarity") or 0)
@@ -5658,7 +5524,8 @@ class DataAnnotationRuntimeRunner(
                 score = max(score, ocr_score)
             return score
         except Exception as exc:
-            self._log("detail", f"匹配失败：{image.get('title')} / {shape.get('title')}：{exc}")
+            if not self._record_missing_match_source(image, exc):
+                self._log("detail", f"匹配失败：{image.get('title')} / {shape.get('title')}：{exc}")
             return 0
 
     def _shape_match_role(self, shape: dict[str, Any], key: str, default: str = "required") -> str:
@@ -5700,31 +5567,10 @@ class DataAnnotationRuntimeRunner(
             ocr_enabled = False
         if image_role == "off" and not ocr_enabled:
             return {"ok": False, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image), "reason": "match_disabled", "flags": flags}
-        if (
-            condition == "image"
-            and bool(ctx.get("_prefer_full_frame_ocr"))
-            and image_role == "optional"
-            and self._shape_ocr_fallback_enabled(shape)
-        ):
-            return {"ok": True, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image), "reason": "prefer_full_frame_ocr", "flags": flags}
-        if ocr_enabled and (bool(ctx.get("_prefer_full_frame_ocr")) or self._has_cached_ocr_lines(ctx, frame_data_url)):
-            result = {"ok": True, "matched": False, "similarity": 0, "matches": [], "box": self._box(shape, image)}
-            if self._shape_full_frame_ocr_matches(ctx, image, shape, frame_data_url, result):
-                result["similarity"] = 100
-                result["matched"] = True
-                result["flags"] = flags
-                result["resolved_box"] = result.get("box") if isinstance(result.get("box"), dict) else self._box(shape, image)
-                return result
-            cache = ctx.get("_ocr_lines_cache")
-            has_full_frame_lines = (
-                isinstance(cache, dict)
-                and cache.get("frame") == frame_data_url
-                and isinstance(cache.get("lines"), list)
-                and bool(cache.get("lines"))
-            )
-            if bool(ctx.get("_prefer_full_frame_ocr")) and has_full_frame_lines:
-                result["flags"] = flags
-                return result
+        if ocr_enabled and self._has_cached_ocr_lines(ctx, frame_data_url):
+            result = self._shape_cached_frame_ocr_match(ctx, image, shape, frame_data_url)
+            result["flags"] = flags
+            return result
         try:
             result = self._run_match(
                 ctx,
@@ -5750,15 +5596,6 @@ class DataAnnotationRuntimeRunner(
                 result["resolved_box"] = fixed_box
             else:
                 result["resolved_box"] = result.get("box") if isinstance(result.get("box"), dict) else self._box(shape, image)
-        elif ocr_enabled and self._shape_full_frame_ocr_matches(ctx, image, shape, frame_data_url, result):
-            matched = True
-            result["matched"] = True
-            if isinstance(result.get("fixed_box"), dict):
-                result["resolved_box"] = result.get("fixed_box")
-            elif isinstance(result.get("box"), dict):
-                result["resolved_box"] = result.get("box")
-            else:
-                result["resolved_box"] = self._box(shape, image)
         result["matched"] = matched
         result["flags"] = flags
         return result
@@ -5771,6 +5608,7 @@ class DataAnnotationRuntimeRunner(
         raw_matches = result.get("matches")
         if not isinstance(raw_matches, list):
             return False
+        existing_fixed_box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else None
         for item in raw_matches:
             if not isinstance(item, dict):
                 continue
@@ -5779,38 +5617,58 @@ class DataAnnotationRuntimeRunner(
                 result["ocr_text"] = text
                 fixed_box = self._ocr_line_box(item)
                 if fixed_box is not None:
-                    result["fixed_box"] = fixed_box
-                    resolved_box = self._ocr_match_resolved_box(item, target, mode)
-                    result["resolved_box"] = resolved_box or fixed_box
+                    if existing_fixed_box is not None:
+                        result["ocr_box"] = fixed_box
+                        result.setdefault("resolved_box", existing_fixed_box)
+                    else:
+                        result["fixed_box"] = fixed_box
+                        resolved_box = self._ocr_match_resolved_box(item, target, mode)
+                        result["resolved_box"] = resolved_box or fixed_box
                 return True
         return False
 
-    def _shape_full_frame_ocr_matches(
+    def _shape_cached_frame_ocr_match(
         self,
         ctx: dict[str, Any],
         image: dict[str, Any],
         shape: dict[str, Any],
         frame_data_url: str,
-        result: dict[str, Any],
-    ) -> bool:
+    ) -> dict[str, Any]:
+        result = {
+            "ok": True,
+            "matched": False,
+            "similarity": 0,
+            "matches": [],
+            "box": self._box(shape, image),
+            "reason": "cached_frame_ocr",
+        }
         target = _sanitize_ocr_text(shape.get("ocrText"))
         if not target:
-            return False
-        box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else self._box(shape, image)
-        lines = self._cached_ocr_lines(ctx, frame_data_url)
+            return result
+        mode = str(shape.get("ocrMatchMode") or "contains")
+        cache = ctx.get("_ocr_lines_cache")
+        lines = cache.get("lines") if isinstance(cache, dict) and cache.get("frame") == frame_data_url else []
+        if not isinstance(lines, list):
+            return result
+        box = self._box(shape, image)
         for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text or not self._ocr_text_matches(text, target, str(shape.get("ocrMatchMode") or "contains")):
+            if not isinstance(line, dict):
                 continue
-            if self._ocr_line_overlaps_box(line, box):
-                result["ocr_text"] = text
-                result["matches"] = [line]
-                fixed_box = self._ocr_line_box(line)
-                if fixed_box is not None:
-                    result["fixed_box"] = fixed_box
-                    result["resolved_box"] = self._ocr_match_resolved_box(line, target, str(shape.get("ocrMatchMode") or "contains")) or fixed_box
-                return True
-        return False
+            text = _sanitize_ocr_text(line.get("text"))
+            if not text or not self._ocr_text_matches(text, target, mode):
+                continue
+            if not self._ocr_line_overlaps_box(line, box):
+                continue
+            result["matched"] = True
+            result["similarity"] = 100
+            result["ocr_text"] = text
+            result["matches"] = [line]
+            fixed_box = self._ocr_line_box(line)
+            if fixed_box is not None:
+                result["fixed_box"] = fixed_box
+                result["resolved_box"] = self._ocr_match_resolved_box(line, target, mode) or fixed_box
+            return result
+        return result
 
     def _cached_ocr_lines(self, ctx: dict[str, Any], frame_data_url: str) -> list[dict[str, Any]]:
         cache = ctx.setdefault("_ocr_lines_cache", {})
@@ -5876,13 +5734,7 @@ class DataAnnotationRuntimeRunner(
         frame_data_url: str,
     ) -> float:
         return SceneScorer(
-            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._shape_score(
-                score_ctx,
-                score_image,
-                score_shape,
-                score_frame,
-                ocr_fallback=False,
-            ),
+            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(
                 self._match_shape(
                     score_ctx,
@@ -5897,23 +5749,10 @@ class DataAnnotationRuntimeRunner(
         ).scene_identity_shape_score(ctx, image, shape, frame_data_url)
 
     def _scene_score(self, ctx: dict[str, Any], image: dict[str, Any], frame_data_url: str) -> float:
-        previous_prefer_ocr = ctx.get("_prefer_full_frame_ocr")
         scope_filter = str(ctx.get("_scene_identity_scope_filter") or "") or None
         scene_identity_shapes = self._scene_identity_shapes(image, scope_filter)
-        if any(self._shape_ocr_fallback_enabled(shape) for shape in scene_identity_shapes):
-            ctx["_prefer_full_frame_ocr"] = True
-            try:
-                self._cached_ocr_lines(ctx, frame_data_url)
-            except Exception as exc:
-                self._log("detail", f"场景识别预取 OCR 失败：{exc}")
         scorer = SceneScorer(
-            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._shape_score(
-                score_ctx,
-                score_image,
-                score_shape,
-                score_frame,
-                ocr_fallback=False,
-            ),
+            shape_score=lambda score_ctx, score_image, score_shape, score_frame: self._scene_identity_image_shape_score(score_ctx, score_image, score_shape, score_frame),
             shape_ocr_score=lambda score_ctx, score_image, score_shape, score_frame: float(
                 self._match_shape(
                     score_ctx,
@@ -5930,12 +5769,19 @@ class DataAnnotationRuntimeRunner(
             scorer.scene_identity_shape_score(ctx, image, shape, frame_data_url)
             for shape in scene_identity_shapes
         ]
-        score = max(scores) if scores else 0.0
-        if previous_prefer_ocr is None:
-            ctx.pop("_prefer_full_frame_ocr", None)
-        else:
-            ctx["_prefer_full_frame_ocr"] = previous_prefer_ocr
+        score = min(scores) if scores else 0.0
         return self._scene_discriminator_adjusted_score(ctx, image, frame_data_url, score)
+
+    def _scene_identity_image_shape_score(
+        self,
+        ctx: dict[str, Any],
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        frame_data_url: str,
+    ) -> float:
+        if self._shape_ocr_role(shape) == "required" and str(shape.get("ocrText") or "").strip():
+            return 0.0
+        return self._shape_score(ctx, image, shape, frame_data_url, ocr_fallback=False)
 
     def _scene_discriminator_groups(self, ctx: dict[str, Any]) -> list[list[dict[str, Any]]]:
         images = ctx.get("images") or {}
@@ -6050,7 +5896,8 @@ class DataAnnotationRuntimeRunner(
             frame_data_url,
             self._popup_match_shapes(image),
             log_label="弹窗标识",
-            scan_fallback=not bool(ctx.get("_popup_fast_match_only")),
+            scan_fallback=False,
+            ocr_fallback=True,
         )
 
     def _match_image_score(
@@ -6062,16 +5909,18 @@ class DataAnnotationRuntimeRunner(
         *,
         log_label: str,
         scan_fallback: bool = True,
+        ocr_fallback: bool = True,
     ) -> float:
         scores: list[float] = []
         for shape in shapes:
-            score = self._shape_score(ctx, image, shape, frame_data_url)
-            if scan_fallback and score < 50 and self._shape_image_role(shape) != "off":
+            score = self._shape_score(ctx, image, shape, frame_data_url, ocr_fallback=ocr_fallback)
+            if scan_fallback and score < 50 and self._shape_image_role(shape) != "off" and not self._match_source_missing_cached(image):
                 try:
                     scan_score = float(self._run_match(ctx, image, shape, frame_data_url, scan=True, match_strategy="auto").get("similarity") or 0)
                     score = max(score, scan_score)
                 except Exception as exc:
-                    self._log("detail", f"{log_label}扫描失败：{image.get('title')} / {shape.get('title')}：{exc}")
+                    if not self._record_missing_match_source(image, exc):
+                        self._log("detail", f"{log_label}扫描失败：{image.get('title')} / {shape.get('title')}：{exc}")
             scores.append(score)
         scores = [score for score in scores if score > 0]
         if not scores:
@@ -6283,7 +6132,8 @@ class DataAnnotationRuntimeRunner(
         width, height = self._frame_size(image)
         click_x = (float(shape.get("x") or 0) + float(shape.get("w") or 0) * float(x_ratio)) * width
         click_y = (float(shape.get("y") or 0) + float(shape.get("h") or 0) * float(y_ratio)) * height
-        self._click_frame_point(ctx, image, click_x, click_y)
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        runtime.click_frame_point(image, click_x, click_y)
 
     def _click_frame_point(self, ctx: dict[str, Any], image: dict[str, Any], x: float, y: float) -> None:
         payload = ActionPlanner().click_point_payload(image, x, y)
@@ -6745,6 +6595,48 @@ class DataAnnotationRuntimeRunner(
                 return shape
         return None
 
+    def _recover_unknown_green_bottle_return_popup(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        expected_ids: list[int],
+    ) -> bool:
+        if int(source_scene_id) != 20 or int(target_scene_id) != 34 or 34 not in {int(item) for item in expected_ids}:
+            return False
+        world_image = (ctx.get("images") or {}).get(34)
+        if not isinstance(world_image, dict):
+            return False
+        blank_shape = self._find_shape(world_image, "空白")
+        if not isinstance(blank_shape, dict):
+            return False
+        x, y = ActionPlanner().shape_center(world_image, blank_shape)
+        with self._lock:
+            self._status.update({
+                "phase": "go_scene_unknown_recover",
+                "current_scene": None,
+                "message": "场景移动：#20 -> #34 遇到 unknown，点击 #34「空白」关闭未归档弹窗",
+                "updated_at": time.time(),
+            })
+        self._log("action", "场景移动：#20 -> #34 遇到 unknown，点击 #34「空白」尝试关闭未归档弹窗")
+        self._save_action_trace(
+            ctx,
+            world_image,
+            {
+                "kind": "click",
+                "point": [float(x), float(y)],
+                "label": "click #34 空白 unknown recovery",
+                "shape_title": blank_shape.get("title"),
+                "shape_id": blank_shape.get("id"),
+            },
+            frame_data_url=frame_data_url,
+        )
+        self._click_frame_point(ctx, world_image, x, y)
+        self._clear_tick_frame(ctx)
+        return True
+
     def _xianfu_home_text_is_scene(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         if "仙侣居" not in normalized and "仙侶居" not in normalized:
@@ -6775,6 +6667,7 @@ class DataAnnotationRuntimeRunner(
         left_source = False
         handled_intermediate_scene_ids: set[int] = set()
         handled_world_side_leave = False
+        handled_green_bottle_unknown_recovery = False
 
         while True:
             self._raise_if_stopped(stop_event)
@@ -6819,8 +6712,21 @@ class DataAnnotationRuntimeRunner(
                         self._clear_tick_frame(ctx)
                         left_source = True
                         start = time.monotonic()
-                        history.append(f"{elapsed:.1f}s #47 弹窗已处理")
-                        continue
+                    history.append(f"{elapsed:.1f}s #47 弹窗已处理")
+                    continue
+            if scene_id is None and not handled_green_bottle_unknown_recovery:
+                if self._recover_unknown_green_bottle_return_popup(
+                    ctx,
+                    frame,
+                    source_scene_id=source_scene_id,
+                    target_scene_id=target_scene_id,
+                    expected_ids=expected_ids,
+                ):
+                    handled_green_bottle_unknown_recovery = True
+                    left_source = True
+                    start = time.monotonic()
+                    history.append(f"{elapsed:.1f}s unknown #34 空白已点击")
+                    continue
             if scene_id is not None and scene_id not in handled_intermediate_scene_ids:
                 current_image = (ctx.get("images") or {}).get(scene_id)
                 confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
@@ -6915,17 +6821,17 @@ class DataAnnotationRuntimeRunner(
 
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
-            route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
             frame = self._screencap(ctx)
-            current_scene_id, score = self._identify_scene_number_for_route(
-                ctx,
-                frame,
-                tree,
-                target_scene_id,
-                route_candidate_ids,
-            )
+            current_scene_id, score = self._identify_scene_number(ctx, frame)
             if current_scene_id is None:
-                current_scene_id, score = self._identify_scene_number(ctx, frame)
+                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
+                current_scene_id, score = self._identify_scene_number_for_route(
+                    ctx,
+                    frame,
+                    tree,
+                    target_scene_id,
+                    route_candidate_ids,
+                )
             if current_scene_id is None:
                 return self._save_unknown_scene_frame(
                     ctx,

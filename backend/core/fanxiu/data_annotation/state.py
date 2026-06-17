@@ -348,6 +348,7 @@ def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     return {
         "job_group_enabled": bool(source.get("job_group_enabled", True)),
+        "behavior_tree_enabled": bool(source.get("behavior_tree_enabled", True)),
         "updated_at": float(source.get("updated_at") or 0),
     }
 

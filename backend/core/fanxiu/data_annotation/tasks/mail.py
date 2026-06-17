@@ -107,7 +107,8 @@ class MailTaskMixin:
             elif game_first:
                 with self._lock:
                     self._log_locked("info", "邮件_历史扫描：游戏画面优先模式，缺 packet 的可见邮件按详情页按钮处理")
-            scene_id, score, frame = self._current_scene_number(ctx)
+            runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+            scene_id, score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
             force_reopen_mail = observe_only or scan_mode in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}
             if scene_id == 121 and not use_current_page and (force_reopen_mail or (not observe_only and self._pending_packet_mail_action_count() > 0)):
                 image121 = ctx.get("images", {}).get(121)
@@ -122,8 +123,8 @@ class MailTaskMixin:
                             current_scene=121,
                         )
                         self._log_locked("action", f"邮件_历史扫描：点击 #121「空白-返回」，重新从顶部进入邮件，{reason}")
-                    self._click_shape(ctx, image121, back_shape, frame)
-                    yield from self._wait_scene_id(ctx, stop_event, 34, timeout=12.0, label="邮件_历史扫描：返回世界 #34")
+                    yield from runtime.wait_click(121, "空白-返回")
+                    yield from runtime.wait_view(34, label="邮件_历史扫描：返回世界 #34")
                     scene_id = 34
                 else:
                     with self._lock:
@@ -185,14 +186,11 @@ class MailTaskMixin:
 
         with self._lock:
             self._set_status_locked("running", "邮件_清理：进入邮件 #121", phase="mail_cleanup_go_mail")
-        frame = runtime.cur_frame(update=True)
-        scene_id, score = self._identify_scene_number(ctx, frame, [121, 122, 123, 34, 35, 69])
-        text = self._ocr_text(self._ocr_lines(frame))
+        scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 34, 35, 69], update=True)
         if scene_id not in {121, 122, 123} and (
             yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="邮件_清理")
         ):
-            frame = runtime.cur_frame(update=True)
-            scene_id, score = self._identify_scene_number(ctx, frame, [121, 122, 123, 34, 35, 69])
+            scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [121, 122, 123, 34, 35, 69], update=True)
         if scene_id == 121:
             with self._lock:
                 self._status.update({"current_scene": 121, "updated_at": time.time()})
@@ -244,7 +242,12 @@ class MailTaskMixin:
                 continue
 
             scroll_started_at = time.monotonic()
-            yield from list_shape.load(runtime)
+            runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(
+                list_shape,
+                ratio=0.5,
+                duration=0.9,
+                settle_seconds=0.35,
+            )
             scroll_elapsed = time.monotonic() - scroll_started_at
             self._log("detail", f"邮件_清理：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
             if not runtime.attrs.get("load_new"):
@@ -451,7 +454,7 @@ class MailTaskMixin:
             timeout=18.0,
             label="邮件_清理：返回邮件 #121",
         )
-        if wait_result == "timeout":
+        if wait_result in {"timeout", "detail_still_open"}:
             back_shape = detail_view.get_shape("空白-返回")
             if back_shape is None:
                 raise RuntimeError("邮件_清理：领取后未回邮件列表，且缺少详情页「空白-返回」标注")
@@ -480,11 +483,12 @@ class MailTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
+            runtime.clear_frame() if hasattr(runtime, "clear_frame") else self._clear_tick_frame(ctx)
             yield BehaviorTreeStatus.RUNNING
-            frame = runtime.cur_frame(update=True)
             elapsed = time.monotonic() - start
-            scene_id, score = self._identify_scene_number(ctx, frame, [121, 34])
+            detail_scene_id = detail_view.id if isinstance(detail_view.id, int) else None
+            candidates = [scene for scene in [121, 34, detail_scene_id] if isinstance(scene, int)]
+            scene_id, score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, candidates, update=True)
             last_scene_id, last_score = scene_id, score
             marker_score = 0.0
             marker_matched = False
@@ -504,11 +508,12 @@ class MailTaskMixin:
                         self._status.update({"current_scene": 121, "updated_at": time.time()})
                     self._log("success", f"{label}：已到达 #121 {score:.0f}%，邮件标识 {marker_score:.0f}%")
                     return "list"
-            text = ""
+            if detail_scene_id is not None and scene_id == detail_scene_id and elapsed >= 3.0:
+                self._log("info", f"{label}：领取后仍停留 #{detail_scene_id} {score:.0f}%，提前走详情页返回")
+                return "detail_still_open"
             now = time.monotonic()
             if scene_id == 34 or now - last_ocr_at >= 1.2:
                 last_ocr_at = now
-                text = self._ocr_text(self._ocr_lines(frame))
                 last_text = text or last_text
             if scene_id == 34 or (text and self._daily_assistant_text_is_world_like(text)):
                 self._log("info", f"{label}：领取后落到世界页，重新打开邮件列表")
@@ -635,7 +640,8 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked("running", "邮件_历史扫描：检测 #68 邮件入口", phase="mail_claim_check_mail", current_scene=34)
             self._log_locked("action", "邮件_历史扫描：检测 #68「邮件」")
-        frame = self._screencap(ctx)
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        frame = runtime.cur_frame(update=True)
         result = self._match_shape(ctx, image68, mail_shape, frame)
         similarity = float(result.get("similarity") or 0)
         matched = bool(result.get("matched"))
@@ -647,8 +653,15 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked("running", "邮件_历史扫描：打开 #68 邮件入口", phase="mail_claim_open_mail", current_scene=34)
             self._log_locked("action", f"邮件_历史扫描：识别到 #68「邮件」{similarity:.0f}%，点击打开")
-        self._click_shape(ctx, image68, mail_shape, frame)
-        yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+        box = self._box(mail_shape, image68)
+        click_x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+        click_y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+        runtime.click_frame_point(image68, click_x, click_y)
+        try:
+            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+        except RuntimeError as exc:
+            self._log("info", f"邮件_历史扫描：#68 邮件入口点击后未进入 #121，改走稳定入口：{exc}")
+            return "missing"
         return "success"
 
     def _open_mail_stable_entry(self, ctx: dict[str, Any], stop_event: threading.Event, asset_tree_path: Path) -> str:
@@ -659,27 +672,36 @@ class MailTaskMixin:
         with self._lock:
             self._set_status_locked("running", "邮件_历史扫描：打开下方菜单 #35", phase="mail_claim_open_world_menu", current_scene=34)
             self._log_locked("action", "邮件_历史扫描：#68 不可用，尝试 #34 -> #35 稳定入口")
-        frame = self._screencap(ctx)
-        try:
-            self._click_shape(ctx, image34, open_shape, frame)
-        except RuntimeError as exc:
-            message = str(exc)
-            if "打开下方菜单" not in message or "定位" not in message:
-                raise
-            box = self._box(open_shape, image34)
-            x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
-            y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            frame = runtime.cur_frame(update=True)
+            try:
+                runtime.click_shape(image34, open_shape, frame_data_url=frame)
+            except RuntimeError as exc:
+                message = str(exc)
+                if "打开下方菜单" not in message or "定位" not in message:
+                    raise
+                box = self._box(open_shape, image34)
+                x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+                y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+                with self._lock:
+                    self._log_locked("info", f"邮件_历史扫描：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
+                runtime.click_frame_point(image34, x, y)
             with self._lock:
-                self._log_locked("info", f"邮件_历史扫描：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
-            self._click_frame_point(ctx, image34, x, y)
-        with self._lock:
-            self._set_status_locked("running", "邮件_历史扫描：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
-        deadline = time.time() + 1.0
-        while time.time() < deadline:
-            self._raise_if_stopped(stop_event)
-            yield BehaviorTreeStatus.RUNNING
-        menu_result = self._open_mail_from_world_menu_shape(ctx, stop_event)
-        return (yield from menu_result) if isinstance(menu_result, GeneratorType) else menu_result
+                self._set_status_locked("running", "邮件_历史扫描：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
+            yield from runtime.wait_action_settle(1.0)
+            try:
+                menu_result = self._open_mail_from_world_menu_shape(ctx, stop_event)
+                return (yield from menu_result) if isinstance(menu_result, GeneratorType) else menu_result
+            except RuntimeError as exc:
+                last_error = exc
+                if "等待 #35 邮件入口超时" not in str(exc) or attempt >= 1:
+                    raise
+                self._log("info", "邮件_历史扫描：下方菜单未展开或未识别，重试打开 #34 下方菜单")
+        if last_error is not None:
+            raise last_error
+        return "missing"
 
     def _open_mail_from_world_menu_shape(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
         # Runtime actions must be driven by the asset-tree annotations. Do not
@@ -690,6 +712,7 @@ class MailTaskMixin:
         menu_shape = self._find_shape(image35, "菜单") if isinstance(image35, dict) else None
         if not isinstance(image35, dict) or (not mail_shape and not menu_shape):
             raise RuntimeError("缺少 #35「邮件」或「菜单」标注，无法走稳定邮件入口")
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         self._raise_if_stopped(stop_event)
         with self._lock:
             self._set_status_locked("running", "邮件_历史扫描：等待 #35 邮件命中", phase="mail_claim_wait_world_menu_mail", current_scene=35)
@@ -711,13 +734,13 @@ class MailTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "邮件_历史扫描：按 #35 邮件固定标注点击", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35「邮件」未命中，按资产树标注点击 ({x:.0f},{y:.0f})")
-                self._click_frame_point(ctx, image35, x, y)
+                runtime.click_frame_point(image35, x, y)
                 yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
             with self._lock:
                 self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
                 self._log_locked("action", "邮件_历史扫描：按 #35「邮件」标注点击")
-            self._click_shape(ctx, image35, mail_shape, frame, match_result=match_result)
+            runtime.click_shape(image35, mail_shape, frame_data_url=frame, match_result=match_result)
             yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
             return "success"
         deadline = time.time() + 8.0
@@ -725,7 +748,7 @@ class MailTaskMixin:
         last_ocr = ""
         while time.time() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
+            frame = runtime.cur_frame(update=True)
             if mail_shape:
                 match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto")
                 last_score = max(last_score, match_score)
@@ -736,11 +759,11 @@ class MailTaskMixin:
                     with self._lock:
                         self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件", phase="mail_claim_click_world_menu_mail", current_scene=35)
                         self._log_locked("action", f"邮件_历史扫描：#35「邮件」标注命中 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
-                    self._click_frame_point(ctx, image35, x, y)
+                    runtime.click_frame_point(image35, x, y)
                     yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                     return "success"
 
-            ocr_lines = self._ocr_lines(frame)
+            ocr_lines = runtime.ocr_lines(frame)
             last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_lines[-3:]) or last_ocr
             menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
             if menu_matches:
@@ -749,7 +772,7 @@ class MailTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
-                self._click_frame_point(ctx, image35, x, y)
+                runtime.click_frame_point(image35, x, y)
                 yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
 
@@ -762,20 +785,14 @@ class MailTaskMixin:
                 )
             yield BehaviorTreeStatus.RUNNING
         if mail_shape:
-            x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
-            with self._lock:
-                self._set_status_locked("running", "邮件_历史扫描：按 #35 邮件固定标注点击", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                self._log_locked("action", f"邮件_历史扫描：#35 邮件入口未命中，按资产树标注点击 ({x:.0f},{y:.0f})")
-            self._click_frame_point(ctx, image35, x, y)
-            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
-            return "success"
+            self._log("info", f"邮件_历史扫描：#35 邮件入口未命中，最后 {last_score:.0f}%，不盲点未命中 shape")
         raise RuntimeError(f"邮件_历史扫描：等待 #35 邮件入口超时，最后 {last_score:.0f}% OCR={last_ocr}")
 
     def _mail_world_menu_icon_click_point(self, image35: dict[str, Any], x: float, y: float) -> tuple[float, float]:
         mail_shape = self._find_shape(image35, "邮件")
         if mail_shape:
             box = self._box(mail_shape, image35)
-            return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) * 0.78
+            return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) / 2
         return x, y
 
     def _wait_mail_list_ready_or_restore_world(
@@ -805,7 +822,7 @@ class MailTaskMixin:
                 raise original_error from restore_error
             with self._lock:
                 self._log_locked("warning", f"{label}：场景图恢复失败，点击左下返回兜底：{restore_error}")
-            self._click_frame_point(ctx, image34, 70, 1490)
+            runtime.click_frame_point(image34, 70, 1490)
             try:
                 yield from runtime.wait_view(34, timeout=18.0, label="邮件_历史扫描：恢复世界 #34")
                 raise original_error
@@ -825,25 +842,27 @@ class MailTaskMixin:
         if not isinstance(image35, dict):
             return "missing"
         mail_shape = self._find_shape(image35, "邮件")
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         deadline = time.time() + max(0.1, float(timeout or 0.1))
         while time.time() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
+            frame = runtime.cur_frame(update=True)
+            scene_id, score, _frame = runtime.current_scene()
+            if scene_id != 35 or score < float(self.scene_threshold):
+                with self._lock:
+                    self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
+                yield BehaviorTreeStatus.RUNNING
+                continue
             if mail_shape:
-                scene_id, score, _frame = self._current_scene_number(ctx)
-                if scene_id == 35 and score >= float(self.scene_threshold):
-                    return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
-                match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto")
-                if match_score >= float(self.scene_threshold):
-                    return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
-            menu_matches = self._ocr_centers_in_shape(self._ocr_lines(frame), image35, "菜单", include=("邮件",))
+                return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
+            menu_matches = self._ocr_centers_in_shape(runtime.ocr_lines(frame), image35, "菜单", include=("邮件",))
             if menu_matches:
                 x, y, text = menu_matches[0]
                 x, y = self._mail_world_menu_icon_click_point(image35, x, y)
                 with self._lock:
                     self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
                     self._log_locked("action", f"邮件_历史扫描：#35 无「邮件」shape，点击菜单 OCR「{text}」({x:.0f},{y:.0f})")
-                self._click_frame_point(ctx, image35, x, y)
+                runtime.click_frame_point(image35, x, y)
                 yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                 return "success"
             with self._lock:
@@ -926,6 +945,7 @@ class MailTaskMixin:
         else:
             with self._lock:
                 self._log_locked("info", "邮件_历史扫描：未建立增量水位，本轮按深扫建立水位")
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         while scroll_count <= max_scrolls and processed_count < max_actions:
             self._raise_if_stopped(stop_event)
             if max_scan_seconds > 0 and time.monotonic() - scan_started_at >= max_scan_seconds:
@@ -936,7 +956,7 @@ class MailTaskMixin:
                         f"邮件_历史扫描：动作扫描达到内部时间预算 {max_scan_seconds:.0f}s，提前收尾",
                     )
                 break
-            frame = self._screencap(ctx)
+            frame = runtime.cur_frame(update=True)
             rows = self._recognize_visible_mail_rows(ctx, image121, frame)
             action_candidate: dict[str, Any] | None = None
             game_first_candidate: dict[str, Any] | None = None
@@ -1159,7 +1179,8 @@ class MailTaskMixin:
         frame: str,
     ) -> list[dict[str, Any]]:
         started_at = time.monotonic()
-        lines = self._ocr_lines_in_shapes(frame, image121, ("第1封", "邮件清单2"))
+        runtime = self._fanxiu_runtime(ctx, frame_data_url=frame)
+        lines = runtime.ocr_lines_in_shapes(image121, ("第1封", "邮件清单2"), frame_data_url=frame)
         first_rows = self._mail_rows_in_shape(lines, image121, "第1封")
         list_rows = self._mail_rows_in_shape(lines, image121, "邮件清单2")
         rows = self._merge_visible_mail_rows_by_position(first_rows, list_rows)
@@ -1549,7 +1570,7 @@ class MailTaskMixin:
                 current_scene=121,
             )
             self._log_locked("action", f"邮件_历史扫描：缺 packet，打开「{title}」按详情页判断")
-        self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
+        self._open_mail_row(ctx, stop_event, row)
         scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
         scene_id, _score = yield from scene_result
         if scene_id == 121:
@@ -1562,28 +1583,17 @@ class MailTaskMixin:
                 self._log_locked("detail", f"邮件_历史扫描：「{title}」详情为 {actual_policy}，不在本轮允许动作内，返回列表")
             yield from self._return_mail_detail_to_list(ctx, stop_event, scene_id)
             return "seen"
-        detail_image = ctx.get("images", {}).get(scene_id)
-        action_shape = self._find_shape(detail_image, "领取" if actual_policy == "claim" else "删除") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not action_shape:
-            raise RuntimeError(f"缺少 #{scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」标注，无法处理邮件")
+        action_title = "领取" if actual_policy == "claim" else "删除"
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_历史扫描：按详情页{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
+                f"邮件_历史扫描：按详情页{action_title}「{title}」",
                 phase=f"mail_claim_do_{actual_policy}",
                 current_scene=scene_id,
             )
-            self._log_locked("action", f"邮件_历史扫描：详情页确认 #{scene_id}，点击「{'领取' if actual_policy == 'claim' else '删除'}」：{title}")
-        match_result = yield from self._wait_shape_match(
-            ctx,
-            stop_event,
-            detail_image,
-            action_shape,
-            timeout=8.0,
-            label=f"邮件_历史扫描：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
-        )
-        frame, action_match = match_result
-        self._click_shape(ctx, detail_image, action_shape, frame, match_result=action_match)
+            self._log_locked("action", f"邮件_历史扫描：详情页确认 #{scene_id}，点击「{action_title}」：{title}")
+        yield from runtime.wait_click(scene_id, action_title, timeout=8.0)
         yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
@@ -1616,7 +1626,7 @@ class MailTaskMixin:
                 current_scene=121,
             )
             self._log_locked("action", f"邮件_历史扫描：打开「{title}」准备{action_label}")
-        self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
+        self._open_mail_row(ctx, stop_event, row)
         scene_result = self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：等待「{title}」详情")
         scene_id, _score = yield from scene_result
         if scene_id == 121:
@@ -1631,28 +1641,17 @@ class MailTaskMixin:
                     "detail",
                     f"邮件_历史扫描：「{title}」列表策略={policy}，详情实际为 #{target_scene_id} {actual_policy}，按详情按钮处理",
                 )
-        detail_image = ctx.get("images", {}).get(target_scene_id)
-        action_shape = self._find_shape(detail_image, "领取" if actual_policy == "claim" else "删除") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not action_shape:
-            raise RuntimeError(f"缺少 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」标注，无法处理邮件")
+        action_title = "领取" if actual_policy == "claim" else "删除"
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"邮件_历史扫描：{('领取' if actual_policy == 'claim' else '删除')}「{title}」",
+                f"邮件_历史扫描：{action_title}「{title}」",
                 phase=f"mail_claim_do_{actual_policy}",
                 current_scene=target_scene_id,
             )
-            self._log_locked("action", f"邮件_历史扫描：等待并点击 #{target_scene_id}「{'领取' if actual_policy == 'claim' else '删除'}」")
-        match_result = yield from self._wait_shape_match(
-            ctx,
-            stop_event,
-            detail_image,
-            action_shape,
-            timeout=8.0,
-            label=f"邮件_历史扫描：等待「{title}」{'领取' if actual_policy == 'claim' else '删除'}按钮",
-        )
-        frame, action_match = match_result
-        self._click_shape(ctx, detail_image, action_shape, frame, match_result=action_match)
+            self._log_locked("action", f"邮件_历史扫描：等待并点击 #{target_scene_id}「{action_title}」")
+        yield from runtime.wait_click(target_scene_id, action_title, timeout=8.0)
         yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
@@ -1681,7 +1680,7 @@ class MailTaskMixin:
                 current_scene=121,
             )
             self._log_locked("action", f"邮件_历史扫描：打开「{title}」探测无附件删除")
-        self._click_frame_point(ctx, image121, float(row.get("x") or 0), float(row.get("y") or 0))
+        self._open_mail_row(ctx, stop_event, row)
         scene_id, score = yield from self._wait_mail_detail_or_list_scene(ctx, stop_event, timeout=12.0, label=f"邮件_历史扫描：探测「{title}」详情")
         if scene_id == 121:
             return "seen"
@@ -1692,11 +1691,7 @@ class MailTaskMixin:
             return "seen"
         if scene_id != 123:
             raise RuntimeError(f"邮件_历史扫描：探测「{title}」进入未知详情 #{scene_id}，为避免误操作已停止")
-        detail_image = ctx.get("images", {}).get(123)
-        action_shape = self._find_shape(detail_image, "删除") if isinstance(detail_image, dict) else None
-        if not isinstance(detail_image, dict) or not action_shape:
-            raise RuntimeError("缺少 #123「删除」标注，无法执行无附件邮件删除")
-        frame = self._screencap(ctx)
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -1705,7 +1700,7 @@ class MailTaskMixin:
                 current_scene=123,
             )
             self._log_locked("action", f"邮件_历史扫描：UI确认 #123，点击「删除」：{title}")
-        self._click_shape(ctx, detail_image, action_shape, frame)
+        yield from runtime.wait_click(123, "删除")
         yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
         self._update_packet_mail_action_for_row(
             row,
@@ -1718,6 +1713,15 @@ class MailTaskMixin:
         )
         return "processed"
 
+    def _open_mail_row(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        row: dict[str, Any],
+    ) -> None:
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        runtime.click_frame_point(121, float(row.get("x") or 0), float(row.get("y") or 0))
+
     def _return_mail_detail_to_list(
         self,
         ctx: dict[str, Any],
@@ -1728,8 +1732,8 @@ class MailTaskMixin:
         back_shape = self._find_shape(detail_image, "空白-返回") if isinstance(detail_image, dict) else None
         if not isinstance(detail_image, dict) or not back_shape:
             raise RuntimeError(f"缺少 #{scene_id}「空白-返回」标注，无法从邮件详情返回")
-        frame = self._screencap(ctx)
-        self._click_shape(ctx, detail_image, back_shape, frame)
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        yield from runtime.wait_click(scene_id, "空白-返回")
         yield from self._wait_mail_list_ready(ctx, stop_event, timeout=18.0, label="邮件_历史扫描：返回邮件 #121")
 
     def _wait_mail_detail_or_list_scene(
@@ -1744,12 +1748,12 @@ class MailTaskMixin:
         last_scene_id: int | None = None
         last_score = 0.0
         candidates = [121, 122, 123]
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
+            runtime.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            scene_id, score = self._identify_scene_number(ctx, frame, candidates)
+            scene_id, score, frame = runtime.current_scene(candidates, update=True)
             last_scene_id, last_score = scene_id, score
             if scene_id in candidates:
                 with self._lock:
