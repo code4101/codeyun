@@ -252,9 +252,9 @@ def load_settings() -> Settings:
     ocr_use_doc_unwarping = _env_flag("CODEYUN_OCR_USE_DOC_UNWARPING", False)
     ocr_use_textline_orientation = _env_flag("CODEYUN_OCR_USE_TEXTLINE_ORIENTATION", False)
     try:
-        ocr_idle_timeout_seconds = int(os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS") or 600)
+        ocr_idle_timeout_seconds = int(os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS") or 120)
     except ValueError:
-        ocr_idle_timeout_seconds = 600
+        ocr_idle_timeout_seconds = 120
     try:
         ocr_max_instances = int(os.getenv("CODEYUN_OCR_MAX_INSTANCES") or 1)
     except ValueError:

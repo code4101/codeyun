@@ -193,6 +193,8 @@ Windows 事件日志里如果出现 `Microsoft-Windows-Resource-Exhaustion-Detec
 恢复后只保证：
 
 - MuMu 安卓容器重新启动。
+- Android `wm size / wm density` 被校验到 `900x1600@320`，以保持与凡修标注坐标系一致；恢复链路不在运行中改写 MuMu 实例 setting。
+- Windows 桌面上的 MuMu 主窗口被校正到当前 DPI 下的默认大小。150% 缩放下，非 DPI aware 脚本读到的主窗口目标约为 `607x1111` 逻辑像素；DPI aware 后端进程会读到约 `910x1666` 物理坐标。两者对应同一个渲染子窗口物理尺寸 `900x1600`。
 - 凡修游戏包 `com.frxxcrjpwssc3.ggws` 被拉到前台。
 
 恢复层不负责关闭公告、点击「进入游戏」、处理活动弹窗或推进游戏流程。这些仍交给 Runtime 场景识别、已标注弹窗守护和具体业务任务处理。

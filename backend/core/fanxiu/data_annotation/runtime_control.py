@@ -77,6 +77,7 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 from backend.core.runtime.process_launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
+from backend.core.fanxiu.runtime.behavior_tree_service import stop_behavior_tree_service
 
 
 def _canonical_runtime_task_type(task_type: str) -> str:
@@ -461,6 +462,80 @@ def set_scheduler_job_group_enabled(
     return write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
 
 
+def behavior_tree_enabled(*, scheduler_settings_path: Path | None = None) -> bool:
+    return bool(read_scheduler_settings(scheduler_settings_path=scheduler_settings_path).get("behavior_tree_enabled", True))
+
+
+def _behavior_tree_disabled_status(
+    *,
+    entry_id: str = "",
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+    message: str = "行为树已关闭",
+) -> dict[str, Any]:
+    status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    status.update({
+        "behavior_tree_enabled": False,
+        "service_running": False,
+        "running": False,
+        "guard_running": False,
+        "guard_group_running": False,
+        "entry_id": entry_id or str(status.get("entry_id") or ""),
+        "task_type": "",
+        "current_task": "",
+        "current_task_id": "",
+        "status": "idle",
+        "phase": "behavior_tree_disabled",
+        "message": message,
+        "updated_at": time.time(),
+    })
+    persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    return status
+
+
+def set_behavior_tree_enabled(
+    *,
+    entry: Any,
+    entry_id: str,
+    enabled: bool,
+    asset_tree_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    settings["behavior_tree_enabled"] = bool(enabled)
+    write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
+    resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
+    if not enabled:
+        try:
+            stop_fanxiu_behavior_tree_current_task(resolved_entry_id)
+        except Exception:
+            pass
+        try:
+            stop_behavior_tree_service()
+        except Exception:
+            pass
+        status = _behavior_tree_disabled_status(
+            entry_id=resolved_entry_id,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+        )
+        append_runtime_log_once(status, "stop", "行为树已关闭")
+        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        return status
+    status = ensure_runtime_service(
+        entry=entry,
+        entry_id=resolved_entry_id,
+        asset_tree_path=asset_tree_path,
+        scheduler_settings_path=scheduler_settings_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    status["behavior_tree_enabled"] = True
+    return status
+
+
 def update_scheduler_tasks(
     updates: list[dict[str, Any]],
     *,
@@ -490,6 +565,7 @@ def update_scheduler_tasks(
 
 def runtime_status(
     *,
+    scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -537,6 +613,15 @@ def runtime_status(
             status["status"] = "idle"
             status["message"] = "后端已重载，行为树服务待恢复"
             append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
+    enabled = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
+    status["behavior_tree_enabled"] = enabled
+    if not enabled:
+        status["service_running"] = False
+        status["running"] = False
+        status["guard_running"] = False
+        status["guard_group_running"] = False
+        status["phase"] = "behavior_tree_disabled"
+        status["message"] = "行为树已关闭"
     normalize_runtime_guard_items(status)
     status.pop("priority", None)
     if owner_active_elsewhere:
@@ -550,15 +635,23 @@ def ensure_runtime_service(
     entry: Any,
     entry_id: str,
     asset_tree_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
+    if not behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path):
+        return _behavior_tree_disabled_status(
+            entry_id=resolved_entry_id,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+        )
     status = ensure_fanxiu_behavior_tree_service(
         entry,
         resolved_entry_id,
         asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
     )
+    status["behavior_tree_enabled"] = True
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 
@@ -705,6 +798,13 @@ def queue_manual_job_status(
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
+    if not behavior_tree_enabled():
+        return _behavior_tree_disabled_status(
+            entry_id=entry_id,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+            message="行为树已关闭，无法触发作业",
+        )
     ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     job = enqueue_manual_job(task_type, payload, label=label, interruptible=interruptible, manual_job_path=manual_job_path)
     fanxiu_runtime_runner_wake()
@@ -1046,8 +1146,15 @@ def run_due_scheduler_tasks(
     manual_job_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
-    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+    if not bool(settings.get("behavior_tree_enabled", True)):
+        return _behavior_tree_disabled_status(
+            entry_id=entry_id,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+            message="行为树已关闭，到期作业暂不自动执行",
+        )
+    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
     if not bool(settings.get("job_group_enabled", True)):
         status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         status.update({

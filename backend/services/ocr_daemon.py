@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.core.runtime.process_launcher import install_child_process_no_window_default
@@ -79,9 +82,31 @@ def reset_ocr_service():
     return {"ok": True, "service": _service_status()}
 
 
+def _log_predict_request(request: Request, *, image_bytes: bytes, shape_type: str) -> None:
+    try:
+        status = ocr_service_manager.get_status()
+        row = {
+            "event": "ocr_predict",
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pid": os.getpid(),
+            "client": request.client.host if request.client else "",
+            "caller": (request.headers.get("x-codeyun-ocr-caller") or "")[:500],
+            "user_agent": (request.headers.get("user-agent") or "")[:200],
+            "image_bytes": len(image_bytes),
+            "shape_type": shape_type,
+            "state": status.get("state"),
+            "loaded": status.get("loaded"),
+            "call_count": status.get("call_count"),
+        }
+        print(json.dumps(row, ensure_ascii=False), flush=True)
+    except Exception:
+        pass
+
+
 @router.post("/predict")
-def predict_ocr(req: OcrPredictRequest):
+def predict_ocr(req: OcrPredictRequest, request: Request):
     image_bytes = _decode_request_image(req.image)
+    _log_predict_request(request, image_bytes=image_bytes, shape_type=req.shape_type)
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
@@ -106,13 +131,57 @@ def predict_ocr(req: OcrPredictRequest):
     }
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def _idle_exit_grace_seconds() -> float:
+    try:
+        return max(0.0, float(os.getenv("CODEYUN_OCR_IDLE_EXIT_GRACE_SECONDS") or 15))
+    except ValueError:
+        return 15.0
+
+
+def _idle_exit_loop(stop_event: threading.Event) -> None:
+    while not stop_event.wait(30.0):
+        status = ocr_service_manager.get_status()
+        if status.get("active_instance_count"):
+            continue
+        last_used_at = status.get("last_used_at")
+        if last_used_at is None:
+            continue
+        try:
+            idle_for = time.time() - float(last_used_at)
+        except (TypeError, ValueError):
+            continue
+        idle_timeout = float(status.get("idle_timeout_seconds") or 0)
+        if status.get("state") == "cold" and idle_for >= idle_timeout + _idle_exit_grace_seconds():
+            os._exit(0)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ocr_service_manager.start_idle_cleanup_thread()
+    idle_exit_stop = threading.Event()
+    idle_exit_thread: threading.Thread | None = None
+    if _env_flag("CODEYUN_OCR_EXIT_AFTER_IDLE", default=True):
+        idle_exit_thread = threading.Thread(
+            target=_idle_exit_loop,
+            args=(idle_exit_stop,),
+            name="codeyun-ocr-idle-exit",
+            daemon=True,
+        )
+        idle_exit_thread.start()
     try:
         yield
     finally:
+        idle_exit_stop.set()
         ocr_service_manager.stop_idle_cleanup_thread()
+        if idle_exit_thread and idle_exit_thread.is_alive():
+            idle_exit_thread.join(timeout=2)
 
 
 app = FastAPI(
@@ -123,12 +192,6 @@ app = FastAPI(
 )
 app.include_router(router)
 app.include_router(router, prefix="/api/services/ocr")
-
-
-def selector_event_loop_factory():
-    import asyncio
-
-    return asyncio.SelectorEventLoop()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -146,7 +209,7 @@ def main(argv: list[str] | None = None) -> None:
         "backend.services.ocr_daemon:app",
         host=args.host,
         port=args.port,
-        loop="backend.services.ocr_daemon:selector_event_loop_factory" if sys.platform == "win32" else "auto",
+        loop="asyncio",
         reload=False,
         access_log=False,
     )

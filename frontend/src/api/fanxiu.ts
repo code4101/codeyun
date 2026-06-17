@@ -543,6 +543,7 @@ export interface FanxiuDataAnnotationDoctorWatchEnsureResponse {
 
 export interface FanxiuDataAnnotationRuntimeStatus {
   ok: boolean;
+  behavior_tree_enabled?: boolean;
   service_running?: boolean;
   running: boolean;
   guard_group_enabled?: boolean;
@@ -5018,6 +5019,16 @@ export const stopFanxiuDataAnnotationRuntimeCurrentTask = (entryId?: string) => 
     .then(res => res.data);
 };
 
+export const setFanxiuDataAnnotationRuntimeBehaviorTree = (entryId: string, enabled: boolean) => {
+  return api
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/behavior-tree/set',
+      { entry_id: entryId, enabled },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
+    )
+    .then(res => res.data);
+};
+
 export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
   return api
     .post<FanxiuDataAnnotationRuntimeStatus>(
@@ -5044,7 +5055,7 @@ export const tickFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType = 
     .then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationRuntimeLogs = (limit = 500, scope = '', itemId = '') => {
+export const getFanxiuDataAnnotationRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
   return api
     .get<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
     .then(res => res.data);

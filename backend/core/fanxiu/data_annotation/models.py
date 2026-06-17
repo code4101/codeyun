@@ -56,6 +56,7 @@ class FanxiuDataAnnotationDoctorWatchEnsureResponse(BaseModel):
 
 class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     ok: bool = True
+    behavior_tree_enabled: bool = True
     service_running: bool = False
     running: bool = False
     guard_group_enabled: bool = True
@@ -94,6 +95,11 @@ class FanxiuDataAnnotationRuntimeTaskRequest(BaseModel):
 
 class FanxiuDataAnnotationRuntimeStopRequest(BaseModel):
     entry_id: Optional[str] = None
+
+
+class FanxiuDataAnnotationRuntimeBehaviorTreeRequest(BaseModel):
+    entry_id: str
+    enabled: bool
 
 
 class FanxiuDataAnnotationRuntimeGuardRequest(BaseModel):

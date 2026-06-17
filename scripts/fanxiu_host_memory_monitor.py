@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import traceback
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ import psutil
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+from backend.core.runtime.process_launcher import run_quiet
 
 
 INTERESTING_PROCESS_NAMES = {
@@ -34,12 +37,14 @@ INTERESTING_PROCESS_NAMES = {
     "tshark.exe",
     "wireshark.exe",
 }
-OCR_PREEMPTIVE_COMMIT_PRESSURE_PERCENT = 85.0
-OCR_PREEMPTIVE_COMMIT_PRESSURE_AVAILABLE_MB = 16 * 1024
 CRITICAL_COMMIT_PRESSURE_PERCENT = 90.0
 CRITICAL_COMMIT_PRESSURE_AVAILABLE_MB = 8192
+WMI_ACTIVITY_SKIP_COMMIT_PRESSURE_PERCENT = 70.0
+WMI_ACTIVITY_SKIP_COMMIT_AVAILABLE_MB = 32 * 1024
 WMI_ACTIVITY_CAPTURE_SECONDS = 5.0
 WMI_ACTIVITY_CAPTURE_INTERVAL_SECONDS = 0.05
+WMI_ACTIVITY_AUTO_WINMGMT_PRIVATE_MB = 4 * 1024
+POWERSHELL_WMI_EVENT_LIMIT = 260
 DEFAULT_LOOP_INTERVAL_SECONDS = 30 * 60
 
 
@@ -117,7 +122,7 @@ def _windows_services_by_pid() -> dict[int, list[str]]:
     if os.name != "nt":
         return {}
     try:
-        result = subprocess.run(
+        result = run_quiet(
             ["sc.exe", "queryex", "type=", "service", "state=", "all"],
             capture_output=True,
             text=True,
@@ -162,16 +167,25 @@ def _process_row(proc: psutil.Process, *, include_cmdline: bool) -> dict[str, An
     }
 
 
-def _top_private_processes(services_by_pid: dict[int, list[str]]) -> list[dict[str, Any]]:
+def _process_snapshot(services_by_pid: dict[int, list[str]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for proc in psutil.process_iter():
-        row = _process_row(proc, include_cmdline=False)
+        row = _process_row(proc, include_cmdline=True)
         if not row:
             continue
         services = services_by_pid.get(int(row["pid"])) or []
         if services:
             row["services"] = services
         rows.append(row)
+    return rows
+
+
+def _top_private_processes(process_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in process_rows:
+        item = dict(row)
+        item["cmdline"] = ""
+        rows.append(item)
     return sorted(rows, key=lambda item: float(item.get("private_mb") or 0), reverse=True)[:15]
 
 
@@ -198,34 +212,29 @@ def _pressure_hints(commit: dict[str, Any], top_processes: list[dict[str, Any]])
     return sorted(set(hints))
 
 
-def _packet_decode_pressure(commit: dict[str, Any]) -> dict[str, Any]:
-    commit_percent = float(commit.get("commit_percent") or 0.0)
-    commit_available_mb = int(commit.get("commit_available_mb") or 0)
-    skip = commit_percent >= OCR_PREEMPTIVE_COMMIT_PRESSURE_PERCENT or commit_available_mb < OCR_PREEMPTIVE_COMMIT_PRESSURE_AVAILABLE_MB
-    return {
-        "skip": skip,
-        "reason": "host_commit_pressure" if skip else None,
-        "commit": {
-            key: commit.get(key)
-            for key in ("committed_mb", "commit_limit_mb", "commit_available_mb", "commit_percent")
-        },
-    }
-
-
 def _host_commit_pressure(commit: dict[str, Any]) -> bool:
     commit_percent = float(commit.get("commit_percent") or 0.0)
     commit_available_mb = int(commit.get("commit_available_mb") or 0)
     return commit_percent >= CRITICAL_COMMIT_PRESSURE_PERCENT or commit_available_mb < CRITICAL_COMMIT_PRESSURE_AVAILABLE_MB
 
 
-def _ocr_preemptive_pressure(commit: dict[str, Any]) -> bool:
+def _skip_wmi_activity_probe(commit: dict[str, Any]) -> bool:
     commit_percent = float(commit.get("commit_percent") or 0.0)
     commit_available_mb = int(commit.get("commit_available_mb") or 0)
-    return commit_percent >= OCR_PREEMPTIVE_COMMIT_PRESSURE_PERCENT or commit_available_mb < OCR_PREEMPTIVE_COMMIT_PRESSURE_AVAILABLE_MB
+    return commit_percent >= WMI_ACTIVITY_SKIP_COMMIT_PRESSURE_PERCENT or commit_available_mb < WMI_ACTIVITY_SKIP_COMMIT_AVAILABLE_MB
 
 
-def _is_ocr_service_process(cmdline: str) -> bool:
-    return "backend.services.ocr_daemon" in cmdline.replace("\\", "/").lower()
+def _should_auto_capture_wmi_activity(commit: dict[str, Any], top_processes: list[dict[str, Any]]) -> bool:
+    if os.name != "nt":
+        return False
+    commit_percent = float(commit.get("commit_percent") or 0.0)
+    if commit_percent >= WMI_ACTIVITY_SKIP_COMMIT_PRESSURE_PERCENT:
+        return True
+    for item in top_processes:
+        services = {str(service).lower() for service in item.get("services") or []}
+        if str(item.get("name") or "").lower() == "svchost.exe" and "winmgmt" in services:
+            return float(item.get("private_mb") or 0.0) >= WMI_ACTIVITY_AUTO_WINMGMT_PRIVATE_MB
+    return False
 
 
 def _is_pressure_reclaimable_process(cmdline: str, process_name: str = "") -> bool:
@@ -233,7 +242,9 @@ def _is_pressure_reclaimable_process(cmdline: str, process_name: str = "") -> bo
     if name not in {"python.exe", "pythonw.exe", "python", "pythonw", "uv.exe", "uv"}:
         return False
     normalized = cmdline.replace("\\", "/").lower()
-    if _is_ocr_service_process(cmdline):
+    if "backend.services.ocr_daemon" in normalized:
+        return False
+    if "backend.services.game_window_daemon" in normalized:
         return True
     if ".venv/scripts/pytest.exe" in normalized and (
         "backend/tests/test_fanxiu_mumu_control.py" in normalized
@@ -244,6 +255,11 @@ def _is_pressure_reclaimable_process(cmdline: str, process_name: str = "") -> bo
     if "scripts/fanxiu_bt.py" in normalized:
         return True
     return False
+
+
+def _auto_process_termination_enabled() -> bool:
+    value = os.getenv("CODEYUN_HOST_MEMORY_MONITOR_AUTO_TERMINATE")
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
 def _append_reclaim_target(
@@ -276,7 +292,6 @@ def _collect_reclaimable_process_tree_targets(
     *,
     excluded_pids: set[int],
     late_reclaim: bool = False,
-    ocr_only: bool = False,
 ) -> tuple[list[psutil.Process], list[dict[str, Any]]]:
     targets: list[psutil.Process] = []
     rows: list[dict[str, Any]] = []
@@ -286,10 +301,7 @@ def _collect_reclaimable_process_tree_targets(
             if pid in excluded_pids:
                 continue
             cmdline = " ".join(str(part) for part in (proc.info.get("cmdline") or []))
-            if ocr_only:
-                if not _is_ocr_service_process(cmdline):
-                    continue
-            elif not _is_pressure_reclaimable_process(cmdline, str(proc.info.get("name") or "")):
+            if not _is_pressure_reclaimable_process(cmdline, str(proc.info.get("name") or "")):
                 continue
             _append_reclaim_target(
                 targets,
@@ -314,9 +326,16 @@ def _collect_reclaimable_process_tree_targets(
 
 def _terminate_reclaimable_processes_under_pressure(commit: dict[str, Any]) -> dict[str, Any]:
     critical_pressure = _host_commit_pressure(commit)
-    ocr_preemptive = _ocr_preemptive_pressure(commit)
-    if not critical_pressure and not ocr_preemptive:
+    if not critical_pressure:
         return {"attempted": False, "reason": "no_host_commit_pressure", "terminated": []}
+    reason = "host_commit_pressure"
+    if not _auto_process_termination_enabled():
+        return {
+            "attempted": False,
+            "reason": f"{reason}_auto_termination_disabled",
+            "terminated": [],
+            "killed_after_timeout": [],
+        }
 
     current_pid = os.getpid()
     excluded_pids = {current_pid}
@@ -327,7 +346,6 @@ def _terminate_reclaimable_processes_under_pressure(commit: dict[str, Any]) -> d
         pass
     targets, terminated = _collect_reclaimable_process_tree_targets(
         excluded_pids=excluded_pids,
-        ocr_only=not critical_pressure,
     )
     for proc in targets:
         try:
@@ -347,7 +365,6 @@ def _terminate_reclaimable_processes_under_pressure(commit: dict[str, Any]) -> d
     late_targets, late_rows = _collect_reclaimable_process_tree_targets(
         excluded_pids=excluded_pids,
         late_reclaim=True,
-        ocr_only=not critical_pressure,
     )
     terminated.extend(late_rows)
     for proc in late_targets:
@@ -364,7 +381,7 @@ def _terminate_reclaimable_processes_under_pressure(commit: dict[str, Any]) -> d
             continue
     return {
         "attempted": True,
-        "reason": "host_commit_pressure" if critical_pressure else "ocr_preemptive_commit_pressure",
+        "reason": reason,
         "terminated": terminated,
         "killed_after_timeout": killed,
     }
@@ -424,6 +441,16 @@ def _capture_recent_process_births(
     return captured
 
 
+def _should_capture_wmi_process_births() -> bool:
+    value = os.getenv("CODEYUN_MONITOR_CAPTURE_WMI_PROCESS_BIRTHS")
+    return bool(value and value.strip().lower() not in {"0", "false", "no", "off", "disabled"})
+
+
+def _should_capture_wmi_activity() -> bool:
+    value = os.getenv("CODEYUN_MONITOR_CAPTURE_WMI_ACTIVITY")
+    return bool(value and value.strip().lower() not in {"0", "false", "no", "off", "disabled"})
+
+
 def _parent_row(pid: int, captured_processes: dict[int, dict[str, Any]]) -> dict[str, Any] | None:
     captured = captured_processes.get(pid)
     if captured:
@@ -447,6 +474,80 @@ def _parent_row(pid: int, captured_processes: dict[int, dict[str, Any]]) -> dict
     }
 
 
+def _is_suspicious_wmi_query_client(row: dict[str, Any]) -> bool:
+    process = row.get("process") if isinstance(row.get("process"), dict) else {}
+    parent = row.get("parent_process") if isinstance(row.get("parent_process"), dict) else {}
+    operations = row.get("operations") if isinstance(row.get("operations"), dict) else {}
+    recent_events = row.get("recent_events") if isinstance(row.get("recent_events"), list) else []
+    operation_text = " ".join(
+        [
+            " ".join(str(key) for key in operations.keys()),
+            " ".join(str(item.get("operation") or "") for item in recent_events if isinstance(item, dict)),
+        ]
+    ).lower()
+    notification_text = " ".join(
+        str(item.get("notification_query") or "") for item in recent_events if isinstance(item, dict)
+    ).lower()
+    client_text = " ".join(
+        [
+            str(process.get("name") or ""),
+            str(process.get("cmdline") or ""),
+            str(parent.get("name") or ""),
+            str(parent.get("cmdline") or ""),
+        ]
+    ).lower()
+
+    expensive_query = (
+        "win32_perfformatteddata_perfproc_process" in operation_text
+        or "iwbemservices::createinstanceenum" in operation_text
+        or bool(re.search(r"\bfrom\s+win32_process\b", operation_text))
+        or bool(re.search(r"\bwin32_process\s+where\b", operation_text))
+    )
+    if expensive_query:
+        return True
+
+    client_uses_wmi_tooling = any(token in client_text for token in ("get-ciminstance", "get-wmiobject"))
+    if client_uses_wmi_tooling:
+        return True
+
+    # Process notification subscriptions are noisy but usually cheap; only promote them
+    # when WMI is already reporting quota/throttling pressure for that client.
+    if "win32_processstarttrace" in notification_text or "win32_processstoptrace" in notification_text:
+        possible_causes = " ".join(
+            str(item.get("possible_cause") or "") for item in recent_events if isinstance(item, dict)
+        ).lower()
+        return "quota" in possible_causes or "thrott" in possible_causes
+
+    return False
+
+
+def _is_codex_tool_wmi_client(row: dict[str, Any]) -> bool:
+    process = row.get("process") if isinstance(row.get("process"), dict) else {}
+    parent = row.get("parent_process") if isinstance(row.get("parent_process"), dict) else {}
+    cmdline = str(process.get("cmdline") or "").lower()
+    name = str(process.get("name") or "").lower()
+    parent_name = str(parent.get("name") or "").lower()
+    parent_cmdline = str(parent.get("cmdline") or "").lower()
+    if "codex.exe" not in f"{parent_name} {parent_cmdline}":
+        return False
+    if not name.endswith("powershell.exe"):
+        return False
+    return "get-ciminstance" in cmdline or "get-wmiobject" in cmdline
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+def _wmi_xml_text(fields: dict[str, str], *names: str) -> str:
+    lowered = {key.lower(): value for key, value in fields.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value:
+            return " ".join(value.split())[:500]
+    return ""
+
+
 def _recent_wmi_activity_clients(
     limit: int = 80,
     *,
@@ -456,7 +557,7 @@ def _recent_wmi_activity_clients(
         return {}
     captured_processes = captured_processes or {}
     try:
-        result = subprocess.run(
+        result = run_quiet(
             [
                 "wevtutil",
                 "qe",
@@ -464,7 +565,7 @@ def _recent_wmi_activity_clients(
                 "/q:*[System[(EventID=5857 or EventID=5858 or EventID=5859 or EventID=5860 or EventID=5861)]]",
                 f"/c:{limit}",
                 "/rd:true",
-                "/f:text",
+                "/f:xml",
             ],
             capture_output=True,
             text=True,
@@ -479,14 +580,33 @@ def _recent_wmi_activity_clients(
         return {"error": (result.stderr or result.stdout).strip()[:500]}
 
     clients: dict[int, dict[str, Any]] = {}
-    for block in re.split(r"\r?\n\r?\n(?=Event\[\d+\])", result.stdout):
-        pid_match = re.search(r"ClientProcessId\s*=\s*(\d+)", block)
-        if not pid_match:
+    try:
+        root = ET.fromstring(f"<Events>{result.stdout}</Events>")
+    except ET.ParseError as exc:
+        return {"error": f"parse_wmi_activity_xml_failed: {exc}"}
+    for event in list(root):
+        fields: dict[str, str] = {}
+        event_id = ""
+        event_time = ""
+        for elem in event.iter():
+            name = _xml_local_name(elem.tag)
+            text = (elem.text or "").strip()
+            if name == "EventID" and text:
+                event_id = text
+            elif name == "TimeCreated":
+                event_time = elem.attrib.get("SystemTime", "")
+            elif text:
+                fields[name] = text
+        pid_text = _wmi_xml_text(fields, "ClientProcessId", "Processid")
+        if not pid_text or not pid_text.isdigit():
             continue
-        pid = int(pid_match.group(1))
-        operation_match = re.search(r"Operation\s*=\s*(.+?)(?:;\s*ResultCode|\x00|\r?\n)", block, flags=re.S)
-        operation = " ".join((operation_match.group(1) if operation_match else "").split())
-        time_match = re.search(r"Date:\s*([^\r\n]+)", block)
+        pid = int(pid_text)
+        operation = _wmi_xml_text(fields, "Operation")
+        notification_query = _wmi_xml_text(fields, "NotificationQuery", "Query")
+        namespace = _wmi_xml_text(fields, "Namespace", "NamespaceName")
+        result_code = _wmi_xml_text(fields, "ResultCode")
+        possible_cause = _wmi_xml_text(fields, "PossibleCause")
+        component = _wmi_xml_text(fields, "Component")
         row = clients.setdefault(
             pid,
             {
@@ -494,14 +614,32 @@ def _recent_wmi_activity_clients(
                 "count": 0,
                 "operations": {},
                 "latest_at": "",
+                "recent_events": [],
             },
         )
         row["count"] += 1
         if operation:
             operations = row.setdefault("operations", {})
             operations[operation] = int(operations.get(operation) or 0) + 1
-        if time_match and not row.get("latest_at"):
-            row["latest_at"] = time_match.group(1).strip()
+        if notification_query:
+            queries = row.setdefault("notification_queries", {})
+            queries[notification_query] = int(queries.get(notification_query) or 0) + 1
+        if event_time and not row.get("latest_at"):
+            row["latest_at"] = event_time
+        recent_events = row.setdefault("recent_events", [])
+        if len(recent_events) < 5:
+            recent_events.append(
+                {
+                    "event_id": event_id,
+                    "time": event_time,
+                    "namespace": namespace,
+                    "operation": operation,
+                    "notification_query": notification_query,
+                    "result_code": result_code,
+                    "possible_cause": possible_cause,
+                    "component": component,
+                }
+            )
 
     for pid, row in clients.items():
         captured = captured_processes.get(pid)
@@ -537,11 +675,164 @@ def _recent_wmi_activity_clients(
             row["process"] = {"exited": True}
 
     rows = sorted(clients.values(), key=lambda item: int(item.get("count") or 0), reverse=True)
+    suspicious_rows = [row for row in rows if _is_suspicious_wmi_query_client(row)]
+    codex_tool_rows = [row for row in rows if _is_codex_tool_wmi_client(row)]
+    exited_client_count = sum(
+        1
+        for row in rows
+        if isinstance(row.get("process"), dict) and bool(row["process"].get("exited"))
+    )
     return {
         "event_count": sum(int(item.get("count") or 0) for item in rows),
         "client_count": len(rows),
+        "exited_client_count": exited_client_count,
+        "suspicious_query_client_count": len(suspicious_rows),
+        "codex_tool_client_count": len(codex_tool_rows),
         "top_clients": rows[:12],
+        "suspicious_query_clients": suspicious_rows[:12],
+        "codex_tool_clients": codex_tool_rows[:12],
     }
+
+
+def _normalize_powershell_wmi_command(command: str) -> str:
+    text = " ".join(command.split())[:2000]
+    text = re.sub(
+        r"ProcessId\s*=\s*(?:\d+\s+OR\s+)*\d+",
+        "ProcessId = <pid-list>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"ProcessId,ParentProcessId,CommandLine,WorkingSetSize,@\{Name='CpuPercent'.*?ConvertTo-Json -Depth 2",
+        "ProcessId,ParentProcessId,CommandLine,WorkingSetSize,<cpu+age> | ConvertTo-Json -Depth 2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text[:1200]
+
+
+def _powershell_wmi_command_from_text(text: str) -> str:
+    compact = " ".join(text.split())
+    match = re.search(
+        r"(powershell\.exe\s+-NoProfile\s+-NonInteractive\s+-Command\s+.*?)(?:\s+EngineVersion=|\s+CommandName=|$)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1)[:1800]
+    match = re.search(
+        r"(powershell\.exe\s+-NoProfile\s+-NonInteractive\s+-Command\s+.*)",
+        compact,
+        flags=re.IGNORECASE,
+    )
+    return match.group(1)[:1800] if match else ""
+
+
+def _recent_powershell_wmi_commands(limit: int = POWERSHELL_WMI_EVENT_LIMIT) -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+    channels = ["Microsoft-Windows-PowerShell/Operational", "Windows PowerShell"]
+    patterns = (
+        "get-ciminstance",
+        "get-wmiobject",
+        "win32_process",
+        "win32_perfformatteddata_perfproc_process",
+    )
+    commands: dict[str, dict[str, Any]] = {}
+    examples: list[dict[str, str]] = []
+    event_count = 0
+    errors: list[str] = []
+    for channel in channels:
+        try:
+            result = run_quiet(
+                ["wevtutil", "qe", channel, "/f:xml", "/rd:true", f"/c:{limit}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=12,
+                check=False,
+            )
+        except Exception as exc:
+            errors.append(f"{channel}: {exc}")
+            continue
+        if result.returncode != 0:
+            errors.append(f"{channel}: {(result.stderr or result.stdout).strip()[:300]}")
+            continue
+        try:
+            root = ET.fromstring(f"<Events>{result.stdout}</Events>")
+        except ET.ParseError as exc:
+            errors.append(f"{channel}: parse_powershell_xml_failed: {exc}")
+            continue
+        for event in list(root):
+            event_text = "".join(event.itertext())
+            lowered = event_text.lower()
+            if not any(pattern in lowered for pattern in patterns):
+                continue
+            command = _powershell_wmi_command_from_text(event_text)
+            if not command:
+                continue
+            normalized = _normalize_powershell_wmi_command(command)
+            event_time = ""
+            event_id = ""
+            for elem in event.iter():
+                name = _xml_local_name(elem.tag)
+                if name == "EventID" and elem.text:
+                    event_id = elem.text.strip()
+                elif name == "TimeCreated":
+                    event_time = elem.attrib.get("SystemTime", "")
+            row = commands.setdefault(
+                normalized,
+                {
+                    "count": 0,
+                    "first_at": event_time,
+                    "last_at": event_time,
+                    "channels": set(),
+                    "event_ids": {},
+                    "command": normalized,
+                },
+            )
+            row["count"] = int(row.get("count") or 0) + 1
+            row["channels"].add(channel)
+            if event_time:
+                if not row.get("first_at") or event_time < str(row.get("first_at") or ""):
+                    row["first_at"] = event_time
+                if event_time > str(row.get("last_at") or ""):
+                    row["last_at"] = event_time
+            event_ids = row.setdefault("event_ids", {})
+            if event_id:
+                event_ids[event_id] = int(event_ids.get(event_id) or 0) + 1
+            event_count += 1
+            if len(examples) < 8:
+                examples.append(
+                    {
+                        "time": event_time,
+                        "channel": channel,
+                        "command": command[:1200],
+                    }
+                )
+
+    top_commands: list[dict[str, Any]] = []
+    for row in sorted(commands.values(), key=lambda item: int(item.get("count") or 0), reverse=True):
+        top_commands.append(
+            {
+                "count": row.get("count"),
+                "first_at": row.get("first_at"),
+                "last_at": row.get("last_at"),
+                "channels": sorted(row.get("channels") or []),
+                "event_ids": row.get("event_ids") or {},
+                "command": row.get("command"),
+            }
+        )
+    result: dict[str, Any] = {
+        "event_count": event_count,
+        "unique_command_count": len(top_commands),
+        "top_commands": top_commands[:8],
+        "examples": examples,
+    }
+    if errors:
+        result["errors"] = errors[:4]
+    return result
 
 
 def _load_recent_monitor_rows(limit: int = 12) -> list[dict[str, Any]]:
@@ -601,33 +892,115 @@ def _monitor_trend(current_sample: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _interesting_processes() -> list[dict[str, Any]]:
+def _interesting_processes(process_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for proc in psutil.process_iter():
-        row = _process_row(proc, include_cmdline=True)
-        if not row:
-            continue
+    for row in process_rows:
         name_lower = str(row.get("name") or "").lower()
         cmdline = str(row.get("cmdline") or "")
-        if name_lower not in INTERESTING_PROCESS_NAMES and "tcpdump" not in cmdline.lower():
+        service_names = {str(service).lower() for service in row.get("services") or []}
+        if (
+            name_lower not in INTERESTING_PROCESS_NAMES
+            and "tcpdump" not in cmdline.lower()
+            and "winmgmt" not in service_names
+        ):
             continue
-        rows.append(row)
+        rows.append(dict(row))
     return sorted(rows, key=lambda item: float(item.get("private_mb") or 0), reverse=True)
+
+
+def _limit_interesting_processes(rows: list[dict[str, Any]], limit: int = 30) -> list[dict[str, Any]]:
+    limited = list(rows[:limit])
+    included_pids = {int(item.get("pid") or 0) for item in limited}
+    for row in rows[limit:]:
+        services = {str(service).lower() for service in row.get("services") or []}
+        if "winmgmt" in services and int(row.get("pid") or 0) not in included_pids:
+            limited.append(row)
+            included_pids.add(int(row.get("pid") or 0))
+    return limited
+
+
+def _critical_findings(sample: dict[str, Any]) -> list[dict[str, Any]]:
+    commit = sample.get("commit") or {}
+    commit_percent = float(commit.get("commit_percent") or 0.0)
+    commit_available_mb = int(commit.get("commit_available_mb") or 0)
+    winmgmt = _winmgmt_row(sample) or {}
+    winmgmt_private_mb = float(winmgmt.get("private_mb") or 0.0)
+    powershell_wmi = sample.get("recent_powershell_wmi_commands") or {}
+    powershell_wmi_event_count = int(powershell_wmi.get("event_count") or 0)
+    top_powershell_wmi_commands = [
+        {
+            "count": int(item.get("count") or 0),
+            "first_at": item.get("first_at"),
+            "last_at": item.get("last_at"),
+            "command": str(item.get("command") or "")[:500],
+        }
+        for item in (powershell_wmi.get("top_commands") or [])[:3]
+        if isinstance(item, dict)
+    ]
+    wmi_activity = sample.get("recent_wmi_activity") or {}
+    suspicious_query_client_count = int(wmi_activity.get("suspicious_query_client_count") or 0)
+
+    findings: list[dict[str, Any]] = []
+    if commit_percent >= 90.0 and winmgmt_private_mb >= 16 * 1024:
+        findings.append(
+            {
+                "severity": "critical",
+                "code": "winmgmt_commit_exhaustion",
+                "summary": "Windows commit pressure is dominated by Winmgmt memory growth.",
+                "evidence": {
+                    "commit_percent": commit_percent,
+                    "commit_available_mb": commit_available_mb,
+                    "winmgmt_private_mb": round(winmgmt_private_mb, 1),
+                    "powershell_wmi_event_count": powershell_wmi_event_count,
+                    "suspicious_wmi_query_client_count": suspicious_query_client_count,
+                    "top_powershell_wmi_commands": top_powershell_wmi_commands,
+                },
+                "recommended_actions": [
+                    "Stop or reduce the external high-frequency WMI process queries.",
+                    "Close likely WMI-heavy external applications before touching MuMu or CodeYun services.",
+                    "If commit remains critical after the query source stops, manually restart Winmgmt or reboot after saving work.",
+                ],
+                "not_primary_suspects": ["adb", "packet_capture", "ocr_daemon"],
+                "auto_action_taken": False,
+            }
+        )
+    elif winmgmt_private_mb >= 8 * 1024:
+        findings.append(
+            {
+                "severity": "warning",
+                "code": "winmgmt_commit_growth",
+                "summary": "Winmgmt memory is abnormally high and should be watched as the primary pressure source.",
+                "evidence": {
+                    "commit_percent": commit_percent,
+                    "commit_available_mb": commit_available_mb,
+                    "winmgmt_private_mb": round(winmgmt_private_mb, 1),
+                    "powershell_wmi_event_count": powershell_wmi_event_count,
+                    "suspicious_wmi_query_client_count": suspicious_query_client_count,
+                    "top_powershell_wmi_commands": top_powershell_wmi_commands,
+                },
+                "recommended_actions": [
+                    "Keep WMI-based diagnostics disabled unless explicitly needed.",
+                    "Investigate external tools repeatedly launching Get-CimInstance or hardware inventory queries.",
+                ],
+                "auto_action_taken": False,
+            }
+        )
+    return findings
 
 
 def collect_sample() -> dict[str, Any]:
     services_by_pid = _windows_services_by_pid()
     commit = _windows_commit_snapshot()
-    top_processes = _top_private_processes(services_by_pid)
-    interesting = _interesting_processes()
+    process_rows = _process_snapshot(services_by_pid)
+    top_processes = _top_private_processes(process_rows)
+    interesting = _interesting_processes(process_rows)
     mitigation = _terminate_reclaimable_processes_under_pressure(commit)
     sample = {
         "sampled_at": datetime.now().isoformat(timespec="seconds"),
         "commit": commit,
         "pressure_hints": _pressure_hints(commit, top_processes),
         "top_private_processes": top_processes,
-        "interesting_processes": interesting[:30],
-        "packet_decode_pressure": _packet_decode_pressure(commit),
+        "interesting_processes": _limit_interesting_processes(interesting),
         "mitigation": mitigation,
     }
     trend = _monitor_trend(sample)
@@ -636,10 +1009,41 @@ def collect_sample() -> dict[str, Any]:
     mumu_health = _latest_mumu_device_health_event()
     if mumu_health:
         sample["latest_mumu_device_health"] = mumu_health
-    captured_processes = _capture_recent_process_births()
-    wmi_activity = _recent_wmi_activity_clients(captured_processes=captured_processes)
-    if wmi_activity:
-        sample["recent_wmi_activity"] = wmi_activity
+    capture_wmi_activity = _should_capture_wmi_activity()
+    auto_capture_wmi_activity = _should_auto_capture_wmi_activity(commit, top_processes)
+    if not capture_wmi_activity and not auto_capture_wmi_activity:
+        sample["recent_wmi_activity"] = {
+            "skipped": True,
+            "reason": "disabled_by_default",
+        }
+    elif capture_wmi_activity and not auto_capture_wmi_activity and _skip_wmi_activity_probe(commit):
+        sample["recent_wmi_activity"] = {
+            "skipped": True,
+            "reason": "host_commit_pressure",
+        }
+    else:
+        # The WMI Activity log often records very short-lived clients after they exit.
+        # Keep process-birth polling opt-in so high-pressure samples stay cheap.
+        capture_births = _should_capture_wmi_process_births()
+        captured_processes = _capture_recent_process_births() if capture_births else {}
+        wmi_activity = _recent_wmi_activity_clients(captured_processes=captured_processes)
+        if wmi_activity:
+            wmi_activity["capture_mode"] = "auto_winmgmt_pressure" if auto_capture_wmi_activity else "manual"
+            if captured_processes:
+                wmi_activity["captured_process_count"] = len(captured_processes)
+            if int(wmi_activity.get("suspicious_query_client_count") or 0) >= 20:
+                sample["pressure_hints"] = sorted(set([*sample["pressure_hints"], "external_wmi_query_storm"]))
+            if int(wmi_activity.get("codex_tool_client_count") or 0) >= 3:
+                sample["pressure_hints"] = sorted(set([*sample["pressure_hints"], "codex_tool_wmi_queries"]))
+            if int(wmi_activity.get("exited_client_count") or 0) >= 20:
+                sample["pressure_hints"] = sorted(set([*sample["pressure_hints"], "transient_wmi_clients"]))
+            sample["recent_wmi_activity"] = wmi_activity
+            powershell_wmi = _recent_powershell_wmi_commands()
+            if powershell_wmi:
+                sample["recent_powershell_wmi_commands"] = powershell_wmi
+    critical_findings = _critical_findings(sample)
+    if critical_findings:
+        sample["critical_findings"] = critical_findings
     return sample
 
 
@@ -743,7 +1147,7 @@ def main() -> int:
     sample = collect_sample()
     path = None if args.no_write else append_sample(sample)
     if args.json:
-        print(json.dumps({"log_path": str(path) if path else "", **sample}, ensure_ascii=False, indent=2))
+        print(json.dumps({"log_path": str(path) if path else "", **sample}, ensure_ascii=True, indent=2))
         return 0
 
     commit = sample.get("commit") or {}

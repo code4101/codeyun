@@ -1,6 +1,7 @@
 import base64
 import difflib
 import asyncio
+import hashlib
 import io
 import json
 import mimetypes
@@ -19,7 +20,7 @@ from types import GeneratorType
 from typing import Any, Callable, List, Optional
 
 import requests
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -45,6 +46,7 @@ from backend.core.runtime.game_window_service import (
 )
 from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
 from backend.core.settings import get_settings
+from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
@@ -379,6 +381,7 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationDoctorWatchLatestResponse,
     FanxiuDataAnnotationRuntimeLogEntry,
     FanxiuDataAnnotationRuntimeLogResponse,
+    FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
     FanxiuDataAnnotationRuntimeStatus,
     FanxiuDataAnnotationRuntimeTaskRequest,
     FanxiuDataAnnotationRuntimeStopRequest,
@@ -488,6 +491,46 @@ from backend.core.notes.semantics import (
     normalize_note_types,
 )
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
+
+
+_DATA_ANNOTATION_OCR_FRAME_LOG_LOCK = threading.Lock()
+
+
+def _rough_data_url_payload_size(value: str) -> int:
+    payload = str(value or "").strip()
+    if "," in payload and payload.split(",", 1)[0].lower().startswith("data:"):
+        payload = payload.split(",", 1)[1]
+    payload = "".join(payload.split())
+    if not payload:
+        return 0
+    padding = payload.count("=")
+    return max(0, (len(payload) * 3 // 4) - padding)
+
+
+def _log_data_annotation_ocr_frame_request(
+    request: Request,
+    req: Any,
+    current_user: User,
+) -> None:
+    try:
+        log_dir = codeyun_temp_root("fanxiu-ocr-frame")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "event": "data_annotation_ocr_frame",
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "client": request.client.host if request.client else "",
+            "user": getattr(current_user, "username", "") or "",
+            "referer": (request.headers.get("referer") or "")[:500],
+            "origin": (request.headers.get("origin") or "")[:200],
+            "user_agent": (request.headers.get("user-agent") or "")[:300],
+            "image_chars": len(req.image_data_url or ""),
+            "image_bytes_approx": _rough_data_url_payload_size(req.image_data_url),
+        }
+        with _DATA_ANNOTATION_OCR_FRAME_LOG_LOCK:
+            with (log_dir / "requests.ndjson").open("a", encoding="utf-8") as file:
+                file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
@@ -3919,10 +3962,25 @@ def _repair_orphaned_data_annotation_scheduler_runs(tasks: list[dict[str, Any]])
 
 def _data_annotation_runtime_status() -> dict[str, Any]:
     _sync_data_annotation_runtime_runner_to_core()
-    return _core_data_annotation_runtime_status(
+    status = _core_data_annotation_runtime_status(
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
+    settings = _runtime_control.read_scheduler_settings(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    )
+    behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
+    status["behavior_tree_enabled"] = behavior_enabled
+    if not behavior_enabled:
+        status.update({
+            "service_running": False,
+            "running": False,
+            "guard_running": False,
+            "guard_group_running": False,
+            "phase": "behavior_tree_disabled",
+            "message": "行为树已关闭",
+        })
+    return status
 
 
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
@@ -5032,6 +5090,7 @@ def get_fanxiu_data_annotation_runtime_status(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
@@ -5055,10 +5114,57 @@ def get_fanxiu_data_annotation_runtime_service_status(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
             runtime_state_path=_data_annotation_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
+
+
+@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuDataAnnotationRuntimeStatus)
+def set_fanxiu_data_annotation_runtime_behavior_tree(
+    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_behavior_tree_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        enabled=req.enabled,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+@status_router.post(
+    "/data-annotation/runtime/service/behavior-tree/set",
+    response_model=FanxiuDataAnnotationRuntimeStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+)
+def set_fanxiu_data_annotation_runtime_service_behavior_tree(
+    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
+    session: Session = Depends(get_session),
+):
+    entry = _get_service_user_device_or_404(session, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.set_behavior_tree_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        enabled=req.enabled,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
 
 
 @status_router.post("/data-annotation/runtime/task/start", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -5266,7 +5372,7 @@ def tick_fanxiu_data_annotation_runtime_service_task(
 
 @status_router.get("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
 def get_fanxiu_data_annotation_runtime_logs(
-    limit: int = Query(500, ge=1, le=2000),
+    limit: int = Query(80, ge=1, le=2000),
     scope: str = Query("", max_length=64),
     item_id: str = Query("", max_length=128),
     current_user: User = Depends(get_current_active_user),
@@ -5281,23 +5387,46 @@ def get_fanxiu_data_annotation_runtime_logs(
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    entries = [
-        FanxiuDataAnnotationRuntimeLogEntry(
-            id=f"runtime-{index}",
-            time=str(item.get("time") or ""),
-            kind=str(item.get("kind") or ""),
-            scope=str(item.get("scope") or ""),
-            item_id=str(item.get("item_id") or ""),
-            message=str(item.get("message") or ""),
-            action=str(item.get("action") or ""),
-            source_file=str(item.get("source_file") or ""),
-            source_path=str(item.get("source_path") or ""),
-            source_line=item.get("source_line") if isinstance(item.get("source_line"), int) else None,
-            source_expr=str(item.get("source_expr") or ""),
-            ts="",
+    seen_ids: dict[str, int] = {}
+    entries = []
+    for item in log_items:
+        base_id = hashlib.sha1(
+            json.dumps(
+                {
+                    "time": item.get("time") or "",
+                    "kind": item.get("kind") or "",
+                    "scope": item.get("scope") or "",
+                    "item_id": item.get("item_id") or "",
+                    "message": item.get("message") or "",
+                    "action": item.get("action") or "",
+                    "source_file": item.get("source_file") or "",
+                    "source_line": item.get("source_line") or "",
+                    "source_expr": item.get("source_expr") or "",
+                    "ts": item.get("ts") or "",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        occurrence = seen_ids.get(base_id, 0)
+        seen_ids[base_id] = occurrence + 1
+        entries.append(
+            FanxiuDataAnnotationRuntimeLogEntry(
+                id=f"runtime-{base_id}-{occurrence}",
+                time=str(item.get("time") or ""),
+                kind=str(item.get("kind") or ""),
+                scope=str(item.get("scope") or ""),
+                item_id=str(item.get("item_id") or ""),
+                message=str(item.get("message") or ""),
+                action=str(item.get("action") or ""),
+                source_file=str(item.get("source_file") or ""),
+                source_path=str(item.get("source_path") or ""),
+                source_line=item.get("source_line") if isinstance(item.get("source_line"), int) else None,
+                source_expr=str(item.get("source_expr") or ""),
+                ts=str(item.get("ts") or ""),
+            )
         )
-        for index, item in enumerate(log_items)
-    ]
     return FanxiuDataAnnotationRuntimeLogResponse(entries=entries, path=str(_data_annotation_runtime_state_path()))
 
 
@@ -5556,10 +5685,12 @@ def run_due_fanxiu_data_annotation_scheduler_service_tasks(
 @status_router.post("/data-annotation/ocr-frame", response_model=FanxiuDataAnnotationOcrFrameResponse)
 def recognize_fanxiu_data_annotation_ocr_frame(
     req: FanxiuDataAnnotationOcrFrameRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _log_data_annotation_ocr_frame_request(request, req, current_user)
     try:
         return _recognize_data_annotation_ocr_frame(req.image_data_url)
     except (ValueError, RuntimeError) as exc:

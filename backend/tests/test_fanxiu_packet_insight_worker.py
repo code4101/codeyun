@@ -11,7 +11,9 @@ from backend.core.fanxiu.packet import insight_worker as worker
 
 
 @pytest.fixture(autouse=True)
-def _no_host_commit_pressure(monkeypatch):
+def _no_host_commit_pressure(monkeypatch, request):
+    if request.node.name == "test_packet_decode_pressure_thresholds_match_ocr_guard":
+        return
     monkeypatch.setattr(worker, "_host_commit_pressure_for_packet_decode", lambda: {"skip": False})
 
 
@@ -95,6 +97,33 @@ def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_
     assert result["skipped_count"] == 1
     assert result["skipped"][0]["reason"] == "host_commit_pressure"
     assert result["host_commit_pressure"]["commit"]["commit_percent"] == 94.0
+
+
+def test_packet_decode_pressure_thresholds_match_ocr_guard(monkeypatch):
+    from backend.core.runtime import ocr_service
+
+    monkeypatch.delenv(worker.PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
+
+    monkeypatch.setattr(
+        ocr_service,
+        "_windows_commit_snapshot",
+        lambda: {"commit_percent": 75.0, "commit_available_mb": 40000},
+    )
+    assert worker._host_commit_pressure_for_packet_decode()["skip"] is True
+
+    monkeypatch.setattr(
+        ocr_service,
+        "_windows_commit_snapshot",
+        lambda: {"commit_percent": 70.0, "commit_available_mb": (24 * 1024) - 1},
+    )
+    assert worker._host_commit_pressure_for_packet_decode()["skip"] is True
+
+    monkeypatch.setattr(
+        ocr_service,
+        "_windows_commit_snapshot",
+        lambda: {"commit_percent": 70.0, "commit_available_mb": 24 * 1024},
+    )
+    assert worker._host_commit_pressure_for_packet_decode()["skip"] is False
 
 
 def test_decode_max_streams_default_matches_runtime_flush_budget():

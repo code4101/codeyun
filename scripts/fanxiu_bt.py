@@ -87,6 +87,8 @@ def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         )
         return "mail_cleanup", payload
     if args.command == "task":
+        if str(args.task_type) == "go_scene" and getattr(args, "target_scene_id", ""):
+            payload["target_scene_id"] = parse_data_annotation_scene_id(args.target_scene_id)
         return str(args.task_type), payload
     raise SystemExit(f"未知命令：{args.command}")
 
@@ -273,6 +275,14 @@ def _doctor_blocking_overlays(screenshot: dict[str, Any] | None) -> list[dict[st
                         titles.append(title)
             return titles
 
+        def game_announcement_action_titles(image: dict[str, Any] | None) -> list[str]:
+            if not isinstance(image, dict):
+                return []
+            actions: list[str] = []
+            if runner._find_shape(image, "关闭公告"):
+                actions.append("关闭公告")
+            return actions
+
         data_url = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
         runner = create_fanxiu_runtime_runner()
         text = runner._ocr_text(runner._ocr_lines(data_url))
@@ -285,14 +295,10 @@ def _doctor_blocking_overlays(screenshot: dict[str, Any] | None) -> list[dict[st
         }
         if "游戏公告" in text or ("更新公告" in text and "风险提醒" in text):
             image = runner._find_asset_image_by_title(ctx, "游戏公告")
-            action_titles = []
-            if isinstance(image, dict):
-                for title in ("关闭", "空白", "返回", "退出"):
-                    if runner._find_shape(image, title):
-                        action_titles.append(title)
+            action_titles = game_announcement_action_titles(image)
             message = "检测到游戏公告遮挡"
             if not action_titles:
-                message += "；资产树「游戏公告」缺少「关闭/空白/返回/退出」动作标注，自动作业无法安全进入游戏"
+                message += "；资产树「游戏公告」缺少「关闭公告」动作标注，自动作业无法安全进入游戏"
             return [{
                 "scene_id": None,
                 "title": "游戏公告",
@@ -312,8 +318,8 @@ def _doctor_annotation_target(blocker: dict[str, Any], entry_id: str | None) -> 
     normalized = str(title or "").strip()
     if normalized == "游戏公告":
         focus_title = "游戏公告"
-        acceptable_shapes = ["关闭", "空白", "返回", "退出"]
-        description = "在资产树「游戏公告」补充可安全关闭的动作标注"
+        acceptable_shapes = ["关闭公告"]
+        description = "在资产树「游戏公告」补充「关闭公告」动作标注"
     elif normalized == "灵祖奖励浮层":
         focus_title = "灵祖奖励浮层"
         acceptable_shapes = ["关闭", "空白", "返回", "退出"]
@@ -413,7 +419,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         for item in blocking_items:
             title = str(item.get("title") or "阻断浮层")
             if title == "游戏公告":
-                action_required.append("在资产树「游戏公告」补充可安全关闭的「关闭/空白/返回/退出」动作标注")
+                action_required.append("在资产树「游戏公告」补充「关闭公告」动作标注")
             elif title == "灵祖奖励浮层":
                 action_required.append("在 #186「灵祖奖励浮层」补充可安全关闭的「关闭/空白/返回/退出」动作标注")
             else:
@@ -463,7 +469,7 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         "blocked_due_ids": [str(item.get("id") or "") for item in blocked_due],
         "action_required": action_required,
         "annotation_targets": annotation_targets,
-        "retry_condition": "阻断浮层消失且对应资产树已有安全关闭动作标注" if blocking_items else "无需特殊条件",
+        "retry_condition": "阻断浮层消失且对应资产树已有安全处理动作标注" if blocking_items else "无需特殊条件",
     }
 
 
@@ -1002,6 +1008,7 @@ def main() -> int:
 
     task = subparsers.add_parser("task", help="运行任意已注册任务类型")
     task.add_argument("task_type")
+    task.add_argument("--target-scene-id", default="", help="task_type=go_scene 时的目标场景")
     _add_task_run_options(task)
 
     tasks = subparsers.add_parser("tasks", help="查看本地已注册作业类型")

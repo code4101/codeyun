@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
@@ -58,7 +57,7 @@ class DailyResourceTaskMixin:
         accepted = 0
         upgraded = 0
         if scene_id == 255:
-            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255)
+            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)
             scene_id = 254
         if scene_id == 47:
             yield from runtime.wait_click(47, "空白")
@@ -71,7 +70,7 @@ class DailyResourceTaskMixin:
             yield from runtime.wait_click(256, "返回")
             scene_id, _score, frame = runtime.current_scene([34, 252], update=True)
 
-        if self._daily_gongfeng_upgrade_page_visible(ctx, image254, frame):
+        if self._daily_gongfeng_upgrade_page_visible(runtime, frame):
             upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, runtime)
             yield from self._close_daily_gongfeng_upgrade_pages(ctx, stop_event, payload, image254, image256, runtime)
         else:
@@ -196,16 +195,11 @@ class DailyResourceTaskMixin:
 
     def _daily_gongfeng_upgrade_page_visible(
         self,
-        ctx: dict[str, Any],
-        image254: dict[str, Any],
+        runtime: Any,
         frame: str | None = None,
     ) -> bool:
-        upgrade_shape = self._find_shape(image254, "升级")
-        if upgrade_shape is None:
-            return False
         try:
-            frame_data_url = frame or self._screencap(ctx)
-            score = float(self._shape_score(ctx, image254, upgrade_shape, frame_data_url) or 0)
+            score = runtime.shape_score(254, "升级", frame_data_url=frame)
         except Exception:
             return False
         return score >= float(self.overlay_threshold)
@@ -224,7 +218,7 @@ class DailyResourceTaskMixin:
         read_retries = max(1, int(payload.get("gongfeng_law_read_retries") or 12))
         for loop_index in range(max_upgrade + 1):
             self._raise_if_stopped(stop_event)
-            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255)
+            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)
             parsed: tuple[int, int] | None = None
             last_text = ""
             for read_index in range(read_retries):
@@ -242,9 +236,9 @@ class DailyResourceTaskMixin:
                 parsed = self._parse_daily_gongfeng_law_progress(last_text)
                 if parsed is not None:
                     break
-                if (yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255)):
+                if (yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)):
                     continue
-                yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=0.8)
+                yield from runtime.wait_action_settle(0.8)
             if parsed is None:
                 raise RuntimeError(f"日常_供奉：#254「数值」未识别到两个整数，OCR={last_text[:120]}")
             current, required = parsed
@@ -279,17 +273,15 @@ class DailyResourceTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         image255: dict[str, Any],
+        runtime: Any,
     ):
-        frame = self._screencap(ctx)
-        scene_id, _score = self._identify_scene_number(ctx, frame, [255])
+        del ctx, stop_event, image255
+        scene_id, _score, _frame = runtime.current_scene([255], update=True)
         if scene_id != 255:
             return False
-        blank = self._find_shape(image255, "空白")
-        if blank is None:
-            raise RuntimeError("日常_供奉：缺少 #255「空白」标注，无法关闭物品详情")
         self._log("action", "日常_供奉：关闭 #255 物品详情")
-        self._click_shape(ctx, image255, blank, frame)
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.2)
+        yield from runtime.wait_click(255, "空白")
+        yield from runtime.wait_action_settle(1.2)
         return True
 
     def _close_daily_gongfeng_upgrade_pages(
@@ -301,9 +293,7 @@ class DailyResourceTaskMixin:
         image256: dict[str, Any],
         runtime: FanxiuRuntime,
     ):
-        blank254 = self._find_shape(image254, "空白")
-        if blank254 is None:
-            raise RuntimeError("日常_供奉：缺少 #254「空白」标注，无法返回法则页")
+        del image254
         scene_id, score, _frame = runtime.current_scene([34, 252, 254, 256], update=True)
         if scene_id in {34, 252}:
             self._log("success", f"日常_供奉：已在收尾场景 #{scene_id} {score:.0f}%，无需关闭 #254")
@@ -324,10 +314,9 @@ class DailyResourceTaskMixin:
                 yield from runtime.wait_view(252, 34, label="日常_供奉：等待回到 #252/#34")
                 return "success"
             raise
-        frame = self._screencap(ctx)
         self._log("action", "日常_供奉：点击 #254「空白」")
-        self._click_shape(ctx, image254, blank254, frame)
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.2)
+        yield from runtime.wait_click(254, "空白")
+        yield from runtime.wait_action_settle(1.2)
         yield from runtime.wait_click(256, "返回")
         try:
             yield from runtime.wait_view(252, 34, label="日常_供奉：等待回到 #252/#34")
@@ -338,14 +327,6 @@ class DailyResourceTaskMixin:
     def _daily_gongfeng_numbers(self, text: str) -> list[int]:
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
         return [int(match) for match in re.findall(r"\d+", normalized)]
-
-    def _daily_gongfeng_join_ocr_lines(self, lines: list[dict[str, Any]]) -> str:
-        texts: list[str] = []
-        for line in lines:
-            text = str(line.get("text") or "").strip().translate(FULLWIDTH_DIGIT_TRANSLATION)
-            if text:
-                texts.append(text)
-        return " ".join(texts)
 
     def _daily_gongfeng_text_is_page(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -417,18 +398,6 @@ class DailyResourceTaskMixin:
             return max(0, int(raw))
         except ValueError:
             return None
-
-    def _daily_youli_purchase_remaining_count_from_frame(
-        self,
-        frame: str,
-        image229: dict[str, Any],
-    ) -> tuple[int | None, str]:
-        local_text = self._ocr_text(self._ocr_lines_in_shapes(frame, image229, ("剩余限购次数",), padding=12))
-        remaining = self._daily_youli_purchase_remaining_count(local_text)
-        if remaining is not None:
-            return remaining, local_text
-        full_text = self._ocr_text(self._ocr_lines(frame))
-        return self._daily_youli_purchase_remaining_count(full_text), full_text
 
     def _daily_youli_text_is_purchase_empty(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -529,17 +498,13 @@ class DailyResourceTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         scene_threshold = 95.0 if int(target_scene_id) == 228 else 80.0
-        yield from runtime.wait_any(
-            {
-                "scene": runtime.view_visible(target_scene_id, threshold=scene_threshold),
-                "text": runtime.ocr_matches(text_predicate, label=f"{label} OCR"),
-            },
+        _result, scene_id, score = yield from runtime.wait_view_or_ocr(
+            target_scene_id,
+            text_predicate,
+            view_threshold=scene_threshold,
             timeout=timeout,
             label=label,
         )
-        scene_id, score, _frame = runtime.current_scene([target_scene_id])
-        if scene_id != target_scene_id:
-            scene_id, score = target_scene_id, 0.0
         self._log("success", f"{label}：已到达 #{target_scene_id} {score:.0f}%")
         return scene_id, score
 
@@ -551,18 +516,11 @@ class DailyResourceTaskMixin:
         *,
         task_label: str,
     ):
-        blank_shape = self._find_shape(image233, "空白")
-        if blank_shape is None:
-            raise RuntimeError("日常_游历：缺少 #233「空白」标注，无法关闭限购提示")
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image233,
-            blank_shape,
-            {},
-            label=f"{task_label}：关闭购买次数不足提示",
-        )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.0)
+        del image233
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click(233, "空白", label=f"{task_label}：关闭购买次数不足提示")
+        yield from runtime.wait_action_settle(1.0)
         self._log("success", f"{task_label}：已关闭购买次数不足提示")
         return "success"
 
@@ -574,65 +532,13 @@ class DailyResourceTaskMixin:
         *,
         task_label: str,
     ):
-        blank_shape = self._find_shape(image229, "空白")
-        if blank_shape is None:
-            self._log("warning", f"{task_label}：#229 缺少「空白」标注，无法主动关闭购买弹窗")
-            return "missing"
-        yield from self._click_shape_respecting_conditions(
-            ctx,
-            stop_event,
-            image229,
-            blank_shape,
-            {},
-            label=f"{task_label}：关闭购买体力弹窗",
-        )
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=1.0)
+        del image229
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click(229, "空白", label=f"{task_label}：关闭购买体力弹窗")
+        yield from runtime.wait_action_settle(1.0)
         self._log("success", f"{task_label}：已关闭购买体力弹窗")
         return "success"
-
-    def _wait_daily_youli_purchase_result(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        image229: dict[str, Any],
-        image233: dict[str, Any],
-        *,
-        timeout: float,
-        label: str,
-    ):
-        del image229, image233
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        last_text = ""
-        while True:
-            self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            text = self._ocr_text(self._ocr_lines(frame))
-            last_text = text or last_text
-            scene_id, score = self._identify_scene_number(ctx, frame, [233, 229, 228])
-            last_scene_id, last_score = scene_id, score
-            if scene_id == 229 or self._daily_youli_text_is_purchase(text):
-                self._log("success", f"{label}：进入 #229 游历购买体力")
-                return 229
-            if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
-                self._log("success", f"{label}：进入 #233 购买次数不足")
-                return 233
-            if scene_id == 228:
-                self._log("success", f"{label}：购买页未打开，仍在 #228")
-                return 228
-            with self._lock:
-                self._status.update({
-                    "phase": "daily_youli_wait_purchase_result",
-                    "current_scene": scene_id,
-                    "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
-                    "updated_at": time.time(),
-                })
-            if time.monotonic() - start >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                raise RuntimeError(f"{label} 超时，未检测到 #229/#233，最后 {scene_text} {last_score:.0f}%，OCR={last_text[:120]}")
 
     def _click_daily_youli_purchase_uses(
         self,
@@ -644,16 +550,14 @@ class DailyResourceTaskMixin:
         *,
         task_label: str,
     ):
-        use_shape = self._find_shape(image229, "购买并使用")
-        if use_shape is None:
-            raise RuntimeError("日常_游历：缺少 #229「购买并使用」标注，无法购买体力")
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_count = int(payload.get("purchase_uses") or payload.get("buy_uses") or 99)
         clicked = 0
         while clicked < max_count:
-            yield from self._wait_scene_id(
-                ctx,
-                stop_event,
+            yield from runtime.wait_view_or_ocr(
                 229,
+                self._daily_youli_text_is_purchase,
                 timeout=float(payload.get("purchase_timeout") or 10.0),
                 label=f"{task_label}：等待购买体力 #229",
             )
@@ -663,13 +567,13 @@ class DailyResourceTaskMixin:
             read_timeout = float(payload.get("purchase_remaining_timeout") or 5.0)
             while True:
                 self._raise_if_stopped(stop_event)
-                frame = self._screencap(ctx)
-                remaining, text = self._daily_youli_purchase_remaining_count_from_frame(frame, image229)
+                numbers, text = runtime.ocr_numbers_in_shapes(229, ("剩余限购次数",), padding=12)
+                remaining = numbers[-1] if numbers else None
                 if remaining is not None:
                     break
                 if time.monotonic() - read_start >= read_timeout:
                     break
-                yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=0.5)
+                yield from runtime.wait_action_settle(0.5)
             if remaining is None:
                 self._log("warning", f"{task_label}：未识别到剩余限购次数，停止购买，OCR={text[:120]}")
                 yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
@@ -679,25 +583,12 @@ class DailyResourceTaskMixin:
                 yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
                 break
             target_count = min(max_count, clicked + remaining)
-            yield from self._click_shape_respecting_conditions(
-                ctx,
-                stop_event,
-                image229,
-                use_shape,
-                payload,
-                label=f"{task_label}：购买并使用 {clicked + 1}/{target_count}",
-                timeout_key="purchase_click_timeout",
-            )
+            yield from runtime.wait_click(229, "购买并使用")
             clicked += 1
-            yield from self._wait_runtime_action_settle(
-                ctx,
-                stop_event,
-                seconds=float(payload.get("purchase_click_settle_seconds") or 1.2),
-            )
-            frame = self._screencap(ctx)
-            _remaining_after, text = self._daily_youli_purchase_remaining_count_from_frame(frame, image229)
+            yield from runtime.wait_action_settle(float(payload.get("purchase_click_settle_seconds") or 1.2))
+            scene_id, _score, frame = runtime.current_scene([233, 229], update=True)
+            text = runtime.ocr_text(frame)
             self._log("detail", f"{task_label}：购买并使用 {clicked}/{target_count} 后 OCR={text[:120]}")
-            scene_id, _score = self._identify_scene_number(ctx, frame, [233, 229])
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
                 yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label)
                 break
@@ -705,9 +596,8 @@ class DailyResourceTaskMixin:
                 self._log("success", f"{task_label}：购买弹窗已关闭，停止购买")
                 break
         if clicked > 0:
-            frame = self._screencap(ctx)
-            scene_id, _score = self._identify_scene_number(ctx, frame, [229, 228, 233])
-            text = self._ocr_text(self._ocr_lines(frame))
+            scene_id, _score, frame = runtime.current_scene([229, 228, 233], update=True)
+            text = runtime.ocr_text(frame)
             if scene_id == 229 or self._daily_youli_text_is_purchase(text):
                 yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
         self._log("success", f"{task_label}：购买并使用完成 {clicked}")
@@ -724,37 +614,17 @@ class DailyResourceTaskMixin:
         *,
         task_label: str,
     ):
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         yield from self._wait_daily_youli_home(
             ctx,
             stop_event,
             label="日常_游历：等待修仙传游历 #228",
         )
-        search_shape = self._find_shape(image228, "检索区域")
-        if search_shape is None:
-            raise RuntimeError("日常_游历：缺少 #228「检索区域」标注，无法选择游历区域")
-        frame = self._screencap(ctx)
-        lines = self._ocr_lines(frame)
-        box = self._box(search_shape, image228)
-        left = float(box.get("x") or 0)
-        top = float(box.get("y") or 0)
-        right = left + float(box.get("w") or 0)
-        bottom = top + float(box.get("h") or 0)
-        candidates: list[tuple[float, float, str]] = []
-        for line in lines:
-            text = _sanitize_ocr_text(line.get("text"))
-            if not text:
-                continue
-            x = float(line.get("x") or 0)
-            y = float(line.get("y") or 0)
-            w = float(line.get("w") or 0)
-            h = float(line.get("h") or 0)
-            cx = x + w / 2
-            cy = y + h / 2
-            if left <= cx <= right and top <= cy <= bottom:
-                candidates.append((cx, cy, text))
+        candidates = runtime.ocr_row_clicks_in_shape(228, "检索区域", include=())
         if not candidates:
             raise RuntimeError("日常_游历：#228「检索区域」内未识别到可点击 OCR 文本")
-        x, y, text = sorted(candidates, key=lambda item: (item[1], item[0]))[-1]
+        x, y, text = candidates[-1]
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -763,8 +633,8 @@ class DailyResourceTaskMixin:
                 current_scene=228,
             )
             self._log_locked("action", f"{task_label}：点击 #228 检索区域最后 OCR「{text}」")
-        self._click_frame_point(ctx, image228, x, y)
-        yield from self._wait_runtime_action_settle(ctx, stop_event, seconds=float(payload.get("region_click_settle_seconds") or 2.0))
+        runtime.click_frame_point(228, x, y)
+        yield from runtime.wait_action_settle(float(payload.get("region_click_settle_seconds") or 2.0))
         yield from self._wait_daily_youli_region_detail(
             ctx,
             stop_event,

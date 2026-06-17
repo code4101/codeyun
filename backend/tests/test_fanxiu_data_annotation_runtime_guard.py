@@ -30,6 +30,7 @@ from backend.api.fanxiu import (
 )
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
+from backend.core.fanxiu.data_annotation import popup_guard as popup_guard_core
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_scheduler_time_order_key,
     repair_data_annotation_scheduler_tasks,
@@ -168,6 +169,53 @@ def test_runtime_ocr_matches_wraps_predicate(monkeypatch):
 
     assert result.matched is True
     assert "游历首页 OCR 命中" in result.detail
+
+
+def test_runtime_wait_view_or_ocr_returns_branch_and_scene(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    runtime = runtime_runner_core.FanxiuRuntime(runner, {"images": {}}, stop_event=threading.Event())
+    actions: list[tuple] = []
+
+    def fake_view_visible(view, **kwargs):
+        actions.append(("view_visible", view, kwargs))
+        return ("view_visible", view)
+
+    def fake_ocr_matches(predicate, **kwargs):
+        actions.append(("ocr_matches", predicate("修仙传 游历"), kwargs))
+        return ("ocr_matches", kwargs)
+
+    def fake_wait_any(conditions, **kwargs):
+        actions.append(("wait_any", conditions, kwargs))
+        if False:
+            yield None
+        return "text"
+
+    monkeypatch.setattr(runtime, "view_visible", fake_view_visible)
+    monkeypatch.setattr(runtime, "ocr_matches", fake_ocr_matches)
+    monkeypatch.setattr(runtime, "wait_any", fake_wait_any)
+    monkeypatch.setattr(runtime, "current_scene", lambda views: (None, 0.0, "frame"))
+
+    result = _drain_generator(runtime.wait_view_or_ocr(
+        228,
+        lambda text: "游历" in text,
+        view_threshold=95.0,
+        timeout=7,
+        label="等待游历首页",
+    ))
+
+    assert result == ("text", 228, 0.0)
+    assert actions == [
+        ("view_visible", 228, {"threshold": 95.0}),
+        ("ocr_matches", True, {"label": "等待游历首页 OCR"}),
+        (
+            "wait_any",
+            {
+                "scene": ("view_visible", 228),
+                "text": ("ocr_matches", {"label": "等待游历首页 OCR"}),
+            },
+            {"timeout": 7, "label": "等待游历首页"},
+        ),
+    ]
 
 
 def _build_service_client(session: Session) -> TestClient:
@@ -672,6 +720,74 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
     assert clicked[0]["input_backend"] == "adb"
 
 
+def test_shape_ocr_reuses_existing_full_frame_cache(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("世界下方菜单", "0035.png")
+    shape = {
+        "id": "mail",
+        "kind": "rect",
+        "title": "邮件",
+        "imageMatchRole": "off",
+        "ocrText": "邮件",
+        "ocrMatchRole": "required",
+        "x": 0.1,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+    }
+    ctx = {
+        "entry": type("Entry", (), {"mode": "local"})(),
+        "_ocr_lines_cache": {
+            "frame": "frame",
+            "lines": [{"text": "邮件", "x": 100, "y": 170, "w": 80, "h": 30}],
+        },
+    }
+
+    monkeypatch.setattr(runner, "_run_match", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should reuse cached OCR")))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not run full-frame OCR")))
+
+    result = runner._match_shape(ctx, image, shape, "frame", condition="ocr")
+
+    assert result["matched"] is True
+    assert result["similarity"] == 100
+    assert result["ocr_text"] == "邮件"
+    assert result["reason"] == "cached_frame_ocr"
+
+
+def test_shape_ocr_cache_miss_does_not_repeat_ocr(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("世界下方菜单", "0035.png")
+    shape = {
+        "id": "mail",
+        "kind": "rect",
+        "title": "邮件",
+        "imageMatchRole": "off",
+        "ocrText": "邮件",
+        "ocrMatchRole": "required",
+        "x": 0.1,
+        "y": 0.1,
+        "w": 0.2,
+        "h": 0.1,
+    }
+    ctx = {
+        "entry": type("Entry", (), {"mode": "local"})(),
+        "_ocr_lines_cache": {
+            "frame": "frame",
+            "lines": [{"text": "邮件", "x": 700, "y": 1400, "w": 80, "h": 30}],
+        },
+    }
+
+    monkeypatch.setattr(runner, "_run_match", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("cache is decisive for this frame")))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not run full-frame OCR")))
+
+    result = runner._match_shape(ctx, image, shape, "frame", condition="ocr")
+
+    assert result["matched"] is False
+    assert result["similarity"] == 0
+    assert result["matches"] == []
+    assert result["reason"] == "cached_frame_ocr"
+
+
 def test_click_floating_required_ocr_shape_does_not_fallback_to_raw_box(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image = _image("世界下方菜单", "0035.png")
@@ -935,7 +1051,7 @@ def test_popup_score_can_fallback_to_plain_shapes(monkeypatch):
     blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
     image = _image("所有提示窗口", "0047.jpg", [blank_shape])
 
-    monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame: 80)
+    monkeypatch.setattr(runner, "_shape_score", lambda _ctx, _image, _shape, _frame, **_kwargs: 80)
 
     assert runner._popup_score({"entry": object()}, image, "frame") == 80
 
@@ -1012,7 +1128,40 @@ def test_shape_score_uses_ocr_fallback_when_image_score_is_below_scene_threshold
     assert calls == [False, True]
 
 
-def test_scene_score_uses_best_scene_identity_shape(monkeypatch):
+def test_shape_score_caches_missing_reference_image(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {"id": "confirm", "kind": "rect", "title": "确认", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}
+    image = _image("仙缘挑战提示", "0201.png", [shape])
+    calls: list[str] = []
+
+    def fake_run_match(_ctx, _image, _shape, _frame, **_kwargs):
+        calls.append("match")
+        raise RuntimeError("400: 截图不存在：0201.png")
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    assert runner._shape_score({"entry": object()}, image, shape, "frame") == 0
+    assert runner._shape_score({"entry": object()}, image, shape, "frame") == 0
+    assert calls == ["match"]
+
+
+def test_popup_score_does_not_scan_fallback_for_every_candidate(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0, "y": 0, "w": 1, "h": 1}
+    image = _image("弹窗", "0047.png", [shape])
+    calls: list[bool] = []
+
+    def fake_run_match(_ctx, _image, _shape, _frame, **kwargs):
+        calls.append(bool(kwargs.get("scan")))
+        return {"similarity": 0, "matches": []}
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    assert runner._popup_score({"entry": object()}, image, "frame") == 0
+    assert calls == [False]
+
+
+def test_scene_score_requires_all_scene_identity_shapes(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     first_shape = {"id": "closed-menu", "kind": "rect", "title": "打开下方菜单", "isSceneIdentity": True}
     second_shape = {"id": "map", "kind": "rect", "title": "大地图", "isSceneIdentity": True}
@@ -1023,7 +1172,14 @@ def test_scene_score_uses_best_scene_identity_shape(monkeypatch):
 
     monkeypatch.setattr(runner, "_shape_score", fake_shape_score)
 
-    assert runner._scene_score({"entry": object()}, image, "frame") == 100
+    assert runner._scene_score({"entry": object()}, image, "frame") == 0
+
+    def fake_passing_shape_score(_ctx, _image, shape, _frame, **_kwargs):
+        return 90 if shape["id"] == "closed-menu" else 100
+
+    monkeypatch.setattr(runner, "_shape_score", fake_passing_shape_score)
+
+    assert runner._scene_score({"entry": object()}, image, "frame") == 90
 
 
 def test_scene_score_enforces_required_ocr_role(monkeypatch):
@@ -1077,6 +1233,48 @@ def test_scene_route_candidates_include_leave_confirmation_popup():
     ]
 
     assert 86 in runner._scene_route_candidate_ids(tree, 34)
+
+
+def test_scene_jump_20_to_34_unknown_clicks_world_blank_once(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    back_shape = {"id": "back", "kind": "rect", "title": "回到世界", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
+    blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}
+    image20 = _image("绿瓶", "0020.png", [back_shape])
+    image34 = _image("世界", "0034.png", [blank_shape])
+    tree = [image20, image34]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {"entry": object(), "asset_tree": tree, "asset_tree_path": path, "images": {20: image20, 34: image34}}
+    frames = iter(["unknown-popup", "world"])
+    clicked: list[tuple[str, float, float]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+    def identify(_ctx, frame, preferred_scene_ids=None):
+        if frame == "world" and (preferred_scene_ids is None or 34 in preferred_scene_ids):
+            return 34, 100.0
+        return None, 0.0
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", identify)
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], x, y)))
+
+    result = _drain_generator(runner._wait_scene_jump_result(
+        ctx,
+        path,
+        tree,
+        source_scene_id=20,
+        target_scene_id=34,
+        edge={"source_id": 20, "image": image20, "shape": back_shape, "target_ids": [34]},
+        stop_event=FakeStopEvent(),
+    ))
+
+    assert result == 34
+    assert clicked == [("世界", 270.0, 560.0)]
+    assert any("#34「空白」" in log["message"] for log in runner.status()["logs"])
 
 
 def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monkeypatch):
@@ -1653,14 +1851,14 @@ def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate(monkeypatch)
     runner = create_fanxiu_runtime_runner()
     candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(12)]
     created_workers: list[int] = []
-    real_executor = runtime_runner_core.ThreadPoolExecutor
+    real_executor = popup_guard_core.ThreadPoolExecutor
 
     class SpyExecutor(real_executor):
         def __init__(self, *args, **kwargs):
             created_workers.append(int(kwargs.get("max_workers") or args[0]))
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(runtime_runner_core, "ThreadPoolExecutor", SpyExecutor)
+    monkeypatch.setattr(popup_guard_core, "ThreadPoolExecutor", SpyExecutor)
     monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "图11" else 0)
 
     scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
@@ -1669,7 +1867,7 @@ def test_popup_guard_parallel_scoring_uses_one_worker_per_candidate(monkeypatch)
     assert scores == [0] * 11 + [70]
 
 
-def test_popup_guard_parallel_scoring_reuses_full_frame_ocr(monkeypatch):
+def test_popup_guard_parallel_scoring_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     candidates = [
         {
@@ -1697,27 +1895,52 @@ def test_popup_guard_parallel_scoring_reuses_full_frame_ocr(monkeypatch):
         for index in range(3)
     ]
     ocr_calls: list[str] = []
-    run_match_calls: list[str] = []
+    run_match_calls: list[tuple[str, bool]] = []
 
     def fake_ocr_lines(frame):
         ocr_calls.append(frame)
         return [{"text": "目标弹窗", "x": 100, "y": 170, "w": 120, "h": 30}]
 
     monkeypatch.setattr(runner, "_ocr_lines", fake_ocr_lines)
-    monkeypatch.setattr(
-        runner,
-        "_run_match",
-        lambda _ctx, image, *_args, **_kwargs: run_match_calls.append(image["title"]) or {"similarity": 0, "matches": []},
-    )
+    def fake_run_match(_ctx, image, _shape, _frame, **kwargs):
+        ocr_enabled = bool(kwargs.get("ocr_enabled"))
+        run_match_calls.append((image["title"], ocr_enabled))
+        if image["title"] == "图2" and ocr_enabled:
+            return {
+                "similarity": 100,
+                "matches": [{"text": "目标弹窗", "x": 100, "y": 170, "w": 120, "h": 30}],
+                "fixed_box": {"x": 100, "y": 170, "w": 120, "h": 30},
+            }
+        return {"similarity": 0, "matches": []}
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
 
     scores = runner._auto_close_popup_candidate_scores_parallel({"entry": object()}, candidates, "frame")
 
     assert scores == [0.0, 0.0, 100.0]
-    assert ocr_calls == ["frame"]
-    assert run_match_calls == []
+    assert ocr_calls == []
+    assert sorted(run_match_calls) == [("图0", True), ("图1", True), ("图2", True)]
 
 
-def test_scene_number_scan_reuses_full_frame_ocr(monkeypatch):
+def test_popup_guard_first_match_scores_candidates_once(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    candidates = [{"image": _image(f"图{index}", f"{index:04d}.jpg")} for index in range(3)]
+    calls: list[int] = []
+
+    def fake_scores(_ctx, score_candidates, _frame):
+        calls.append(len(score_candidates))
+        return [0.0, 100.0, 100.0]
+
+    monkeypatch.setattr(runner, "_auto_close_popup_candidate_scores_parallel", fake_scores)
+
+    candidate, score = runner._auto_close_popup_first_match({"entry": object()}, candidates, "frame")
+
+    assert candidate is candidates[1]
+    assert score == 100
+    assert calls == [3]
+
+
+def test_scene_number_uses_shape_ocr_without_full_frame_prefetch(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image(
         "世界",
@@ -1763,24 +1986,31 @@ def test_scene_number_scan_reuses_full_frame_ocr(monkeypatch):
     )
     ctx = {"entry": object(), "images": {34: image34, 35: image35}}
     ocr_calls: list[str] = []
-    run_match_calls: list[str] = []
+    run_match_calls: list[tuple[str, bool]] = []
 
     def fake_ocr_lines(frame):
         ocr_calls.append(frame)
         return [{"text": "大地图", "x": 100, "y": 170, "w": 120, "h": 30}]
 
     monkeypatch.setattr(runner, "_ocr_lines", fake_ocr_lines)
-    monkeypatch.setattr(
-        runner,
-        "_run_match",
-        lambda _ctx, image, *_args, **_kwargs: run_match_calls.append(image["title"]) or {"similarity": 0, "matches": []},
-    )
+    def fake_run_match(_ctx, image, _shape, _frame, **kwargs):
+        ocr_enabled = bool(kwargs.get("ocr_enabled"))
+        run_match_calls.append((image["title"], ocr_enabled))
+        if image["title"] == "世界" and ocr_enabled:
+            return {
+                "similarity": 100,
+                "matches": [{"text": "大地图", "x": 100, "y": 170, "w": 120, "h": 30}],
+                "fixed_box": {"x": 100, "y": 170, "w": 120, "h": 30},
+            }
+        return {"similarity": 0, "matches": []}
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
 
     scene_id, score = runner._identify_scene_number(ctx, "frame")
 
     assert (scene_id, score) == (34, 100)
-    assert ocr_calls == ["frame"]
-    assert run_match_calls == []
+    assert ocr_calls == []
+    assert run_match_calls == [("世界", True), ("菜单", True)]
 
 
 def test_popup_guard_parallel_scoring_is_faster_than_serial_for_independent_candidates(tmp_path, monkeypatch):
@@ -2060,6 +2290,9 @@ def test_manual_job_queue_orders_by_group_then_created_at(tmp_path, monkeypatch)
 
 def test_runtime_scene_candidates_use_only_global_primary_frames_without_context():
     runner = create_fanxiu_runtime_runner()
+    image20 = _image("绿瓶", "0020.png", [
+        {"id": "green-bottle-id", "kind": "rect", "title": "绿瓶", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
     image34 = _image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
     ])
@@ -2076,13 +2309,14 @@ def test_runtime_scene_candidates_use_only_global_primary_frames_without_context
     ])
     image34["children"] = [image35]
     tree = [
+        {"type": "folder", "title": "绿瓶", "children": [image20]},
         {"type": "folder", "title": "世界", "children": [image34]},
         {"type": "folder", "title": "弹窗", "children": [image47, image86]},
         {"type": "folder", "title": "日常", "children": [image198, image204]},
     ]
-    ctx = {"asset_tree": tree, "images": {34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 204: image204}}
+    ctx = {"asset_tree": tree, "images": {20: image20, 34: image34, 35: image35, 47: image47, 86: image86, 198: image198, 204: image204}}
 
-    assert runner._runtime_scene_candidate_ids(ctx) == [34, 204]
+    assert runner._runtime_scene_candidate_ids(ctx) == [20, 34, 204]
     assert runner._runtime_popup_scene_candidate_ids(ctx) == [47, 86]
 
 
@@ -2615,6 +2849,20 @@ def _fake_daily_shuangxiu_finish(runner):
     return finish
 
 
+def _patch_real_fanxiu_runtime(monkeypatch, runner):
+    monkeypatch.setattr(
+        runner,
+        "_fanxiu_runtime",
+        lambda runtime_ctx, asset_tree_path=None, frame_data_url=None, stop_event=None, **_kwargs: runtime_runner_core.FanxiuRuntime(
+            runner,
+            runtime_ctx,
+            asset_tree_path=asset_tree_path,
+            frame_data_url=frame_data_url,
+            stop_event=stop_event,
+        ),
+    )
+
+
 def test_daily_shuangxiu_opens_daily_entry_from_69(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image34 = _image("世界", "0034.png", [])
@@ -2645,7 +2893,7 @@ def test_daily_shuangxiu_opens_daily_entry_from_69(tmp_path, monkeypatch):
         "asset_tree_path": tmp_path / "asset_tree.json",
         "images": {34: image34, 69: image69, 215: image215, 216: image216, 217: image217, 218: image218, 219: image219, 221: image221},
     }
-    frames = iter(["initial-daily", "daily-list"])
+    frames = iter(["initial-daily", "daily-list", "secret"])
     clicked: list[tuple[float, float]] = []
 
     monkeypatch.setattr(
@@ -2660,7 +2908,7 @@ def test_daily_shuangxiu_opens_daily_entry_from_69(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (69, 100.0))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _ids=None: (215, 100.0) if frame == "secret" else (69, 100.0))
     monkeypatch.setattr(
         runner,
         "_ocr_lines",
@@ -2682,12 +2930,7 @@ def test_daily_shuangxiu_opens_daily_entry_from_69(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_wait_daily_shuangxiu_complete", lambda *_args, **_kwargs: iter(()))
     monkeypatch.setattr(runner, "_finish_daily_shuangxiu_after_continue", _fake_daily_shuangxiu_finish(runner))
 
-    def fake_wait_scene_id(*_args, **_kwargs):
-        if False:
-            yield None
-        return 215, 100.0
-
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._execute_daily_shuangxiu_task(ctx, threading.Event(), {}),
@@ -2732,7 +2975,7 @@ def test_daily_shuangxiu_clicks_first_book_when_already_on_215(tmp_path, monkeyp
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "secret-page")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (215, 100.0))
     monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "秘术", "x": 120.0, "y": 120.0, "w": 100.0, "h": 40.0}])
@@ -2786,7 +3029,7 @@ def test_daily_shuangxiu_clicks_invite_when_already_on_detail(tmp_path, monkeypa
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "detail-page")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
     monkeypatch.setattr(
@@ -2847,7 +3090,7 @@ def test_daily_shuangxiu_clicks_xianyuan_when_already_on_invite(tmp_path, monkey
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "invite-page")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
     monkeypatch.setattr(
@@ -2907,7 +3150,7 @@ def test_daily_shuangxiu_clicks_partner_when_already_on_xianyuan_list(tmp_path, 
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "xianyuan-list")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
     monkeypatch.setattr(
@@ -2968,7 +3211,7 @@ def test_daily_shuangxiu_clicks_start_when_already_on_training_ready(tmp_path, m
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "training-ready")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
     monkeypatch.setattr(
@@ -3028,7 +3271,7 @@ def test_daily_shuangxiu_clicks_continue_when_already_on_complete(tmp_path, monk
     }
     clicked: list[tuple[float, float]] = []
 
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: object())
+    _patch_real_fanxiu_runtime(monkeypatch, runner)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "complete-page")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (None, 0.0))
     monkeypatch.setattr(
@@ -3971,8 +4214,7 @@ def test_daily_assistant_full_group_returns_to_daily_by_default(monkeypatch):
     ])
     ctx = {"entry": object(), "images": {204: image204}}
     groups: list[str] = []
-    clicked: list[tuple[float, float]] = []
-    waited: list[int] = []
+    runtime_calls: list[tuple] = []
 
     def fake_group(_ctx, _stop_event, _payload, _image204, group):
         groups.append(group)
@@ -3980,15 +4222,32 @@ def test_daily_assistant_full_group_returns_to_daily_by_default(monkeypatch):
             yield None
         return [(group, "ok")]
 
-    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
-        waited.append(scene_id)
-        if False:
-            yield None
-        return scene_id, 100
+    class FakeRuntime:
+        def current_scene(self, view_ids=None, **kwargs):
+            scene_id, score = next(identify_calls)
+            runtime_calls.append(("current_scene", tuple(view_ids or ()), kwargs))
+            return scene_id, score, "frame"
+
+        def ocr_text(self, frame):
+            runtime_calls.append(("ocr_text", frame))
+            return ""
+
+        def wait_click(self, view_id, shape, **kwargs):
+            runtime_calls.append(("wait_click", view_id, shape, kwargs))
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            runtime_calls.append(("wait_view", view_ids, kwargs))
+            if False:
+                yield None
+            return view_ids[0]
 
     monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fake_group)
-    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {}),
@@ -3998,8 +4257,10 @@ def test_daily_assistant_full_group_returns_to_daily_by_default(monkeypatch):
 
     assert result == "success"
     assert groups == ["完整小助手"]
-    assert clicked == [(78.8, 1524.0)]
-    assert waited == [69]
+    assert runtime_calls == [
+        ("wait_click", 204, "返回", {}),
+        ("wait_view", (69,), {"label": "日常_助手：等待返回日常页"}),
+    ]
 
 
 def test_daily_assistant_empty_items_are_respected_and_only_return(monkeypatch):
@@ -4008,21 +4269,28 @@ def test_daily_assistant_empty_items_are_respected_and_only_return(monkeypatch):
         {"id": "back", "kind": "rect", "title": "返回", "x": 0.045, "y": 0.925, "w": 0.085, "h": 0.055},
     ])
     ctx = {"entry": object(), "images": {204: image204}}
-    clicked: list[tuple[float, float]] = []
-    waited: list[int] = []
+    runtime_calls: list[tuple] = []
 
     def fail_group(*_args, **_kwargs):
         raise AssertionError("empty assistant_items must not fall back to default full group")
 
-    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
-        waited.append(scene_id)
-        if False:
-            yield None
-        return scene_id, 100
+    class FakeRuntime:
+        def wait_click(self, view_id, shape, **kwargs):
+            runtime_calls.append(("wait_click", view_id, shape, kwargs))
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            runtime_calls.append(("wait_view", view_ids, kwargs))
+            if False:
+                yield None
+            return view_ids[0]
 
     monkeypatch.setattr(runner, "_run_daily_assistant_group_from_list", fail_group)
-    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._run_daily_assistant_from_list(
@@ -4035,8 +4303,10 @@ def test_daily_assistant_empty_items_are_respected_and_only_return(monkeypatch):
     )
 
     assert result == "success"
-    assert clicked == [(78.8, 1524.0)]
-    assert waited == [69]
+    assert runtime_calls == [
+        ("wait_click", 204, "返回", {}),
+        ("wait_view", (69,), {"label": "日常_助手：等待返回日常页"}),
+    ]
 
 
 def test_daily_assistant_reuses_bottom_reached_for_missing_floating_items(monkeypatch):
@@ -4092,6 +4362,7 @@ def test_daily_assistant_reuses_bottom_reached_for_missing_floating_items(monkey
 def test_daily_assistant_can_resume_from_214_complete_popup(monkeypatch, tmp_path):
     runner = create_fanxiu_runtime_runner()
     asset_tree_path = tmp_path / "asset_tree.json"
+    asset_tree_path.write_text("[]", encoding="utf-8")
     image34 = _image("世界", "0034.png", [])
     image69 = _image("日常", "0069.png", [])
     image204 = _image("小助手清单", "0204.png", [])
@@ -4101,17 +4372,12 @@ def test_daily_assistant_can_resume_from_214_complete_popup(monkeypatch, tmp_pat
     ctx = {"entry": object(), "asset_tree_path": asset_tree_path, "images": {34: image34, 69: image69, 204: image204, 214: image214}}
     clicked: list[tuple[str, float, float]] = []
     ran_list: list[bool] = []
+    frames = iter(["frame-214", "frame-204"])
 
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame-214")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (214, 100.0))
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, frame, _ids: (214, 100.0) if frame == "frame-214" else (204, 100.0))
     monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "指教完成 继续"}])
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, image, x, y: clicked.append((image["title"], round(x, 1), round(y, 1))))
-
-    def fake_wait_scene_id(_ctx, _stop_event, scene_id, **_kwargs):
-        assert scene_id == 204
-        if False:
-            yield None
-        return scene_id, 100
 
     def fake_run_from_list(_ctx, _stop_event, _payload):
         ran_list.append(True)
@@ -4119,7 +4385,7 @@ def test_daily_assistant_can_resume_from_214_complete_popup(monkeypatch, tmp_pat
             yield None
         return "success"
 
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene_id)
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
     monkeypatch.setattr(runner, "_run_daily_assistant_from_list", fake_run_from_list)
 
     result = runner._run_direct_runtime_action(
@@ -4276,11 +4542,74 @@ def test_leave_scene_confirm_ocr_prefers_86_over_false_24(monkeypatch):
             {"text": "取消确认", "x": 260.0, "y": 1036.0, "w": 393.0, "h": 47.0},
         ],
     )
-    monkeypatch.setattr(runner, "_scene_number_scan_has_ocr_identity", lambda _ctx: True)
-
     scene_id, score = runner._identify_scene_number(ctx, "frame", [24, 86])
 
     assert (scene_id, score) == (86, 100.0)
+
+
+def test_scene_number_does_not_prefetch_unrelated_ocr_identity(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image("世界", "0034.png", [
+        {"id": "world-id", "kind": "rect", "title": "世界标识", "sceneIdentityRole": "required", "sceneIdentityScope": "global"},
+    ])
+    image999 = _image("其它OCR场景", "0999.png", [
+        {
+            "id": "ocr-id",
+            "kind": "rect",
+            "title": "OCR身份",
+            "sceneIdentityRole": "required",
+            "sceneIdentityScope": "global",
+            "ocrEnabled": True,
+            "ocrMatchRole": "required",
+            "ocrText": "其它",
+        },
+    ])
+    ctx = {"images": {34: image34, 999: image999}}
+    ocr_calls: list[str] = []
+
+    monkeypatch.setattr(runner, "_runtime_scene_candidate_ids", lambda _ctx: [34])
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: ocr_calls.append("ocr") or [])
+    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: 100.0 if image is image34 else 0.0)
+
+    assert runner._identify_scene_number(ctx, "frame") == (34, 100.0)
+    assert ocr_calls == []
+
+
+def test_scene_number_uses_shape_ocr_rule_without_entry_prefetch(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    target_text = "当前没有可执行的事项"
+    image208 = _image("小助手无可执行事项", "0208.png", [
+        {
+            "id": "empty-id",
+            "kind": "rect",
+            "title": "当前没有可执行的事项",
+            "sceneIdentityRole": "required",
+            "sceneIdentityScope": "local",
+            "imageMatchRole": "off",
+            "ocrEnabled": True,
+            "ocrMatchRole": "required",
+            "ocrText": target_text,
+        },
+    ])
+    ctx = {"images": {208: image208}}
+    ocr_prefetch_calls: list[str] = []
+    run_match_calls: list[bool] = []
+
+    monkeypatch.setattr(runner, "_cached_ocr_lines", lambda _ctx, _frame: ocr_prefetch_calls.append("prefetch") or [])
+
+    def fake_run_match(_ctx, _image, _shape, _frame, **kwargs):
+        run_match_calls.append(bool(kwargs.get("ocr_enabled")))
+        return {
+            "similarity": 100,
+            "matches": [{"text": target_text, "x": 100, "y": 200, "w": 240, "h": 40}],
+            "fixed_box": {"x": 100, "y": 200, "w": 240, "h": 40},
+        }
+
+    monkeypatch.setattr(runner, "_run_match", fake_run_match)
+
+    assert runner._identify_scene_number(ctx, "frame", [208]) == (208, 100.0)
+    assert run_match_calls == [True]
+    assert ocr_prefetch_calls == []
 
 
 def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monkeypatch):
@@ -4311,6 +4640,11 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
             if False:
                 yield BehaviorTreeStatus.RUNNING
 
+        def scroll_shape_content(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return False
+
     def fake_identify(_ctx, frame, _preferred):
         if frame == "scene-inside":
             return 69, 100.0
@@ -4334,11 +4668,6 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
             yield BehaviorTreeStatus.RUNNING
         return "success"
 
-    def fake_list_load(self, runtime):
-        runtime.attrs["load_new"] = False
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
     monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
@@ -4347,7 +4676,6 @@ def test_mail_cleanup_leaves_world_side_scene_before_opening_mail(tmp_path, monk
     monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
     monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_mail)
     monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(runtime_runner_core.Shape, "load", fake_list_load)
 
     result = runner._run_direct_runtime_action(
         lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 1, "max_scrolls": 1}),
@@ -4974,7 +5302,43 @@ def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
     assert reopened == [True]
 
 
-def test_mail_world_menu_ocr_click_uses_mail_shape_lower_point_when_available():
+def test_mail_cleanup_wait_returns_detail_still_open_after_short_delay(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image121 = _image("邮件", "0121.png", [])
+    image122 = _image("邮件内容", "0122.png", [])
+    ctx = {"images": {121: image121, 122: image122}}
+    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
+    times = [0.0, 4.0]
+
+    class FakeTime:
+        @staticmethod
+        def monotonic():
+            return times.pop(0) if times else 4.0
+
+        @staticmethod
+        def time():
+            return 0.0
+
+    monkeypatch.setitem(runner._wait_mail_list_or_reopen_from_world_after_action.__globals__, "time", FakeTime)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _targets: (122, 100.0))
+    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [])
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._wait_mail_list_or_reopen_from_world_after_action(
+            runtime,
+            runtime_runner_core.View(image122),
+            timeout=18.0,
+            label="邮件_清理：返回邮件 #121",
+        ),
+        stop_event=runtime.stop_event,
+        tick_seconds=0.01,
+    )
+
+    assert result == "detail_still_open"
+
+
+def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
     runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
@@ -4988,7 +5352,7 @@ def test_mail_world_menu_ocr_click_uses_mail_shape_lower_point_when_available():
     x, y = runner._mail_world_menu_icon_click_point(image35, 360.0, 1548.0)
 
     assert 495 <= x <= 500
-    assert 1540 <= y <= 1545
+    assert 1510 <= y <= 1514
 
 
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
@@ -5022,6 +5386,152 @@ def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
     assert result == "missing"
     assert runner.status().get("current_scene") != 35
     assert runner.status()["phase"] == "mail_claim_probe_world_menu_mail"
+
+
+def test_visible_mail_menu_probe_requires_scene_35_before_shape_click(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [{"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05}],
+    )
+    ctx = {"images": {35: image35}}
+    opened: list[str] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "world-frame"
+
+        def current_scene(self):
+            return 34, 100.0, "world-frame"
+
+        def ocr_lines(self, _frame):
+            return []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 100.0)
+    monkeypatch.setattr(runner, "_open_mail_from_world_menu_shape", lambda *_args, **_kwargs: opened.append("open") or "success")
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._try_open_mail_from_visible_world_menu(ctx, threading.Event(), timeout=0.01),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "missing"
+    assert opened == []
+
+
+def test_visible_mail_menu_probe_requires_scene_35_before_ocr_click(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "mail-frame"
+
+        def current_scene(self):
+            return 121, 100.0, "mail-frame"
+
+        def ocr_lines(self, _frame):
+            return [{"text": "已锁定4/10封邮件", "x": 340, "y": 1240, "w": 180, "h": 40}]
+
+        def click_frame_point(self, _view, x, y):
+            clicked.append((x, y))
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._try_open_mail_from_visible_world_menu(ctx, threading.Event(), timeout=0.01),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "missing"
+    assert clicked == []
+
+
+def test_mail_dynamic_entry_clicks_after_first_match_without_wait_click(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image68 = _image(
+        "动态栏",
+        "0068.png",
+        [{"id": "mail", "kind": "rect", "title": "邮件", "x": 0.42, "y": 0.30, "w": 0.12, "h": 0.08}],
+    )
+    ctx = {"images": {68: image68}}
+    clicked: list[tuple[float, float]] = []
+    waited: list[str] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def click_frame_point(self, _view, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
+
+        def wait_click(self, *_args, **_kwargs):
+            raise AssertionError("dynamic entry should reuse first match instead of waiting again")
+
+    def fake_wait_ready(_ctx, _stop_event, **_kwargs):
+        waited.append("ready")
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_match_shape", lambda *_args, **_kwargs: {"matched": True, "similarity": 82})
+    monkeypatch.setattr(runner, "_wait_mail_list_ready_or_restore_world", fake_wait_ready)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._try_open_mail_dynamic_entry(ctx, threading.Event()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(432.0, 544.0)]
+    assert waited == ["ready"]
+
+
+def test_mail_dynamic_entry_falls_back_when_click_does_not_open_list(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image68 = _image(
+        "动态栏",
+        "0068.png",
+        [{"id": "mail", "kind": "rect", "title": "邮件", "x": 0.42, "y": 0.30, "w": 0.12, "h": 0.08}],
+    )
+    ctx = {"images": {68: image68}}
+    clicked: list[tuple[float, float]] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def click_frame_point(self, _view, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
+
+    def fake_wait_ready(_ctx, _stop_event, **_kwargs):
+        if False:
+            yield None
+        raise RuntimeError("未进入 #121")
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_match_shape", lambda *_args, **_kwargs: {"matched": True, "similarity": 84})
+    monkeypatch.setattr(runner, "_wait_mail_list_ready_or_restore_world", fake_wait_ready)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._try_open_mail_dynamic_entry(ctx, threading.Event()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "missing"
+    assert clicked == [(432.0, 544.0)]
 
 
 def test_mail_world_menu_shape_click_uses_mail_shape_center(monkeypatch):
@@ -5066,6 +5576,42 @@ def test_mail_world_menu_shape_click_uses_mail_shape_center(monkeypatch):
     x, y = clicked[0]
     assert 490 <= x <= 495
     assert 1548 <= y <= 1552
+
+
+def test_mail_world_menu_does_not_click_unmatched_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.511, "y": 0.958, "w": 0.072, "h": 0.021},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+    times = [0.0, 0.0, 9.0]
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def ocr_lines(self, _frame):
+            return []
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
+    monkeypatch.setattr(runner._open_mail_from_world_menu_shape.__globals__["time"], "time", lambda: times.pop(0) if times else 9.0)
+
+    with pytest.raises(RuntimeError, match="等待 #35 邮件入口超时"):
+        runner._run_direct_runtime_action(
+            lambda: runner._open_mail_from_world_menu_shape(ctx, threading.Event()),
+            stop_event=threading.Event(),
+            tick_seconds=0.01,
+        )
+
+    assert clicked == []
 
 
 def test_mail_rows_normalize_time_and_mark_read():
@@ -5599,8 +6145,9 @@ def test_mail_ui_delete_probe_deletes_only_delete_detail(monkeypatch):
     )
 
     assert result == "processed"
-    assert clicked_points == [(320, 420)]
-    assert clicked_shapes == ["删除"]
+    assert clicked_points[0] == (320, 420)
+    assert clicked_points[1] == pytest.approx((450, 1344))
+    assert clicked_shapes == []
     assert updated == ["无附件旧邮件"]
 
 
@@ -5659,8 +6206,9 @@ def test_packet_claim_policy_clicks_claim_detail(monkeypatch):
     )
 
     assert result == "processed"
-    assert clicked_points == [(320, 420)]
-    assert clicked_shapes == ["领取"]
+    assert clicked_points[0] == (320, 420)
+    assert clicked_points[1] == pytest.approx((450, 1344))
+    assert clicked_shapes == []
     assert updates == [("仙财福礼", "claim_requested")]
 
 
@@ -5858,6 +6406,7 @@ def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeyp
     ctx = {"images": {121: image121, 122: image122}}
     row = {"title": "有附件邮件", "time_text": "2026年06月06日20:00", "x": 320, "y": 420}
     clicked_shapes: list[str] = []
+    clicked_points: list[str] = []
 
     class FakeStopEvent:
         def is_set(self):
@@ -5877,8 +6426,19 @@ def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeyp
     monkeypatch.setattr(runner, "_wait_mail_detail_or_list_scene", fake_wait_detail)
     monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args: None)
-    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None: clicked_shapes.append(shape["title"]))
+    def fake_click_frame_point(_ctx, image, x, y):
+        for shape in image.get("shapes") or []:
+            box = runner._box(shape, image)
+            left = float(box.get("x") or 0)
+            top = float(box.get("y") or 0)
+            right = left + float(box.get("w") or 0)
+            bottom = top + float(box.get("h") or 0)
+            if left <= x <= right and top <= y <= bottom:
+                clicked_points.append(shape.get("title"))
+                return
+
+    monkeypatch.setattr(runner, "_click_frame_point", fake_click_frame_point)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked_shapes.append(shape["title"]))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._probe_and_maybe_delete_mail_row(ctx, FakeStopEvent(), image121, row),
@@ -5887,7 +6447,8 @@ def test_mail_ui_delete_probe_returns_from_claim_detail_without_claiming(monkeyp
     )
 
     assert result == "seen"
-    assert clicked_shapes == ["空白-返回"]
+    assert clicked_shapes == []
+    assert clicked_points == ["空白-返回"]
 
 
 def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
@@ -5901,7 +6462,7 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
         "images": {34: image34, 69: image69, 121: image121},
         "asset_tree_path": Path("assets.json"),
     }
-    clicked_shapes: list[str] = []
+    runtime_calls: list[tuple] = []
     identify_calls = iter([(121, 100.0), (34, 100.0)])
 
     class FakeStopEvent:
@@ -5911,10 +6472,6 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
         def wait(self, _seconds):
             return False
 
-    def fake_wait_scene(*_args, **_kwargs):
-        yield BehaviorTreeStatus.RUNNING
-        return 34, 100.0
-
     def fake_enter_daily(*_args, **_kwargs):
         yield BehaviorTreeStatus.RUNNING
         return 69
@@ -5923,11 +6480,34 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
         yield BehaviorTreeStatus.RUNNING
         return "not_found"
 
+    class FakeRuntime:
+        def current_scene(self, view_ids=None, **kwargs):
+            scene_id, score = next(identify_calls)
+            runtime_calls.append(("current_scene", tuple(view_ids or ()), kwargs))
+            return scene_id, score, "frame"
+
+        def ocr_text(self, frame):
+            runtime_calls.append(("ocr_text", frame))
+            return ""
+
+        def wait_click(self, view_id, shape, **kwargs):
+            runtime_calls.append(("wait_click", view_id, shape, kwargs))
+            if False:
+                yield None
+            return "success"
+
+        def wait_view(self, *view_ids, **kwargs):
+            runtime_calls.append(("wait_view", view_ids, kwargs))
+            if False:
+                yield None
+            return view_ids[0]
+
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [])
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(identify_calls))
-    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None: clicked_shapes.append(shape["title"]))
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
     monkeypatch.setattr(runner, "_enter_daily_from_world_like", fake_enter_daily)
     monkeypatch.setattr(runner, "_open_daily_assistant_from_daily", fake_open_daily_assistant)
     monkeypatch.setattr(runner, "_record_scheduler_task_discovered_next_time", lambda *_args, **_kwargs: None)
@@ -5939,7 +6519,11 @@ def test_daily_assistant_leaves_mail_scene_before_start(monkeypatch):
             tick_seconds=0.01,
         )
 
-    assert clicked_shapes == ["空白-返回"]
+    action_calls = [call for call in runtime_calls if call[0] in {"wait_click", "wait_view"}]
+    assert action_calls == [
+        ("wait_click", 121, "空白-返回", {}),
+        ("wait_view", (34,), {"label": "日常_助手：等待返回世界 #34"}),
+    ]
 
 
 def test_mail_list_lock_hint_skips_delete_probe(monkeypatch):
@@ -6301,6 +6885,7 @@ def test_daily_signup_list_scrolls_after_click_without_reward_page():
     runtime = _FakeSignupRuntime(
         row_batches=[
             [(720.0, 415.0, "疑似报名")],
+            [(720.0, 415.0, "疑似报名")],
             [],
         ],
         scroll_results=[True, False],
@@ -6309,11 +6894,17 @@ def test_daily_signup_list_scrolls_after_click_without_reward_page():
 
     result = _drain_generator(runner._日常报名处理报名列(runtime))
 
-    assert result == 0
+    assert result == 1
     assert runtime.actions == [
         ("ocr_rows", 23, "报名列"),
         ("point", 23, 720.0, 415.0),
         ("wait_view", 24),
+        ("ocr_rows", 23, "报名列"),
+        ("point", 23, 720.0, 415.0),
+        ("wait_view", 24),
+        ("wait_click", 24, "领取"),
+        ("wait_view", 23),
+        ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
         ("ocr_rows", 23, "报名列"),
         ("scroll", 23, "报名列"),
@@ -7077,6 +7668,11 @@ def test_daily_boss_stuck_at_twenty_percent_leaves_and_rechecks_rewards(tmp_path
     monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", lambda _ctx, frame=None: "首领 命20% 自动战斗中")
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+    def fake_identify_scene(_ctx, _frame, view_ids=None):
+        waited.extend(list(view_ids or ()))
+        return 178, 100.0
+
+    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify_scene)
     monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "剩余奖励次数：0"}])
     def fake_return_world(_ctx, _stop_event):
         if False:
@@ -7085,13 +7681,7 @@ def test_daily_boss_stuck_at_twenty_percent_leaves_and_rechecks_rewards(tmp_path
 
     monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
 
-    def fake_wait_scene(_ctx, _stop_event, scene_id, **_kwargs):
-        waited.append(scene_id)
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return "success"
-
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._wait_daily_boss_after_challenge(ctx, FakeStopEvent(), {"boss_twenty_percent_stuck_count": 2}),
@@ -7135,6 +7725,7 @@ def test_daily_boss_stuck_on_boss_map_leaves_and_rechecks_rewards(tmp_path, monk
     monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", lambda _ctx, frame=None: "首领·泷尊剑主 100% 数据统计 离开")
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, *_args, **_kwargs: clicked.append(shape["title"]))
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "list-frame")
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, view_ids=None: (178, 100.0))
     monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "剩余奖励次数：0"}])
     def fake_return_world(_ctx, _stop_event):
         if False:
@@ -7143,13 +7734,7 @@ def test_daily_boss_stuck_on_boss_map_leaves_and_rechecks_rewards(tmp_path, monk
 
     monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return_world)
 
-    def fake_wait_scene(_ctx, _stop_event, scene_id, **_kwargs):
-        assert scene_id == 178
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return "success"
-
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
 
     result = runner._run_direct_runtime_action(
         lambda: runner._wait_daily_boss_after_challenge(ctx, FakeStopEvent(), {"boss_map_stuck_count": 2}),
@@ -7173,16 +7758,16 @@ def test_daily_boss_reopens_list_after_leave_lands_on_world(tmp_path, monkeypatc
             return False
 
     class FakeRuntime:
+        def wait_view_id(self, *_args, **_kwargs):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            raise RuntimeError("not list")
+
         def goto_view(self, scene_id):
             calls.append(f"goto:{scene_id}")
             if False:
                 yield BehaviorTreeStatus.RUNNING
             return "success"
-
-    def fake_wait_scene(*_args, **_kwargs):
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        raise RuntimeError("not list")
 
     def fake_open_list(_ctx, _stop_event):
         calls.append("open-list")
@@ -7190,7 +7775,7 @@ def test_daily_boss_reopens_list_after_leave_lands_on_world(tmp_path, monkeypatc
             yield BehaviorTreeStatus.RUNNING
         return "success"
 
-    monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_wait_scene_id", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use runtime")))
     monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (34, 100.0, "world"))
     monkeypatch.setattr(runner, "_open_daily_boss_list_from_daily", fake_open_list)
 
@@ -7233,6 +7818,8 @@ def test_daily_boss_returns_to_world_after_list_completion(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (178, 100.0, "list"))
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_click_shape", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _preferred=None: (178, 100.0))
     def fake_wait_scene(*_args, **_kwargs):
         if False:
             yield BehaviorTreeStatus.RUNNING
