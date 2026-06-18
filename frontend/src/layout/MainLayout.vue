@@ -72,7 +72,6 @@ const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const MUSIC_TOOLS_PATH = requirePageMenuPath('MusicTools');
 const OPEN_SCORE_STUDY_PATH = requirePageMenuPath('OpenScoreStudy');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
-const AI_EVOMIND_PATH = requirePageMenuPath('AiEvoMind');
 const AI_AGENTS_PATH = requirePageMenuPath('AiAgents');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
@@ -149,7 +148,6 @@ const MUSIC_TOOLS_TITLE = requirePermissionTitleByMenuPath(MUSIC_TOOLS_PATH);
 const OPEN_SCORE_STUDY_TITLE = requirePermissionTitleByMenuPath(OPEN_SCORE_STUDY_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
-const AI_EVOMIND_TITLE = requirePermissionTitleByMenuPath(AI_EVOMIND_PATH);
 const AI_AGENTS_TITLE = requirePermissionTitleByMenuPath(AI_AGENTS_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
@@ -380,7 +378,6 @@ const aiToolsMenuVisible = computed(() =>
   canAccessFeature('ai-tools')
   && [
     AI_CONFIG_PATH,
-    AI_EVOMIND_PATH,
     CLUSTER_CODEX_PATH,
     AI_AGENTS_PATH,
     AI_CHAT_PATH,
@@ -821,7 +818,6 @@ watch(
               <span>{{ AI_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(AI_EVOMIND_PATH)" :index="AI_EVOMIND_PATH">{{ AI_EVOMIND_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_AGENTS_PATH)" :index="AI_AGENTS_PATH">{{ AI_AGENTS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>

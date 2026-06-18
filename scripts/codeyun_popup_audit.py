@@ -175,6 +175,8 @@ def is_codeyun_event(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> bool:
     root = os.fspath(root_dir).lower().replace("\\", "/")
     if root not in text:
         return False
+    if "openai.codex_" in text and "app-server" in text and "pwsh.exe" in text:
+        return False
     markers = (
         "dev.py",
         "backend.app:app",

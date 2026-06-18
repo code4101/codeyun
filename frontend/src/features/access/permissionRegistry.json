@@ -119,17 +119,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "tools.ai-evomind",
-      "title": "EvoMind",
-      "node_type": "feature",
-      "parent_key": "ai-tools",
-      "sort_order": 24,
-      "route_paths": ["/tools/ai-evomind"],
-      "menu_paths": ["/tools/ai-evomind"],
-      "api_scopes": ["ai-tools.evomind"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "cluster.codex",
       "title": "Codex",
       "node_type": "feature",

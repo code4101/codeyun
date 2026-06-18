@@ -348,6 +348,24 @@ def _codex_script_for_command(candidate: Path) -> Path | None:
     return None
 
 
+def _native_codex_exe_for_command(candidate: Path) -> Path | None:
+    if os.name != "nt":
+        return None
+
+    if candidate.suffix.lower() == ".exe" and candidate.name.lower() == "codex.exe":
+        return candidate if candidate.is_file() else None
+
+    package_root = candidate.parent / "node_modules" / "@openai" / "codex"
+    native_root = package_root / "node_modules" / "@openai" / "codex-win32-x64" / "vendor"
+    if not native_root.is_dir():
+        return None
+
+    for native in native_root.rglob("codex.exe"):
+        if native.is_file():
+            return native
+    return None
+
+
 def _node_command_for_codex_script(command_path: Path) -> list[str] | None:
     script = _codex_script_for_command(command_path)
     if script is None:
@@ -358,6 +376,9 @@ def _node_command_for_codex_script(command_path: Path) -> list[str] | None:
 
 
 def _resolved_codex_candidate_command(candidate: Path, args: list[str]) -> list[str]:
+    native_command = _native_codex_exe_for_command(candidate)
+    if native_command is not None:
+        return [os.fspath(native_command), *args]
     node_command = _node_command_for_codex_script(candidate)
     if node_command is not None:
         return [*node_command, *args]

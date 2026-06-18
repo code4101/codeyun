@@ -709,7 +709,6 @@ const FALLBACK_APP_GROUPS: Record<string, string> = {
   'note-sheet-clockin-link-detection': '考勤',
   'note-sheet-excel-import': '考勤',
   'ai-git-commit': '开发工具',
-  evomind: '开发工具',
   codeclaw: '开发工具',
   'rime-lint': '文本工具',
   'fanxiu-pseudocode': '凡修',

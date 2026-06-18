@@ -25,7 +25,6 @@ AI_APP_RIME_LINT = "rime-lint"
 AI_APP_FANXIU_PSEUDOCODE = "fanxiu-pseudocode"
 AI_APP_FANXIU_GAME_MACRO_ANNOTATION = "fanxiu-game-macro-annotation"
 AI_APP_ATTENDANCE_PRECHECK = "attendance-precheck"
-AI_APP_EVOMIND = "evomind"
 AI_APP_CODECLAW = "codeclaw"
 AI_APP_WECHAT_DAILY_SUMMARY = "wechat-daily-summary"
 AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
@@ -48,7 +47,6 @@ _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
     AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, "gpt-5.5"),
     AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
-    AI_APP_EVOMIND: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
 }
@@ -121,12 +119,6 @@ AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
         "group": "考勤",
         "label": "问卷预检报告",
         "description": "为考勤问卷反馈行生成并填写 AI 初判文本。",
-    },
-    {
-        "id": AI_APP_EVOMIND,
-        "group": "开发工具",
-        "label": "EvoMind 语义分析",
-        "description": "EvoMind 案例抽取、语义筛选和规则建议。",
     },
     {
         "id": AI_APP_CODECLAW,
