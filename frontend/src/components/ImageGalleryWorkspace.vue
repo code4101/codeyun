@@ -778,12 +778,7 @@ const previewClipLabel = computed(() => (
 ));
 const previewVideoSource = computed(() => {
   const url = previewImage.value?.url || '';
-  const clip = previewClip.value;
-  if (!url || !clip || !previewImage.value || !isVideo(previewImage.value)) {
-    return url;
-  }
-  const baseUrl = url.split('#')[0];
-  return `${baseUrl}#t=${clip.start.toFixed(3)},${clip.end.toFixed(3)}`;
+  return url.split('#')[0];
 });
 const previewClipStatusText = computed(() => {
   const clip = previewClip.value;
@@ -1295,8 +1290,14 @@ const seekPreviewClipStart = async () => {
 
   const applySeek = () => {
     const duration = Number.isFinite(video.duration) ? video.duration : clip.start;
-    const boundedStart = Math.max(0, Math.min(clip.start, duration));
-    video.currentTime = boundedStart;
+    const boundedStart = Math.max(0, Math.min(clip.start, Math.max(0, duration - 0.2)));
+    try {
+      video.currentTime = boundedStart;
+    } catch (error) {
+      console.warn('Failed to seek preview clip start', error);
+      previewClipStatus.value = 'error';
+      return;
+    }
     void video.play().catch(() => undefined);
   };
 
@@ -1322,7 +1323,7 @@ const playPreviewClip = async () => {
     return;
   }
   const duration = Number.isFinite(video.duration) ? video.duration : clip.start;
-  video.currentTime = Math.max(0, Math.min(clip.start, duration));
+  video.currentTime = Math.max(0, Math.min(clip.start, Math.max(0, duration - 0.2)));
   await video.play().catch(() => undefined);
 };
 

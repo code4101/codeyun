@@ -54,7 +54,7 @@ const DOWNLOADING_STABLE_AGE_MS = 10 * 60 * 1000;
 const RECENT_RANDOM_VIDEO_MEMORY_LIMIT = 80;
 const RECENT_RANDOM_VIDEO_EXCLUDE_LIMIT = 20;
 const RANDOM_PLAYABLE_ATTEMPT_LIMIT = 16;
-const VIDEO_PROBE_TIMEOUT_MS = 8_000;
+const VIDEO_PROBE_TIMEOUT_MS = 12_000;
 const DOWNLOADING_EXTENSION_SUFFIXES = [
   '.crdownload',
   '.download',
@@ -220,7 +220,8 @@ const probeVideoSegmentPlayable = (url: string, start: number, end: number) => n
 
   const video = document.createElement('video');
   let done = false;
-  let seekingProbe = false;
+  let targetTime = 0;
+  let requireSeeked = false;
   const cleanup = () => {
     window.clearTimeout(timer);
     video.removeAttribute('src');
@@ -240,11 +241,17 @@ const probeVideoSegmentPlayable = (url: string, start: number, end: number) => n
   video.muted = true;
   video.playsInline = true;
   video.oncanplay = () => {
-    if (seekingProbe) {
+    if (!requireSeeked) {
       finish(true);
     }
   };
-  video.onseeked = () => finish(true);
+  video.onseeked = () => {
+    if (!requireSeeked) {
+      finish(true);
+      return;
+    }
+    finish(Math.abs(video.currentTime - targetTime) <= 1.5);
+  };
   video.onerror = () => finish(false);
   video.onloadedmetadata = () => {
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -252,13 +259,13 @@ const probeVideoSegmentPlayable = (url: string, start: number, end: number) => n
       finish(false);
       return;
     }
-    const targetTime = Math.min(Math.max(0, start), Math.max(0, duration - 0.2));
+    targetTime = Math.min(Math.max(0, start), Math.max(0, duration - 0.2));
     if (targetTime <= 0.1) {
-      finish(true);
+      requireSeeked = false;
       return;
     }
     try {
-      seekingProbe = true;
+      requireSeeked = true;
       video.currentTime = targetTime;
     } catch (error) {
       console.warn('Failed to seek random video probe', error);
@@ -267,7 +274,7 @@ const probeVideoSegmentPlayable = (url: string, start: number, end: number) => n
   };
 
   const baseUrl = url.split('#')[0];
-  video.src = `${baseUrl}#t=${Math.max(0, start).toFixed(3)},${Math.max(start, end).toFixed(3)}`;
+  video.src = baseUrl;
   video.load();
 });
 
