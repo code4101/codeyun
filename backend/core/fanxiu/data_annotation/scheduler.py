@@ -20,6 +20,7 @@ from pyxllib.prog import (
 from backend.core.fanxiu.data_annotation.state import (
     next_data_annotation_scheduler_time,
     normalize_data_annotation_scheduler_task,
+    parse_data_annotation_daily_clock,
     parse_data_annotation_task_time,
 )
 
@@ -70,6 +71,29 @@ def _daily_retry_should_defer_to_next_trigger(task: dict[str, Any], current_time
     if retry_ts <= next_ts and next_ts - retry_ts <= _DAILY_RETRY_TO_NEXT_TRIGGER_GRACE.total_seconds():
         return next_time
     return None
+
+
+def _daily_first_schedule_time_today(task: dict[str, Any], current_time: datetime) -> str | None:
+    if str(task.get("schedule_kind") or "") != "daily":
+        return None
+    clocks = []
+    for value in task.get("schedule_times", []):
+        clock = parse_data_annotation_daily_clock(value)
+        if clock is not None:
+            clocks.append(clock)
+    if not clocks:
+        return None
+    first_clock = sorted(clocks)[0]
+    return datetime.combine(current_time.date(), first_clock).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _daily_task_success_today(task: dict[str, Any], current_time: datetime) -> bool:
+    if str(task.get("last_result") or "") != "success":
+        return False
+    last_run_ts = parse_data_annotation_task_time(task.get("last_run_at"))
+    if last_run_ts is None:
+        return False
+    return datetime.fromtimestamp(last_run_ts).date() == current_time.date()
 
 
 def sync_data_annotation_scheduler_tasks_from_world_facts(
@@ -397,7 +421,7 @@ def repair_data_annotation_scheduler_tasks(
             task["cooldown_seconds"] = default_task.get("cooldown_seconds")
             changed = True
         if str(task.get("id") or "") == "legacy-daily-assistant":
-            for key in ("enabled", "schedule_times", "cooldown_seconds"):
+            for key in ("schedule_times", "cooldown_seconds"):
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True
@@ -492,10 +516,28 @@ def repair_data_annotation_scheduler_tasks(
         if (
             task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
+            and str(task.get("last_result") or "") not in {"error", "stopped", "skipped", "unsupported", *_UNSCHEDULED_MANUAL_RESULTS}
+            and not task.get("retry_after")
+            and not _daily_task_success_today(task, current_time)
+        ):
+            today_time = _daily_first_schedule_time_today(task, current_time)
+            today_ts = parse_data_annotation_task_time(today_time)
+            actual_ts = parse_data_annotation_task_time(task.get("next_time"))
+            if today_time and today_ts is not None and (
+                actual_ts is None
+                or actual_ts > current_ts
+                or datetime.fromtimestamp(actual_ts).date() > current_time.date()
+            ):
+                task["next_time"] = today_time
+                changed = True
+        if (
+            task.get("enabled")
+            and str(task.get("schedule_kind") or "") == "daily"
             and str(task.get("last_result") or "") not in _UNSCHEDULED_MANUAL_RESULTS
             and isinstance(task.get("schedule_times"), list)
             and len([value for value in task.get("schedule_times", []) if str(value or "").strip()]) > 1
             and not task.get("retry_after")
+            and _daily_task_success_today(task, current_time)
         ):
             expected_next_time = next_data_annotation_scheduler_time(task, current_time)
             expected_ts = parse_data_annotation_task_time(expected_next_time)

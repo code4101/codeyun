@@ -26,6 +26,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
 
     assert response.status_code == 200
     payload = response.json()
+    tasks_by_key = {item["key"]: item for item in payload["tasks"]}
     task_keys = {item["key"] for item in payload["tasks"]}
     assert {
         "auto_git_commit",
@@ -41,6 +42,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "storage_analysis",
         "fanxiu_slimming",
     }.issubset(task_keys)
+    assert tasks_by_key["auto_git_commit"]["title"] == "GitHub 项目自动提交"
     assert "queue" in payload
 
 

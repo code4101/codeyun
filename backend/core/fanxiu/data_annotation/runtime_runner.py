@@ -6959,6 +6959,15 @@ class DataAnnotationRuntimeRunner(
 
             matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
             if matched_expected is not None:
+                if not left_source and matched_expected != source_scene_id:
+                    global_scene_id, global_score = self._identify_scene_number(ctx, frame)
+                    if global_scene_id == source_scene_id and float(global_score or 0) >= float(expected_score or 0):
+                        last_scene_id, last_score, last_frame = global_scene_id, global_score, frame
+                        history.append(
+                            f"{elapsed:.1f}s #{global_scene_id} {global_score:.0f}% "
+                            f"expected=#{matched_expected} {expected_score:.0f}% left={left_source}"
+                        )
+                        continue
                 last_scene_id, last_score, last_frame = matched_expected, expected_score, frame
                 if matched_expected != source_scene_id:
                     left_source = True

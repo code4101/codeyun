@@ -320,7 +320,7 @@ def build_idle_maintenance_task_pool() -> list[IdleMaintenanceTask]:
     return [
         IdleMaintenanceTask(
             key="auto_commit_dirty_worktree",
-            title="整理已有脏工作区并自动提交",
+            title="GitHub 项目脏工作区自动提交",
             category="git",
             risk="medium",
             mode="delegated",

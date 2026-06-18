@@ -12,6 +12,11 @@ def test_select_idle_maintenance_prefers_auto_commit_when_worktree_dirty():
     )
 
     assert decision.selected_task_key == "auto_commit_dirty_worktree"
+    assert any(
+        item["key"] == "auto_commit_dirty_worktree"
+        and item["title"] == "GitHub 项目脏工作区自动提交"
+        for item in decision.candidates
+    )
     assert any(item["key"] == "docs_sync_scan" for item in decision.candidates)
 
 
