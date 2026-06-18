@@ -27,14 +27,14 @@ CodeYun 的集群管理不依赖中心化的注册服务器，而是采用**点�
 *   **机制**: **显式注册 (Explicit Registration)**。不使用广播/组播。
 *   **流程**:
     1.  用户在 Manager 端输入目标 Agent 的 **URL** (如 `http://192.168.1.x:8000`) 和 **API Token**。
-    2.  Manager 调用 Agent 的 `/api/agent/status` 接口进行握手验证。
+    2.  Manager 调用 Agent 的 `/api/device-control/status` 接口进行握手验证。
     3.  验证通过后，Agent 信息（ID, Name, URL, Token）被加密存储在 Manager 的 SQLite 数据库中。
 
 ## 3. 核心组件与实现 (Core Components)
 
 集群逻辑主要由以下 Python 模块驱动：
 
-### 3.1 `backend/core/device.py` (设备抽象层)
+### 3.1 `backend/core/devices/device.py` (设备抽象层)
 这是集群管理的基石，定义了统一的设备操作接口。
 
 *   **`Device` (Base Class)**: 定义了 `start_task`, `stop_task`, `get_status`, `get_logs` 等抽象方法。
@@ -54,20 +54,21 @@ CodeYun 的集群管理不依赖中心化的注册服务器，而是采用**点�
 *   **分发逻辑**:
     *   当接收到 `start_task(task_id)` 请求时，根据 `task.device_id` 查找对应的 `Device` 实例。
     *   若为 `LocalDevice` -> 本地启动。
-    *   若为 `RemoteDevice` -> 发送 `POST {remote_url}/api/task/{id}/start`。
+    *   若为 `RemoteDevice` -> 发送 `POST {remote_url}/api/tasks/{id}/start`。
 
-### 3.3 `backend/api/agent.py` (Agent 接口)
-暴露给外部 Manager 调用的接口。
+### 3.3 `backend/api/device_control.py` 与 `backend/api/task_manager.py` (Agent/远程执行接口)
+暴露给外部 Manager 调用的设备状态、进程匹配、任务启动、任务停止和日志接口。
 
-*   **`/api/agent/status`**: 返回本机系统信息（用于握手）。
-*   **`/api/agent/tasks`**: 返回本机运行的所有任务状态（供远程 Manager 轮询）。
+*   **`/api/device-control/status`**: 返回本机设备身份和基础状态（用于远程设备握手）。
+*   **`/api/tasks`**: 返回当前设备可见的任务列表与状态。
+*   **`/api/tasks/{task_id}/start` / `/api/tasks/{task_id}/stop` / `/api/tasks/{task_id}/logs`**: 供远程 Manager 代理执行和读取任务日志。
 
 ## 4. 数据流与通信 (Data Flow)
 
 ### 4.1 任务执行 (Task Execution)
 1.  **User** -> **Manager UI** -> **Manager API** (`start_task`)
 2.  **Manager API** -> `TaskManager` -> `RemoteDevice.start_task()`
-3.  **RemoteDevice** --(HTTP POST)--> **Agent API** (`/api/task/start`)
+3.  **RemoteDevice** --(HTTP POST)--> **Agent API** (`/api/tasks/{task_id}/start`)
 4.  **Agent API** -> `LocalDevice.start_task()` -> `subprocess.Popen`
 
 ### 4.2 状态同步 (Status Synchronization)
@@ -82,7 +83,7 @@ CodeYun 的集群管理不依赖中心化的注册服务器，而是采用**点�
 
 ### 4.3 日志流 (Log Streaming)
 *   **Local**: `tail -f` 模式读取文件 -> WebSocket 推送。
-*   **Remote**: Manager 通过 HTTP GET `/api/task/{id}/logs` 拉取远程日志片段 -> 转发给前端。
+*   **Remote**: Manager 通过 HTTP GET `/api/tasks/{id}/logs` 拉取远程日志片段 -> 转发给前端。
     *   *优化点*: 目前主要支持“拉取历史”，实时流式转发 (Proxy Streaming) 仍在完善中。
 
 ## 5. 开发注意事项 (Development Notes)
@@ -94,8 +95,8 @@ CodeYun 的集群管理不依赖中心化的注册服务器，而是采用**点�
 
 ## 6. 关键文件索引 (Key Files)
 
-*   `backend/core/device.py`: **核心**。Local/Remote 设备实现。
+*   `backend/core/devices/device.py`: **核心**。Local/Remote 设备实现。
 *   `backend/api/task_manager.py`: 任务管理与分发逻辑。
-*   `backend/api/agent.py`: Agent 端被调用的 API。
+*   `backend/api/device_control.py`: Agent 端设备状态、进程匹配和受信控制 API。
 *   `frontend/src/store/taskStore.ts`: 前端状态管理，处理 WebSocket 数据。
-*   `frontend/src/views/TaskManager.vue`: 集群管理主界面。
+*   `frontend/src/standard/cluster/tasks/page.vue`: 集群任务管理主界面。

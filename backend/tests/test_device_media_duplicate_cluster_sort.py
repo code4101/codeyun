@@ -6,7 +6,12 @@ from sqlmodel import Session, create_engine, select
 
 from backend.api import filesystem as filesystem_api
 from backend.core.devices import device as device_core
-from backend.models import DeviceFile
+from backend.models import DeviceFile, ResourceIdentity
+
+
+def _create_device_file_metadata_tables(engine) -> None:
+    ResourceIdentity.__table__.create(engine, checkfirst=True)
+    DeviceFile.__table__.create(engine, checkfirst=True)
 
 
 def _build_media_entry(
@@ -145,7 +150,7 @@ def test_attach_cached_media_metadata_persists_visual_hash(tmp_path, monkeypatch
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    DeviceFile.__table__.create(engine, checkfirst=True)
+    _create_device_file_metadata_tables(engine)
 
     image_path = tmp_path / "cluster.png"
     Image.new("RGB", (16, 16), color=(240, 120, 40)).save(image_path)
@@ -199,7 +204,7 @@ def test_attach_cached_media_metadata_reuses_visual_hash_from_matching_content_h
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    DeviceFile.__table__.create(engine, checkfirst=True)
+    _create_device_file_metadata_tables(engine)
 
     image_path = tmp_path / "reused.png"
     Image.new("RGB", (24, 24), color=(20, 120, 220)).save(image_path)
@@ -282,7 +287,7 @@ def test_attach_cached_media_metadata_schedules_visual_hash_prewarm_for_browse_r
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    DeviceFile.__table__.create(engine, checkfirst=True)
+    _create_device_file_metadata_tables(engine)
 
     image_path = tmp_path / "browse.png"
     Image.new("RGB", (20, 20), color=(180, 40, 120)).save(image_path)
@@ -349,7 +354,7 @@ def test_list_supported_entries_does_not_prewarm_visual_hash_without_duplicate_c
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    DeviceFile.__table__.create(engine, checkfirst=True)
+    _create_device_file_metadata_tables(engine)
 
     image_path = tmp_path / "plain-browse.png"
     Image.new("RGB", (20, 20), color=(40, 120, 180)).save(image_path)
@@ -401,7 +406,7 @@ def test_list_supported_entries_prewarms_visual_hash_when_duplicate_cluster_rule
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    DeviceFile.__table__.create(engine, checkfirst=True)
+    _create_device_file_metadata_tables(engine)
 
     image_path = tmp_path / "cluster-browse.png"
     Image.new("RGB", (20, 20), color=(120, 40, 180)).save(image_path)
