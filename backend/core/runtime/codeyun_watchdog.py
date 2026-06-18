@@ -5,18 +5,20 @@ import subprocess
 import sys
 import time
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import psutil
 
-from backend.core.runtime.process_launcher import popen_python_script_service, python_script_service_command
+from backend.core.runtime.process_launcher import popen_python_script_service, python_script_service_command, run_quiet
 from backend.core.settings import ROOT_DIR, get_settings
 
 
 CODEYUN_WATCHDOG_SERVICE_KEY = "codeyun-watchdog"
 CODEYUN_WATCHDOG_TITLE = "CodeYun 本机守护"
+CODEYUN_WATCHDOG_STARTUP_TASK_NAME = "CodeYun Watchdog"
 WATCHDOG_SCRIPT = ROOT_DIR / "scripts" / "codeyun_watchdog.py"
 PYTHON_PROCESS_NAMES = {"py.exe", "py", "python.exe", "python", "pythonw.exe", "pythonw"}
 LEGACY_WATCHDOG_LOCK_PATH = ROOT_DIR / ".codex-run" / "codeyun-watchdog.pid"
@@ -187,9 +189,110 @@ def get_codeyun_watchdog_status() -> dict[str, Any]:
             and item.get("pid") not in launcher_pids
         ],
         "last_error": "" if WATCHDOG_SCRIPT.is_file() else f"脚本不存在：{WATCHDOG_SCRIPT}",
+        "startup": get_codeyun_watchdog_startup_status(),
         "external": True,
         "controllable": True,
     }
+
+
+def _watchdog_loop_command() -> str:
+    command = python_script_service_command(
+        WATCHDOG_SCRIPT,
+        "--loop",
+        "--interval",
+        str(os.getenv("CODEYUN_WATCHDOG_INTERVAL_SECONDS") or "60"),
+        preferred_root=ROOT_DIR,
+        executable=sys.executable,
+    )
+    return subprocess.list2cmdline(command)
+
+
+def _windows_scheduled_task_supported() -> bool:
+    return os.name == "nt"
+
+
+def _run_schtasks(*args: str) -> subprocess.CompletedProcess[Any]:
+    return run_quiet(
+        ["schtasks", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def _parse_task_enabled(xml_text: str) -> bool | None:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    enabled = root.find(".//{*}Settings/{*}Enabled")
+    if enabled is None or enabled.text is None:
+        return None
+    return enabled.text.strip().lower() == "true"
+
+
+def get_codeyun_watchdog_startup_status() -> dict[str, Any]:
+    task_name = CODEYUN_WATCHDOG_STARTUP_TASK_NAME
+    status: dict[str, Any] = {
+        "supported": _windows_scheduled_task_supported(),
+        "task_name": task_name,
+        "configured": False,
+        "enabled": False,
+        "run_command": _watchdog_loop_command(),
+        "last_error": "",
+    }
+    if not status["supported"]:
+        status["last_error"] = "当前系统不支持 Windows 计划任务"
+        return status
+
+    result = _run_schtasks("/Query", "/TN", task_name, "/XML")
+    if result.returncode != 0:
+        return status
+    enabled = _parse_task_enabled(str(result.stdout or ""))
+    status["configured"] = True
+    status["enabled"] = bool(enabled)
+    if enabled is None:
+        status["last_error"] = "无法解析计划任务启用状态"
+    return status
+
+
+def enable_codeyun_watchdog_startup() -> dict[str, Any]:
+    if not _windows_scheduled_task_supported():
+        raise CodeYunWatchdogError("当前系统不支持 Windows 计划任务")
+    if not WATCHDOG_SCRIPT.is_file():
+        raise CodeYunWatchdogError(f"脚本不存在：{WATCHDOG_SCRIPT}")
+
+    result = _run_schtasks(
+        "/Create",
+        "/TN",
+        CODEYUN_WATCHDOG_STARTUP_TASK_NAME,
+        "/SC",
+        "ONLOGON",
+        "/TR",
+        _watchdog_loop_command(),
+        "/F",
+    )
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip() or "schtasks 创建失败"
+        raise CodeYunWatchdogError(f"开启 CodeYun 守护开机自启失败：{message}")
+    return {"status": "enabled", "startup": get_codeyun_watchdog_startup_status()}
+
+
+def disable_codeyun_watchdog_startup() -> dict[str, Any]:
+    if not _windows_scheduled_task_supported():
+        raise CodeYunWatchdogError("当前系统不支持 Windows 计划任务")
+    current = get_codeyun_watchdog_startup_status()
+    if not current.get("configured"):
+        return {"status": "disabled", "startup": current}
+
+    result = _run_schtasks("/Change", "/TN", CODEYUN_WATCHDOG_STARTUP_TASK_NAME, "/DISABLE")
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "").strip() or "schtasks 禁用失败"
+        raise CodeYunWatchdogError(f"关闭 CodeYun 守护开机自启失败：{message}")
+    return {"status": "disabled", "startup": get_codeyun_watchdog_startup_status()}
 
 
 def _resolve_watchdog_python_executable() -> str:
@@ -286,6 +389,11 @@ def build_codeyun_watchdog_log_lines(limit: int = 200) -> list[str]:
         f"脚本：{status.get('script_path')}",
         f"日志：{path}",
     ]
+    startup = status.get("startup") or {}
+    if startup:
+        lines.append(f"开机自启：{'启用' if startup.get('enabled') else '关闭'}")
+        if startup.get("task_name"):
+            lines.append(f"启动任务：{startup.get('task_name')}")
     pids = status.get("pids") or []
     if pids:
         lines.append(f"PID：{', '.join(str(pid) for pid in pids)}")

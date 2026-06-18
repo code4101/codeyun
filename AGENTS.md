@@ -71,7 +71,8 @@
 - `dev.py` 是长驻进程，终端/工具超时不等于启动失败。
 - 当命令超时时，先检查是否已成功启动，而不是立即判定失败：
   - `netstat -ano | Select-String ':8000|:5173'`
-  - `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match 'codeyun' }`
+  - `Get-Process python,node,uv -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path`
+  - 不要用 `Get-CimInstance Win32_Process` / `Get-WmiObject` 扫进程命令行；WMI 异常时会推高 `svchost.exe / Winmgmt` 的提交内存。
 - 重复调试前先清理残留进程，避免多开导致端口冲突或日志混淆：
   - `python.exe / node.exe / cmd.exe` 中命令行包含 `dev.py`、`uvicorn`、`vite` 的进程都应清理。
 - 为了稳定抓错误，优先使用“后台启动 + 分离 stdout/stderr 日志”方式，不依赖前台交互输出。

@@ -22,6 +22,21 @@ class PopupGuardMixin:
             return action_shape
         return CloseActionPlanner(title_priorities=("确定",)).choose_close_shape(image.get("shapes"))
 
+    def _auto_close_guard_action_allowed(self, shape: dict[str, Any] | None) -> bool:
+        if not isinstance(shape, dict):
+            return False
+        text = f"{shape.get('title') or ''}\n{shape.get('description') or ''}"
+        blocked_markers = (
+            "不作为通用弹窗守护动作",
+            "只允许",
+            "不得点击",
+            "不能点击",
+            "禁止点击",
+            "托管中不得点击",
+            "不得自动点击",
+        )
+        return not any(marker in text for marker in blocked_markers)
+
     def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         seen_image_ids: set[int] = set()
@@ -93,7 +108,7 @@ class PopupGuardMixin:
         allow_confirm_actions: bool = True,
     ) -> bool:
         child_view, child_score = self._best_popup_47_child(runtime, popup_view)
-        if child_view is None or child_score < self.overlay_threshold:
+        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
             return False
         if child_view.id == 84:
             return self._handle_auto_close_popup_47_child_84(
@@ -124,6 +139,9 @@ class PopupGuardMixin:
         }
         if not allow_confirm_actions:
             return self._close_popup_view_without_confirm(runtime, popup_view, event)
+        action_shape = self._auto_close_guard_action_shape(child_view.raw)
+        if not self._auto_close_guard_action_allowed(action_shape):
+            return True
         try:
             child_view.close(runtime)
         except RuntimeError:
@@ -155,7 +173,7 @@ class PopupGuardMixin:
     ) -> bool:
         child_view = child_view or runtime.get_view(84, root=popup_view)
         child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self.overlay_threshold:
+        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
             return False
         child_event = {
             **event,
@@ -193,7 +211,7 @@ class PopupGuardMixin:
     ) -> bool:
         child_view = child_view or runtime.get_view(86, root=popup_view)
         child_score = runtime.popup_score(child_view) if child_score is None else child_score
-        if child_view is None or child_score < self.overlay_threshold:
+        if child_view is None or child_score < self._runtime_popup_guard_min_score(runtime):
             return False
         child_event = {
             **event,
@@ -312,62 +330,95 @@ class PopupGuardMixin:
         ctx: dict[str, Any],
         candidates: list[dict[str, Any]],
         frame_data_url: str,
+        *,
+        min_score: float | None = None,
     ) -> tuple[dict[str, Any] | None, float]:
         if not candidates:
             return None, 0.0
+        threshold = self.overlay_threshold if min_score is None else float(min_score)
         scores = self._auto_close_popup_candidate_scores_parallel(ctx, candidates, frame_data_url)
         for candidate, score in zip(candidates, scores):
-            if score >= self.overlay_threshold:
+            if score >= threshold:
                 return candidate, score
         return None, 0.0
+
+    def _runtime_popup_guard_min_score(self, runtime: Any) -> float:
+        try:
+            return float(runtime.attrs.get("popup_guard_min_score") or self.overlay_threshold)
+        except Exception:
+            return float(self.overlay_threshold)
 
     def _auto_close_popup_guard_step(
         self,
         runtime: Any,
         *,
         allow_confirm_actions: bool = True,
+        during_task: bool | None = None,
     ) -> bool:
-        view = runtime.find_view("弹窗")
-        matched = runtime.matched_view
-        if view is None or matched is None:
-            return False
-
-        image_label = f"#{view.id}" if view.id is not None else view.title or view.filename or "unknown"
-        event = {
-            "time": time.time(),
-            "kind": "popup",
-            "image": image_label,
-            "title": view.title,
-            "folder_path": matched.folder_path,
-            "score": round(matched.score, 1),
-            "action": "",
-        }
-
-        if view.id == 47 and self._handle_auto_close_popup_47_child(
-            runtime,
-            view,
-            event,
-            allow_confirm_actions=allow_confirm_actions,
-        ):
-            return True
-
-        try:
-            if not allow_confirm_actions:
-                return self._close_popup_view_without_confirm(runtime, view, event)
-            view.close(runtime)
-        except RuntimeError:
-            self._record_popup_guard_missing(
-                view.id,
-                f"守护命中：{image_label} {matched.score:.0f}%，缺少关闭标注",
-                event,
-                "missing_action",
-            )
-            return False
-        action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
-        self._record_popup_guard_click(
-            view.id,
-            f"守护处理：{image_label} 点击「{action_title or 'shape'}」 {matched.score:.0f}%",
-            event,
-            action_title or "shape",
+        if during_task is None:
+            try:
+                with self._lock:
+                    phase = str(self._status.get("phase") or "")
+                    during_task = bool(self._status.get("running")) and phase not in {"", "idle", "idle_guard"}
+            except Exception:
+                during_task = False
+        min_score = (
+            max(float(self.overlay_threshold), float(getattr(self, "task_popup_guard_threshold", self.overlay_threshold)))
+            if during_task
+            else float(self.overlay_threshold)
         )
-        return True
+        had_previous_min_score = "popup_guard_min_score" in runtime.attrs
+        previous_min_score = runtime.attrs.get("popup_guard_min_score")
+        runtime.attrs["popup_guard_min_score"] = min_score
+        try:
+            view = runtime.find_view("弹窗")
+            matched = runtime.matched_view
+            if view is None or matched is None:
+                return False
+
+            image_label = f"#{view.id}" if view.id is not None else view.title or view.filename or "unknown"
+            event = {
+                "time": time.time(),
+                "kind": "popup",
+                "image": image_label,
+                "title": view.title,
+                "folder_path": matched.folder_path,
+                "score": round(matched.score, 1),
+                "action": "",
+            }
+
+            if view.id == 47 and self._handle_auto_close_popup_47_child(
+                runtime,
+                view,
+                event,
+                allow_confirm_actions=allow_confirm_actions,
+            ):
+                return True
+
+            try:
+                if not allow_confirm_actions:
+                    return self._close_popup_view_without_confirm(runtime, view, event)
+                if not self._auto_close_guard_action_allowed(matched.action_shape):
+                    return True
+                view.close(runtime)
+            except RuntimeError:
+                self._record_popup_guard_missing(
+                    view.id,
+                    f"守护命中：{image_label} {matched.score:.0f}%，缺少关闭标注",
+                    event,
+                    "missing_action",
+                )
+                return False
+            action_title = runtime.last_clicked_shape.title if runtime.last_clicked_shape is not None else "shape"
+            self._record_popup_guard_click(
+                view.id,
+                f"守护处理：{image_label} 点击「{action_title or 'shape'}」 {matched.score:.0f}%",
+                event,
+                action_title or "shape",
+            )
+            return True
+        finally:
+            if had_previous_min_score:
+                runtime.attrs["popup_guard_min_score"] = previous_min_score
+            else:
+                runtime.attrs.pop("popup_guard_min_score", None)

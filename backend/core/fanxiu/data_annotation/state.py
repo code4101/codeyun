@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
@@ -25,6 +26,142 @@ from pyxllib.prog import (
     trim_fact_events,
     write_json_state,
 )
+
+_RUNTIME_PHASE_LABELS = {
+    "service_owned_by_other": "由后端服务接管",
+    "idle": "空闲",
+    "idle_tick": "空闲",
+    "idle_guard": "空闲巡检中",
+    "idle_guard_done": "空闲巡检完成",
+    "manual_job_poll": "检查手动作业",
+    "scheduler_poll": "检查定时作业",
+    "scheduler_isolated": "执行定时作业",
+    "waiting_context": "等待运行环境",
+    "starting": "启动中",
+    "stopped": "已停止",
+    "behavior_tree_disabled": "已关闭",
+}
+
+
+def data_annotation_runtime_phase_label(phase: Any) -> str:
+    key = str(phase or "").strip()
+    return _RUNTIME_PHASE_LABELS.get(key, key)
+
+
+def data_annotation_runtime_owner_message(pid: Any, step: Any = "") -> str:
+    pid_text = str(pid or "").strip()
+    step_label = data_annotation_runtime_phase_label(step)
+    suffix = f"，{step_label}" if step_label and step_label not in {"unknown", "空闲巡检完成"} else ""
+    return f"后台服务正在运行（进程 {pid_text}）{suffix}" if pid_text else f"后台服务正在运行{suffix}"
+
+
+def data_annotation_runtime_display_message(message: Any) -> str:
+    text = str(message or "")
+    if not text:
+        return text
+    owner_match = re.search(r"行为树执行器已由后端进程\s+(\d+)\s+持有[：:]?\s*([A-Za-z0-9_\\-]*)", text)
+    if owner_match:
+        return data_annotation_runtime_owner_message(owner_match.group(1), owner_match.group(2))
+    service_match = re.search(r"行为树常驻服务运行中[：:]?\s*进程\s+(\d+)\s+([A-Za-z0-9_\\-]+)", text)
+    if service_match:
+        return data_annotation_runtime_owner_message(service_match.group(1), service_match.group(2))
+    stale_owner_match = re.search(r"owner\s+进程不是凡修常驻服务[：:]pid=(\d+)", text)
+    if stale_owner_match:
+        return f"原后台服务已失效（进程 {stale_owner_match.group(1)}）"
+    for key, label in sorted(_RUNTIME_PHASE_LABELS.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", label, text)
+    return text
+
+
+def normalize_data_annotation_runtime_display(status: dict[str, Any]) -> None:
+    status["message"] = data_annotation_runtime_display_message(status.get("message") or "")
+    logs = status.get("logs")
+    if isinstance(logs, list):
+        status["logs"] = normalize_data_annotation_runtime_logs_for_display([item for item in logs if isinstance(item, dict)])
+    if isinstance(status.get("engine_tick"), dict) and not isinstance(status.get("framework_tick"), dict):
+        status["framework_tick"] = dict(status["engine_tick"])
+    if isinstance(status.get("framework_tick"), dict) and not isinstance(status.get("engine_tick"), dict):
+        status["engine_tick"] = dict(status["framework_tick"])
+    status.update(data_annotation_runtime_layer_status(status))
+
+
+def _runtime_state_label(status: dict[str, Any]) -> str:
+    if str(status.get("phase") or "") == "service_owned_by_other":
+        return "后台接管"
+    if not bool(status.get("behavior_tree_enabled", True)):
+        return "已暂停"
+    if bool(status.get("running")):
+        return "执行中"
+    if str(status.get("status") or "") == "stopping":
+        return "中断中"
+    if bool(status.get("service_running")):
+        return "就绪"
+    return "未运行"
+
+
+def data_annotation_runtime_layer_status(status: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    scene = status.get("current_scene")
+    current_scene = f"#{scene}" if isinstance(scene, int) else ""
+    phase = str(status.get("phase") or "")
+    task_type = str(status.get("task_type") or "")
+    current_task = str(status.get("current_task") or task_type or "")
+    total = int(status.get("total") or 0)
+    current_index = int(status.get("current_index") or 0)
+    progress = f"{current_index}/{total}" if total else ""
+    guard_items = status.get("guard_items") if isinstance(status.get("guard_items"), dict) else {}
+    guard_enabled_count = sum(1 for item in guard_items.values() if isinstance(item, dict) and bool(item.get("enabled")))
+    service_owned_by_other = phase == "service_owned_by_other"
+    kernel_enabled = bool(status.get("behavior_tree_enabled", True))
+    scheduler_enabled = bool(status.get("job_group_enabled", True))
+    framework_status = {
+        "label": "执行中" if bool(status.get("running")) else "空闲",
+        "phase": data_annotation_runtime_phase_label(phase) if phase else "",
+        "task_type": task_type,
+        "current_task": current_task,
+        "current_task_id": str(status.get("current_task_id") or ""),
+        "progress": progress,
+        "interruptible": bool(status.get("interruptible", True)),
+    }
+    return {
+        "kernel_status": {
+            "label": _runtime_state_label(status),
+            "enabled": kernel_enabled,
+            "running": bool(status.get("service_running")) or service_owned_by_other,
+            "busy": bool(status.get("running")),
+            "current_scene": current_scene,
+            "message": status.get("message") or "",
+            "can_restart": True,
+            "can_interrupt": bool(status.get("running")),
+        },
+        "framework_status": framework_status,
+        "engine_status": dict(framework_status),
+        "scheduler_status": {
+            "label": "运行中" if scheduler_enabled else "已暂停",
+            "enabled": scheduler_enabled,
+            "service_running": bool(status.get("service_running")),
+            "job_group_enabled": scheduler_enabled,
+            "guard_group_enabled": bool(status.get("guard_group_enabled", True)),
+        },
+        "orchestration_status": {
+            "entry_id": str(status.get("entry_id") or ""),
+            "guard_count": len(guard_items),
+            "guard_enabled_count": guard_enabled_count,
+            "guard_interval_seconds": float(status.get("guard_interval_seconds") or 0),
+        },
+    }
+
+
+def normalize_data_annotation_runtime_logs_for_display(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in logs:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        next_item["message"] = data_annotation_runtime_display_message(next_item.get("message") or "")
+        if str(next_item.get("kind") or "") == "info" and str(next_item.get("message") or "").startswith("后台服务正在运行"):
+            continue
+        normalized.append(next_item)
+    return normalized
 
 
 def write_data_annotation_json(path: Path, payload: Any) -> None:
@@ -259,6 +396,7 @@ def initial_data_annotation_runtime_status() -> dict[str, Any]:
         "finished_at": 0,
         "error": "",
         "logs": [],
+        "cell_logs": [],
     }
 
 

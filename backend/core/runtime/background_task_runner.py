@@ -32,6 +32,11 @@ from backend.core.runtime.public_frontend_deploy import (
     PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
     run_public_frontend_deploy_check,
 )
+from backend.core.maintenance.idle_maintenance import (
+    IDLE_MAINTENANCE_INTERVAL_MINUTES,
+    IDLE_MAINTENANCE_TASK_KEY,
+    enqueue_idle_maintenance,
+)
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
@@ -57,6 +62,7 @@ BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 7
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
+    IDLE_MAINTENANCE_TASK_KEY,
     "note_metadata_feedback_optimization",
     "codex_diary_yesterday_import",
     RUANYF_WEEKLY_TASK_NAME,
@@ -166,6 +172,11 @@ def _storage_analysis_schedule_policy() -> dict[str, Any]:
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
     if task_key == "auto_git_commit":
         return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=30)
+    if task_key == IDLE_MAINTENANCE_TASK_KEY:
+        return _job_schedule_policy(
+            {"type": "interval", "minutes": IDLE_MAINTENANCE_INTERVAL_MINUTES, "anchor": "last_finish"},
+            retry_minutes=10,
+        )
     if task_key == "note_metadata_feedback_optimization":
         return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
@@ -541,6 +552,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="会使用 DeepSeek v4-flash 生成提交信息，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 超过阈值会直接 checkpoint。",
     ),
     BackgroundTaskSpec(
+        key=IDLE_MAINTENANCE_TASK_KEY,
+        title="空闲维护任务执行器",
+        category="AI",
+        description="每 5 分钟检测后台队列和仓库状态，空闲时从维护任务池挑选一个低风险、可验证、可独立执行的任务；当前支持自动提交委托、文档对齐扫描和代码瘦身候选扫描。",
+        schedule_label=f"每 {IDLE_MAINTENANCE_INTERVAL_MINUTES} 分钟检查",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_idle_maintenance,
+        manual_warning="默认任务较保守：扫描类任务只读生成报告；自动提交任务复用现有自动 Git 提交预检和提交逻辑。",
+    ),
+    BackgroundTaskSpec(
         key="note_metadata_feedback_optimization",
         title="元数据反馈优化",
         category="AI",
@@ -633,7 +654,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=MARKET_INTRADAY_PERSIST_TASK_KEY,
         title="股票分时持久化",
         category="股票",
-        description="每天收盘后为股票量化分析页面自选池拉取最新交易日 1 分钟分时，并写入本地 market_intraday，供后续量化分析复用。",
+        description="每天收盘后审计股票量化分析标的最近交易日的 1 分钟分时缺口，按公开数据源可返回范围分批补齐并写入本地 market_intraday。",
         schedule_label=f"每天 {MARKET_INTRADAY_PERSIST_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_market_intraday_persist,

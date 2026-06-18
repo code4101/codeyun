@@ -797,6 +797,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "cluster.view-chan-course",
+      "title": "禅课合辑",
+      "node_type": "feature",
+      "parent_key": "cluster.files",
+      "sort_order": 26,
+      "route_paths": ["/cluster/view-chan-course"],
+      "menu_paths": ["/cluster/view-chan-course"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster.labelme",
       "title": "图片标注",
       "node_type": "feature",

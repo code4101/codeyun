@@ -976,6 +976,7 @@ def _add_task_run_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--wait", action="store_true", default=argparse.SUPPRESS, help="如果任务进入队列，则等待 queued job 完成")
     parser.add_argument("--wait-timeout-seconds", type=float, default=argparse.SUPPRESS)
+    parser.add_argument("--tick-seconds", type=float, default=0.2, help="direct 模式下生成器每轮让出后的推进间隔")
 
 
 def main() -> int:
@@ -1285,6 +1286,7 @@ def main() -> int:
         payload=payload,
         entry_id=str(args.entry_id),
         isolate_jobs=not bool(args.no_isolate_jobs),
+        tick_seconds=float(getattr(args, "tick_seconds", 0.2) or 0.2),
     ))
     _print_status(status)
     return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1

@@ -59,6 +59,7 @@ from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
+    data_annotation_runtime_owner_message,
     CLOSE_POPUPS_GUARD_CONFIG_VERSION,
     close_popups_guard_enabled_from_status,
     data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
@@ -328,7 +329,13 @@ class FanxiuRuntime(Runtime):
                     return view
             self.matched_view = None
             return None
-        candidate, score = self.runner._auto_close_popup_first_match(self.ctx, self.popup_candidates(), self.cur_frame())
+        min_score = self.attrs.get("popup_guard_min_score")
+        candidate, score = self.runner._auto_close_popup_first_match(
+            self.ctx,
+            self.popup_candidates(),
+            self.cur_frame(),
+            min_score=float(min_score) if min_score is not None else None,
+        )
         if not isinstance(candidate, dict) or not isinstance(candidate.get("image"), dict):
             self.matched_view = None
             return None
@@ -1887,6 +1894,7 @@ class DataAnnotationRuntimeRunner(
     scene_threshold = 80
     scene_thresholds = {"gift": 60, "daily": 60, "hide_floating": 55}
     overlay_threshold = 55
+    task_popup_guard_threshold = 88
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -2002,6 +2010,7 @@ class DataAnnotationRuntimeRunner(
     def _status_base_preserving_guard_locked(self) -> dict[str, Any]:
         base = self._initial_status()
         current_logs = [item for item in self._status.get("logs") or [] if isinstance(item, dict)]
+        current_cell_logs = [item for item in self._status.get("cell_logs") or [] if isinstance(item, dict)]
         base.update({
             "guard_group_enabled": bool(self._guard_group_enabled),
             "guard_enabled": bool(self._guard_enabled),
@@ -2012,6 +2021,7 @@ class DataAnnotationRuntimeRunner(
             "last_guard_event": self._status.get("last_guard_event") if isinstance(self._status.get("last_guard_event"), dict) else {},
             "service_running": bool(self._service_thread is not None and self._service_thread.is_alive()),
             "logs": current_logs[-500:],
+            "cell_logs": current_cell_logs[:100],
         })
         return base
 
@@ -2185,7 +2195,7 @@ class DataAnnotationRuntimeRunner(
                 if isinstance(owner, dict) and owner_alive and not self._service_owner_stale(owner):
                     pid = owner.get("pid")
                     step = owner.get("step") or "unknown"
-                    return False, f"行为树执行器已由后端进程 {pid} 持有：{step}"
+                    return False, data_annotation_runtime_owner_message(pid, step)
                 try:
                     owner_path.unlink()
                 except FileNotFoundError:
@@ -2292,7 +2302,6 @@ class DataAnnotationRuntimeRunner(
             if not acquired:
                 self._sync_service_status_locked()
                 self._set_status_locked("idle", owner_message, phase="service_owned_by_other")
-                self._log_locked("info", owner_message)
                 return json.loads(json.dumps(self._status, ensure_ascii=False))
             requeued_count = _requeue_running_data_annotation_manual_jobs()
             self._service_heartbeat_at = time.time()
@@ -2364,12 +2373,16 @@ class DataAnnotationRuntimeRunner(
         current_logs = [item for item in self._status.get("logs") or [] if isinstance(item, dict)]
         persisted_logs = [item for item in persisted.get("logs") or [] if isinstance(item, dict)]
         kept_logs = (current_logs or persisted_logs)[-500:]
+        current_cell_logs = [item for item in self._status.get("cell_logs") or [] if isinstance(item, dict)]
+        persisted_cell_logs = [item for item in persisted.get("cell_logs") or [] if isinstance(item, dict)]
+        kept_cell_logs = (current_cell_logs or persisted_cell_logs)[:100]
         self._status.update({
             **self._status,
             "entry_id": persisted.get("entry_id") or persisted.get("guard_entry_id") or self._status.get("entry_id") or "",
             "current_scene": persisted.get("current_scene"),
             "message": "行为树常驻服务恢复配置",
             "logs": kept_logs,
+            "cell_logs": kept_cell_logs,
             "updated_at": time.time(),
         })
 
@@ -2510,6 +2523,145 @@ class DataAnnotationRuntimeRunner(
             self._log_locked("stop", "行为树常驻服务已停止")
         self._release_service_owner()
         self._persist_status()
+
+    def run_service_tick_once(
+        self,
+        *,
+        guard: bool = True,
+        manual_job: bool = True,
+        scheduled_job: bool = True,
+    ) -> dict[str, Any]:
+        context = self._service_context()
+        if context is None or not self._service_paths_still_current():
+            self._mark_service_heartbeat("waiting_context")
+            status = self.status()
+            status["engine_tick"] = {
+                "ran": False,
+                "reason": "waiting_context",
+                "guard": bool(guard),
+                "manual_job": bool(manual_job),
+                "scheduled_job": bool(scheduled_job),
+            }
+            self._persist_status()
+            return status
+        entry, entry_id, asset_tree_path = context
+        action = "idle"
+        try:
+            if guard:
+                self._run_device_health_guard_tick(entry_id)
+            if not self.status().get("running"):
+                if manual_job:
+                    self._mark_service_heartbeat("manual_job_poll")
+                    if self._start_next_manual_job_if_idle(entry, entry_id) is not None:
+                        action = "manual_job_started"
+                if action == "idle" and scheduled_job:
+                    if self._job_group_isolated():
+                        self._mark_service_heartbeat("scheduler_isolated")
+                        action = "scheduler_isolated"
+                    else:
+                        self._mark_service_heartbeat("scheduler_poll")
+                        if self._start_due_scheduler_tasks_if_idle(entry, entry_id, asset_tree_path):
+                            action = "scheduler_started"
+                if action == "idle" and guard and self._guard_group_enabled and self._guard_enabled:
+                    self._mark_service_heartbeat("idle_guard")
+                    self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
+                    self._mark_service_heartbeat("idle_guard_done")
+                    action = "guard_checked"
+        except Exception as exc:
+            with self._lock:
+                self._log_locked("error", f"行为树 tick 失败：{exc}")
+                self._status.update({"ok": False, "status": "error", "message": str(exc), "error": str(exc), "updated_at": time.time()})
+            self._persist_status()
+            raise
+        status = self.status()
+        status["engine_tick"] = {
+            "ran": True,
+            "action": action,
+            "guard": bool(guard),
+            "manual_job": bool(manual_job),
+            "scheduled_job": bool(scheduled_job),
+        }
+        self._persist_status()
+        return status
+
+    def run_service_ticks(
+        self,
+        *,
+        guard: bool = True,
+        manual_job: bool = True,
+        scheduled_job: bool = True,
+        run_mode: str = "tick_once",
+        max_ticks: int = 10,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        mode = str(run_mode or "tick_once").strip() or "tick_once"
+        if mode not in {"tick_once", "until_idle", "current_job"}:
+            mode = "tick_once"
+        max_count = max(1, min(int(max_ticks or 1), 100))
+        deadline = time.time() + max(0.1, min(float(timeout_seconds or 30.0), 300.0))
+        statuses: list[dict[str, Any]] = []
+
+        if mode == "current_job" and self.status().get("running"):
+            completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
+            status = self.status()
+            status["engine_tick"] = {
+                "ran": False,
+                "reason": "current_job_done" if completed else "timeout",
+                "run_mode": mode,
+                "ticks": 0,
+                "guard": bool(guard),
+                "manual_job": bool(manual_job),
+                "scheduled_job": bool(scheduled_job),
+            }
+            self._persist_status()
+            return status
+
+        no_progress_actions = {"idle", "guard_checked", "scheduler_isolated"}
+        for index in range(max_count):
+            if time.time() >= deadline:
+                break
+            status = self.run_service_tick_once(
+                guard=guard,
+                manual_job=manual_job,
+                scheduled_job=scheduled_job,
+            )
+            statuses.append(status)
+            tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
+            action = str(tick.get("action") or "")
+            if mode == "tick_once":
+                break
+            if mode == "current_job":
+                if status.get("running"):
+                    completed = self.wait_until_idle(timeout_seconds=max(0.1, deadline - time.time()))
+                    status = self.status()
+                    tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
+                    status["engine_tick"] = {
+                        **tick,
+                        "ran": True,
+                        "action": action,
+                        "reason": "current_job_done" if completed else "timeout",
+                        "guard": bool(guard),
+                        "manual_job": bool(manual_job),
+                        "scheduled_job": bool(scheduled_job),
+                    }
+                    statuses[-1] = status
+                break
+            if action in no_progress_actions:
+                break
+
+        status = statuses[-1] if statuses else self.status()
+        tick = status.get("engine_tick") if isinstance(status.get("engine_tick"), dict) else {}
+        status["engine_tick"] = {
+            **tick,
+            "run_mode": mode,
+            "ticks": len(statuses),
+            "timeout": time.time() >= deadline and bool(statuses),
+            "guard": bool(guard),
+            "manual_job": bool(manual_job),
+            "scheduled_job": bool(scheduled_job),
+        }
+        self._persist_status()
+        return status
 
     def _start_due_scheduler_tasks_if_idle(self, entry: Any, entry_id: str, asset_tree_path: Path) -> bool:
         if self.status().get("running"):
@@ -2752,6 +2904,7 @@ class DataAnnotationRuntimeRunner(
         payload: dict[str, Any],
         asset_tree_path: Path,
         isolate_jobs: bool = True,
+        tick_seconds: float = 0.2,
     ) -> dict[str, Any]:
         task_type = self._canonical_runtime_task_type(task_type)
         payload = dict(payload or {})
@@ -2772,7 +2925,7 @@ class DataAnnotationRuntimeRunner(
                 entry=entry,
                 entry_id=entry_id,
                 task_type=task_type,
-                payload={**payload, "__local_run": True},
+                payload={**payload, "__local_run": True, "__tick_seconds": max(0.1, float(tick_seconds or 0.2))},
                 asset_tree_path=asset_tree_path,
             )
         finally:
@@ -2975,6 +3128,100 @@ class DataAnnotationRuntimeRunner(
     def _log(self, kind: str, message: str) -> None:
         with self._lock:
             self._log_locked(kind, message)
+
+    def _runtime_cell_log_entry_base_id(self, item: dict[str, Any]) -> str:
+        return hashlib.sha1(
+            json.dumps(
+                {
+                    "time": item.get("time") or "",
+                    "kind": item.get("kind") or "",
+                    "scope": item.get("scope") or "",
+                    "item_id": item.get("item_id") or "",
+                    "message": item.get("message") or "",
+                    "action": item.get("action") or "",
+                    "source_file": item.get("source_file") or "",
+                    "source_line": item.get("source_line") or "",
+                    "source_expr": item.get("source_expr") or "",
+                    "ts": item.get("ts") or "",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+
+    def _runtime_cell_log_entry(self, item: dict[str, Any], occurrence: int) -> dict[str, Any]:
+        return {
+            "id": f"runtime-{self._runtime_cell_log_entry_base_id(item)}-{occurrence}",
+            "time": str(item.get("time") or ""),
+            "kind": str(item.get("kind") or ""),
+            "scope": str(item.get("scope") or ""),
+            "item_id": str(item.get("item_id") or ""),
+            "message": str(item.get("message") or ""),
+            "action": str(item.get("action") or ""),
+            "source_file": str(item.get("source_file") or ""),
+            "source_path": str(item.get("source_path") or ""),
+            "source_line": item.get("source_line") if isinstance(item.get("source_line"), int) else None,
+            "source_expr": str(item.get("source_expr") or ""),
+            "ts": str(item.get("ts") or ""),
+        }
+
+    def _runtime_task_cell_source(self, task_type: str, payload: dict[str, Any], *, local_run: bool = False) -> str:
+        clean_payload = {
+            str(key): value
+            for key, value in dict(payload or {}).items()
+            if not str(key).startswith("__")
+        }
+        prefix = "# 本地直接运行\n" if local_run else ""
+        return (
+            f"{prefix}task = 行为树.create_task({task_type!r}, {clean_payload!r})\n"
+            "行为树.step(task, 守护=True)"
+        )
+
+    def _append_runtime_cell_log_locked(
+        self,
+        *,
+        title: str,
+        source: str,
+        logs: list[dict[str, Any]] | None = None,
+    ) -> None:
+        raw_entries = [item for item in (logs if logs is not None else self._status.get("logs") or []) if isinstance(item, dict)]
+        raw_entries = raw_entries[-300:]
+        seen_ids: dict[str, int] = {}
+        entries: list[dict[str, Any]] = []
+        for item in raw_entries:
+            base_id = self._runtime_cell_log_entry_base_id(item)
+            occurrence = seen_ids.get(base_id, 0)
+            seen_ids[base_id] = occurrence + 1
+            entries.append(self._runtime_cell_log_entry(item, occurrence))
+        if not entries:
+            now = _now().strftime("%H:%M:%S")
+            entries = [{
+                "id": f"runtime-cell-empty-{uuid.uuid4().hex[:8]}",
+                "time": now,
+                "kind": "info",
+                "scope": "cell",
+                "item_id": "framework",
+                "message": f"提交 cell：{title}",
+                "action": "",
+                "source_file": "",
+                "source_path": "",
+                "source_line": None,
+                "source_expr": "",
+                "ts": str(time.time()),
+            }]
+        cell_id = f"cell-{hashlib.sha1((title + source + str(time.time())).encode('utf-8')).hexdigest()[:16]}"
+        cell = {
+            "id": cell_id,
+            "title": title,
+            "source_kind": "command",
+            "source": source,
+            "started_at": str(entries[0].get("time") or ""),
+            "ended_at": str(entries[-1].get("time") or ""),
+            "entries": entries,
+        }
+        existing = self._status.get("cell_logs") if isinstance(self._status.get("cell_logs"), list) else []
+        self._status["cell_logs"] = [cell, *[item for item in existing if isinstance(item, dict) and item.get("id") != cell_id]][:100]
 
     def _finish_daily_runtime_task(
         self,
@@ -3329,6 +3576,7 @@ class DataAnnotationRuntimeRunner(
                 stop_event=stop_event,
                 action=lambda: self._execute_runtime_task(ctx, task_type, payload, stop_event),
                 label=self._runtime_task_label(task_type, payload),
+                tick_seconds=max(0.1, float(payload.get("__tick_seconds") or 1.0)),
                 max_runtime_seconds=self._task_timeout_seconds(payload),
             )
             if (task_result or "success") == "success":
@@ -3345,17 +3593,29 @@ class DataAnnotationRuntimeRunner(
                     "current_code": "",
                 })
                 self._log_locked("success" if task_result == "success" else "skip", self._status["message"])
+                self._append_runtime_cell_log_locked(
+                    title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
+                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                )
         except InterruptedError:
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({"status": "stopped", "phase": "stopped", "message": "已停止", "finished_at": time.time(), "updated_at": time.time()})
                 self._log_locked("stop", "任务已停止")
+                self._append_runtime_cell_log_locked(
+                    title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
+                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                )
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
                 self._log_locked("error", str(detail))
+                self._append_runtime_cell_log_locked(
+                    title=f"执行任务：{self._runtime_task_label(task_type, payload)}",
+                    source=self._runtime_task_cell_source(task_type, payload, local_run=bool(payload.get("__local_run"))),
+                )
         finally:
             if previous_log_context is not None:
                 self._restore_log_context(previous_log_context)
@@ -3404,11 +3664,20 @@ class DataAnnotationRuntimeRunner(
                     "current_index": 1,
                 })
                 self._log_locked("success", self._manual_job_log_message(task_id, self._status["message"]), scope="manual_job", item_id="manual_job")
+                self._append_runtime_cell_log_locked(
+                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
+                    source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
+                )
         except InterruptedError:
             with self._lock:
                 self._clear_current_task_locked()
                 self._status.update({"status": "stopped", "phase": "stopped", "message": "手动作业已停止", "finished_at": time.time(), "updated_at": time.time()})
                 self._log_locked("stop", self._manual_job_log_message(task_id, "手动作业已停止"), scope="manual_job", item_id="manual_job")
+                payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+                self._append_runtime_cell_log_locked(
+                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
+                    source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
+                )
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
@@ -3420,6 +3689,10 @@ class DataAnnotationRuntimeRunner(
                 self._clear_current_task_locked()
                 self._status.update({"ok": False, "status": "error", "phase": "error", "message": str(detail), "error": str(detail), "finished_at": time.time(), "updated_at": time.time()})
                 self._log_locked("error", self._manual_job_log_message(task_id, str(detail)), scope="manual_job", item_id="manual_job")
+                self._append_runtime_cell_log_locked(
+                    title=f"手动作业：{task.get('label') or self._runtime_task_label(str(task.get('task_type') or ''), payload)}",
+                    source=self._runtime_task_cell_source(str(task.get("task_type") or ""), payload),
+                )
         finally:
             payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
             isolation_token = str(payload.get("__job_group_isolation_token") or "")
@@ -5959,11 +6232,6 @@ class DataAnnotationRuntimeRunner(
             self._require_shape_match(action_match_result, shape)
         click_x, click_y = ActionPlanner().shape_center(image, shape)
         if action_match_result is not None:
-            actual_x, actual_y = click_x, click_y
-            resolved_box = action_match_result.get("resolved_box") or action_match_result.get("fixed_box")
-            if isinstance(resolved_box, dict):
-                actual_x = float(resolved_box.get("x") or 0) + float(resolved_box.get("w") or 0) / 2
-                actual_y = float(resolved_box.get("y") or 0) + float(resolved_box.get("h") or 0) / 2
             self._log(
                 "detail",
                 (
@@ -5971,16 +6239,10 @@ class DataAnnotationRuntimeRunner(
                     f"similarity={float(action_match_result.get('similarity') or 0):.0f}，"
                     f"ocr={str(action_match_result.get('ocr_text') or '')[:40]}，"
                     f"fixed_box={action_match_result.get('fixed_box')}，"
-                    f"click=({actual_x:.1f},{actual_y:.1f})，"
+                    f"click=({click_x:.1f},{click_y:.1f})，"
                     f"raw=({click_x:.1f},{click_y:.1f})"
                 ),
             )
-            if isinstance(resolved_box, dict):
-                current_image = dict(image)
-                current_image["width"] = int(action_match_result.get("width") or image.get("width") or 0)
-                current_image["height"] = int(action_match_result.get("height") or image.get("height") or 0)
-                self._click_frame_point(ctx, current_image, actual_x, actual_y)
-                return
         payload = ActionPlanner().click_shape_payload(image, shape)
         entry: Any = ctx["entry"]
         click_x = float(payload.get("x") or 0)
@@ -6034,6 +6296,8 @@ class DataAnnotationRuntimeRunner(
             return False
         image_number = self._image_number(image)
         shape_title = str(shape.get("title") or "")
+        if str(shape.get("sceneJumpTarget") or "").strip() and "一键领取" not in shape_title:
+            return True
         return (image_number, shape_title) in {
             (34, "打开下方菜单"),
             (69, "退出"),
@@ -6637,6 +6901,23 @@ class DataAnnotationRuntimeRunner(
         self._clear_tick_frame(ctx)
         return True
 
+    def _recover_unknown_start_to_world(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        *,
+        target_scene_id: int,
+    ) -> bool:
+        if int(target_scene_id) != 34:
+            return False
+        return self._recover_unknown_green_bottle_return_popup(
+            ctx,
+            frame_data_url,
+            source_scene_id=20,
+            target_scene_id=34,
+            expected_ids=[34],
+        )
+
     def _xianfu_home_text_is_scene(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         if "仙侣居" not in normalized and "仙侶居" not in normalized:
@@ -6676,19 +6957,24 @@ class DataAnnotationRuntimeRunner(
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
 
+            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
+            if matched_expected is not None:
+                last_scene_id, last_score, last_frame = matched_expected, expected_score, frame
+                if matched_expected != source_scene_id:
+                    left_source = True
+                history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% expected={expected_score:.0f}% left={left_source}")
+                if self._increment_scene_jump_target(shape, matched_expected):
+                    self._write_asset_tree(asset_tree_path, tree)
+                    ctx["images"] = self._index_images(tree)
+                self._log("info", f"场景跳转：#{source_scene_id} -> #{matched_expected}，{elapsed:.1f}s")
+                return matched_expected
+
             scene_id, score = self._identify_scene_number(ctx, frame)
             last_scene_id, last_score, last_frame = scene_id, score, frame
             if scene_id is not None and scene_id != source_scene_id:
                 left_source = True
-            matched_expected, expected_score = self._identify_scene_number(ctx, frame, expected_ids)
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
             history.append(f"{elapsed:.1f}s {scene_text} {score:.0f}% expected={expected_score:.0f}% left={left_source}")
-            if scene_id is not None and scene_id in expected_ids:
-                if self._increment_scene_jump_target(shape, scene_id):
-                    self._write_asset_tree(asset_tree_path, tree)
-                    ctx["images"] = self._index_images(tree)
-                self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s")
-                return scene_id
             if 171 in expected_ids:
                 text = self._ocr_text(self._ocr_lines(frame))
                 if self._xianfu_home_text_is_scene(text):
@@ -6765,6 +7051,19 @@ class DataAnnotationRuntimeRunner(
                     "updated_at": time.time(),
                 })
 
+            if not left_source and last_scene_id == source_scene_id and not allows_self and elapsed >= 8.0:
+                return self._save_unknown_scene_frame(
+                    ctx,
+                    asset_tree_path,
+                    tree,
+                    last_frame or frame,
+                    target_scene_id=target_scene_id,
+                    current_scene_id=source_scene_id,
+                    action_shape=shape,
+                    elapsed_seconds=elapsed,
+                    history=history,
+                )
+
             if elapsed < timeout_seconds:
                 continue
 
@@ -6819,6 +7118,7 @@ class DataAnnotationRuntimeRunner(
             ctx["asset_tree"] = tree
             ctx["images"] = self._index_images(tree)
 
+        recovered_unknown_start = False
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
@@ -6833,6 +7133,10 @@ class DataAnnotationRuntimeRunner(
                     route_candidate_ids,
                 )
             if current_scene_id is None:
+                if not recovered_unknown_start and self._recover_unknown_start_to_world(ctx, frame, target_scene_id=target_scene_id):
+                    recovered_unknown_start = True
+                    yield BehaviorTreeStatus.RUNNING
+                    continue
                 return self._save_unknown_scene_frame(
                     ctx,
                     asset_tree_path,

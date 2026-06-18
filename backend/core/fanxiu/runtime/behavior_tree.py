@@ -28,7 +28,10 @@ from pyxllib.prog import (
 
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_log_once,
+    data_annotation_runtime_owner_message,
     is_data_annotation_runtime_live_empty,
+    normalize_data_annotation_runtime_display,
+    normalize_data_annotation_runtime_logs_for_display,
     normalize_data_annotation_runtime_guard_items,
     persist_data_annotation_runtime_status,
     read_data_annotation_runtime_status,
@@ -57,6 +60,7 @@ class FanxiuLocalRunRequest:
     payload: dict[str, Any] = field(default_factory=dict)
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID
     isolate_jobs: bool = True
+    tick_seconds: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,7 @@ def _fanxiu_process_matches_service_owner(pid: int) -> bool:
         or ("fanxiu_bt.py" in command and "watch-doctor" in command)
         or ("fanxiu_bt.py" in command and "ensure-watch-doctor" in command)
         or ("uvicorn" in command and "backend.app:app" in command)
+        or "backend.core.runtime.uvicorn_hidden" in command
         or "dev.py" in command
     )
 
@@ -532,7 +537,7 @@ def fanxiu_data_annotation_runtime_status(
             status["running"] = False
             status["status"] = "idle"
             status["phase"] = owner_step
-            status["message"] = f"行为树常驻服务运行中：进程 {owner.get('pid')} {owner_step}"
+            status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner_step)
             status["current_task"] = ""
             status["current_task_id"] = ""
             status["task_type"] = ""
@@ -618,11 +623,9 @@ def fanxiu_data_annotation_runtime_status(
                     )
                 else:
                     status["phase"] = str(owner.get("step") or "scheduler_poll")
-                    status["message"] = (
-                        f"行为树常驻服务运行中：进程 {owner.get('pid')} "
-                        f"{owner.get('step') or 'scheduler_poll'}"
-                    )
+                    status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner.get("step") or "scheduler_poll")
     normalize_data_annotation_runtime_guard_items(status, runner.guard_definitions)
+    normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
     if owner_active_elsewhere:
         return status
@@ -645,7 +648,7 @@ def fanxiu_data_annotation_runtime_logs(
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )
-    return filter_status_logs(status, limit=limit, scope=scope, item_id=item_id)
+    return normalize_data_annotation_runtime_logs_for_display(filter_status_logs(status, limit=limit, scope=scope, item_id=item_id))
 
 
 def clear_fanxiu_data_annotation_runtime_logs(
@@ -898,6 +901,7 @@ def run_fanxiu_local_task(request: FanxiuLocalRunRequest) -> dict[str, Any]:
         payload=dict(request.payload or {}),
         asset_tree_path=asset_tree_path,
         isolate_jobs=bool(request.isolate_jobs),
+        tick_seconds=float(request.tick_seconds or 0.2),
     )
 
 

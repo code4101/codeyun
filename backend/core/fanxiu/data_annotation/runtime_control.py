@@ -28,6 +28,7 @@ from backend.core.fanxiu.runtime.behavior_tree import (
     fanxiu_data_annotation_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path,
     fanxiu_runtime_guard_definitions,
+    get_fanxiu_runtime_runner,
     fanxiu_runtime_runner_running,
     fanxiu_runtime_runner_status,
     fanxiu_runtime_runner_wake,
@@ -61,9 +62,12 @@ from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_
 from backend.core.fanxiu.data_annotation.runner import create_fanxiu_runtime_runner
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_log_once,
+    data_annotation_runtime_owner_message,
     data_annotation_scheduler_task_state,
     data_annotation_task_due,
     is_data_annotation_runtime_live_empty,
+    normalize_data_annotation_runtime_display,
+    normalize_data_annotation_runtime_logs_for_display,
     next_data_annotation_scheduler_time,
     normalize_data_annotation_runtime_guard_items,
     normalize_data_annotation_scheduler_settings,
@@ -285,6 +289,18 @@ def persist_runtime_status(
         world_facts_path or fanxiu_data_annotation_world_facts_path(),
         status,
     )
+
+
+def finalize_runtime_status(
+    status: dict[str, Any],
+    *,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    normalize_runtime_guard_items(status)
+    normalize_data_annotation_runtime_display(status)
+    persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    return status
 
 
 def read_runtime_status(path: Path | None = None) -> dict[str, Any]:
@@ -590,7 +606,7 @@ def runtime_status(
             status["running"] = False
             status["status"] = "idle"
             status["phase"] = owner_step
-            status["message"] = f"行为树常驻服务运行中：进程 {owner.get('pid')} {owner_step}"
+            status["message"] = data_annotation_runtime_owner_message(owner.get("pid"), owner_step)
             status["current_task"] = ""
             status["current_task_id"] = ""
             status["task_type"] = ""
@@ -623,6 +639,7 @@ def runtime_status(
         status["phase"] = "behavior_tree_disabled"
         status["message"] = "行为树已关闭"
     normalize_runtime_guard_items(status)
+    normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
     if owner_active_elsewhere:
         return status
@@ -652,6 +669,39 @@ def ensure_runtime_service(
         asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(resolved_entry_id),
     )
     status["behavior_tree_enabled"] = True
+    persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+    return status
+
+
+def restart_runtime_kernel(
+    *,
+    entry: Any,
+    entry_id: str,
+    timeout_seconds: float = 5.0,
+    asset_tree_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    runner = get_fanxiu_runtime_runner()
+    stop_service = getattr(runner, "stop_service", None)
+    stopped_status: dict[str, Any] = {}
+    if callable(stop_service):
+        stopped_status = stop_service(timeout_seconds=max(0.1, float(timeout_seconds or 5.0)))
+    status = ensure_runtime_service(
+        entry=entry,
+        entry_id=entry_id,
+        asset_tree_path=asset_tree_path,
+        scheduler_settings_path=scheduler_settings_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    status["kernel_restart"] = {
+        "ran": True,
+        "previous_service_running": bool(stopped_status.get("service_running")),
+        "service_running": bool(status.get("service_running")),
+    }
+    normalize_data_annotation_runtime_display(status)
     persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     return status
 
@@ -761,6 +811,60 @@ def submit_tick_task(
     )
 
 
+def execute_runtime_tick(
+    *,
+    entry: Any,
+    entry_id: str,
+    guard: bool = True,
+    manual_job: bool = True,
+    scheduled_job: bool = True,
+    run_mode: str = "tick_once",
+    max_ticks: int = 10,
+    timeout_seconds: float = 30.0,
+    asset_tree_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    ensure_status = ensure_runtime_service(
+        entry=entry,
+        entry_id=entry_id,
+        asset_tree_path=asset_tree_path,
+        scheduler_settings_path=scheduler_settings_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    if not bool(ensure_status.get("behavior_tree_enabled", True)):
+        ensure_status["engine_tick"] = {
+            "ran": False,
+            "reason": "kernel_disabled",
+            "guard": bool(guard),
+            "manual_job": bool(manual_job),
+            "scheduled_job": bool(scheduled_job),
+            "run_mode": str(run_mode or "tick_once"),
+            "ticks": 0,
+        }
+        return finalize_runtime_status(
+            ensure_status,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+        )
+    status = get_fanxiu_runtime_runner().run_service_ticks(
+        guard=guard,
+        manual_job=manual_job,
+        scheduled_job=scheduled_job,
+        run_mode=run_mode,
+        max_ticks=max_ticks,
+        timeout_seconds=timeout_seconds,
+    )
+    status["entry_id"] = str(entry_id or getattr(entry, "entry_id", None) or "")
+    return finalize_runtime_status(
+        status,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+
 def runtime_logs(
     *,
     limit: int = 500,
@@ -770,7 +874,7 @@ def runtime_logs(
     world_facts_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
-    return filter_status_logs(status, limit=limit, scope=scope, item_id=item_id)
+    return normalize_data_annotation_runtime_logs_for_display(filter_status_logs(status, limit=limit, scope=scope, item_id=item_id))
 
 
 def clear_runtime_logs(

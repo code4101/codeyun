@@ -516,7 +516,10 @@ class MailTaskMixin:
                 last_ocr_at = now
                 last_text = text or last_text
             if scene_id == 34 or (text and self._daily_assistant_text_is_world_like(text)):
+                if self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, text):
+                    yield from runtime.wait_action_settle(0.3)
                 self._log("info", f"{label}：领取后落到世界页，重新打开邮件列表")
+                yield from runtime.wait_action_settle(0.8)
                 reopened = self._reopen_mail_from_current_world_like(runtime)
                 result = (yield from reopened) if isinstance(reopened, GeneratorType) else reopened
                 if result == "success":
@@ -547,18 +550,80 @@ class MailTaskMixin:
         ctx = runtime.ctx
         stop_event = runtime.stop_event or threading.Event()
         asset_tree_path = runtime.asset_tree_path
-        dynamic_result = self._try_open_mail_dynamic_entry(ctx, stop_event)
-        dynamic_opened = (yield from dynamic_result) if isinstance(dynamic_result, GeneratorType) else dynamic_result
-        if dynamic_opened == "success":
-            return "success"
-        visible_result = self._try_open_mail_from_visible_world_menu(ctx, stop_event, timeout=1.0)
+        frame = runtime.cur_frame(update=True)
+        if self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, ""):
+            yield from runtime.wait_action_settle(0.3)
+        if isinstance(asset_tree_path, Path):
+            try:
+                for attempt in range(2):
+                    stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=(attempt > 0))
+                    stable_opened = (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+                    if stable_opened == "success":
+                        return "success"
+                    if stable_opened != "blocked_reward_tip":
+                        break
+                    frame = runtime.cur_frame(update=True)
+                    if not self._close_mail_world_reward_tip_if_present(ctx, runtime, frame, ""):
+                        break
+                    yield from runtime.wait_action_settle(0.3)
+            except RuntimeError as exc:
+                self._log("info", f"邮件_历史扫描：#35 稳定入口失败，尝试 #68 动态入口：{exc}")
+        visible_result = self._try_open_mail_from_visible_world_menu(ctx, stop_event, timeout=0.2)
         visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
         if visible_opened == "success":
             return "success"
-        if not isinstance(asset_tree_path, Path):
-            return dynamic_opened if dynamic_opened != "missing" else visible_opened
-        stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path)
-        return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+        dynamic_result = self._try_open_mail_dynamic_entry(ctx, stop_event)
+        dynamic_opened = (yield from dynamic_result) if isinstance(dynamic_result, GeneratorType) else dynamic_result
+        return dynamic_opened if dynamic_opened != "missing" else visible_opened
+
+    def _mail_world_reward_tip_text_matches(self, text: str) -> bool:
+        compact = _sanitize_ocr_text(text).replace(" ", "")
+        if "点击查看" not in compact and "点击使用" not in compact:
+            return False
+        if not any(token in compact for token in ("宝魄", "丹药", "炼化", "获得", "奖励")):
+            return False
+        return True
+
+    def _mail_world_reward_tip_detected(
+        self,
+        ctx: dict[str, Any],
+        frame: str,
+        text: str = "",
+        *,
+        menu_ocr_lines: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        if self._mail_world_reward_tip_text_matches(text):
+            return True
+        image35 = ctx.get("images", {}).get(35)
+        if not isinstance(image35, dict) or not self._find_shape(image35, "菜单"):
+            return False
+        lines = menu_ocr_lines
+        if lines is None:
+            try:
+                lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
+            except Exception as exc:
+                self._log("detail", f"邮件_清理：#35 菜单奖励提示 OCR 失败：{exc}")
+                return False
+        menu_text = self._ocr_text(lines or [])
+        if self._mail_world_reward_tip_text_matches(f"{text} {menu_text}"):
+            return True
+        menu_compact = _sanitize_ocr_text(menu_text).replace(" ", "")
+        return "点击查看" in menu_compact or "点击使用" in menu_compact
+
+    def _close_mail_world_reward_tip_if_present(self, ctx: dict[str, Any], runtime: FanxiuRuntime, frame: str, text: str) -> bool:
+        if not self._mail_world_reward_tip_detected(ctx, frame, text):
+            return False
+        image34 = ctx.get("images", {}).get(34)
+        if not isinstance(image34, dict):
+            return False
+        menu_shape = self._find_shape(image34, "下方菜单")
+        if menu_shape is None:
+            return False
+        with self._lock:
+            self._set_status_locked("running", "邮件_清理：关闭世界页奖励提示", phase="mail_cleanup_close_world_reward_tip", current_scene=34)
+            self._log_locked("action", "邮件_清理：检测到世界页奖励提示，点击 #34「下方菜单」收起")
+        runtime.click_shape_center(image34, "下方菜单")
+        return True
 
     def _refresh_recent_mail_packets_for_runtime_log(self, label: str, *, flush_capture: bool) -> None:
         try:
@@ -617,16 +682,23 @@ class MailTaskMixin:
         if result != "success":
             return result
         if entry_mode in {"stable", "menu", "full", "full_scan", "debug"}:
-            stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path)
+            stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=False)
             return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+        stable_opened = "missing"
+        try:
+            stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path, probe_before_open=False)
+            stable_opened = (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+            if stable_opened == "success":
+                return "success"
+        except RuntimeError as exc:
+            self._log("info", f"邮件_历史扫描：#35 稳定入口失败，尝试 #68 动态入口：{exc}")
         dynamic_result = self._try_open_mail_dynamic_entry(ctx, stop_event)
         opened = (yield from dynamic_result) if isinstance(dynamic_result, GeneratorType) else dynamic_result
         if opened == "no_mail":
             return "no_mail"
         if opened == "success":
             return "success"
-        stable_result = self._open_mail_stable_entry(ctx, stop_event, asset_tree_path)
-        return (yield from stable_result) if isinstance(stable_result, GeneratorType) else stable_result
+        return stable_opened
 
     def _try_open_mail_dynamic_entry(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
         image34 = ctx.get("images", {}).get(34)
@@ -664,7 +736,14 @@ class MailTaskMixin:
             return "missing"
         return "success"
 
-    def _open_mail_stable_entry(self, ctx: dict[str, Any], stop_event: threading.Event, asset_tree_path: Path) -> str:
+    def _open_mail_stable_entry(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        asset_tree_path: Path,
+        *,
+        probe_before_open: bool = True,
+    ) -> str:
         image34 = ctx.get("images", {}).get(34)
         open_shape = self._find_shape(image34, "打开下方菜单") if isinstance(image34, dict) else None
         if not isinstance(image34, dict) or not open_shape:
@@ -675,33 +754,108 @@ class MailTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         last_error: Exception | None = None
         for attempt in range(2):
-            frame = runtime.cur_frame(update=True)
-            try:
-                runtime.click_shape(image34, open_shape, frame_data_url=frame)
-            except RuntimeError as exc:
-                message = str(exc)
-                if "打开下方菜单" not in message or "定位" not in message:
-                    raise
-                box = self._box(open_shape, image34)
-                x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
-                y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
-                with self._lock:
-                    self._log_locked("info", f"邮件_历史扫描：#34「打开下方菜单」图像定位失败，改按固定标注点击 ({x:.0f},{y:.0f})")
-                runtime.click_frame_point(image34, x, y)
+            if probe_before_open:
+                visible_result = self._click_mail_from_visible_world_menu_once(ctx, stop_event, require_world_scene=False)
+                visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
+                if visible_opened == "success":
+                    return "success"
+                if visible_opened == "blocked_reward_tip":
+                    return "blocked_reward_tip"
+            box = self._box(open_shape, image34)
+            x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+            y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+            runtime.click_frame_point(image34, x, y)
             with self._lock:
                 self._set_status_locked("running", "邮件_历史扫描：等待下方菜单展开", phase="mail_claim_wait_world_menu", current_scene=34)
             yield from runtime.wait_action_settle(1.0)
-            try:
-                menu_result = self._open_mail_from_world_menu_shape(ctx, stop_event)
-                return (yield from menu_result) if isinstance(menu_result, GeneratorType) else menu_result
-            except RuntimeError as exc:
-                last_error = exc
-                if "等待 #35 邮件入口超时" not in str(exc) or attempt >= 1:
-                    raise
-                self._log("info", "邮件_历史扫描：下方菜单未展开或未识别，重试打开 #34 下方菜单")
+            visible_result = self._click_mail_from_visible_world_menu_once(ctx, stop_event, require_world_scene=False)
+            visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
+            if visible_opened == "success":
+                return "success"
+            if visible_opened == "blocked_reward_tip":
+                return "blocked_reward_tip"
+            yield from runtime.wait_action_settle(0.8)
+            visible_result = self._click_mail_from_visible_world_menu_once(ctx, stop_event, require_world_scene=False)
+            visible_opened = (yield from visible_result) if isinstance(visible_result, GeneratorType) else visible_result
+            if visible_opened == "success":
+                return "success"
+            if visible_opened == "blocked_reward_tip":
+                return "blocked_reward_tip"
+            last_error = RuntimeError("邮件_历史扫描：等待 #35 邮件入口超时，最后 0%")
+            if attempt >= 1:
+                break
+            self._log("info", "邮件_历史扫描：下方菜单未展开或未识别，重试打开 #34 下方菜单")
         if last_error is not None:
             raise last_error
         return "missing"
+
+    def _click_mail_from_visible_world_menu_once(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        require_world_scene: bool = True,
+    ) -> str:
+        image35 = ctx.get("images", {}).get(35)
+        if not isinstance(image35, dict):
+            return "missing"
+        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
+        self._raise_if_stopped(stop_event)
+        frame = runtime.cur_frame(update=True)
+        if require_world_scene:
+            scene_id, score, _frame = runtime.current_scene(frame_data_url=frame)
+            if scene_id not in {34, 35} or score < float(self.scene_threshold):
+                return "missing"
+        mail_shape = self._find_shape(image35, "邮件")
+        menu_shape = self._find_shape(image35, "菜单")
+        if not require_world_scene and menu_shape:
+            ocr_lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
+            if self._mail_world_reward_tip_detected(ctx, frame, menu_ocr_lines=ocr_lines):
+                self._log("info", "邮件_历史扫描：#35 菜单区域检测到世界奖励提示，先关闭提示")
+                return "blocked_reward_tip"
+            menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+            menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
+            if not menu_matches:
+                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_lines):
+                    x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件标注", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35 菜单已展开，点击邮件入口 ({x:.0f},{y:.0f})")
+                    runtime.click_frame_point(image35, x, y)
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    return "success"
+                return "missing"
+            x, y = self._mail_world_menu_icon_click_point(image35, menu_matches[0][0], menu_matches[0][1])
+            text = menu_matches[0][2]
+            with self._lock:
+                self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
+            runtime.click_frame_point(image35, x, y)
+            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+            return "success"
+        if mail_shape:
+            match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto", ocr_fallback=False)
+            if match_score < float(self.scene_threshold):
+                return "missing"
+            x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
+            with self._lock:
+                self._set_status_locked("running", "邮件_历史扫描：点击已展开菜单邮件入口", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                self._log_locked("action", f"邮件_历史扫描：#35「邮件」可见 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
+            runtime.click_frame_point(image35, x, y)
+            yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+            return "success"
+        menu_matches = self._ocr_centers_in_shape(runtime.ocr_lines(frame), image35, "菜单", include=("邮件",))
+        menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
+        if not menu_matches:
+            return "missing"
+        x, y, text = menu_matches[0]
+        x, y = self._mail_world_menu_icon_click_point(image35, x, y)
+        with self._lock:
+            self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+            self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
+        runtime.click_frame_point(image35, x, y)
+        yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+        return "success"
 
     def _open_mail_from_world_menu_shape(self, ctx: dict[str, Any], stop_event: threading.Event) -> str:
         # Runtime actions must be driven by the asset-tree annotations. Do not
@@ -763,18 +917,20 @@ class MailTaskMixin:
                     yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
                     return "success"
 
-            ocr_lines = runtime.ocr_lines(frame)
-            last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_lines[-3:]) or last_ocr
-            menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
-            if menu_matches:
-                x, y, text = menu_matches[0]
-                x, y = self._mail_world_menu_icon_click_point(image35, x, y)
-                with self._lock:
-                    self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
-                    self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
-                runtime.click_frame_point(image35, x, y)
-                yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
-                return "success"
+            if not mail_shape:
+                ocr_lines = runtime.ocr_lines(frame)
+                last_ocr = " / ".join(str(item.get("text") or "") for item in ocr_lines[-3:]) or last_ocr
+                menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+                menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
+                if menu_matches:
+                    x, y, text = menu_matches[0]
+                    x, y = self._mail_world_menu_icon_click_point(image35, x, y)
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
+                    runtime.click_frame_point(image35, x, y)
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    return "success"
 
             with self._lock:
                 self._set_status_locked(
@@ -794,6 +950,27 @@ class MailTaskMixin:
             box = self._box(mail_shape, image35)
             return float(box.get("x") or 0) + float(box.get("w") or 0) / 2, float(box.get("y") or 0) + float(box.get("h") or 0) / 2
         return x, y
+
+    def _looks_like_world_menu_mail_entry_ocr(self, text: str) -> bool:
+        compact = _sanitize_ocr_text(text).replace(" ", "")
+        if not compact or "邮件" not in compact:
+            return False
+        if any(token in compact for token in ("已锁定", "封邮件", "一键", "领取", "删除", "已阅", "未阅", "已读", "附件", "年月日")):
+            return False
+        chinese = re.sub(r"[^\u4e00-\u9fff]", "", compact)
+        if chinese == "邮件":
+            return True
+        return any(token in chinese for token in ("仙缘", "修为", "设置"))
+
+    def _looks_like_world_menu_open_ocr(self, lines: list[dict[str, Any]]) -> bool:
+        compact = _sanitize_ocr_text("".join(str(line.get("text") or "") for line in lines)).replace(" ", "")
+        if not compact:
+            return False
+        if any(token in compact for token in ("已锁定", "封邮件", "一键领取", "一键删除", "已阅", "未阅", "附件")):
+            return False
+        if "邮件" in compact:
+            return True
+        return "仙缘" in compact and "设置" in compact
 
     def _wait_mail_list_ready_or_restore_world(
         self,
@@ -842,19 +1019,58 @@ class MailTaskMixin:
         if not isinstance(image35, dict):
             return "missing"
         mail_shape = self._find_shape(image35, "邮件")
+        menu_shape = self._find_shape(image35, "菜单")
         runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
         deadline = time.time() + max(0.1, float(timeout or 0.1))
         while time.time() < deadline:
             self._raise_if_stopped(stop_event)
             frame = runtime.cur_frame(update=True)
             scene_id, score, _frame = runtime.current_scene()
-            if scene_id != 35 or score < float(self.scene_threshold):
+            in_world_menu_context = scene_id in {34, 35} and score >= float(self.scene_threshold)
+            if not in_world_menu_context:
+                with self._lock:
+                    self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
+                yield BehaviorTreeStatus.RUNNING
+                continue
+            if menu_shape:
+                ocr_lines = self._ocr_lines_in_shapes(frame, image35, ("菜单",), padding=8)
+                menu_matches = self._ocr_centers_in_shape(ocr_lines, image35, "菜单", include=("邮件",))
+                menu_matches = [match for match in menu_matches if self._looks_like_world_menu_mail_entry_ocr(match[2])]
+                if menu_matches:
+                    x, y = self._mail_world_menu_icon_click_point(image35, menu_matches[0][0], menu_matches[0][1])
+                    text = menu_matches[0][2]
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件 OCR", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35 菜单 OCR 命中「{text}」，点击邮件入口 ({x:.0f},{y:.0f})")
+                    runtime.click_frame_point(image35, x, y)
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    return "success"
+                if mail_shape and self._looks_like_world_menu_open_ocr(ocr_lines):
+                    x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_历史扫描：点击 #35 邮件标注", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35 菜单已展开，点击邮件入口 ({x:.0f},{y:.0f})")
+                    runtime.click_frame_point(image35, x, y)
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    return "success"
                 with self._lock:
                     self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
                 yield BehaviorTreeStatus.RUNNING
                 continue
             if mail_shape:
-                return (yield from self._open_mail_from_world_menu_shape(ctx, stop_event))
+                match_score = self._shape_score(ctx, image35, mail_shape, frame, match_strategy="auto", ocr_fallback=False)
+                if match_score >= float(self.scene_threshold):
+                    x, y = self._mail_world_menu_icon_click_point(image35, 0, 0)
+                    with self._lock:
+                        self._set_status_locked("running", "邮件_历史扫描：点击已展开菜单邮件入口", phase="mail_claim_click_world_menu_mail", current_scene=35)
+                        self._log_locked("action", f"邮件_历史扫描：#35「邮件」可见 {match_score:.0f}%，点击标注中心 ({x:.0f},{y:.0f})")
+                    runtime.click_frame_point(image35, x, y)
+                    yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=12.0, label="邮件_历史扫描：等待邮件 #121")
+                    return "success"
+                with self._lock:
+                    self._set_status_locked("running", "邮件_历史扫描：探测可见下方菜单邮件入口", phase="mail_claim_probe_world_menu_mail")
+                yield BehaviorTreeStatus.RUNNING
+                continue
             menu_matches = self._ocr_centers_in_shape(runtime.ocr_lines(frame), image35, "菜单", include=("邮件",))
             if menu_matches:
                 x, y, text = menu_matches[0]

@@ -21,6 +21,7 @@
         </div>
 
         <ImageGalleryWorkspace
+          ref="galleryWorkspaceRef"
           :images="mediaItems"
           :show-sidebar="showSidebar"
           :show-sidebar-when-empty="true"
@@ -47,9 +48,11 @@
           :update-image-weight="updateImageWeight"
           :delete-image="deleteImage"
           :reveal-image-in-folder="revealDeviceMediaInFolder"
+          :open-file-in-local-browser="openDeviceMediaInLocalBrowser"
           :open-pdf-document="openPdfDocument"
           delete-button-text="删除文件"
           set-cover-button-text="设为封面"
+          open-local-browser-button-text="本地浏览器打开"
           open-pdf-button-text="打开阅读器"
           show-quick-delete-for-non-positive-weight
           @update:show-sidebar="showSidebar = $event"
@@ -216,6 +219,11 @@
                   <span class="media-toolbar-value">{{ thumbnailScale }}%</span>
                 </div>
 
+                <div v-if="mediaTotalCount > 0" class="media-toolbar-group media-toolbar-group-duration">
+                  <span class="media-toolbar-label">总时长</span>
+                  <span class="media-toolbar-value media-duration-value">{{ mediaTotalDurationDaysText }}</span>
+                </div>
+
                 <div v-if="mediaVisualHashHint" class="media-toolbar-group media-toolbar-group-index">
                   <span class="media-toolbar-label">视觉索引</span>
                   <span class="media-index-pill" :class="`is-${mediaVisualHashHint.tone}`">
@@ -254,6 +262,8 @@
                 :media-items="mediaItems"
                 :media-total-count="mediaTotalCount"
                 :can-browse="canBrowse"
+                :recursive-display="recursiveDisplay"
+                :media-scan-limit="mediaScanLimit"
                 :reload-directory="loadDirectory"
               />
             </div>
@@ -296,117 +306,6 @@
       </section>
     </section>
 
-    <el-dialog
-      v-model="previewVisible"
-      class="preview-dialog"
-      width="92vw"
-      top="4vh"
-      destroy-on-close
-    >
-      <template #header>
-        <div v-if="previewImage" class="preview-header">
-          <div class="preview-actions">
-            <el-button :disabled="!hasPreviousImage" @click="handleShowPrevious">上一项</el-button>
-            <el-button type="primary" :disabled="!hasNextImage" @click="handleShowNext">下一项</el-button>
-            <el-button plain :loading="downloadingPath === previewImage.absolutePath" @click="downloadPreviewFile">
-              下载
-            </el-button>
-            <el-button
-              v-if="previewImage.kind === 'pdf'"
-              plain
-              :loading="openingPdfPath === previewImage.absolutePath"
-              @click="openPdfDocument(previewImage)"
-            >
-              打开阅读器
-            </el-button>
-          </div>
-          <el-tag>{{ previewPositionText }}</el-tag>
-        </div>
-      </template>
-
-      <div v-if="previewImage" class="preview-layout">
-        <div class="preview-stage">
-          <template v-if="canRenderPreviewMedia(previewImage)">
-            <img
-              v-if="!shouldRenderPreviewAsVideo(previewImage) && !shouldRenderPreviewAsPdf(previewImage)"
-              :src="previewImage.url"
-              :alt="previewImage.name"
-              class="preview-image"
-            />
-            <video
-              v-else-if="shouldRenderPreviewAsVideo(previewImage)"
-              ref="previewVideoRef"
-              class="preview-video"
-              :src="previewImage.url"
-              controls
-              playsinline
-              preload="metadata"
-            />
-            <iframe
-              v-else
-              class="preview-pdf"
-              :src="previewImage.url"
-              :title="previewImage.name"
-            />
-          </template>
-          <div v-else class="preview-placeholder">{{ getMediaLoadingText(previewImage, true) }}</div>
-        </div>
-
-        <div class="preview-sidebar">
-          <div class="meta-card">
-            <div class="meta-row">
-              <span class="meta-label">文件夹</span>
-              <span class="meta-value">{{ getPreviewFolderPath(previewImage) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">文件名</span>
-              <span class="meta-value">{{ previewImage.name }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">格式</span>
-              <span class="meta-value">{{ getPreviewFormatLabel(previewImage) }}</span>
-            </div>
-            <div v-if="previewImage.kind === 'video' && hasDuration(previewImage)" class="meta-row">
-              <span class="meta-label">时长</span>
-              <span class="meta-value">{{ formatDuration(previewImage.duration) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">分辨率</span>
-              <span class="meta-value">{{ formatResolution(previewImage) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">大小</span>
-              <span class="meta-value">{{ formatFileSize(previewImage.size) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">创建时间</span>
-              <span class="meta-value">
-                {{ typeof previewImage.createdAt === 'number' ? formatDate(previewImage.createdAt) : '--' }}
-              </span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">修改时间</span>
-              <span class="meta-value">{{ formatDate(previewImage.modifiedAt) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">路径</span>
-              <span class="meta-value meta-value-break">{{ previewImage.absolutePath }}</span>
-            </div>
-            <div class="meta-actions">
-              <el-button
-                plain
-                class="preview-reveal-button"
-                :loading="revealingPath === previewImage.absolutePath"
-                @click="revealPreviewInFolder"
-              >
-                打开所在目录
-              </el-button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </el-dialog>
-
     <slot
       name="page-after"
       :selected-entry-id="selectedEntryId"
@@ -421,7 +320,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Document, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera } from '@element-plus/icons-vue';
@@ -433,6 +332,7 @@ import {
   fetchDeviceMedia,
   fetchDeviceMediaBlob,
   fetchDeviceThumbnailBlob,
+  openDeviceEntryInLocalBrowser,
   revealDeviceEntryInFolder,
   setDeviceFileCover,
   setDeviceFileWeight,
@@ -458,7 +358,6 @@ import {
   cloneGallerySortProgram,
   createDefaultGallerySortProgram,
   formatDate,
-  formatDuration,
   formatFileSize,
   formatResolution,
   normalizeGallerySortProgram,
@@ -481,6 +380,10 @@ interface DeviceBrowserImage extends GalleryImage {
   absolutePath: string;
   createdAt?: number | null;
   isFetchingUrl?: boolean;
+}
+
+interface GalleryWorkspaceExpose {
+  openMediaClip: (imageId: string, startSeconds: number, endSeconds: number) => Promise<void>;
 }
 
 interface SortFieldOption {
@@ -582,6 +485,7 @@ const selectedPath = ref(DEVICE_ROOT_SENTINEL);
 const pathInputValue = ref('');
 const listing = ref<DeviceDirectoryListing | null>(null);
 const mediaItems = ref<DeviceBrowserImage[]>([]);
+const galleryWorkspaceRef = ref<GalleryWorkspaceExpose | null>(null);
 const recursiveDisplay = ref(false);
 const showSidebar = ref(true);
 const isLoadingDevices = ref(false);
@@ -592,11 +496,9 @@ const revealingPath = ref('');
 const openingPdfPath = ref('');
 const directorySortProgram = ref<DeviceDirectorySortProgram>(cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM));
 const backendSortProgram = ref<GallerySortProgram>(createDefaultGallerySortProgram());
-const previewVisible = ref(false);
-const previewImageId = ref<string | null>(null);
-const previewVideoRef = ref<HTMLVideoElement | null>(null);
 const mediaTotalCount = ref(0);
 const mediaTotalBytes = ref(0);
+const mediaTotalDurationMs = ref(0);
 const mediaPageSize = ref(DEFAULT_DEVICE_MEDIA_PAGE_SIZE);
 const currentMediaPage = ref(1);
 const currentDirectoryPage = ref(1);
@@ -917,6 +819,7 @@ const emptyStateDescription = computed(() => {
 });
 const listingItems = computed(() => listing.value?.items ?? []);
 const galleryStorageKey = computed(() => `device_media_gallery_${selectedEntryId.value || 'default'}`);
+const mediaTotalDurationDaysText = computed(() => `${(mediaTotalDurationMs.value / 86_400_000).toFixed(2)}天`);
 const getParentPathWithinConstraints = (value: string) => {
   const parent = getAbsoluteParentPath(value);
   if (!parent) {
@@ -975,28 +878,6 @@ const mediaVisualHashHint = computed(() => {
       status.prewarm_scheduled_count > 0 ? `后台已排队预热：${status.prewarm_scheduled_count} 张` : '',
     ].filter(Boolean).join('\n'),
   };
-});
-const previewIndex = computed(() => {
-  if (!previewImageId.value) {
-    return -1;
-  }
-  return orderedMediaItems.value.findIndex((item) => item.id === previewImageId.value);
-});
-const previewImage = computed(() => {
-  if (previewIndex.value < 0) {
-    return null;
-  }
-  return orderedMediaItems.value[previewIndex.value] ?? null;
-});
-const hasPreviousImage = computed(() => previewIndex.value > 0);
-const hasNextImage = computed(
-  () => previewIndex.value >= 0 && previewIndex.value < orderedMediaItems.value.length - 1
-);
-const previewPositionText = computed(() => {
-  if (previewIndex.value < 0) {
-    return '-- / --';
-  }
-  return `${previewIndex.value + 1} / ${orderedMediaItems.value.length}`;
 });
 const mediaEmptyInlineText = computed(() =>
   isLoadingMediaPage.value
@@ -1115,6 +996,7 @@ const buildMediaListPayload = (
 const resetMediaPagination = () => {
   mediaTotalCount.value = 0;
   mediaTotalBytes.value = 0;
+  mediaTotalDurationMs.value = 0;
   currentMediaPage.value = 1;
   mediaSnapshotId.value = null;
   mediaListingDirty.value = false;
@@ -1156,6 +1038,7 @@ const mapDeviceMediaRecord = (record: DeviceImageRecord): DeviceBrowserImage => 
 const applyMediaListing = (mediaListing: DeviceMediaListing, options?: { append?: boolean }) => {
   mediaTotalCount.value = mediaListing.total_count ?? 0;
   mediaTotalBytes.value = mediaListing.total_bytes ?? 0;
+  mediaTotalDurationMs.value = mediaListing.total_duration_ms ?? 0;
   mediaSnapshotId.value = mediaListing.snapshot_id ?? mediaSnapshotId.value;
   mediaListingDirty.value = false;
   mediaVisualHashStatus.value = mediaListing.visual_hash_status ?? null;
@@ -1168,6 +1051,25 @@ const applyMediaListing = (mediaListing: DeviceMediaListing, options?: { append?
   }
 
   replaceMediaItems(nextItems);
+};
+
+const upsertMediaRecordForPreview = (record: DeviceImageRecord) => {
+  const nextItem = mapDeviceMediaRecord(record);
+  const existingIndex = mediaItems.value.findIndex((item) => item.id === nextItem.id);
+  if (existingIndex >= 0) {
+    mediaItems.value[existingIndex] = {
+      ...nextItem,
+      url: mediaItems.value[existingIndex].url,
+      urlVariant: mediaItems.value[existingIndex].urlVariant,
+      urlNeedsRevoke: mediaItems.value[existingIndex].urlNeedsRevoke,
+      thumbnailFailed: mediaItems.value[existingIndex].thumbnailFailed,
+      thumbnailVersion: mediaItems.value[existingIndex].thumbnailVersion,
+      lastAccessedAt: mediaItems.value[existingIndex].lastAccessedAt,
+    };
+    return nextItem.id;
+  }
+  mediaItems.value = [...mediaItems.value, nextItem];
+  return nextItem.id;
 };
 
 const loadMediaPage = async (
@@ -1249,43 +1151,7 @@ const getParentPath = (filePath: string) => {
 const hasDuration = (image: DeviceBrowserImage) =>
   typeof image.duration === 'number' && Number.isFinite(image.duration) && image.duration >= 0;
 
-const getPreviewFolderPath = (image: DeviceBrowserImage) =>
-  image.folderDisplayPath || image.folderPath || normalizedPathInput.value || '根目录';
-
-const getPreviewFormatLabel = (image: DeviceBrowserImage) => {
-  const source = image.name || image.relativePath || '';
-  const lastDotIndex = source.lastIndexOf('.');
-  if (lastDotIndex >= 0 && lastDotIndex < source.length - 1) {
-    return source.slice(lastDotIndex + 1).toLowerCase();
-  }
-
-  const mimeSubtype = image.mimeType?.split('/')[1];
-  if (mimeSubtype) {
-    return mimeSubtype.toLowerCase();
-  }
-
-  if (image.kind === 'pdf') return 'pdf';
-  return image.kind === 'video' ? 'video' : 'image';
-};
-
-const getMediaLoadingText = (image: DeviceBrowserImage | null, full = false) => {
-  if (image?.kind === 'pdf') {
-    return full ? 'PDF 加载中' : 'PDF';
-  }
-  if (image?.thumbnailFailed) {
-    return image.kind === 'video' ? '暂无视频首帧' : '缩略图失败';
-  }
-  if (full) return '原图加载中';
-  return image?.kind === 'video' ? '视频封面加载中' : '图片加载中';
-};
-
 const isVideoMedia = (image: DeviceBrowserImage) => image.kind === 'video';
-const canRenderPreviewMedia = (image: DeviceBrowserImage | null) =>
-  Boolean(image?.url && (image.urlVariant === 'full' || !image.isFetchingUrl));
-const shouldRenderPreviewAsVideo = (image: DeviceBrowserImage | null) =>
-  Boolean(image && image.kind === 'video' && image.urlVariant === 'full');
-const shouldRenderPreviewAsPdf = (image: DeviceBrowserImage | null) =>
-  Boolean(image && image.kind === 'pdf' && image.urlVariant === 'full');
 
 const isNativeStreamableVideo = (image: DeviceBrowserImage) => {
   if (image.kind !== 'video') {
@@ -1383,6 +1249,7 @@ const removeMediaItemLocally = (imageId: string) => {
   mediaItems.value = mediaItems.value.filter((item) => item.id !== imageId);
   mediaTotalCount.value = Math.max(0, mediaTotalCount.value - 1);
   mediaTotalBytes.value = Math.max(0, mediaTotalBytes.value - (target.size || 0));
+  mediaTotalDurationMs.value = Math.max(0, mediaTotalDurationMs.value - Math.round((target.duration || 0) * 1000));
 };
 
 const markMediaListingDirty = () => {
@@ -1597,13 +1464,6 @@ const downloadFile = async (item: DeviceDirectoryItem | DeviceBrowserImage) => {
   }
 };
 
-const downloadPreviewFile = async () => {
-  if (!previewImage.value) {
-    return;
-  }
-  await downloadFile(previewImage.value);
-};
-
 const revealDeviceMediaInFolder = async (image: GalleryImage) => {
   if (!selectedEntryId.value) {
     return false;
@@ -1633,13 +1493,6 @@ const revealDeviceMediaInFolder = async (image: GalleryImage) => {
   }
 };
 
-const revealPreviewInFolder = async () => {
-  if (!previewImage.value) {
-    return;
-  }
-  await revealDeviceMediaInFolder(previewImage.value);
-};
-
 const openPdfDocument = async (image: GalleryImage) => {
   if (!selectedEntryId.value) {
     return false;
@@ -1665,6 +1518,31 @@ const openPdfDocument = async (image: GalleryImage) => {
     if (openingPdfPath.value === target.absolutePath) {
       openingPdfPath.value = '';
     }
+  }
+};
+
+const openDeviceMediaInLocalBrowser = async (image: GalleryImage) => {
+  if (!selectedEntryId.value) {
+    return false;
+  }
+
+  const targetImage = image as DeviceBrowserImage;
+  if (!targetImage.absolutePath) {
+    return false;
+  }
+
+  try {
+    const result = await openDeviceEntryInLocalBrowser(selectedEntryId.value, buildImagePayload(targetImage));
+    if (!result.launched) {
+      ElMessage.info(result.detail || '当前设备不支持直接用本地浏览器打开');
+    } else {
+      ElMessage.success('已请求本地浏览器打开原文件');
+    }
+    return result.launched;
+  } catch (error) {
+    console.error('Failed to open device media file in local browser', error);
+    ElMessage.error('本地浏览器打开失败');
+    return false;
   }
 };
 
@@ -1843,66 +1721,35 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
   }
 };
 
-const handleOpenPreview = async (imageId: string) => {
-  const image = orderedMediaItems.value.find((item) => item.id === imageId);
-  if (!image) {
-    return;
-  }
-  previewImageId.value = imageId;
-  previewVisible.value = true;
-  await ensureMediaReady(image, { full: true });
+const openMediaClip = async (imageId: string, startSeconds: number, endSeconds: number) => {
+  const normalizedStart = Math.max(0, Number(startSeconds) || 0);
+  const normalizedEnd = Math.max(normalizedStart, Number(endSeconds) || normalizedStart);
+  await galleryWorkspaceRef.value?.openMediaClip(imageId, normalizedStart, normalizedEnd);
 };
 
-const handleShowPrevious = async () => {
-  if (!hasPreviousImage.value) {
-    return;
+const ensureMediaPlayableUrl = async (imageId: string) => {
+  const target = mediaItems.value.find((item) => item.id === imageId);
+  if (!target) {
+    return '';
   }
-  const nextImage = orderedMediaItems.value[previewIndex.value - 1];
-  if (!nextImage) {
-    return;
+  await ensureMediaReady(target, { full: true });
+  const updatedTarget = mediaItems.value.find((item) => item.id === imageId);
+  if (!updatedTarget?.url || updatedTarget.urlVariant !== 'full') {
+    return '';
   }
-  await handleOpenPreview(nextImage.id);
+  return updatedTarget.url;
 };
 
-const handleShowNext = async () => {
-  if (!hasNextImage.value) {
-    return;
-  }
-  const nextImage = orderedMediaItems.value[previewIndex.value + 1];
-  if (!nextImage) {
-    return;
-  }
-  await handleOpenPreview(nextImage.id);
+const openMediaRecordClip = async (record: DeviceImageRecord, startSeconds: number, endSeconds: number) => {
+  const imageId = upsertMediaRecordForPreview(record);
+  await nextTick();
+  await openMediaClip(imageId, startSeconds, endSeconds);
 };
 
-const isInteractiveTarget = (target: EventTarget | null) => {
-  if (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    target instanceof HTMLVideoElement ||
-    target instanceof HTMLButtonElement
-  ) {
-    return true;
-  }
-
-  return target instanceof HTMLElement && target.isContentEditable;
-};
-
-const handleKeydown = (event: KeyboardEvent) => {
-  if (!previewVisible.value || isInteractiveTarget(event.target)) {
-    return;
-  }
-
-  if (event.key === 'ArrowLeft' && hasPreviousImage.value) {
-    event.preventDefault();
-    void handleShowPrevious();
-  }
-
-  if (event.key === 'ArrowRight' && hasNextImage.value) {
-    event.preventDefault();
-    void handleShowNext();
-  }
+const ensureMediaRecordPlayableUrl = async (record: DeviceImageRecord) => {
+  const imageId = upsertMediaRecordForPreview(record);
+  await nextTick();
+  return ensureMediaPlayableUrl(imageId);
 };
 
 watch(
@@ -2038,22 +1885,7 @@ watch(
   { deep: true }
 );
 
-watch(previewVisible, (visible) => {
-  if (!visible) {
-    previewImageId.value = null;
-    previewVideoRef.value?.pause();
-  }
-});
-
-watch(orderedMediaItems, (items) => {
-  if (previewImageId.value && !items.some((item) => item.id === previewImageId.value)) {
-    previewVisible.value = false;
-  }
-});
-
 onMounted(async () => {
-  window.addEventListener('keydown', handleKeydown);
-
   isLoadingDevices.value = true;
   try {
     await taskStore.fetchDevices();
@@ -2087,8 +1919,14 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown);
   revokeMediaUrls(mediaItems.value);
+});
+
+defineExpose({
+  openMediaClip,
+  openMediaRecordClip,
+  ensureMediaPlayableUrl,
+  ensureMediaRecordPlayableUrl,
 });
 </script>
 
@@ -2491,6 +2329,10 @@ onBeforeUnmount(() => {
   min-width: 280px;
 }
 
+.media-toolbar-group-duration {
+  gap: 8px;
+}
+
 .media-toolbar-group-index {
   gap: 8px;
 }
@@ -2518,6 +2360,11 @@ onBeforeUnmount(() => {
   font-weight: 600;
   text-align: right;
   white-space: nowrap;
+}
+
+.media-duration-value {
+  min-width: 64px;
+  text-align: left;
 }
 
 .media-index-pill {
@@ -2907,111 +2754,6 @@ onBeforeUnmount(() => {
   background: rgba(248, 250, 252, 0.65);
 }
 
-.preview-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-}
-
-.preview-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.preview-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 20px;
-  min-height: 68vh;
-}
-
-.preview-stage,
-.meta-card {
-  border-radius: 24px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(248, 250, 252, 0.86);
-}
-
-.preview-stage {
-  min-height: 68vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
-}
-
-.preview-image,
-.preview-video {
-  width: 100%;
-  max-height: 68vh;
-  object-fit: contain;
-}
-
-.preview-pdf {
-  width: 100%;
-  height: 68vh;
-  border: 0;
-  border-radius: 14px;
-  background: #ffffff;
-}
-
-.preview-placeholder {
-  color: #475569;
-  font-size: 15px;
-}
-
-.preview-sidebar {
-  min-width: 0;
-}
-
-.meta-card {
-  height: 100%;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.meta-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.meta-actions {
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.preview-reveal-button {
-  width: 100%;
-}
-
-.meta-label {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #64748b;
-}
-
-.meta-value {
-  color: #0f172a;
-  word-break: break-word;
-}
-
-.meta-value-break {
-  font-size: 13px;
-  color: #334155;
-}
-
 @media (max-width: 780px) {
   .device-file-page {
     padding: 16px;
@@ -3108,24 +2850,6 @@ onBeforeUnmount(() => {
     columns: 1;
   }
 
-  .preview-layout {
-    grid-template-columns: 1fr;
-    min-height: auto;
-  }
-
-  .preview-stage {
-    min-height: 44vh;
-  }
-
-  .preview-image,
-  .preview-video,
-  .preview-pdf {
-    max-height: 44vh;
-  }
-
-  .preview-pdf {
-    height: 44vh;
-  }
 }
 
 @media (min-width: 781px) and (max-width: 1180px) {

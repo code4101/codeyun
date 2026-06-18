@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import webbrowser
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -120,6 +121,7 @@ class MediaListingSnapshot:
     sort_program: dict
     entries: list[dict]
     total_bytes: int
+    total_duration_ms: int
     visual_hash_status: dict | None
     created_at: float
     last_accessed_at: float
@@ -3859,6 +3861,7 @@ def _store_media_listing_snapshot(
     sort_program: dict,
     entries: list[dict],
     total_bytes: int,
+    total_duration_ms: int,
     visual_hash_status: dict | None,
 ) -> MediaListingSnapshot:
     now = time.time()
@@ -3872,6 +3875,7 @@ def _store_media_listing_snapshot(
         sort_program=sort_program,
         entries=entries,
         total_bytes=total_bytes,
+        total_duration_ms=total_duration_ms,
         visual_hash_status=visual_hash_status,
         created_at=now,
         last_accessed_at=now,
@@ -3912,6 +3916,7 @@ def _build_media_listing_response(
     snapshot_id: str,
     entries: list[dict],
     total_bytes: int,
+    total_duration_ms: int,
     visual_hash_status: dict | None,
     normalized_rules: list[GallerySortRule],
     session: Session | None,
@@ -3963,6 +3968,7 @@ def _build_media_listing_response(
         "snapshot_id": snapshot_id,
         "total_count": total_count,
         "total_bytes": total_bytes,
+        "total_duration_ms": total_duration_ms,
         "visual_hash_status": response_visual_hash_status,
         "offset": normalized_offset,
         "limit": normalized_limit,
@@ -4102,6 +4108,11 @@ def _build_database_media_page(
             select(func.coalesce(func.sum(DeviceFile.file_size), 0)).where(*base_filters)
         ).one() or 0
     )
+    total_duration_ms = int(
+        session.exec(
+            select(func.coalesce(func.sum(DeviceFile.duration_ms), 0)).where(*base_filters)
+        ).one() or 0
+    )
     overfetch_limit = min(MAX_MEDIA_SCAN_LIMIT, normalized_offset + max(normalized_limit * 4, normalized_limit))
     rows = session.exec(
         select(DeviceFile)
@@ -4147,6 +4158,7 @@ def _build_database_media_page(
         snapshot_id="",
         entries=entries,
         total_bytes=total_bytes,
+        total_duration_ms=total_duration_ms,
         visual_hash_status=visual_hash_status,
         normalized_rules=normalized_rules,
         session=session,
@@ -4201,6 +4213,7 @@ def _list_supported_entries(
             "sort_program": {"rules": [rule.model_dump() for rule in normalized_rules]},
             "total_count": 0,
             "total_bytes": 0,
+            "total_duration_ms": 0,
             "visual_hash_status": _build_visual_hash_status(
                 include_visual_hash=include_visual_hash,
                 total_image_count=0,
@@ -4246,6 +4259,7 @@ def _list_supported_entries(
             snapshot_id=cached_snapshot.snapshot_id,
             entries=cached_snapshot.entries,
             total_bytes=cached_snapshot.total_bytes,
+            total_duration_ms=cached_snapshot.total_duration_ms,
             visual_hash_status=cached_snapshot.visual_hash_status,
             normalized_rules=normalized_rules,
             session=session,
@@ -4347,6 +4361,11 @@ def _list_supported_entries(
     normalized_rules = _prepare_media_listing_snapshot_entries(entries, sort_mode, sort_program)
     sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
     total_bytes = sum(int(entry.get("size") or 0) for entry in entries)
+    total_duration_ms = sum(
+        int(entry.get("duration_ms") or 0)
+        for entry in entries
+        if isinstance(entry.get("duration_ms"), (int, float))
+    )
     snapshot = _store_media_listing_snapshot(
         query_signature=query_signature,
         root=resolved["root"],
@@ -4356,6 +4375,7 @@ def _list_supported_entries(
         sort_program=sort_program_payload,
         entries=entries,
         total_bytes=total_bytes,
+        total_duration_ms=total_duration_ms,
         visual_hash_status=visual_hash_status,
     )
     if progress_callback is not None:
@@ -4376,6 +4396,7 @@ def _list_supported_entries(
         snapshot_id=snapshot.snapshot_id,
         entries=snapshot.entries,
         total_bytes=snapshot.total_bytes,
+        total_duration_ms=snapshot.total_duration_ms,
         visual_hash_status=snapshot.visual_hash_status,
         normalized_rules=normalized_rules,
         session=session,
@@ -5022,6 +5043,48 @@ def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, st
         return False, False, "", str(exc)
 
 
+def _launch_file_in_local_browser(target_path: Path) -> tuple[bool, bool, str, str]:
+    normalized_target_path = target_path.resolve(strict=False)
+    if not normalized_target_path.is_file():
+        return False, False, "", "目标不是文件"
+
+    if not _has_desktop_session():
+        return False, False, "", "当前设备没有可用的桌面浏览器"
+
+    file_url = normalized_target_path.as_uri()
+    try:
+        if sys.platform == "win32":
+            try:
+                os.startfile(file_url)  # type: ignore[attr-defined]
+                return True, True, "startfile", ""
+            except OSError as exc:
+                try:
+                    popen_service(
+                        ["rundll32.exe", "url.dll,FileProtocolHandler", file_url],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True, True, "rundll32", ""
+                except OSError:
+                    pass
+                opened = webbrowser.open_new_tab(file_url)
+                return bool(opened), True, "webbrowser", "" if opened else str(exc)
+
+        if sys.platform == "darwin":
+            popen_service(["open", file_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, True, "open", ""
+
+        opener = shutil.which("xdg-open")
+        if opener:
+            popen_service([opener, file_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, True, "xdg-open", ""
+
+        opened = webbrowser.open_new_tab(file_url)
+        return bool(opened), True, "webbrowser", "" if opened else "浏览器未接受打开请求"
+    except OSError as exc:
+        return False, True, "", str(exc)
+
+
 def reveal_scoped_entry(
     root_key: Optional[str] = None,
     rel_path: str = "",
@@ -5045,6 +5108,33 @@ def reveal_scoped_entry(
         absolute_path=resolved["absolute_path"],
         target_path=os.fspath(target_path.resolve(strict=False)),
         directory_path=os.fspath(directory_path.resolve(strict=False)),
+    ).model_dump()
+
+
+def open_scoped_file_in_local_browser(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+) -> dict:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    launched, supported, method, detail = _launch_file_in_local_browser(target_path)
+    return RevealEntryResponse(
+        ok=launched,
+        supported=supported,
+        launched=launched,
+        method=method,
+        detail=detail,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        target_path=os.fspath(target_path.resolve(strict=False)),
+        directory_path=os.fspath(target_path.parent.resolve(strict=False)),
     ).model_dump()
 
 

@@ -10,6 +10,7 @@ import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Vie
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import {
   addRuntimeJob,
+  configureRuntimeItemAutostart,
   configureRuntimeJobSchedule,
   deleteRuntimeJob,
   fetchRuntimeJobCatalog,
@@ -33,6 +34,7 @@ const currentDevice = computed(() => {
 });
 
 const runtimeStatuses = ref<Record<string, RuntimeStatusResponse>>({});
+const CODEYUN_WATCHDOG_KEY = 'codeyun-watchdog';
 const currentRuntimeStatus = computed(() => runtimeStatuses.value[currentDeviceId.value] || null);
 const currentRuntimeItems = computed<RuntimeItem[]>(() => currentRuntimeStatus.value?.items || []);
 const serviceItems = computed(() => currentRuntimeItems.value.filter(item => item.kind === 'service'));
@@ -640,7 +642,42 @@ const handleRuntimeContextConfigure = () => {
   } else if (target.source === 'builtin' && target.kind === 'job') {
     openBuiltinScheduleDialog(target);
   } else if (target.source === 'builtin' && target.kind === 'service') {
+    if (target.key === CODEYUN_WATCHDOG_KEY) {
+      void handleConfigureWatchdogAutostart(target);
+      return;
+    }
     viewLogs(target);
+  }
+};
+
+const handleConfigureWatchdogAutostart = async (item: RuntimeItem) => {
+  const startup = item.status?.startup || {};
+  const nextEnabled = !startup.enabled;
+  try {
+    await ElMessageBox.confirm(
+      nextEnabled
+        ? '将在 Windows 计划任务中创建或更新 CodeYun Watchdog 登录自启项。'
+        : '将禁用 CodeYun Watchdog 登录自启项，不会停止当前正在运行的守护。',
+      nextEnabled ? '开启开机自启' : '关闭开机自启',
+      {
+        confirmButtonText: nextEnabled ? '开启' : '关闭',
+        cancelButtonText: '取消',
+        type: nextEnabled ? 'info' : 'warning',
+      }
+    );
+  } catch {
+    return;
+  }
+
+  item.actionLoading = true;
+  try {
+    await configureRuntimeItemAutostart(currentDeviceId.value, item.source, item.key, nextEnabled);
+    ElMessage.success(nextEnabled ? '已开启开机自启' : '已关闭开机自启');
+    await fetchTasks(currentDeviceId.value, true);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '配置失败');
+  } finally {
+    item.actionLoading = false;
   }
 };
 

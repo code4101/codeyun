@@ -29,15 +29,18 @@ from backend.api.fanxiu import (
     _write_data_annotation_world_facts,
 )
 from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.runtime import behavior_tree as fanxiu_behavior_tree_core
+from backend.core.fanxiu.data_annotation import runtime_control as runtime_control_core
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
 from backend.core.fanxiu.data_annotation import popup_guard as popup_guard_core
 from backend.core.fanxiu.data_annotation.scheduler import (
     data_annotation_scheduler_time_order_key,
     repair_data_annotation_scheduler_tasks,
 )
+from backend.core.fanxiu.data_annotation.state import normalize_data_annotation_runtime_display
 from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, create_service_access_token
 from backend.core.fanxiu.runtime.mumu_control import _compare_frame_crops
-from backend.models import FanxiuMailRecord, UserDevice
+from backend.models import FanxiuMailRecord, User, UserDevice
 from backend.core.fanxiu.runtime import mumu_control as mumu_control
 
 
@@ -239,6 +242,75 @@ def _build_service_session() -> Session:
     return Session(engine)
 
 
+def test_runtime_cell_logs_prefers_persisted_cell_and_falls_back_to_runtime_logs(monkeypatch):
+    session = _build_service_session()
+    app = FastAPI()
+    app.include_router(fanxiu_api.router, prefix="/api/fanxiu")
+    current_user = User(id=1, username="alice", hashed_password="x", is_active=True)
+
+    def override_get_session():
+        yield session
+
+    app.dependency_overrides[fanxiu_api.get_session] = override_get_session
+    app.dependency_overrides[fanxiu_api.get_current_active_user] = lambda: current_user
+    monkeypatch.setattr(fanxiu_api, "ensure_feature_access", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(fanxiu_api, "_sync_data_annotation_runtime_runner_to_core", lambda: None)
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: Path("runtime-state.json"))
+    monkeypatch.setattr(
+        fanxiu_api,
+        "_read_data_annotation_runtime_status",
+        lambda: {
+            "cell_logs": [
+                {
+                    "id": "cell-new",
+                    "title": "调度器提交 tick：tick_once",
+                    "source_kind": "command",
+                    "source": json.dumps({"cmd": "framework.tick", "entry_id": "mumu"}, ensure_ascii=False),
+                    "started_at": "10:00:01",
+                    "ended_at": "10:00:02",
+                    "entries": [
+                        {
+                            "id": "runtime-1",
+                            "time": "10:00:01",
+                            "kind": "info",
+                            "scope": "cell",
+                            "item_id": "framework",
+                            "message": "提交 cell",
+                            "action": "",
+                            "source_file": "",
+                            "source_path": "",
+                            "source_line": None,
+                            "source_expr": "",
+                            "ts": "1",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        fanxiu_api,
+        "_core_data_annotation_runtime_logs",
+        lambda **_kwargs: [
+            {"time": "09:00:01", "kind": "info", "scope": "guard", "item_id": "popup", "message": "守护完成", "ts": "1"}
+        ],
+    )
+
+    response = TestClient(app).get("/api/fanxiu/data-annotation/runtime/cell-logs?limit=2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["cells"]) == 2
+    assert payload["cells"][0]["id"] == "cell-new"
+    assert payload["cells"][1]["id"].startswith("cell-")
+    assert payload["cells"][0]["title"] == "调度器提交 tick：tick_once"
+    assert "行为树.tick(" in payload["cells"][0]["source"]
+    assert "entry_id" not in payload["cells"][0]["source"]
+    assert payload["cells"][0]["entries"][0]["message"] == "提交 cell"
+    assert payload["cells"][1]["title"] == "守护 cell"
+    assert payload["cells"][1]["source"].startswith("# 历史运行日志回放")
+
+
 def test_ocr_row_clicks_in_shape_uses_shape_center_x_and_filters_text():
     runner = create_fanxiu_runtime_runner()
     image = _image(
@@ -288,6 +360,56 @@ def test_scene_route_click_falls_back_for_world_open_menu(monkeypatch):
 
     assert clicked == [(405.0, 1488.0)]
     assert any("改按固定标注点击" in log["message"] for log in runner.status()["logs"])
+
+
+def test_scene_route_click_falls_back_for_jump_target_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {
+        "id": "daily",
+        "kind": "rect",
+        "title": "日常",
+        "sceneJumpTarget": "69(149)",
+        "x": 0.03944444444444445,
+        "y": 0.2070833333333333,
+        "w": 0.08666666666666667,
+        "h": 0.07708333333333334,
+    }
+    image34 = _image("世界", "0034.png", [shape])
+    clicked: list[tuple[float, float]] = []
+
+    def fake_click_shape(*_args, **_kwargs):
+        raise RuntimeError("未能按 OCR 定位浮动按钮「日常」：目标 日|常")
+
+    monkeypatch.setattr(runner, "_click_shape", fake_click_shape)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((x, y)))
+
+    runner._click_scene_route_shape({"entry": object()}, image34, shape, "frame")
+
+    assert clicked == [(pytest.approx(74.5), pytest.approx(392.99999999999994))]
+
+
+def test_scene_route_click_does_not_fall_back_for_one_key_claim(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {
+        "id": "claim-all",
+        "kind": "rect",
+        "title": "一键领取",
+        "sceneJumpTarget": "121",
+        "x": 0.4,
+        "y": 0.8,
+        "w": 0.2,
+        "h": 0.1,
+    }
+    image121 = _image("邮件", "0121.png", [shape])
+
+    def fake_click_shape(*_args, **_kwargs):
+        raise RuntimeError("未能按 OCR 定位浮动按钮「一键领取」")
+
+    monkeypatch.setattr(runner, "_click_shape", fake_click_shape)
+    monkeypatch.setattr(runner, "_click_frame_point", lambda *_args: pytest.fail("一键领取不能固定 fallback 点击"))
+
+    with pytest.raises(RuntimeError, match="一键领取"):
+        runner._click_scene_route_shape({"entry": object()}, image121, shape, "frame")
 
 
 def test_click_frame_point_saves_action_trace_before_click(tmp_path, monkeypatch):
@@ -364,6 +486,40 @@ def test_runtime_local_shape_click_overrides_action_planner_input_backend(monkey
     runner._click_shape(ctx, image34, shape)
 
     assert clicked and clicked[0]["input_backend"] == "adb"
+
+
+def test_runtime_shape_click_uses_parent_shape_center_when_ocr_resolves_sub_box(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    shape = {
+        "id": "daily",
+        "kind": "rect",
+        "title": "日常",
+        "x": 0.4,
+        "y": 0.2,
+        "w": 0.2,
+        "h": 0.1,
+        "ocrMatchRole": "required",
+        "ocrText": "日|常",
+    }
+    image34 = _image("世界", "0034.png", [shape])
+    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+    clicked: list[dict] = []
+    match_result = {
+        "matched": True,
+        "similarity": 100,
+        "ocr_text": "日常",
+        "fixed_box": {"x": 100, "y": 1200, "w": 80, "h": 36},
+        "resolved_box": {"x": 110, "y": 1204, "w": 60, "h": 32},
+    }
+
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_runner_core, "_click_game_window2_service", lambda payload: clicked.append(payload) or {"ok": True})
+
+    runner._click_shape(ctx, image34, shape, frame_data_url="frame", match_result=match_result)
+
+    assert clicked and clicked[0]["x"] == 450.0
+    assert clicked[0]["y"] == 400.0
+    assert any("ocr=日常" in log["message"] and "click=(450.0,400.0)" in log["message"] for log in runner.status()["logs"])
 
 
 def test_runtime_local_drag_overrides_action_planner_input_backend(monkeypatch):
@@ -715,8 +871,8 @@ def test_click_shape_uses_shape_center_after_ocr_match(monkeypatch):
     runner._click_shape(ctx, image, shape, "frame")
 
     assert calls == [{"scan": False, "match_strategy": "anchor_pixel", "ocr_enabled": True}]
-    assert clicked[0]["x"] == 140
-    assert clicked[0]["y"] == 220
+    assert clicked[0]["x"] == 495.0
+    assert clicked[0]["y"] == 1488.0
     assert clicked[0]["input_backend"] == "adb"
 
 
@@ -1306,6 +1462,28 @@ def test_auto_close_guard_tick_clicks_first_matching_blank_shape(tmp_path, monke
     assert clicked == [("所有提示窗口", "空白")]
 
 
+def test_auto_close_guard_requires_high_confidence_during_task(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    blank_shape = {"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1}
+    tree = [{
+        "type": "folder",
+        "title": "弹窗",
+        "children": [_image("所有提示窗口", "0047.jpg", [blank_shape])],
+    }]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 70 if image["title"] == "所有提示窗口" else 0)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    with runner._lock:
+        runner._status.update({"running": True, "phase": "wait_shape_match"})
+
+    assert not runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    assert clicked == []
+
+
 def test_auto_close_guard_clicks_popup_blank_without_jump_target(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     tree = [{
@@ -1448,6 +1626,35 @@ def test_auto_close_guard_popup_47_child_86_clicks_confirm(tmp_path, monkeypatch
 
     assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
     assert clicked == [("离开场景", "确认")]
+
+
+def test_auto_close_guard_popup_47_child_skips_business_only_confirm(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    business_confirm = {
+        "id": "confirm",
+        "kind": "rect",
+        "title": "确认",
+        "description": "确认一键同游。只允许同游传道助手闭环内点击，不作为通用弹窗守护动作。",
+        "x": 0.54,
+        "y": 0.638,
+        "w": 0.28,
+        "h": 0.055,
+    }
+    child_210 = _image("同游传道确认提示", "0210.png", [
+        {"id": "identity", "kind": "rect", "title": "同游传道确认标识", "isSceneIdentity": True, "x": 0.18, "y": 0.43, "w": 0.67, "h": 0.075},
+        business_confirm,
+    ])
+    popup_47 = _image("所有提示窗口", "0047.jpg", [{"id": "blank", "kind": "rect", "title": "空白", "x": 0.1, "y": 0.8, "w": 0.2, "h": 0.1, "sceneJumpTarget": "-1"}])
+    popup_47["children"] = [child_210]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps([{"type": "folder", "title": "弹窗", "children": [popup_47]}]), encoding="utf-8")
+
+    clicked: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "_popup_score", lambda _ctx, image, _frame: 100 if image["title"] in {"所有提示窗口", "同游传道确认提示"} else 0)
+    monkeypatch.setattr(runner, "_click_shape", lambda _ctx, image, shape, _frame=None, **_kwargs: clicked.append((image["title"], shape["title"])))
+
+    assert runner._auto_close_popup_guard_step(runner._fanxiu_runtime({"entry": object()}, path, "data:image/png;base64,frame"))
+    assert clicked == []
 
 
 def test_auto_close_guard_popup_47_uses_best_child_before_special_confirm(tmp_path, monkeypatch):
@@ -3613,6 +3820,55 @@ def test_daily_assistant_disciple_teaching_result_closes_to_list(monkeypatch):
     assert clicked == [(749.6, 688.0), (450.0, 1384.0)]
 
 
+def test_daily_assistant_disciple_teaching_result_wins_over_false_list_scene(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image204 = _image("小助手清单", "0204.png", [
+        {"id": "scroll", "kind": "rect", "title": "滚动窗口", "x": 0.10, "y": 0.20, "w": 0.82, "h": 0.62},
+        {
+            "id": "disciple-teaching-row",
+            "kind": "rect",
+            "title": "弟子授业助手",
+            "x": 0.104,
+            "y": 0.349,
+            "w": 0.788,
+            "h": 0.100,
+            "children": [
+                {"id": "disciple-teaching-title", "kind": "rect", "title": "标题", "x": 0.465, "y": 0.354, "w": 0.302, "h": 0.028},
+                {"id": "disciple-teaching-execute", "kind": "rect", "title": "执行", "x": 0.782, "y": 0.377, "w": 0.106, "h": 0.062},
+            ],
+        },
+    ])
+    image209 = _image("小助手授业结果", "0209.png", [
+        {"id": "continue", "kind": "rect", "title": "点击屏幕继续", "x": 0.24, "y": 0.82, "w": 0.52, "h": 0.09},
+    ])
+    ctx = {"entry": object(), "images": {204: image204, 209: image209}}
+    frames = iter(["before-teaching", "after-teaching-result", "after-teaching-list"])
+    clicked: list[tuple[float, float]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _ids: (204, 100.0))
+    monkeypatch.setattr(
+        runner,
+        "_ocr_lines",
+        lambda frame: (
+            [{"text": "授业结果 玄阴祭炼诀 弟子评分:9490310 点击屏幕继续", "x": 100, "y": 300, "w": 700, "h": 200}]
+            if frame == "after-teaching-result"
+            else [{"text": "小助手 弟子授业助手", "x": 250, "y": 300, "w": 420, "h": 90}, {"text": "执行", "x": 708, "y": 633, "w": 90, "h": 70}]
+        ),
+    )
+    monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: iter(()))
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._run_daily_assistant_from_list(ctx, threading.Event(), {"assistant_items": ["弟子授业助手/执行"]}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(727.1, 409.0), (450.0, 1384.0)]
+
+
 def test_daily_assistant_disciple_teaching_accepts_no_teachable_disciple_toast(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image204 = _image("小助手清单", "0204.png", [
@@ -5273,14 +5529,15 @@ def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
     image122 = _image("邮件内容", "0122.png", [])
     ctx = {"images": {121: image121, 122: image122}}
     runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=threading.Event())
-    reopened: list[bool] = []
+    events: list[str] = []
 
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda _ctx, _frame, _targets: (None, 0.0))
     monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "角色 装备 星海 功法书 储物袋"}])
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, **_kwargs: events.append("settle") or iter(()))
 
     def fake_reopen(_runtime):
-        reopened.append(True)
+        events.append("reopen")
         if False:
             yield BehaviorTreeStatus.RUNNING
         return "success"
@@ -5299,7 +5556,7 @@ def test_mail_cleanup_wait_reopens_from_world_like_text(tmp_path, monkeypatch):
     )
 
     assert result == "reopened"
-    assert reopened == [True]
+    assert events == ["settle", "reopen"]
 
 
 def test_mail_cleanup_wait_returns_detail_still_open_after_short_delay(tmp_path, monkeypatch):
@@ -5355,6 +5612,409 @@ def test_mail_world_menu_ocr_click_uses_mail_shape_center_when_available():
     assert 1510 <= y <= 1514
 
 
+def test_mail_world_menu_shape_wait_does_not_full_frame_ocr_when_mail_shape_exists(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.505, "y": 0.912, "w": 0.093, "h": 0.066},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def ocr_lines(self, _frame):
+            raise AssertionError("existing mail shape should not trigger full-frame OCR fallback")
+
+    class FakeTime:
+        calls = 0
+
+        @classmethod
+        def time(cls):
+            cls.calls += 1
+            if cls.calls <= 2:
+                return 0.0
+            return 9.0
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 0.0)
+    monkeypatch.setitem(runner._open_mail_from_world_menu_shape.__globals__, "time", FakeTime)
+
+    with pytest.raises(RuntimeError, match="等待 #35 邮件入口超时"):
+        runner._run_direct_runtime_action(
+            lambda: runner._open_mail_from_world_menu_shape(ctx, threading.Event()),
+            stop_event=threading.Event(),
+            tick_seconds=0.01,
+        )
+
+
+def test_mail_stable_entry_uses_visible_menu_before_toggling_open_button(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image(
+        "世界",
+        "0034.png",
+        [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.85, "y": 0.9, "w": 0.08, "h": 0.08}],
+    )
+    ctx = {"images": {34: image34}}
+    clicked_open: list[str] = []
+    visible_calls: list[str] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def click_shape(self, *_args, **_kwargs):
+            raise AssertionError("stable entry should not image-match the open menu button")
+
+        def click_frame_point(self, _image, x, y):
+            clicked_open.append(f"{round(float(x), 1)},{round(float(y), 1)}")
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+    def fake_visible(_ctx, _stop_event, **_kwargs):
+        visible_calls.append("visible")
+        return "success"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_mail_from_visible_world_menu_once", fake_visible)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_stable_entry(ctx, threading.Event(), tmp_path / "asset_tree.json"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert visible_calls == ["visible"]
+    assert clicked_open == []
+
+
+def test_mail_visible_menu_once_can_skip_scene_identification(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+    waited: list[str] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def current_scene(self, **_kwargs):
+            raise AssertionError("stable menu probe should be able to skip scene identification")
+
+        def click_frame_point(self, _image, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
+
+    def fake_wait_ready(_ctx, _stop_event, **_kwargs):
+        waited.append("ready")
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fast menu probe should use local OCR before image matching")))
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "邮件", "x": 420, "y": 1460, "w": 50, "h": 30}])
+    monkeypatch.setattr(runner, "_wait_mail_list_ready_or_restore_world", fake_wait_ready)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_mail_from_visible_world_menu_once(ctx, threading.Event(), require_world_scene=False),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(450.0, 1480.0)]
+    assert waited == ["ready"]
+
+
+def test_mail_visible_menu_once_rejects_mail_list_status_text(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def current_scene(self, **_kwargs):
+            raise AssertionError("stable menu probe should be able to skip scene identification")
+
+        def click_frame_point(self, _image, x, y):
+            clicked.append((float(x), float(y)))
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(
+        runner,
+        "_shape_score",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mail-list status text must not fall through to image matching")),
+    )
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "已锁定4/10封邮件", "x": 340, "y": 1240, "w": 180, "h": 40}])
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_mail_from_visible_world_menu_once(ctx, threading.Event(), require_world_scene=False),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "missing"
+    assert clicked == []
+
+
+def test_mail_visible_menu_once_accepts_compound_world_menu_ocr(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def current_scene(self, **_kwargs):
+            raise AssertionError("stable menu probe should be able to skip scene identification")
+
+        def click_frame_point(self, _image, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
+
+    def fake_wait_ready(_ctx, _stop_event, **_kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fast menu probe should use local OCR before image matching")))
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "仙缘邮件修为设置8638", "x": 420, "y": 1460, "w": 220, "h": 30}])
+    monkeypatch.setattr(runner, "_wait_mail_list_ready_or_restore_world", fake_wait_ready)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_mail_from_visible_world_menu_once(ctx, threading.Event(), require_world_scene=False),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == [(450.0, 1480.0)]
+
+
+def test_mail_visible_menu_once_reports_reward_tip_blocker(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [
+            {"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05},
+            {"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278},
+        ],
+    )
+    ctx = {"images": {35: image35}}
+    clicked: list[tuple[float, float]] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def current_scene(self, **_kwargs):
+            raise AssertionError("stable menu probe should be able to skip scene identification")
+
+        def click_frame_point(self, _image, x, y):
+            clicked.append((float(x), float(y)))
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(
+        runner,
+        "_shape_score",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("blocked reward tip must not fall through to image matching")),
+    )
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "点击使用", "x": 420, "y": 1220, "w": 80, "h": 30}])
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._click_mail_from_visible_world_menu_once(ctx, threading.Event(), require_world_scene=False),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "blocked_reward_tip"
+    assert clicked == []
+
+
+def test_mail_stable_entry_clicks_open_shape_center_after_visible_miss(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image(
+        "世界",
+        "0034.png",
+        [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.85, "y": 0.9, "w": 0.08, "h": 0.08}],
+    )
+    ctx = {"images": {34: image34}}
+    clicked_open: list[str] = []
+    visible_results = iter(["missing", "success"])
+
+    class FakeRuntime:
+        def click_shape(self, *_args, **_kwargs):
+            raise AssertionError("stable entry should not image-match the open menu button")
+
+        def click_frame_point(self, _image, x, y):
+            clicked_open.append(f"{round(float(x), 1)},{round(float(y), 1)}")
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+    def fake_visible(_ctx, _stop_event, **_kwargs):
+        return next(visible_results)
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_mail_from_visible_world_menu_once", fake_visible)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_stable_entry(ctx, threading.Event(), tmp_path / "asset_tree.json"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked_open == ["801.0,1504.0"]
+
+
+def test_mail_stable_entry_returns_reward_tip_blocker_without_retry(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image(
+        "世界",
+        "0034.png",
+        [{"id": "open", "kind": "rect", "title": "打开下方菜单", "x": 0.85, "y": 0.9, "w": 0.08, "h": 0.08}],
+    )
+    ctx = {"images": {34: image34}}
+    visible_calls: list[str] = []
+
+    class FakeRuntime:
+        def click_frame_point(self, *_args, **_kwargs):
+            raise AssertionError("blocked reward tip should stop before toggling menu")
+
+        def wait_action_settle(self, _seconds):
+            raise AssertionError("blocked reward tip should not wait through menu retries")
+
+    def fake_visible(_ctx, _stop_event, **_kwargs):
+        visible_calls.append("visible")
+        return "blocked_reward_tip"
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_click_mail_from_visible_world_menu_once", fake_visible)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_stable_entry(ctx, threading.Event(), tmp_path / "asset_tree.json"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "blocked_reward_tip"
+    assert visible_calls == ["visible"]
+
+
+def test_mail_reopen_closes_reward_tip_blocker_before_retry(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image(
+        "世界",
+        "0034.png",
+        [{"id": "bottom-menu", "kind": "rect", "title": "下方菜单", "x": 0.36, "y": 0.91, "w": 0.52, "h": 0.07}],
+    )
+    ctx = {"images": {34: image34}}
+    stable_results = iter(["blocked_reward_tip", "success"])
+    clicked_bottom_menu: list[str] = []
+    settled: list[float] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.ctx = ctx
+            self.stop_event = threading.Event()
+            self.asset_tree_path = tmp_path / "asset_tree.json"
+
+        def cur_frame(self, *, update: bool = False):
+            return "frame"
+
+        def click_shape_center(self, _image, title):
+            clicked_bottom_menu.append(str(title))
+
+        def wait_action_settle(self, seconds):
+            settled.append(float(seconds))
+            if False:
+                yield None
+
+    def fake_close(_ctx, runtime, _frame, _text):
+        runtime.click_shape_center(image34, "下方菜单")
+        return True
+
+    def fake_stable(_ctx, _stop_event, _asset_tree_path, **_kwargs):
+        return next(stable_results)
+
+    monkeypatch.setattr(runner, "_close_mail_world_reward_tip_if_present", fake_close)
+    monkeypatch.setattr(runner, "_open_mail_stable_entry", fake_stable)
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._reopen_mail_from_current_world_like(FakeRuntime()),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked_bottom_menu == ["下方菜单", "下方菜单"]
+    assert settled == [0.3, 0.3]
+
+
+def test_mail_reward_tip_close_clicks_world_bottom_menu_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image34 = _image(
+        "世界",
+        "0034.png",
+        [
+            {"id": "bottom-menu", "kind": "rect", "title": "下方菜单", "x": 0.36, "y": 0.91, "w": 0.52, "h": 0.07},
+            {"id": "storage", "kind": "rect", "title": "储物袋", "x": 0.7, "y": 0.92, "w": 0.12, "h": 0.06},
+        ],
+    )
+    image35 = _image(
+        "世界下方菜单",
+        "0035.png",
+        [{"id": "menu", "kind": "rect", "title": "菜单", "x": 0.36, "y": 0.705, "w": 0.513, "h": 0.278}],
+    )
+    ctx = {"images": {34: image34, 35: image35}}
+    clicked: list[str] = []
+
+    class FakeRuntime:
+        def click_shape_center(self, _image, title):
+            clicked.append(str(title))
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "点击使用", "x": 420, "y": 1220, "w": 80, "h": 30}])
+
+    assert runner._close_mail_world_reward_tip_if_present(ctx, FakeRuntime(), "frame", "") is True
+    assert clicked == ["下方菜单"]
+
+
 def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image35 = _image(
@@ -5388,7 +6048,7 @@ def test_visible_mail_menu_probe_missing_does_not_stamp_scene_35(monkeypatch):
     assert runner.status()["phase"] == "mail_claim_probe_world_menu_mail"
 
 
-def test_visible_mail_menu_probe_requires_scene_35_before_shape_click(monkeypatch):
+def test_visible_mail_menu_probe_clicks_shape_in_world_context(monkeypatch):
     runner = create_fanxiu_runtime_runner()
     image35 = _image(
         "世界下方菜单",
@@ -5396,7 +6056,8 @@ def test_visible_mail_menu_probe_requires_scene_35_before_shape_click(monkeypatc
         [{"id": "mail", "kind": "rect", "title": "邮件", "x": 0.45, "y": 0.9, "w": 0.1, "h": 0.05}],
     )
     ctx = {"images": {35: image35}}
-    opened: list[str] = []
+    clicked: list[tuple[float, float]] = []
+    waited: list[str] = []
 
     class FakeRuntime:
         def cur_frame(self, *, update: bool = False):
@@ -5405,12 +6066,18 @@ def test_visible_mail_menu_probe_requires_scene_35_before_shape_click(monkeypatc
         def current_scene(self):
             return 34, 100.0, "world-frame"
 
-        def ocr_lines(self, _frame):
-            return []
+        def click_frame_point(self, _image, x, y):
+            clicked.append((round(float(x), 1), round(float(y), 1)))
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
     monkeypatch.setattr(runner, "_shape_score", lambda *_args, **_kwargs: 100.0)
-    monkeypatch.setattr(runner, "_open_mail_from_world_menu_shape", lambda *_args, **_kwargs: opened.append("open") or "success")
+
+    def fake_wait_ready(_ctx, _stop_event, **_kwargs):
+        waited.append("ready")
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_wait_mail_list_ready_or_restore_world", fake_wait_ready)
 
     result = runner._run_direct_runtime_action(
         lambda: runner._try_open_mail_from_visible_world_menu(ctx, threading.Event(), timeout=0.01),
@@ -5418,8 +6085,9 @@ def test_visible_mail_menu_probe_requires_scene_35_before_shape_click(monkeypatc
         tick_seconds=0.01,
     )
 
-    assert result == "missing"
-    assert opened == []
+    assert result == "success"
+    assert clicked == [(450.0, 1480.0)]
+    assert waited == ["ready"]
 
 
 def test_visible_mail_menu_probe_requires_scene_35_before_ocr_click(monkeypatch):
@@ -8347,6 +9015,31 @@ def test_manual_runtime_task_persists_terminal_log_before_removing_queue_item(tm
     assert any(any("[manual-1] 手动作业完成：单步识别" in message for message in messages) for messages in persisted_before_remove)
 
 
+def test_manual_runtime_task_records_task_cell_source(tmp_path, monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
+    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
+    monkeypatch.setattr(runner, "_require_assets", lambda _ctx: None)
+    monkeypatch.setattr(runner, "_execute_runtime_task", lambda _ctx, _task_type, _payload, _stop_event: "success")
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+    monkeypatch.setattr(runtime_runner_core, "_remove_data_annotation_manual_job", lambda _task_id: None)
+
+    status = runner.start_manual_runtime_task(
+        entry=object(),
+        entry_id="entry",
+        task={"id": "manual-1", "task_type": "daily_signup", "label": "日常_报名", "payload": {}},
+        asset_tree_path=tmp_path / "entry.json",
+    )
+
+    assert status["cell_logs"]
+    cell = status["cell_logs"][0]
+    assert cell["title"] == "手动作业：日常_报名"
+    assert "行为树.create_task('daily_signup', {})" in cell["source"]
+    assert "行为树.step(task, 守护=True)" in cell["source"]
+    assert cell["entries"][0]["message"].startswith("[manual-1] 手动作业已启动")
+    assert cell["entries"][-1]["message"].startswith("[manual-1] 手动作业完成")
+
+
 def test_resident_manual_job_uses_current_runner_instance(tmp_path, monkeypatch):
     runner = create_fanxiu_runtime_runner()
     jobs = [{
@@ -8508,6 +9201,45 @@ def test_ensure_service_restarts_stale_loop_when_manual_job_is_pending(tmp_path,
     assert any("心跳停滞" in item["message"] for item in status["logs"])
 
 
+def test_runtime_display_message_hides_internal_service_step():
+    from backend.core.fanxiu.data_annotation.state import (
+        data_annotation_runtime_display_message,
+        normalize_data_annotation_runtime_logs_for_display,
+    )
+
+    assert data_annotation_runtime_display_message("行为树执行器已由后端进程 2664 持有：idle_guard") == "后台服务正在运行（进程 2664），空闲巡检中"
+    assert data_annotation_runtime_display_message("行为树常驻服务运行中：进程 2664 idle_guard_done") == "后台服务正在运行（进程 2664）"
+    assert data_annotation_runtime_display_message("行为树常驻服务心跳停滞，准备重启：idle_guard") == "行为树常驻服务心跳停滞，准备重启：空闲巡检中"
+    assert data_annotation_runtime_display_message("行为树常驻服务未运行，等待恢复：owner 进程不是凡修常驻服务：pid=2664") == "原后台服务已失效（进程 2664）"
+    assert normalize_data_annotation_runtime_logs_for_display([
+        {"kind": "info", "message": "行为树执行器已由后端进程 2664 持有：scheduler_poll"}
+    ]) == []
+
+
+def test_service_owner_accepts_hidden_uvicorn_runner(monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def name(self):
+            return "pythonw.exe"
+
+        def cmdline(self):
+            return [
+                r"D:\home\chenkunze\slns\codeyun\.venv\Scripts\pythonw.exe",
+                "-m",
+                "backend.core.runtime.uvicorn_hidden",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+            ]
+
+    monkeypatch.setattr(fanxiu_behavior_tree_core.psutil, "Process", FakeProcess)
+
+    assert fanxiu_behavior_tree_core._fanxiu_process_matches_service_owner(12345) is True
+
+
 def test_restore_persisted_guard_config_keeps_close_popups_when_logs_exist(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
     monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
@@ -8524,6 +9256,7 @@ def test_restore_persisted_guard_config_keeps_close_popups_when_logs_exist(tmp_p
                     "wanling_invite": {"enabled": False, "entry_id": "", "updated_at": 0.0},
                 },
                 "logs": [{"kind": "info", "message": "persisted"}],
+                "cell_logs": [{"id": "cell-persisted", "title": "持久化 cell", "entries": []}],
             },
             ensure_ascii=False,
         ),
@@ -8542,6 +9275,7 @@ def test_restore_persisted_guard_config_keeps_close_popups_when_logs_exist(tmp_p
     assert status["guard_entry_id"] == "codepc_mf"
     assert status["guard_items"]["close_popups"]["enabled"] is True
     assert status["logs"] == [{"kind": "info", "message": "local"}]
+    assert status["cell_logs"] == [{"id": "cell-persisted", "title": "持久化 cell", "entries": []}]
 
 
 def test_scheduler_task_due_soon_detects_near_enabled_supported_task(tmp_path, monkeypatch):
@@ -8679,5 +9413,284 @@ def test_device_health_guard_tick_respects_item_switch(monkeypatch):
     assert calls == [{"recover": True, "reason": "resident_heartbeat"}]
 
 
+def test_runtime_display_adds_layered_status_projection():
+    status = {
+        "entry_id": "mf-entry",
+        "behavior_tree_enabled": True,
+        "service_running": True,
+        "running": True,
+        "status": "running",
+        "phase": "idle_guard",
+        "task_type": "daily",
+        "current_task": "日常小助手",
+        "current_task_id": "daily-helper",
+        "current_scene": 34,
+        "current_index": 2,
+        "total": 5,
+        "guard_group_enabled": False,
+        "job_group_enabled": False,
+        "guard_interval_seconds": 2,
+        "guard_items": {
+            "device_health": {"enabled": True},
+            "close_popups": {"enabled": False},
+        },
+        "message": "行为树执行器已由后端进程 2664 持有：idle_guard",
+        "logs": [
+            {"kind": "info", "message": "行为树执行器已由后端进程 2664 持有：idle_guard"},
+            {"kind": "info", "message": "local"},
+        ],
+    }
+
+    normalize_data_annotation_runtime_display(status)
+
+    assert status["message"] == "后台服务正在运行（进程 2664），空闲巡检中"
+    assert status["logs"] == [{"kind": "info", "message": "local"}]
+    assert status["kernel_status"] == {
+        "label": "执行中",
+        "enabled": True,
+        "running": True,
+        "busy": True,
+        "current_scene": "#34",
+        "message": "后台服务正在运行（进程 2664），空闲巡检中",
+        "can_restart": True,
+        "can_interrupt": True,
+    }
+    assert status["engine_status"]["phase"] == "空闲巡检中"
+    assert status["engine_status"]["current_task"] == "日常小助手"
+    assert status["engine_status"]["progress"] == "2/5"
+    assert status["framework_status"]["phase"] == "空闲巡检中"
+    assert status["framework_status"]["current_task"] == "日常小助手"
+    assert status["framework_status"]["progress"] == "2/5"
+    assert status["scheduler_status"]["job_group_enabled"] is False
+    assert status["scheduler_status"]["guard_group_enabled"] is False
+    assert status["orchestration_status"]["entry_id"] == "mf-entry"
+    assert status["orchestration_status"]["guard_count"] == 2
+    assert status["orchestration_status"]["guard_enabled_count"] == 1
+
+    owned_status = {
+        "behavior_tree_enabled": True,
+        "service_running": False,
+        "running": False,
+        "phase": "service_owned_by_other",
+    }
+    normalize_data_annotation_runtime_display(owned_status)
+    assert owned_status["kernel_status"]["label"] == "后台接管"
+    assert owned_status["kernel_status"]["running"] is True
 
 
+def test_runtime_engine_tick_respects_group_flags(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[str] = []
+
+    with runner._lock:
+        runner._service_entry = object()
+        runner._service_entry_id = "mf-entry"
+        runner._service_asset_tree_path = Path("asset-tree.json")
+        runner._guard_group_enabled = True
+        runner._guard_enabled = True
+        runner._status["running"] = False
+
+    monkeypatch.setattr(runner, "_service_context", lambda: (object(), "mf-entry", Path("asset-tree.json")))
+    monkeypatch.setattr(runner, "_service_paths_still_current", lambda: True)
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+    monkeypatch.setattr(runner, "_run_device_health_guard_tick", lambda _entry_id: events.append("device_health"))
+    monkeypatch.setattr(runner, "_start_next_manual_job_if_idle", lambda *_args: events.append("manual_job") or None)
+    monkeypatch.setattr(runner, "_job_group_isolated", lambda: False)
+    monkeypatch.setattr(runner, "_start_due_scheduler_tasks_if_idle", lambda *_args: events.append("scheduled_job") or False)
+    monkeypatch.setattr(runner, "_run_idle_guard_tick", lambda *_args: events.append("idle_guard"))
+
+    status = runner.run_service_tick_once(guard=True, manual_job=False, scheduled_job=True)
+
+    assert events == ["device_health", "scheduled_job", "idle_guard"]
+    assert status["engine_tick"] == {
+        "ran": True,
+        "action": "guard_checked",
+        "guard": True,
+        "manual_job": False,
+        "scheduled_job": True,
+    }
+
+
+def test_runtime_engine_tick_request_rejects_ambiguous_run_mode():
+    from pydantic import ValidationError
+
+    from backend.core.fanxiu.data_annotation.models import (
+        FanxiuDataAnnotationRuntimeEngineTickRequest,
+        FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+    )
+
+    with pytest.raises(ValidationError):
+        FanxiuDataAnnotationRuntimeEngineTickRequest(entry_id="mf-entry", run_mode="run")
+
+    with pytest.raises(ValidationError):
+        FanxiuDataAnnotationRuntimeEngineTickRequest(entry_id="mf-entry", max_ticks=0)
+
+    request = FanxiuDataAnnotationRuntimeFrameworkTickRequest(
+        entry_id="mf-entry",
+        guard=False,
+        manual_job=True,
+        scheduled_job=False,
+        run_mode="tick_once",
+    )
+    assert request.guard is False
+    assert request.manual_job is True
+    assert request.scheduled_job is False
+
+
+def test_runtime_engine_run_until_idle_stops_after_no_progress(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions = iter(["manual_job_started", "scheduler_started", "guard_checked"])
+    calls: list[dict[str, bool]] = []
+
+    def fake_tick_once(*, guard: bool, manual_job: bool, scheduled_job: bool):
+        calls.append({
+            "guard": guard,
+            "manual_job": manual_job,
+            "scheduled_job": scheduled_job,
+        })
+        return {
+            "running": False,
+            "engine_tick": {
+                "ran": True,
+                "action": next(actions),
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_service_tick_once", fake_tick_once)
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+
+    status = runner.run_service_ticks(
+        guard=True,
+        manual_job=True,
+        scheduled_job=False,
+        run_mode="until_idle",
+        max_ticks=10,
+        timeout_seconds=5,
+    )
+
+    assert calls == [
+        {"guard": True, "manual_job": True, "scheduled_job": False},
+        {"guard": True, "manual_job": True, "scheduled_job": False},
+        {"guard": True, "manual_job": True, "scheduled_job": False},
+    ]
+    assert status["engine_tick"]["action"] == "guard_checked"
+    assert status["engine_tick"]["run_mode"] == "until_idle"
+    assert status["engine_tick"]["ticks"] == 3
+
+
+def test_runtime_engine_current_job_waits_after_start(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    events: list[str] = []
+
+    def fake_tick_once(*, guard: bool, manual_job: bool, scheduled_job: bool):
+        events.append("tick")
+        return {
+            "running": True,
+            "engine_tick": {
+                "ran": True,
+                "action": "manual_job_started",
+            },
+        }
+
+    monkeypatch.setattr(runner, "run_service_tick_once", fake_tick_once)
+    monkeypatch.setattr(runner, "wait_until_idle", lambda timeout_seconds=5.0: events.append("wait") or True)
+    monkeypatch.setattr(runner, "status", lambda: {"running": False, "engine_tick": {}})
+    monkeypatch.setattr(runner, "_persist_status", lambda: None)
+
+    status = runner.run_service_ticks(
+        guard=False,
+        manual_job=True,
+        scheduled_job=False,
+        run_mode="current_job",
+        max_ticks=10,
+        timeout_seconds=5,
+    )
+
+    assert events == ["tick", "wait"]
+    assert status["engine_tick"]["action"] == "manual_job_started"
+    assert status["engine_tick"]["reason"] == "current_job_done"
+    assert status["engine_tick"]["run_mode"] == "current_job"
+    assert status["engine_tick"]["ticks"] == 1
+
+
+def test_runtime_kernel_restart_stops_service_before_ensure(monkeypatch):
+    events: list[str] = []
+
+    class FakeRunner:
+        def stop_service(self, *, timeout_seconds: float = 5.0):
+            events.append(f"stop:{timeout_seconds}")
+            return {"service_running": True}
+
+    def fake_ensure_runtime_service(**kwargs):
+        events.append(f"ensure:{kwargs['entry_id']}")
+        return {
+            "ok": True,
+            "behavior_tree_enabled": True,
+            "service_running": True,
+            "running": False,
+            "entry_id": kwargs["entry_id"],
+            "status": "idle",
+            "message": "行为树常驻服务运行中",
+            "logs": [],
+        }
+
+    monkeypatch.setattr(runtime_control_core, "get_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(runtime_control_core, "ensure_runtime_service", fake_ensure_runtime_service)
+    monkeypatch.setattr(runtime_control_core, "persist_runtime_status", lambda *args, **kwargs: None)
+
+    status = runtime_control_core.restart_runtime_kernel(
+        entry=object(),
+        entry_id="mf-entry",
+        timeout_seconds=3,
+    )
+
+    assert events == ["stop:3.0", "ensure:mf-entry"]
+    assert status["kernel_restart"] == {
+        "ran": True,
+        "previous_service_running": True,
+        "service_running": True,
+    }
+
+
+def test_execute_runtime_tick_returns_layer_status(monkeypatch):
+    class FakeRunner:
+        def run_service_ticks(self, **kwargs):
+            return {
+                "ok": True,
+                "behavior_tree_enabled": True,
+                "service_running": False,
+                "running": False,
+                "entry_id": "mf-entry",
+                "status": "idle",
+                "phase": "service_owned_by_other",
+                "message": "行为树执行器已由后端进程 2664 持有：idle_guard",
+                "engine_tick": {
+                    "ran": True,
+                    "action": "idle",
+                    "guard": kwargs["guard"],
+                    "manual_job": kwargs["manual_job"],
+                    "scheduled_job": kwargs["scheduled_job"],
+                },
+                "logs": [],
+            }
+
+    monkeypatch.setattr(runtime_control_core, "ensure_runtime_service", lambda **_kwargs: {"behavior_tree_enabled": True})
+    monkeypatch.setattr(runtime_control_core, "get_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(runtime_control_core, "persist_runtime_status", lambda *args, **kwargs: None)
+
+    status = runtime_control_core.execute_runtime_tick(
+        entry=object(),
+        entry_id="mf-entry",
+        guard=False,
+        manual_job=False,
+        scheduled_job=False,
+        run_mode="tick_once",
+        max_ticks=1,
+        timeout_seconds=5,
+    )
+
+    assert status["message"] == "后台服务正在运行（进程 2664），空闲巡检中"
+    assert status["engine_tick"]["guard"] is False
+    assert status["kernel_status"]["label"] == "后台接管"
+    assert status["kernel_status"]["running"] is True
+    assert status["scheduler_status"]["label"] == "运行中"

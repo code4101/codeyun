@@ -461,6 +461,21 @@ export interface FanxiuDataAnnotationRuntimeLogResponse {
   path: string;
 }
 
+export interface FanxiuDataAnnotationRuntimeCellLog {
+  id: string;
+  title: string;
+  source_kind: string;
+  source: string;
+  started_at: string;
+  ended_at: string;
+  entries: FanxiuDataAnnotationRuntimeLogEntry[];
+}
+
+export interface FanxiuDataAnnotationRuntimeCellLogResponse {
+  cells: FanxiuDataAnnotationRuntimeCellLog[];
+  path: string;
+}
+
 export interface FanxiuDataAnnotationRuntimeGuardItem {
   id: string;
   label: string;
@@ -566,11 +581,20 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   current_code: string;
   current_task_id?: string;
   interruptible?: boolean;
+  kernel_status?: Record<string, unknown>;
+  framework_status?: Record<string, unknown>;
+  engine_status?: Record<string, unknown>;
+  scheduler_status?: Record<string, unknown>;
+  orchestration_status?: Record<string, unknown>;
+  framework_tick?: Record<string, unknown>;
+  engine_tick?: Record<string, unknown>;
+  kernel_restart?: Record<string, unknown>;
   started_at: number;
   updated_at: number;
   finished_at: number;
   error: string;
   logs: Array<{ time: string; kind: string; message: string }>;
+  cell_logs?: FanxiuDataAnnotationRuntimeCellLog[];
 }
 
 export interface FanxiuDataAnnotationRuntimeTaskRequest {
@@ -5029,6 +5053,16 @@ export const setFanxiuDataAnnotationRuntimeBehaviorTree = (entryId: string, enab
     .then(res => res.data);
 };
 
+export const restartFanxiuDataAnnotationRuntimeKernel = (entryId: string, timeoutSeconds = 5) => {
+  return api
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/kernel/restart',
+      { entry_id: entryId, timeout_seconds: timeoutSeconds },
+      { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, (timeoutSeconds * 1000) + 10000) },
+    )
+    .then(res => res.data);
+};
+
 export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
   return api
     .post<FanxiuDataAnnotationRuntimeStatus>(
@@ -5055,9 +5089,45 @@ export const tickFanxiuDataAnnotationRuntimeTask = (entryId: string, taskType = 
     .then(res => res.data);
 };
 
+export const tickFanxiuDataAnnotationRuntimeFramework = (
+  entryId: string,
+  options: {
+    guard?: boolean;
+    manual_job?: boolean;
+    scheduled_job?: boolean;
+    run_mode?: 'tick_once' | 'until_idle' | 'current_job';
+    max_ticks?: number;
+    timeout_seconds?: number;
+  } = {},
+) => {
+  return api
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/framework/tick',
+      {
+        entry_id: entryId,
+        guard: options.guard ?? true,
+        manual_job: options.manual_job ?? true,
+        scheduled_job: options.scheduled_job ?? true,
+        run_mode: options.run_mode ?? 'tick_once',
+        max_ticks: options.max_ticks ?? 10,
+        timeout_seconds: options.timeout_seconds ?? 30,
+      },
+      { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, ((options.timeout_seconds ?? 30) * 1000) + 5000) },
+    )
+    .then(res => res.data);
+};
+
+export const tickFanxiuDataAnnotationRuntimeEngine = tickFanxiuDataAnnotationRuntimeFramework;
+
 export const getFanxiuDataAnnotationRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
   return api
     .get<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
+    .then(res => res.data);
+};
+
+export const getFanxiuDataAnnotationRuntimeCellLogs = (limit = 20, logLimit = 1000) => {
+  return api
+    .get<FanxiuDataAnnotationRuntimeCellLogResponse>('/fanxiu/data-annotation/runtime/cell-logs', { params: { limit, log_limit: logLimit } })
     .then(res => res.data);
 };
 

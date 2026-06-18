@@ -128,6 +128,7 @@ const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
 const CLUSTER_TREESIZE_PATH = requirePageMenuPath('ClusterTreeSize');
 const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
 const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
+const CLUSTER_VIEW_CHAN_COURSE_PATH = requirePageMenuPath('ClusterViewChanCourse');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
 const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
 const EASTMONEY_SUBMENU_INDEX = 'eastmoney';
@@ -210,6 +211,7 @@ const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH)
 const CLUSTER_TREESIZE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TREESIZE_PATH);
 const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
 const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
+const CLUSTER_VIEW_CHAN_COURSE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH);
 const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
 const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
@@ -502,11 +504,17 @@ const eastmoneyMenuEntryPath = computed(() =>
 );
 
 const clusterFilesMenuVisible = computed(() =>
-  canAccessMenuPath(CLUSTER_FILES_PATH) || canAccessMenuPath(CLUSTER_VIEW_MN_PATH),
+  canAccessMenuPath(CLUSTER_FILES_PATH)
+  || canAccessMenuPath(CLUSTER_VIEW_MN_PATH)
+  || canAccessMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH),
 );
 
 const clusterFilesMenuEntryPath = computed(() =>
-  canAccessMenuPath(CLUSTER_FILES_PATH) ? CLUSTER_FILES_PATH : CLUSTER_VIEW_MN_PATH,
+  canAccessMenuPath(CLUSTER_FILES_PATH)
+    ? CLUSTER_FILES_PATH
+    : canAccessMenuPath(CLUSTER_VIEW_MN_PATH)
+      ? CLUSTER_VIEW_MN_PATH
+      : CLUSTER_VIEW_CHAN_COURSE_PATH,
 );
 
 const fanxiuActivityListMenuEntryPath = computed(() =>
@@ -563,7 +571,7 @@ const defaultOpeneds = computed(() => {
   } else if (route.path.startsWith('/cluster/')) {
     openeds.push('cluster-tools');
   }
-  if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
+  if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH, CLUSTER_VIEW_CHAN_COURSE_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
     openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
   }
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
@@ -1016,6 +1024,7 @@ watch(
                 </span>
               </template>
               <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_CHAN_COURSE_PATH)" :index="CLUSTER_VIEW_CHAN_COURSE_PATH">{{ CLUSTER_VIEW_CHAN_COURSE_TITLE }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item
               v-for="item in clusterPluginMenuItems"

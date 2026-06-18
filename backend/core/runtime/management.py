@@ -19,6 +19,8 @@ from backend.core.runtime.codeyun_watchdog import (
     CODEYUN_WATCHDOG_SERVICE_KEY,
     CodeYunWatchdogError,
     build_codeyun_watchdog_log_lines,
+    disable_codeyun_watchdog_startup,
+    enable_codeyun_watchdog_startup,
     get_codeyun_watchdog_status,
     start_codeyun_watchdog,
     stop_codeyun_watchdog,
@@ -498,6 +500,7 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
             f"每 {interval} 秒巡检",
             "独立进程",
             "异常时重启 dev.py",
+            "开机自启" if (payload.get("startup") or {}).get("enabled") else "",
         )
         if part
     )
@@ -533,6 +536,7 @@ def _serialize_codeyun_watchdog_service_item(status: dict[str, Any] | None = Non
             "process_count": payload.get("process_count") or 0,
             "pids": payload.get("pids") or [],
             "last_error": payload.get("last_error") or "",
+            "startup": payload.get("startup") or {},
             "controllable": True,
         },
         "actions": ["trigger", "stop", "logs", "configure"],
@@ -1580,6 +1584,16 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         with Session(engine) as session:
             return stop_data_annotation_behavior_tree_current_task(session)
     raise HTTPException(status_code=400, detail="该内置运行单元不支持停止")
+
+
+def configure_builtin_runtime_item_autostart(task_key: str, enabled: bool) -> dict[str, Any]:
+    normalized_key = str(task_key or "").strip()
+    if normalized_key != CODEYUN_WATCHDOG_SERVICE_KEY:
+        raise HTTPException(status_code=400, detail="该运行单元不支持开机自启配置")
+    try:
+        return enable_codeyun_watchdog_startup() if enabled else disable_codeyun_watchdog_startup()
+    except CodeYunWatchdogError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def toggle_builtin_runtime_job(task_key: str, enabled: bool, session: Session) -> dict[str, Any]:
