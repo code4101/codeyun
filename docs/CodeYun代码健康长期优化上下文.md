@@ -83,6 +83,9 @@ backend/api/filesystem.py::_run_duplicate_analysis_task
 | 2026-06-18 | failure 分支抽取 | 新增 `_fail_duplicate_analysis_task(...)`，目标函数再减少 10 行，当前为 67 行 | `3 passed`, pytest reported `0.45s` |
 | 2026-06-18 | 当前函数主线复盘 | 只读评估 helper 参数、闭包依赖和测试覆盖；结论是当前函数瘦身线应在现有改动提交后收束 | `3 passed`, pytest reported `0.46s` |
 | 2026-06-18 | 重复文件分析行为补测 | 新增 Everything unavailable 与 `scan_limit` 截断行为测试 | `7 passed`, pytest reported `0.87s` |
+| 2026-06-18 | 提交前扩展验证 | `test_device_entry_proxy.py -k duplicate` 通过；`test_device_media_duplicate_cluster_sort.py` 暴露 2 个 visual hash prewarm 夹具失败 | `7 passed`; `2 failed, 6 passed` |
+| 2026-06-18 | visual hash prewarm 夹具修复 | 测试夹具补齐 `ResourceIdentity` 表，metadata upsert 能走到 prewarm 调度分支 | `8 passed`; duplicate API `7 passed` |
+| 2026-06-18 | 提交边界就绪验证 | 当前剩余改动为测试夹具和长期上下文文档；提交门槛测试通过 | media duplicate cluster `8 passed`; duplicate API `7 passed` |
 
 当前验证命令：
 
@@ -113,6 +116,196 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 - `success_metric`: 当前主线有提交边界；长期上下文中记录下一主线入口
 - `risk`: low
 - `verification`: 提交前继续跑 duplicate 相关测试
+
+当前扩展验证状态：
+
+- `uv run pytest tests/backend/test_device_entry_proxy.py -q -k "duplicate" --durations=10` 通过，`7 passed`。
+- `uv run pytest backend/tests/test_device_media_duplicate_cluster_sort.py -q --durations=10` 失败，`2 failed, 6 passed`。
+- 失败测试：
+  - `test_attach_cached_media_metadata_schedules_visual_hash_prewarm_for_browse_requests`
+  - `test_list_supported_entries_prewarms_visual_hash_when_duplicate_cluster_rule_active`
+- 初步定位：失败发生在 visual hash prewarm 调度断言；`_attach_cached_media_metadata` 只有在 `upsert_device_file_metadata_batch -> reconcile_device_file_batch -> ensure_device_file_resource_identity` 成功后才调用 `_schedule_visual_hash_prewarm`，而测试夹具只创建了 `DeviceFile` 表，可能缺少 `ResourceIdentity` 等资源身份表，导致 upsert 异常被业务代码吞掉，调度未发生。
+- 这不是重复文件分析 API 主线的直接回归，但会影响提交前完整验证口径。
+
+优先级 1A 已完成：
+
+- `object`: `backend/tests/test_device_media_duplicate_cluster_sort.py` visual hash prewarm 夹具
+- `action`: 已补齐测试数据库表，创建 `ResourceIdentity` 与 `DeviceFile`，使 visual hash prewarm 测试真正覆盖调度逻辑
+- `success_metric`: `uv run pytest backend/tests/test_device_media_duplicate_cluster_sort.py -q --durations=10` 通过
+- `risk`: low-medium
+- `verification`: `8 passed`, pytest reported `1.21s`
+
+新的优先级 1B：
+
+- `object`: 当前 filesystem 重复文件分析主线提交边界
+- `action`: 当前提交边界已就绪，等待自动提交维护接手或人工提交；提交前保持这组验证命令为门槛
+- `success_metric`: `device_entry_proxy -k duplicate` 与 `test_device_media_duplicate_cluster_sort.py` 均通过
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_device_entry_proxy.py -q -k "duplicate" --durations=10` 和 `uv run pytest backend/tests/test_device_media_duplicate_cluster_sort.py -q --durations=10`
+- 当前剩余文件范围：
+  - `backend/tests/test_device_media_duplicate_cluster_sort.py`
+  - `docs/CodeYun代码健康长期优化上下文.md`
+
+下一条主线候选：
+
+- `object`: `docs_sync_scan` 噪声治理
+- `action`: 从扫描器中排除 `*.egg-info/SOURCES.txt`，并把 `**` 通配路径分类为模式引用而非缺失路径
+- `success_metric`: `docs_sync_scan` 的固定噪声候选下降，同时保留真实缺失路径报告能力
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q`，并运行一次只读 `docs_sync_scan` 报告对比
+
+优先级 1C 已完成：
+
+- `object`: `backend/core/maintenance/idle_maintenance.py` 文档路径扫描器
+- `action`: 已排除 `*.egg-info/SOURCES.txt` 打包清单，并过滤 `**` glob 模式与 `backend.core...` 这类代码标识符引用
+- `success_metric`: 两类固定误报不再进入 `missing_doc_path_ref`，真实缺失仓库路径仍会报告
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`9 passed`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-201755-docs_sync_scan.json`
+
+新的优先级 1D：
+
+- `object`: `docs_sync_scan` Markdown 引用提取边界
+- `action`: 处理 Windows 绝对路径、带空格的 Markdown 链接路径和说明性目录引用，避免把非仓库相对路径或被截断的链接当成缺失路径
+- `success_metric`: 只读扫描中的明显解析噪声减少，同时保留 `backend/...`、`frontend/...`、`docs/...` 真实缺失路径候选
+- `risk`: low
+- `verification`: 新增聚焦测试覆盖绝对路径和带空格链接；运行 `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 与一次只读 `docs_sync_scan`
+
+优先级 1D 已完成：
+
+- `object`: `backend/core/maintenance/idle_maintenance.py` Markdown/路径引用提取
+- `action`: 已过滤 Windows 盘符绝对路径、`%TEMP%` 环境变量路径；裸路径不再从 Markdown 链接括号中截断，中文仓库路径不再被截成 ASCII 前缀
+- `success_metric`: `README.md` 中的 `[docs/自动部署恢复档案.md](...)`、长期上下文中的 `%TEMP%\...docs_sync...`、`docs/CodeYun代码健康长期优化上下文.md` 不再进入前排误报；真实缺失路径仍保留
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-203225-docs_sync_scan.json`
+
+新的优先级 1E：
+
+- `object`: `docs/FANXIU_REVERSE_CONTEXT.md` 旧 core 模块名漂移
+- `action`: 对扫描前排的旧 Fanxiu 扁平 core 模块候选做事实核验，区分已迁移模块、已删除模块和应改为当前入口的模块
+- `success_metric`: 生成候选排序；若事实明确，修正 1-3 个旧路径引用
+- `risk`: low
+- `verification`: `rg` 引用核验，必要时运行 `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 和一次只读 `docs_sync_scan`
+
+优先级 1E 已完成：
+
+- `object`: `docs/FANXIU_REVERSE_CONTEXT.md` 旧 Fanxiu 扁平 core 模块路径
+- `action`: 已将模块表和高价值 addendum 中的旧路径更新为当前 `backend/core/fanxiu/catalog/...` 或 `backend/core/fanxiu/runtime/download_bridge.py` 路径
+- `success_metric`: 13 个旧路径均核验到当前存在文件；旧 Fanxiu 扁平 core 模块路径无剩余匹配；`docs_sync_scan` 中该文档旧扁平模块候选清零
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`；只读 `docs_sync_scan` 从 40 条降到 39 条
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-204850-docs_sync_scan.json`
+
+新的优先级 1F：
+
+- `object`: `docs/FANXIU_REVERSE_CONTEXT.md` 前端页面路径漂移
+- `action`: 核验旧 packet-capture 与 protocol-semantics 独立页面是否迁移、合并或已废弃，并修正文档事实
+- `success_metric`: `docs_sync_scan` 中该文档剩余前端页面路径候选减少；不误删仍有产品意义的历史说明
+- `risk`: low
+- `verification`: `rg --files frontend/src/standard/fanxiu` 路径核验，一次只读 `docs_sync_scan`
+
+优先级 1F 已完成：
+
+- `object`: `docs/FANXIU_REVERSE_CONTEXT.md` 前端页面路径漂移
+- `action`: 已确认旧 packet-capture 与 protocol-semantics 独立页面合并进 `frontend/src/standard/fanxiu/wiki/page.vue`，入口分别为 `/fanxiu/wiki?tab=packet` 与 `/fanxiu/wiki?tab=protocol`
+- `success_metric`: `docs_sync_scan` 中 `docs/FANXIU_REVERSE_CONTEXT.md` 的缺失路径候选清零；前端和 API 集成的说明性短语也改为非路径措辞
+- `risk`: low
+- `verification`: `rg --files frontend/src/standard/fanxiu` 路径核验；`uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`；只读 `docs_sync_scan` 为 39 条且该文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-210214-docs_sync_scan.json`
+
+新的优先级 1G：
+
+- `object`: `docs/AI_CLUSTER_CONTEXT.md` 集群旧后端/前端路径漂移
+- `action`: 核验集群上下文中旧设备 core、agent API、TaskManager 前端页是否已有当前等价入口，先产出映射证据，再做事实性文档修正
+- `success_metric`: `docs_sync_scan` 前排候选减少，且每个替换路径都能通过 `Test-Path` 或 `rg --files` 证明存在
+- `risk`: low
+- `verification`: `rg`/`Test-Path` 路径核验，一次只读 `docs_sync_scan`
+
+优先级 1G 已完成：
+
+- `object`: `docs/AI_CLUSTER_CONTEXT.md` 集群旧路径和旧接口说明
+- `action`: 已将旧设备 core、agent API、TaskManager 前端页路径更新为当前 `backend/core/devices/device.py`、`backend/api/device_control.py`、`backend/api/task_manager.py`、`frontend/src/standard/cluster/tasks/page.vue`；旧 `/api/agent/status` 与 `/api/task/...` 示例同步为当前 `/api/device-control/status` 与 `/api/tasks/...`
+- `success_metric`: 新路径均通过 `Test-Path`；旧路径/旧接口 `rg` 无剩余匹配；`docs_sync_scan` 中 `docs/AI_CLUSTER_CONTEXT.md` 候选清零
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`；只读 `docs_sync_scan` 为 33 条且该文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-211734-docs_sync_scan.json`
+
+新的优先级 1H：
+
+- `object`: `docs/standard与plugins结构约定.md` 模板路径误报
+- `action`: 区分 `<插件名>`、`<域>` 这类模板路径与真实仓库路径，优先判断是改扫描规则还是改文档措辞
+- `success_metric`: docs scan 中模板路径候选下降，同时保留真实缺失路径检测
+- `risk`: low
+- `verification`: 聚焦测试覆盖尖括号模板路径；一次只读 `docs_sync_scan`
+
+优先级 1H 已完成：
+
+- `object`: `docs_sync_scan` 模板路径识别
+- `action`: 扫描器已过滤包含尖括号占位符的模板路径，例如插件名、领域名这类说明性路径
+- `success_metric`: `docs/standard与plugins结构约定.md` 的模板路径候选清零；真实缺失路径测试仍保留
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 28 条且该文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-213148-docs_sync_scan.json`
+
+新的优先级 1I：
+
+- `object`: 凡修运行/抓包文档旧 core 路径漂移
+- `action`: 核验凡修运行设备约定和抓包服务架构约定中旧 `fanxiu_*` 扁平 core 路径的当前包路径，优先修正 3-5 个前排候选
+- `success_metric`: `docs_sync_scan` 前排凡修旧路径候选减少；每个替换路径都有存在性证据
+- `risk`: low
+- `verification`: `rg --files backend/core/fanxiu` 映射核验，一次只读 `docs_sync_scan`
+
+优先级 1I 已完成：
+
+- `object`: `docs/凡修data-annotation运行设备约定.md` 与 `docs/凡修抓包服务架构约定.md` 旧 core 路径
+- `action`: 已将 MuMu 控制、窗口捕获、抓包 runtime、tcp flow、洞察 worker、活动同步、业务 store、玩家面板 store 等旧扁平路径更新为当前 `backend/core/fanxiu/runtime/...`、`backend/core/fanxiu/packet/...` 或 `backend/core/devices/...` 路径
+- `success_metric`: 9 个替换路径均通过 `Test-Path`；两个目标文档旧路径候选清零；`docs_sync_scan` 总候选从 28 降到 19
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 19 条且两个目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-214724-docs_sync_scan.json`
+
+新的优先级 1J：
+
+- `object`: `docs/凡修行为树运行框架约定.md` 旧 core 路径漂移
+- `action`: 核验行为树、data-annotation runner/runtime_control、game window actions 等旧扁平路径的当前包路径，优先修正前排候选
+- `success_metric`: `docs_sync_scan` 中行为树文档旧路径候选减少；每个替换路径都有存在性证据
+- `risk`: low
+- `verification`: `rg --files backend/core/fanxiu` 映射核验，一次只读 `docs_sync_scan`
+
+优先级 1J 已完成：
+
+- `object`: `docs/凡修行为树运行框架约定.md` 旧 core 路径漂移
+- `action`: 已将行为树门面、data-annotation runner/runtime_control/default_jobs/debug_eval、game window actions、runtime errors、mail runtime store 等旧扁平 import/path 更新为当前包路径
+- `success_metric`: 9 个当前路径均通过 `Test-Path`；行为树文档旧路径候选清零；`docs_sync_scan` 总候选从 19 降到 14
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 14 条且目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-220419-docs_sync_scan.json`
+
+新的优先级 1K：
+
+- `object`: `docs/凡修逆向资源安全边界.md` 旧资源模块路径漂移
+- `action`: 核验旧资源模块路径当前是否迁移到 `backend/core/fanxiu/catalog/resources.py`，并修正事实性路径
+- `success_metric`: `docs_sync_scan` 中该文档旧资源模块候选清零；替换路径有存在性证据
+- `risk`: low
+- `verification`: `Test-Path backend/core/fanxiu/catalog/resources.py`，一次只读 `docs_sync_scan`
+
+优先级 1K 已完成：
+
+- `object`: `docs/凡修逆向资源安全边界.md` 旧资源模块路径
+- `action`: 已将旧资源模块路径更新为当前 `backend/core/fanxiu/catalog/resources.py`
+- `success_metric`: 替换路径通过 `Test-Path`；该文档旧资源模块候选清零；`docs_sync_scan` 总候选从 14 降到 13
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 13 条且目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260618-221712-docs_sync_scan.json`
+
+新的优先级 1L：
+
+- `object`: `docs/筛选与排序实现说明.md` 旧 notes/cluster 页面路径漂移
+- `action`: 核验旧 notes 列表/星图/日历页面和 cluster 文件浏览页面是否迁移到 `frontend/src/standard/...` 当前入口，并修正事实性路径
+- `success_metric`: `docs_sync_scan` 中该文档旧前端页面候选减少；每个替换路径有存在性证据
+- `risk`: low
+- `verification`: `rg --files frontend/src/standard` 映射核验，一次只读 `docs_sync_scan`
 
 优先级 2：
 

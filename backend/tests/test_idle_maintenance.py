@@ -106,3 +106,124 @@ def test_docs_sync_scan_reports_missing_repo_path(monkeypatch, tmp_path):
 
     assert result["missing_path_ref_count"] == 1
     assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_ignores_packaging_sources_noise(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    egg_info = repo / "backend" / "codeyun_backend.egg-info"
+    docs = repo / "docs"
+    egg_info.mkdir(parents=True)
+    docs.mkdir()
+    (egg_info / "SOURCES.txt").write_text("tests/missing_from_build_metadata.py\n", encoding="utf-8")
+    (docs / "guide.md").write_text("See `backend/missing.py` for details.", encoding="utf-8")
+    (repo / "backend").mkdir(exist_ok=True)
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_ignores_glob_and_code_style_refs(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    docs.mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "frontend" / "src" / "standard" / "notes").mkdir(parents=True)
+    (docs / "guide.md").write_text(
+        "\n".join(
+            [
+                "Use `frontend/src/standard/**/index.ts` as a route pattern.",
+                "Call `backend.core.temp_paths.codeyun_temp_root(...)` in Python.",
+                "See `backend/missing.py` for details.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_ignores_windows_absolute_paths(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    docs.mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (docs / "guide.md").write_text(
+        "\n".join(
+            [
+                r"Repo example: `D:\home\chenkunze\slns\codeyun\backend`.",
+                r"Old context: `c:\home\chenkunze\slns\codeyun\frontend`.",
+                r"Report path: `%TEMP%\codeyun\idle-maintenance\20260618-docs_sync_scan.json`.",
+                "See `backend/missing.py` for details.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_does_not_truncate_markdown_links_or_unicode_paths(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    docs.mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (docs / "My File.md").write_text("# guide\n", encoding="utf-8")
+    (docs / "CodeYun代码健康长期优化上下文.md").write_text("# context\n", encoding="utf-8")
+    (docs / "自动部署恢复档案.md").write_text("# deploy archive\n", encoding="utf-8")
+    (docs / "guide.md").write_text(
+        "\n".join(
+            [
+                "See [docs/自动部署恢复档案.md](docs/自动部署恢复档案.md).",
+                "Read [file with space](docs/My File.md).",
+                "Long-term context: docs/CodeYun代码健康长期优化上下文.md",
+                "See `backend/missing.py` for details.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_ignores_template_placeholder_paths(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    docs.mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "frontend").mkdir()
+    (docs / "guide.md").write_text(
+        "\n".join(
+            [
+                "Plugin template: `frontend/src/plugins/modules/<插件名>/index.ts`.",
+                "Domain template: `backend/standard/<域>/...`.",
+                "See `backend/missing.py` for details.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/missing.py"

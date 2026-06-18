@@ -53,10 +53,19 @@ class DailyChallengeTaskMixin:
         text = runtime.ocr_text(frame)
         if self._daily_dungeon_text_is_result(text):
             return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
+        if self._daily_dungeon_text_is_completed(text):
+            self._log("success", f"{task_label}：#223 已显示完成态，OCR={text[:120]}")
+            self._record_daily_dungeon_done(payload, message="副本挑战已完成")
+            yield from self._safe_daily_done_cleanup(
+                lambda: self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label),
+                label=task_label,
+                repeat_risk="重复扫荡",
+            )
+            return "success"
         if scene_id == 226:
             yield from self._handle_daily_dungeon_quick_sweep_prompt(ctx, stop_event, payload, task_label=task_label)
             return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
-        if scene_id == 225:
+        if scene_id == 225 or self._daily_dungeon_text_is_purchase_unavailable(text):
             yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
             yield from runtime.wait_view(223, timeout=10.0, label="日常_每日副本：等待回到副本挑战 #223")
             return (yield from self._click_daily_dungeon_sweep(ctx, stop_event, payload, image223, task_label=task_label))
@@ -86,8 +95,21 @@ class DailyChallengeTaskMixin:
                 text = runtime.ocr_text(frame)
                 if self._daily_dungeon_text_is_result(text):
                     return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
+                if self._daily_dungeon_text_is_completed(text):
+                    self._log("success", f"{task_label}：#223 已显示完成态，OCR={text[:120]}")
+                    self._record_daily_dungeon_done(payload, message="副本挑战已完成")
+                    yield from self._safe_daily_done_cleanup(
+                        lambda: self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label),
+                        label=task_label,
+                        repeat_risk="重复扫荡",
+                    )
+                    return "success"
                 if self._daily_dungeon_text_is_purchase(text):
                     return (yield from self._click_daily_dungeon_purchase_uses(ctx, stop_event, payload, image224, task_label=task_label))
+                if self._daily_dungeon_text_is_purchase_unavailable(text):
+                    yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
+                    yield from runtime.wait_view(223, timeout=10.0, label="日常_每日副本：等待回到副本挑战 #223")
+                    return (yield from self._click_daily_dungeon_sweep(ctx, stop_event, payload, image223, task_label=task_label))
                 if self._daily_dungeon_text_is_entry(text):
                     return (yield from self._click_daily_dungeon_recommend_and_buy(ctx, stop_event, payload, image222, image223, image224, image225, task_label=task_label))
         if scene_id != 69:
@@ -128,6 +150,11 @@ class DailyChallengeTaskMixin:
     def _daily_dungeon_text_is_purchase(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         return "购买并使用" in normalized and ("破界符" in normalized or "剩余限购次数" in normalized)
+
+    def _daily_dungeon_text_is_purchase_unavailable(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        compact = re.sub(r"\s+", "", normalized)
+        return "破界符" in compact and ("持有数量" in compact or "每日限购" in compact or "增加购买次数" in compact)
 
     def _daily_dungeon_purchase_remaining_count(self, text: str) -> int | None:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -400,6 +427,11 @@ class DailyChallengeTaskMixin:
                     repeat_risk="重复扫荡",
                 )
                 return "success"
+            scene_id, _score, _frame = runtime.current_scene([227, 223, 34], update=False)
+            if scene_id == 34 and self._daily_lingta_text_is_world_like(text):
+                self._log("success", f"{task_label}：扫荡后已回到世界，OCR={text[:120]}")
+                self._record_daily_dungeon_done(payload, message="扫荡后返回世界")
+                return "success"
             if time.monotonic() - start >= timeout:
                 raise RuntimeError(f"{task_label}：等待 #227 扫荡结果超时，OCR={last_text[:120]}")
             with self._lock:
@@ -435,7 +467,26 @@ class DailyChallengeTaskMixin:
             label=f"{task_label}：点击返回",
             timeout_key="return_timeout",
         )
-        yield from runtime.wait_view(34, timeout=float(payload.get("return_world_timeout") or 18.0), label=f"{task_label}：等待世界 #34")
+        timeout = float(payload.get("return_world_timeout") or 18.0)
+        start = time.monotonic()
+        last_text = ""
+        while True:
+            self._raise_if_stopped(stop_event)
+            scene_id, score, frame = runtime.current_scene([223, 34], update=True)
+            text = runtime.ocr_text(frame)
+            last_text = text or last_text
+            if scene_id == 34 and self._daily_lingta_text_is_world_like(text) and not self._daily_dungeon_text_is_entry(text):
+                return
+            if time.monotonic() - start >= timeout:
+                raise RuntimeError(f"{task_label}：等待世界 #34 超时，最后 #{scene_id or 'unknown'} {score:.0f}% OCR={last_text[:120]}")
+            with self._lock:
+                self._status.update({
+                    "phase": "daily_dungeon_return_world_wait",
+                    "current_scene": scene_id,
+                    "message": f"{task_label}：等待真实世界 #34，当前 {'#' + str(scene_id) if scene_id else 'unknown'} {score:.0f}%",
+                    "updated_at": time.time(),
+                })
+            yield BehaviorTreeStatus.RUNNING
 
     def _wait_daily_dungeon_purchase_result(
         self,
@@ -463,6 +514,12 @@ class DailyChallengeTaskMixin:
                 return 224
             if scene_id == 225:
                 self._log("success", f"{label}：进入 #225 数量不足，关闭弹窗")
+                yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
+                yield from runtime.wait_view(223, timeout=10.0, label="日常_每日副本：等待回到副本挑战 #223")
+                return 225
+            text = runtime.ocr_text(_frame)
+            if self._daily_dungeon_text_is_purchase_unavailable(text):
+                self._log("success", f"{label}：OCR 确认 #225 数量不足，关闭弹窗")
                 yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
                 yield from runtime.wait_view(223, timeout=10.0, label="日常_每日副本：等待回到副本挑战 #223")
                 return 225
@@ -1077,8 +1134,12 @@ class DailyChallengeTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError(f"缺少{task_label}资产树路径，无法执行作业")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([188, 189, 69, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([223, 188, 189, 69, 34], update=True)
         text = runtime.ocr_text(frame)
+        if scene_id == 223 or self._daily_dungeon_text_is_entry(text) or self._daily_dungeon_text_is_completed(text):
+            yield from self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label)
+            scene_id, _score, frame = runtime.current_scene([188, 189, 69, 34], update=True)
+            text = runtime.ocr_text(frame)
         if self._daily_free_challenge_text_is_purchase_modal(text):
             raise RuntimeError(f"{task_label}：出现「购买并使用」弹窗，默认不购买次数或道具，已停止等待人工关闭")
         if (
@@ -1184,22 +1245,10 @@ class DailyChallengeTaskMixin:
             task_label=task_label,
             title_pattern=title_pattern,
             exclude_pattern=exclude_pattern,
-            progress_can_mark_done=True,
+            progress_can_mark_done=False,
         )
         if daily_status == "done":
-            self._record_daily_free_challenge_done(
-                payload,
-                task_id=task_id,
-                task_type=task_type,
-                task_label=task_label,
-                message="日常列表显示已完成",
-            )
-            yield from self._safe_daily_done_cleanup(
-                lambda: self._return_daily_free_challenge_to_world(ctx, stop_event, task_label=task_label),
-                label=task_label,
-                repeat_risk="重复剿灭",
-            )
-            return "success"
+            raise RuntimeError(f"{task_label}：日常列表完成态不能作为成功依据，必须进入详情确认剩余奖励次数")
         if daily_status == "not_found":
             raise RuntimeError(f"{task_label}：#69 日常列表未找到入口，不能按完成处理")
 

@@ -18,8 +18,8 @@
 - ADB 是 Runtime 的主通道；桌面窗口捕获只允许作为显式调试兜底，目标也必须是本机 `MuMu` 窗口，不再使用向日葵窗口标题或向日葵投屏通道。
 - 桌面窗口捕获、窗口预览和窗口点击兜底必须默认归一到 `900x1600` 标注坐标系；MuMu 恢复后外层窗口尺寸或缩放可能变化，不得让截图输出跟随窗口实际像素漂移。
 - 当前 Runtime 底层模块边界：
-  - `backend/core/fanxiu_mumu_control.py`：MuMu ADB、MuMu 窗口捕获兜底、截图匹配、点击/拖拽/输入。
-  - `backend/core/window_capture_preview.py`：通用 Windows 窗口捕获工具。
+  - `backend/core/fanxiu/runtime/mumu_control.py`：MuMu ADB、MuMu 窗口捕获兜底、截图匹配、点击/拖拽/输入。
+  - `backend/core/devices/window_capture_preview.py`：通用 Windows 窗口捕获工具。
   - 抓包服务只能负责网络代理、证书、pcap/数据流解析，不应提供截图、点击、OCR 或行为树设备候选。
 - 不要重新注册 `/fanxiu/game-window2` 页面；需要做当前标注功能时改 `/fanxiu/data-annotation`。
 - 若发现 `codepc_mi15` 下残留凡修 data-annotation 资产树、旧画面流或旧脚本文档，应视为历史残留清理对象，不要用它推断当前运行状态。

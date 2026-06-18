@@ -918,7 +918,7 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                 )
                 return before
             before_status = str(before.get("status") or "unknown")
-            if _mumu_device_recovery_cooling_down(now, status=before_status):
+            if not force_restart and _mumu_device_recovery_cooling_down(now, status=before_status):
                 state = _clone_mumu_device_health_state()
                 state["recovered"] = False
                 state["recovery_skipped"] = "cooldown"

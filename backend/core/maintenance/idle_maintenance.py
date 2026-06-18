@@ -225,8 +225,8 @@ def _find_large_code_files(limit: int = 20) -> list[dict[str, Any]]:
 def _extract_doc_refs(text: str) -> list[str]:
     refs: list[str] = []
     patterns = [
-        r"`([^`\n]*(?:backend|frontend|scripts|docs|tests|AGENTS\.md|README\.md)[^`\n]*)`",
-        r"(?<![A-Za-z0-9_./-])((?:backend|frontend|scripts|docs|tests)/[A-Za-z0-9_./-]+)",
+        r"`((?:(?:backend|frontend|scripts|docs|tests)[/\\][^`\n]+|AGENTS\.md|README\.md))`",
+        r"(?<![A-Za-z0-9_./(-])((?:backend|frontend|scripts|docs|tests)/[^\s`()\[\],;:，。；：]+)",
     ]
     for pattern in patterns:
         for match in re.finditer(pattern, text):
@@ -236,8 +236,27 @@ def _extract_doc_refs(text: str) -> list[str]:
     return refs
 
 
+def _should_scan_doc_path(path: Path | str) -> bool:
+    normalized = path.as_posix() if isinstance(path, Path) else str(path).replace("\\", "/")
+    return not (
+        normalized.endswith(".egg-info/SOURCES.txt")
+        or "/.egg-info/" in normalized
+        or normalized.startswith(".egg-info/")
+    )
+
+
 def _looks_like_path_ref(ref: str) -> bool:
     if any(part in ref for part in (" ", "\t", "$", "|", "&&")):
+        return False
+    if "<" in ref or ">" in ref:
+        return False
+    if ref.startswith("%"):
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", ref):
+        return False
+    if "*" in ref or "..." in ref:
+        return False
+    if "." in ref and "/" not in ref and "\\" not in ref:
         return False
     return "/" in ref or "\\" in ref or "." in Path(ref).name
 
@@ -246,6 +265,8 @@ def _check_doc_path_refs(limit: int = 50) -> list[dict[str, Any]]:
     root = _repo_root()
     issues: list[dict[str, Any]] = []
     for doc_path in _iter_repo_files(suffixes=DOC_SUFFIXES):
+        if not _should_scan_doc_path(_relative_path(doc_path)):
+            continue
         try:
             text = doc_path.read_text(encoding="utf-8", errors="ignore")
         except OSError:

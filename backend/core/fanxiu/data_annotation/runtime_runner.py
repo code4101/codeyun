@@ -6980,6 +6980,12 @@ class DataAnnotationRuntimeRunner(
 
             scene_id, score = self._identify_scene_number(ctx, frame)
             last_scene_id, last_score, last_frame = scene_id, score, frame
+            if scene_id == target_scene_id and scene_id != source_scene_id:
+                self._log(
+                    "warning",
+                    f"场景跳转：#{source_scene_id} -> #{scene_id} 已到达目标，但「{shape.get('title') or '未命名'}」未声明该 sceneJumpTarget",
+                )
+                return scene_id
             if scene_id is not None and scene_id != source_scene_id:
                 left_source = True
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
