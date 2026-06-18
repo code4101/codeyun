@@ -162,6 +162,24 @@ def merge_data_annotation_scheduler_task_updates(
     *,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    incoming_by_id = {
+        str(task.get("id") or ""): task
+        for task in incoming_tasks
+        if isinstance(task, dict) and str(task.get("id") or "")
+    }
+    if incoming_by_id and len(incoming_by_id) < len([task for task in current_tasks if str(task.get("id") or "")]):
+        merged_input: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for current in current_tasks:
+            task_id = str(current.get("id") or "")
+            if not task_id:
+                continue
+            seen.add(task_id)
+            merged_input.append(incoming_by_id.get(task_id, current))
+        for task_id, incoming in incoming_by_id.items():
+            if task_id not in seen:
+                merged_input.append(incoming)
+        incoming_tasks = merged_input
     return merge_scheduled_task_updates(
         current_tasks,
         incoming_tasks,

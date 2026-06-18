@@ -120,6 +120,7 @@ class XianfuTaskMixin:
                 next_time,
                 task_type="xianfu_visit_partner",
                 label="仙府_寻访仙侣",
+                last_result="success",
             )
             with self._lock:
                 self._set_status_locked(
@@ -157,6 +158,7 @@ class XianfuTaskMixin:
                 next_time,
                 task_type="xianfu_visit_partner",
                 label="仙府_寻访仙侣",
+                last_result="success",
             )
             with self._lock:
                 self._set_status_locked(
@@ -367,6 +369,7 @@ class XianfuTaskMixin:
                 next_time,
                 task_type="xianfu_learn_skill",
                 label="仙府_领悟绝技",
+                last_result="success",
             )
             with self._lock:
                 self._set_status_locked(
@@ -377,7 +380,7 @@ class XianfuTaskMixin:
                 )
                 self._log_locked("skip", self._status["message"])
             yield from self._return_xianfu_learn_skill_to_world(runtime)
-            return "skipped"
+            return "success"
 
         if not isinstance(images.get(177), dict):
             self._log("skip", "仙府_领悟绝技：当前可免费领悟，但缺少 #177「领悟绝技」结果弹窗标注，暂不自动点击")
@@ -403,6 +406,7 @@ class XianfuTaskMixin:
                 next_time,
                 task_type="xianfu_learn_skill",
                 label="仙府_领悟绝技",
+                last_result="success",
             )
             with self._lock:
                 self._set_status_locked(

@@ -193,10 +193,10 @@
                     v-model="assetFrameSearchText"
                     class="asset-frame-search"
                     size="small"
-                    placeholder="编号"
+                    placeholder="编号/名称"
                     clearable
                     :prefix-icon="Search"
-                    @keyup.enter="searchAssetFrameById"
+                    @keyup.enter="searchAssetFrame"
                   />
                   <el-button size="small" :icon="Plus" title="新建目录" aria-label="新建目录" @click="addAssetFolder" />
                   <el-button
@@ -238,6 +238,7 @@
                   :expand-on-click-node="false"
                   :current-node-key="selectedAssetId"
                   :allow-drop="allowAssetDrop"
+                  :filter-node-method="filterAssetTreeNode"
                   @node-click="selectAssetNode"
                   @node-expand="node => setAssetNodeExpanded(node.id, true)"
                   @node-collapse="node => setAssetNodeExpanded(node.id, false)"
@@ -7083,6 +7084,7 @@ type AnnotationTreeNodeHandle = {
 type AnnotationTreeRef = {
   getNode: (key: string) => AnnotationTreeNodeHandle | null;
   setCurrentKey?: (key: string | null) => void;
+  filter?: (value: string) => void;
 };
 const assetTreeRef = ref<AnnotationTreeRef | null>(null);
 const shapeTreeRef = ref<AnnotationTreeRef | null>(null);
@@ -8053,20 +8055,97 @@ const focusAssetImage = async (image: DataAnnotationAssetNode) => {
   scrollCurrentTreeNodeIntoView('shape-tree');
 };
 
-const searchAssetFrameById = async () => {
-  const text = assetFrameSearchText.value.trim().replace(/^#/, '');
-  const numericId = text ? Number(text) : NaN;
-  if (!Number.isInteger(numericId) || numericId < 0) {
-    ElMessage.warning('请输入帧编号');
+const normalizeAssetSearchText = (value: string) => value.trim().replace(/^#/, '').toLowerCase();
+
+const shapeMatchesAssetSearch = (shape: DataAnnotationShape, needle: string): boolean => {
+  const title = shape.title.trim().toLowerCase();
+  if (title.includes(needle)) return true;
+  return (shape.children ?? []).some((child) => shapeMatchesAssetSearch(child, needle));
+};
+
+const findFirstShapeByAssetSearch = (shapes: DataAnnotationShape[], needle: string): DataAnnotationShape | null => {
+  for (const shape of shapes) {
+    if (shape.title.trim().toLowerCase().includes(needle)) return shape;
+    const found = findFirstShapeByAssetSearch(shape.children ?? [], needle);
+    if (found) return found;
+  }
+  return null;
+};
+
+const assetNodeMatchesSearchText = (node: DataAnnotationAssetNode, needle: string) => {
+  const texts = [
+    node.title,
+    node.filename,
+    node.type === 'image' ? assetImageIdMark(node) : '',
+    node.type === 'image' ? String(assetNumericImageId(node) ?? '') : '',
+  ];
+  return texts.some((text) => String(text || '').trim().toLowerCase().replace(/^#/, '').includes(needle));
+};
+
+const filterAssetTreeNode = (value: string, data: DataAnnotationAssetNode) => {
+  const needle = normalizeAssetSearchText(value);
+  if (!needle) return true;
+  if (assetNodeMatchesSearchText(data, needle)) return true;
+  return data.type === 'image' && (data.shapes ?? []).some((shape) => shapeMatchesAssetSearch(shape, needle));
+};
+
+const findFirstAssetSearchMatch = (
+  nodes: DataAnnotationAssetNode[],
+  needle: string,
+): { image: DataAnnotationAssetNode; shape: DataAnnotationShape | null } | null => {
+  for (const node of nodes) {
+    if (node.type === 'image') {
+      if (assetNodeMatchesSearchText(node, needle)) return { image: node, shape: null };
+      const shape = findFirstShapeByAssetSearch(node.shapes ?? [], needle);
+      if (shape) return { image: node, shape };
+    }
+    const found = findFirstAssetSearchMatch(node.children ?? [], needle);
+    if (found) return found;
+  }
+  return null;
+};
+
+const expandAssetSearchMatches = (value: string) => {
+  const needle = normalizeAssetSearchText(value);
+  if (!needle) return;
+  const matchedImageIds = flattenAssetImages(assetTree.value)
+    .filter((image) => assetNodeMatchesSearchText(image, needle) || (image.shapes ?? []).some((shape) => shapeMatchesAssetSearch(shape, needle)))
+    .map((image) => image.id);
+  const ancestorIds = matchedImageIds.flatMap((id) => findAssetAncestorFolderIds(assetTree.value, id) ?? []);
+  expandedAssetNodeIds.value = Array.from(new Set([...expandedAssetNodeIds.value, ...ancestorIds]));
+  void syncAssetTreeExpansionFromState();
+};
+
+const searchAssetFrame = async () => {
+  const needle = normalizeAssetSearchText(assetFrameSearchText.value);
+  if (!needle) {
+    ElMessage.warning('请输入编号或名称');
     return;
   }
-  const image = findAssetImageByNumericId(assetTree.value, numericId);
-  if (!image) {
-    ElMessage.warning(`未找到 #${numericId}`);
+  const numericId = Number(needle);
+  if (!Number.isInteger(numericId) || numericId < 0) {
+    const match = findFirstAssetSearchMatch(assetTree.value, needle);
+    if (!match) {
+      ElMessage.warning(`未找到「${assetFrameSearchText.value.trim()}」`);
+      return;
+    }
+    await focusAssetImage(match.image);
+    if (match.shape) selectedShapeId.value = match.shape.id;
     return;
   }
 
-  await focusAssetImage(image);
+  const image = findAssetImageByNumericId(assetTree.value, numericId);
+  if (image) {
+    await focusAssetImage(image);
+    return;
+  }
+  const match = findFirstAssetSearchMatch(assetTree.value, needle);
+  if (match) {
+    await focusAssetImage(match.image);
+    if (match.shape) selectedShapeId.value = match.shape.id;
+    return;
+  }
+  ElMessage.warning(`未找到 #${numericId}`);
 };
 
 const findAssetImageByTitle = (nodes: DataAnnotationAssetNode[], title: string): DataAnnotationAssetNode | null => {
@@ -8577,6 +8656,12 @@ watch(globalOcclusionMaskEnabled, (value) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(DATA_ANNOTATION_OCCLUSION_MASK_ENABLED_KEY, value ? 'true' : 'false');
 });
+
+watch(assetFrameSearchText, (value) => {
+  assetTreeRef.value?.filter?.(value);
+  expandAssetSearchMatches(value);
+});
+
 watch(selectedRuntimeTaskType, (value) => {
   const sameTypeTasks = runtimeSchedulerTasks.value.filter((task) => task.task_type === value);
   if (!sameTypeTasks.length) {

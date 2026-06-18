@@ -420,7 +420,18 @@ class DailyResourceTaskMixin:
 
     def _daily_youli_text_is_region_detail(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
-        return "探索进度" in normalized and ("快速游历" in normalized or "消耗体力" in normalized)
+        if "探索进度" in normalized and ("快速游历" in normalized or "消耗体力" in normalized):
+            return True
+        if (
+            "修仙传" in normalized
+            and "游历" in normalized
+            and "道祖逸闻" in normalized
+            and "北寒蛮荒" in normalized
+            and "探索完成" in normalized
+            and "挑战" not in normalized
+        ):
+            return True
+        return False
 
     def _daily_youli_text_is_quick_result(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -660,7 +671,7 @@ class DailyResourceTaskMixin:
             stop_event,
             label=f"{task_label}：等待游历区域详情 #236",
         )
-        yield from runtime.wait_click(236, "快速游历")
+        runtime.click_shape_center(236, "快速游历")
         yield from runtime.wait_action_settle(float(payload.get("quick_travel_settle_seconds") or 2.0))
         self._log("success", f"{task_label}：已点击快速游历")
         yield from self._wait_daily_youli_quick_result(

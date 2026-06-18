@@ -35,7 +35,7 @@ MIN_CAPTURE_PCAP_BYTES = 24
 
 
 def _hidden_process_kwargs() -> dict[str, Any]:
-    return ()
+    return {}
 
 
 def _now_label() -> str:

@@ -474,6 +474,105 @@ def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(
     assert {item["name"] for item in group["files"]} == {"same-a.bin", "same-b.bin"}
 
 
+def test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable(
+    client, auth_user, test_device, tmp_path, monkeypatch
+):
+    duplicate_root = tmp_path / "duplicate-everything-unavailable-root"
+    duplicate_root.mkdir()
+    (duplicate_root / "same-a.bin").write_bytes(b"same-content")
+    (duplicate_root / "same-b.bin").write_bytes(b"same-content")
+    monkeypatch.setattr("backend.api.filesystem._load_duplicate_candidates_from_everything", lambda *_, **__: None)
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    start_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates/tasks",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "everything",
+            "min_size": 0,
+            "rules": ["size"],
+        },
+    )
+    assert start_resp.status_code == 200
+    payload = start_resp.json()
+    assert payload["task_id"]
+
+    for _ in range(20):
+        status_resp = client.get(
+            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
+            params={"page": 1, "page_size": 10},
+        )
+        assert status_resp.status_code == 200
+        payload = status_resp.json()
+        if payload["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "failed"
+    assert payload["stage"] == "failed"
+    assert payload["error"] == "Everything ES is not available on this device"
+    assert payload["complete"] is False
+
+
+def test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit(client, auth_user, test_device, tmp_path):
+    duplicate_root = tmp_path / "duplicate-scan-limit-root"
+    duplicate_root.mkdir()
+    for index in range(3):
+        (duplicate_root / f"file-{index}.bin").write_bytes(b"same-content")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    start_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates/tasks",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size"],
+            "scan_limit": 1,
+        },
+    )
+    assert start_resp.status_code == 200
+    payload = start_resp.json()
+    assert payload["task_id"]
+
+    for _ in range(20):
+        status_resp = client.get(
+            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
+            params={"page": 1, "page_size": 10},
+        )
+        assert status_resp.status_code == 200
+        payload = status_resp.json()
+        if payload["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "completed"
+    assert payload["scan_limit"] == 1
+    assert payload["scanned_file_count"] == 1
+    assert payload["complete"] is False
+    assert payload["hit_scan_limit"] is True
+
+
 def test_local_entry_proxy_supports_absolute_image_path(client, auth_user, test_device, tmp_path):
     image_dir = tmp_path / "absolute-images"
     image_dir.mkdir(parents=True, exist_ok=True)
