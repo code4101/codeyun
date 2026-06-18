@@ -81,12 +81,12 @@ def _next_future_cron_fire(now: datetime | None = None) -> datetime:
     current = _auto_git_now(now, trigger)
     next_fire = trigger.get_next_fire_time(None, current)
     if next_fire is None:
-        raise RuntimeError(f"无法计算自动 Git 提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
+        raise RuntimeError(f"无法计算 GitHub 项目自动提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
     next_fire = _coerce_cron_datetime(next_fire, trigger).replace(microsecond=0)
     if next_fire <= current:
         next_fire = trigger.get_next_fire_time(next_fire, current + timedelta(seconds=1))
     if next_fire is None:
-        raise RuntimeError(f"无法计算自动 Git 提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
+        raise RuntimeError(f"无法计算 GitHub 项目自动提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
     return _coerce_cron_datetime(next_fire, trigger).replace(microsecond=0)
 
 

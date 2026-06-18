@@ -105,27 +105,27 @@ def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_
 
 
 def test_packet_decode_pressure_thresholds_match_ocr_guard(monkeypatch):
-    from backend.core.runtime import ocr_service
+    from backend.core.fanxiu.runtime import mumu_control
 
     monkeypatch.delenv(worker.PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
 
     monkeypatch.setattr(
-        ocr_service,
-        "_windows_commit_snapshot",
+        mumu_control,
+        "_collect_windows_commit_snapshot",
         lambda: {"commit_percent": 75.0, "commit_available_mb": 40000},
     )
     assert worker._host_commit_pressure_for_packet_decode()["skip"] is True
 
     monkeypatch.setattr(
-        ocr_service,
-        "_windows_commit_snapshot",
+        mumu_control,
+        "_collect_windows_commit_snapshot",
         lambda: {"commit_percent": 70.0, "commit_available_mb": (24 * 1024) - 1},
     )
     assert worker._host_commit_pressure_for_packet_decode()["skip"] is True
 
     monkeypatch.setattr(
-        ocr_service,
-        "_windows_commit_snapshot",
+        mumu_control,
+        "_collect_windows_commit_snapshot",
         lambda: {"commit_percent": 70.0, "commit_available_mb": 24 * 1024},
     )
     assert worker._host_commit_pressure_for_packet_decode()["skip"] is False

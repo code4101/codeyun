@@ -45,6 +45,7 @@ const actionLoading = ref('');
 const tickGuardEnabled = ref(true);
 const tickManualJobEnabled = ref(true);
 const tickScheduledJobEnabled = ref(true);
+const schedulerKind = ref<'timer' | 'ai'>('timer');
 const cellRunMode = ref<'tick_once' | 'until_idle' | 'current_job'>('tick_once');
 const contextMenu = ref({
   visible: false,
@@ -132,6 +133,10 @@ const frameworkPhaseText = computed(() => statusText('framework_status', 'phase'
 const frameworkTaskText = computed(() => statusText('framework_status', 'current_task', '无'));
 const frameworkProgressText = computed(() => statusText('framework_status', 'progress', taskProgressText.value || '-'));
 const tickGroupSelected = computed(() => tickGuardEnabled.value || tickManualJobEnabled.value || tickScheduledJobEnabled.value);
+const schedulerKindOptions = [
+  { label: '定时调度器', value: 'timer' },
+  { label: 'AI调度器', value: 'ai' },
+];
 const cellRunModeOptions = [
   { label: '单步', value: 'tick_once' },
   { label: '到空闲', value: 'until_idle' },
@@ -139,11 +144,11 @@ const cellRunModeOptions = [
 ];
 const cellSubmitActionText = computed(() => {
   const labels: Record<string, string> = {
-    tick_once: '提交单步',
-    until_idle: '提交到空闲',
-    current_job: '提交本作业',
+    tick_once: 'AI提交单步',
+    until_idle: 'AI提交到空闲',
+    current_job: 'AI提交本作业',
   };
-  return labels[cellRunMode.value] || '提交 cell';
+  return labels[cellRunMode.value] || 'AI提交 cell';
 });
 const frameworkTickText = computed(() => {
   const tick = runtimeStatus.value?.framework_tick || runtimeStatus.value?.engine_tick || {};
@@ -333,13 +338,21 @@ const formatRuntimeTime = (value: string) => {
 };
 
 const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (!task.enabled) return '';
   if (task.retry_after) return `重试 ${formatRuntimeTime(task.retry_after)}`;
   if (task.next_time) return formatRuntimeTime(task.next_time);
+  const scheduleTimes = (task.schedule_times || []).filter(Boolean);
+  if (scheduleTimes.length) return scheduleTimes.join(' / ');
+  if (task.schedule_kind === 'dynamic') return task.enabled ? '立即' : '待检测';
   return '';
 };
 
-const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => (task.enabled ? task.retry_after || task.next_time || '' : '');
+const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  if (task.retry_after || task.next_time) return task.retry_after || task.next_time || '';
+  const scheduleTimes = (task.schedule_times || []).filter(Boolean);
+  if (scheduleTimes.length) return `每日 ${scheduleTimes.join(' / ')}`;
+  if (task.schedule_kind === 'dynamic') return '动态作业未记录下次时间，当前视为立即到期';
+  return '';
+};
 
 const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
   const file = String(entry.source_file || '').trim();
@@ -651,7 +664,7 @@ onUnmounted(() => {
             <div class="runtime-help-doc">
               <h4>分层运行</h4>
               <p>运行内核保存设备连接、当前画面和运行上下文；凡修框架定义 task、guard、tick 和 ctx 协议。</p>
-              <p>调度器负责手动、API、定时等触发来源，并把它们统一提交为 cell。</p>
+              <p>调度器按触发来源分为定时调度器和 AI 调度器；执行方式如单步、到空闲、本作业只是提交 cell 时的运行参数。</p>
               <p>前端只提交明确动作，例如重启内核、中断当前 cell、暂停调度、提交一次 tick，不再把这些语义混在一个开关里。</p>
             </div>
           </el-popover>
@@ -697,27 +710,51 @@ onUnmounted(() => {
               <strong>调度器</strong>
               <span>{{ schedulerLabelText }}</span>
             </div>
-            <div class="runtime-facts">
+            <el-radio-group v-model="schedulerKind" class="scheduler-kind-tabs" size="small">
+              <el-radio-button
+                v-for="option in schedulerKindOptions"
+                :key="option.value"
+                :label="option.value"
+              >
+                {{ option.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <div v-if="schedulerKind === 'timer'" class="runtime-facts">
               <span>自动作业 {{ schedulerJobGroupEnabled ? '启用' : '暂停' }}</span>
               <span>到期 {{ dueTaskCount }}</span>
             </div>
+            <div v-else class="runtime-facts">
+              <span>本次手动提交</span>
+              <span>到期 {{ dueTaskCount }}</span>
+            </div>
             <div class="runtime-actions">
-              <el-radio-group v-model="cellRunMode" size="small">
-                <el-radio-button
-                  v-for="option in cellRunModeOptions"
-                  :key="option.value"
-                  :label="option.value"
-                >
-                  {{ option.label }}
-                </el-radio-button>
-              </el-radio-group>
-              <div class="tick-groups">
-                <el-checkbox v-model="tickGuardEnabled" size="small">守护</el-checkbox>
-                <el-checkbox v-model="tickManualJobEnabled" size="small">手动</el-checkbox>
-                <el-checkbox v-model="tickScheduledJobEnabled" size="small">普通</el-checkbox>
+              <template v-if="schedulerKind === 'ai'">
+                <div class="scheduler-control-row">
+                  <span class="runtime-inline-label">执行方式</span>
+                  <el-radio-group v-model="cellRunMode" size="small">
+                    <el-radio-button
+                      v-for="option in cellRunModeOptions"
+                      :key="option.value"
+                      :label="option.value"
+                    >
+                      {{ option.label }}
+                    </el-radio-button>
+                  </el-radio-group>
+                </div>
+                <div class="scheduler-control-row">
+                  <span class="runtime-inline-label">参与分组</span>
+                  <div class="tick-groups">
+                    <el-checkbox v-model="tickGuardEnabled" size="small">守护</el-checkbox>
+                    <el-checkbox v-model="tickManualJobEnabled" size="small">手动</el-checkbox>
+                    <el-checkbox v-model="tickScheduledJobEnabled" size="small">普通</el-checkbox>
+                  </div>
+                </div>
+                <el-button size="small" :disabled="!tickGroupSelected" :loading="actionLoading === 'scheduler-submit'" @click="submitSchedulerCell">{{ cellSubmitActionText }}</el-button>
+              </template>
+              <div v-else class="scheduler-control-row">
+                <span class="runtime-inline-label">时间规则</span>
+                <el-button size="small" :loading="actionLoading === 'job-group'" @click="toggleJobGroupEnabled">{{ schedulerJobGroupEnabled ? '暂停定时' : '恢复定时' }}</el-button>
               </div>
-              <el-button size="small" :disabled="!tickGroupSelected" :loading="actionLoading === 'scheduler-submit'" @click="submitSchedulerCell">{{ cellSubmitActionText }}</el-button>
-              <el-button size="small" :loading="actionLoading === 'job-group'" @click="toggleJobGroupEnabled">{{ schedulerJobGroupEnabled ? '暂停调度' : '恢复调度' }}</el-button>
             </div>
           </div>
           <div class="runtime-layer">
@@ -1060,6 +1097,24 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.scheduler-kind-tabs {
+  margin-top: 8px;
+}
+
+.scheduler-control-row {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.runtime-inline-label {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .tick-groups {

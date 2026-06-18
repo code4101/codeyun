@@ -47,7 +47,7 @@ export const FALLBACK_AI_APP_DEFINITIONS: AiAppDefinition[] = [
     id: 'ai-git-commit',
     group: '开发工具',
     label: 'AI提交',
-    description: '生成 Git 提交信息，自动 Git 提交和分层归纳提交共用这一组模型配置。',
+    description: '生成 Git 提交信息，GitHub 项目自动提交和分层归纳提交共用这一组模型配置。',
   },
   {
     id: 'codex-diary',

@@ -70,7 +70,7 @@ AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
         "id": AI_APP_GIT_COMMIT,
         "group": "开发工具",
         "label": "AI提交",
-        "description": "生成 Git 提交信息，自动 Git 提交和分层归纳提交共用这一组模型配置。",
+        "description": "生成 Git 提交信息，GitHub 项目自动提交和分层归纳提交共用这一组模型配置。",
     },
     {
         "id": AI_APP_CODEX_DIARY,

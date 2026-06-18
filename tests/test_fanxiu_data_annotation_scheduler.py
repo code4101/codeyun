@@ -335,9 +335,9 @@ def test_data_annotation_scheduler_read_initializes_enabled_daily_next_time(tmp_
     assistant = next(item for item in tasks if item["id"] == "legacy-daily-assistant")
 
     assert signup["enabled"] is True
-    assert signup["next_time"] == "2026-06-03 05:00:00"
+    assert signup["next_time"] == "2026-06-02 05:00:00"
     assert assistant["enabled"] is True
-    assert assistant["next_time"] == "2026-06-02 12:00:00"
+    assert assistant["next_time"] == "2026-06-02 00:00:00"
 
 
 def test_data_annotation_scheduler_read_repairs_enabled_failed_task_retry_time(tmp_path, monkeypatch):
@@ -1913,7 +1913,7 @@ def _run_registered_daily_yihuo(runner, ctx, stop_event, payload=None):
 
 def _wait_click_runtime(image):
     runner = create_fanxiu_runtime_runner()
-    ctx = {"images": {int(image["id"]): image}, "entry": object()}
+    ctx = {"images": {int(image["id"]): image}, "entry": type("Entry", (), {"mode": "local"})()}
     return runner, runtime_runner_core.FanxiuRuntime(runner, ctx, stop_event=fanxiu.threading.Event())
 
 
@@ -2083,7 +2083,7 @@ def test_fanxiu_runtime_wait_click_nested_shape_uses_parent_match_region(monkeyp
     assert captured["match_result"]["resolved_box"]["x"] == 300
 
 
-def test_fanxiu_runtime_wait_click_ocr_floating_child_clicks_text_fragment(monkeypatch):
+def test_fanxiu_runtime_wait_click_ocr_floating_child_uses_shape_center(monkeypatch):
     image = {
         "id": 228,
         "title": "修仙传游历",
@@ -2112,7 +2112,7 @@ def test_fanxiu_runtime_wait_click_ocr_floating_child_clicks_text_fragment(monke
     }
     runner, runtime = _wait_click_runtime(image)
     captured: dict[str, object] = {}
-    clicks: list[tuple[float, float]] = []
+    clicks: list[dict[str, object]] = []
 
     def fake_match(ctx, img, shape, frame, **kwargs):
         captured["match_shape"] = dict(shape)
@@ -2123,14 +2123,16 @@ def test_fanxiu_runtime_wait_click_ocr_floating_child_clicks_text_fragment(monke
 
     monkeypatch.setattr(runner, "_screencap", lambda ctx: "frame")
     monkeypatch.setattr(runner, "_run_match", fake_match)
-    monkeypatch.setattr(runner, "_click_frame_point", lambda ctx, img, x, y: clicks.append((x, y)))
+    monkeypatch.setattr(runtime_runner_core, "_click_game_window2_service", lambda payload: clicks.append(dict(payload)))
 
     _drain_generator(runtime.wait_click(228, "[菜单/游历]"))
 
     assert captured["match_shape"]["title"] == "游历"
     assert captured["match_shape"]["x"] == pytest.approx(0.34)
     assert captured["match_shape"]["w"] == pytest.approx(0.6)
-    assert clicks == [(pytest.approx(560.0), pytest.approx(1492.5))]
+    assert clicks
+    assert clicks[-1]["x"] == pytest.approx(531.0)
+    assert clicks[-1]["y"] == pytest.approx(1488.0)
 
 
 def test_goto_view_route_candidate_ranking_prefers_score_clarity_then_shortest(monkeypatch):
@@ -2177,6 +2179,8 @@ def test_data_annotation_scheduler_repair_corrects_wrong_multi_clock_future_next
         "enabled": True,
         "next_time": "2026-06-14 05:00:00",
         "schedule_times": ["05:00", "00:00"],
+        "last_run_at": "2026-06-13 18:00:00",
+        "last_result": "success",
         "retry_after": None,
         "payload": {"__scheduler_definition_task_type": "daily_youli"},
     }]
@@ -2192,6 +2196,63 @@ def test_data_annotation_scheduler_repair_corrects_wrong_multi_clock_future_next
     youli = next(item for item in tasks if item["id"] == "legacy-daily-youli")
     assert changed is True
     assert youli["next_time"] == "2026-06-14 00:00:00"
+
+
+def test_data_annotation_scheduler_repair_keeps_unfinished_daily_task_due_today():
+    raw = [{
+        "id": "legacy-daily-lingta",
+        "task_type": "daily_lingta",
+        "label": "日常_灵塔",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "next_time": "2026-06-19 05:00:00",
+        "schedule_times": ["05:00"],
+        "last_run_at": None,
+        "last_result": "",
+        "retry_after": None,
+        "payload": {"__scheduler_definition_task_type": "daily_lingta"},
+    }]
+
+    tasks, changed = fanxiu.repair_data_annotation_scheduler_tasks(
+        raw,
+        fanxiu._default_data_annotation_scheduler_tasks(),
+        {},
+        task_supported=lambda task: True,
+        now=datetime(2026, 6, 18, 15, 0, 0),
+    )
+
+    lingta = next(item for item in tasks if item["id"] == "legacy-daily-lingta")
+    assert changed is True
+    assert lingta["next_time"] == "2026-06-18 05:00:00"
+
+
+def test_data_annotation_scheduler_repair_keeps_successful_daily_task_on_next_day():
+    raw = [{
+        "id": "legacy-daily-signup",
+        "task_type": "daily_signup",
+        "label": "日常_报名",
+        "source": "data_annotation_runtime",
+        "schedule_kind": "daily",
+        "enabled": True,
+        "next_time": "2026-06-19 05:00:00",
+        "schedule_times": ["05:00"],
+        "last_run_at": "2026-06-18 14:32:15",
+        "last_result": "success",
+        "retry_after": None,
+        "payload": {"__scheduler_definition_task_type": "daily_signup"},
+    }]
+
+    tasks, changed = fanxiu.repair_data_annotation_scheduler_tasks(
+        raw,
+        fanxiu._default_data_annotation_scheduler_tasks(),
+        {},
+        task_supported=lambda task: True,
+        now=datetime(2026, 6, 18, 15, 0, 0),
+    )
+
+    signup = next(item for item in tasks if item["id"] == "legacy-daily-signup")
+    assert signup["next_time"] == "2026-06-19 05:00:00"
 
 
 def test_data_annotation_scheduler_repair_keeps_due_multi_clock_task_due():
@@ -4720,8 +4781,7 @@ def test_daily_lingzu_outer_world_confirms_leave_dialog(monkeypatch):
 
         def wait_action_settle(self, seconds=1.0):
             actions.append(("settle", seconds))
-            if False:
-                yield None
+            yield None
             return "success"
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
@@ -5106,6 +5166,7 @@ def test_data_annotation_manual_job_submit_is_queue_mediator(tmp_path, monkeypat
 
 def test_data_annotation_run_now_gift_code_executes_through_runtime_thread(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
+    runtime_control.set_scheduler_job_group_enabled(False, scheduler_settings_path=_scheduler_settings_path(tmp_path))
     asset_tree_path = tmp_path / "entry.json"
     asset_tree_path.write_text(json.dumps([
         {"type": "image", "id": "49", "title": "#49 设置页", "filename": "0049.png", "shapes": []},
@@ -5228,6 +5289,10 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     disabled_signup = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-signup").copy()
     disabled_signup["enabled"] = False
+    disabled_mail = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup").copy()
+    disabled_mail["enabled"] = False
+    disabled_assistant = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-assistant").copy()
+    disabled_assistant["enabled"] = False
     fanxiu._write_data_annotation_scheduler_tasks([
         {
             "id": "legacy-daily-mozu",
@@ -5270,6 +5335,8 @@ def test_data_annotation_run_due_endpoint_skips_legacy_placeholders(tmp_path, mo
             "checkpoint": None,
         },
         disabled_signup,
+        disabled_mail,
+        disabled_assistant,
     ])
     response = fanxiu.run_due_fanxiu_data_annotation_scheduler_tasks(
         fanxiu.FanxiuDataAnnotationSchedulerRunDueRequest(entry_id="entry"),
@@ -5286,6 +5353,10 @@ def test_data_annotation_run_due_endpoint_reports_no_executable_due_tasks(tmp_pa
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     disabled_signup = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-signup").copy()
     disabled_signup["enabled"] = False
+    disabled_mail = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "mail-cleanup").copy()
+    disabled_mail["enabled"] = False
+    disabled_assistant = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-assistant").copy()
+    disabled_assistant["enabled"] = False
     fanxiu._write_data_annotation_scheduler_tasks([
         {
             "id": "legacy-daily-mozu",
@@ -5308,6 +5379,8 @@ def test_data_annotation_run_due_endpoint_reports_no_executable_due_tasks(tmp_pa
             "checkpoint": None,
         },
         disabled_signup,
+        disabled_mail,
+        disabled_assistant,
     ])
 
     response = fanxiu.run_due_fanxiu_data_annotation_scheduler_tasks(
@@ -6757,8 +6830,7 @@ def test_daily_assistant_shenwuyuan_execute_skips_fast_list_probe(tmp_path, monk
     class FakeRuntime:
         def wait_action_settle(self, seconds=1.0):
             actions.append(("settle", seconds))
-            if False:
-                yield None
+            yield None
             return "success"
 
         def current_scene(self, view_ids=None, **kwargs):
@@ -6770,10 +6842,10 @@ def test_daily_assistant_shenwuyuan_execute_skips_fast_list_probe(tmp_path, monk
             return "小助手 神物园助手 执行"
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
-    monkeypatch.setattr(runtime_runner_core.time, "monotonic", lambda: 1.0)
 
     gen = runner._wait_daily_assistant_item_result(ctx, fanxiu.threading.Event(), {}, "神物园助手", "执行")
     assert next(gen) is None
+    gen.close()
 
     assert actions == [
         ("current_scene", (214, 213, 210, 208, 209, 205, 204, 69, 34), {"update": True}),
