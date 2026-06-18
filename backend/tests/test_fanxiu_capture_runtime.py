@@ -8,6 +8,7 @@ from backend.core.fanxiu.runtime.capture_runtime import (
     DEFAULT_FANXIU_DEVICE_ID,
     FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
     FanxiuCaptureRuntimeService,
+    ensure_fanxiu_capture_runtime_backstop,
 )
 
 
@@ -69,6 +70,62 @@ def test_capture_runtime_watchdog_loop_checks_before_wait(monkeypatch):
     service._watchdog_loop()
 
     assert calls == 1
+
+
+def test_capture_runtime_backstop_starts_watchdog_and_ensures_when_game_running(monkeypatch):
+    from backend.core.fanxiu.runtime import capture_runtime
+
+    service = FanxiuCaptureRuntimeService()
+    calls: list[str] = []
+
+    class FakeWatchdogThread:
+        def is_alive(self):
+            return True
+
+    def fake_start_watchdog(*, interval_seconds=60):
+        del interval_seconds
+        service._watchdog_thread = FakeWatchdogThread()
+        return service.status()
+
+    monkeypatch.setattr(capture_runtime, "fanxiu_capture_runtime_service", service)
+    monkeypatch.setattr(service, "start_watchdog", fake_start_watchdog)
+    monkeypatch.setattr(service, "probe_game_running", lambda: True)
+    monkeypatch.setattr(service, "_ensure_supervisor_locked", lambda: calls.append("supervisor"))
+
+    result = ensure_fanxiu_capture_runtime_backstop("test-backstop")
+
+    assert result["ensured"] is True
+    assert "test-backstop" in result["status"]["active_reasons"]
+    assert result["status"]["watchdog_running"] is True
+    assert calls == ["supervisor"]
+
+
+def test_capture_runtime_backstop_skips_when_game_not_running(monkeypatch):
+    from backend.core.fanxiu.runtime import capture_runtime
+
+    service = FanxiuCaptureRuntimeService()
+    calls: list[str] = []
+
+    class FakeWatchdogThread:
+        def is_alive(self):
+            return True
+
+    def fake_start_watchdog(*, interval_seconds=60):
+        del interval_seconds
+        service._watchdog_thread = FakeWatchdogThread()
+        return service.status()
+
+    monkeypatch.setattr(capture_runtime, "fanxiu_capture_runtime_service", service)
+    monkeypatch.setattr(service, "start_watchdog", fake_start_watchdog)
+    monkeypatch.setattr(service, "probe_game_running", lambda: False)
+    monkeypatch.setattr(service, "_ensure_supervisor_locked", lambda: calls.append("supervisor"))
+
+    result = ensure_fanxiu_capture_runtime_backstop("test-backstop")
+
+    assert result["ensured"] is False
+    assert result["skip_reason"] == "game_not_running"
+    assert "test-backstop" not in result["status"]["active_reasons"]
+    assert calls == []
 
 
 def test_capture_runtime_prefers_connected_bridge_device(monkeypatch):

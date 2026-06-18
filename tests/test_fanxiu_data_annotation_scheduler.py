@@ -6782,3 +6782,12 @@ def test_daily_assistant_shenwuyuan_execute_skips_fast_list_probe(tmp_path, monk
     ]
 
 
+def test_daily_assistant_result_scene_accepts_generic_continue_reward_text():
+    runner = create_fanxiu_runtime_runner()
+
+    assert runner._daily_assistant_result_scene_id(
+        None,
+        "【仙花祈愿】活动积分增加454点 恭喜获得神·刘备：获得积分效率加成 点击屏幕继续",
+    ) == 205
+
+

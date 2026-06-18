@@ -1859,6 +1859,13 @@ class DailyChallengeTaskMixin:
             return 209
         if "神物园" in compact and ("获得神物园" in compact or "神物园产出效率" in compact or "神物园效率加成" in compact):
             return 205
+        if "点击屏幕继续" in compact and (
+            "恭喜获得" in compact
+            or "活动积分增加" in compact
+            or "获得积分效率加成" in compact
+            or "获得额外" in compact
+        ):
+            return 205
         if "灵力" in compact and "气血" in compact and ("+" in compact or "＋" in compact):
             return 205
         return None

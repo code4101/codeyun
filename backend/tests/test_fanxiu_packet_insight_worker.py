@@ -15,6 +15,11 @@ def _no_host_commit_pressure(monkeypatch, request):
     if request.node.name == "test_packet_decode_pressure_thresholds_match_ocr_guard":
         return
     monkeypatch.setattr(worker, "_host_commit_pressure_for_packet_decode", lambda: {"skip": False})
+    monkeypatch.setattr(
+        worker,
+        "_ensure_capture_runtime_from_packet_worker",
+        lambda **_kwargs: {"ok": True, "ensured": False, "reason": "test_disabled"},
+    )
 
 
 def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypatch, tmp_path):
@@ -168,6 +173,27 @@ def test_realtime_scan_uses_cursor_and_small_batch(monkeypatch):
     assert calls[0]["limit"] == 2
     assert result["decoded_record_db_sync"]["skipped"] is True
     assert result["activity_packet_sync"]["skipped"] is True
+    assert result["capture_runtime_backstop"]["reason"] == "test_disabled"
+
+
+def test_realtime_scan_runs_capture_runtime_backstop(monkeypatch):
+    service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(worker, "sync_fanxiu_live_capture_backlog", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(worker, "sync_fanxiu_mail_business_backlog", lambda **_kwargs: {"ok": True})
+
+    def fake_backstop(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "ensured": True, "reason": "packet-worker-backstop"}
+
+    monkeypatch.setattr(worker, "_ensure_capture_runtime_from_packet_worker", fake_backstop)
+
+    result = service.scan_once()
+
+    assert calls == [{}]
+    assert result["capture_runtime_backstop"]["ensured"] is True
+    assert result["capture_runtime_backstop"]["reason"] == "packet-worker-backstop"
 
 
 def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatch, tmp_path):

@@ -26,6 +26,11 @@ from backend.core.fanxiu.packet.tcp_flow import (
     resolve_fanxiu_tcp_live_capture_dir,
     resolve_fanxiu_tcp_store_root,
 )
+from backend.core.fanxiu.runtime.capture_runtime import (
+    FANXIU_CAPTURE_RUNTIME_PACKET_WORKER_REASON,
+    ensure_fanxiu_capture_runtime_backstop,
+    latest_fanxiu_live_capture_summary,
+)
 
 
 DEFAULT_SCAN_INTERVAL_SECONDS = 15.0
@@ -37,6 +42,7 @@ DEFAULT_MAINTENANCE_DECODE_LIMIT = 32
 DEFAULT_DECODE_MAX_STREAMS = 4
 DEFAULT_LIVE_CAPTURE_SCAN_MULTIPLIER = 40
 DEFAULT_DECODE_TIMEOUT_SECONDS = 30.0
+DEFAULT_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS = 5 * 60.0
 MIN_PCAP_BYTES = 24
 PACKET_INSIGHT_WORKER_SCHEMA_VERSION = 3
 PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV = "CODEYUN_PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE"
@@ -76,9 +82,14 @@ def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
     if os.getenv(PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
         return {"skip": False}
     try:
-        from backend.core.runtime.ocr_service import _windows_commit_snapshot
+        try:
+            from backend.core.runtime.ocr_service import _windows_commit_snapshot
 
-        commit = _windows_commit_snapshot()
+            commit = _windows_commit_snapshot()
+        except (ImportError, AttributeError):
+            from backend.core.fanxiu.runtime.mumu_control import _collect_windows_commit_snapshot
+
+            commit = _collect_windows_commit_snapshot()
     except Exception:
         return {"skip": False}
     if not commit:
@@ -91,6 +102,37 @@ def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
         "reason": "host_commit_pressure",
         "commit": commit,
     }
+
+
+def _capture_backstop_max_pcap_age_seconds() -> float:
+    try:
+        return max(
+            60.0,
+            float(os.getenv("FX_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS") or DEFAULT_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS),
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_CAPTURE_BACKSTOP_MAX_PCAP_AGE_SECONDS
+
+
+def _ensure_capture_runtime_from_packet_worker(*, data_dir: str | Path | None = None) -> dict[str, Any]:
+    summary = latest_fanxiu_live_capture_summary(data_dir=data_dir)
+    max_age = _capture_backstop_max_pcap_age_seconds()
+    latest_age = summary.get("latest_age_seconds")
+    should_ensure = latest_age is None or float(latest_age) > max_age
+    if not should_ensure:
+        return {
+            "ok": True,
+            "ensured": False,
+            "reason": "recent_live_capture_present",
+            "max_age_seconds": max_age,
+            "live_capture": summary,
+        }
+    result = ensure_fanxiu_capture_runtime_backstop(
+        FANXIU_CAPTURE_RUNTIME_PACKET_WORKER_REASON,
+    )
+    result["max_age_seconds"] = max_age
+    result["live_capture"] = summary
+    return result
 
 
 def _worker_state_path(data_dir: str | Path | None = None) -> Path:
@@ -1357,12 +1399,14 @@ class FanxiuPacketInsightWorker:
             }
 
     def scan_once(self) -> dict[str, Any]:
+        capture_backstop = _ensure_capture_runtime_from_packet_worker()
         result = sync_fanxiu_live_capture_backlog(
             stable_seconds=self.stable_seconds,
             use_cursor=True,
             newest_first=True,
             limit=2,
         )
+        result["capture_runtime_backstop"] = capture_backstop
         result["mail_business_backlog_sync"] = sync_fanxiu_mail_business_backlog(
             latest_limit=16,
             historical_limit=0,

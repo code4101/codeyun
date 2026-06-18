@@ -37,11 +37,6 @@ from backend.core.maintenance.idle_maintenance import (
     IDLE_MAINTENANCE_TASK_KEY,
     enqueue_idle_maintenance,
 )
-from backend.core.ai.ui_learning import (
-    UI_LEARNING_DAILY_RUN_TIME,
-    UI_LEARNING_TASK_KEY,
-    enqueue_ui_design_learning,
-)
 from backend.core.settings import get_settings
 from backend.core.notes.weekly_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
@@ -79,7 +74,6 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     HK_CONNECT_MOMENTUM_REVIEW_TASK_KEY,
     WECHAT_ARCHIVE_INCREMENTAL_SYNC_TASK_KEY,
     FANXIU_SLIMMING_TASK_KEY,
-    UI_LEARNING_TASK_KEY,
 }
 
 
@@ -185,8 +179,6 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         )
     if task_key == "note_metadata_feedback_optimization":
         return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
-    if task_key == UI_LEARNING_TASK_KEY:
-        return _job_schedule_policy({"type": "daily", "time": UI_LEARNING_DAILY_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
         return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
     if task_key == RUANYF_WEEKLY_TASK_NAME:
@@ -578,17 +570,6 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="失败后 10 分钟重试",
         action=_enqueue_note_metadata_feedback,
         manual_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
-    ),
-    BackgroundTaskSpec(
-        key=UI_LEARNING_TASK_KEY,
-        title="UI 自主学习",
-        category="AI",
-        description="按时间增量读取 Codex 原始会话中的前端/UI 纠正样本，生成前端 UI skill 修改建议；只产出报告和人工审核 patch，不直接修改 skill。",
-        schedule_label=f"每天 {UI_LEARNING_DAILY_RUN_TIME}",
-        retry_label="失败后 10 分钟重试",
-        action=enqueue_ui_design_learning,
-        manual_warning="会读取本机 Codex 原始会话缓存并生成学习报告；默认不消费自身分析产物，也不会自动写入 skill。",
-        default_visible=False,
     ),
     BackgroundTaskSpec(
         key="codex_diary_yesterday_import",

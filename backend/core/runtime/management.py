@@ -60,6 +60,8 @@ from backend.core.attendance.behavior_tree_service import (
 )
 from backend.core.fanxiu.runtime.capture_runtime import (
     FANXIU_CAPTURE_RUNTIME_SERVICE_KEY,
+    FANXIU_CAPTURE_RUNTIME_BEHAVIOR_TREE_REASON,
+    ensure_fanxiu_capture_runtime_backstop,
     fanxiu_capture_runtime_service,
 )
 from backend.core.fanxiu.packet.insight_worker import fanxiu_packet_insight_worker
@@ -799,6 +801,12 @@ def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, 
     entry = _resolve_data_annotation_runtime_entry(session)
     ensure_fanxiu_behavior_tree_service(entry=entry, entry_id=entry.entry_id)
     result: dict[str, Any] = {"status": "started", "service": _get_data_annotation_behavior_tree_status()}
+    try:
+        result["capture_runtime"] = ensure_fanxiu_capture_runtime_backstop(
+            FANXIU_CAPTURE_RUNTIME_BEHAVIOR_TREE_REASON,
+        )
+    except Exception as exc:
+        result["capture_runtime"] = {"ok": False, "ensured": False, "error": str(exc)}
     if _fanxiu_doctor_watch_autostart_enabled():
         try:
             result["doctor_watch"] = ensure_doctor_watch_background()
