@@ -109,6 +109,36 @@ def test_codex_cli_command_resolution_uses_node_script_for_cmd(monkeypatch, tmp_
     assert command == [str(node), str(script), "-p", "myprofile", "--version"]
 
 
+def test_codex_cli_command_resolution_prefers_native_windows_exe(monkeypatch, tmp_path):
+    shim = tmp_path / "node-bin" / "codex.cmd"
+    script = shim.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    native = (
+        shim.parent
+        / "node_modules"
+        / "@openai"
+        / "codex"
+        / "node_modules"
+        / "@openai"
+        / "codex-win32-x64"
+        / "vendor"
+        / "x86_64-pc-windows-msvc"
+        / "codex"
+        / "codex.exe"
+    )
+    script.parent.mkdir(parents=True)
+    native.parent.mkdir(parents=True)
+    shim.write_text("@echo off\nnode codex.js %*\n", encoding="utf-8")
+    script.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    native.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("backend.core.ai.chat._get_preferred_codex_command_candidates", lambda: [shim])
+    monkeypatch.setattr("backend.core.ai.chat.os.name", "nt")
+
+    command = _resolve_command_path(["codex", "--version"])
+
+    assert command == [str(native), "--version"]
+
+
 def test_summarize_process_output_skips_trailing_node_version():
     detail = _summarize_process_output(
         "Error: Cannot find module 'missing-codex.js'\nNode.js v24.14.0\n"

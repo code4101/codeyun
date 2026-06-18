@@ -1725,6 +1725,33 @@ class DailyChallengeTaskMixin:
         scene_id, score, frame = runtime.current_scene([204, 205, 208, 69, 34], update=True)
         lines = runtime.ocr_lines(frame)
         text = runtime.ocr_text(frame)
+        result_scene_id = self._daily_assistant_result_scene_id(scene_id, text)
+        if result_scene_id is not None:
+            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+            result_image = images.get(result_scene_id)
+            if not isinstance(result_image, dict):
+                raise RuntimeError(f"日常_助手：准备点击「{shape_title}」前停在 #{result_scene_id} 结果页，但缺少资产标注")
+            continue_shape = self._find_shape(result_image, "点击屏幕继续")
+            if continue_shape is None:
+                raise RuntimeError(f"日常_助手：准备点击「{shape_title}」前停在 #{result_scene_id} 结果页，但缺少「点击屏幕继续」标注")
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"日常_助手：先关闭上一条结果页，再点击「{shape_title}」",
+                    phase="daily_assistant_item_preclose_result",
+                    current_scene=result_scene_id,
+                )
+                self._log_locked("action", f"日常_助手：准备点击「{shape_title}」前先点击 #{result_scene_id}「点击屏幕继续」")
+            yield from runtime.wait_click(result_scene_id, "点击屏幕继续")
+            yield from self._wait_daily_assistant_list_state(
+                ctx,
+                stop_event,
+                timeout=float(payload.get("assistant_item_detail_return_timeout") or payload.get("assistant_daoyi_detail_return_timeout") or 10.0),
+                label="日常_助手：等待上一条结果页返回小助手清单",
+            )
+            scene_id, score, frame = runtime.current_scene([204, 205, 208, 69, 34], update=True)
+            lines = runtime.ocr_lines(frame)
+            text = runtime.ocr_text(frame)
         if scene_id != 204 and not self._daily_assistant_text_is_list(text):
             raise RuntimeError(
                 f"日常_助手：准备点击「{shape_title}」前已不在小助手清单，"
@@ -2004,6 +2031,8 @@ class DailyChallengeTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         pending_scene: tuple[int | None, float, str] | None = None
         fast_list_probe = str(payload.get("assistant_fast_list_probe", "1")).strip().lower() not in {"0", "false", "no", "off"}
+        if "神物园" in str(assistant_label or "") and str(action_label or "") == "执行":
+            fast_list_probe = False
         if fast_list_probe and not capture_feedback:
             yield from runtime.wait_action_settle(float(payload.get("assistant_fast_list_probe_settle_seconds") or 1.0))
             scene_id, score, frame = runtime.current_scene([209, 205], update=True)
