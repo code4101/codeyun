@@ -147,7 +147,8 @@ def test_maintenance_once_runs_bounded_mail_backlog_without_full_historical_sync
     service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
     result = service.maintenance_once()
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert result["capture_runtime_backstop"]["reason"] == "test_disabled"
     assert calls
     assert calls[0]["include_historical_business_backlog"] is False
     assert calls[0]["include_mail_business_backlog"] is True
@@ -194,6 +195,35 @@ def test_realtime_scan_runs_capture_runtime_backstop(monkeypatch):
     assert calls == [{}]
     assert result["capture_runtime_backstop"]["ensured"] is True
     assert result["capture_runtime_backstop"]["reason"] == "packet-worker-backstop"
+
+
+def test_worker_start_writes_capture_runtime_backstop_state(monkeypatch, tmp_path):
+    state_path = tmp_path / "live_capture_worker_state.json"
+    monkeypatch.setattr(worker, "_worker_state_path", lambda: state_path)
+    monkeypatch.setattr(
+        worker,
+        "_ensure_capture_runtime_from_packet_worker",
+        lambda: {"ok": True, "ensured": True, "reason": "packet-worker-backstop"},
+    )
+
+    class FakeThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(worker.threading, "Thread", FakeThread)
+
+    service = worker.FanxiuPacketInsightWorker(stable_seconds=1)
+    service.start()
+
+    payload = worker._load_json(state_path, {})
+    assert payload["mode"] == "packet_worker_startup"
+    assert payload["capture_runtime_backstop"]["reason"] == "packet-worker-backstop"
 
 
 def test_live_capture_backlog_skips_decode_under_host_commit_pressure(monkeypatch, tmp_path):

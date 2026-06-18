@@ -257,6 +257,31 @@ def test_data_annotation_scheduler_put_preserves_runtime_fields(tmp_path, monkey
     assert persisted_signup["next_time"] == "2026-06-07 05:00:00"
 
 
+def test_data_annotation_scheduler_partial_update_preserves_other_enabled_tasks(tmp_path, monkeypatch):
+    path = _scheduler_state_path(tmp_path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: path)
+    monkeypatch.setattr(fanxiu, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    tasks = []
+    for task_id in ("xianfu-learn-skill", "xianfu-visit-partner"):
+        item = next(item for item in fanxiu._default_data_annotation_scheduler_tasks() if item["id"] == task_id).copy()
+        item["enabled"] = True
+        tasks.append(item)
+    fanxiu._write_data_annotation_scheduler_tasks(tasks)
+
+    update = dict(tasks[0])
+    update["enabled"] = False
+    result = runtime_control.update_scheduler_tasks(
+        [update],
+        scheduler_state_path=path,
+        world_facts_path=tmp_path / "world_facts.json",
+        now=datetime(2026, 6, 18, 15, 20, 0),
+    )
+
+    by_id = {item["id"]: item for item in result}
+    assert by_id["xianfu-learn-skill"]["enabled"] is False
+    assert by_id["xianfu-visit-partner"]["enabled"] is True
+
+
 def test_data_annotation_scheduler_read_migrates_supported_legacy_tasks(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     fanxiu._write_data_annotation_scheduler_tasks([

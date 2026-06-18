@@ -132,7 +132,9 @@ class DailyChallengeTaskMixin:
     def _daily_dungeon_purchase_remaining_count(self, text: str) -> int | None:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         normalized = normalized.replace("：", ":")
-        match = re.search(r"剩余限购次数[:：]?\s*([0-9Oo])", normalized)
+        match = re.search(r"剩余\s*限购\s*次数\s*[:：]?\s*([0-9Oo])", normalized)
+        if not match:
+            match = re.search(r"剩余.{0,4}限购.{0,4}次数\D{0,8}([0-9Oo])", normalized)
         if not match:
             return None
         raw = match.group(1).replace("O", "0").replace("o", "0")
@@ -148,6 +150,7 @@ class DailyChallengeTaskMixin:
             next_time,
             task_type="daily_dungeon",
             label="日常_每日副本",
+            last_result="success",
         )
         self._log("success", f"日常_每日副本：{message}，下次 {next_time}")
         return next_time
@@ -577,6 +580,8 @@ class DailyChallengeTaskMixin:
             return (yield from self._click_daily_shuangxiu_xianyuan_tab(ctx, stop_event, payload))
         if self._daily_shuangxiu_text_is_detail(text):
             return (yield from self._click_daily_shuangxiu_invite(ctx, stop_event, payload))
+        if self._daily_shuangxiu_text_is_book_list(text):
+            return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
         if scene_id == 215:
             return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
         if scene_id != 69:
@@ -625,6 +630,9 @@ class DailyChallengeTaskMixin:
         scene_id = waited_view.id if isinstance(waited_view, View) else waited_view
         if scene_id == 215:
             return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload))
+        frame = runtime.cur_frame(update=True)
+        if self._daily_shuangxiu_text_is_book_list(runtime.ocr_text(frame)):
+            return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
         raise RuntimeError("日常_双修：已点击日常入口，但未进入 #215 双修秘术页")
 
     def _click_daily_shuangxiu_first_book(
@@ -667,6 +675,15 @@ class DailyChallengeTaskMixin:
         normalized = _sanitize_ocr_text(text)
         compact = re.sub(r"\s+", "", normalized)
         return "痴情咒" in compact and "邀请道友" in compact and ("双人神通" in compact or "双人互动" in compact)
+
+    def _daily_shuangxiu_text_is_book_list(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        compact = re.sub(r"\s+", "", normalized)
+        return (
+            "秘术" in compact
+            and "双人" in compact
+            and ("自创功法书" in compact or "合欢" in compact or "痴情咒" in compact)
+        )
 
     def _wait_daily_shuangxiu_detail(
         self,
@@ -2697,7 +2714,10 @@ class DailyChallengeTaskMixin:
         score = 0.0
         max_attempts = max(1, int(payload.get("detail_go_max_attempts") or 2))
         for attempt_index in range(max_attempts):
-            yield from runtime.wait_click(198, "前往")
+            box = self._box(go_shape, image198)
+            x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+            y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+            runtime.click_frame_point(image198, x, y)
             yield from runtime.wait_action_settle(float(payload.get("xianyuan_detail_go_settle_seconds") or 2.0))
             scene_id, score = yield from self._wait_daily_xianyuan_after_detail_go(ctx, stop_event, payload)
             if scene_id == 199:
@@ -3228,7 +3248,11 @@ class DailyChallengeTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：前往战灵长老", phase="daily_lingzu_go_elder", current_scene=184)
                 self._log_locked("action", "日常_灵祖：点击 #184「前往」")
-            yield from action_runtime.wait_click(184, "前往")
+            box = self._box(go_shape, image184)
+            x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+            y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+            action_runtime.click_frame_point(image184, x, y)
+            yield from action_runtime.wait_action_settle(1.0)
             scene_id, _score = yield from action_runtime.wait_view_id(
                 187,
                 timeout=float(payload.get("lingzu_elder_timeout") or 45.0),

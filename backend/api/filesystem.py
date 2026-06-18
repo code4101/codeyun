@@ -2629,6 +2629,281 @@ def _finish_duplicate_analysis_task(
     )
 
 
+def _try_complete_duplicate_analysis_task_from_candidate_cache(
+    task_id: str,
+    target_path: Path,
+    *,
+    query_signature: str,
+    resolved: dict,
+    source: str,
+    recursive: bool,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    rules: tuple[str, ...],
+    sort_mode: str,
+) -> bool:
+    cached_candidates = _find_duplicate_candidate_cache(
+        target_path,
+        source=source,
+        recursive=recursive,
+        filter_rules=filter_rules,
+        min_size=min_size,
+    )
+    if cached_candidates is None:
+        return False
+
+    cache, candidates = cached_candidates
+    _update_duplicate_analysis_task(
+        task_id,
+        stage="cached",
+        message="复用已扫描缓存",
+        source=cache.source,
+        source_detail=f"cache: {cache.source_detail}",
+        scanned_file_count=len(candidates),
+        candidate_file_count=len(candidates),
+    )
+    groups, hash_computed_count = _build_duplicate_groups(
+        candidates,
+        rules=rules,
+        sort_mode=sort_mode,
+    )
+    _finish_duplicate_analysis_task(
+        task_id,
+        query_signature=query_signature,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        groups=groups,
+        scanned_file_count=len(candidates),
+        candidate_file_count=len(candidates),
+        hash_computed_count=hash_computed_count,
+        source=cache.source,
+        source_detail=f"cache: {cache.source_detail}",
+        complete=cache.complete,
+    )
+    return True
+
+
+def _try_complete_duplicate_analysis_task_from_everything(
+    task_id: str,
+    target_path: Path,
+    *,
+    query_signature: str,
+    resolved: dict,
+    recursive: bool,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    rules: tuple[str, ...],
+    sort_mode: str,
+    source: str,
+    scan_limit: int,
+) -> bool:
+    if source not in {"auto", "everything"}:
+        return False
+
+    _update_duplicate_analysis_task(
+        task_id,
+        stage="everything",
+        message="正在调用 Everything",
+        source="everything",
+        source_detail="Everything ES",
+    )
+    everything_result = _load_duplicate_candidates_from_everything(
+        target_path,
+        resolved=resolved,
+        rules=rules,
+        filter_rules=filter_rules,
+        min_size=min_size,
+        scan_limit=scan_limit,
+    )
+    if everything_result is None:
+        if source == "everything":
+            raise HTTPException(status_code=501, detail="Everything ES is not available on this device")
+        return False
+
+    candidates, source_detail = everything_result
+    complete = len(candidates) < scan_limit
+    _update_duplicate_analysis_task(
+        task_id,
+        stage="grouping",
+        message="正在整理重复组",
+        scanned_file_count=len(candidates),
+        candidate_file_count=len(candidates),
+        source="everything",
+        source_detail=source_detail,
+        complete=complete,
+    )
+    groups, hash_computed_count = _build_duplicate_groups(
+        candidates,
+        rules=rules,
+        sort_mode=sort_mode,
+    )
+    _store_duplicate_candidate_cache(
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        recursive=recursive,
+        source="everything",
+        source_detail=source_detail,
+        filter_rules=filter_rules,
+        min_size=min_size,
+        candidates=candidates,
+        scanned_file_count=len(candidates),
+        complete=complete,
+    )
+    _finish_duplicate_analysis_task(
+        task_id,
+        query_signature=query_signature,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        groups=groups,
+        scanned_file_count=len(candidates),
+        candidate_file_count=len(candidates),
+        hash_computed_count=hash_computed_count,
+        source="everything",
+        source_detail=source_detail,
+        complete=complete,
+    )
+    return True
+
+
+def _complete_duplicate_analysis_task_from_filesystem(
+    task_id: str,
+    target_path: Path,
+    *,
+    query_signature: str,
+    resolved: dict,
+    recursive: bool,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    rules: tuple[str, ...],
+    sort_mode: str,
+    scan_limit: int,
+) -> None:
+    def publish_partial(
+        *,
+        candidates: list[DuplicateFileCandidate],
+        scanned_file_count: int,
+        message: str,
+        force_groups: bool = False,
+    ) -> None:
+        groups: list[dict] = []
+        hash_computed_count = 0
+        if candidates and "sha256" not in rules and force_groups:
+            groups, hash_computed_count = _build_duplicate_groups(
+                list(candidates),
+                rules=rules,
+                sort_mode=sort_mode,
+            )
+        _update_duplicate_analysis_task(
+            task_id,
+            groups=groups,
+            scanned_file_count=scanned_file_count,
+            candidate_file_count=len(candidates),
+            hash_computed_count=hash_computed_count,
+            source="filesystem",
+            source_detail="filesystem traversal",
+            message=message,
+        )
+
+    candidates: list[DuplicateFileCandidate] = []
+    scanned_file_count = 0
+    complete = True
+    root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+    last_publish_time = time.monotonic()
+    last_publish_candidate_count = 0
+    _update_duplicate_analysis_task(
+        task_id,
+        stage="scanning",
+        message="正在遍历文件",
+        source="filesystem",
+        source_detail="filesystem traversal",
+    )
+    for file_path in _iter_duplicate_candidate_paths(target_path, recursive=recursive):
+        candidate = _build_duplicate_candidate_from_path(file_path, resolved=resolved, root_path=root_path)
+        if candidate is None:
+            continue
+        scanned_file_count += 1
+        if _duplicate_path_allowed(candidate.absolute_path, filter_rules) and candidate.size >= min_size:
+            candidates.append(candidate)
+        if scanned_file_count >= scan_limit:
+            complete = False
+            break
+
+        now_monotonic = time.monotonic()
+        candidate_delta = len(candidates) - last_publish_candidate_count
+        if (
+            now_monotonic - last_publish_time >= DUPLICATE_PARTIAL_GROUP_INTERVAL_SECONDS
+            or candidate_delta >= DUPLICATE_PARTIAL_GROUP_CANDIDATE_STEP
+        ):
+            last_publish_time = now_monotonic
+            last_publish_candidate_count = len(candidates)
+            publish_partial(
+                candidates=candidates,
+                scanned_file_count=scanned_file_count,
+                message="正在遍历文件",
+                force_groups="sha256" not in rules,
+            )
+
+    _update_duplicate_analysis_task(
+        task_id,
+        stage="hashing" if "sha256" in rules else "grouping",
+        message="正在计算哈希" if "sha256" in rules else "正在整理重复组",
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=len(candidates),
+        source="filesystem",
+        source_detail="filesystem traversal",
+        complete=complete,
+    )
+    groups, hash_computed_count = _build_duplicate_groups(
+        candidates,
+        rules=rules,
+        sort_mode=sort_mode,
+    )
+    _store_duplicate_candidate_cache(
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        recursive=recursive,
+        source="filesystem",
+        source_detail="filesystem traversal",
+        filter_rules=filter_rules,
+        min_size=min_size,
+        candidates=candidates,
+        scanned_file_count=scanned_file_count,
+        complete=complete,
+    )
+    _finish_duplicate_analysis_task(
+        task_id,
+        query_signature=query_signature,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        groups=groups,
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=len(candidates),
+        hash_computed_count=hash_computed_count,
+        source="filesystem",
+        source_detail="filesystem traversal",
+        complete=complete,
+    )
+
+
+def _fail_duplicate_analysis_task(task_id: str, exc: Exception) -> None:
+    detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    now = time.time()
+    _update_duplicate_analysis_task(
+        task_id,
+        status="failed",
+        stage="failed",
+        message=str(detail),
+        error=str(detail),
+        finished_at=now,
+        complete=False,
+    )
+
+
 def _run_duplicate_analysis_task(
     task_id: str,
     target_path: Path,
@@ -2652,234 +2927,50 @@ def _run_duplicate_analysis_task(
         started_at=now,
     )
 
-    def publish_partial(
-        *,
-        candidates: list[DuplicateFileCandidate],
-        scanned_file_count: int,
-        source_name: str,
-        source_detail: str,
-        message: str,
-        force_groups: bool = False,
-    ) -> None:
-        groups: list[dict] = []
-        hash_computed_count = 0
-        if candidates and "sha256" not in rules and force_groups:
-            groups, hash_computed_count = _build_duplicate_groups(
-                list(candidates),
-                rules=rules,
-                sort_mode=sort_mode,
-            )
-        _update_duplicate_analysis_task(
-            task_id,
-            groups=groups,
-            scanned_file_count=scanned_file_count,
-            candidate_file_count=len(candidates),
-            hash_computed_count=hash_computed_count,
-            source=source_name,
-            source_detail=source_detail,
-            message=message,
-        )
-
     try:
-        cached_candidates = _find_duplicate_candidate_cache(
+        if _try_complete_duplicate_analysis_task_from_candidate_cache(
+            task_id,
             target_path,
+            query_signature=query_signature,
+            resolved=resolved,
             source=source,
             recursive=recursive,
             filter_rules=filter_rules,
             min_size=min_size,
-        )
-        if cached_candidates is not None:
-            cache, candidates = cached_candidates
-            _update_duplicate_analysis_task(
-                task_id,
-                stage="cached",
-                message="复用已扫描缓存",
-                source=cache.source,
-                source_detail=f"cache: {cache.source_detail}",
-                scanned_file_count=len(candidates),
-                candidate_file_count=len(candidates),
-            )
-            groups, hash_computed_count = _build_duplicate_groups(
-                candidates,
-                rules=rules,
-                sort_mode=sort_mode,
-            )
-            _finish_duplicate_analysis_task(
-                task_id,
-                query_signature=query_signature,
-                root=resolved["root"],
-                path=resolved["path"],
-                absolute_path=resolved["absolute_path"],
-                groups=groups,
-                scanned_file_count=len(candidates),
-                candidate_file_count=len(candidates),
-                hash_computed_count=hash_computed_count,
-                source=cache.source,
-                source_detail=f"cache: {cache.source_detail}",
-                complete=cache.complete,
-            )
-            return
-
-        if source in {"auto", "everything"}:
-            _update_duplicate_analysis_task(
-                task_id,
-                stage="everything",
-                message="正在调用 Everything",
-                source="everything",
-                source_detail="Everything ES",
-            )
-            everything_result = _load_duplicate_candidates_from_everything(
-                target_path,
-                resolved=resolved,
-                rules=rules,
-                filter_rules=filter_rules,
-                min_size=min_size,
-                scan_limit=scan_limit,
-            )
-            if everything_result is not None:
-                candidates, source_detail = everything_result
-                complete = len(candidates) < scan_limit
-                _update_duplicate_analysis_task(
-                    task_id,
-                    stage="grouping",
-                    message="正在整理重复组",
-                    scanned_file_count=len(candidates),
-                    candidate_file_count=len(candidates),
-                    source="everything",
-                    source_detail=source_detail,
-                    complete=complete,
-                )
-                groups, hash_computed_count = _build_duplicate_groups(
-                    candidates,
-                    rules=rules,
-                    sort_mode=sort_mode,
-                )
-                _store_duplicate_candidate_cache(
-                    root=resolved["root"],
-                    path=resolved["path"],
-                    absolute_path=resolved["absolute_path"],
-                    recursive=recursive,
-                    source="everything",
-                    source_detail=source_detail,
-                    filter_rules=filter_rules,
-                    min_size=min_size,
-                    candidates=candidates,
-                    scanned_file_count=len(candidates),
-                    complete=complete,
-                )
-                _finish_duplicate_analysis_task(
-                    task_id,
-                    query_signature=query_signature,
-                    root=resolved["root"],
-                    path=resolved["path"],
-                    absolute_path=resolved["absolute_path"],
-                    groups=groups,
-                    scanned_file_count=len(candidates),
-                    candidate_file_count=len(candidates),
-                    hash_computed_count=hash_computed_count,
-                    source="everything",
-                    source_detail=source_detail,
-                    complete=complete,
-                )
-                return
-            if source == "everything":
-                raise HTTPException(status_code=501, detail="Everything ES is not available on this device")
-
-        candidates: list[DuplicateFileCandidate] = []
-        scanned_file_count = 0
-        complete = True
-        root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
-        last_publish_time = time.monotonic()
-        last_publish_candidate_count = 0
-        _update_duplicate_analysis_task(
-            task_id,
-            stage="scanning",
-            message="正在遍历文件",
-            source="filesystem",
-            source_detail="filesystem traversal",
-        )
-        for file_path in _iter_duplicate_candidate_paths(target_path, recursive=recursive):
-            candidate = _build_duplicate_candidate_from_path(file_path, resolved=resolved, root_path=root_path)
-            if candidate is None:
-                continue
-            scanned_file_count += 1
-            if _duplicate_path_allowed(candidate.absolute_path, filter_rules) and candidate.size >= min_size:
-                candidates.append(candidate)
-            if scanned_file_count >= scan_limit:
-                complete = False
-                break
-
-            now_monotonic = time.monotonic()
-            candidate_delta = len(candidates) - last_publish_candidate_count
-            if (
-                now_monotonic - last_publish_time >= DUPLICATE_PARTIAL_GROUP_INTERVAL_SECONDS
-                or candidate_delta >= DUPLICATE_PARTIAL_GROUP_CANDIDATE_STEP
-            ):
-                last_publish_time = now_monotonic
-                last_publish_candidate_count = len(candidates)
-                publish_partial(
-                    candidates=candidates,
-                    scanned_file_count=scanned_file_count,
-                    source_name="filesystem",
-                    source_detail="filesystem traversal",
-                    message="正在遍历文件",
-                    force_groups="sha256" not in rules,
-                )
-
-        _update_duplicate_analysis_task(
-            task_id,
-            stage="hashing" if "sha256" in rules else "grouping",
-            message="正在计算哈希" if "sha256" in rules else "正在整理重复组",
-            scanned_file_count=scanned_file_count,
-            candidate_file_count=len(candidates),
-            source="filesystem",
-            source_detail="filesystem traversal",
-            complete=complete,
-        )
-        groups, hash_computed_count = _build_duplicate_groups(
-            candidates,
             rules=rules,
             sort_mode=sort_mode,
-        )
-        _store_duplicate_candidate_cache(
-            root=resolved["root"],
-            path=resolved["path"],
-            absolute_path=resolved["absolute_path"],
+        ):
+            return
+
+        if _try_complete_duplicate_analysis_task_from_everything(
+            task_id,
+            target_path,
+            query_signature=query_signature,
+            resolved=resolved,
             recursive=recursive,
-            source="filesystem",
-            source_detail="filesystem traversal",
             filter_rules=filter_rules,
             min_size=min_size,
-            candidates=candidates,
-            scanned_file_count=scanned_file_count,
-            complete=complete,
-        )
-        _finish_duplicate_analysis_task(
+            rules=rules,
+            sort_mode=sort_mode,
+            source=source,
+            scan_limit=scan_limit,
+        ):
+            return
+
+        _complete_duplicate_analysis_task_from_filesystem(
             task_id,
+            target_path,
             query_signature=query_signature,
-            root=resolved["root"],
-            path=resolved["path"],
-            absolute_path=resolved["absolute_path"],
-            groups=groups,
-            scanned_file_count=scanned_file_count,
-            candidate_file_count=len(candidates),
-            hash_computed_count=hash_computed_count,
-            source="filesystem",
-            source_detail="filesystem traversal",
-            complete=complete,
+            resolved=resolved,
+            recursive=recursive,
+            filter_rules=filter_rules,
+            min_size=min_size,
+            rules=rules,
+            sort_mode=sort_mode,
+            scan_limit=scan_limit,
         )
     except Exception as exc:
-        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        now = time.time()
-        _update_duplicate_analysis_task(
-            task_id,
-            status="failed",
-            stage="failed",
-            message=str(detail),
-            error=str(detail),
-            finished_at=now,
-            complete=False,
-        )
+        _fail_duplicate_analysis_task(task_id, exc)
 
 
 def start_duplicate_file_analysis(

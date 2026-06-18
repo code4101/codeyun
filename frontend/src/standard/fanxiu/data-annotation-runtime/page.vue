@@ -331,7 +331,9 @@ const formatRuntimeTime = (value: string) => {
   const isSameDate = date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  if (isSameDate) return time;
+  const targetMinute = date.getHours() * 60 + date.getMinutes();
+  const nowMinute = now.getHours() * 60 + now.getMinutes();
+  if (isSameDate && targetMinute >= nowMinute) return time;
   const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
   if (date.getFullYear() === now.getFullYear()) return monthDayTime;
   return `${date.getFullYear()}-${monthDayTime}`;

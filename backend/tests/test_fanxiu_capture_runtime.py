@@ -8,6 +8,7 @@ from backend.core.fanxiu.runtime.capture_runtime import (
     DEFAULT_FANXIU_DEVICE_ID,
     FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON,
     FanxiuCaptureRuntimeService,
+    _hidden_process_kwargs,
     ensure_fanxiu_capture_runtime_backstop,
 )
 
@@ -19,6 +20,10 @@ def test_capture_runtime_watchdog_enabled_by_default(monkeypatch):
     monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
 
     assert _fanxiu_capture_runtime_service_enabled() is True
+
+
+def test_hidden_process_kwargs_is_mapping():
+    assert isinstance(_hidden_process_kwargs(), dict)
 
 
 def test_capture_runtime_watchdog_can_be_disabled(monkeypatch):

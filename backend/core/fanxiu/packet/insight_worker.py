@@ -1356,6 +1356,17 @@ class FanxiuPacketInsightWorker:
         with self._lock:
             self._stop_event.clear()
             self._maintenance_stop_event.clear()
+            try:
+                startup_backstop = _ensure_capture_runtime_from_packet_worker()
+            except Exception as exc:
+                startup_backstop = {"ok": False, "ensured": False, "error": str(exc)}
+            self._last_realtime_result = {
+                "ok": bool(startup_backstop.get("ok", True)),
+                "updated_at": _now_text(),
+                "mode": "packet_worker_startup",
+                "capture_runtime_backstop": startup_backstop,
+            }
+            _write_json(_worker_state_path(), self._last_realtime_result)
             if not (self._thread and self._thread.is_alive()):
                 self._thread = threading.Thread(target=self._run_loop, name="fanxiu-packet-realtime-worker", daemon=True)
                 self._thread.start()
@@ -1426,11 +1437,16 @@ class FanxiuPacketInsightWorker:
         return result
 
     def maintenance_once(self) -> dict[str, Any]:
+        try:
+            capture_backstop = _ensure_capture_runtime_from_packet_worker()
+        except Exception as exc:
+            capture_backstop = {"ok": False, "ensured": False, "error": str(exc)}
         result = sync_fanxiu_capture_maintenance_backlog(
             stable_seconds=self.stable_seconds,
             include_historical_business_backlog=False,
             include_mail_business_backlog=True,
         )
+        result["capture_runtime_backstop"] = capture_backstop
         with self._lock:
             self._last_maintenance_result = result
         return result
