@@ -1394,63 +1394,156 @@ def run_market_intraday_persist_snapshot_job(
     include_market_kline: bool = True,
     limit: int | None = 300,
     day_count: int = 5,
+    max_trade_days: int = 20,
+    max_fetch_rounds: int = 4,
 ) -> dict:
     targets = _collect_market_intraday_persist_targets(
         include_market_kline=include_market_kline,
         limit=limit,
     )
     target_trade_date = dt.date.today().isoformat()
+    normalized_day_count = max(1, min(int(day_count or 1), 5))
+    normalized_max_trade_days = max(1, min(int(max_trade_days or 1), 120))
+    normalized_max_fetch_rounds = max(1, min(int(max_fetch_rounds or 1), 24))
     items: list[dict] = []
     for target in targets:
         market_code, normalized_symbol = resolve_akshare_market_symbol(
             format_market_symbol(target["market"], target["symbol"])
         )
-        latest_trade_date = read_latest_persisted_history_date(
+        coverage = _read_market_intraday_coverage(
             market=market_code,
             symbol=normalized_symbol,
+            period="1",
+            max_trade_days=normalized_max_trade_days,
         )
+        latest_trade_date = coverage["latest_daily_date"]
+        missing_dates = list(coverage["missing_dates"])
         item = {
             "market": market_code,
             "symbol": normalized_symbol,
             "name": target["name"],
             "latest_daily_date": latest_trade_date,
+            "latest_intraday_date": coverage["latest_intraday_date"],
             "target_trade_date": target_trade_date,
-            "status": "skipped",
+            "status": "complete" if coverage["is_complete"] else "skipped",
             "rows": 0,
             "trade_dates": [],
+            "daily_dates_checked": coverage["daily_dates"],
+            "existing_intraday_dates": coverage["intraday_dates"],
+            "missing_dates": missing_dates,
+            "remaining_missing_dates": missing_dates,
             "error": "",
         }
+        if coverage["is_complete"]:
+            items.append(item)
+            continue
+
+        fetch_dates = missing_dates or ([latest_trade_date] if latest_trade_date else [target_trade_date])
+        persisted_dates: set[str] = set()
+        fetch_errors: list[str] = []
         try:
-            intraday = fetch_akshare_etf_intraday(
-                market=market_code,
-                symbol=normalized_symbol,
-                name=target["name"],
-                trade_date=target_trade_date,
-                period="1",
-                day_count=day_count,
-            )
-            if intraday.rows:
+            remaining_dates = list(fetch_dates)
+            for _round in range(normalized_max_fetch_rounds):
+                if not remaining_dates:
+                    break
+                fetch_date = remaining_dates[0]
+                intraday = fetch_akshare_etf_intraday(
+                    market=market_code,
+                    symbol=normalized_symbol,
+                    name=target["name"],
+                    trade_date=fetch_date,
+                    period="1",
+                    day_count=normalized_day_count,
+                )
+                if not intraday.rows:
+                    fetch_errors.append(f"{fetch_date}: 数据源未返回分时数据")
+                    remaining_dates = remaining_dates[1:]
+                    continue
                 persist_akshare_intraday(intraday)
-                trade_dates = sorted({row.time[:10] for row in intraday.rows if row.time})
+                trade_dates = sorted({akshare_date_to_iso(row.time[:10]) for row in intraday.rows if row.time})
+                persisted_dates.update(date for date in trade_dates if date)
+                item["rows"] += len(intraday.rows)
+                remaining_dates = [date for date in remaining_dates if date not in persisted_dates]
+
+            item["trade_dates"] = sorted(persisted_dates)
+            item["remaining_missing_dates"] = [date for date in missing_dates if date not in persisted_dates]
+            if persisted_dates and item["remaining_missing_dates"]:
+                item["status"] = "partial"
+            elif persisted_dates:
                 item["status"] = "persisted"
-                item["rows"] = len(intraday.rows)
-                item["trade_dates"] = trade_dates
             else:
                 item["status"] = "empty"
-                item["error"] = f"数据源未返回 {target_trade_date} 附近的分时数据"
+            if fetch_errors:
+                item["error"] = "；".join(fetch_errors[:3])
         except Exception as exc:
-            item["status"] = "error"
+            item["status"] = "partial" if persisted_dates else "error"
             item["error"] = str(exc)
         items.append(item)
     return {
         "provider": "akshare",
         "period": "1",
-        "day_count": max(1, min(int(day_count or 1), 5)),
+        "day_count": normalized_day_count,
+        "max_trade_days": normalized_max_trade_days,
+        "max_fetch_rounds": normalized_max_fetch_rounds,
         "target_trade_date": target_trade_date,
         "target_count": len(targets),
         "items": items,
         "persisted": sum(1 for item in items if item["status"] == "persisted"),
+        "partial": sum(1 for item in items if item["status"] == "partial"),
+        "complete": sum(1 for item in items if item["status"] == "complete"),
         "failed": sum(1 for item in items if item["status"] == "error"),
+        "missing_after": sum(len(item.get("remaining_missing_dates") or []) for item in items),
+    }
+
+
+def _read_market_intraday_coverage(
+    *,
+    market: str,
+    symbol: str,
+    period: str,
+    max_trade_days: int,
+) -> dict:
+    normalized_period = str(period or "1")
+    normalized_max_trade_days = max(1, min(int(max_trade_days or 1), 120))
+    with connect_market_data_db() as conn:
+        daily_rows = conn.execute(
+            """
+            SELECT time_key
+            FROM market_kline
+            WHERE provider = ?
+              AND market = ?
+              AND symbol = ?
+              AND ktype = 'daily'
+              AND time_key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+            GROUP BY time_key
+            ORDER BY time_key DESC
+            LIMIT ?
+            """,
+            (MARKET_DATA_PROVIDER_AKSHARE, market, symbol, normalized_max_trade_days),
+        ).fetchall()
+        intraday_rows = conn.execute(
+            """
+            SELECT DISTINCT trade_date
+            FROM market_intraday
+            WHERE provider = ?
+              AND market = ?
+              AND symbol = ?
+              AND period = ?
+            ORDER BY trade_date DESC
+            """,
+            (MARKET_DATA_PROVIDER_AKSHARE, market, symbol, normalized_period),
+        ).fetchall()
+
+    daily_dates = [str(row["time_key"] or "")[:10] for row in daily_rows if row["time_key"]]
+    intraday_dates = {str(row["trade_date"] or "")[:10] for row in intraday_rows if row["trade_date"]}
+    missing_dates = [date for date in daily_dates if date and date not in intraday_dates]
+    return {
+        "latest_daily_date": daily_dates[0] if daily_dates else "",
+        "latest_intraday_date": max(intraday_dates) if intraday_dates else "",
+        "daily_dates": daily_dates,
+        "intraday_dates": sorted(intraday_dates, reverse=True),
+        "missing_dates": missing_dates,
+        "is_complete": bool(daily_dates) and not missing_dates,
     }
 
 
@@ -1534,6 +1627,23 @@ def _collect_market_intraday_persist_targets(
     if limit is not None and limit > 0:
         targets = targets[:limit]
     return targets
+
+
+@router.post("/market-intraday/persist")
+def persist_market_intraday_snapshot(
+    include_market_kline: bool = Query(default=True),
+    limit: int | None = Query(default=300, ge=1, le=2000),
+    day_count: int = Query(default=5, ge=1, le=5),
+    max_trade_days: int = Query(default=20, ge=1, le=120),
+    max_fetch_rounds: int = Query(default=4, ge=1, le=24),
+):
+    return run_market_intraday_persist_snapshot_job(
+        include_market_kline=include_market_kline,
+        limit=limit,
+        day_count=day_count,
+        max_trade_days=max_trade_days,
+        max_fetch_rounds=max_fetch_rounds,
+    )
 
 
 @router.get("/qlib/hk-connect-momentum-review", include_in_schema=False)

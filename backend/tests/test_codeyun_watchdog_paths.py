@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import dev
 from backend.core.runtime import codeyun_watchdog as codeyun_watchdog_runtime
@@ -45,6 +46,74 @@ def test_watchdog_launcher_prefers_repo_pythonw_on_windows(monkeypatch, tmp_path
     monkeypatch.setattr(codeyun_watchdog_runtime.sys, "executable", os.fspath(scripts_dir / "python.exe"))
 
     assert codeyun_watchdog_runtime._resolve_watchdog_python_executable() == os.fspath(pythonw)
+
+
+def test_watchdog_startup_status_reads_windows_task_xml(monkeypatch):
+    xml = """<?xml version="1.0" encoding="UTF-16"?>
+<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Settings><Enabled>true</Enabled></Settings>
+</Task>"""
+
+    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
+    monkeypatch.setattr(
+        codeyun_watchdog_runtime,
+        "_run_schtasks",
+        lambda *args: CompletedProcess(["schtasks", *args], 0, stdout=xml, stderr=""),
+    )
+
+    status = codeyun_watchdog_runtime.get_codeyun_watchdog_startup_status()
+
+    assert status["supported"] is True
+    assert status["configured"] is True
+    assert status["enabled"] is True
+    assert status["task_name"] == "CodeYun Watchdog"
+
+
+def test_enable_watchdog_startup_creates_onlogon_task(monkeypatch, tmp_path):
+    calls: list[tuple[str, ...]] = []
+    script = tmp_path / "scripts" / "codeyun_watchdog.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('watchdog')", encoding="utf-8")
+
+    def fake_run(*args: str):
+        calls.append(args)
+        if args[:2] == ("/Query", "/TN"):
+            return CompletedProcess(["schtasks", *args], 0, stdout="<Task><Settings><Enabled>true</Enabled></Settings></Task>", stderr="")
+        return CompletedProcess(["schtasks", *args], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(codeyun_watchdog_runtime.os, "name", "nt")
+    monkeypatch.setattr(codeyun_watchdog_runtime, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(codeyun_watchdog_runtime, "WATCHDOG_SCRIPT", script)
+    monkeypatch.setattr(codeyun_watchdog_runtime, "_run_schtasks", fake_run)
+
+    result = codeyun_watchdog_runtime.enable_codeyun_watchdog_startup()
+
+    create_call = calls[0]
+    assert create_call[:2] == ("/Create", "/TN")
+    assert "CodeYun Watchdog" in create_call
+    assert "/SC" in create_call
+    assert "ONLOGON" in create_call
+    assert "/F" in create_call
+    assert result["startup"]["enabled"] is True
+
+
+def test_runtime_autostart_configuration_only_supports_watchdog(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runtime_management,
+        "enable_codeyun_watchdog_startup",
+        lambda: calls.append("enable") or {"status": "enabled"},
+    )
+
+    assert runtime_management.configure_builtin_runtime_item_autostart("codeyun-watchdog", True) == {"status": "enabled"}
+    assert calls == ["enable"]
+
+    try:
+        runtime_management.configure_builtin_runtime_item_autostart("ocr", True)
+    except runtime_management.HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("expected HTTPException")
 
 
 def test_local_builtin_services_autostart_defaults_to_enabled(monkeypatch):

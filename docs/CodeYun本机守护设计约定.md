@@ -20,6 +20,11 @@ CodeYun 后端启动
   -> 检查 CodeYun 本机守护是否存在
   -> 不存在则用 pythonw 启动 scripts/codeyun_watchdog.py --loop
 
+Windows 登录自启
+  -> 由固定计划任务 CodeYun Watchdog 管理
+  -> 计划任务直接启动 scripts/codeyun_watchdog.py --loop
+  -> 守护再按恢复策略拉起 dev.py
+
 CodeYun 本机守护
   -> 独立进程，使用系统临时目录中的 pid/log
   -> 确认可见控制台弹窗监控器存活
@@ -191,6 +196,9 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 - `CODEYUN_WATCHDOG_RELOAD_CHECK_COMMAND`：热加载预检查命令。
 - `CODEYUN_WATCHDOG_LOG`：守护日志路径，默认位于系统临时目录。
 - `CODEYUN_WATCHDOG_LOCK`：守护 pid 文件路径，默认位于系统临时目录。
+
+`CODEYUN_WATCHDOG_AUTOSTART` 不是系统开机自启开关。系统登录自启由 Windows 计划任务
+`CodeYun Watchdog` 管理；运行页中 CodeYun 本机守护的“配置”入口只创建或禁用这一个固定任务，不扫描其他启动项来源。
 
 ## 验收标准
 

@@ -380,6 +380,13 @@
     <template #header>
       <div class="preview-header" v-if="previewImage">
         <div class="preview-actions">
+          <el-button
+            v-if="previewClip && isVideo(previewImage)"
+            type="primary"
+            @click="playPreviewClip"
+          >
+            播放片段
+          </el-button>
           <el-button :disabled="!hasPreviousImage" @click="handleShowPrevious">上一张</el-button>
           <el-button type="primary" :disabled="!hasNextImage" @click="handleShowNext">下一张</el-button>
           <el-button
@@ -389,6 +396,14 @@
             @click="handleSetVideoCover"
           >
             {{ setCoverButtonText }}
+          </el-button>
+          <el-button
+            v-if="openFileInLocalBrowser && isVideo(previewImage)"
+            plain
+            :loading="openingLocalBrowserImageId === previewImage.id"
+            @click="handleOpenFileInLocalBrowser(previewImage)"
+          >
+            {{ openLocalBrowserButtonText }}
           </el-button>
           <el-button
             v-if="deleteImage"
@@ -425,11 +440,17 @@
             v-else-if="isVideo(previewImage)"
             ref="previewVideoRef"
             class="preview-video"
-            :src="previewImage.url"
+            :src="previewVideoSource"
             controls
             playsinline
             preload="metadata"
-            @loadedmetadata="handleVideoMetadata(previewImage.id, $event)"
+            @loadedmetadata="handlePreviewVideoLoadedMetadata(previewImage.id, $event)"
+            @timeupdate="handlePreviewVideoTimeUpdate"
+            @seeking="handlePreviewVideoSeeking"
+            @waiting="handlePreviewVideoWaiting"
+            @canplay="handlePreviewVideoCanPlay"
+            @playing="handlePreviewVideoPlaying"
+            @error="handlePreviewVideoError"
           />
           <iframe
             v-else
@@ -439,6 +460,13 @@
           />
         </template>
         <div v-else class="preview-placeholder">{{ getLoadingText(previewImage) }}</div>
+        <div
+          v-if="previewClipStatusText"
+          class="preview-clip-status"
+          :class="{ 'is-error': previewClipStatus === 'error' }"
+        >
+          {{ previewClipStatusText }}
+        </div>
       </div>
 
       <div class="preview-sidebar">
@@ -458,6 +486,10 @@
           <div v-if="isVideo(previewImage) && hasDuration(previewImage)" class="meta-row">
             <span class="meta-label">时长</span>
             <span class="meta-value">{{ formatDuration(previewImage.duration) }}</span>
+          </div>
+          <div v-if="previewClip && isVideo(previewImage)" class="meta-row">
+            <span class="meta-label">片段</span>
+            <span class="meta-value">{{ previewClipLabel }}</span>
           </div>
           <div class="meta-row">
             <span class="meta-label">分辨率</span>
@@ -546,10 +578,12 @@ const props = withDefaults(
     updateImageWeight?: (imageId: string, nextWeight: number) => Promise<boolean>;
     deleteImage?: (imageId: string) => Promise<boolean>;
     revealImageInFolder?: (image: GalleryImage) => Promise<boolean | void>;
+    openFileInLocalBrowser?: (image: GalleryImage) => Promise<boolean | void>;
     openPdfDocument?: (image: GalleryImage) => Promise<boolean | void>;
     deleteButtonText?: string;
     setCoverButtonText?: string;
     revealButtonText?: string;
+    openLocalBrowserButtonText?: string;
     openPdfButtonText?: string;
     deleteTip?: string;
     itemLabel?: string;
@@ -577,6 +611,7 @@ const props = withDefaults(
     deleteButtonText: '删除图片',
     setCoverButtonText: '设为封面',
     revealButtonText: '打开所在目录',
+    openLocalBrowserButtonText: '浏览器打开原文件',
     openPdfButtonText: '打开阅读器',
     deleteTip: '',
     itemLabel: '图片',
@@ -589,6 +624,13 @@ const emit = defineEmits<{
   (event: 'update:showSidebar', value: boolean): void;
   (event: 'update:sortProgram', value: GallerySortProgram): void;
 }>();
+
+interface PreviewClipRange {
+  start: number;
+  end: number;
+}
+
+type PreviewClipStatus = 'idle' | 'loading' | 'seeking' | 'waiting' | 'ready' | 'error';
 
 const showSidebarModel = computed({
   get: () => props.showSidebar,
@@ -654,6 +696,7 @@ watch(
 const deletingImageId = ref<string | null>(null);
 const revealingImageId = ref<string | null>(null);
 const settingCoverImageId = ref<string | null>(null);
+const openingLocalBrowserImageId = ref<string | null>(null);
 const openingPdfImageId = ref<string | null>(null);
 const updatingWeightById = ref<Record<string, boolean>>({});
 const mediaCardElements = new Map<string, Element>();
@@ -663,6 +706,8 @@ let mediaVisibilityObserver: IntersectionObserver | null = null;
 let masonryLoadMoreObserver: IntersectionObserver | null = null;
 const lastPreviewedVideoId = ref<string | null>(null);
 const previewVideoRef = ref<HTMLVideoElement | null>(null);
+const previewClip = ref<PreviewClipRange | null>(null);
+const previewClipStatus = ref<PreviewClipStatus>('idle');
 
 const handleThumbnailScaleChange = (value: number) => {
   thumbnailScale.value = value;
@@ -726,6 +771,39 @@ const getLoadingText = (image: GalleryImage | null) => {
   }
   return image && isVideo(image) ? '视频首帧加载中' : '缩略图加载中';
 };
+const previewClipLabel = computed(() => (
+  previewClip.value
+    ? `${formatDuration(previewClip.value.start)} - ${formatDuration(previewClip.value.end)}`
+    : ''
+));
+const previewVideoSource = computed(() => {
+  const url = previewImage.value?.url || '';
+  const clip = previewClip.value;
+  if (!url || !clip || !previewImage.value || !isVideo(previewImage.value)) {
+    return url;
+  }
+  const baseUrl = url.split('#')[0];
+  return `${baseUrl}#t=${clip.start.toFixed(3)},${clip.end.toFixed(3)}`;
+});
+const previewClipStatusText = computed(() => {
+  const clip = previewClip.value;
+  if (!clip) {
+    return '';
+  }
+  if (previewClipStatus.value === 'loading') {
+    return '正在加载视频';
+  }
+  if (previewClipStatus.value === 'seeking') {
+    return `正在定位到 ${formatDuration(clip.start)}`;
+  }
+  if (previewClipStatus.value === 'waiting') {
+    return `正在缓冲 ${formatDuration(clip.start)} 附近的数据`;
+  }
+  if (previewClipStatus.value === 'error') {
+    return '片段加载失败，可能是视频编码或浏览器不支持直接跳播';
+  }
+  return '';
+});
 
 const ensureImage = async (imageId: string, options?: { full?: boolean }) => {
   if (!props.ensureImageReady) return true;
@@ -1191,8 +1269,110 @@ const rebuildMasonryLoadMoreObserver = async () => {
 };
 
 const handleOpenPreview = async (imageId: string) => {
+  previewClip.value = null;
+  previewClipStatus.value = 'idle';
   await ensureImage(imageId, { full: true });
   setPreviewImage(imageId);
+};
+
+const normalizePreviewClip = (startSeconds: number, endSeconds: number): PreviewClipRange => {
+  const start = Math.max(0, Number(startSeconds) || 0);
+  const end = Math.max(start, Number(endSeconds) || start);
+  return { start, end };
+};
+
+const seekPreviewClipStart = async () => {
+  const clip = previewClip.value;
+  if (!clip) {
+    return;
+  }
+  previewClipStatus.value = 'seeking';
+  await nextTick();
+  const video = previewVideoRef.value;
+  if (!video) {
+    return;
+  }
+
+  const applySeek = () => {
+    const duration = Number.isFinite(video.duration) ? video.duration : clip.start;
+    const boundedStart = Math.max(0, Math.min(clip.start, duration));
+    video.currentTime = boundedStart;
+    void video.play().catch(() => undefined);
+  };
+
+  if (video.readyState >= 1) {
+    applySeek();
+  } else {
+    video.addEventListener('loadedmetadata', applySeek, { once: true });
+  }
+};
+
+const openMediaClip = async (imageId: string, startSeconds: number, endSeconds: number) => {
+  previewClip.value = normalizePreviewClip(startSeconds, endSeconds);
+  previewClipStatus.value = 'loading';
+  await ensureImage(imageId, { full: true });
+  setPreviewImage(imageId);
+  await seekPreviewClipStart();
+};
+
+const playPreviewClip = async () => {
+  const clip = previewClip.value;
+  const video = previewVideoRef.value;
+  if (!clip || !video) {
+    return;
+  }
+  const duration = Number.isFinite(video.duration) ? video.duration : clip.start;
+  video.currentTime = Math.max(0, Math.min(clip.start, duration));
+  await video.play().catch(() => undefined);
+};
+
+const handlePreviewVideoLoadedMetadata = (imageId: string, event: Event) => {
+  handleVideoMetadata(imageId, event);
+  if (previewClip.value) {
+    void seekPreviewClipStart();
+  }
+};
+
+const handlePreviewVideoSeeking = () => {
+  if (previewClip.value) {
+    previewClipStatus.value = 'seeking';
+  }
+};
+
+const handlePreviewVideoWaiting = () => {
+  if (previewClip.value) {
+    previewClipStatus.value = 'waiting';
+  }
+};
+
+const handlePreviewVideoCanPlay = () => {
+  if (previewClip.value) {
+    previewClipStatus.value = 'ready';
+  }
+};
+
+const handlePreviewVideoPlaying = () => {
+  if (previewClip.value) {
+    previewClipStatus.value = 'ready';
+  }
+};
+
+const handlePreviewVideoError = () => {
+  if (previewClip.value) {
+    previewClipStatus.value = 'error';
+  }
+};
+
+const handlePreviewVideoTimeUpdate = () => {
+  const clip = previewClip.value;
+  const video = previewVideoRef.value;
+  if (!clip || !video) {
+    return;
+  }
+  if (video.currentTime >= clip.end) {
+    video.pause();
+    video.currentTime = clip.end;
+  }
 };
 
 const handleShowPrevious = async () => {
@@ -1328,6 +1508,21 @@ const handleOpenPdfDocument = async (image: GalleryImage) => {
   } finally {
     if (openingPdfImageId.value === image.id) {
       openingPdfImageId.value = null;
+    }
+  }
+};
+
+const handleOpenFileInLocalBrowser = async (image: GalleryImage) => {
+  if (!props.openFileInLocalBrowser) {
+    return;
+  }
+
+  openingLocalBrowserImageId.value = image.id;
+  try {
+    await props.openFileInLocalBrowser(image);
+  } finally {
+    if (openingLocalBrowserImageId.value === image.id) {
+      openingLocalBrowserImageId.value = null;
     }
   }
 };
@@ -1488,7 +1683,13 @@ watch(previewImage, (image) => {
 });
 
 watch(previewVisible, (visible) => {
-  if (visible || !lastPreviewedVideoId.value) {
+  if (visible) {
+    return;
+  }
+
+  previewClip.value = null;
+  previewClipStatus.value = 'idle';
+  if (!lastPreviewedVideoId.value) {
     return;
   }
 
@@ -1509,6 +1710,10 @@ onBeforeUnmount(() => {
   disconnectMediaVisibilityObserver();
   disconnectMasonryLoadMoreObserver();
   resetThumbnailWarmQueue();
+});
+
+defineExpose({
+  openMediaClip,
 });
 </script>
 
@@ -2207,6 +2412,7 @@ onBeforeUnmount(() => {
 }
 
 .preview-stage {
+  position: relative;
   min-height: 0;
   border-radius: 22px;
   background: #0f172a;
@@ -2227,6 +2433,24 @@ onBeforeUnmount(() => {
 .preview-video {
   width: 100%;
   background: #000000;
+}
+
+.preview-clip-status {
+  position: absolute;
+  left: 24px;
+  top: 24px;
+  max-width: min(520px, calc(100% - 48px));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.preview-clip-status.is-error {
+  background: rgba(153, 27, 27, 0.9);
 }
 
 .preview-pdf {

@@ -7,18 +7,20 @@ import { taskStore } from '@/store/taskStore';
 import {
   ensureFanxiuDataAnnotationDoctorWatch,
   getFanxiuDataAnnotationDoctorWatchLatest,
-  getFanxiuDataAnnotationRuntimeLogs,
+  getFanxiuDataAnnotationRuntimeCellLogs,
   getFanxiuDataAnnotationRuntimeStatus,
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
-  runDueFanxiuDataAnnotationSchedulerTasks,
   runNowFanxiuDataAnnotationSchedulerTask,
   saveFanxiuDataAnnotationSchedulerTasks,
   setFanxiuDataAnnotationSchedulerSettings,
-  setFanxiuDataAnnotationRuntimeBehaviorTree,
+  restartFanxiuDataAnnotationRuntimeKernel,
   setFanxiuDataAnnotationRuntimeGuard,
   setFanxiuDataAnnotationRuntimeGuardGroup,
+  stopFanxiuDataAnnotationRuntimeCurrentTask,
+  tickFanxiuDataAnnotationRuntimeFramework,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
+  type FanxiuDataAnnotationRuntimeCellLog,
   type FanxiuDataAnnotationRuntimeLogEntry,
   type FanxiuDataAnnotationRuntimeGuardItem,
   type FanxiuDataAnnotationRuntimeStatus,
@@ -35,9 +37,15 @@ const schedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const schedulerPlan = ref<FanxiuDataAnnotationSchedulerPlanResponse | null>(null);
 const doctorWatchLatest = ref<FanxiuDataAnnotationDoctorWatchLatestResponse | null>(null);
 const schedulerJobGroupEnabled = ref(true);
+const cellLogs = ref<FanxiuDataAnnotationRuntimeCellLog[]>([]);
+const activeCellIndex = ref(0);
 const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
 const loading = ref(false);
 const actionLoading = ref('');
+const tickGuardEnabled = ref(true);
+const tickManualJobEnabled = ref(true);
+const tickScheduledJobEnabled = ref(true);
+const cellRunMode = ref<'tick_once' | 'until_idle' | 'current_job'>('tick_once');
 const contextMenu = ref({
   visible: false,
   x: 0,
@@ -50,7 +58,8 @@ const contextMenu = ref({
 let pollTimer: number | null = null;
 let pollTick = 0;
 let polling = false;
-const LOG_PREVIEW_LIMIT = 80;
+const CELL_LOG_LIMIT = 24;
+const CELL_LOG_ENTRY_LIMIT = 1200;
 
 const devices = computed(() => taskStore.devices);
 const behaviorTreeEnabled = computed(() => runtimeStatus.value?.behavior_tree_enabled ?? true);
@@ -62,6 +71,7 @@ const serviceRunning = computed(() => Boolean(runtimeStatus.value?.service_runni
 const serviceStateText = computed(() => {
   if (!runtimeStatus.value) return '未连接';
   if (!behaviorTreeEnabled.value) return '已关闭';
+  if (runtimeStatus.value.phase === 'service_owned_by_other') return '后台接管';
   return serviceRunning.value ? '常驻' : '未运行';
 });
 const currentSceneText = computed(() => {
@@ -77,12 +87,95 @@ const runtimeStateText = computed(() => {
   return '空转';
 });
 const runtimeMessage = computed(() => runtimeStatus.value?.message || '-');
-const runtimePhaseText = computed(() => runtimeStatus.value?.phase || runtimeStatus.value?.task_type || '-');
+const runtimePhaseLabels: Record<string, string> = {
+  service_owned_by_other: '由后端服务接管',
+  idle: '空闲',
+  idle_tick: '空闲',
+  idle_guard: '空闲巡检中',
+  idle_guard_done: '空闲巡检完成',
+  manual_job_poll: '检查手动作业',
+  scheduler_poll: '检查定时作业',
+  scheduler_isolated: '执行定时作业',
+  waiting_context: '等待运行环境',
+  starting: '启动中',
+  stopped: '已停止',
+  behavior_tree_disabled: '已关闭',
+};
+const phaseLabel = (phase: string) => runtimePhaseLabels[phase] || phase;
+const runtimePhaseText = computed(() => {
+  const phase = runtimeStatus.value?.phase || runtimeStatus.value?.task_type || '';
+  return phase ? phaseLabel(phase) : '-';
+});
 const taskProgressText = computed(() => {
   const status = runtimeStatus.value;
   if (!status || !status.total) return '';
   return `${status.current_index}/${status.total}`;
 });
+type RuntimeLayerStatusKey = 'kernel_status' | 'framework_status' | 'scheduler_status' | 'orchestration_status';
+
+const statusText = (section: RuntimeLayerStatusKey, key: string, fallback = '-') => {
+  const value = runtimeStatus.value?.[section]?.[key];
+  return value === undefined || value === null || value === '' ? fallback : String(value);
+};
+const statusBool = (section: RuntimeLayerStatusKey, key: string, fallback = false) => {
+  const value = runtimeStatus.value?.[section]?.[key];
+  return typeof value === 'boolean' ? value : fallback;
+};
+const kernelLabelText = computed(() => {
+  if (runtimeStatus.value?.phase === 'service_owned_by_other') return '后台接管';
+  return statusText('kernel_status', 'label', serviceStateText.value);
+});
+const kernelSceneText = computed(() => statusText('kernel_status', 'current_scene', currentSceneText.value));
+const kernelMessageText = computed(() => statusText('kernel_status', 'message', runtimeMessage.value));
+const frameworkLabelText = computed(() => statusText('framework_status', 'label', runtimeStateText.value));
+const frameworkPhaseText = computed(() => statusText('framework_status', 'phase', runtimePhaseText.value));
+const frameworkTaskText = computed(() => statusText('framework_status', 'current_task', '无'));
+const frameworkProgressText = computed(() => statusText('framework_status', 'progress', taskProgressText.value || '-'));
+const tickGroupSelected = computed(() => tickGuardEnabled.value || tickManualJobEnabled.value || tickScheduledJobEnabled.value);
+const cellRunModeOptions = [
+  { label: '单步', value: 'tick_once' },
+  { label: '到空闲', value: 'until_idle' },
+  { label: '本作业', value: 'current_job' },
+];
+const cellSubmitActionText = computed(() => {
+  const labels: Record<string, string> = {
+    tick_once: '提交单步',
+    until_idle: '提交到空闲',
+    current_job: '提交本作业',
+  };
+  return labels[cellRunMode.value] || '提交 cell';
+});
+const frameworkTickText = computed(() => {
+  const tick = runtimeStatus.value?.framework_tick || runtimeStatus.value?.engine_tick || {};
+  const ran = tick.ran;
+  const labels: Record<string, string> = {
+    idle: '空转',
+    manual_job_started: '手动作业',
+    scheduler_started: '普通作业',
+    scheduler_isolated: '作业隔离',
+    guard_checked: '守护检查',
+  };
+  const reasons: Record<string, string> = {
+    waiting_context: '等待环境',
+    kernel_disabled: '内核暂停',
+  };
+  if (ran === true) {
+    const action = String(tick.action || '');
+    return labels[action] || action || '已执行';
+  }
+  if (ran === false) {
+    const reason = String(tick.reason || '');
+    return reasons[reason] || reason || '未执行';
+  }
+  return '';
+});
+const schedulerLabelText = computed(() => statusText('scheduler_status', 'label', schedulerJobGroupEnabled.value ? '运行中' : '已暂停'));
+const orchestrationGuardText = computed(() => {
+  const enabled = statusText('orchestration_status', 'guard_enabled_count', '0');
+  const total = statusText('orchestration_status', 'guard_count', '0');
+  return `${enabled}/${total}`;
+});
+const dueTaskCount = computed(() => schedulerPlan.value?.due_tasks?.length ?? 0);
 const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
   const items = runtimeStatus.value?.guard_items || {};
   return Object.values(items).map((item) => ({
@@ -269,6 +362,23 @@ const sameLogEntries = (left: FanxiuDataAnnotationRuntimeLogEntry[], right: Fanx
       && item.message === other.message;
   })
 );
+const currentCellLog = computed(() => cellLogs.value[activeCellIndex.value] || null);
+const cellPageText = computed(() => {
+  if (!cellLogs.value.length) return '0/0';
+  return `${activeCellIndex.value + 1}/${cellLogs.value.length}`;
+});
+const canShowNewerCell = computed(() => activeCellIndex.value > 0);
+const canShowOlderCell = computed(() => activeCellIndex.value < cellLogs.value.length - 1);
+const showNewerCell = () => {
+  if (!canShowNewerCell.value) return;
+  activeCellIndex.value -= 1;
+  logs.value = currentCellLog.value?.entries || [];
+};
+const showOlderCell = () => {
+  if (!canShowOlderCell.value) return;
+  activeCellIndex.value += 1;
+  logs.value = currentCellLog.value?.entries || [];
+};
 
 const openLogMenu = (event: MouseEvent, scope: string, itemId: string, title: string) => {
   contextMenu.value = {
@@ -308,6 +418,16 @@ const openContextLogs = () => {
       scope: menu.scope,
       item_id: menu.itemId,
       title: menu.title,
+    },
+  });
+};
+
+const openRuntimeLogs = () => {
+  void router.push({
+    path: '/fanxiu/data-annotation/runtime/logs',
+    query: {
+      entry_id: entryId.value,
+      title: '运行日志',
     },
   });
 };
@@ -352,8 +472,13 @@ const refreshStatus = async () => {
 };
 
 const refreshLogs = async () => {
-  const response = await getFanxiuDataAnnotationRuntimeLogs(LOG_PREVIEW_LIMIT);
-  const nextLogs = [...(response.entries || [])].reverse();
+  const response = await getFanxiuDataAnnotationRuntimeCellLogs(CELL_LOG_LIMIT, CELL_LOG_ENTRY_LIMIT);
+  const nextCells = response.cells || [];
+  const previousCellId = currentCellLog.value?.id || '';
+  cellLogs.value = nextCells;
+  const retainedIndex = previousCellId ? nextCells.findIndex((cell) => cell.id === previousCellId) : -1;
+  activeCellIndex.value = retainedIndex >= 0 ? retainedIndex : 0;
+  const nextLogs = currentCellLog.value?.entries || [];
   if (!sameLogEntries(logs.value, nextLogs)) {
     logs.value = nextLogs;
   }
@@ -382,11 +507,6 @@ const refreshAll = async () => {
   loading.value = true;
   try {
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
-    if (behaviorTreeEnabled.value && schedulerJobGroupEnabled.value && entryId.value) {
-      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
-      applyStatus(status);
-      await Promise.all([refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
-    }
   } finally {
     loading.value = false;
   }
@@ -413,7 +533,18 @@ const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntim
 
 const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
 
-const toggleBehaviorTreeEnabled = () => runAction('behavior-tree', () => setFanxiuDataAnnotationRuntimeBehaviorTree(entryId.value, !behaviorTreeEnabled.value));
+const restartKernel = () => runAction('kernel-restart', () => restartFanxiuDataAnnotationRuntimeKernel(entryId.value, 5));
+
+const stopCurrentCell = () => runAction('cell-stop', () => stopFanxiuDataAnnotationRuntimeCurrentTask(entryId.value));
+
+const submitSchedulerCell = () => runAction('scheduler-submit', () => tickFanxiuDataAnnotationRuntimeFramework(entryId.value, {
+  guard: tickGuardEnabled.value,
+  manual_job: tickManualJobEnabled.value,
+  scheduled_job: tickScheduledJobEnabled.value,
+  run_mode: cellRunMode.value,
+  max_ticks: cellRunMode.value === 'tick_once' ? 1 : 20,
+  timeout_seconds: cellRunMode.value === 'tick_once' ? 30 : 180,
+}));
 
 const toggleGuardItem = (itemId: string) => {
   if (itemId === 'close_popups') {
@@ -434,10 +565,6 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    if (willEnable && behaviorTreeEnabled.value && schedulerJobGroupEnabled.value && entryId.value) {
-      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
-      applyStatus(status);
-    }
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
@@ -453,10 +580,6 @@ const toggleJobGroupEnabled = async () => {
     const response = await setFanxiuDataAnnotationSchedulerSettings(willEnable);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
-    if (willEnable && behaviorTreeEnabled.value && entryId.value) {
-      const status = await runDueFanxiuDataAnnotationSchedulerTasks(entryId.value);
-      applyStatus(status);
-    }
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
@@ -526,12 +649,10 @@ onUnmounted(() => {
               </el-button>
             </template>
             <div class="runtime-help-doc">
-              <h4>运行分组</h4>
-              <p>运行时按分组管理记忆。当前分为守护、手动作业、自动作业。</p>
-              <p>跨组只暂停，不清记忆。守护处理弹窗时，正在运行的作业本轮不推进；守护结束后，作业从原来的生成器位置继续。</p>
-              <p>手动按钮会写入手动作业队列。没有守护时，手动作业优先于后台自动作业执行。</p>
-              <p>同组默认串行，不抢占。一个作业开始后会先跑完，同组里新到期的作业进入候选池，等当前作业结束后再选择。</p>
-              <p>前端只修改启用白名单和任务配置；后端动态容器读取配置后生成行为树节点。</p>
+              <h4>分层运行</h4>
+              <p>运行内核保存设备连接、当前画面和运行上下文；凡修框架定义 task、guard、tick 和 ctx 协议。</p>
+              <p>调度器负责手动、API、定时等触发来源，并把它们统一提交为 cell。</p>
+              <p>前端只提交明确动作，例如重启内核、中断当前 cell、暂停调度、提交一次 tick，不再把这些语义混在一个开关里。</p>
             </div>
           </el-popover>
         </div>
@@ -539,6 +660,109 @@ onUnmounted(() => {
     </header>
 
     <main class="runtime-main" v-loading="loading">
+      <section class="runtime-section">
+        <div class="section-title">
+          <h3>运行控制</h3>
+          <span>{{ kernelMessageText }}</span>
+        </div>
+        <div class="runtime-layer-grid">
+          <div class="runtime-layer">
+            <div class="runtime-layer-head">
+              <strong>运行内核</strong>
+              <span>{{ kernelLabelText }}</span>
+            </div>
+            <div class="runtime-facts">
+              <span>场景 {{ kernelSceneText }}</span>
+              <span>服务 {{ serviceStateText }}</span>
+            </div>
+            <div class="runtime-actions">
+              <el-button size="small" :loading="actionLoading === 'kernel-restart'" @click="restartKernel">重启内核</el-button>
+              <el-button size="small" :disabled="!statusBool('kernel_status', 'can_interrupt')" :loading="actionLoading === 'cell-stop'" @click="stopCurrentCell">中断 cell</el-button>
+            </div>
+          </div>
+          <div class="runtime-layer">
+            <div class="runtime-layer-head">
+              <strong>凡修框架</strong>
+              <span>{{ frameworkLabelText }}</span>
+            </div>
+            <div class="runtime-facts">
+              <span>阶段 {{ frameworkPhaseText }}</span>
+              <span>任务 {{ frameworkTaskText }}</span>
+              <span v-if="frameworkProgressText !== '-'">进度 {{ frameworkProgressText }}</span>
+              <span v-if="frameworkTickText">上轮 {{ frameworkTickText }}</span>
+            </div>
+          </div>
+          <div class="runtime-layer">
+            <div class="runtime-layer-head">
+              <strong>调度器</strong>
+              <span>{{ schedulerLabelText }}</span>
+            </div>
+            <div class="runtime-facts">
+              <span>自动作业 {{ schedulerJobGroupEnabled ? '启用' : '暂停' }}</span>
+              <span>到期 {{ dueTaskCount }}</span>
+            </div>
+            <div class="runtime-actions">
+              <el-radio-group v-model="cellRunMode" size="small">
+                <el-radio-button
+                  v-for="option in cellRunModeOptions"
+                  :key="option.value"
+                  :label="option.value"
+                >
+                  {{ option.label }}
+                </el-radio-button>
+              </el-radio-group>
+              <div class="tick-groups">
+                <el-checkbox v-model="tickGuardEnabled" size="small">守护</el-checkbox>
+                <el-checkbox v-model="tickManualJobEnabled" size="small">手动</el-checkbox>
+                <el-checkbox v-model="tickScheduledJobEnabled" size="small">普通</el-checkbox>
+              </div>
+              <el-button size="small" :disabled="!tickGroupSelected" :loading="actionLoading === 'scheduler-submit'" @click="submitSchedulerCell">{{ cellSubmitActionText }}</el-button>
+              <el-button size="small" :loading="actionLoading === 'job-group'" @click="toggleJobGroupEnabled">{{ schedulerJobGroupEnabled ? '暂停调度' : '恢复调度' }}</el-button>
+            </div>
+          </div>
+          <div class="runtime-layer">
+            <div class="runtime-layer-head">
+              <strong>任务配置</strong>
+              <span>{{ businessTasks.length }} 作业</span>
+            </div>
+            <div class="runtime-facts">
+              <span>守护 {{ orchestrationGuardText }}</span>
+              <span>守护组 {{ guardGroupEnabled ? '启用' : '暂停' }}</span>
+            </div>
+            <div class="runtime-actions">
+              <el-button size="small" :loading="actionLoading === 'guard-group'" @click="toggleGuardGroupEnabled">{{ guardGroupEnabled ? '暂停守护' : '恢复守护' }}</el-button>
+              <el-button size="small" @click="openRuntimeLogs">查看日志</el-button>
+            </div>
+          </div>
+        </div>
+        <div v-if="schedulerBlockingMessage" class="runtime-blocking" :title="schedulerBlockingMessage">
+          {{ schedulerBlockingMessage }}
+        </div>
+        <div
+          v-if="doctorWatchLatest?.exists"
+          class="runtime-doctor"
+          :class="doctorSeverityClass"
+          :title="doctorSummaryText"
+        >
+          <span>巡检 {{ doctorSeverityText }}</span>
+          <span v-if="doctorHeartbeatText" :class="doctorHeartbeatClass">{{ doctorHeartbeatText }}</span>
+          <span v-if="doctorStaleText">{{ doctorStaleText }}</span>
+          <span v-if="doctorSnapshot.checked_at">巡检 {{ doctorSnapshot.checked_at }}</span>
+        </div>
+        <div v-if="doctorActionText" class="runtime-blocking runtime-blocking-action" :title="doctorActionText">
+          <span>{{ doctorActionText }}</span>
+          <el-button
+            v-if="doctorAnnotationTitle"
+            size="small"
+            plain
+            @click="openDoctorAnnotationTarget"
+          >
+            打开补标
+          </el-button>
+        </div>
+        <div class="runtime-message" :title="runtimeMessage">{{ runtimeMessage }}</div>
+      </section>
+
       <section class="runtime-section">
         <div class="section-title group-section-title">
           <h3>守护</h3>
@@ -658,58 +882,20 @@ onUnmounted(() => {
       </section>
 
       <section class="runtime-section">
-        <div class="section-title">
-          <h3>运行状态</h3>
-          <div class="section-actions">
-            <button
-              class="enable-dot group-enable-dot"
-              :class="{ enabled: behaviorTreeEnabled }"
-              type="button"
-              :disabled="actionLoading === 'behavior-tree'"
-              :title="behaviorTreeEnabled ? '关闭行为树' : '开启行为树'"
-              @click="toggleBehaviorTreeEnabled"
-            />
+        <div class="section-title cell-log-title">
+          <h3>Cell 日志</h3>
+          <div class="cell-log-pager">
+            <el-button size="small" :disabled="!canShowNewerCell" @click="showNewerCell">‹</el-button>
+            <span>{{ cellPageText }}</span>
+            <el-button size="small" :disabled="!canShowOlderCell" @click="showOlderCell">›</el-button>
           </div>
         </div>
-        <div class="runtime-facts">
-          <span>服务 {{ serviceStateText }}</span>
-          <span>{{ runtimeStateText }}</span>
-          <span>场景 {{ currentSceneText }}</span>
-          <span>阶段 {{ runtimePhaseText }}</span>
-          <span v-if="taskProgressText">进度 {{ taskProgressText }}</span>
-        </div>
-        <div v-if="schedulerBlockingMessage" class="runtime-blocking" :title="schedulerBlockingMessage">
-          {{ schedulerBlockingMessage }}
-        </div>
-        <div
-          v-if="doctorWatchLatest?.exists"
-          class="runtime-doctor"
-          :class="doctorSeverityClass"
-          :title="doctorSummaryText"
-        >
-          <span>巡检 {{ doctorSeverityText }}</span>
-          <span v-if="doctorHeartbeatText" :class="doctorHeartbeatClass">{{ doctorHeartbeatText }}</span>
-          <span v-if="doctorStaleText">{{ doctorStaleText }}</span>
-          <span v-if="doctorSnapshot.checked_at">巡检 {{ doctorSnapshot.checked_at }}</span>
-        </div>
-        <div v-if="doctorActionText" class="runtime-blocking runtime-blocking-action" :title="doctorActionText">
-          <span>{{ doctorActionText }}</span>
-          <el-button
-            v-if="doctorAnnotationTitle"
-            size="small"
-            plain
-            @click="openDoctorAnnotationTarget"
-          >
-            打开补标
-          </el-button>
-        </div>
-        <div class="runtime-message" :title="runtimeMessage">{{ runtimeMessage }}</div>
-      </section>
-
-      <section class="runtime-section">
-        <div class="section-title">
-          <h3>日志</h3>
-          <span>{{ logs.length }} 条</span>
+        <div v-if="currentCellLog" class="cell-log-head">
+          <div>
+            <strong>{{ currentCellLog.title }}</strong>
+            <span>{{ currentCellLog.started_at }} - {{ currentCellLog.ended_at }}</span>
+          </div>
+          <pre>{{ currentCellLog.source }}</pre>
         </div>
         <div class="log-list">
           <div v-for="(entry, index) in logs" :key="logEntryKey(entry, index)" class="log-row" :class="`is-${entry.kind}`">
@@ -720,7 +906,7 @@ onUnmounted(() => {
               <span>{{ entry.message }}</span>
             </p>
           </div>
-          <div v-if="!logs.length" class="empty-row">暂无日志</div>
+          <div v-if="!logs.length" class="empty-row">暂无 cell 日志</div>
         </div>
       </section>
     </main>
@@ -826,6 +1012,72 @@ onUnmounted(() => {
 .section-title span,
 .muted {
   color: #6b7280;
+  font-size: 12px;
+}
+
+.runtime-layer-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.runtime-layer {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fbfdff;
+}
+
+.runtime-layer-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.runtime-layer-head strong {
+  min-width: 0;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.runtime-layer-head span {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-actions {
+  margin-top: 8px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tick-groups {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.tick-groups :deep(.el-checkbox) {
+  height: 24px;
+  margin-right: 6px;
+}
+
+.tick-groups :deep(.el-checkbox__label) {
+  padding-left: 4px;
+  color: #475569;
   font-size: 12px;
 }
 
@@ -1074,6 +1326,55 @@ onUnmounted(() => {
   max-height: 460px;
   overflow: auto;
   border: 1px solid #edf2f7;
+}
+
+.cell-log-title {
+  gap: 12px;
+}
+
+.cell-log-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.cell-log-head {
+  margin-bottom: 8px;
+  border: 1px solid #edf2f7;
+  background: #fbfdff;
+}
+
+.cell-log-head > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf2f7;
+  font-size: 12px;
+}
+
+.cell-log-head strong {
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.cell-log-head span {
+  color: #64748b;
+}
+
+.cell-log-head pre {
+  max-height: 132px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  color: #334155;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .log-row {

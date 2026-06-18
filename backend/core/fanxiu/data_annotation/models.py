@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,21 @@ class FanxiuDataAnnotationRuntimeLogEntry(BaseModel):
 
 class FanxiuDataAnnotationRuntimeLogResponse(BaseModel):
     entries: list[FanxiuDataAnnotationRuntimeLogEntry] = Field(default_factory=list)
+    path: str = ""
+
+
+class FanxiuDataAnnotationRuntimeCellLog(BaseModel):
+    id: str = ""
+    title: str = ""
+    source_kind: str = "command"
+    source: str = ""
+    started_at: str = ""
+    ended_at: str = ""
+    entries: list[FanxiuDataAnnotationRuntimeLogEntry] = Field(default_factory=list)
+
+
+class FanxiuDataAnnotationRuntimeCellLogResponse(BaseModel):
+    cells: list[FanxiuDataAnnotationRuntimeCellLog] = Field(default_factory=list)
     path: str = ""
 
 
@@ -79,11 +94,20 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     current_task_id: str = ""
     interruptible: bool = True
     last_guard_event: dict[str, Any] = Field(default_factory=dict)
+    kernel_status: dict[str, Any] = Field(default_factory=dict)
+    framework_status: dict[str, Any] = Field(default_factory=dict)
+    engine_status: dict[str, Any] = Field(default_factory=dict)
+    scheduler_status: dict[str, Any] = Field(default_factory=dict)
+    orchestration_status: dict[str, Any] = Field(default_factory=dict)
+    framework_tick: dict[str, Any] = Field(default_factory=dict)
+    engine_tick: dict[str, Any] = Field(default_factory=dict)
+    kernel_restart: dict[str, Any] = Field(default_factory=dict)
     started_at: float = 0
     updated_at: float = 0
     finished_at: float = 0
     error: str = ""
     logs: list[dict[str, Any]] = Field(default_factory=list)
+    cell_logs: list[dict[str, Any]] = Field(default_factory=list)
     queued_job: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -91,6 +115,25 @@ class FanxiuDataAnnotationRuntimeTaskRequest(BaseModel):
     entry_id: str
     task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuDataAnnotationRuntimeEngineTickRequest(BaseModel):
+    entry_id: str
+    guard: bool = True
+    manual_job: bool = True
+    scheduled_job: bool = True
+    run_mode: Literal["tick_once", "until_idle", "current_job"] = "tick_once"
+    max_ticks: int = Field(10, ge=1, le=100)
+    timeout_seconds: float = Field(30.0, ge=0.1, le=300.0)
+
+
+class FanxiuDataAnnotationRuntimeFrameworkTickRequest(FanxiuDataAnnotationRuntimeEngineTickRequest):
+    pass
+
+
+class FanxiuDataAnnotationRuntimeKernelRestartRequest(BaseModel):
+    entry_id: str
+    timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
 
 
 class FanxiuDataAnnotationRuntimeStopRequest(BaseModel):

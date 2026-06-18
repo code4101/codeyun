@@ -252,3 +252,121 @@ def test_persist_intraday_keeps_each_row_trade_date(monkeypatch):
     ).fetchall()
 
     assert [tuple(row) for row in rows] == [("2026-06-10", 1), ("2026-06-12", 1)]
+
+
+def test_intraday_coverage_reports_missing_daily_dates(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_market_data_schema(conn)
+    _insert_daily(conn, "HK", "03896", "金山云", ["2026-06-10", "2026-06-11", "2026-06-12"])
+
+    @contextmanager
+    def fake_connect():
+        yield conn
+
+    monkeypatch.setattr(eastmoney, "connect_market_data_db", fake_connect)
+    eastmoney.persist_akshare_intraday(
+        AkshareEtfIntraday(
+            provider="akshare",
+            market="HK",
+            symbol="03896",
+            name="金山云",
+            period="1",
+            trade_date="2026-06-11",
+            rows=(_intraday_row("2026-06-11 09:31:00"),),
+        )
+    )
+
+    coverage = eastmoney._read_market_intraday_coverage(
+        market="HK",
+        symbol="03896",
+        period="1",
+        max_trade_days=3,
+    )
+
+    assert coverage["latest_daily_date"] == "2026-06-12"
+    assert coverage["latest_intraday_date"] == "2026-06-11"
+    assert coverage["missing_dates"] == ["2026-06-12", "2026-06-10"]
+    assert coverage["is_complete"] is False
+
+
+def test_intraday_persist_job_backfills_missing_daily_dates(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_market_data_schema(conn)
+    _insert_daily(conn, "HK", "03896", "金山云", ["2026-06-10", "2026-06-11", "2026-06-12"])
+
+    @contextmanager
+    def fake_connect():
+        yield conn
+
+    requested_dates: list[str | None] = []
+
+    def fake_fetch(**kwargs):
+        requested_dates.append(kwargs["trade_date"])
+        return AkshareEtfIntraday(
+            provider="akshare",
+            market="HK",
+            symbol="03896",
+            name="金山云",
+            period="1",
+            trade_date=kwargs["trade_date"],
+            rows=(
+                _intraday_row("2026-06-12 09:31:00"),
+                _intraday_row("2026-06-11 09:31:00"),
+                _intraday_row("2026-06-10 09:31:00"),
+            ),
+        )
+
+    monkeypatch.setattr(eastmoney, "connect_market_data_db", fake_connect)
+    monkeypatch.setattr(eastmoney, "fetch_akshare_etf_intraday", fake_fetch)
+    monkeypatch.setattr(
+        eastmoney,
+        "_collect_market_intraday_persist_targets",
+        lambda **_kwargs: [{"market": "HK", "symbol": "03896", "name": "金山云"}],
+    )
+
+    payload = eastmoney.run_market_intraday_persist_snapshot_job(
+        include_market_kline=True,
+        limit=1,
+        day_count=5,
+        max_trade_days=3,
+        max_fetch_rounds=2,
+    )
+
+    assert requested_dates == ["2026-06-12"]
+    assert payload["persisted"] == 1
+    assert payload["missing_after"] == 0
+    item = payload["items"][0]
+    assert item["status"] == "persisted"
+    assert item["missing_dates"] == ["2026-06-12", "2026-06-11", "2026-06-10"]
+    assert item["remaining_missing_dates"] == []
+    assert item["trade_dates"] == ["2026-06-10", "2026-06-11", "2026-06-12"]
+
+    rows = conn.execute(
+        """
+        SELECT trade_date, COUNT(*) AS count
+        FROM market_intraday
+        WHERE provider = 'akshare'
+          AND market = 'HK'
+          AND symbol = '03896'
+          AND period = '1'
+        GROUP BY trade_date
+        ORDER BY trade_date
+        """
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [("2026-06-10", 1), ("2026-06-11", 1), ("2026-06-12", 1)]
+
+
+def _insert_daily(conn: sqlite3.Connection, market: str, symbol: str, name: str, dates: list[str]) -> None:
+    conn.executemany(
+        """
+        INSERT INTO market_kline (
+            provider, market, symbol, provider_code, name, ktype, autype, time_key,
+            open, close, high, low, volume, turnover, fetched_at, raw_json
+        )
+        VALUES ('akshare', ?, ?, ?, ?, 'daily', '', ?, 1, 1, 1, 1, 100, 100, 1, '{}')
+        """,
+        [(market, symbol, symbol, name, date) for date in dates],
+    )
+    conn.commit()

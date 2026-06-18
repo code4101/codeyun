@@ -113,6 +113,7 @@ export interface DeviceMediaListing {
   snapshot_id: string | null;
   total_count: number;
   total_bytes: number;
+  total_duration_ms: number;
   visual_hash_status: DeviceMediaVisualHashStatus | null;
   offset: number;
   limit: number;
@@ -490,6 +491,7 @@ const normalizeDeviceMediaListing = (raw: any): DeviceMediaListing => ({
   snapshot_id: raw?.snapshot_id ?? null,
   total_count: raw?.total_count ?? 0,
   total_bytes: raw?.total_bytes ?? 0,
+  total_duration_ms: raw?.total_duration_ms ?? 0,
   visual_hash_status: raw?.visual_hash_status ?? null,
   offset: raw?.offset ?? 0,
   limit: raw?.limit ?? 0,
@@ -807,6 +809,25 @@ export const revealDeviceEntryInFolder = async (
   payload: DeviceFileSelector
 ): Promise<DeviceRevealResult> => {
   const response = await api.post(getDeviceEntryPath(entryId, '/files/reveal'), payload);
+  return {
+    ok: Boolean(response.data.ok),
+    supported: Boolean(response.data.supported),
+    launched: Boolean(response.data.launched),
+    method: response.data.method ?? '',
+    detail: response.data.detail ?? '',
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    target_path: response.data.target_path ?? '',
+    directory_path: response.data.directory_path ?? '',
+  };
+};
+
+export const openDeviceEntryInLocalBrowser = async (
+  entryId: string,
+  payload: DeviceFileSelector
+): Promise<DeviceRevealResult> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/open-local-browser'), payload);
   return {
     ok: Boolean(response.data.ok),
     supported: Boolean(response.data.supported),

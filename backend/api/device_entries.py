@@ -48,6 +48,7 @@ from backend.api.filesystem import (
     list_duplicate_file_groups,
     list_image_entries,
     list_media_entries,
+    open_scoped_file_in_local_browser,
     read_text_file,
     rename_labelme_annotation_pair,
     reveal_scoped_entry,
@@ -4143,6 +4144,34 @@ def reveal_file_for_entry(
             absolute_path=req.absolute_path,
         )
     return _proxy_request(entry, "POST", "/fs/reveal", json_body=_filesystem_payload(req))
+
+
+@router.post("/{entry_id}/files/open-local-browser")
+def open_file_in_local_browser_for_entry(
+    entry_id: str,
+    req: RootScopedRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode != "local":
+        return {
+            "ok": False,
+            "supported": False,
+            "launched": False,
+            "method": "",
+            "detail": "只有本机设备文件支持直接用本地浏览器打开",
+            "root": req.root,
+            "path": req.path,
+            "absolute_path": req.absolute_path,
+            "target_path": req.absolute_path or req.path,
+            "directory_path": "",
+        }
+    return open_scoped_file_in_local_browser(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+    )
 
 
 @router.post("/{entry_id}/files/sync")
