@@ -9,7 +9,11 @@ from typing import Any
 from pathlib import Path
 from types import GeneratorType
 
-from backend.core.fanxiu.runtime.capture_runtime import fanxiu_capture_runtime_service
+from backend.core.fanxiu.runtime.capture_runtime import (
+    FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON,
+    ensure_fanxiu_capture_runtime_backstop,
+    fanxiu_capture_runtime_service,
+)
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
@@ -180,6 +184,19 @@ class MailTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少邮件_清理资产树路径，无法执行邮件作业")
+        try:
+            capture_status = ensure_fanxiu_capture_runtime_backstop(FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON)
+            with self._lock:
+                self._log_locked(
+                    "info",
+                    "邮件_抓包：清理入口兜底 "
+                    f"ensured={bool(capture_status.get('ensured'))} "
+                    f"state={((capture_status.get('status') or {}).get('state') if isinstance(capture_status, dict) else '')}",
+                )
+        except Exception as exc:
+            with self._lock:
+                self._log_locked("error", f"邮件_抓包：清理入口兜底失败：{exc}")
+            raise
         max_actions = max(1, int(payload.get("max_actions") or 20))
         max_scrolls = max(1, int(payload.get("max_scrolls") or 24))
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)

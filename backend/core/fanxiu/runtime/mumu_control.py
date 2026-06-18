@@ -983,6 +983,17 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
             final_state["resolution"] = resolution_result
             final_state["window_size"] = window_size_result
             final_state["recovered"] = True
+            try:
+                from backend.core.fanxiu.runtime.capture_runtime import (
+                    FANXIU_CAPTURE_RUNTIME_MUMU_RECOVERY_REASON,
+                    ensure_fanxiu_capture_runtime_backstop,
+                )
+
+                final_state["capture_runtime"] = ensure_fanxiu_capture_runtime_backstop(
+                    FANXIU_CAPTURE_RUNTIME_MUMU_RECOVERY_REASON,
+                )
+            except Exception as exc:
+                final_state["capture_runtime"] = {"ok": False, "ensured": False, "error": str(exc)}
             _append_mumu_device_health_event(
                 "recovery_success",
                 {"reason": reason, "state": final_state},

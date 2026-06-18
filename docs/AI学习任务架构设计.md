@@ -11,8 +11,8 @@
 - 每个学习器都有清晰主题，例如 UI 审美、API 命名、服务验证或项目结构。
 - 学习器按时间增量处理 Codex 原始会话，不反复暴力扫描全部历史。
 - 原始会话和派生分析产物严格分层，默认不把分析器自己的输出当学习素材。
-- 定时任务默认只生成报告和 patch 建议，人工确认后才写入 skill。
-- 新学习器通过“作业 +”按需添加，不默认进入运行清单。
+- Codex 自动化默认只生成报告和 patch 建议，人工确认后才写入 skill。
+- 新学习器通过 Codex automation 显式创建和启停，不注册为 CodeYun 后台作业。
 
 ## 总体设计
 
@@ -58,6 +58,21 @@ flowchart TD
 
 - 保存完整原始聊天全文。
 - 直接执行 skill 写入。
+
+### Codex Automation
+
+职责：
+
+- 承载需要 AI 推理能力的定期学习任务。
+- 读取 CodeYun 暴露的 Codex 原始会话总汇和本地 skill 文件。
+- 按 LearningJob 的边界增量扫描、归纳和生成 patch 建议。
+- 将运行报告写入数据目录或 docs 中约定的位置。
+
+不负责：
+
+- 作为 CodeYun 后端常驻作业运行。
+- 绕过人工确认直接修改 skill。
+- 默认消费自身产生的报告。
 
 ### Checkpoint
 
@@ -124,18 +139,18 @@ flowchart TD
 - 生成面向 `D:/home/chenkunze/slns/skills/前端UI规范/SKILL.md` 的 patch 建议。
 - 不直接修改 skill。
 
-作业类型：
+Codex 自动化：
 
-- key：`ui_design_skill_learning`
-- 分类：`AI`
-- 默认可见：否
-- 默认启用：否
-- 默认调度：每天 `03:10`
-- 运行产物：数据目录 `ai-learning/ui-design/` 下的 JSON 报告和 Markdown patch 建议。
+- automation 名称：`UI 自主学习`
+- 建议调度：每天 `03:10`
+- 运行环境：Codex cron automation，工作目录为 `D:/home/chenkunze/slns/codeyun`
+- 输入：CodeYun 的 Codex 会话缓存、目标 skill、上次 checkpoint。
+- 输出：学习报告和 `前端UI规范` skill patch 建议。
+- 写入策略：默认只写报告和建议，不直接修改 skill；需要人工确认后再执行写入。
 
 v1 扫描策略：
 
-- 读取 Codex 会话概览。
+- 读取 Codex 会话总汇或 `/cluster/codex` 背后的原始会话缓存。
 - 按 `updated_at` 升序处理 checkpoint 之后的 thread。
 - 对消息应用 UI 关键词和用户纠正关键词。
 - 排除包含 EvoMind、自主学习、学习器、案例池等元学习语境且没有具体 UI 信号的内容。
@@ -143,10 +158,10 @@ v1 扫描策略：
 
 v1 有意不做：
 
-- 不调用大模型重写 skill。
 - 不写入 `SKILL.md`。
 - 不做跨主题自动发现。
 - 不消费学习器自己的报告。
+- 不作为 CodeYun 后端作业类型注册。
 
 ## 正交性分析
 
@@ -154,15 +169,16 @@ v1 有意不做：
 
 - 学习主题由 LearningJob 定义，新增 API 学习器不会影响 UI 学习器。
 - 增量进度由 Checkpoint 管理，扫描规则变化不需要改 Codex 原始缓存。
-- 案例提取和 skill 激活分离，自动任务失败不会污染 skill。
+- 案例提取和 skill 激活分离，Codex automation 失败不会污染 skill。
 - 原始数据和派生数据分层，分析器不会默认学习自己的分析过程。
+- CodeYun 负责提供数据底座，Codex automation 负责需要 AI 能力的学习推理，两者不混在同一个后端作业里。
 
 相比旧 EvoMind，这个方案牺牲了“自动发现一切”的野心，但换来更低误伤、更低成本和更明确的人工控制点。
 
 ## 后续实施计划
 
-1. 将 UI 自主学习的启发式候选提取跑稳定。
-2. 为 LearningJob 增加可配置 UI，而不是把关键词写死在代码里。
+1. 创建 `UI 自主学习` Codex automation，并先以报告模式运行。
+2. 为 LearningJob 增加可配置输入，而不是把关键词写死在 CodeYun 后端代码里。
 3. 增加 `rule_hash` 和 `prompt_hash`，规则变化后允许局部重扫。
 4. 增加人工审核页面，展示报告、来源案例和 patch 建议。
 5. 增加激活记录，确认后再写入 skill，并保留回滚依据。

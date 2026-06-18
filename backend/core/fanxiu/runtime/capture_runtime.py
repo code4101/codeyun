@@ -18,6 +18,10 @@ from backend.core.runtime.process_launcher import popen_service, run_quiet
 
 FANXIU_CAPTURE_RUNTIME_SERVICE_KEY = "fanxiu-capture-runtime"
 FANXIU_CAPTURE_RUNTIME_WATCHDOG_REASON = "auto-watchdog"
+FANXIU_CAPTURE_RUNTIME_BEHAVIOR_TREE_REASON = "behavior-tree-backstop"
+FANXIU_CAPTURE_RUNTIME_MUMU_RECOVERY_REASON = "mumu-recovery-backstop"
+FANXIU_CAPTURE_RUNTIME_PACKET_WORKER_REASON = "packet-worker-backstop"
+FANXIU_CAPTURE_RUNTIME_MAIL_TASK_REASON = "mail-task-backstop"
 DEFAULT_FANXIU_DEVICE_ID = "127.0.0.1:7555"
 FANXIU_DEVICE_ID_ENV_KEYS = ("FANXIU_CAPTURE_DEVICE_ID", "FANXIU_ADB_DEVICE_ID")
 DEFAULT_FANXIU_PACKAGE_NAME = "com.frxxcrjpwssc3.ggws"
@@ -886,3 +890,65 @@ class FanxiuCaptureRuntimeService:
 
 
 fanxiu_capture_runtime_service = FanxiuCaptureRuntimeService()
+
+
+def latest_fanxiu_live_capture_summary(*, data_dir: str | Path | None = None) -> dict[str, Any]:
+    live_dir = resolve_fanxiu_tcp_live_capture_dir(data_dir)
+    latest_path: Path | None = None
+    latest_mtime = 0.0
+    latest_size = 0
+    if live_dir.is_dir():
+        for path in live_dir.glob("*.pcap"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime <= latest_mtime:
+                continue
+            latest_path = path
+            latest_mtime = float(stat.st_mtime)
+            latest_size = int(stat.st_size)
+    now = time.time()
+    return {
+        "live_dir": str(live_dir),
+        "latest_pcap": str(latest_path or ""),
+        "latest_mtime": latest_mtime,
+        "latest_age_seconds": round(now - latest_mtime, 3) if latest_mtime else None,
+        "latest_size": latest_size,
+    }
+
+
+def ensure_fanxiu_capture_runtime_backstop(
+    reason: str,
+    *,
+    require_game_running: bool = True,
+    start_watchdog: bool = True,
+) -> dict[str, Any]:
+    """Idempotently recover the always-on capture runtime from adjacent services."""
+    normalized_reason = fanxiu_capture_runtime_service._normalize_reason(reason)
+    before = fanxiu_capture_runtime_service.status()
+    watchdog_status: dict[str, Any] | None = None
+    if start_watchdog and not before.get("watchdog_running"):
+        watchdog_status = fanxiu_capture_runtime_service.start_watchdog()
+    game_running = True
+    if require_game_running:
+        game_running = fanxiu_capture_runtime_service.probe_game_running()
+    if not game_running:
+        return {
+            "ok": True,
+            "ensured": False,
+            "reason": normalized_reason,
+            "skip_reason": "game_not_running",
+            "before": before,
+            "watchdog": watchdog_status,
+            "status": fanxiu_capture_runtime_service.status(),
+        }
+    status = fanxiu_capture_runtime_service.ensure_running(normalized_reason)
+    return {
+        "ok": True,
+        "ensured": True,
+        "reason": normalized_reason,
+        "before": before,
+        "watchdog": watchdog_status,
+        "status": status,
+    }
