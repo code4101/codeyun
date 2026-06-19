@@ -5,17 +5,38 @@ from typing import Any
 
 class SignupMiscTaskMixin:
     def 日常报名流程(self, runtime: Any):
-        yield from runtime.goto_view(69)
-        入口状态 = yield from self._日常报名打开活动报名(runtime)
+        起点状态 = yield from self._日常报名进入日常页(runtime)
+        入口状态 = "报名页" if 起点状态 == "报名页" else (yield from self._日常报名打开活动报名(runtime))
         if 入口状态 == "已完成":
             yield from runtime.goto_view(34)
             return
 
         yield from self._日常报名处理报名列(runtime)
         yield from self._日常报名返回日常页(runtime)
-        yield from runtime.goto_view(34)
+        yield from self._日常报名返回世界(runtime)
+
+    def _日常报名进入日常页(self, runtime: Any):
+        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if self._日常报名文本是报名页(text):
+            return "报名页"
+        if scene_id == 69:
+            return "日常页"
+        if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+            runtime.click_shape_center(34, "日常")
+            yield from runtime.wait_view(69)
+            return "日常页"
+        yield from runtime.goto_view(69)
+        return "日常页"
+
+    def _日常报名文本是报名页(self, text: str) -> bool:
+        normalized = str(text or "")
+        return "报名" in normalized and "活动时间" in normalized and ("已报名" in normalized or "待报名" in normalized)
 
     def _日常报名打开活动报名(self, runtime: Any) -> str:
+        current_text = runtime.ocr_text(runtime.cur_frame(update=True))
+        if self._日常报名文本是报名页(current_text):
+            return "报名页"
         入口状态 = yield from runtime.wait_any({
             "可领取": runtime.shape_visible(75, "活动报名-领取"),
             "已完成": runtime.all_of(
@@ -24,7 +45,13 @@ class SignupMiscTaskMixin:
         })
         if 入口状态 == "可领取":
             yield from runtime.wait_click(75, "活动报名")
-            yield from runtime.wait_view(23)
+            yield from runtime.wait_any(
+                {
+                    "scene": runtime.view_visible(23),
+                    "text": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：报名列表 OCR"),
+                },
+                label="日常_报名：等待报名列表 #23",
+            )
         return 入口状态
 
     def _日常报名处理报名列(self, runtime: Any) -> int:
@@ -64,3 +91,20 @@ class SignupMiscTaskMixin:
             yield from runtime.wait_action_settle(1.0)
             return
         yield from runtime.wait_click(23, "返回")
+
+    def _日常报名返回世界(self, runtime: Any):
+        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+            return
+        if scene_id == 69 or ("日常" in text and "活跃度" in text):
+            yield from runtime.wait_click(69, "退出")
+            yield from runtime.wait_any(
+                {
+                    "scene": runtime.view_visible(34),
+                    "text": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：世界 OCR"),
+                },
+                label="日常_报名：等待返回世界 #34",
+            )
+            return
+        yield from runtime.goto_view(34)

@@ -173,6 +173,17 @@ class DuplicateCandidateCache:
     last_accessed_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class DuplicateAnalysisContext:
+    query_signature: str
+    resolved: dict
+    recursive: bool
+    filter_rules: tuple[dict, ...]
+    min_size: int
+    rules: tuple[str, ...]
+    sort_mode: str
+
+
 @dataclass(slots=True)
 class DuplicateAnalysisTask:
     task_id: str
@@ -1248,31 +1259,26 @@ def _find_duplicate_candidate_cache(
 
 def _store_duplicate_candidate_cache(
     *,
-    root: str | None,
-    path: str,
-    absolute_path: str,
-    recursive: bool,
+    context: DuplicateAnalysisContext,
     source: str,
     source_detail: str,
-    filter_rules: tuple[dict, ...],
-    min_size: int,
     candidates: list[DuplicateFileCandidate],
     scanned_file_count: int,
     complete: bool,
 ) -> None:
-    if not recursive or not candidates:
+    if not context.recursive or not candidates:
         return
     now = time.time()
     cache = DuplicateCandidateCache(
         cache_id=uuid4().hex,
-        root=root,
-        path=path,
-        absolute_path=absolute_path,
-        recursive=recursive,
+        root=context.resolved["root"],
+        path=context.resolved["path"],
+        absolute_path=context.resolved["absolute_path"],
+        recursive=context.recursive,
         source=source,
         source_detail=source_detail,
-        filter_rules=filter_rules,
-        min_size=min_size,
+        filter_rules=context.filter_rules,
+        min_size=context.min_size,
         candidates=list(candidates),
         scanned_file_count=scanned_file_count,
         complete=complete,
@@ -2585,10 +2591,7 @@ def _complete_duplicate_analysis_task_from_snapshot(
 def _finish_duplicate_analysis_task(
     task_id: str,
     *,
-    query_signature: str,
-    root: str | None,
-    path: str,
-    absolute_path: str,
+    context: DuplicateAnalysisContext,
     groups: list[dict],
     scanned_file_count: int,
     candidate_file_count: int,
@@ -2598,10 +2601,10 @@ def _finish_duplicate_analysis_task(
     complete: bool,
 ) -> None:
     snapshot = _store_duplicate_listing_snapshot(
-        query_signature=query_signature,
-        root=root,
-        path=path,
-        absolute_path=absolute_path,
+        query_signature=context.query_signature,
+        root=context.resolved["root"],
+        path=context.resolved["path"],
+        absolute_path=context.resolved["absolute_path"],
         groups=groups,
         scanned_file_count=scanned_file_count,
         candidate_file_count=candidate_file_count,
@@ -2633,21 +2636,15 @@ def _try_complete_duplicate_analysis_task_from_candidate_cache(
     task_id: str,
     target_path: Path,
     *,
-    query_signature: str,
-    resolved: dict,
+    context: DuplicateAnalysisContext,
     source: str,
-    recursive: bool,
-    filter_rules: tuple[dict, ...],
-    min_size: int,
-    rules: tuple[str, ...],
-    sort_mode: str,
 ) -> bool:
     cached_candidates = _find_duplicate_candidate_cache(
         target_path,
         source=source,
-        recursive=recursive,
-        filter_rules=filter_rules,
-        min_size=min_size,
+        recursive=context.recursive,
+        filter_rules=context.filter_rules,
+        min_size=context.min_size,
     )
     if cached_candidates is None:
         return False
@@ -2664,15 +2661,12 @@ def _try_complete_duplicate_analysis_task_from_candidate_cache(
     )
     groups, hash_computed_count = _build_duplicate_groups(
         candidates,
-        rules=rules,
-        sort_mode=sort_mode,
+        rules=context.rules,
+        sort_mode=context.sort_mode,
     )
     _finish_duplicate_analysis_task(
         task_id,
-        query_signature=query_signature,
-        root=resolved["root"],
-        path=resolved["path"],
-        absolute_path=resolved["absolute_path"],
+        context=context,
         groups=groups,
         scanned_file_count=len(candidates),
         candidate_file_count=len(candidates),
@@ -2688,13 +2682,7 @@ def _try_complete_duplicate_analysis_task_from_everything(
     task_id: str,
     target_path: Path,
     *,
-    query_signature: str,
-    resolved: dict,
-    recursive: bool,
-    filter_rules: tuple[dict, ...],
-    min_size: int,
-    rules: tuple[str, ...],
-    sort_mode: str,
+    context: DuplicateAnalysisContext,
     source: str,
     scan_limit: int,
 ) -> bool:
@@ -2710,10 +2698,10 @@ def _try_complete_duplicate_analysis_task_from_everything(
     )
     everything_result = _load_duplicate_candidates_from_everything(
         target_path,
-        resolved=resolved,
-        rules=rules,
-        filter_rules=filter_rules,
-        min_size=min_size,
+        resolved=context.resolved,
+        rules=context.rules,
+        filter_rules=context.filter_rules,
+        min_size=context.min_size,
         scan_limit=scan_limit,
     )
     if everything_result is None:
@@ -2735,28 +2723,20 @@ def _try_complete_duplicate_analysis_task_from_everything(
     )
     groups, hash_computed_count = _build_duplicate_groups(
         candidates,
-        rules=rules,
-        sort_mode=sort_mode,
+        rules=context.rules,
+        sort_mode=context.sort_mode,
     )
     _store_duplicate_candidate_cache(
-        root=resolved["root"],
-        path=resolved["path"],
-        absolute_path=resolved["absolute_path"],
-        recursive=recursive,
+        context=context,
         source="everything",
         source_detail=source_detail,
-        filter_rules=filter_rules,
-        min_size=min_size,
         candidates=candidates,
         scanned_file_count=len(candidates),
         complete=complete,
     )
     _finish_duplicate_analysis_task(
         task_id,
-        query_signature=query_signature,
-        root=resolved["root"],
-        path=resolved["path"],
-        absolute_path=resolved["absolute_path"],
+        context=context,
         groups=groups,
         scanned_file_count=len(candidates),
         candidate_file_count=len(candidates),
@@ -2772,13 +2752,7 @@ def _complete_duplicate_analysis_task_from_filesystem(
     task_id: str,
     target_path: Path,
     *,
-    query_signature: str,
-    resolved: dict,
-    recursive: bool,
-    filter_rules: tuple[dict, ...],
-    min_size: int,
-    rules: tuple[str, ...],
-    sort_mode: str,
+    context: DuplicateAnalysisContext,
     scan_limit: int,
 ) -> None:
     def publish_partial(
@@ -2790,11 +2764,11 @@ def _complete_duplicate_analysis_task_from_filesystem(
     ) -> None:
         groups: list[dict] = []
         hash_computed_count = 0
-        if candidates and "sha256" not in rules and force_groups:
+        if candidates and "sha256" not in context.rules and force_groups:
             groups, hash_computed_count = _build_duplicate_groups(
                 list(candidates),
-                rules=rules,
-                sort_mode=sort_mode,
+                rules=context.rules,
+                sort_mode=context.sort_mode,
             )
         _update_duplicate_analysis_task(
             task_id,
@@ -2810,7 +2784,7 @@ def _complete_duplicate_analysis_task_from_filesystem(
     candidates: list[DuplicateFileCandidate] = []
     scanned_file_count = 0
     complete = True
-    root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+    root_path = None if context.resolved["is_absolute"] else resolve_root_path(context.resolved["root"])
     last_publish_time = time.monotonic()
     last_publish_candidate_count = 0
     _update_duplicate_analysis_task(
@@ -2820,12 +2794,12 @@ def _complete_duplicate_analysis_task_from_filesystem(
         source="filesystem",
         source_detail="filesystem traversal",
     )
-    for file_path in _iter_duplicate_candidate_paths(target_path, recursive=recursive):
-        candidate = _build_duplicate_candidate_from_path(file_path, resolved=resolved, root_path=root_path)
+    for file_path in _iter_duplicate_candidate_paths(target_path, recursive=context.recursive):
+        candidate = _build_duplicate_candidate_from_path(file_path, resolved=context.resolved, root_path=root_path)
         if candidate is None:
             continue
         scanned_file_count += 1
-        if _duplicate_path_allowed(candidate.absolute_path, filter_rules) and candidate.size >= min_size:
+        if _duplicate_path_allowed(candidate.absolute_path, context.filter_rules) and candidate.size >= context.min_size:
             candidates.append(candidate)
         if scanned_file_count >= scan_limit:
             complete = False
@@ -2843,13 +2817,13 @@ def _complete_duplicate_analysis_task_from_filesystem(
                 candidates=candidates,
                 scanned_file_count=scanned_file_count,
                 message="正在遍历文件",
-                force_groups="sha256" not in rules,
+                force_groups="sha256" not in context.rules,
             )
 
     _update_duplicate_analysis_task(
         task_id,
-        stage="hashing" if "sha256" in rules else "grouping",
-        message="正在计算哈希" if "sha256" in rules else "正在整理重复组",
+        stage="hashing" if "sha256" in context.rules else "grouping",
+        message="正在计算哈希" if "sha256" in context.rules else "正在整理重复组",
         scanned_file_count=scanned_file_count,
         candidate_file_count=len(candidates),
         source="filesystem",
@@ -2858,28 +2832,20 @@ def _complete_duplicate_analysis_task_from_filesystem(
     )
     groups, hash_computed_count = _build_duplicate_groups(
         candidates,
-        rules=rules,
-        sort_mode=sort_mode,
+        rules=context.rules,
+        sort_mode=context.sort_mode,
     )
     _store_duplicate_candidate_cache(
-        root=resolved["root"],
-        path=resolved["path"],
-        absolute_path=resolved["absolute_path"],
-        recursive=recursive,
+        context=context,
         source="filesystem",
         source_detail="filesystem traversal",
-        filter_rules=filter_rules,
-        min_size=min_size,
         candidates=candidates,
         scanned_file_count=scanned_file_count,
         complete=complete,
     )
     _finish_duplicate_analysis_task(
         task_id,
-        query_signature=query_signature,
-        root=resolved["root"],
-        path=resolved["path"],
-        absolute_path=resolved["absolute_path"],
+        context=context,
         groups=groups,
         scanned_file_count=scanned_file_count,
         candidate_file_count=len(candidates),
@@ -2926,32 +2892,29 @@ def _run_duplicate_analysis_task(
         message="准备分析",
         started_at=now,
     )
+    context = DuplicateAnalysisContext(
+        query_signature=query_signature,
+        resolved=resolved,
+        recursive=recursive,
+        filter_rules=filter_rules,
+        min_size=min_size,
+        rules=rules,
+        sort_mode=sort_mode,
+    )
 
     try:
         if _try_complete_duplicate_analysis_task_from_candidate_cache(
             task_id,
             target_path,
-            query_signature=query_signature,
-            resolved=resolved,
+            context=context,
             source=source,
-            recursive=recursive,
-            filter_rules=filter_rules,
-            min_size=min_size,
-            rules=rules,
-            sort_mode=sort_mode,
         ):
             return
 
         if _try_complete_duplicate_analysis_task_from_everything(
             task_id,
             target_path,
-            query_signature=query_signature,
-            resolved=resolved,
-            recursive=recursive,
-            filter_rules=filter_rules,
-            min_size=min_size,
-            rules=rules,
-            sort_mode=sort_mode,
+            context=context,
             source=source,
             scan_limit=scan_limit,
         ):
@@ -2960,13 +2923,7 @@ def _run_duplicate_analysis_task(
         _complete_duplicate_analysis_task_from_filesystem(
             task_id,
             target_path,
-            query_signature=query_signature,
-            resolved=resolved,
-            recursive=recursive,
-            filter_rules=filter_rules,
-            min_size=min_size,
-            rules=rules,
-            sort_mode=sort_mode,
+            context=context,
             scan_limit=scan_limit,
         )
     except Exception as exc:

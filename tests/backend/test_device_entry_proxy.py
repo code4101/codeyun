@@ -8,14 +8,120 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from PIL import Image
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import object_session
-from sqlmodel import select
+from sqlmodel import SQLModel, Session, create_engine, select
 
 from backend.api import device_entries as device_entries_api
 from backend.api.filesystem import DEVICE_ROOT_SENTINEL, FILESYSTEM_DELETE_TASKS_STATE_FILE, delete_scoped_entry
-from backend.models import DeviceFile, UserDevice
+from backend.app import app
+from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.devices.device import device_manager
 from backend.core.settings import get_settings
+from backend.db import get_session
+from backend.models import DeviceFile, User, UserDevice
+
+
+@pytest.fixture(scope="module")
+def duplicate_file_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    yield engine
+    SQLModel.metadata.drop_all(engine)
+
+
+@pytest.fixture
+def duplicate_file_session(duplicate_file_engine):
+    with Session(duplicate_file_engine) as session:
+        yield session
+        for table in reversed(SQLModel.metadata.sorted_tables):
+            session.execute(table.delete())
+        session.commit()
+
+
+@pytest.fixture
+def duplicate_file_client(duplicate_file_session):
+    app.dependency_overrides[get_session] = lambda: duplicate_file_session
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def duplicate_file_auth_user(duplicate_file_session, duplicate_file_client):
+    user = User(
+        username="duplicate-file-user",
+        email="duplicate-file-user@example.com",
+        hashed_password="pw",
+        is_active=True,
+    )
+    duplicate_file_session.add(user)
+    duplicate_file_session.commit()
+    duplicate_file_session.refresh(user)
+    app.dependency_overrides[get_current_user_from_token] = lambda: user
+    app.dependency_overrides[get_optional_current_user_from_token] = lambda: user
+    yield user
+    app.dependency_overrides.pop(get_current_user_from_token, None)
+    app.dependency_overrides.pop(get_optional_current_user_from_token, None)
+
+
+@pytest.fixture
+def duplicate_file_test_device(monkeypatch):
+    device_id = "test-device-local"
+    token = "test-token-123"
+    monkeypatch.setattr("socket.gethostname", lambda: "Test Local Device")
+    monkeypatch.setattr(
+        "backend.core.devices.device._load_machine_identity",
+        lambda: {
+            "device_id": device_id,
+            "device_identity_version": 2,
+            "device_identity_source": "test",
+        },
+    )
+    monkeypatch.setattr("backend.core.devices.device._save_machine_identity", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("backend.core.devices.device.get_device_token", lambda: token)
+    monkeypatch.setattr("backend.core.devices.device.get_device_id", lambda: device_id)
+    monkeypatch.setattr("backend.api.device.get_device_id", lambda: device_id)
+    monkeypatch.setattr("backend.api.device_entries.get_device_id", lambda: device_id)
+    monkeypatch.setattr("backend.api.device_control.get_device_id", lambda: device_id)
+    device_manager.devices = {}
+    device_manager.load()
+    yield {"id": device_id, "token": token}
+    device_manager.devices = {}
+
+
+def _create_duplicate_file_entry_id(client: TestClient) -> str:
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    return entry_resp.json()["id"]
+
+
+def _wait_duplicate_file_task_payload(client: TestClient, entry_id: str, task_id: str) -> dict:
+    payload = {"task_id": task_id}
+    for _ in range(20):
+        status_resp = client.get(
+            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{task_id}",
+            params={"page": 1, "page_size": 10},
+        )
+        assert status_resp.status_code == 200
+        payload = status_resp.json()
+        if payload["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+    return payload
 
 
 def test_local_entry_proxy_create_and_list_tasks(client, auth_user, test_device):
@@ -303,7 +409,9 @@ def test_delete_scoped_entry_refuses_filesystem_root(tmp_path):
     assert "root" in exc_info.value.detail.lower()
 
 
-def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(client, auth_user, test_device, tmp_path):
+def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(
+    duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path
+):
     duplicate_root = tmp_path / "duplicate-root"
     left_dir = duplicate_root / "left"
     right_dir = duplicate_root / "right"
@@ -315,18 +423,9 @@ def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(client, auth_u
     (right_dir / "same-copy.bin").write_bytes(b"same-content")
     (extra_dir / "same-size.bin").write_bytes(b"same-contend")
 
-    entry_resp = client.post(
-        "/api/devices/add",
-        json={
-            "mode": "local",
-            "token": "local-entry-token",
-            "alias": "当前机器",
-        },
-    )
-    assert entry_resp.status_code == 200
-    entry_id = entry_resp.json()["id"]
+    entry_id = _create_duplicate_file_entry_id(duplicate_file_client)
 
-    size_resp = client.post(
+    size_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates",
         json={
             "absolute_path": str(duplicate_root),
@@ -341,7 +440,7 @@ def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(client, auth_u
     assert size_payload["groups"][0]["file_count"] == 3
     assert size_payload["groups"][0]["reclaimable_bytes"] == len(b"same-content") * 2
 
-    hash_resp = client.post(
+    hash_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates",
         json={
             "absolute_path": str(duplicate_root),
@@ -359,7 +458,9 @@ def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(client, auth_u
     assert {item["name"] for item in hash_group["files"]} == {"same.bin", "same-copy.bin"}
 
 
-def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, auth_user, test_device, tmp_path):
+def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(
+    duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path
+):
     duplicate_root = tmp_path / "duplicate-page-root"
     first_dir = duplicate_root / "first"
     second_dir = duplicate_root / "second"
@@ -371,18 +472,9 @@ def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, 
         (first_dir / filename).write_bytes(payload)
         (second_dir / filename).write_bytes(payload)
 
-    entry_resp = client.post(
-        "/api/devices/add",
-        json={
-            "mode": "local",
-            "token": "local-entry-token",
-            "alias": "当前机器",
-        },
-    )
-    assert entry_resp.status_code == 200
-    entry_id = entry_resp.json()["id"]
+    entry_id = _create_duplicate_file_entry_id(duplicate_file_client)
 
-    first_page_resp = client.post(
+    first_page_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates",
         json={
             "absolute_path": str(duplicate_root),
@@ -399,7 +491,7 @@ def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, 
     assert len(first_page["groups"]) == 10
     assert first_page["snapshot_id"]
 
-    second_page_resp = client.post(
+    second_page_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates",
         json={
             "absolute_path": str(duplicate_root),
@@ -419,7 +511,9 @@ def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, 
     assert len(second_page["groups"]) == 1
 
 
-def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(client, auth_user, test_device, tmp_path):
+def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(
+    duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path
+):
     duplicate_root = tmp_path / "duplicate-task-root"
     keep_dir = duplicate_root / "keep"
     recycle_dir = duplicate_root / "$Recycle.Bin"
@@ -429,18 +523,9 @@ def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(
     (keep_dir / "same-b.bin").write_bytes(b"same-content")
     (recycle_dir / "same-c.bin").write_bytes(b"same-content")
 
-    entry_resp = client.post(
-        "/api/devices/add",
-        json={
-            "mode": "local",
-            "token": "local-entry-token",
-            "alias": "当前机器",
-        },
-    )
-    assert entry_resp.status_code == 200
-    entry_id = entry_resp.json()["id"]
+    entry_id = _create_duplicate_file_entry_id(duplicate_file_client)
 
-    start_resp = client.post(
+    start_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates/tasks",
         json={
             "absolute_path": str(duplicate_root),
@@ -456,16 +541,7 @@ def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(
     payload = start_resp.json()
     assert payload["task_id"]
 
-    for _ in range(20):
-        status_resp = client.get(
-            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
-            params={"page": 1, "page_size": 10},
-        )
-        assert status_resp.status_code == 200
-        payload = status_resp.json()
-        if payload["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.05)
+    payload = _wait_duplicate_file_task_payload(duplicate_file_client, entry_id, payload["task_id"])
 
     assert payload["status"] == "completed"
     assert payload["total_groups"] == 1
@@ -475,7 +551,7 @@ def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(
 
 
 def test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable(
-    client, auth_user, test_device, tmp_path, monkeypatch
+    duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path, monkeypatch
 ):
     duplicate_root = tmp_path / "duplicate-everything-unavailable-root"
     duplicate_root.mkdir()
@@ -483,18 +559,9 @@ def test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable(
     (duplicate_root / "same-b.bin").write_bytes(b"same-content")
     monkeypatch.setattr("backend.api.filesystem._load_duplicate_candidates_from_everything", lambda *_, **__: None)
 
-    entry_resp = client.post(
-        "/api/devices/add",
-        json={
-            "mode": "local",
-            "token": "local-entry-token",
-            "alias": "当前机器",
-        },
-    )
-    assert entry_resp.status_code == 200
-    entry_id = entry_resp.json()["id"]
+    entry_id = _create_duplicate_file_entry_id(duplicate_file_client)
 
-    start_resp = client.post(
+    start_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates/tasks",
         json={
             "absolute_path": str(duplicate_root),
@@ -507,16 +574,7 @@ def test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable(
     payload = start_resp.json()
     assert payload["task_id"]
 
-    for _ in range(20):
-        status_resp = client.get(
-            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
-            params={"page": 1, "page_size": 10},
-        )
-        assert status_resp.status_code == 200
-        payload = status_resp.json()
-        if payload["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.05)
+    payload = _wait_duplicate_file_task_payload(duplicate_file_client, entry_id, payload["task_id"])
 
     assert payload["status"] == "failed"
     assert payload["stage"] == "failed"
@@ -524,24 +582,17 @@ def test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable(
     assert payload["complete"] is False
 
 
-def test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit(client, auth_user, test_device, tmp_path):
+def test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit(
+    duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path
+):
     duplicate_root = tmp_path / "duplicate-scan-limit-root"
     duplicate_root.mkdir()
     for index in range(3):
         (duplicate_root / f"file-{index}.bin").write_bytes(b"same-content")
 
-    entry_resp = client.post(
-        "/api/devices/add",
-        json={
-            "mode": "local",
-            "token": "local-entry-token",
-            "alias": "当前机器",
-        },
-    )
-    assert entry_resp.status_code == 200
-    entry_id = entry_resp.json()["id"]
+    entry_id = _create_duplicate_file_entry_id(duplicate_file_client)
 
-    start_resp = client.post(
+    start_resp = duplicate_file_client.post(
         f"/api/device-entries/{entry_id}/files/duplicates/tasks",
         json={
             "absolute_path": str(duplicate_root),
@@ -555,16 +606,7 @@ def test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit(client, au
     payload = start_resp.json()
     assert payload["task_id"]
 
-    for _ in range(20):
-        status_resp = client.get(
-            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
-            params={"page": 1, "page_size": 10},
-        )
-        assert status_resp.status_code == 200
-        payload = status_resp.json()
-        if payload["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.05)
+    payload = _wait_duplicate_file_task_payload(duplicate_file_client, entry_id, payload["task_id"])
 
     assert payload["status"] == "completed"
     assert payload["scan_limit"] == 1

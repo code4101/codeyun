@@ -433,6 +433,16 @@ class DailyResourceTaskMixin:
             return True
         return False
 
+    def _daily_youli_text_is_region_completed(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        compact = re.sub(r"\s+", "", normalized)
+        return (
+            "修仙传" in compact
+            and "探索完成" in compact
+            and ("游历" in compact or "道祖逸闻" in compact or "北寒蛮荒" in compact)
+            and "挑战" not in compact
+        )
+
     def _daily_youli_text_is_quick_result(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         return "游历" in normalized and ("总共获得宝物" in normalized or "游历消耗" in normalized) and "确定" in normalized
@@ -674,11 +684,25 @@ class DailyResourceTaskMixin:
         runtime.click_shape_center(236, "快速游历")
         yield from runtime.wait_action_settle(float(payload.get("quick_travel_settle_seconds") or 2.0))
         self._log("success", f"{task_label}：已点击快速游历")
-        yield from self._wait_daily_youli_quick_result(
-            ctx,
-            stop_event,
-            label=f"{task_label}：等待游历结果 #237",
+        result = yield from runtime.wait_any(
+            {
+                "result": runtime.ocr_matches(
+                    self._daily_youli_text_is_quick_result,
+                    label=f"{task_label}：等待游历结果 #237 OCR",
+                    preview_chars=120,
+                ),
+                "completed": runtime.ocr_matches(
+                    self._daily_youli_text_is_region_completed,
+                    label=f"{task_label}：等待游历区域已完成 OCR",
+                    preview_chars=120,
+                ),
+            },
+            timeout=float(payload.get("quick_result_timeout") or self._daily_default_wait_condition_timeout),
+            label=f"{task_label}：等待游历结果或已完成",
         )
+        if result == "completed":
+            self._log("success", f"{task_label}：游历区域已显示探索完成，按幂等完成处理")
+            return "success"
         return (yield from self._confirm_daily_youli_quick_result(ctx, stop_event, payload, image237, task_label=task_label))
 
     def _confirm_daily_youli_quick_result(
@@ -722,7 +746,32 @@ class DailyResourceTaskMixin:
             return "success"
         if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
             yield from runtime.wait_click(236, "返回")
-            yield from self._wait_daily_youli_home(ctx, stop_event, label=f"{task_label}：等待修仙传游历 #228")
+            result = yield from runtime.wait_any(
+                {
+                    "home": runtime.ocr_matches(
+                        self._daily_youli_text_is_home,
+                        label=f"{task_label}：等待修仙传游历 #228 OCR",
+                        preview_chars=120,
+                    ),
+                    "world_scene": runtime.view_visible(34),
+                    "world_text": runtime.ocr_matches(
+                        self._daily_lingta_text_is_world_like,
+                        label=f"{task_label}：等待世界 OCR",
+                        preview_chars=120,
+                    ),
+                },
+                timeout=18.0,
+                label=f"{task_label}：等待返回修仙传或世界",
+            )
+            if result in {"world_scene", "world_text"}:
+                self._record_daily_entry_done(
+                    {},
+                    task_id="legacy-daily-youli",
+                    task_type="daily_youli",
+                    label=task_label,
+                    message="游历已完成并回到世界",
+                )
+                return "success"
         else:
             yield from self._wait_daily_youli_home(ctx, stop_event, label=f"{task_label}：等待修仙传游历 #228")
 

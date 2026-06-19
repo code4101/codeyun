@@ -227,3 +227,45 @@ def test_docs_sync_scan_ignores_template_placeholder_paths(monkeypatch, tmp_path
 
     assert result["missing_path_ref_count"] == 1
     assert result["issues"][0]["ref"] == "backend/missing.py"
+
+
+def test_docs_sync_scan_ignores_intentional_legacy_and_generated_dirs(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    (repo / "AGENTS.md").write_text(
+        "\n".join(
+            [
+                "Do not fall back to `backend/data/`: 不要再回落到 `backend/data/`。",
+                "Script state is stored in `frontend/.codeyun-state/`, and the directory is in `.gitignore`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (scripts / "README.md").write_text(
+        "The build script writes source fingerprints to `frontend/.codeyun-state/`.",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 0
+
+
+def test_docs_sync_scan_still_reports_unqualified_missing_dirs(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    docs.mkdir(parents=True)
+    (docs / "guide.md").write_text(
+        "Store files under `backend/data/` for now.",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(idle_maintenance, "ROOT_DIR", repo)
+
+    result = idle_maintenance._run_docs_sync_scan_task()
+
+    assert result["missing_path_ref_count"] == 1
+    assert result["issues"][0]["ref"] == "backend/data/"
