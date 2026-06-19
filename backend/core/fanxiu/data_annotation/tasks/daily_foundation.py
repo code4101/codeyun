@@ -54,6 +54,10 @@ class DailyFoundationTaskMixin:
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, _score, _frame = runtime.current_scene(update=True)
         current_text = runtime.ocr_text(_frame)
+        if self._daily_boss_done_text(current_text):
+            return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
+        if self._daily_boss_combat_in_progress_text(current_text):
+            return (yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload))
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
@@ -61,11 +65,11 @@ class DailyFoundationTaskMixin:
                 return (yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload))
             if scene_id == 181:
                 return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
+        elif self._daily_boss_text_is_detail(current_text):
+            scene_id = 179
         elif self._daily_boss_text_is_list(current_text):
             scene_id = 178
         else:
-            if self._daily_boss_done_text(current_text):
-                return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
             current_cd = _parse_daily_boss_cd_seconds(current_text)
             if current_cd and current_cd > 0:
                 next_time = self._record_daily_boss_recheck_time(payload, seconds=max(60, current_cd))
@@ -77,8 +81,6 @@ class DailyFoundationTaskMixin:
                     )
                     self._log_locked("skip", self._status["message"])
                 return "skipped"
-            if self._daily_boss_combat_in_progress_text(current_text):
-                return (yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload))
 
         if scene_id != 179:
             if scene_id != 178:
@@ -224,7 +226,18 @@ class DailyFoundationTaskMixin:
                     )
                     self._log_locked("action", f"日常_首领：点击 #178「{text}」")
                 runtime.click_frame_point(178, click_x, y)
-                yield from runtime.wait_view(179, label="日常_首领：等待首领详情 #179")
+                yield from runtime.wait_any(
+                    {
+                        "scene": runtime.view_visible(179),
+                        "detail": runtime.ocr_matches(
+                            self._daily_boss_text_is_detail,
+                            label="日常_首领：首领详情 OCR",
+                            preview_chars=120,
+                        ),
+                    },
+                    timeout=45.0,
+                    label="日常_首领：等待首领详情 #179",
+                )
                 return "opened"
 
             with self._lock:
@@ -606,7 +619,7 @@ class DailyFoundationTaskMixin:
                 leave_shape.click(runtime)
                 try:
                     yield from runtime.wait_view_id(178, timeout=20.0, label="日常_首领：等待首领列表 #178")
-                except RuntimeError as exc:
+                except Exception as exc:
                     with self._lock:
                         self._log_locked("warning", f"日常_首领：离开 #181 后未能回到 #178 读取刷新时间：{exc}")
             else:
@@ -616,6 +629,11 @@ class DailyFoundationTaskMixin:
         scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
         if scene_id == 178:
             return self._record_daily_boss_next_time_from_current_list(ctx, payload)
+        opened = yield from self._open_daily_boss_list_after_leaving_fight(ctx, runtime, stop_event)
+        if opened:
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+            if scene_id == 178 or self._daily_boss_text_is_list(_text):
+                return self._record_daily_boss_next_time_from_current_list(ctx, payload)
 
         next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
         return next_time, "未能可靠读取 #182 刷新时间，半小时后复查"
@@ -650,6 +668,18 @@ class DailyFoundationTaskMixin:
             "首领" in normalized
             and "首领境界" in normalized
             and ("剩余奖励次数" in normalized or "掉落记录" in normalized)
+        )
+
+    def _daily_boss_text_is_detail(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        normalized = re.sub(r"\s+", "", normalized)
+        return (
+            "首领规则" in normalized
+            and (
+                "剩余奖励次数" in normalized
+                or "前往挑战" in normalized
+                or "神识注视" in normalized
+            )
         )
 
     def _daily_boss_combat_in_progress_text(self, text: str) -> bool:

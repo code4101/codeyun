@@ -189,15 +189,14 @@ codex exec `
 
 ## 7. 建议落地文件
 
-```text
-backend/core/subagents/
-  __init__.py
-  models.py
-  service.py
-  codex_cli.py
+当前仓库尚未落地 SubAgent 专用后端模块。本节记录的是拟新增结构，不表示这些路径已经存在。
 
-backend/api/device_control_subagents.py
-```
+- 拟新增核心包：`backend.core.subagents`
+  - `__init__.py`
+  - `models.py`
+  - `service.py`
+  - `codex_cli.py`
+- 拟新增本机接口模块：`device_control_subagents.py`
 
 本机接口挂载到 `backend/standard/cluster/control/module.py` 的 `/api/device-control` 下。
 

@@ -607,6 +607,8 @@ def _chat_with_codex_cli(
             "--ignore-user-config",
             "--disable",
             "image_generation",
+            "--disable",
+            "plugins",
             "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
             "--color",

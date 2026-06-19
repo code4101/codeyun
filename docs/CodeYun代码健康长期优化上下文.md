@@ -307,6 +307,362 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 - `risk`: low
 - `verification`: `rg --files frontend/src/standard` 映射核验，一次只读 `docs_sync_scan`
 
+优先级 1L 已完成：
+
+- `object`: `docs/筛选与排序实现说明.md` 旧 notes/cluster 页面路径漂移
+- `action`: 已将旧 notes 列表、全局星系、日历页面和设备文件浏览路径更新为当前 `frontend/src/standard/...` 入口；后端 note walker 路径同步为当前 `backend/core/notes/walker.py`
+- `success_metric`: 替换路径均通过存在性核验；该文档候选清零；`docs_sync_scan` 总候选从 13 降到 8
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 8 条且目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-022754-docs_sync_scan.json`
+
+新的优先级 1M：
+
+- `object`: `docs/分层上下文压缩设计.md` 旧后端模块路径漂移
+- `action`: 核验旧 `hierarchical_reduction` 模块是否迁移、删除或尚未实现；若当前实现存在则修正文档，否则产出候选结论
+- `success_metric`: 该文档候选有明确处置：修正路径或标记为设计候选而非当前实现路径
+- `risk`: low
+- `verification`: `rg --files backend/core` 映射核验，一次只读 `docs_sync_scan`
+
+优先级 1M 已完成：
+
+- `object`: `docs/分层上下文压缩设计.md` 旧后端模块路径漂移
+- `action`: 已将通用分层压缩引擎路径更新为当前 `backend/core/ai/hierarchical_reduction.py`，并把 Git profile 与设备侧拆分入口同步为当前 `backend/core/ai/git_reduction.py`、`/{entry_id}/git/reduce`、`/{entry_id}/git/reduce-runs`
+- `success_metric`: 目标文档在 `docs_sync_scan` 中候选清零；总缺失路径候选从 8 降到 7
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 7 条且目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-025158-docs_sync_scan.json`
+
+新的优先级 1N：
+
+- `object`: `docs/远端SubAgent能力设计.md` 旧 SubAgent 后端路径漂移
+- `action`: 核验 `backend.core.subagents` 包与 `device_control_subagents.py` 接口模块是否已迁移、删除或尚未实现；若有当前入口则修正文档，否则将设计文档标记为待实现候选，避免被当成当前事实路径
+- `success_metric`: 该文档候选有明确处置；若修正路径则每个替换路径有存在性证据
+- `risk`: low
+- `verification`: `rg -n "subagent|subagents|device_control_subagents" backend docs/远端SubAgent能力设计.md`，一次只读 `docs_sync_scan`
+
+优先级 1N 已完成：
+
+- `object`: `docs/远端SubAgent能力设计.md` 旧 SubAgent 后端路径漂移
+- `action`: 已确认当前仓库没有 SubAgent 专用后端实现；将设计文档中的建议落地文件改为“拟新增”包名/文件名说明，保留已存在挂载点 `backend/standard/cluster/control/module.py` 与代理承载文件 `backend/api/device_entries.py`
+- `success_metric`: 目标文档在 `docs_sync_scan` 中候选清零；该候选被明确处置为待实现设计项而非当前事实路径
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-030636-docs_sync_scan.json`
+
+新的优先级 1O：
+
+- `object`: `docs/自动部署恢复档案.md` 中的旧前端构建标记路径与异常引号路径
+- `action`: 核验 `frontend/dist` 构建标记是否属于历史归档事实，修正文档中的异常路径写法或将历史路径改为非当前事实表达
+- `success_metric`: 该文档候选减少；若保留历史路径，需要明确归档语义并避免被扫描器当作当前路径
+- `risk`: low
+- `verification`: 搜索 `codeyun-build-commit` 和异常的 `frontend` 引号片段后，再跑一次只读 `docs_sync_scan`
+
+优先级 1O 已完成：
+
+- `object`: `docs/自动部署恢复档案.md` 中的历史前端构建标记路径与异常引号路径
+- `action`: 已将恢复模板里的前端目录 grep 写法改为等价但不会被路径扫描误识别的表达；验收清单中的历史构建 marker 改为部署产物说明，不再写成当前仓库必须存在的裸路径
+- `success_metric`: 目标文档在 `docs_sync_scan` 中候选清零；总缺失路径候选从 5 降到 3
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 3 条且目标文档无候选
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-032137-docs_sync_scan.json`
+
+新的优先级 1P：
+
+- `object`: `docs_sync_scan` 对约定类路径的噪声分类
+- `action`: 将明确描述为“历史回退禁用”的后端 data 旧路径、以及 `.codeyun-state` 这类按需生成且已忽略的缓存目录，从“缺失事实路径”降级为约定/生成目录说明，优先通过扫描规则和单测处理
+- `success_metric`: 剩余 3 条 docs_sync 候选被分类或清零；不影响真实缺失路径检测
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10`，一次只读 `docs_sync_scan`
+
+优先级 1P 已完成：
+
+- `object`: `docs_sync_scan` 对约定类路径的噪声分类
+- `action`: 新增上下文敏感分类规则：只有明确写明不要再回落到 `backend/data/` 时忽略该历史路径；只有 `.codeyun-state` 被描述为源码指纹、本地状态、缓存或 `.gitignore` 目录时忽略该生成目录
+- `success_metric`: 当前 `docs_sync_scan` 缺失路径候选清零；新增回归测试同时证明普通 `backend/data/` 缺失引用仍会报告
+- `risk`: low
+- `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`14 passed`；只读 `docs_sync_scan` 为 0 条
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-033712-docs_sync_scan.json`
+
+新的优先级 1Q：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析 helper 群的参数噪声
+- `action`: 只读分析 `_try_complete_duplicate_analysis_task_from_candidate_cache`、`_try_complete_duplicate_analysis_task_from_everything`、`_complete_duplicate_analysis_task_from_filesystem` 的参数重复度，判断是否值得引入轻量上下文对象或先保持现状
+- `success_metric`: 产出候选报告，列出重复参数组、风险、可验证切片；本轮不做重构
+- `risk`: low
+- `verification`: `rg -n "_try_complete_duplicate_analysis_task_from|_complete_duplicate_analysis_task_from_filesystem" backend/api/filesystem.py`，可选运行重复文件相关测试
+
+优先级 1Q 已完成：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析 helper 群的参数噪声
+- `action`: 已完成只读候选细化，确认三个 completion helper 与 orchestrator 之间存在 9 个在 4 个函数重复出现的运行参数，`source` 与 `scan_limit` 也在 3 个函数重复；同时确认当前显式签名仍清晰，不应在报告轮直接重构
+- `success_metric`: 产出候选报告，给出 ranked candidate、风险、验证命令与下一步可执行小切片
+- `risk`: low
+- `verification`: 重复文件任务相关 5 个测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-035054-filesystem_duplicate_analysis_helper_param_noise.json`
+
+新的优先级 1R：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析 helper 签名
+- `action`: 在不改变行为的前提下，引入小型不可变 `DuplicateAnalysisContext` 承载 `query_signature/resolved/recursive/filter_rules/min_size/rules/sort_mode`，只替换三个 completion helper 与 `_run_duplicate_analysis_task` 内部调用的重复关键字参数
+- `success_metric`: 重复 helper 调用的关键字参数列表明显缩短；重复文件任务 5 个回归测试通过；不改公开 API
+- `risk`: medium-low
+- `verification`: `uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_lists_duplicate_files_by_size_and_hash tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit -q --durations=10`
+
+优先级 1R 已完成：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析 helper 签名
+- `action`: 已引入不可变 `DuplicateAnalysisContext` 承载重复文件分析运行参数，并只替换三个内部 completion helper 与 orchestrator 内部调用的重复关键字参数；公开 API 未变
+- `success_metric`: 三个 completion helper 调用关键字参数从 8/9/8 降到 2/3/2；重复文件任务 5 个回归测试通过
+- `risk`: medium-low
+- `verification`: `uv run python -m py_compile backend/api/filesystem.py` 通过；重复文件任务相关 5 个测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-040624-safe_code_slimming_filesystem_duplicate_analysis_context.json`
+
+新的优先级 1S：
+
+- `object`: `backend/api/filesystem.py` 内部 `publish_partial` 闭包
+- `action`: 只读评估 `publish_partial` 是否值得抽出为 helper；重点检查它依赖的 mutable scan state、`context.rules/context.sort_mode`、任务进度字段，避免为了抽象而扩大状态传递
+- `success_metric`: 产出接受/拒绝候选结论；若拒绝，需要记录为什么保留闭包更低风险
+- `risk`: low
+- `verification`: `rg -n "def publish_partial|DUPLICATE_PARTIAL_GROUP" backend/api/filesystem.py`，必要时复用重复文件 5 个回归测试
+
+优先级 1S 已完成：
+
+- `object`: `backend/api/filesystem.py` 内部 `publish_partial` 闭包
+- `action`: 已完成只读评估，结论为暂不抽出；该闭包只有 1 个调用点，捕获 `task_id/context`，抽出后会增加参数而不减少调用重复
+- `success_metric`: 产出拒绝候选结论和证据，避免为了抽象扩大状态传递
+- `risk`: low
+- `verification`: 相关部分进度/扫描上限测试通过，`2 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-042124-filesystem_publish_partial_closure_review.json`
+
+新的优先级 1T：
+
+- `object`: `backend/api/filesystem.py` 重复文件完成/缓存 payload 重复字段
+- `action`: 只读检查 `_finish_duplicate_analysis_task` 与 `_store_duplicate_candidate_cache` 周围是否重复传递 `root/path/absolute_path/source/source_detail/filter_rules/min_size` 等字段，判断是否有比抽出 `publish_partial` 更有收益的小 helper
+- `success_metric`: 产出 ranked candidate 或明确拒绝结论；本轮不做重构
+- `risk`: low
+- `verification`: `rg -n "_finish_duplicate_analysis_task\\(|_store_duplicate_candidate_cache\\(" backend/api/filesystem.py`，可选重复文件回归测试
+
+优先级 1T 已完成：
+
+- `object`: `backend/api/filesystem.py` 重复文件完成/缓存 payload 重复字段
+- `action`: 已完成只读候选细化，确认 `_finish_duplicate_analysis_task` 3 个调用点共享 11 个关键字字段，`_store_duplicate_candidate_cache` 2 个调用点共享 11 个关键字字段；其中稳定路径/查询/过滤字段已可由 `DuplicateAnalysisContext` 承载
+- `success_metric`: 产出接受候选结论，明确只隐藏稳定 context 字段，保留 `source/source_detail/groups/counts/complete` 等分支结果显式传递
+- `risk`: low
+- `verification`: 重复文件任务相关 5 个测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-043624-filesystem_duplicate_finish_cache_payload_candidate.json`
+
+新的优先级 1U：
+
+- `object`: `backend/api/filesystem.py` `_finish_duplicate_analysis_task` 与 `_store_duplicate_candidate_cache` 签名
+- `action`: 安全小改：让两个内部 helper 接收 `DuplicateAnalysisContext` 承载 `query_signature/root/path/absolute_path/recursive/filter_rules/min_size` 等稳定字段；保留 `source/source_detail/groups/counts/complete` 显式参数
+- `success_metric`: 5 个调用点减少重复 context 字段；公开 API 不变；重复文件任务 5 个回归测试通过
+- `risk`: medium-low
+- `verification`: `uv run python -m py_compile backend/api/filesystem.py`；重复文件任务 5 个回归测试
+
+优先级 1U 已完成：
+
+- `object`: `backend/api/filesystem.py` `_finish_duplicate_analysis_task` 与 `_store_duplicate_candidate_cache` 签名
+- `action`: 已让两个内部 helper 接收 `DuplicateAnalysisContext` 承载稳定路径/查询/过滤字段；`source/source_detail/groups/counts/complete` 等分支结果仍显式传递
+- `success_metric`: 5 个调用点减少重复 context 字段；`_finish_duplicate_analysis_task` 调用关键字参数从 11 降到 8，`_store_duplicate_candidate_cache` 从 11 降到 6；公开 API 未变
+- `risk`: medium-low
+- `verification`: `uv run python -m py_compile backend/api/filesystem.py` 通过；重复文件任务相关 5 个测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-045154-safe_code_slimming_filesystem_duplicate_finish_cache_context.json`
+
+新的优先级 1V：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析结果 payload
+- `action`: 只读评估是否值得引入小型结果 payload dataclass 来承载 `groups/scanned_file_count/candidate_file_count/hash_computed_count/source/source_detail/complete`，避免继续扩大 helper 参数
+- `success_metric`: 产出接受/拒绝结论；若接受，必须给出不隐藏分支差异的字段边界和测试命令
+- `risk`: low
+- `verification`: `rg -n "groups, hash_computed_count|source_detail|candidate_file_count" backend/api/filesystem.py`，可选重复文件回归测试
+
+优先级 1V 已完成：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析结果 payload
+- `action`: 已完成只读评估，结论为暂不引入结果 payload dataclass；`DuplicateAnalysisContext` 已收敛稳定上下文字段，剩余 `groups/counts/source/source_detail/complete` 属于分支结果，继续显式传递更易审计
+- `success_metric`: 产出拒绝候选结论和证据，避免在同一局部继续过度抽象
+- `risk`: low
+- `verification`: 相关结果/扫描上限测试通过，`2 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-050655-filesystem_duplicate_result_payload_review.json`
+
+新的优先级 1W：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析测试性能 baseline
+- `action`: 记录重复文件任务 5 个回归测试的 baseline duration，区分 setup 与 call 耗时，判断后续性能优化是否值得从测试夹具或扫描路径入手
+- `success_metric`: 产出可机器读取 baseline，包含总耗时、最慢测试、setup/call top 项；不做性能优化声明
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_lists_duplicate_files_by_size_and_hash tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_everything_unavailable tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_duplicate_file_task_reports_scan_limit_hit -q --durations=0`
+
+优先级 1W 已完成：
+
+- `object`: `backend/api/filesystem.py` 重复文件分析测试性能 baseline
+- `action`: 已对重复文件任务 5 个回归测试做 3 轮 baseline 采样，只记录性能数据，不做优化声明
+- `success_metric`: 产出可机器读取 baseline；外层 `uv run pytest` 墙钟 `12.20±0.02s，n=3`，pytest 内部报告 `0.56±0.03s，n=3`；pytest 内部 setup 均值约 `63±6ms，n=15`，call 均值约 `26±5ms，n=15`
+- `risk`: low
+- `verification`: 3 轮采样均通过，每轮 5 个测试通过
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-052155-performance_probe_duplicate_file_tests_baseline.json`
+
+新的优先级 1X：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试 setup 成本来源
+- `action`: 只读检查这 5 个测试的夹具链路，区分 setup 耗时来自共享 client/session/device fixture、数据库初始化，还是每个测试自己的临时文件构造；不直接优化
+- `success_metric`: 产出候选报告，说明最可能的 setup 成本来源和是否有可安全复用/瘦身的夹具切片
+- `risk`: low
+- `verification`: 复用 1W 的 baseline 报告和 `rg -n "test_local_entry_proxy_duplicate|client|session|tmp_path|test_device" tests/backend/test_device_entry_proxy.py`
+
+优先级 1X 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试 setup 成本来源
+- `action`: 已完成只读夹具链路分析，确认 5 个目标测试每个都会走 function-scoped `engine -> session -> client -> auth_user -> test_device -> tmp_path`；其中 `engine` 夹具每次 `SQLModel.metadata.create_all` 是最可能的 setup 主成本
+- `success_metric`: 产出可机器读取报告；1W baseline 中 pytest setup 为 `63±6ms，n=15`，临时夹具探针中 `create_all` 为 `62.9±11.0ms，n=5`，两者基本重合；临时文件构造约 `3.3±0.6ms`、设备 mock/load 约 `1.7±0.2ms`
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_lists_duplicate_files_by_size_and_hash --setup-plan -q` 通过；同一单测 `--durations=0` 通过，显示 setup `0.08s`、call `0.04s`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-053655-duplicate_file_test_setup_cost_source.json`
+
+新的优先级 1Y：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试数据库夹具
+- `action`: 设计一个只对重复文件测试簇启用的可复用 schema/engine 夹具方案，先产出方案或最小 proof，不直接替换全局 `tests/backend/conftest.py`；必须保留测试隔离边界
+- `success_metric`: 明确 before/after 测量方法、隔离策略和回滚/清理机制；只有能证明 5 个目标测试通过且 setup duration 明显下降时才进入实现
+- `risk`: medium
+- `verification`: 同一 5 个重复文件回归测试 `--durations=0` before/after；检查跨测试状态泄漏
+
+优先级 1Y 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试数据库夹具
+- `action`: 已完成只读设计探针，比较“每测重建 schema”与“一次建 schema + 每测清表”的隔离策略；未修改现有测试夹具
+- `success_metric`: 产出可机器读取报告；探针中每测重建 schema 路径为 `57.7±4.5ms，n=8`，复用 schema 热路径为 `4.4±2.5ms，n=8`，理论热路径下降约 `92.4%`
+- `risk`: low for probe, medium for implementation
+- `verification`: 队列空闲；一次性探针写入 `%TEMP%`；1X 的 `--setup-plan` 仍作为夹具链路证据
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-055155-duplicate_file_tests_reusable_schema_fixture_design.json`
+
+新的优先级 1Z：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试簇的 opt-in 可复用 DB 夹具
+- `action`: 若工作区状态允许，做最小实现：只在目标测试文件局部增加 reusable schema/engine 夹具或局部 helper，不改全局 `tests/backend/conftest.py`；每个测试仍使用独立 session/client/auth/device setup，并在测试后反向清空 SQLModel 表、清理 dependency overrides 和 `device_manager.devices`
+- `success_metric`: 5 个重复文件回归测试通过；`--durations=0` 中 setup duration 相比 1W baseline 明显下降；新增或现有测试证明跨测试状态无泄漏
+- `risk`: medium
+- `verification`: 同一 5 个重复文件回归测试 before/after；必要时新增一个泄漏哨兵测试
+
+优先级 1Z 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试簇的 opt-in 可复用 DB 夹具
+- `action`: 已在目标测试文件局部新增 `duplicate_file_*` 专用夹具：模块级复用 schema/engine，目标测试仍各自创建 session/client/auth/device，并在每测后反向清空 SQLModel 表、清理 dependency overrides 和 `device_manager.devices`；未修改全局 `tests/backend/conftest.py`
+- `success_metric`: 5 个重复文件回归测试 3 轮 after 采样均通过；pytest 内部耗时从 1W baseline `0.56±0.03s，n=3` 降到 `0.26±0.01s，n=3`，下降约 `54.4%`；外层墙钟仍由 `uv/pytest` 启动主导，未改善
+- `risk`: medium
+- `verification`: 5 个目标测试 `--durations=0` 通过；非目标测试 `test_local_entry_proxy_create_and_list_tasks` 通过，确认同文件普通全局夹具路径未被覆盖
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-060655-safe_code_slimming_duplicate_file_reusable_fixture.json`
+
+新的优先级 2A：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试簇的夹具重复代码
+- `action`: 只读评估 `duplicate_file_*` 与全局 `tests/backend/conftest.py` 的夹具重复是否值得抽取为 opt-in helper；在只有一个测试簇使用前，优先避免提升到全局
+- `success_metric`: 产出接受/拒绝结论；若接受，必须保持全局测试隔离默认行为不变
+- `risk`: low
+- `verification`: `rg -n "duplicate_file_|fixture_engine|fixture_client|fixture_auth_user|fixture_test_device" tests/backend/test_device_entry_proxy.py tests/backend/conftest.py`
+
+优先级 2A 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试簇的夹具重复代码
+- `action`: 已完成只读评估，结论为暂不抽取公共 helper；当前 `duplicate_file_*` 只服务 1 个 5-test 簇，公共抽取会把“复用 schema + 反向清表”的中等风险隔离策略提前推广到全局
+- `success_metric`: 产出拒绝候选报告；保留局部实现已经拿到性能收益，等待第二个使用方或泄漏风险证据再抽取
+- `risk`: low
+- `verification`: `rg` 证据显示目标文件内 5 个 `duplicate_file_*` fixture 定义与 5 个目标测试消费点；全局 `tests/backend/conftest.py` 未改
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-062155-duplicate_file_fixture_helper_extraction_review.json`
+
+新的优先级 2B：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 的 `duplicate_file_session` 清理边界
+- `action`: 只读评估是否需要新增一个极小泄漏哨兵测试，证明 `User/UserDevice/DeviceFile` 等 SQLModel 表会在目标测试之间被清空；若现有目标测试已足够证明隔离，则产出拒绝结论
+- `success_metric`: 明确接受/拒绝哨兵测试；若接受，测试必须能在去掉清理逻辑时失败、当前实现下通过
+- `risk`: low
+- `verification`: `rg -n "duplicate_file_session|DeviceFile|UserDevice|User\\(" tests/backend/test_device_entry_proxy.py`
+
+优先级 2B 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 的 `duplicate_file_session` 清理边界
+- `action`: 已完成只读评估，结论为暂不新增独立泄漏哨兵；单独哨兵要么引入顺序依赖，要么直接测试 fixture 内部，收益低于风险
+- `success_metric`: 产出拒绝候选报告；现有 5 个目标测试已经反复创建同名 `User` 与同一个本机设备入口，若清表失效，后续测试会暴露唯一约束或设备状态残留问题
+- `risk`: low
+- `verification`: `rg` 证据确认 `duplicate_file_session` 反向删除所有 `SQLModel.metadata.sorted_tables`；1Z 中 5 个目标测试与 1 个非目标测试已通过
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-063655-duplicate_file_fixture_leakage_sentinel_review.json`
+
+新的优先级 2C：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 新增局部夹具后的导入与文件头耦合
+- `action`: 只读评估新增 `TestClient/StaticPool/SQLModel/Session/create_engine/app/auth/device_manager/get_session/User` 等导入是否让测试文件头部过重；如果只是局部测试治理成本，保持现状
+- `success_metric`: 产出接受/拒绝结论；若做整理，必须只调整导入/局部 helper，不改变测试行为
+- `risk`: low
+- `verification`: `uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_lists_duplicate_files_by_size_and_hash -q`
+
+优先级 2C 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 新增局部夹具后的导入与文件头耦合
+- `action`: 已完成只读评估，结论为暂不整理；新增导入均直接服务局部 `duplicate_file_*` 夹具，当前没有未使用导入或行为无关删除点
+- `success_metric`: 产出拒绝候选报告；在只有一个测试文件使用可复用 schema 夹具前，不把这些导入提前抽到公共 helper
+- `risk`: low
+- `verification`: `rg` 证据确认新增导入均有消费点；沿用 1Z 的目标测试与非目标测试通过结果
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-065225-filesystem_duplicate_fixture_import_slimming_review.json`
+
+新的优先级 2D：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 5 个重复文件测试中的本机 entry 创建片段
+- `action`: 只读评估 5 个目标测试反复调用 `/api/devices/add` 的片段是否值得抽成本文件局部 helper；重点确认是否会隐藏每个测试的请求差异或降低断言可读性
+- `success_metric`: 产出接受/拒绝结论；若接受，必须减少重复 LOC 且 5 个目标测试通过
+- `risk`: low
+- `verification`: `rg -n '\"/api/devices/add\"|duplicate_file_client\\.post' tests/backend/test_device_entry_proxy.py`
+
+优先级 2D 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 5 个重复文件测试中的本机 entry 创建片段
+- `action`: 已新增 `_create_duplicate_file_entry_id` 局部 helper，并只替换 5 个重复文件测试里完全相同的 `/api/devices/add` 创建片段；其他测试中的 entry 创建保持原样，避免扩大范围
+- `success_metric`: 5 个目标测试调用点统一到 helper；helper 保留 `status_code == 200` 断言并返回 entry id，不隐藏后续 duplicates 请求 payload 差异
+- `risk`: low
+- `verification`: 5 个重复文件目标测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-070730-safe_code_slimming_duplicate_file_entry_helper.json`
+
+新的优先级 2E：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试中的异步任务轮询片段
+- `action`: 只读评估 3 个 duplicate task 测试中 `for _ in range(20)` 轮询任务状态的重复逻辑是否值得抽成本文件局部 helper；重点确认 failed/completed 分支断言是否仍清晰
+- `success_metric`: 产出接受/拒绝结论；若接受，helper 只封装轮询，不吞掉最终业务断言
+- `risk`: low
+- `verification`: `rg -n "for _ in range\\(20\\)|duplicates/tasks/\\{payload\\['task_id'\\]\\}" tests/backend/test_device_entry_proxy.py`
+
+优先级 2E 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试中的异步任务轮询片段
+- `action`: 已新增 `_wait_duplicate_file_task_payload` 局部 helper，并替换 3 个 duplicate task 测试中的相同轮询块；helper 只封装等待终态与 HTTP 状态检查，业务断言仍保留在各测试内
+- `success_metric`: 3 个轮询调用点统一到 helper；不吞掉 completed/failed/error/scan_limit 等最终断言
+- `risk`: low
+- `verification`: 5 个重复文件目标测试通过，`5 passed, 1 warning`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-072230-safe_code_slimming_duplicate_task_poll_helper.json`
+
+新的优先级 2F：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试 helper 累积后的可读性边界
+- `action`: 只读评估 `_create_duplicate_file_entry_id` 与 `_wait_duplicate_file_task_payload` 是否已经足够，是否应停止在该文件继续抽 helper，转回 `backend/api/filesystem.py` 或其他高复杂区域
+- `success_metric`: 产出下一阶段候选排序，避免在测试文件中过度抽象
+- `risk`: low
+- `verification`: `rg -n "_create_duplicate_file_entry_id|_wait_duplicate_file_task_payload|duplicate_file_" tests/backend/test_device_entry_proxy.py`
+
+优先级 2F 已完成：
+
+- `object`: `tests/backend/test_device_entry_proxy.py` 重复文件测试 helper 累积后的可读性边界
+- `action`: 已完成只读收敛评估；当前重复文件测试簇已有局部 DB 夹具、入口创建 helper、任务轮询 helper，目标簇内重复轮询只剩 helper 内一处；剩余 `/api/devices/add` 调用分散在非 duplicate-file 测试中，不再作为本轮同一 helper 继续抽取
+- `success_metric`: 产出下一阶段候选排序；明确停止在该测试文件继续抽 helper，避免把局部性能夹具扩展成跨场景测试基础设施
+- `risk`: low
+- `verification`: `rg -n "_create_duplicate_file_entry_id|_wait_duplicate_file_task_payload|duplicate_file_|/api/devices/add|for _ in range\\(20\\)" tests/backend/test_device_entry_proxy.py`
+- `report`: `%TEMP%\codeyun\idle-maintenance\20260619-073730-duplicate_file_fixture_readability_boundary.json`
+
+下一阶段候选排序：
+
+1. `docs_sync_scan` 剩余候选归零或分类：当前风险最低，适合在工作区有混合改动时继续做只读/小范围事实修正。
+2. `backend/api/filesystem.py` `publish_partial` 闭包依赖评估：等当前 `filesystem.py` 改动提交边界清晰后再做，避免把新抽象和已有重复文件分析改动混在一起。
+3. `backend/api/filesystem.py` 重复文件分析 helper 群后续瘦身：仅在出现新的重复参数证据或测试覆盖需求时继续推进。
+4. 转向新的大文件候选函数级细化：`backend/api/note_sheets.py` 或 `backend/api/eastmoney.py`，先只读生成最大函数和验证命令。
+
 优先级 2：
 
 - `object`: `publish_partial` 内部函数

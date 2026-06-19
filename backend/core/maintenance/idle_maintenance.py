@@ -261,6 +261,24 @@ def _looks_like_path_ref(ref: str) -> bool:
     return "/" in ref or "\\" in ref or "." in Path(ref).name
 
 
+def _is_intentional_nonexistent_doc_ref(ref: str, text: str) -> bool:
+    normalized = ref.replace("\\", "/").strip()
+    if normalized.rstrip("/") == "backend/data":
+        return "不要再回落到 `backend/data/`" in text or "不要再回落到 backend/data/" in text
+    if normalized.rstrip("/") == "frontend/.codeyun-state":
+        return (
+            ".codeyun-state" in text
+            and (
+                ".gitignore" in text
+                or "源码指纹" in text
+                or "source fingerprint" in text.lower()
+                or "本地状态" in text
+                or "缓存" in text
+            )
+        )
+    return False
+
+
 def _check_doc_path_refs(limit: int = 50) -> list[dict[str, Any]]:
     root = _repo_root()
     issues: list[dict[str, Any]] = []
@@ -273,6 +291,8 @@ def _check_doc_path_refs(limit: int = 50) -> list[dict[str, Any]]:
             continue
         for ref in _extract_doc_refs(text):
             if not _looks_like_path_ref(ref):
+                continue
+            if _is_intentional_nonexistent_doc_ref(ref, text):
                 continue
             normalized = ref.replace("\\", "/").split("#", 1)[0]
             target = (root / normalized).resolve(strict=False)

@@ -679,13 +679,19 @@ class DailyChallengeTaskMixin:
         if daily_status == "not_found":
             raise RuntimeError("日常_双修：#69 日常列表未找到「完成双人修炼1次」，不能继续")
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
-        waited_view = yield from runtime.wait_view(
-            215,
+        wait_result = yield from runtime.wait_any(
+            {
+                "scene": runtime.view_visible(215),
+                "book_list": runtime.ocr_matches(
+                    self._daily_shuangxiu_text_is_book_list,
+                    label="日常_双修：双修秘术书列表 OCR",
+                    preview_chars=120,
+                ),
+            },
             timeout=float(payload.get("secret_timeout") or payload.get("post_click_timeout") or 12.0),
             label="日常_双修：等待双修秘术页 #215",
         )
-        scene_id = waited_view.id if isinstance(waited_view, View) else waited_view
-        if scene_id == 215:
+        if wait_result in {"scene", "book_list"}:
             return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload))
         frame = runtime.cur_frame(update=True)
         if self._daily_shuangxiu_text_is_book_list(runtime.ocr_text(frame)):
@@ -916,7 +922,7 @@ class DailyChallengeTaskMixin:
             with self._lock:
                 self._set_status_locked("running", f"{task_label}：从免费剿灭页返回", phase="daily_free_challenge_return_ocr_page", current_scene=scene_id)
                 self._log_locked("action", f"{task_label}：点击 {back_title}「返回」")
-            yield from runtime.wait_click(71 if back_image is image71 else 188, "返回")
+            runtime.click_shape_center(back_image, "返回")
             yield from runtime.wait_action_settle(2.0)
             runtime.clear_frame()
         scene_id, _score, _frame = runtime.current_scene([34, 188, 187, 183, 69], update=True)
@@ -1008,6 +1014,7 @@ class DailyChallengeTaskMixin:
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image188 = images.get(188)
         image189 = images.get(189)
+        image227 = images.get(227)
         image69 = images.get(69)
         if not isinstance(image69, dict):
             raise RuntimeError(f"{task_label}：缺少 #69「日常」标注，无法按 OCR 点击妖王/妖族页")
@@ -1025,6 +1032,18 @@ class DailyChallengeTaskMixin:
             text = runtime.ocr_text(frame)
             if self._daily_free_challenge_text_is_purchase_modal(text):
                 raise RuntimeError(f"{task_label}：出现「购买并使用」弹窗，默认不购买次数或道具，已停止等待人工关闭")
+            if self._daily_dungeon_text_is_result(text):
+                if not isinstance(image227, dict):
+                    raise RuntimeError(f"{task_label}：已进入奖励结果页，但缺少 #227「继续」标注，无法收口")
+                continue_shape = self._find_shape(image227, "继续", "点击屏幕继续")
+                if continue_shape is None:
+                    raise RuntimeError(f"{task_label}：已进入奖励结果页，但缺少「点击屏幕继续」标注，无法收口")
+                with self._lock:
+                    self._set_status_locked("running", f"{task_label}：关闭剿灭奖励页", phase="daily_free_challenge_close_reward", current_scene=scene_id)
+                    self._log_locked("action", f"{task_label}：点击奖励页「点击屏幕继续」")
+                runtime.click_shape_center(image227, str(continue_shape.get("title") or "继续"))
+                yield from runtime.wait_action_settle(2.0)
+                continue
             if self._daily_free_challenge_text_is_selection(text):
                 match = self._ocr_line_center_matching(lines, r"推荐?剿灭|荐剿灭")
                 if match is None:
@@ -1808,7 +1827,7 @@ class DailyChallengeTaskMixin:
                     current_scene=result_scene_id,
                 )
                 self._log_locked("action", f"日常_助手：准备点击「{shape_title}」前先点击 #{result_scene_id}「点击屏幕继续」")
-            yield from runtime.wait_click(result_scene_id, "点击屏幕继续")
+            runtime.click_shape_center(result_image, "点击屏幕继续")
             yield from self._wait_daily_assistant_list_state(
                 ctx,
                 stop_event,
@@ -1930,6 +1949,15 @@ class DailyChallengeTaskMixin:
             or "活动积分增加" in compact
             or "获得积分效率加成" in compact
             or "获得额外" in compact
+        ):
+            return 205
+        if "点击屏幕继续" in compact and (
+            "执行详情" in compact
+            or "收益" in compact
+            or "攻击" in compact
+            or "气血" in compact
+            or "宗门任务完成" in compact
+            or "祈福完成" in compact
         ):
             return 205
         if "灵力" in compact and "气血" in compact and ("+" in compact or "＋" in compact):
@@ -2243,7 +2271,7 @@ class DailyChallengeTaskMixin:
                         current_scene=result_scene_id,
                     )
                     self._log_locked("action", f"日常_助手：点击 #{result_scene_id}「点击屏幕继续」")
-                yield from runtime.wait_click(result_scene_id, "点击屏幕继续")
+                runtime.click_shape_center(result_image, "点击屏幕继续")
                 yield from self._wait_daily_assistant_list_state(
                     ctx,
                     stop_event,
@@ -2346,7 +2374,7 @@ class DailyChallengeTaskMixin:
                     current_scene=result_scene_id,
                 )
                 self._log_locked("action", f"日常_助手：启动时点击 #{result_scene_id}「点击屏幕继续」")
-            yield from runtime.wait_click(result_scene_id, "点击屏幕继续")
+            runtime.click_shape_center(result_image, "点击屏幕继续")
             yield from self._wait_daily_assistant_list_state(
                 ctx,
                 stop_event,

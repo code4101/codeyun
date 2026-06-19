@@ -42,6 +42,12 @@ class XianfuTaskMixin:
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
         scene_id, score, _frame = runtime.current_scene([177, 176, 175, 174, 173, 172, 171, 34], update=True)
+        current_text = runtime.ocr_text(_frame)
+        if scene_id is None:
+            if self._xianfu_visit_text_is_continue_popup(current_text):
+                scene_id = 175
+            elif self._xianfu_visit_text_is_juepin(current_text):
+                scene_id = 174
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
@@ -102,7 +108,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_寻访仙侣：切换绝品仙侣", phase="xianfu_visit_open_juepin", current_scene=173)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #173「绝品仙侣」")
                 shape.click(runtime)
-                yield from runtime.wait_view(174, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
+                yield from self._wait_xianfu_visit_juepin(runtime, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
 
         image174 = ctx.get("images", {}).get(174)
         if not isinstance(image174, dict):
@@ -208,8 +214,26 @@ class XianfuTaskMixin:
             self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
             self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
         close_shape.click(runtime)
-        yield from runtime.wait_view(174, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
+        yield from self._wait_xianfu_visit_juepin(runtime, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
         return "success"
+
+    def _xianfu_visit_text_is_juepin(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        return "仙侣预览" in normalized and "寻访" in normalized and ("免费抽取" in normalized or "绝品仙侣" in normalized)
+
+    def _xianfu_visit_text_is_continue_popup(self, text: str) -> bool:
+        normalized = _sanitize_ocr_text(text)
+        return "继续寻访" in normalized and "关闭" in normalized
+
+    def _wait_xianfu_visit_juepin(self, runtime: FanxiuRuntime, *, timeout: float, label: str):
+        return (yield from runtime.wait_any(
+            {
+                "scene": runtime.view_visible(174),
+                "text": runtime.ocr_matches(self._xianfu_visit_text_is_juepin, label=f"{label} OCR"),
+            },
+            timeout=timeout,
+            label=label,
+        ))
 
     def _return_xianfu_visit_partner_to_world(self, runtime: FanxiuRuntime):
         with self._lock:
@@ -231,6 +255,14 @@ class XianfuTaskMixin:
     ):
         for _attempt in range(6):
             scene_id, score, _frame = runtime.current_scene(current_candidates, update=True)
+            text = runtime.ocr_text(_frame)
+            if scene_id is None:
+                if self._xianfu_visit_text_is_continue_popup(text):
+                    scene_id = 175
+                elif self._xianfu_visit_text_is_juepin(text):
+                    scene_id = 174
+                elif self._daily_assistant_text_is_world_like(text):
+                    scene_id = 34
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
             if scene_id == 34:

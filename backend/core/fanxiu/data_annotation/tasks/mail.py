@@ -276,6 +276,7 @@ class MailTaskMixin:
         if reached_scroll_limit:
             self._log("info", f"邮件_清理：达到 max_scrolls={max_scrolls} 仍未确认到底，继续一键删除已阅")
 
+        delete_result_scene: int | None = None
         if scanned_to_end or reached_scroll_limit:
             delete_read_shape = view121.get_shape("一键删除")
             if delete_read_shape is not None:
@@ -283,16 +284,19 @@ class MailTaskMixin:
                     self._set_status_locked("running", "邮件_清理：一键删除已阅", phase="mail_cleanup_delete_read", current_scene=121)
                     self._log_locked("action", "邮件_清理：点击 #121「一键删除」清理已阅")
                 delete_read_shape.click(runtime)
-                yield from runtime.wait_view(121, timeout=8.0, label="邮件_清理：一键删除后返回 #121")
+                delete_result_view = yield from runtime.wait_view(121, 34, timeout=12.0, label="邮件_清理：一键删除后等待邮件页或世界页")
+                delete_result_scene = delete_result_view.id if isinstance(delete_result_view, View) else None
             else:
                 self._log("error", "邮件_清理：缺少 #121「一键删除」标注，跳过清理已阅")
         elif processed_count >= max_actions:
             self._log("info", f"邮件_清理：达到 max_actions={max_actions}，跳过一键删除已阅")
 
-        final_scene = 121
+        final_scene = 34 if delete_result_scene == 34 else 121
         image121 = ctx.get("images", {}).get(121) if isinstance(ctx.get("images"), dict) else None
         back_shape = self._find_shape(image121, "空白-返回") if isinstance(image121, dict) else None
-        if back_shape is not None:
+        if final_scene == 34:
+            self._log("info", "邮件_清理：一键删除后已回到世界页")
+        elif back_shape is not None:
             yield from self._leave_mail_scene_to_world(ctx, stop_event, runtime, 121, label="邮件_清理")
             final_scene = 34
         else:
