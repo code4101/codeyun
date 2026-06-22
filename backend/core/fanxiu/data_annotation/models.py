@@ -102,6 +102,7 @@ class FanxiuDataAnnotationRuntimeStatus(BaseModel):
     framework_tick: dict[str, Any] = Field(default_factory=dict)
     engine_tick: dict[str, Any] = Field(default_factory=dict)
     kernel_restart: dict[str, Any] = Field(default_factory=dict)
+    isolation: dict[str, Any] = Field(default_factory=dict)
     started_at: float = 0
     updated_at: float = 0
     finished_at: float = 0
@@ -155,6 +156,13 @@ class FanxiuDataAnnotationRuntimeGuardRequest(BaseModel):
 class FanxiuDataAnnotationRuntimeGuardGroupRequest(BaseModel):
     entry_id: str
     enabled: bool
+
+
+class FanxiuDataAnnotationRuntimeIsolationRequest(BaseModel):
+    entry_id: str
+    enabled: bool
+    token: str = ""
+    ttl_seconds: float = Field(21600.0, ge=60.0, le=86400.0)
 
 
 class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):

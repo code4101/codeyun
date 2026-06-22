@@ -51,6 +51,69 @@ def test_fanxiu_char_put_returns_valid_note_read(client, session):
     assert created_note.legacy_id and created_note.legacy_id != created_note.id
 
 
+def test_fanxiu_char_put_updates_existing_note_and_preserves_custom_fields(client, session):
+    fanxiu_user = get_fanxiu_user(session)
+    existing_note = NoteNode(
+        id=str(uuid.uuid4()),
+        user_id=fanxiu_user.id,
+        title="银月",
+        content="<p>旧内容</p>",
+        weight=1,
+        node_type=FANXIU_CHAR_TYPE,
+        note_types=[{"key": FANXIU_CHAR_TYPE, "weight": 100}],
+        note_kind=FANXIU_CHAR_KIND,
+        node_status="idea",
+        weight_mode=NOTE_WEIGHT_MODE_LINEAR,
+        custom_fields=[["旧字段", "text", "保留"]],
+        history=[],
+        color=None,
+        created_at=100.0,
+        updated_at=100.0,
+        start_at=100.0,
+    )
+    session.add(existing_note)
+    session.commit()
+
+    _override_user(fanxiu_user)
+    try:
+        response = client.put(
+            "/api/fanxiu/chars/银月",
+            json={
+                "content": "<p>更新角色内容</p>",
+                "weight": 9,
+                "start_at": 200.0,
+                "node_status": "done",
+                "color": "#FF00AA",
+                "custom_fields": [["新字段", "text", "不会写入"]],
+            },
+        )
+    finally:
+        _clear_user_override()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == existing_note.id
+    assert payload["title"] == "银月"
+    assert payload["content"] == "<p>更新角色内容</p>"
+    assert payload["weight"] == 9
+    assert payload["start_at"] == 200.0
+    assert payload["node_status"] == "done"
+    assert payload["color"] == "#FF00AA"
+    assert payload["custom_fields"] == [["旧字段", "text", "保留"]]
+
+    session.refresh(existing_note)
+    assert existing_note.content == "<p>更新角色内容</p>"
+    assert existing_note.weight == 9
+    assert existing_note.start_at == 200.0
+    assert existing_note.note_kind == FANXIU_CHAR_KIND
+    assert existing_note.weight_mode == NOTE_WEIGHT_MODE_LINEAR
+    assert existing_note.node_status == "done"
+    assert existing_note.color == "#FF00AA"
+    assert existing_note.node_type == FANXIU_CHAR_TYPE
+    assert existing_note.note_types == [{"key": FANXIU_CHAR_TYPE, "weight": 100}]
+    assert existing_note.custom_fields == [["旧字段", "text", "保留"]]
+
+
 def test_fanxiu_chars_list_migrates_legacy_note(client, session):
     fanxiu_user = get_fanxiu_user(session)
     legacy_note = NoteNode(

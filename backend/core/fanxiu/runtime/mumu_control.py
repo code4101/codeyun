@@ -33,6 +33,7 @@ from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_servi
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
     WindowCapture,
+    WindowCandidate,
     activate_window,
     click_window_title_bar,
     click_window_raw_point,
@@ -54,6 +55,7 @@ PREVIEW_MODULE = "backend.core.devices.window_capture_preview"
 DEFAULT_TARGET_TITLE = "MuMu"
 DEFAULT_PREVIEW_TITLE = "codeyun-mumu-window"
 DEFAULT_FPS = "15"
+DEFAULT_CAPTURE_MODE = "auto"
 DEFAULT_CROP = "0,60,4,4"
 DEFAULT_TRIM_BORDER = "0,0,0,0"
 DEFAULT_ROTATE = "0"
@@ -62,6 +64,10 @@ DEFAULT_FIXED_HEIGHT = "1600"
 DEFAULT_FIXED_DPI = "320"
 DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI = 607
 DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI = 1111
+# MuMu main window outer rect on codepc_mf, calibrated by hand for comfortable
+# desktop viewing. Keep this as a fixed xywh; do not derive it from DPI.
+DEFAULT_MUMU_MAIN_WINDOW_RECT = (2927, 0, 910, 1666)
+MUMU_MAIN_WINDOW_RECT_ENV = "CODEYUN_FANXIU_MUMU_WINDOW_RECT"
 SCREENSHOT_FRAME_DIRNAME = "截图"
 MATCH_FRAME_DIRNAME = "匹配"
 BURST_FRAME_DIRNAME = "连拍缓存"
@@ -425,6 +431,39 @@ def _is_mumu_adb_unavailable_error(message: str) -> bool:
     )
 
 
+def _is_mumu_frame_unusable_error(message: str) -> bool:
+    normalized = message.lower()
+    return "mumu adb截图疑似黑屏" in normalized or "mumu adb screencap looks black" in normalized
+
+
+def _mumu_adb_png_black_frame_summary(data: bytes) -> dict[str, Any]:
+    try:
+        from PIL import Image, ImageStat
+        import io
+
+        image = Image.open(io.BytesIO(data)).convert("RGB")
+        stat = ImageStat.Stat(image)
+        sample = image.resize((max(1, image.width // 16), max(1, image.height // 16)))
+        pixels = list(sample.getdata())
+        if not pixels:
+            return {"black": False, "reason": "empty_sample"}
+        near_dark = sum(1 for r, g, b in pixels if r < 24 and g < 24 and b < 24)
+        unique_colors = len(set(pixels))
+        near_dark_ratio = near_dark / len(pixels)
+        mean = [float(value) for value in stat.mean]
+        black = near_dark_ratio >= 0.995 and max(mean) < 12.0 and unique_colors <= 32
+        return {
+            "black": bool(black),
+            "width": image.width,
+            "height": image.height,
+            "mean": [round(value, 3) for value in mean],
+            "near_dark_ratio": round(near_dark_ratio, 6),
+            "unique_sample_colors": unique_colors,
+        }
+    except Exception as exc:
+        return {"black": False, "error": str(exc)}
+
+
 def _get_mumu_adb_failure_cache() -> str | None:
     with _MUMU_ADB_FAILURE_CACHE_LOCK:
         if _mumu_adb_failure_cache is None:
@@ -709,6 +748,23 @@ def _find_mumu_desktop_main_window() -> dict[str, Any]:
     raise RuntimeError("未找到凡修 MuMu 主窗口")
 
 
+def _find_mumu_window_candidate(normalized_title: str, title_match: str) -> tuple[WindowCandidate, str, str]:
+    """Find the actual MuMu game window instead of any window mentioning MuMu."""
+
+    if str(normalized_title or "").strip().lower() == DEFAULT_TARGET_TITLE.lower() and title_match != "exact":
+        info = _find_mumu_desktop_main_window()
+        rect = info.get("extended_rect_physical") or info.get("window_rect") or [0, 0, 0, 0]
+        target = WindowCandidate(
+            hwnd=int(info.get("hwnd") or 0),
+            title=str(info.get("title") or DEFAULT_TARGET_TITLE),
+            class_name=str(info.get("class") or ""),
+            rect=tuple(int(part) for part in rect),
+        )
+        return target, target.title, "exact"
+    target = find_window(normalized_title, title_match)
+    return target, normalized_title, title_match
+
+
 def _target_mumu_main_window_size(hwnd: int, current_info: dict[str, Any] | None = None) -> tuple[int, int, str]:
     dpi = _mumu_window_dpi(hwnd)
     scale = dpi / 96 if dpi > 0 else 1.0
@@ -741,6 +797,20 @@ def _target_mumu_main_window_size(hwnd: int, current_info: dict[str, Any] | None
     )
 
 
+def _target_mumu_main_window_rect() -> tuple[int, int, int, int]:
+    configured = str(os.environ.get(MUMU_MAIN_WINDOW_RECT_ENV) or "").strip()
+    if configured:
+        parts = [part for part in re.split(r"[\s,;]+", configured) if part]
+        if len(parts) == 4:
+            try:
+                left, top, width, height = (int(part) for part in parts)
+                if width > 0 and height > 0:
+                    return left, top, width, height
+            except ValueError:
+                pass
+    return DEFAULT_MUMU_MAIN_WINDOW_RECT
+
+
 def normalize_mumu_desktop_window_size(*, apply: bool = False, timeout_s: float = 0.0) -> dict[str, Any]:
     deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.0)
     while True:
@@ -749,37 +819,62 @@ def normalize_mumu_desktop_window_size(*, apply: bool = False, timeout_s: float 
             import win32gui
 
             before = _find_mumu_desktop_main_window()
+            initial = before
             hwnd = int(before["hwnd"])
-            target_width, target_height, coordinate_mode = _target_mumu_main_window_size(hwnd, before)
-            current_width, current_height = before["window_size_logical"]
-            already_target = abs(int(current_width) - target_width) <= 1 and abs(int(current_height) - target_height) <= 1
+            target_left, target_top, target_width, target_height = _target_mumu_main_window_rect()
+
+            def is_target(info: dict[str, Any]) -> bool:
+                current_left, current_top, _current_right, _current_bottom = info["window_rect"]
+                current_width, current_height = info["window_size_logical"]
+                return (
+                    abs(int(current_left) - target_left) <= 1
+                    and abs(int(current_top) - target_top) <= 1
+                    and abs(int(current_width) - target_width) <= 1
+                    and abs(int(current_height) - target_height) <= 1
+                )
+
+            already_target = is_target(before)
             result: dict[str, Any] = {
                 "ok": True,
+                "target_window_rect": [target_left, target_top, target_left + target_width, target_top + target_height],
                 "target_main_size": [target_width, target_height],
+                "setpos_size": [target_width, target_height],
                 "target_main_size_logical_at_150_dpi": [
                     DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI,
                     DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI,
                 ],
                 "target_render_size_physical": [int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT)],
-                "coordinate_mode": coordinate_mode,
-                "before": before,
+                "coordinate_mode": "window_rect",
+                "before": initial,
                 "already_target": already_target,
                 "applied": False,
             }
-            if apply and not already_target:
-                left, top, _right, _bottom = before["window_rect"]
-                win32gui.SetWindowPos(
-                    hwnd,
-                    None,
-                    int(left),
-                    int(top),
-                    int(target_width),
-                    int(target_height),
-                    win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
-                )
-                time.sleep(0.2)
-                result["applied"] = True
-                result["after"] = _find_mumu_desktop_main_window()
+            if apply:
+                attempts: list[dict[str, Any]] = []
+                for _ in range(2):
+                    if is_target(before):
+                        break
+                    win32gui.SetWindowPos(
+                        hwnd,
+                        None,
+                        int(target_left),
+                        int(target_top),
+                        int(target_width),
+                        int(target_height),
+                        win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
+                    )
+                    time.sleep(0.2)
+                    result["applied"] = True
+                    before = _find_mumu_desktop_main_window()
+                    hwnd = int(before["hwnd"])
+                    attempts.append({
+                        "after": before,
+                        "next_setpos_size": [target_width, target_height],
+                    })
+                if attempts:
+                    result["attempts"] = attempts
+                result["after"] = before
+                result["already_target"] = is_target(before)
             return result
         except Exception:
             if time.monotonic() >= deadline:
@@ -1039,7 +1134,11 @@ def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = T
     if failure_count < 3 and now_mono - checked_mono < _mumu_device_health_check_interval():
         return _clone_mumu_device_health_state()
     state = mumu_device_health_check(vmindex=vmindex, force=True)
-    if recover and (state.get("status") in {"broken", "stopped"} or _is_mumu_adb_unavailable_error(message)):
+    if recover and (
+        state.get("status") in {"broken", "stopped"}
+        or _is_mumu_adb_unavailable_error(message)
+        or _is_mumu_frame_unusable_error(message)
+    ):
         return recover_mumu_device(vmindex=vmindex, reason=f"adb_failure:{message[:80]}", force_restart=True)
     return state
 
@@ -1542,6 +1641,9 @@ def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
         data = data.replace(b"\r\n", b"\n")
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("ADB screencap 返回的不是 PNG 数据")
+    black_frame = _mumu_adb_png_black_frame_summary(data)
+    if black_frame.get("black"):
+        raise RuntimeError(f"MuMu ADB截图疑似黑屏，需重建模拟器画面链路：{black_frame}")
     _clear_mumu_adb_failure_cache()
     return data, meta
 
@@ -1699,15 +1801,15 @@ def _processed_window_target(
     ensure_windows_runtime()
     set_dpi_awareness()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", DEFAULT_CAPTURE_MODE)
     resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
     resolved_trim_border = parse_crop(
         trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER)
     )
     resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
 
-    target = find_window(normalized_title, title_match)
-    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, title_match, refind_interval=1.0)
+    target, refind_title, refind_match = _find_mumu_window_candidate(normalized_title, title_match)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, refind_title, refind_match, refind_interval=1.0)
     raw_frame = capturer.capture()
     if raw_frame is None:
         raise RuntimeError("输入前截图失败，无法确认窗口坐标")
@@ -2211,7 +2313,7 @@ def _build_preview_command() -> list[str]:
         "--fps",
         os.getenv("CODEYUN_FANXIU_MUMU_FPS", DEFAULT_FPS),
         "--mode",
-        os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen"),
+        os.getenv("CODEYUN_FANXIU_MUMU_MODE", DEFAULT_CAPTURE_MODE),
         "--crop",
         os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP),
         "--trim-border",
@@ -2330,7 +2432,7 @@ def stream_mumu_window_mjpeg(
     resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER))
     resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
     resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", DEFAULT_CAPTURE_MODE)
     resolved_fixed_width = int(
         fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_MUMU_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
     )
@@ -2429,7 +2531,7 @@ def capture_mumu_window_frame(
 
     normalized_title = (title or get_target_title()).strip() or get_target_title()
     resolved_area = area or os.getenv("CODEYUN_FANXIU_MUMU_AREA", "outer")
-    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", "screen")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_MUMU_MODE", DEFAULT_CAPTURE_MODE)
     resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_MUMU_CROP", DEFAULT_CROP))
     resolved_trim_border = parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_MUMU_TRIM_BORDER", DEFAULT_TRIM_BORDER))
     resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_MUMU_ROTATE", DEFAULT_ROTATE))
@@ -2456,13 +2558,13 @@ def capture_mumu_window_frame(
         if cached is not None:
             return cached
 
-    target = find_window(normalized_title, title_match)
+    target, refind_title, refind_match = _find_mumu_window_candidate(normalized_title, title_match)
     capturer = WindowCapture(
         target.hwnd,
         resolved_area,
         resolved_mode,
-        normalized_title,
-        title_match,
+        refind_title,
+        refind_match,
         refind_interval=1.0,
     )
     frame = capturer.capture()
@@ -3830,7 +3932,7 @@ def activate_mumu_window(
     set_dpi_awareness()
 
     normalized_title = (title or get_target_title()).strip() or get_target_title()
-    target = find_window(normalized_title, title_match)
+    target, _refind_title, _refind_match = _find_mumu_window_candidate(normalized_title, title_match)
     point: tuple[int, int] | None = None
     if click_title:
         point = click_window_title_bar(target.hwnd)

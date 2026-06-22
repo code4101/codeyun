@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -34,6 +35,16 @@ class _FakeCapture:
 def _patch_window_fallback(monkeypatch):
     monkeypatch.setattr(mumu, "ensure_windows_runtime", lambda: None)
     monkeypatch.setattr(mumu, "set_dpi_awareness", lambda: None)
+    monkeypatch.setattr(
+        mumu,
+        "_find_mumu_desktop_main_window",
+        lambda: {
+            "hwnd": 123,
+            "title": "凡人修仙传：人界篇-Powered by MuMu模拟器",
+            "class": "Qt5156QWindowIcon",
+            "extended_rect_physical": [0, 0, 902, 1630],
+        },
+    )
     monkeypatch.setattr(mumu, "find_window", lambda *_args, **_kwargs: SimpleNamespace(hwnd=123, title="MuMu Player"))
     monkeypatch.setattr(mumu, "WindowCapture", _FakeCapture)
     monkeypatch.setattr(mumu, "process_frame", lambda *_args, **_kwargs: _Frame())
@@ -55,6 +66,80 @@ def test_capture_mumu_window_frame_defaults_to_annotation_canvas(monkeypatch):
     assert kwargs_list[-1]["fixed_width"] == 900
     assert kwargs_list[-1]["fixed_height"] == 1600
     assert mumu.DEFAULT_CROP == "0,60,4,4"
+
+
+def test_capture_mumu_window_frame_defaults_to_real_mumu_window_and_auto_mode(monkeypatch):
+    calls = []
+    _patch_window_fallback(monkeypatch)
+    monkeypatch.setattr(
+        mumu,
+        "find_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("default MuMu should use dedicated finder")),
+    )
+
+    class CapturingFakeCapture(_FakeCapture):
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(mumu, "WindowCapture", CapturingFakeCapture)
+
+    mumu.capture_mumu_window_frame()
+
+    assert calls
+    args, _kwargs = calls[-1]
+    assert args[0] == 123
+    assert args[2] == mumu.DEFAULT_CAPTURE_MODE
+    assert args[3] == "凡人修仙传：人界篇-Powered by MuMu模拟器"
+    assert args[4] == "exact"
+
+
+def test_target_mumu_main_window_rect_defaults_to_recorded_desktop_geometry(monkeypatch):
+    monkeypatch.delenv(mumu.MUMU_MAIN_WINDOW_RECT_ENV, raising=False)
+
+    assert mumu._target_mumu_main_window_rect() == (2927, 0, 908, 1644)
+
+
+def test_target_mumu_main_window_rect_allows_env_override(monkeypatch):
+    monkeypatch.setenv(mumu.MUMU_MAIN_WINDOW_RECT_ENV, "10,20,930,1700")
+
+    assert mumu._target_mumu_main_window_rect() == (10, 20, 930, 1700)
+
+
+def test_normalize_mumu_desktop_window_size_applies_recorded_xywh(monkeypatch):
+    calls = []
+    monkeypatch.delenv(mumu.MUMU_MAIN_WINDOW_RECT_ENV, raising=False)
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SWP_NOZORDER=4, SWP_NOACTIVATE=16))
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(SetWindowPos=lambda *args: calls.append(args)),
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_find_mumu_desktop_main_window",
+        lambda: {
+            "hwnd": 123,
+            "title": "凡人修仙传：人界篇-Powered by MuMu模拟器",
+            "class": "Qt5156QWindowIcon",
+            "window_rect": [3000, 10, 3910, 1676],
+            "window_size_logical": [910, 1666],
+            "extended_rect_physical": [3000, 10, 3904, 1652],
+            "extended_size_physical": [904, 1642],
+            "client_screen_rect_logical": [3002, 10, 3902, 1650],
+            "client_size_logical": [900, 1640],
+            "dpi": 144,
+            "scale": 1.5,
+        },
+    )
+
+    result = mumu.normalize_mumu_desktop_window_size(apply=True)
+
+    assert result["target_window_rect"] == [2927, 0, 3835, 1644]
+    assert result["target_main_size"] == [908, 1644]
+    assert result["already_target"] is False
+    assert result["applied"] is True
+    assert calls == [(123, None, 2927, 0, 908, 1644, 20)]
 
 
 def test_click_processed_point_does_not_fallback_to_window_when_adb_is_unavailable(monkeypatch):

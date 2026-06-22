@@ -9,11 +9,18 @@ class SignupMiscTaskMixin:
         入口状态 = "报名页" if 起点状态 == "报名页" else (yield from self._日常报名打开活动报名(runtime))
         if 入口状态 == "已完成":
             yield from runtime.goto_view(34)
-            return
+            return {"result": "success", "claimed": 0, "already_done": True}
 
-        yield from self._日常报名处理报名列(runtime)
+        领取数量 = yield from self._日常报名处理报名列(runtime)
         yield from self._日常报名返回日常页(runtime)
         yield from self._日常报名返回世界(runtime)
+        if 领取数量 <= 0:
+            return {
+                "result": "skipped",
+                "claimed": 0,
+                "message": "日常_报名：未领取任何报名项，不能确认最后两条已处理，稍后重试",
+            }
+        return {"result": "success", "claimed": 领取数量}
 
     def _日常报名进入日常页(self, runtime: Any):
         scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
@@ -56,6 +63,8 @@ class SignupMiscTaskMixin:
 
     def _日常报名处理报名列(self, runtime: Any) -> int:
         领取数量 = 0
+        无变化确认次数 = 0
+        底部确认轮数 = int(getattr(runtime, "payload", {}).get("signup_bottom_confirmations", 2) or 2)
         while True:
             matches = runtime.ocr_row_clicks_in_shape(
                 23,
@@ -71,10 +80,15 @@ class SignupMiscTaskMixin:
                 yield from runtime.wait_click(24, "领取")
                 yield from runtime.wait_view(23)
                 领取数量 += 1
+                无变化确认次数 = 0
                 continue
 
             滚动有变化 = yield from runtime.scroll_shape_content(23, "报名列")
-            if not 滚动有变化:
+            if 滚动有变化:
+                无变化确认次数 = 0
+                continue
+            无变化确认次数 += 1
+            if 无变化确认次数 >= max(1, 底部确认轮数):
                 break
         return 领取数量
 
@@ -98,7 +112,11 @@ class SignupMiscTaskMixin:
         if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
             return
         if scene_id == 69 or ("日常" in text and "活跃度" in text):
-            yield from runtime.wait_click(69, "退出")
+            if all(hasattr(runtime, name) for name in ("click_shape_center", "wait_action_settle")):
+                runtime.click_shape_center(69, "退出")
+                yield from runtime.wait_action_settle(1.0)
+            else:
+                yield from runtime.wait_click(69, "退出")
             yield from runtime.wait_any(
                 {
                     "scene": runtime.view_visible(34),

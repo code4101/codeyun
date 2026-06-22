@@ -589,6 +589,7 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   framework_tick?: Record<string, unknown>;
   engine_tick?: Record<string, unknown>;
   kernel_restart?: Record<string, unknown>;
+  isolation?: Record<string, unknown>;
   started_at: number;
   updated_at: number;
   finished_at: number;
@@ -5078,6 +5079,21 @@ export const setFanxiuDataAnnotationRuntimeGuardGroup = (entryId: string, enable
     .post<FanxiuDataAnnotationRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/guard/group/set',
       { entry_id: entryId, enabled },
+      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
+    )
+    .then(res => res.data);
+};
+
+export const setFanxiuDataAnnotationRuntimeIsolation = (
+  entryId: string,
+  enabled: boolean,
+  token = '',
+  ttlSeconds = 21600,
+) => {
+  return api
+    .post<FanxiuDataAnnotationRuntimeStatus>(
+      '/fanxiu/data-annotation/runtime/isolation/set',
+      { entry_id: entryId, enabled, token, ttl_seconds: ttlSeconds },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);

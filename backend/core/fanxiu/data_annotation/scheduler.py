@@ -30,6 +30,23 @@ TaskDue = Callable[[dict[str, Any]], bool]
 
 _UNSCHEDULED_MANUAL_RESULTS = {"manual_check_pending"}
 _DAILY_RETRY_TO_NEXT_TRIGGER_GRACE = timedelta(minutes=60)
+_XIANFU_INITIAL_CHECK_TASK_IDS = {"xianfu-visit-partner", "xianfu-learn-skill"}
+_DAILY_AUDIT_COMPLETION_MIN_TOTAL = {
+    "daily_dungeon": 6,
+}
+_STANDARD_ENABLED_TASK_IDS = {
+    "daily-boss",
+    "legacy-daily-lingta",
+    "legacy-daily-xianyuan",
+    "legacy-daily-lingzu",
+    "legacy-daily-jianling",
+    "legacy-daily-yaowang",
+    "legacy-daily-yaozu",
+}
+
+
+def _xianfu_initial_check_time(current_time: datetime) -> str:
+    return datetime(current_time.year, current_time.month, current_time.day, 6, 30, 0).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def data_annotation_fact_time_text(fact: dict[str, Any], *keys: str) -> str | None:
@@ -96,6 +113,20 @@ def _daily_task_success_today(task: dict[str, Any], current_time: datetime) -> b
     return datetime.fromtimestamp(last_run_ts).date() == current_time.date()
 
 
+def _daily_audit_row_is_valid_completed(row: dict[str, Any]) -> bool:
+    task_type = str(row.get("task_type") or "")
+    progress = row.get("progress") if isinstance(row.get("progress"), dict) else {}
+    try:
+        current = int(progress.get("current"))
+        total = int(progress.get("total"))
+    except (TypeError, ValueError):
+        return bool(row.get("done"))
+    min_total = _DAILY_AUDIT_COMPLETION_MIN_TOTAL.get(task_type)
+    if min_total is not None:
+        return total >= min_total and current >= total
+    return bool(row.get("done")) or current >= total
+
+
 def sync_data_annotation_scheduler_tasks_from_world_facts(
     tasks: list[dict[str, Any]],
     facts: dict[str, Any],
@@ -104,11 +135,60 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
 ) -> bool:
     discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
     task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
-    if not isinstance(task_facts, dict) or not task_facts:
-        return False
-    filtered_task_facts = dict(task_facts)
+    filtered_task_facts = dict(task_facts) if isinstance(task_facts, dict) else {}
+    current_time = now or datetime.now()
+    daily_audit = discoveries.get("daily_audit") if isinstance(discoveries.get("daily_audit"), dict) else {}
+    audit_updated_at = float(daily_audit.get("updated_at") or 0) if isinstance(daily_audit, dict) else 0.0
+    audit_date = datetime.fromtimestamp(audit_updated_at).date() if audit_updated_at > 0 else None
+    audit_completed_ids = {
+        str(task_id)
+        for task_id in (daily_audit.get("completed_task_ids") or [])
+        if str(task_id)
+    } if isinstance(daily_audit, dict) and audit_date == current_time.date() else set()
+    if isinstance(daily_audit, dict) and audit_date == current_time.date():
+        for row in daily_audit.get("mapped_completed") or []:
+            if isinstance(row, dict) and str(row.get("task_id") or "") and _daily_audit_row_is_valid_completed(row):
+                audit_completed_ids.add(str(row.get("task_id") or ""))
+            elif isinstance(row, dict) and str(row.get("task_id") or ""):
+                audit_completed_ids.discard(str(row.get("task_id") or ""))
+        for row in daily_audit.get("rows") or []:
+            if isinstance(row, dict) and str(row.get("task_id") or "") and _daily_audit_row_is_valid_completed(row):
+                audit_completed_ids.add(str(row.get("task_id") or ""))
+            elif isinstance(row, dict) and str(row.get("task_id") or ""):
+                audit_completed_ids.discard(str(row.get("task_id") or ""))
+    audit_completed_changed = False
     for task in tasks:
         task_id = str(task.get("id") or "")
+        if task_id in audit_completed_ids:
+            last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
+            if last_run_at is None or audit_updated_at > last_run_at + 1.0:
+                audit_time = datetime.fromtimestamp(audit_updated_at)
+                next_time = next_data_annotation_scheduler_time(task, audit_time)
+                task["last_result"] = "success"
+                task["last_run_at"] = daily_audit.get("updated_at_text") or audit_time.strftime("%Y-%m-%d %H:%M:%S")
+                task["retry_after"] = None
+                if next_time:
+                    task["next_time"] = next_time
+                audit_completed_changed = True
+                fact = dict(filtered_task_facts.get(task_id) or {})
+                fact.update({
+                    "id": task_id,
+                    "task_type": str(task.get("task_type") or ""),
+                    "label": str(task.get("label") or task_id),
+                    "source": str(task.get("source") or ""),
+                    "schedule_kind": str(task.get("schedule_kind") or ""),
+                    "last_result": "success",
+                    "last_run_at": daily_audit.get("updated_at_text") or audit_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "next_time": next_time,
+                    "retry_after": None,
+                    "updated_at": audit_updated_at,
+                    "visual_audit_result": "completed",
+                })
+                fact.pop("discovered_retry_after", None)
+                if next_time:
+                    fact["discovered_next_time"] = next_time
+                filtered_task_facts[task_id] = fact
+                continue
         fact = filtered_task_facts.get(task_id)
         if not isinstance(fact, dict):
             continue
@@ -128,6 +208,15 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         last_run_at = parse_data_annotation_task_time(task.get("last_run_at"))
         fact_last_run_at = parse_data_annotation_task_time(fact.get("last_run_at"))
         if (
+            fact_result == "success"
+            and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
+            and fact_last_run_at is not None
+            and last_run_at is not None
+            and fact_last_run_at < last_run_at
+        ):
+            filtered_task_facts.pop(task_id, None)
+            continue
+        if (
             fact_result in {"queued", "running"}
             and str(task.get("last_result") or "") in {"error", "stopped", "skipped", "unsupported"}
             and fact_last_run_at is not None
@@ -136,12 +225,18 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         ):
             filtered_task_facts.pop(task_id, None)
             continue
-        if fact_updated_at and last_run_at and fact_updated_at <= last_run_at + 1.0:
+        fact_has_success_next_time = (
+            fact_result == "success"
+            and bool(fact.get("discovered_next_time") or fact.get("next_time"))
+            and (not task.get("next_time") or bool(task.get("retry_after")))
+            and (not fact_updated_at or not last_run_at or fact_updated_at >= last_run_at)
+        )
+        if fact_updated_at and last_run_at and fact_updated_at <= last_run_at + 1.0 and not fact_has_success_next_time:
             filtered_task_facts.pop(task_id, None)
     if not filtered_task_facts:
-        return False
+        return audit_completed_changed
     sync_time = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-    return sync_scheduled_tasks_from_facts(
+    synced = sync_scheduled_tasks_from_facts(
         tasks,
         filtered_task_facts,
         time_field_sources={
@@ -154,6 +249,7 @@ def sync_data_annotation_scheduler_tasks_from_world_facts(
         fact_updated_at_key="world_fact_updated_at",
         synced_at_text=sync_time,
     )
+    return bool(synced or audit_completed_changed)
 
 
 def merge_data_annotation_scheduler_task_updates(
@@ -439,10 +535,17 @@ def repair_data_annotation_scheduler_tasks(
             task["cooldown_seconds"] = default_task.get("cooldown_seconds")
             changed = True
         if str(task.get("id") or "") == "legacy-daily-assistant":
-            for key in ("schedule_times", "cooldown_seconds"):
+            for key in ("enabled", "schedule_times", "cooldown_seconds"):
                 if task.get(key) != default_task.get(key):
                     task[key] = default_task.get(key)
                     changed = True
+        if (
+            str(task.get("id") or "") in _STANDARD_ENABLED_TASK_IDS
+            and default_task.get("enabled") is True
+            and task.get("enabled") is not True
+        ):
+            task["enabled"] = True
+            changed = True
     by_id = {str(task.get("id") or ""): task for task in tasks}
     if len(by_id) != len(tasks):
         deduped: dict[str, dict[str, Any]] = {}
@@ -472,6 +575,7 @@ def repair_data_annotation_scheduler_tasks(
     current_time = now or datetime.now()
     current_ts = current_time.timestamp()
     for task in tasks:
+        daily_retry_deferred = False
         if str(task.get("schedule_kind") or "") == "manual" and task.get("enabled"):
             task["enabled"] = False
             changed = True
@@ -495,6 +599,7 @@ def repair_data_annotation_scheduler_tasks(
                     task["checkpoint"] = checkpoint
                 else:
                     task["checkpoint"] = None
+                daily_retry_deferred = True
                 changed = True
         if (
             task.get("enabled")
@@ -533,9 +638,20 @@ def repair_data_annotation_scheduler_tasks(
                 changed = True
         if (
             task.get("enabled")
+            and str(task.get("id") or "") in _XIANFU_INITIAL_CHECK_TASK_IDS
+            and str(task.get("schedule_kind") or "") == "dynamic"
+            and not task.get("next_time")
+            and not task.get("retry_after")
+            and not str(task.get("last_result") or "")
+        ):
+            task["next_time"] = _xianfu_initial_check_time(current_time)
+            changed = True
+        if (
+            task.get("enabled")
             and str(task.get("schedule_kind") or "") == "daily"
             and str(task.get("last_result") or "") not in {"error", "stopped", "skipped", "unsupported", *_UNSCHEDULED_MANUAL_RESULTS}
             and not task.get("retry_after")
+            and not daily_retry_deferred
             and not _daily_task_success_today(task, current_time)
         ):
             today_time = _daily_first_schedule_time_today(task, current_time)
@@ -627,14 +743,32 @@ def build_data_annotation_scheduler_plan(
 ) -> dict[str, Any]:
     discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
     task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+    daily_audit = discoveries.get("daily_audit") if isinstance(discoveries.get("daily_audit"), dict) else {}
     runtime_running = bool(runtime.get("running"))
     current_ts = time.time() if now_ts is None else now_ts
+    audit_updated_at = float(daily_audit.get("updated_at") or 0) if isinstance(daily_audit, dict) else 0.0
+    audit_date = datetime.fromtimestamp(audit_updated_at).date() if audit_updated_at > 0 else None
+    current_date = datetime.fromtimestamp(current_ts).date()
+    audit_incomplete_ids = {
+        str(task_id)
+        for task_id in (daily_audit.get("incomplete_task_ids") or [])
+        if str(task_id)
+    } if isinstance(daily_audit, dict) and audit_date == current_date else set()
+
+    def visual_audit_task_due(task: dict[str, Any]) -> bool:
+        task_id = str(task.get("id") or "")
+        if task_id in audit_incomplete_ids:
+            last_run_ts = parse_data_annotation_task_time(task.get("last_run_at"))
+            if last_run_ts is None or audit_updated_at > last_run_ts + 1.0:
+                return True
+        return task_due(task)
+
     plan = build_scheduled_task_plan(
         tasks,
         runtime_running=runtime_running,
         runtime_task=str(runtime.get("current_task") or runtime.get("task_type") or ""),
         task_supported=task_supported,
-        task_due=task_due,
+        task_due=visual_audit_task_due,
         task_facts=task_facts,
         now=current_ts,
     )
@@ -652,6 +786,7 @@ def build_data_annotation_scheduler_plan(
             "interruptible": bool(runtime.get("interruptible", True)),
         },
         "facts_summary": data_annotation_world_facts_summary(facts),
+        "daily_audit": daily_audit,
         "due_tasks": plan["due_tasks"],
         "tasks": plan["tasks"],
         "path": str(scheduler_state_path),

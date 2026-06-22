@@ -19,6 +19,10 @@ class 日常异火任务Mixin:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
         return "大地图" in compact and "异火" not in compact and "净莲妖火" not in compact
 
+    def _daily_yihuo_text_is_detail(self, text: str) -> bool:
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        return "异火" in compact and ("升阶" in compact or "次日5点刷新" in compact or "净莲妖火" in compact)
+
     def _daily_yihuo_return_best_effort(self, runtime: Any):
         for view_id, shape_title in ((261, "返回"), (260, "返回"), (259, "返回")):
             try:
@@ -40,24 +44,30 @@ class 日常异火任务Mixin:
                 return
 
     def 日常异火流程(self, runtime: Any):
-        _scene_id, _score, frame = runtime.current_scene([261, 260, 259, 34], update=True)
+        scene_id, _score, frame = runtime.current_scene([261, 260, 259, 34], update=True)
         current_text = runtime.ocr_text(frame)
         if self._daily_yihuo_text_is_claimed(current_text):
             yield from self._daily_yihuo_return_best_effort(runtime)
             return
-        if not self._daily_yihuo_text_is_xinghai_list(current_text):
+        if scene_id == 261 or self._daily_yihuo_text_is_detail(current_text):
+            runtime.click_shape_center(261, "返回")
+            yield from runtime.wait_view(260, timeout=5.0, label="日常_异火：从异火详情返回列表 #260")
+            scene_id = 260
+        if scene_id not in {259, 260} and not self._daily_yihuo_text_is_xinghai_list(current_text):
             yield from runtime.goto_view(34)
             yield from runtime.wait_click(34, "下方菜单/星海")
 
-        frame = yield from runtime.wait_any({
-            "星海列表": runtime.ocr_contains(all_of=("异火",), any_of=("蓝色星海", "提纯", "幻灵域", "淬锋域")),
-            "异火入口": runtime.shape_visible(259, "异火"),
-        })
-        if frame == "星海列表":
-            runtime.click_shape_center(259, "异火")
-        else:
-            yield from runtime.wait_click(259, "异火")
-        yield from runtime.wait_click(260, "净莲")
+        if scene_id != 260:
+            frame = yield from runtime.wait_any({
+                "星海列表": runtime.ocr_contains(all_of=("异火",), any_of=("蓝色星海", "提纯", "幻灵域", "淬锋域")),
+                "异火入口": runtime.shape_visible(259, "异火"),
+            })
+            if frame == "星海列表":
+                runtime.click_shape_center(259, "异火")
+            else:
+                yield from runtime.wait_click(259, "异火")
+            yield from runtime.wait_view(260, timeout=18.0, label="日常_异火：等待异火列表 #260")
+        runtime.click_shape_center(260, "净莲")
 
         箱子状态 = yield from runtime.wait_any({
             "可领取": runtime.shape_visible(261, "箱子"),

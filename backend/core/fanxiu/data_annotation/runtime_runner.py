@@ -56,6 +56,7 @@ from backend.core.fanxiu.data_annotation.scheduler import (
     repair_data_annotation_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks
+from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence
 from backend.core.fanxiu.data_annotation.popup_guard import PopupGuardMixin
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_runtime_status_log,
@@ -693,6 +694,7 @@ class FanxiuRuntime(Runtime):
         )
         last_scene_id: int | None = None
         last_score = 0.0
+        previous_frame: str | None = None
         while True:
             if self.stop_event is not None:
                 self.runner._raise_if_stopped(self.stop_event)
@@ -726,7 +728,25 @@ class FanxiuRuntime(Runtime):
             if elapsed >= float(wait_timeout):
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
                 expected = "/".join(f"#{view_id}" for view_id in view_ids)
-                raise TimeoutError(f"{label} 超时，未检测到 {expected}，最后 {scene_text} {last_score:.0f}%")
+                diagnostic = ""
+                try:
+                    evidence = build_unknown_evidence(
+                        self.runner,
+                        self.ctx,
+                        frame,
+                        label=label,
+                        expected_scene_ids=view_ids,
+                        last_scene_id=last_scene_id,
+                        last_score=last_score,
+                        previous_frame_data_url=previous_frame,
+                    )
+                    report_suffix = f"，证据={evidence.report_path}" if evidence.report_path else ""
+                    frame_suffix = f"，截图={evidence.frame_path}" if evidence.frame_path else ""
+                    diagnostic = f"；unknown诊断={evidence.classification}：{evidence.suggestion}{frame_suffix}{report_suffix}"
+                    self.runner._log("warning", f"{label}：{diagnostic.lstrip('；')}")
+                except Exception as exc:
+                    self.runner._log("warning", f"{label}：unknown诊断生成失败：{exc}")
+                raise TimeoutError(f"{label} 超时，未检测到 {expected}，最后 {scene_text} {last_score:.0f}%{diagnostic}")
             if self.runner._auto_close_popup_guard_step(self):
                 self.clear_frame()
                 continue
@@ -737,6 +757,7 @@ class FanxiuRuntime(Runtime):
                     "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
                     "updated_at": time.time(),
                 })
+            previous_frame = frame
 
     def wait_view_id(
         self,
@@ -1052,6 +1073,26 @@ class FanxiuRuntime(Runtime):
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
         lines = self.runner._cached_ocr_lines(self.ctx, frame)
         return self.runner._ocr_row_clicks_in_shape(
+            lines,
+            target_view.raw,
+            shape_title,
+            include=include,
+            exclude=exclude,
+        )
+
+    def ocr_centers_in_shape(
+        self,
+        view: View | int | str,
+        shape_title: str,
+        *,
+        include: tuple[str, ...],
+        exclude: tuple[str, ...] = (),
+        frame_data_url: str | None = None,
+    ) -> list[tuple[float, float, str]]:
+        target_view = self.view(view)
+        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=True)
+        lines = self.runner._cached_ocr_lines(self.ctx, frame)
+        return self.runner._ocr_centers_in_shape(
             lines,
             target_view.raw,
             shape_title,
@@ -1422,7 +1463,7 @@ class FanxiuRuntime(Runtime):
         title_pattern: str,
         exclude_pattern: str | None = None,
         progress_can_mark_done: bool = True,
-        max_scrolls: int = 10,
+        max_scrolls: int = 30,
         reverse_scrolls: int = 0,
     ):
         view69 = self.view(69)
@@ -1799,6 +1840,9 @@ class DataAnnotationRuntimeRunner(
 ):
     default_guard_enabled = True
     default_guard_interval_seconds = 2.0
+    idle_recovery_interval_seconds = 300.0
+    idle_recovery_max_popup_ticks = 6
+    idle_recovery_settle_seconds = 1.0
     default_guard_items = {
         "device_health": {"enabled": True, "entry_id": "", "updated_at": 0.0},
         "close_popups": {"enabled": True, "entry_id": "", "updated_at": 0.0},
@@ -2123,18 +2167,24 @@ class DataAnnotationRuntimeRunner(
             return True
         return time.time() - heartbeat_at > max(10.0, self._guard_interval_seconds * 3)
 
-    def _start_next_manual_job_if_idle(self, entry: Any, entry_id: str) -> dict[str, Any] | None:
+    def _start_next_manual_job_if_idle(
+        self,
+        entry: Any,
+        entry_id: str,
+        asset_tree_path: Path | None = None,
+    ) -> dict[str, Any] | None:
         with self._lock:
             if self._status.get("running"):
                 return None
         task = _pop_next_data_annotation_manual_job()
         if task is None:
             return None
+        resolved_asset_tree_path = asset_tree_path if isinstance(asset_tree_path, Path) else _data_annotation_asset_tree_path(entry_id)
         return self.start_manual_runtime_task(
             entry=entry,
             entry_id=entry_id,
             task=task,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            asset_tree_path=resolved_asset_tree_path,
         )
 
     def _mark_service_heartbeat(self, step: str) -> None:
@@ -2154,22 +2204,28 @@ class DataAnnotationRuntimeRunner(
             return True
         return time.time() - updated_at > max(120.0, self._guard_interval_seconds * 30)
 
+    def _service_owner_payload(self, token: str, entry_id: str, generation: int, step: str) -> dict[str, Any]:
+        pid = os.getpid()
+        now = time.time()
+        return {
+            "resource": "fanxiu-behavior-tree-kernel",
+            "owner_kind": "process",
+            "owner_id": f"pid:{pid}",
+            "pid": pid,
+            "token": token,
+            "lease_token": token,
+            "entry_id": entry_id,
+            "generation": generation,
+            "step": step,
+            "heartbeat_at": now,
+            "updated_at": now,
+        }
+
     def _write_service_owner(self, owner_path: Path, token: str, entry_id: str, generation: int, step: str) -> None:
         try:
             owner_path.parent.mkdir(parents=True, exist_ok=True)
             owner_path.write_text(
-                json.dumps(
-                    {
-                        "pid": os.getpid(),
-                        "token": token,
-                        "entry_id": entry_id,
-                        "generation": generation,
-                        "step": step,
-                        "updated_at": time.time(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
+                json.dumps(self._service_owner_payload(token, entry_id, generation, step), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception:
@@ -2202,19 +2258,7 @@ class DataAnnotationRuntimeRunner(
                     pass
             fd = os.open(str(owner_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as file:
-                json.dump(
-                    {
-                        "pid": os.getpid(),
-                        "token": token,
-                        "entry_id": entry_id,
-                        "generation": generation,
-                        "step": "starting",
-                        "updated_at": time.time(),
-                    },
-                    file,
-                    ensure_ascii=False,
-                    indent=2,
-                )
+                json.dump(self._service_owner_payload(token, entry_id, generation, "starting"), file, ensure_ascii=False, indent=2)
             self._service_owner_token = token
             self._service_owner_path = owner_path
             return True, ""
@@ -2261,6 +2305,10 @@ class DataAnnotationRuntimeRunner(
             if self._local_run_token == token:
                 self._local_run_token = ""
         release_fanxiu_job_group_isolation(token, path=_data_annotation_job_group_isolation_path())
+
+    def _ensure_runtime_cell_idle_locked(self) -> None:
+        if self._status.get("running"):
+            raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
 
     def ensure_service(
         self,
@@ -2427,6 +2475,8 @@ class DataAnnotationRuntimeRunner(
             request = json.loads(control_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
+        except OSError:
+            return
         except Exception:
             request = {}
         if not isinstance(request, dict):
@@ -2443,10 +2493,20 @@ class DataAnnotationRuntimeRunner(
                     "info",
                     f"已处理本地控制请求：wake_service reason={request.get('reason') or ''}",
                 )
-            try:
-                control_path.unlink()
-            except FileNotFoundError:
-                pass
+            self._remove_service_control_request(control_path)
+            return
+        if command == "shutdown_service":
+            self._service_last_control_id = request_id
+            stop_event = self._service_stop_event
+            if stop_event is not None:
+                stop_event.set()
+            self._service_wake_event.set()
+            with self._lock:
+                self._log_locked(
+                    "stop",
+                    f"已处理本地控制请求：shutdown_service reason={request.get('reason') or ''}",
+                )
+            self._remove_service_control_request(control_path)
             return
         if command != "stop_current_task":
             return
@@ -2458,13 +2518,20 @@ class DataAnnotationRuntimeRunner(
                 "stop",
                 f"已处理本地控制请求：stop_current_task reason={request.get('reason') or ''} status={status.get('status') or ''}",
             )
-        try:
-            control_path.unlink()
-        except FileNotFoundError:
-            pass
+        self._remove_service_control_request(control_path)
+
+    def _remove_service_control_request(self, control_path: Path) -> None:
+        for _attempt in range(3):
+            try:
+                control_path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(0.05)
 
     def _run_service_loop(self, *, stop_event: threading.Event, tick_seconds: float, generation: int) -> None:
-        last_idle_guard_at = 0.0
+        last_idle_recovery_at = 0.0
         while not stop_event.is_set():
             with self._lock:
                 if generation != self._service_generation:
@@ -2478,10 +2545,18 @@ class DataAnnotationRuntimeRunner(
                 continue
             entry, entry_id, asset_tree_path = context
             try:
-                self._run_device_health_guard_tick(entry_id)
                 if not self.status().get("running"):
+                    guard_handled = False
+                    if self._guard_group_enabled and self._guard_enabled:
+                        self._mark_service_heartbeat("idle_guard")
+                        guard_handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
+                        self._mark_service_heartbeat("idle_guard_done")
+                    if guard_handled:
+                        self._service_wake_event.wait(0.1)
+                        self._service_wake_event.clear()
+                        continue
                     self._mark_service_heartbeat("manual_job_poll")
-                    if self._start_next_manual_job_if_idle(entry, entry_id) is not None:
+                    if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
                         self._mark_service_heartbeat("manual_job_started")
                         self._service_wake_event.wait(0.1)
                         self._service_wake_event.clear()
@@ -2496,20 +2571,18 @@ class DataAnnotationRuntimeRunner(
                             self._service_wake_event.wait(0.1)
                             self._service_wake_event.clear()
                             continue
-                    interval = self._guard_interval_seconds
                     now = time.time()
                     if (
                         self._guard_group_enabled
-                        and self._guard_enabled
-                        and now - last_idle_guard_at >= max(0.5, interval)
+                        and now - last_idle_recovery_at >= max(30.0, float(self.idle_recovery_interval_seconds))
                         and (
                             not bool(_read_data_annotation_scheduler_settings().get("job_group_enabled", True))
                             or not self._scheduler_task_due_soon(within_seconds=180.0)
                         )
                     ):
-                        last_idle_guard_at = now
+                        last_idle_recovery_at = now
                         self._mark_service_heartbeat("idle_guard")
-                        self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
+                        self._run_idle_recovery(entry, entry_id, asset_tree_path, stop_event=stop_event)
                         self._mark_service_heartbeat("idle_guard_done")
             except Exception as exc:
                 with self._lock:
@@ -2550,11 +2623,20 @@ class DataAnnotationRuntimeRunner(
             if guard:
                 self._run_device_health_guard_tick(entry_id)
             if not self.status().get("running"):
-                if manual_job:
+                guard_handled = False
+                guard_checked = False
+                if guard and self._guard_group_enabled and self._guard_enabled:
+                    self._mark_service_heartbeat("idle_guard")
+                    guard_handled = self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
+                    self._mark_service_heartbeat("idle_guard_done")
+                    guard_checked = True
+                    if guard_handled:
+                        action = "guard_checked"
+                if not guard_handled and manual_job:
                     self._mark_service_heartbeat("manual_job_poll")
-                    if self._start_next_manual_job_if_idle(entry, entry_id) is not None:
+                    if self._start_next_manual_job_if_idle(entry, entry_id, asset_tree_path) is not None:
                         action = "manual_job_started"
-                if action == "idle" and scheduled_job:
+                if not guard_handled and action == "idle" and scheduled_job:
                     if self._job_group_isolated():
                         self._mark_service_heartbeat("scheduler_isolated")
                         action = "scheduler_isolated"
@@ -2562,10 +2644,7 @@ class DataAnnotationRuntimeRunner(
                         self._mark_service_heartbeat("scheduler_poll")
                         if self._start_due_scheduler_tasks_if_idle(entry, entry_id, asset_tree_path):
                             action = "scheduler_started"
-                if action == "idle" and guard and self._guard_group_enabled and self._guard_enabled:
-                    self._mark_service_heartbeat("idle_guard")
-                    self._run_idle_guard_tick(entry, entry_id, asset_tree_path)
-                    self._mark_service_heartbeat("idle_guard_done")
+                if action == "idle" and guard_checked:
                     action = "guard_checked"
         except Exception as exc:
             with self._lock:
@@ -2691,7 +2770,7 @@ class DataAnnotationRuntimeRunner(
             blocking_overlay = self._known_blocking_overlay_info(ctx)
         except Exception:
             blocking_overlay = None
-        if blocking_overlay:
+        if blocking_overlay and bool(blocking_overlay.get("blocking")):
             blocking_message = str(blocking_overlay.get("message") or "")
             self._mark_scheduler_tasks_blocked(tasks, due_tasks, blocking_message)
             with self._lock:
@@ -2739,7 +2818,7 @@ class DataAnnotationRuntimeRunner(
                     return True
         return False
 
-    def _run_idle_guard_tick(self, entry: Any, entry_id: str, asset_tree_path: Path) -> None:
+    def _run_idle_guard_tick(self, entry: Any, entry_id: str, asset_tree_path: Path) -> bool:
         try:
             tree = self._load_asset_tree(asset_tree_path)
             ctx = {
@@ -2749,7 +2828,7 @@ class DataAnnotationRuntimeRunner(
                 "images": self._index_images(tree),
             }
             self._require_assets(ctx)
-            self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, threading.Event())
+            result = self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, threading.Event())
             frame = self._screencap(ctx)
             key, score = self._identify_scene(ctx, frame)
             scene_id = self.scene_ids.get(key)
@@ -2765,9 +2844,75 @@ class DataAnnotationRuntimeRunner(
                     })
             self._clear_tick_frame(ctx)
             self._persist_status()
+            return result == BehaviorTreeStatus.RUNNING
         except Exception as exc:
             with self._lock:
                 self._log_locked("error", f"守护空转失败：{exc}", scope="guard", item_id="close_popups")
+            return False
+
+    def _run_idle_recovery(
+        self,
+        entry: Any,
+        entry_id: str,
+        asset_tree_path: Path,
+        *,
+        stop_event: threading.Event,
+        max_popup_ticks: int | None = None,
+        settle_seconds: float | None = None,
+    ) -> None:
+        """Run bounded idle maintenance without starting business jobs."""
+        self._run_device_health_guard_tick(entry_id)
+        if not (self._guard_group_enabled and self._guard_enabled):
+            return
+        max_ticks = max(1, int(max_popup_ticks or self.idle_recovery_max_popup_ticks))
+        settle = max(0.0, float(settle_seconds if settle_seconds is not None else self.idle_recovery_settle_seconds))
+        try:
+            tree = self._load_asset_tree(asset_tree_path)
+            ctx = {
+                "entry": entry,
+                "asset_tree": tree,
+                "asset_tree_path": asset_tree_path,
+                "images": self._index_images(tree),
+            }
+            self._require_assets(ctx)
+            handled_count = 0
+            for _index in range(max_ticks):
+                self._raise_if_stopped(stop_event)
+                if self.status().get("running"):
+                    break
+                result = self._runtime_guard_service_tick("close_popups", ctx, asset_tree_path, stop_event)
+                if result != BehaviorTreeStatus.RUNNING:
+                    frame = self._screencap(ctx)
+                    key, score = self._identify_scene(ctx, frame)
+                    scene_id = self.scene_ids.get(key)
+                    if scene_id is not None and self._scene_matches(key, score):
+                        with self._lock:
+                            self._status.update({
+                                "entry_id": entry_id,
+                                "current_scene": scene_id,
+                                "status": "idle",
+                                "phase": "idle_tick",
+                                "message": f"空闲复原识别：#{scene_id} {key} {score:.0f}%",
+                                "updated_at": time.time(),
+                            })
+                    break
+                handled_count += 1
+                self._clear_tick_frame(ctx)
+                if settle > 0 and stop_event.wait(settle):
+                    self._raise_if_stopped(stop_event)
+            if handled_count >= max_ticks:
+                with self._lock:
+                    self._log_locked(
+                        "warning",
+                        f"空闲复原达到弹窗处理上限：{handled_count}",
+                        scope="guard",
+                        item_id="close_popups",
+                    )
+            self._clear_tick_frame(ctx)
+            self._persist_status()
+        except Exception as exc:
+            with self._lock:
+                self._log_locked("error", f"空闲复原失败：{exc}", scope="guard", item_id="close_popups")
 
     def _run_device_health_guard_tick(self, entry_id: str) -> None:
         if not self._runtime_guard_enabled("device_health"):
@@ -2943,8 +3088,7 @@ class DataAnnotationRuntimeRunner(
     ) -> dict[str, Any]:
         payload = dict(payload or {})
         with self._lock:
-            if self._status.get("running"):
-                raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
+            self._ensure_runtime_cell_idle_locked()
             stop_event = threading.Event()
             self._stop_event = stop_event
             now = time.time()
@@ -2990,8 +3134,7 @@ class DataAnnotationRuntimeRunner(
         payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
         label = str(task.get("label") or self._runtime_task_label(task_type, payload) or task_type)
         with self._lock:
-            if self._status.get("running"):
-                raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
+            self._ensure_runtime_cell_idle_locked()
             stop_event = threading.Event()
             self._stop_event = stop_event
             now = time.time()
@@ -3040,8 +3183,7 @@ class DataAnnotationRuntimeRunner(
             raise FanxiuRuntimeError("没有可执行的到期任务", status_code=400)
         is_run_due = run_label in {"执行全部到期任务", "执行到期任务"}
         with self._lock:
-            if self._status.get("running"):
-                raise FanxiuRuntimeError("数据标注 Runtime 正在运行任务", status_code=409)
+            self._ensure_runtime_cell_idle_locked()
             stop_event = threading.Event()
             self._stop_event = stop_event
             now = time.time()
@@ -3270,9 +3412,34 @@ class DataAnnotationRuntimeRunner(
         if isinstance(runtime_attrs, dict):
             runtime_attrs["payload"] = payload
         result = flow(runtime)
+        flow_result: Any = None
         if isinstance(result, GeneratorType):
-            yield from result
+            flow_result = yield from result
+        else:
+            flow_result = result
         yield from self._wait_runtime_action_settle(ctx, stop_event)
+        if isinstance(flow_result, dict) and str(flow_result.get("result") or "success") != "success":
+            task_result = str(flow_result.get("result") or "skipped")
+            retry_after = (
+                _runtime_runner._now()
+                + timedelta(seconds=max(60, int(payload.get("fallback_seconds") or payload.get("cooldown_seconds") or 600)))
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            self._record_scheduler_task_discovered_retry_after(
+                str(payload.get("__scheduler_task_id") or f"legacy-{task_type}"),
+                retry_after,
+                task_type=task_type,
+                label=label,
+                last_result=task_result,
+            )
+            with self._lock:
+                self._set_status_locked(
+                    task_result,
+                    str(flow_result.get("message") or f"{label}未确认完成，{retry_after} 重试"),
+                    phase=f"{task_type}_{task_result}",
+                    current_scene=34,
+                )
+                self._log_locked("skip" if task_result == "skipped" else task_result, self._status["message"])
+            return task_result
         runtime_attrs = getattr(runtime, "attrs", None)
         completion_message = str(runtime_attrs.get("completion_message") or "").strip() if isinstance(runtime_attrs, dict) else ""
         self._finish_daily_runtime_task(
@@ -3857,6 +4024,36 @@ class DataAnnotationRuntimeRunner(
                 "action_shapes": [str(close_shape.get("title") or "")],
                 "message": "检测到游戏公告遮挡，已有安全关闭动作标注",
             }
+        compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
+        if "破界符" in compact and "购买并使用" in compact and ("剩余限购次数" in compact or "价格" in compact):
+            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+            candidate = images.get(224)
+            image224 = candidate if isinstance(candidate, dict) else None
+            candidate225 = images.get(225)
+            image225 = candidate225 if isinstance(candidate225, dict) else None
+            use_shape = self._find_shape(image224, "购买并使用")
+            blank_shape = self._find_shape(image225, "空白")
+            if use_shape is None or blank_shape is None:
+                missing: list[str] = []
+                if use_shape is None:
+                    missing.append("#224「购买并使用」")
+                if blank_shape is None:
+                    missing.append("#225「空白」")
+                return {
+                    "scene_id": 224,
+                    "title": "购买破界符",
+                    "blocking": True,
+                    "all_shapes": shape_titles(image224),
+                    "message": f"检测到 #224「购买破界符」弹窗；资产树缺少 {'、'.join(missing)}，无法按 #224 连续购买到 #225 后回退",
+                }
+            return {
+                "scene_id": 224,
+                "title": "购买破界符",
+                "blocking": False,
+                "all_shapes": shape_titles(image224),
+                "action_shapes": ["购买并使用", "#225 空白"],
+                "message": "检测到 #224「购买破界符」弹窗，已有连续购买与 #225 回退标注",
+            }
         return None
 
     def _known_blocking_overlay_message(self, ctx: dict[str, Any]) -> str | None:
@@ -3906,7 +4103,7 @@ class DataAnnotationRuntimeRunner(
             raise RuntimeError(message)
         action = self._known_blocking_overlay_action(ctx, info)
         if action is None:
-            raise RuntimeError(message)
+            return False
         image, shape = action
         title = str(info.get("title") or image.get("title") or "阻断浮层")
         shape_title = str(shape.get("title") or "关闭")
@@ -3952,14 +4149,31 @@ class DataAnnotationRuntimeRunner(
                 item["last_run_at"] = now_text
                 item["retry_after"] = None
             elif result == "success":
+                fact_retry_after = self._scheduler_task_runtime_discovered_retry_after(item)
+                fact_next_time = self._scheduler_task_runtime_discovered_next_time(item)
+                if fact_retry_after:
+                    item["last_run_at"] = now_text
+                    item["next_time"] = None
+                    item["retry_after"] = fact_retry_after
+                    item["last_result"] = "skipped"
+                    changed = True
+                    break
                 item["last_run_at"] = now_text
                 item["retry_after"] = None
                 if str(item.get("schedule_kind") or "") == "daily":
-                    item["next_time"] = _next_data_annotation_scheduler_time(item)
+                    item["next_time"] = fact_next_time if fact_next_time else _next_data_annotation_scheduler_time(item)
                 else:
-                    item["next_time"] = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
+                    fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
+                    item["next_time"] = fact_next_time if fact_next_time else None
             elif result in {"skipped", "unsupported"}:
                 item["last_run_at"] = now_text
+                fact_retry_after = self._scheduler_task_fact_retry_after(str(item.get("id") or ""))
+                if fact_retry_after:
+                    item["next_time"] = None
+                    item["retry_after"] = fact_retry_after
+                    item["last_result"] = result
+                    changed = True
+                    break
                 fact_next_time = self._scheduler_task_fact_next_time(str(item.get("id") or ""))
                 if fact_next_time:
                     item["next_time"] = fact_next_time
@@ -4022,6 +4236,72 @@ class DataAnnotationRuntimeRunner(
                 return value
         return None
 
+    def _scheduler_task_runtime_discovered_next_time(self, item: dict[str, Any]) -> str | None:
+        task_id = str(item.get("id") or "").strip()
+        if not task_id:
+            return None
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+        task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+        fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        value = str(fact.get("discovered_next_time") or "").strip()
+        if not value or "updated_at" not in fact:
+            return None
+        last_run_at = str(item.get("last_run_at") or "").strip()
+        if last_run_at:
+            try:
+                started_at = datetime.strptime(last_run_at, "%Y-%m-%d %H:%M:%S").timestamp()
+                if float(fact.get("updated_at") or 0) + 1e-6 >= started_at:
+                    return value
+            except (TypeError, ValueError):
+                return None
+        if str(item.get("last_result") or "") == "running":
+            return value
+        return None
+
+    def _scheduler_task_runtime_discovered_retry_after(self, item: dict[str, Any]) -> str | None:
+        task_id = str(item.get("id") or "").strip()
+        if not task_id:
+            return None
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+        task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+        fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        value = ""
+        for key in ("discovered_retry_after", "retry_after"):
+            value = str(fact.get(key) or "").strip()
+            if value:
+                break
+        if not value or "updated_at" not in fact:
+            return None
+        last_result = str(fact.get("last_result") or "")
+        if last_result and last_result not in {"skipped", "unsupported", "error", "stopped"}:
+            return None
+        last_run_at = str(item.get("last_run_at") or "").strip()
+        if last_run_at:
+            try:
+                started_at = datetime.strptime(last_run_at, "%Y-%m-%d %H:%M:%S").timestamp()
+                if float(fact.get("updated_at") or 0) + 1e-6 >= started_at:
+                    return value
+            except (TypeError, ValueError):
+                return None
+        if str(item.get("last_result") or "") == "running":
+            return value
+        return None
+
+    def _scheduler_task_fact_retry_after(self, task_id: str) -> str | None:
+        if not task_id:
+            return None
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+        task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+        fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        for key in ("discovered_retry_after", "retry_after"):
+            value = str(fact.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
     def _scheduler_task_next_time_from_schedule(self, task_id: str, task_type: str = "") -> str | None:
         task_id = str(task_id or "").strip()
         task_type = str(task_type or "").strip()
@@ -4065,6 +4345,47 @@ class DataAnnotationRuntimeRunner(
             "source": "data_annotation_runtime",
             "schedule_kind": "dynamic",
             "discovered_next_time": next_time_text,
+            "updated_at": time.time(),
+        }
+        if last_result:
+            task_facts[task_id]["last_result"] = str(last_result)
+            task_facts[task_id]["last_run_at"] = _now().strftime("%Y-%m-%d %H:%M:%S")
+        _write_data_annotation_world_facts(facts)
+
+    def _record_scheduler_task_discovered_retry_after(
+        self,
+        task_id: str,
+        retry_after_text: str,
+        *,
+        task_type: str,
+        label: str,
+        last_result: str | None = "skipped",
+    ) -> None:
+        task_id = str(task_id or "").strip()
+        retry_after_text = str(retry_after_text or "").strip()
+        if not task_id or not retry_after_text:
+            return
+        facts = _read_data_annotation_world_facts()
+        discoveries = facts.get("discoveries")
+        if not isinstance(discoveries, dict):
+            discoveries = {}
+            facts["discoveries"] = discoveries
+        task_facts = discoveries.get("task")
+        if not isinstance(task_facts, dict):
+            task_facts = {}
+            discoveries["task"] = task_facts
+        existing = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        task_facts[task_id] = {
+            **existing,
+            "id": task_id,
+            "task_type": str(task_type or ""),
+            "label": str(label or task_id),
+            "source": "data_annotation_runtime",
+            "schedule_kind": "dynamic",
+            "discovered_next_time": None,
+            "next_time": None,
+            "discovered_retry_after": retry_after_text,
+            "retry_after": retry_after_text,
             "updated_at": time.time(),
         }
         if last_result:
@@ -4159,7 +4480,10 @@ class DataAnnotationRuntimeRunner(
         frame = self._screencap(ctx)
         text = self._ocr_text(self._ocr_lines(frame))
         scene_id, _score = self._identify_scene_number(ctx, frame, [228, 71])
-        if scene_id in {228, 71} or self._daily_youli_text_is_home(text):
+        if scene_id == 71:
+            self._log("success", f"{task_label}：主线快路径进入修仙传菜单")
+            return True
+        if self._daily_youli_text_is_home(text):
             self._log("success", f"{task_label}：主线快路径进入修仙传游历")
             return True
         self._log("warning", f"{task_label}：主线快路径落点不是游历页，回退日常入口，OCR={text[:120]}")
@@ -4744,7 +5068,14 @@ class DataAnnotationRuntimeRunner(
                 return self._complete_daily_shuangxiu_after_continue(current_scene=34)
             if self._daily_shuangxiu_text_is_training_ready(text):
                 yield from self._leave_daily_shuangxiu_training_ready(ctx, stop_event, payload)
-                continue
+                yield from self._wait_scene_id(
+                    ctx,
+                    stop_event,
+                    34,
+                    timeout=float(payload.get("after_leave_world_timeout") or 12.0),
+                    label="日常_双修：等待离开后回到世界 #34",
+                )
+                return self._complete_daily_shuangxiu_after_continue(current_scene=34)
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -4753,8 +5084,7 @@ class DataAnnotationRuntimeRunner(
                     current_scene=scene_id,
                 )
             if time.monotonic() - start >= timeout:
-                self._log("warning", f"日常_双修：点击完成继续后未确认 #219/#34，按已完成处理，OCR={last_text[:120]}")
-                return self._complete_daily_shuangxiu_after_continue(current_scene=None)
+                raise RuntimeError(f"日常_双修：点击完成继续后未回到 #34，不能按成功处理，OCR={last_text[:120]}")
 
     def _leave_daily_shuangxiu_training_ready(
         self,
@@ -4803,9 +5133,9 @@ class DataAnnotationRuntimeRunner(
         image86 = ctx.get("images", {}).get(86)
         if not isinstance(image86, dict):
             raise RuntimeError("日常_双修：缺少 #86「离开场景」标注，无法确认离开")
-        confirm_shape = self._find_shape(image86, "确认", "确定")
+        confirm_shape = self._find_shape(image86, "确认", "确定", "离开")
         if confirm_shape is None:
-            raise RuntimeError("日常_双修：#86 缺少「确认」按钮标注，无法确认离开")
+            raise RuntimeError("日常_双修：#86 缺少「离开/确认」按钮标注，无法确认离开")
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -4813,15 +5143,13 @@ class DataAnnotationRuntimeRunner(
                 phase="daily_shuangxiu_confirm_leave",
                 current_scene=86,
             )
-            self._log_locked("action", "日常_双修：点击 #86「确认」离开场景")
-        yield from self._click_shape_respecting_conditions(
+            self._log_locked("action", f"日常_双修：点击 #86「{confirm_shape.get('title') or '确认'}」离开场景")
+        box = self._box(confirm_shape, image86)
+        self._click_frame_point(
             ctx,
-            stop_event,
             image86,
-            confirm_shape,
-            payload,
-            label="日常_双修：等待 #86「确认」",
-            timeout_key="leave_confirm_click_timeout",
+            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
+            float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
         )
         settle_seconds = float(payload.get("leave_confirm_settle_seconds") or 1.0)
         if settle_seconds > 0:
@@ -5285,7 +5613,7 @@ class DataAnnotationRuntimeRunner(
                 frame_data_url,
                 preferred_scene_ids=candidate_scene_ids or None,
             )
-            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id):
+            if scene_id is not None and not self._scene_number_ocr_confirmed(ctx, frame_data_url, scene_id, score):
                 return None, score
             return scene_id, score
         finally:
@@ -5295,8 +5623,16 @@ class DataAnnotationRuntimeRunner(
                 else:
                     ctx["_scene_identity_scope_filter"] = previous_scope_filter
 
-    def _scene_number_ocr_confirmed(self, ctx: dict[str, Any], frame_data_url: str, scene_id: int) -> bool:
+    def _scene_number_ocr_confirmed(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        scene_id: int,
+        score: float,
+    ) -> bool:
         if int(scene_id) != 34:
+            return True
+        if float(score) >= 80.0:
             return True
         text = self._ocr_text(self._cached_ocr_lines(ctx, frame_data_url))
         if self._daily_lingta_text_is_world_like(text):
@@ -5306,7 +5642,9 @@ class DataAnnotationRuntimeRunner(
 
     def _leave_scene_confirm_text(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
-        return bool(("是否离开" in compact or "离开当前场景" in compact) and "确认" in compact)
+        if ("是否离开" in compact or "离开当前场景" in compact) and ("确认" in compact or "确定" in compact):
+            return True
+        return bool("是否中止修炼" in compact and "留下" in compact and "离开" in compact)
 
     def _runtime_scene_candidate_ids(self, ctx: dict[str, Any]) -> list[int]:
         return self._runtime_scene_candidate_ids_by_kind(ctx, include_popups=False)
@@ -5530,6 +5868,22 @@ class DataAnnotationRuntimeRunner(
     ) -> dict[str, Any]:
         action_title = action_shape.get("title") if isinstance(action_shape, dict) else "unknown"
         current_text = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
+        diagnostic = ""
+        try:
+            evidence = build_unknown_evidence(
+                self,
+                ctx,
+                frame_data_url,
+                label=f"go_scene_{target_scene_id}",
+                expected_scene_ids=[target_scene_id],
+                last_scene_id=current_scene_id,
+                last_score=0.0,
+            )
+            report_suffix = f"，证据={evidence.report_path}" if evidence.report_path else ""
+            frame_suffix = f"，截图={evidence.frame_path}" if evidence.frame_path else ""
+            diagnostic = f"；unknown诊断={evidence.classification}：{evidence.suggestion}{frame_suffix}{report_suffix}"
+        except Exception as exc:
+            diagnostic = f"；unknown诊断生成失败：{exc}"
         detail = "；".join([
             f"目标场景=#{target_scene_id}",
             f"当前/点击前场景={current_text}",
@@ -5537,8 +5891,8 @@ class DataAnnotationRuntimeRunner(
             f"累计等待={elapsed_seconds:.1f}s",
             f"最近识别={history[-1] if history else '无'}",
         ])
-        self._log("error", f"场景跳转缺少可靠标注，已中断：{detail}")
-        raise RuntimeError(f"场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：{detail}")
+        self._log("error", f"场景跳转缺少可靠标注，已中断：{detail}{diagnostic}")
+        raise RuntimeError(f"场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：{detail}{diagnostic}")
 
     def _require_assets(self, ctx: dict[str, Any]) -> None:
         images: dict[int, dict[str, Any]] = ctx["images"]
@@ -7015,6 +7369,46 @@ class DataAnnotationRuntimeRunner(
         self._clear_tick_frame(ctx)
         return True
 
+    def _recover_unknown_hidden_world_popup(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+    ) -> bool:
+        image59 = (ctx.get("images") or {}).get(59)
+        if not isinstance(image59, dict):
+            return False
+        blank_shape = self._find_shape(image59, "空白")
+        if not isinstance(blank_shape, dict):
+            return False
+        score = float(self._shape_score(ctx, image59, blank_shape, frame_data_url) or 0.0)
+        if score < float(self.overlay_threshold):
+            return False
+        x, y = ActionPlanner().shape_center(image59, blank_shape)
+        with self._lock:
+            self._status.update({
+                "phase": "go_scene_unknown_recover",
+                "current_scene": 59,
+                "message": "场景移动：遇到 #59「封魔杀」弹层，点击「空白」关闭",
+                "updated_at": time.time(),
+            })
+        self._log("action", f"场景移动：遇到 #59「封魔杀」弹层，点击「空白」关闭 {score:.0f}%")
+        self._save_action_trace(
+            ctx,
+            image59,
+            {
+                "kind": "click",
+                "point": [float(x), float(y)],
+                "label": "click #59 空白 hidden world popup recovery",
+                "shape_title": blank_shape.get("title"),
+                "shape_id": blank_shape.get("id"),
+                "score": round(score, 1),
+            },
+            frame_data_url=frame_data_url,
+        )
+        self._click_frame_point(ctx, image59, x, y)
+        self._clear_tick_frame(ctx)
+        return True
+
     def _recover_unknown_start_to_world(
         self,
         ctx: dict[str, Any],
@@ -7024,6 +7418,8 @@ class DataAnnotationRuntimeRunner(
     ) -> bool:
         if int(target_scene_id) != 34:
             return False
+        if self._recover_unknown_hidden_world_popup(ctx, frame_data_url):
+            return True
         return self._recover_unknown_green_bottle_return_popup(
             ctx,
             frame_data_url,
@@ -7034,10 +7430,86 @@ class DataAnnotationRuntimeRunner(
 
     def _xianfu_home_text_is_scene(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
-        if "仙侣居" not in normalized and "仙侶居" not in normalized:
+        world_markers = (
+            "大地图",
+            "日程",
+            "角色",
+            "装备",
+            "星海",
+            "功法书",
+            "储物袋",
+        )
+        if any(marker in normalized for marker in world_markers):
             return False
-        markers = ("玄机阁", "本命金身", "拜仙台", "寻仙台", "仙府管家")
-        return any(marker in normalized for marker in markers)
+        markers = (
+            "玄机阁",
+            "仙侣居",
+            "仙侶居",
+            "本命金身",
+            "拜仙台",
+            "寻仙台",
+            "仙府管家",
+        )
+        hits = sum(1 for marker in markers if marker in normalized)
+        if hits >= 2:
+            return True
+        return "仙府管家" in normalized and ("寻仙台" in normalized or "拜仙台" in normalized)
+
+    def _is_xianfu_entry_cutscene(self, ctx: dict[str, Any], scene_id: int | None) -> bool:
+        if scene_id != 185:
+            return False
+        image = (ctx.get("images") or {}).get(185) if isinstance(ctx.get("images"), dict) else None
+        if not isinstance(image, dict):
+            return False
+        title = str(image.get("title") or "")
+        shapes = image.get("shapes") if isinstance(image.get("shapes"), list) else []
+        has_skip = any(str(shape.get("title") or "") == "跳过" for shape in shapes if isinstance(shape, dict))
+        return has_skip and "过场" in title
+
+    def _is_xianfu_entry_recoverable_landing(
+        self,
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        expected_ids: list[int],
+        scene_id: int | None,
+        shape: dict[str, Any],
+    ) -> bool:
+        title = str(shape.get("title") or "")
+        return (
+            source_scene_id == 34
+            and scene_id == 197
+            and (target_scene_id == 171 or 171 in expected_ids)
+            and "仙府" in title
+        )
+
+    def _is_xianfu_cutscene_landing_target(
+        self,
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        scene_id: int | None,
+        shape: dict[str, Any],
+    ) -> bool:
+        return (
+            source_scene_id == 185
+            and target_scene_id == 171
+            and scene_id == 171
+            and str(shape.get("title") or "") == "跳过"
+        )
+
+    def _scene_jump_source_stall_timeout(
+        self,
+        *,
+        source_scene_id: int,
+        target_scene_id: int,
+        expected_ids: list[int],
+        shape: dict[str, Any],
+    ) -> float:
+        title = str(shape.get("title") or "")
+        if source_scene_id == 34 and (target_scene_id == 171 or 171 in expected_ids) and "仙府" in title:
+            return 30.0
+        return 8.0
 
     def _wait_scene_jump_result(
         self,
@@ -7063,6 +7535,14 @@ class DataAnnotationRuntimeRunner(
         handled_intermediate_scene_ids: set[int] = set()
         handled_world_side_leave = False
         handled_green_bottle_unknown_recovery = False
+        shape_jump_target = str(shape.get("sceneJumpTarget") or "").strip()
+        dynamic_landing = bool(edge.get("_runtime_confirm_edge")) or shape_jump_target == "-1" or shape_jump_target.startswith("-1(")
+        source_stall_timeout = self._scene_jump_source_stall_timeout(
+            source_scene_id=source_scene_id,
+            target_scene_id=target_scene_id,
+            expected_ids=expected_ids,
+            shape=shape,
+        )
 
         while True:
             self._raise_if_stopped(stop_event)
@@ -7103,22 +7583,68 @@ class DataAnnotationRuntimeRunner(
                     route_candidate_ids,
                 )
             last_scene_id, last_score, last_frame = scene_id, score, frame
+            if (target_scene_id == 171 or 171 in expected_ids) and self._is_xianfu_entry_cutscene(ctx, scene_id):
+                left_source = True
+                history.append(f"{elapsed:.1f}s #{scene_id} 仙府过场 {score:.0f}% left={left_source}")
+                if scene_id not in handled_intermediate_scene_ids:
+                    handled_intermediate_scene_ids.add(scene_id)
+                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id} 仙府过场，重新规划到 #171")
+                    if 171 not in expected_ids and scene_id != target_scene_id and scene_id not in expected_ids:
+                        return scene_id
+                continue
             if scene_id == target_scene_id and scene_id != source_scene_id:
-                self._log(
-                    "warning",
-                    f"场景跳转：#{source_scene_id} -> #{scene_id} 已到达目标，但「{shape.get('title') or '未命名'}」未声明该 sceneJumpTarget",
+                if scene_id in expected_ids:
+                    left_source = True
+                    history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% global-target left={left_source}")
+                    if not edge.get("_runtime_confirm_edge") and self._increment_scene_jump_target(shape, scene_id):
+                        self._write_asset_tree(asset_tree_path, tree)
+                    ctx["images"] = self._index_images(tree)
+                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，全局识别命中目标")
+                    return scene_id
+                if self._is_xianfu_cutscene_landing_target(
+                    source_scene_id=source_scene_id,
+                    target_scene_id=target_scene_id,
+                    scene_id=scene_id,
+                    shape=shape,
+                ):
+                    left_source = True
+                    history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% xianfu-cutscene-target left={left_source}")
+                    self._log("info", f"场景跳转：#{source_scene_id} -> #{scene_id}，{elapsed:.1f}s，仙府过场跳过后到达主页")
+                    return scene_id
+                if dynamic_landing:
+                    self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，由上层重新规划")
+                    return scene_id
+                raise RuntimeError(
+                    f"场景跳转实际到达 #{scene_id}，但这是「{shape.get('title') or '未命名'}」的未声明落点，"
+                    "不在 sceneJumpTarget 中；"
+                    "Runtime 已中断，请人工确认并修正标注后重试"
                 )
-                return scene_id
             if (
                 scene_id is not None
                 and scene_id != source_scene_id
                 and self._find_scene_route(tree, scene_id, target_scene_id) is not None
             ):
-                self._log(
-                    "warning",
-                    f"场景跳转：#{source_scene_id} -> #{scene_id} 可继续规划到 #{target_scene_id}，但「{shape.get('title') or '未命名'}」未声明该 sceneJumpTarget",
+                if self._is_xianfu_entry_recoverable_landing(
+                    source_scene_id=source_scene_id,
+                    target_scene_id=target_scene_id,
+                    expected_ids=expected_ids,
+                    scene_id=scene_id,
+                    shape=shape,
+                ):
+                    self._log(
+                        "warning",
+                        f"场景跳转：#{source_scene_id} 点击仙府实际到达 #{scene_id}，"
+                        f"沿用已标注路径重新规划到 #{target_scene_id}",
+                    )
+                    return scene_id
+                if dynamic_landing:
+                    self._log("detail", f"场景跳转动态落点：#{source_scene_id} -> #{scene_id}，重新规划到 #{target_scene_id}")
+                    return scene_id
+                raise RuntimeError(
+                    f"场景跳转实际到达 #{scene_id}，可继续规划到 #{target_scene_id}，"
+                    f"但这是「{shape.get('title') or '未命名'}」的未声明落点，不在 sceneJumpTarget 中；"
+                    "Runtime 已中断，请人工确认并修正标注后重试"
                 )
-                return scene_id
             if scene_id is not None and scene_id != source_scene_id:
                 left_source = True
             scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
@@ -7148,6 +7674,11 @@ class DataAnnotationRuntimeRunner(
                         start = time.monotonic()
                     history.append(f"{elapsed:.1f}s #47 弹窗已处理")
                     continue
+            if scene_id is None and self._recover_unknown_hidden_world_popup(ctx, frame):
+                left_source = True
+                start = time.monotonic()
+                history.append(f"{elapsed:.1f}s unknown #59 空白已点击")
+                continue
             if scene_id is None and not handled_green_bottle_unknown_recovery:
                 if self._recover_unknown_green_bottle_return_popup(
                     ctx,
@@ -7199,7 +7730,7 @@ class DataAnnotationRuntimeRunner(
                     "updated_at": time.time(),
                 })
 
-            if not left_source and last_scene_id == source_scene_id and not allows_self and elapsed >= 8.0:
+            if not left_source and last_scene_id == source_scene_id and not allows_self and elapsed >= source_stall_timeout:
                 return self._save_unknown_scene_frame(
                     ctx,
                     asset_tree_path,
@@ -7267,6 +7798,7 @@ class DataAnnotationRuntimeRunner(
             ctx["images"] = self._index_images(tree)
 
         recovered_unknown_start = False
+        recovered_unknown_side_leave = False
         for _step_index in range(24):
             self._raise_if_stopped(stop_event)
             frame = self._screencap(ctx)
@@ -7285,6 +7817,19 @@ class DataAnnotationRuntimeRunner(
                     recovered_unknown_start = True
                     yield BehaviorTreeStatus.RUNNING
                     continue
+                if not recovered_unknown_side_leave:
+                    text = self._ocr_text(self._ocr_lines(frame))
+                    if (yield from self._leave_world_side_scene_if_present(
+                        ctx,
+                        stop_event,
+                        frame,
+                        text,
+                        label="场景移动",
+                        require_world_like=False,
+                    )):
+                        recovered_unknown_side_leave = True
+                        yield BehaviorTreeStatus.RUNNING
+                        continue
                 return self._save_unknown_scene_frame(
                     ctx,
                     asset_tree_path,
@@ -7579,6 +8124,9 @@ class DataAnnotationRuntimeRunner(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
+
+
+
 
 
 
