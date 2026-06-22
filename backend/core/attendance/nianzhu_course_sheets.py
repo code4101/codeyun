@@ -1478,16 +1478,18 @@ def _build_video_config_document(
         progress = progress_by_key.get(key) if key else None
         if progress is not None:
             used_progress_keys.add(key)
-        rows.append([
-            legacy_index,
-            _format_legacy_value(legacy_row.get("start_date")),
-            _format_legacy_value(legacy_row.get("end_date")),
-            _format_legacy_value(legacy_row.get("next_update")),
-            _format_legacy_value(legacy_row.get("lesson_id2")),
-            _format_legacy_value(legacy_row.get("shop_id")),
-            lesson_name,
-            _format_legacy_value(legacy_row.get("video_duration")),
-        ])
+        config_row = {
+            "lesson_id": legacy_index,
+            "start_date": _format_legacy_value(legacy_row.get("start_date")),
+            "end_date": _format_legacy_value(legacy_row.get("end_date")),
+            "next_update": _format_legacy_value(legacy_row.get("next_update")),
+            "lesson_id2": _format_legacy_value(legacy_row.get("lesson_id2")),
+            "shop_id": _format_legacy_value(legacy_row.get("shop_id")),
+            "lesson_name": lesson_name,
+            "video_duration": _format_legacy_value(legacy_row.get("video_duration")),
+        }
+        config_row = _normalize_initial_zen_stage_next_update(config_row, course_name=course_name)
+        rows.append([config_row.get(column, "") for column in VIDEO_CONFIG_COLUMNS])
 
     for fallback_index, column_index in enumerate(_progress_column_range(columns), start=1):
         field_name = columns[column_index]
@@ -1911,6 +1913,27 @@ def _format_datetime_for_sheet(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S") if value else ""
 
 
+def _is_zen_stage_config_row(row: dict[str, Any], *, course_name: str = "") -> bool:
+    lesson_name = _normalize_text(row.get("lesson_name"))
+    rule_text = f"{_normalize_text(course_name)} {lesson_name}".strip()
+    return _is_zen_stage_course_text(rule_text)
+
+
+def _normalize_initial_zen_stage_next_update(row: dict[str, Any], *, course_name: str = "") -> dict[str, Any]:
+    if not _is_zen_stage_config_row(row, course_name=course_name):
+        return row
+    start_date = _parse_datetime_cell(row.get("start_date"))
+    next_update = _parse_datetime_cell(row.get("next_update"))
+    if start_date is None or next_update is None:
+        return row
+    first_due_time = start_date + timedelta(days=7)
+    if next_update >= first_due_time:
+        return row
+    next_row = dict(row)
+    next_row["next_update"] = _format_datetime_for_sheet(first_due_time)
+    return next_row
+
+
 def _compute_next_lesson_update(
     row: dict[str, Any],
     *,
@@ -1920,13 +1943,15 @@ def _compute_next_lesson_update(
     now = now or datetime.now()
     lesson_name = _normalize_text(row.get("lesson_name"))
     rule_text = f"{_normalize_text(course_name)} {lesson_name}".strip()
-    is_zen_stage_course = _is_zen_stage_course_text(rule_text)
+    is_zen_stage_course = _is_zen_stage_config_row(row, course_name=course_name)
     start_date = _parse_datetime_cell(row.get("start_date")) or now
     end_date = _parse_datetime_cell(row.get("end_date")) or datetime(9999, 12, 31, 23, 59, 59)
     current_next_update = _parse_datetime_cell(row.get("next_update")) or start_date
     video_duration = _to_float(row.get("video_duration"))
     video_end_time = start_date if "闯关" in rule_text else start_date + timedelta(seconds=video_duration)
     update_interval = timedelta(days=7 if is_zen_stage_course else 1)
+    if is_zen_stage_course:
+        current_next_update = max(current_next_update, start_date + update_interval)
 
     if now < video_end_time:
         return _format_datetime_for_sheet(video_end_time)
@@ -2241,7 +2266,10 @@ def run_nianzhu_course_sheet_step1(
             video_config_columns = _normalize_document_columns(video_config_document) or VIDEO_CONFIG_COLUMNS
             video_config_rows = _document_dict_rows(video_config_document)
             video_data_rows = _document_dict_rows(video_data_document)
+            normalized_video_config_rows: list[dict[str, Any]] = []
             for config_row in video_config_rows:
+                config_row = _normalize_initial_zen_stage_next_update(config_row, course_name=course_name)
+                normalized_video_config_rows.append(config_row)
                 if int(_to_float(config_row.get("shop_id"))) != normalized_shop_id:
                     continue
                 next_update = _parse_datetime_cell(config_row.get("next_update"))
@@ -2275,7 +2303,7 @@ def run_nianzhu_course_sheet_step1(
             _renumber_rows(video_data_rows, "lesson_data_id")
             video_config_document = _make_table_document_from_dicts(
                 columns=video_config_columns,
-                rows=video_config_rows,
+                rows=normalized_video_config_rows,
                 numeric_columns={"lesson_id", "shop_id", "video_duration"},
                 page_size=100,
                 source_meta=dict(video_config_document.get("source_meta") or {}),
@@ -3487,7 +3515,10 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     current_document, formula_config_defaulted_cells = _ensure_refund_baseline_config_cell(current_document)
     if formula_config_defaulted_cells:
         schema_summary["formula_config_defaulted_cells"] = formula_config_defaulted_cells
-    current_document, refund_period_config_repaired_cells = _ensure_refund_period_config_cell(current_document)
+    current_document, refund_period_config_repaired_cells = _ensure_refund_period_config_cell(
+        current_document,
+        course_name=effective_course_name,
+    )
     if refund_period_config_repaired_cells:
         schema_summary["refund_period_config_repaired_cells"] = refund_period_config_repaired_cells
     columns = _normalize_document_columns(current_document)
@@ -4347,7 +4378,7 @@ def _ensure_refund_baseline_config_cell(document: dict[str, Any]) -> tuple[dict[
     return next_document, 1
 
 
-def _ensure_refund_period_config_cell(document: dict[str, Any]) -> tuple[dict[str, Any], int]:
+def _ensure_refund_period_config_cell(document: dict[str, Any], *, course_name: str = "") -> tuple[dict[str, Any], int]:
     columns = _normalize_document_columns(document)
     refunded_index = _find_column_index(columns, "已返款")
     if refunded_index is None:
@@ -4356,7 +4387,8 @@ def _ensure_refund_period_config_cell(document: dict[str, Any]) -> tuple[dict[st
     config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
     current_value = _grid_cell_value(document, config_row_index, refunded_index)
     current_text = _normalize_text(current_value)
-    period_formula = '="第"&返款周期&"天"'
+    period_unit = "周" if _is_zen_stage_course_text(course_name) else "天"
+    period_formula = f'="第"&返款周期&"{period_unit}"'
     if current_value == period_formula:
         return document, 0
     if current_text and not _is_numeric_literal(current_value) and "返款周期" not in current_text:

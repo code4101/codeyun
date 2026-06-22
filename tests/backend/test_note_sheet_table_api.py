@@ -516,3 +516,20 @@ def test_note_sheet_formula_defined_names_support_standard_attendance_periods():
     )
 
     assert result == "测试第2周返款,order_week2,2"
+
+
+def test_note_sheet_formula_defined_names_count_completed_week_boundary():
+    from backend.api import note_sheets
+
+    result = note_sheets._evaluate_table_formula_expr(
+        "第几周",
+        grid_rows=[],
+        cache={},
+        defined_names={
+            "开始日期": '="2026-05-17"',
+            "第几天": '=DATEDIF_COMPAT(开始日期,"2026-06-21","d")',
+            "第几周": "=INT((第几天-1)/7)+1",
+        },
+    )
+
+    assert result == 5

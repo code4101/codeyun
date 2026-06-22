@@ -4991,6 +4991,37 @@ def _format_registration_composite_update_message(
     ])
 
 
+def _registration_attendance_row_identity(row: list[Any], columns: list[str]) -> tuple[str, str, str]:
+    user_id_index = _get_column_index(columns, "用户ID")
+    student_id_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    merchant_order_index = _get_column_index(columns, "商户订单号")
+    user_id = _normalize_sheet_text(row[user_id_index]) if user_id_index >= 0 else ""
+    student_id = _normalize_sheet_text(row[student_id_index]) if student_id_index >= 0 else ""
+    merchant_order_id = (
+        _strip_legacy_text_prefix(row[merchant_order_index])
+        if merchant_order_index >= 0
+        else ""
+    )
+    return user_id, student_id, merchant_order_id
+
+
+def _find_registration_attendance_existing_index(
+    *,
+    user_id: str,
+    student_id: str,
+    merchant_order_id: str,
+    existing_user_id_rows: dict[str, int],
+    existing_student_id_rows: dict[str, int],
+    existing_merchant_order_id_rows: dict[str, int],
+) -> int | None:
+    existing_index = existing_user_id_rows.get(user_id) if user_id else None
+    if existing_index is None and student_id:
+        existing_index = existing_student_id_rows.get(student_id)
+    if existing_index is None and merchant_order_id:
+        existing_index = existing_merchant_order_id_rows.get(merchant_order_id)
+    return existing_index
+
+
 def _registration_user_browser_timeout_seconds() -> float:
     try:
         return max(float(NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS), 1.0)
@@ -7839,6 +7870,44 @@ def _attendance_row_has_empty_progress_entity_cell_meta(
     return False
 
 
+def _attendance_row_needs_registration_meta_repair(
+    row: list[Any],
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_limit: int,
+    progress_style_start_column: int,
+    progress_style_end_column: int,
+) -> bool:
+    cell_meta = document_json.get("cell_meta")
+    return (
+        _attendance_row_has_archived_cell_meta(
+            cell_meta,
+            document_row=document_row,
+            column_limit=column_limit,
+        )
+        or _attendance_row_has_archived_entity_cell_meta(
+            document_json,
+            document_row=document_row,
+            column_limit=column_limit,
+        )
+        or _attendance_row_has_empty_progress_cell_meta(
+            row,
+            cell_meta,
+            document_row=document_row,
+            start_column=progress_style_start_column,
+            end_column=progress_style_end_column,
+        )
+        or _attendance_row_has_empty_progress_entity_cell_meta(
+            row,
+            document_json,
+            document_row=document_row,
+            start_column=progress_style_start_column,
+            end_column=progress_style_end_column,
+        )
+    )
+
+
 def _remove_attendance_row_entity_cell_styles(
     document_json: dict[str, Any],
     *,
@@ -7926,9 +7995,6 @@ def _sync_registration_rows_to_attendance_document(
     existing_student_ids = set(existing_student_id_rows)
     existing_merchant_order_ids = set(existing_merchant_order_id_rows)
 
-    registration_user_id_index = _get_column_index(registration_columns, "用户ID")
-    registration_student_id_index = _get_column_index(registration_columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
-    registration_merchant_order_index = _get_column_index(registration_columns, "商户订单号")
     skipped_count = 0
     repaired_count = 0
     repair_meta_targets: list[tuple[int, int | None]] = []
@@ -7943,22 +8009,19 @@ def _sync_registration_rows_to_attendance_document(
         if _is_refunded_registration_row(row, registration_columns):
             skipped_count += 1
             continue
-        user_id = _normalize_sheet_text(row[registration_user_id_index]) if registration_user_id_index >= 0 else ""
-        student_id = _normalize_sheet_text(row[registration_student_id_index]) if registration_student_id_index >= 0 else ""
-        merchant_order_id = (
-            _strip_legacy_text_prefix(row[registration_merchant_order_index])
-            if registration_merchant_order_index >= 0
-            else ""
-        )
+        user_id, student_id, merchant_order_id = _registration_attendance_row_identity(row, registration_columns)
         if not user_id and not student_id and not merchant_order_id:
             skipped_count += 1
             continue
 
-        existing_index = existing_user_id_rows.get(user_id) if user_id else None
-        if existing_index is None and student_id:
-            existing_index = existing_student_id_rows.get(student_id)
-        if existing_index is None and merchant_order_id:
-            existing_index = existing_merchant_order_id_rows.get(merchant_order_id)
+        existing_index = _find_registration_attendance_existing_index(
+            user_id=user_id,
+            student_id=student_id,
+            merchant_order_id=merchant_order_id,
+            existing_user_id_rows=existing_user_id_rows,
+            existing_student_id_rows=existing_student_id_rows,
+            existing_merchant_order_id_rows=existing_merchant_order_id_rows,
+        )
         if existing_index is not None:
             if 0 <= existing_index < len(attendance_rows) and not _is_archived_attendance_row(
                 attendance_rows[existing_index],
@@ -7978,26 +8041,13 @@ def _sync_registration_rows_to_attendance_document(
                     candidate_row,
                     attendance_columns,
                 )
-                needs_meta_repair = _attendance_row_has_archived_cell_meta(
-                    attendance_document.get("cell_meta"),
-                    document_row=cell_meta_row_offset + existing_index,
-                    column_limit=cell_meta_column_limit,
-                ) or _attendance_row_has_archived_entity_cell_meta(
-                    attendance_document,
-                    document_row=cell_meta_row_offset + existing_index,
-                    column_limit=cell_meta_column_limit,
-                ) or _attendance_row_has_empty_progress_cell_meta(
-                    attendance_rows[existing_index],
-                    attendance_document.get("cell_meta"),
-                    document_row=cell_meta_row_offset + existing_index,
-                    start_column=progress_style_start_column,
-                    end_column=progress_style_end_column,
-                ) or _attendance_row_has_empty_progress_entity_cell_meta(
+                needs_meta_repair = _attendance_row_needs_registration_meta_repair(
                     attendance_rows[existing_index],
                     attendance_document,
                     document_row=cell_meta_row_offset + existing_index,
-                    start_column=progress_style_start_column,
-                    end_column=progress_style_end_column,
+                    column_limit=cell_meta_column_limit,
+                    progress_style_start_column=progress_style_start_column,
+                    progress_style_end_column=progress_style_end_column,
                 )
                 if changed:
                     attendance_rows[existing_index] = repaired_row

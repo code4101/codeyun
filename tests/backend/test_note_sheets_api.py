@@ -3038,7 +3038,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
 
     assert summary["inserted_count"] == 0
-    assert summary["repaired_count"] == 3
+    assert summary["repaired_count"] == 2
     repaired_row = next_doc["rows"][1]
     assert repaired_row[attendance_columns.index("报名日期")] == "2026-05-21 09:46"
     assert repaired_row[attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'

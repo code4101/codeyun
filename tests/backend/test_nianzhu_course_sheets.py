@@ -1252,8 +1252,8 @@ def test_rebuild_nianzhu_attendance_removes_merchant_order_display_column(sessio
     assert "商户订单号" not in rebuilt_columns
     assert row[rebuilt_columns.index("用户ID")] == "u1"
     assert row[rebuilt_columns.index("禅客")] == '=IF(AND(G4>=11,N4>=7),"是","")'
-    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4,"*遍*")'
-    assert row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(O4,"*遍*")*20'
+    assert row[rebuilt_columns.index("完成视频数")] == '=COUNTIF(O4:P4,"*遍*")'
+    assert row[rebuilt_columns.index("视频应返款")] == '=COUNTIF(O4:P4,"*遍*")*20'
     assert row[rebuilt_columns.index("打卡应返款")] == '=SWITCH(TRUE,N4>=15,200,N4>=10,150,N4>=5,100,0)'
     assert rebuilt_columns.index("已返款") < rebuilt_columns.index("订单金额")
     assert row[rebuilt_columns.index("总应返款")] == "=MIN(IFERROR(H4+I4+L4-IF($L$3>0,$L$3,L4),0),L4)"
@@ -1817,6 +1817,77 @@ def test_materialize_video_config_preserves_legacy_lesson_table_fields(
     data_rows = [dict(zip(data_columns, row)) for row in video_data.document_json["rows"]]
     first_lesson_data = next(row for row in data_rows if row["user_id2"] == "u1" and row["lesson_id"] == 1)
     assert first_lesson_data["lesson_id"] == 1
+
+
+def test_materialize_zen_stage_video_config_sets_first_update_after_week_end(
+    session: Session,
+    monkeypatch,
+) -> None:
+    _create_nianzhu_workbook(session)
+
+    monkeypatch.setattr(
+        nianzhu_course_sheets,
+        "_query_legacy_lesson_rows",
+        lambda course_name: (
+            [
+                {
+                    "lesson_id": 11037,
+                    "start_date": "2026-06-21 00:00:00",
+                    "end_date": "2026-10-18 00:00:00",
+                    "next_update": "2026-06-21 00:00:00",
+                    "lesson_id2": "https://admin.xiaoe-tech.com/t/course-1",
+                    "shop_id": 1,
+                    "lesson_name": "修道班7期5阶-第6周=测试课程",
+                    "video_duration": 3600,
+                },
+            ],
+            None,
+        ),
+    )
+
+    materialize_nianzhu_course_sheets(session, course_name="修道班7期5阶", replace=False)
+    session.commit()
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    config_rows = [dict(zip(VIDEO_CONFIG_COLUMNS, row)) for row in video_config.document_json["rows"]]
+    lesson_config = next(row for row in config_rows if row["lesson_id"] == 1)
+    assert lesson_config["start_date"] == "2026-06-21 00:00:00"
+    assert lesson_config["next_update"] == "2026-06-28 00:00:00"
+
+
+def test_compute_zen_stage_next_update_does_not_collect_at_week_start() -> None:
+    next_update = nianzhu_course_sheets._compute_next_lesson_update(
+        {
+            "lesson_name": "第6周=测试课程",
+            "start_date": "2026-06-21 00:00:00",
+            "next_update": "2026-06-21 00:00:00",
+            "end_date": "2026-10-18 00:00:00",
+            "video_duration": 3600,
+        },
+        course_name="修道班7期5阶",
+        now=datetime(2026, 6, 21, 11, 52, 50),
+    )
+
+    assert next_update == "2026-06-28 00:00:00"
+
+
+def test_refund_period_config_cell_uses_week_for_zen_stage_course() -> None:
+    columns = ["学号", "已返款"]
+    document = _sheet_document(columns, [["1", "0"]])
+    document["data_start_row"] = 2
+    document["grid_rows"] = [
+        columns,
+        ["", ""],
+        ["1", "0"],
+    ]
+
+    next_document, changed = nianzhu_course_sheets._ensure_refund_period_config_cell(
+        document,
+        course_name="修道班7期5阶",
+    )
+
+    assert changed == 1
+    assert next_document["grid_rows"][1][1] == '="第"&返款周期&"周"'
 
 
 def test_materialize_imports_legacy_video_and_clockin_pg_table_shapes(

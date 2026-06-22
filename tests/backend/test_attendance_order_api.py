@@ -227,6 +227,14 @@ def test_execute_attendance_order_records_refund_history(session, monkeypatch):
         }
 
     monkeypatch.setattr(attendance, "_execute_order_on_entry", fake_execute)
+    monkeypatch.setattr(
+        attendance,
+        "_execute_order_refund_details_on_entry",
+        lambda entry_snapshot, execution_payload: {
+            "summary": {"row_count": 1, "refund_amount_total": 479},
+            "rows": [{"refund_amount": 479, "refund_status": "退款成功"}],
+        },
+    )
 
     payload = attendance.AttendanceOrderExecuteRequest(
         action="refund",
@@ -247,6 +255,51 @@ def test_execute_attendance_order_records_refund_history(session, monkeypatch):
     assert page.items[1].wechat_order_id == "4200003006202602263330752835"
     assert page.items[1].refund_reason == "补差退款"
     assert page.items[1].remaining_amount == "20"
+
+
+def test_execute_attendance_order_blocks_history_when_refund_confirmation_fails(session, monkeypatch):
+    user = _create_superuser(session)
+    entry = _create_local_device(session, user_id=user.id)
+
+    monkeypatch.setattr(
+        attendance,
+        "_execute_order_on_entry",
+        lambda entry_snapshot, execution_payload: {
+            "action": "refund",
+            "rows": [
+                {
+                    "学员名称": "王诗语",
+                    "商户订单号": "TETVM2-0OZRE8O-17S8",
+                    "订单金额": 620,
+                    "已返款": 620,
+                    "退款额度": 70,
+                    "执行退款": "已退款",
+                },
+            ],
+            "summary": {"processed_count": 1, "refunded_count": 1},
+        },
+    )
+    monkeypatch.setattr(
+        attendance,
+        "_execute_order_refund_details_on_entry",
+        lambda entry_snapshot, execution_payload: {
+            "summary": {"row_count": 17, "refund_amount_total": 550},
+            "rows": [{"refund_amount": 550, "refund_status": "退款成功"}],
+        },
+    )
+
+    payload = attendance.AttendanceOrderExecuteRequest(
+        action="refund",
+        rows=[{"商户订单号": "TETVM2-0OZRE8O-17S8"}],
+        execution_device_entry_id=entry.entry_id,
+    )
+    with pytest.raises(HTTPException) as exc:
+        attendance.execute_attendance_order(payload, session=session, current_user=user)
+
+    assert exc.value.status_code == 500
+    assert "退款执行后支付侧确认失败" in str(exc.value.detail)
+    page = attendance._build_order_refund_history_page(session, page=1, page_size=20)
+    assert page.total == 0
 
 
 def test_execute_attendance_order_refund_history_uses_result_timestamps_and_interpolation(session, monkeypatch):
@@ -441,7 +494,7 @@ def test_remote_order_requests_bypass_system_proxy(monkeypatch):
                 }
             )
             if url.endswith("/refund-details"):
-                return FakeResponse({"summary": {"row_count": 0}, "rows": []})
+                return FakeResponse({"summary": {"row_count": 1}, "rows": [{"refund_amount": 20}]})
             return FakeResponse({"action": "inspect", "rows": [], "summary": {"processed_count": 0}})
 
     monkeypatch.setattr(attendance.requests, "Session", FakeSession)
@@ -472,6 +525,59 @@ def test_remote_order_requests_bypass_system_proxy(monkeypatch):
     assert captured[0]["url"] == "http://192.168.31.15:8000/api/device-control/attendance/order/execute"
     assert captured[1]["url"] == "http://192.168.31.15:8000/api/device-control/attendance/order/refund-details"
     assert captured[0]["headers"]["X-Device-Token"] == "device-token"
+
+
+def test_remote_order_refund_details_retries_auto_empty_with_precise_type(monkeypatch):
+    captured = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, *, json, headers, timeout):
+            captured.append({"json": json, "trust_env": self.trust_env})
+            if json.get("query_type") == "merchant_order":
+                return FakeResponse({"summary": {"row_count": 1, "refund_amount_total": 550}, "rows": [{"refund_amount": 550}]})
+            return FakeResponse({"summary": {"row_count": 0}, "rows": []})
+
+    monkeypatch.setattr(attendance.requests, "Session", FakeSession)
+    entry_snapshot = {
+        "entry_id": "remote-entry",
+        "user_id": 1,
+        "device_id": "remote-device",
+        "name": "codepc_mi15",
+        "mode": "remote",
+        "server_url": "http://192.168.31.15:8000",
+        "token": "device-token",
+        "is_active": True,
+        "order_index": 0,
+        "created_at": 1.0,
+        "updated_at": 2.0,
+    }
+
+    result = attendance._execute_order_refund_details_on_entry(
+        entry_snapshot,
+        {"order_id": "TETVM2-0OZRE8O-17S8", "query_type": "auto", "login_users": ["考勤后台"]},
+    )
+
+    assert result["summary"]["refund_amount_total"] == 550
+    assert [item["json"]["query_type"] for item in captured] == ["auto", "merchant_order"]
+    assert [item["trust_env"] for item in captured] == [False, False]
 
 
 def test_order_execute_endpoint_allows_orders_feature_without_service_grant(client, session, auth_user, monkeypatch):
