@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlmodel import Session, select
+from pyxllib.prog import process_runtime
 from pyxllib.prog.schedule_policy import schedule_policy_label
 
 from backend.api.task_manager import task_manager
@@ -88,6 +89,7 @@ from backend.models import Task as TaskModel, UserDevice
 
 BUILTIN_OCR_SERVICE_KEY = "ocr"
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
+CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
 
 
 def _env_enabled(value: str | None) -> bool | None:
@@ -846,7 +848,97 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
         except ProxyTrafficAuditError as exc:
             results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = {"status": "error", "error": str(exc)}
 
+    if _local_builtin_service_autostart_enabled("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART"):
+        results["critical-command-services"] = ensure_local_critical_command_services()
+
     return results
+
+
+def ensure_local_critical_command_services() -> dict[str, Any]:
+    """Keep local always-on command services alive.
+
+    These are user-configured command rows, not built-in services.  We guard only
+    the small network/sync allowlist because other command services may be
+    intentionally stopped.
+    """
+
+    local_device_id = get_device_id()
+    started: list[dict[str, Any]] = []
+    already_running: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    task_manager.scan_running_tasks()
+    with Session(engine) as session:
+        stmt = (
+            select(TaskModel)
+            .where(TaskModel.device_id == local_device_id)
+            .order_by(TaskModel.order, TaskModel.created_at)
+        )
+        tasks = [
+            task
+            for task in session.exec(stmt).all()
+            if str(task.name or "").strip().lower() in CRITICAL_LOCAL_COMMAND_SERVICE_NAMES
+            and infer_command_runtime_kind(task) == "service"
+            and not is_legacy_codeyun_command_task(task)
+        ]
+
+    for task in tasks:
+        status = task_manager.get_task_status(task.id)
+        item = {"id": task.id, "name": task.name, "pid": status.pid}
+        if status.running:
+            already_running.append(item)
+            continue
+
+        executable_match = _find_running_process_by_command_executable(task.command)
+        if executable_match:
+            device = device_manager.get_device(local_device_id)
+            if device is not None:
+                try:
+                    device.associate_process(task.id, int(executable_match["pid"]))
+                except Exception:
+                    pass
+            already_running.append({**item, **executable_match})
+            continue
+
+        try:
+            result = task_manager.start_task(
+                task.id,
+                replace_running=False,
+                trigger_reason="critical_command_service_guard",
+            )
+            started.append({"id": task.id, "name": task.name, "result": result})
+        except Exception as exc:
+            errors.append({"id": task.id, "name": task.name, "error": str(exc)})
+
+    return {
+        "status": "error" if errors else ("started" if started else "ok"),
+        "started": started,
+        "already_running": already_running,
+        "errors": errors,
+    }
+
+
+def _find_running_process_by_command_executable(command: str) -> dict[str, Any] | None:
+    try:
+        args = process_runtime.parse_cmdline(command)
+    except Exception:
+        args = []
+    if not args:
+        return None
+
+    executable = Path(str(args[0]).strip('"')).expanduser()
+    if not executable.is_absolute():
+        return None
+
+    executable_key = os.path.normcase(os.path.abspath(os.fspath(executable)))
+    for proc in process_runtime.process_candidates_by_name({executable.name}):
+        try:
+            proc_exe = proc.exe()
+        except Exception:
+            continue
+        if os.path.normcase(os.path.abspath(proc_exe)) == executable_key:
+            return {"pid": proc.pid, "matched_by": "executable", "exe": proc_exe}
+    return None
 
 
 def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:

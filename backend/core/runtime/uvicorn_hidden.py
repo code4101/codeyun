@@ -33,6 +33,10 @@ def main(argv: list[str] | None = None) -> None:
     if os.name == "nt":
         _attach_stdio()
 
+    from backend.core.runtime.process_launcher import install_child_process_no_window_default
+
+    install_child_process_no_window_default()
+
     import uvicorn
 
     args = _parse_args(sys.argv[1:] if argv is None else argv)

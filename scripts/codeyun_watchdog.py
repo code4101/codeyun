@@ -572,6 +572,24 @@ def _ensure_visible_console_monitor(args: argparse.Namespace, log_path: Path) ->
     return {"ok": True, **status}
 
 
+def _ensure_critical_command_services(log_path: Path) -> dict[str, Any] | None:
+    try:
+        from backend.core.runtime.management import ensure_local_critical_command_services
+
+        result = ensure_local_critical_command_services()
+    except Exception as exc:
+        _log(log_path, f"Critical command service guard failed: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+    for item in result.get("started") or []:
+        name = item.get("name") or item.get("id")
+        pid = ((item.get("result") or {}) if isinstance(item, dict) else {}).get("pid")
+        _log(log_path, f"Critical command service started: {name} PID {pid}")
+    for item in result.get("errors") or []:
+        _log(log_path, f"Critical command service error: {item.get('name') or item.get('id')} {item.get('error')}")
+    return {"ok": not bool(result.get("errors")), **result}
+
+
 def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, log_path: Path) -> dict[str, Any] | None:
     if not args.reload:
         return None
@@ -636,16 +654,23 @@ def _maybe_handle_stable_reload(args: argparse.Namespace, state: WatchdogState, 
 def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> dict[str, Any]:
     log_path = Path(args.log_path).resolve(strict=False)
     monitor_status = _ensure_visible_console_monitor(args, log_path)
+    critical_services = _ensure_critical_command_services(log_path)
     health = check_health(args.backend_url, args.frontend_url, args.timeout)
     if health["healthy"]:
         reload_result = _maybe_handle_stable_reload(args, state, log_path) if state is not None else None
         if reload_result is not None:
-            return {"health": health, "visible_console_monitor": monitor_status, **reload_result}
+            return {
+                "health": health,
+                "visible_console_monitor": monitor_status,
+                "critical_command_services": critical_services,
+                **reload_result,
+            }
         _log(log_path, "Health check ok; no restart needed.")
         return {
             "status": "healthy",
             "health": health,
             "visible_console_monitor": monitor_status,
+            "critical_command_services": critical_services,
             "started_pid": None,
         }
 
@@ -662,6 +687,7 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
             "status": "starting",
             "health": health,
             "visible_console_monitor": monitor_status,
+            "critical_command_services": critical_services,
             "dev_processes": dev_processes,
             "startup_age": startup_age,
             "started_pid": None,
@@ -682,6 +708,7 @@ def run_once(args: argparse.Namespace, state: WatchdogState | None = None) -> di
         "status": "restarted",
         "health": health,
         "visible_console_monitor": monitor_status,
+        "critical_command_services": critical_services,
         **restart,
     }
 

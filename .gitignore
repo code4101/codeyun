@@ -93,3 +93,4 @@ backend/data/
 /tmp_*.txt
 /bc_*.db
 /@AutomationLog.txt
+/compact_log.txt

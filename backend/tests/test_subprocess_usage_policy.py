@@ -11,6 +11,19 @@ PROCESS_LAUNCHER = BACKEND / "core" / "runtime" / "process_launcher.py"
 ALLOWED_DIRECT_POPEN = {SUBPROCESS_UTILS}
 ALLOWED_DIRECT_RUN = {SUBPROCESS_UTILS}
 ALLOWED_SUBPROCESS_UTILS_IMPORTS = {PROCESS_LAUNCHER}
+LOCAL_RUNTIME_SCRIPTS = [
+    ROOT / "dev.py",
+    ROOT / "scripts" / "codeyun_watchdog.py",
+    ROOT / "scripts" / "codeyun_popup_audit.py",
+    ROOT / "scripts" / "codeyun_visible_console_monitor.py",
+]
+SERVICE_ENTRYPOINTS_REQUIRING_NO_WINDOW_DEFAULT = {
+    BACKEND / "app.py",
+    BACKEND / "services" / "ocr_daemon.py",
+    BACKEND / "services" / "game_window_daemon.py",
+    BACKEND / "services" / "proxy_traffic_audit_daemon.py",
+    BACKEND / "core" / "runtime" / "uvicorn_hidden.py",
+}
 
 
 def _python_files() -> list[Path]:
@@ -20,7 +33,7 @@ def _python_files() -> list[Path]:
         if "tests" not in path.parts
         and "__pycache__" not in path.parts
     ]
-    files.extend([ROOT / "dev.py", ROOT / "scripts" / "codeyun_watchdog.py"])
+    files.extend(LOCAL_RUNTIME_SCRIPTS)
     return files
 
 
@@ -82,3 +95,28 @@ def test_runtime_callers_do_not_import_low_level_subprocess_utils():
                         violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
 
     assert not violations, "Import backend.core.runtime.process_launcher instead of subprocess_utils:\n" + "\n".join(violations)
+
+
+def _calls_install_child_process_no_window_default(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "install_child_process_no_window_default":
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "install_child_process_no_window_default":
+            return True
+    return False
+
+
+def test_codeyun_service_entrypoints_install_no_window_popen_default():
+    violations: list[str] = []
+    for path in SERVICE_ENTRYPOINTS_REQUIRING_NO_WINDOW_DEFAULT:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if not _calls_install_child_process_no_window_default(tree):
+            violations.append(path.relative_to(ROOT).as_posix())
+
+    assert not violations, (
+        "Long-running CodeYun Python service entrypoints must install the process-wide "
+        "no-window subprocess default:\n" + "\n".join(violations)
+    )

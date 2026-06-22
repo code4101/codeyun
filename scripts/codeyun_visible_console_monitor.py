@@ -25,6 +25,22 @@ DEFAULT_DURATION_SECONDS = 24 * 60 * 60.0
 DEFAULT_INTERVAL_SECONDS = 0.08
 DEFAULT_HEARTBEAT_SECONDS = 5.0
 WINDOW_KEYWORDS = ("cmd", "powershell", "terminal", "console", "cascadia")
+NEARBY_PROCESS_NAMES = {
+    "cmd.exe",
+    "conhost.exe",
+    "git.exe",
+    "git-remote-https.exe",
+    "node.exe",
+    "openconsole.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "python.exe",
+    "pythonw.exe",
+    "uv.exe",
+    "windowsterminal.exe",
+    "wt.exe",
+}
+NEARBY_PROCESS_SECONDS = 20.0
 
 
 def _now_text() -> str:
@@ -104,6 +120,52 @@ def _children_for(pid: int) -> list[dict[str, Any]]:
         return []
 
 
+def _process_payload(proc: Any, *, now: float) -> dict[str, Any] | None:
+    try:
+        parent = proc.parent()
+        create_time = proc.create_time()
+        payload: dict[str, Any] = {
+            "pid": proc.pid,
+            "ppid": proc.ppid(),
+            "name": proc.name(),
+            "cmdline": proc.cmdline(),
+            "cwd": proc.cwd(),
+            "create_time": datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M:%S"),
+            "age_seconds": round(max(0.0, now - float(create_time)), 3),
+        }
+        if parent is not None:
+            payload["parent"] = {
+                "pid": parent.pid,
+                "name": parent.name(),
+                "cmdline": parent.cmdline(),
+                "cwd": parent.cwd(),
+            }
+        return payload
+    except Exception:
+        return None
+
+
+def _nearby_console_processes(*, now: float | None = None) -> list[dict[str, Any]]:
+    if psutil is None:
+        return []
+    timestamp = time.time() if now is None else float(now)
+    items: list[dict[str, Any]] = []
+    for proc in psutil.process_iter(["pid", "name", "create_time"]):
+        try:
+            name = str(proc.info.get("name") or proc.name() or "").lower()
+            if name not in NEARBY_PROCESS_NAMES:
+                continue
+            create_time = float(proc.info.get("create_time") or proc.create_time())
+            if timestamp - create_time > NEARBY_PROCESS_SECONDS:
+                continue
+            payload = _process_payload(proc, now=timestamp)
+            if payload is not None:
+                items.append(payload)
+        except Exception:
+            continue
+    return sorted(items, key=lambda item: (float(item.get("age_seconds") or 0), int(item.get("pid") or 0)))
+
+
 def _enum_visible_console_windows() -> list[dict[str, Any]]:
     if os.name != "nt":
         return []
@@ -111,6 +173,7 @@ def _enum_visible_console_windows() -> list[dict[str, Any]]:
     user32 = ctypes.windll.user32
     enum_windows_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     items: list[dict[str, Any]] = []
+    snapshot_now = time.time()
 
     def window_text(hwnd: int) -> str:
         length = user32.GetWindowTextLengthW(hwnd)
@@ -143,6 +206,7 @@ def _enum_visible_console_windows() -> list[dict[str, Any]]:
                 "class": class_name,
                 "chain": _chain_for(process_id),
                 "children": _children_for(process_id),
+                "nearby_processes": _nearby_console_processes(now=snapshot_now),
             }
         )
         return True
@@ -225,4 +289,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

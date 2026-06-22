@@ -148,6 +148,32 @@ def test_trigger_command_service_runtime_item_starts_service(client, session, te
     }
 
 
+def test_trigger_legacy_codeyun_command_delegates_to_watchdog(session, test_device, monkeypatch):
+    task = Task(
+        id="legacy-codeyun-command",
+        name="codeyun",
+        command="uv run dev.py",
+        device_id=test_device["id"],
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    captured = {}
+
+    def fake_trigger_builtin_runtime_item(item_key: str, session_arg):
+        captured["item_key"] = item_key
+        captured["session"] = session_arg
+        return {"status": "started", "key": item_key}
+
+    monkeypatch.setattr(runtime_core, "trigger_builtin_runtime_item", fake_trigger_builtin_runtime_item)
+
+    result = runtime_core.trigger_command_runtime_item("legacy-codeyun-command", session)
+
+    assert result == {"status": "started", "key": "codeyun-watchdog"}
+    assert captured == {"item_key": "codeyun-watchdog", "session": session}
+
+
 def test_local_device_entry_runtime_item_trigger_uses_same_runtime_engine(
     client,
     session,
@@ -270,6 +296,47 @@ def test_runtime_queue_uses_runtime_titles_and_preserves_duplicate_records(sessi
     ]
 
 
+def test_runtime_status_hides_legacy_codeyun_command_item(session, test_device, monkeypatch):
+    legacy_task = Task(
+        id="legacy-codeyun-command",
+        name="codeyun",
+        command="uv run dev.py",
+        device_id=test_device["id"],
+        created_at=time.time(),
+    )
+    normal_task = Task(
+        id="normal-service-command",
+        name="capture",
+        command="python capture.py",
+        device_id=test_device["id"],
+        created_at=time.time(),
+    )
+    session.add(legacy_task)
+    session.add(normal_task)
+    session.commit()
+
+    monkeypatch.setattr(runtime_core.task_manager, "scan_running_tasks", lambda: None)
+    monkeypatch.setattr(runtime_core.task_manager, "get_task_status", lambda task_id: {"running": False})
+    monkeypatch.setattr(
+        runtime_core,
+        "_collect_builtin_jobs",
+        lambda session: {
+            "items": [],
+            "queue": {"running": None, "pending": [], "recent": []},
+            "runner_running": False,
+            "next_wake_at": None,
+            "runner_error": None,
+        },
+    )
+    monkeypatch.setattr(runtime_core, "_collect_builtin_services", lambda: {"items": []})
+
+    payload = runtime_core.build_runtime_status(session, test_device["id"])
+
+    command_keys = {item["key"] for item in payload["items"] if item["source"] == "command"}
+    assert "legacy-codeyun-command" not in command_keys
+    assert "normal-service-command" in command_keys
+
+
 def test_builtin_runtime_logs_use_runtime_title_and_queue_records(session, monkeypatch):
     queue = {
         "running": None,
@@ -350,6 +417,65 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
     assert item["actions"] == ["trigger", "stop", "logs", "configure"]
     assert "空闲10分释放" in item["description"]
     assert "独立进程" in item["description"]
+
+
+def test_builtin_service_runtime_projection_contract_is_stable():
+    ocr_item = runtime_core._serialize_ocr_service_item({
+        "key": "ocr",
+        "title": "OCR",
+        "running": False,
+        "loaded": False,
+        "state": "cold",
+    })
+    watchdog_item = runtime_core._serialize_codeyun_watchdog_service_item({
+        "title": "CodeYun 本机守护",
+        "running": True,
+        "state": "running",
+        "interval_seconds": 60,
+        "script_path": "watchdog.py",
+        "cwd": ".",
+    })
+
+    common_keys = {
+        "id",
+        "key",
+        "kind",
+        "source",
+        "group_id",
+        "group_title",
+        "title",
+        "description",
+        "command",
+        "cwd",
+        "schedule",
+        "schedule_policy",
+        "schedule_label",
+        "next_run_at",
+        "timeout",
+        "order",
+        "enabled",
+        "active",
+        "status",
+        "actions",
+        "raw",
+        "schedule_kind",
+        "timeout_policy",
+        "timeout_seconds",
+        "concurrency_scope",
+        "concurrency_key",
+        "overlap_policy",
+        "queue_key",
+    }
+
+    for item in (ocr_item, watchdog_item):
+        assert common_keys <= item.keys()
+        assert item["kind"] == "service"
+        assert item["source"] == "builtin"
+        assert item["schedule_kind"] == "manual"
+        assert item["timeout_policy"] == "none"
+        assert item["concurrency_scope"] == "unit"
+        assert item["queue_key"] is None
+        assert isinstance(item["status"], dict)
 
 
 def test_trigger_builtin_ocr_runtime_item_starts_external_service(session, monkeypatch):

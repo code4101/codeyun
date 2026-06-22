@@ -57,6 +57,18 @@ class LongTaskContext:
         )
 
 
+def make_long_task_progress_heartbeat(context: LongTaskContext) -> Callable[[dict[str, Any]], None]:
+    def heartbeat(progress: dict[str, Any]) -> None:
+        context.heartbeat(
+            stage=str(progress.get("stage") or "running"),
+            message=str(progress.get("message") or "运行中"),
+            progress_current=progress.get("progress_current"),
+            progress_total=progress.get("progress_total"),
+        )
+
+    return heartbeat
+
+
 class LongTaskNotFoundError(KeyError):
     pass
 

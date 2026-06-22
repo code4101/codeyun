@@ -115,6 +115,10 @@ pythonw.exe -m compileall -q backend scripts dev.py
 
 ## 后台子进程启动规范
 
+核心不变量只有一条：CodeYun 体系内的后台启动默认无窗口；只有显式 debug/monitor 工具才允许可见控制台。
+不要把它理解成一套按业务分类的复杂框架，也不要为 adb、tshark、uv、npm、Python 作业分别发明启动方案。
+新增路径应先判断能否进入统一 launcher；不能进入时，应优先修 launcher 的覆盖能力，而不是在业务代码里补一份窗口隐藏逻辑。
+
 CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和公网前端构建，必须统一使用
 `backend.core.runtime.process_launcher`：
 
@@ -126,14 +130,37 @@ CodeYun 常驻服务、守护、热加载预检查、ADB/MuMu/tshark 调用和�
 - `python_script_service_command(...)` / `popen_python_script_service(...)`：后台 Python 脚本服务。
 - `node_npm_command(...)` / `node_script_command(...)`：后台 Node/NPM 命令，Windows 下绕开 `npm.cmd`。
 - `apply_background_node_env(...)`：为后台 Node 工具注入 child_process 隐藏窗口补丁。
+- `apply_background_python_env(...)`：为后台 Python 服务注入子进程隐藏窗口补丁。
 
 `backend.core.runtime.subprocess_utils` 是底层实现层，只保存 Windows flags、`pythonw` 解析、`node npm-cli.js`
 解析等细节。业务模块、API 模块、守护脚本和 `dev.py` 不应直接导入它；新增调用必须走
 `process_launcher`。
 
+### 进程级兜底
+
+所有 CodeYun 长驻 Python 服务入口还必须在导入业务模块前调用
+`install_child_process_no_window_default()`：
+
+- `backend.app`
+- `backend.services.ocr_daemon`
+- `backend.services.game_window_daemon`
+- `backend.services.proxy_traffic_audit_daemon`
+- `backend.core.runtime.uvicorn_hidden`
+
+这不是替代 `process_launcher`，而是兜底保护：显式启动后台服务仍必须走 `popen_service(...)` /
+`run_quiet(...)` 等统一入口；如果第三方库或未来代码误用裸 `subprocess.Popen`，当前进程也会默认追加
+`CREATE_NO_WINDOW` 和隐藏 `STARTUPINFO`，避免重新出现可见控制台闪烁。
+
 底层默认策略：
 
 - 后台 Python 优先用 `resolve_pythonw(ROOT_DIR, sys.executable)`，Windows 下优先 `.venv/Scripts/pythonw.exe`。
+- `run_quiet(...)` / `popen_service(...)` 发现命令入口是 `python.exe`、`pythonw.exe`、`python`、`pythonw`、`py.exe`
+  或 `py` 时，也会自动注入后台 Python 服务环境。这保证了“先构造 Python 命令，再交给通用 launcher”的两步写法不会绕过
+  子进程隐藏继承策略。
+- 后台 Python 服务由 `popen_python_module_service(...)` / `popen_python_script_service(...)` 启动时，会自动在
+  `PYTHONPATH` 前置 CodeYun 的 `sitecustomize.py`，并设置 `CODEYUN_NO_WINDOW_SUBPROCESS_DEFAULT=1`。这会让
+  被托管的外部 Python 进程在解释器启动时安装同样的 `subprocess.Popen` 无窗口兜底，覆盖 adb、git、
+  tshark 等由外部项目二次启动的短命令。
 - `dev.py` 监督器本身属于后台 Python 服务，必须用 `pythonw.exe dev.py` 启动，避免 Windows Terminal 为监督器分配伪控制台。
 - `dev.py` 内部拉起 `uvicorn` 后端时例外：必须用 `resolve_python(ROOT_DIR, sys.executable)` 选择 `python.exe`，
   再通过隐藏启动 flags 和断开的 stdio 禁止弹窗。不要用 `pythonw.exe` 运行 uvicorn；它可能丢失正常 stdio 语义并卡在启动期。

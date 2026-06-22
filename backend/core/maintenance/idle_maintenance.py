@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from backend.core.ai.auto_git_commit import AUTO_GIT_COMMIT_MIN_CHANGED_LINES
 from backend.core.ai.git_tools import GitToolError, inspect_git_repository
 from backend.core.runtime.background_task_queue import background_task_queue
 from backend.core.settings import ROOT_DIR, get_settings
@@ -140,6 +141,15 @@ def _inspect_auto_commit_repositories() -> list[dict[str, Any]]:
             continue
         inspect_payload = _git_inspect_or_error(path)
         changed_files = list(inspect_payload.get("changed_files") or [])
+        added_line_count = int(inspect_payload.get("added_line_count") or 0)
+        deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
+        estimated_changed_line_count = int(
+            inspect_payload.get("estimated_changed_line_count") or (added_line_count + deleted_line_count)
+        )
+        auto_commit_eligible = (
+            _has_dirty_worktree(inspect_payload)
+            and estimated_changed_line_count >= AUTO_GIT_COMMIT_MIN_CHANGED_LINES
+        )
         results.append(
             {
                 "name": name,
@@ -148,12 +158,26 @@ def _inspect_auto_commit_repositories() -> list[dict[str, Any]]:
                 "clean": bool(inspect_payload.get("clean")),
                 "has_changes": _has_dirty_worktree(inspect_payload),
                 "changed_file_count": len(changed_files),
+                "added_line_count": added_line_count,
+                "deleted_line_count": deleted_line_count,
+                "estimated_changed_line_count": estimated_changed_line_count,
+                "auto_commit_eligible": auto_commit_eligible,
+                "auto_commit_line_threshold": AUTO_GIT_COMMIT_MIN_CHANGED_LINES,
+                "auto_commit_skip_reason": (
+                    ""
+                    if auto_commit_eligible
+                    else ("below_line_threshold" if _has_dirty_worktree(inspect_payload) else "clean")
+                ),
                 "branch": str(inspect_payload.get("branch") or ""),
                 "status_lines": list(inspect_payload.get("status_lines") or [])[:20],
                 "error": str(inspect_payload.get("error") or ""),
             }
         )
     return results
+
+
+def _has_auto_commit_eligible_repository(repo_inspects: list[dict[str, Any]] | None) -> bool:
+    return any(bool(item.get("auto_commit_eligible")) for item in repo_inspects or [])
 
 
 def _has_dirty_auto_commit_repository(repo_inspects: list[dict[str, Any]] | None) -> bool:
@@ -411,9 +435,18 @@ def select_idle_maintenance_task(
     candidates = [_task_metadata(task) for task in tasks]
     task_by_key = {task.key: task for task in tasks}
 
-    if _has_dirty_auto_commit_repository(repo_inspects) or (repo_inspects is None and _has_dirty_worktree(git_inspect)):
+    if _has_auto_commit_eligible_repository(repo_inspects) or (
+        repo_inspects is None and _has_dirty_worktree(git_inspect)
+    ):
         if "auto_commit_dirty_worktree" in task_by_key:
             return IdleMaintenanceDecision("auto_commit_dirty_worktree", candidates=candidates)
+
+    if repo_inspects is not None and _has_dirty_auto_commit_repository(repo_inspects):
+        return IdleMaintenanceDecision(
+            None,
+            skipped_reason="存在未达自动提交阈值的脏工作区，跳过非提交维护任务",
+            candidates=candidates,
+        )
 
     read_only_order = ["docs_sync_scan", "code_slimming_scan"]
     if last_task_key in read_only_order:
