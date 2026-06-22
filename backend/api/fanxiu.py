@@ -28,7 +28,6 @@ from sqlmodel import Session, or_, select
 from starlette.background import BackgroundTask
 from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
 
-from backend.api.device import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.access.auth import (
     ALGORITHM,
     SECRET_KEY,
@@ -38,6 +37,7 @@ from backend.core.access.auth import (
     verify_api_token,
 )
 from backend.core.access.feature_access_guard import ensure_feature_access, require_feature_access_dependency
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.runtime.game_window_service import (
     GameWindowServiceError,
     get_game_window_service_status,
@@ -393,6 +393,7 @@ from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationRuntimeStopRequest,
     FanxiuDataAnnotationRuntimeGuardGroupRequest,
     FanxiuDataAnnotationRuntimeGuardRequest,
+    FanxiuDataAnnotationRuntimeIsolationRequest,
     FanxiuDataAnnotationSchedulerTaskItem,
     FanxiuDataAnnotationSchedulerTasksResponse,
     FanxiuDataAnnotationSchedulerPlanItem,
@@ -443,6 +444,7 @@ from backend.core.fanxiu.data_annotation.runtime import (
 from backend.core.fanxiu.runtime.behavior_tree import (
     DEFAULT_FANXIU_ENTRY_ID,
     acquire_fanxiu_job_group_isolation,
+    clear_stale_fanxiu_job_group_isolation,
     create_fanxiu_runtime_runner,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
@@ -3972,6 +3974,7 @@ def _data_annotation_runtime_status() -> dict[str, Any]:
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
+    status["isolation"] = clear_stale_fanxiu_job_group_isolation(_data_annotation_job_group_isolation_path())
     settings = _runtime_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
@@ -3987,6 +3990,43 @@ def _data_annotation_runtime_status() -> dict[str, Any]:
             "message": "行为树已关闭",
         })
     return status
+
+
+def _is_human_runtime_isolation(status: dict[str, Any]) -> bool:
+    reason = str(status.get("reason") or "")
+    return reason == "human_using_runtime" or reason.startswith("human_using_runtime:")
+
+
+def _set_fanxiu_data_annotation_runtime_isolation(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeIsolationRequest,
+) -> FanxiuDataAnnotationRuntimeStatus:
+    _sync_data_annotation_runtime_runner_to_core()
+    isolation_path = _data_annotation_job_group_isolation_path()
+    status = clear_stale_fanxiu_job_group_isolation(isolation_path)
+    active = bool(status.get("active"))
+    token = str(req.token or "").strip()
+    if req.enabled:
+        if active and not _is_human_runtime_isolation(status):
+            raise HTTPException(status_code=409, detail="普通作业组已有非人工隔离锁，不能覆盖")
+        token = token or uuid.uuid4().hex
+        acquire_fanxiu_job_group_isolation(
+            reason="human_using_runtime",
+            ttl_seconds=req.ttl_seconds,
+            token=token,
+            path=isolation_path,
+        )
+    else:
+        if active:
+            if not _is_human_runtime_isolation(status) and token != str(status.get("token") or ""):
+                raise HTTPException(status_code=409, detail="普通作业组已有非人工隔离锁，不能解除")
+            release_token = token or str(status.get("token") or "")
+            if not release_token:
+                raise HTTPException(status_code=400, detail="缺少隔离锁 token")
+            release_fanxiu_job_group_isolation(release_token, path=isolation_path)
+    fanxiu_runtime_runner_wake()
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
 
 
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
@@ -5127,15 +5167,11 @@ def get_fanxiu_data_annotation_runtime_service_status(
     return FanxiuDataAnnotationRuntimeStatus.model_validate(_data_annotation_runtime_status())
 
 
-@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuDataAnnotationRuntimeStatus)
-def set_fanxiu_data_annotation_runtime_behavior_tree(
+def _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(
+    entry: Any,
+    entry_id: str,
     req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
     status = _runtime_framework.set_kernel_enabled(
         entry=entry,
@@ -5147,6 +5183,36 @@ def set_fanxiu_data_annotation_runtime_behavior_tree(
         world_facts_path=_data_annotation_world_facts_path(),
     )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+def _restart_fanxiu_data_annotation_runtime_kernel(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeKernelRestartRequest,
+) -> FanxiuDataAnnotationRuntimeStatus:
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_framework.restart_kernel(
+        entry=entry,
+        entry_id=entry_id,
+        timeout_seconds=req.timeout_seconds,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuDataAnnotationRuntimeStatus)
+def set_fanxiu_data_annotation_runtime_behavior_tree(
+    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5160,17 +5226,7 @@ def set_fanxiu_data_annotation_runtime_service_behavior_tree(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_kernel_enabled(
-        entry=entry,
-        entry_id=entry_id,
-        enabled=req.enabled,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(entry, entry_id, req)
 
 
 @status_router.post("/data-annotation/runtime/kernel/restart", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -5182,17 +5238,7 @@ def restart_fanxiu_data_annotation_runtime_kernel(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.restart_kernel(
-        entry=entry,
-        entry_id=entry_id,
-        timeout_seconds=req.timeout_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _restart_fanxiu_data_annotation_runtime_kernel(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5206,17 +5252,7 @@ def restart_fanxiu_data_annotation_runtime_service_kernel(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.restart_kernel(
-        entry=entry,
-        entry_id=entry_id,
-        timeout_seconds=req.timeout_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _restart_fanxiu_data_annotation_runtime_kernel(entry, entry_id, req)
 
 
 @status_router.post("/data-annotation/runtime/task/start", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -5250,6 +5286,12 @@ def stop_fanxiu_data_annotation_runtime_task(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return _stop_data_annotation_runtime_task(req)
+
+
+def _stop_data_annotation_runtime_task(
+    req: FanxiuDataAnnotationRuntimeStopRequest,
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
     status = _runtime_framework.interrupt_current_cell(
         req.entry_id or "",
@@ -5267,9 +5309,39 @@ def stop_fanxiu_data_annotation_runtime_task(
 def stop_fanxiu_data_annotation_runtime_service_task(
     req: FanxiuDataAnnotationRuntimeStopRequest,
 ):
+    return _stop_data_annotation_runtime_task(req)
+
+
+def _set_fanxiu_data_annotation_runtime_guard_item(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeGuardRequest,
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.interrupt_current_cell(
-        req.entry_id or "",
+    status = _runtime_framework.set_guard_item_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        guard_id=req.guard_id,
+        enabled=req.enabled,
+        interval_seconds=req.interval_seconds,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+def _set_fanxiu_data_annotation_runtime_guard_group(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
+) -> FanxiuDataAnnotationRuntimeStatus:
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_framework.set_guard_group_enabled(
+        entry=entry,
+        entry_id=entry_id,
+        enabled=req.enabled,
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
@@ -5285,18 +5357,7 @@ def set_fanxiu_data_annotation_runtime_guard(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_item_enabled(
-        entry=entry,
-        entry_id=entry_id,
-        guard_id=req.guard_id,
-        enabled=req.enabled,
-        interval_seconds=req.interval_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _set_fanxiu_data_annotation_runtime_guard_item(entry, entry_id, req)
 
 
 @status_router.post("/data-annotation/runtime/guard/group/set", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -5308,16 +5369,19 @@ def set_fanxiu_data_annotation_runtime_guard_group(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_group_enabled(
-        entry=entry,
-        entry_id=entry_id,
-        enabled=req.enabled,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
+
+
+@status_router.post("/data-annotation/runtime/isolation/set", response_model=FanxiuDataAnnotationRuntimeStatus)
+def set_fanxiu_data_annotation_runtime_isolation(
+    req: FanxiuDataAnnotationRuntimeIsolationRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _set_fanxiu_data_annotation_runtime_isolation(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5331,18 +5395,7 @@ def set_fanxiu_data_annotation_runtime_service_guard(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_item_enabled(
-        entry=entry,
-        entry_id=entry_id,
-        guard_id=req.guard_id,
-        enabled=req.enabled,
-        interval_seconds=req.interval_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _set_fanxiu_data_annotation_runtime_guard_item(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5356,28 +5409,30 @@ def set_fanxiu_data_annotation_runtime_service_guard_group(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_group_enabled(
-        entry=entry,
-        entry_id=entry_id,
-        enabled=req.enabled,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/framework/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-@status_router.post("/data-annotation/runtime/engine/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
-def tick_fanxiu_data_annotation_runtime_framework(
-    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
-    current_user: User = Depends(get_current_active_user),
+@status_router.post(
+    "/data-annotation/runtime/service/isolation/set",
+    response_model=FanxiuDataAnnotationRuntimeStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+)
+def set_fanxiu_data_annotation_runtime_service_isolation(
+    req: FanxiuDataAnnotationRuntimeIsolationRequest,
     session: Session = Depends(get_session),
 ):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _set_fanxiu_data_annotation_runtime_isolation(entry, entry_id, req)
+
+
+def _tick_fanxiu_data_annotation_runtime_framework(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+    *,
+    source: str = "",
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
     before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
     status = _runtime_framework.execute_tick(
@@ -5394,24 +5449,40 @@ def tick_fanxiu_data_annotation_runtime_framework(
         runtime_state_path=_data_annotation_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
+    log_source = {
+        "cmd": "framework.tick",
+        "entry_id": entry_id,
+        "policy": {
+            "guard": req.guard,
+            "manual_job": req.manual_job,
+            "scheduled_job": req.scheduled_job,
+            "run_mode": req.run_mode,
+            "max_ticks": req.max_ticks,
+            "timeout_seconds": req.timeout_seconds,
+        },
+    }
+    if source:
+        log_source["source"] = source
     status = _record_runtime_cell_log(
         status,
-        title=f"调度器提交 tick：{req.run_mode}",
-        source={
-            "cmd": "framework.tick",
-            "entry_id": entry_id,
-            "policy": {
-                "guard": req.guard,
-                "manual_job": req.manual_job,
-                "scheduled_job": req.scheduled_job,
-                "run_mode": req.run_mode,
-                "max_ticks": req.max_ticks,
-                "timeout_seconds": req.timeout_seconds,
-            },
-        },
+        title=f"{'服务' if source == 'service' else '调度器'}提交 tick：{req.run_mode}",
+        source=log_source,
         before_keys=before_keys,
     )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+@status_router.post("/data-annotation/runtime/framework/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
+@status_router.post("/data-annotation/runtime/engine/tick", response_model=FanxiuDataAnnotationRuntimeStatus)
+def tick_fanxiu_data_annotation_runtime_framework(
+    req: FanxiuDataAnnotationRuntimeFrameworkTickRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _tick_fanxiu_data_annotation_runtime_framework(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5430,38 +5501,43 @@ def tick_fanxiu_data_annotation_runtime_service_framework(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _tick_fanxiu_data_annotation_runtime_framework(entry, entry_id, req, source="service")
+
+
+def _tick_fanxiu_data_annotation_runtime_task(
+    entry: Any,
+    entry_id: str,
+    req: FanxiuDataAnnotationRuntimeTaskRequest,
+    *,
+    source: str = "",
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
     before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
-    status = _runtime_framework.execute_tick(
-        entry=entry,
-        entry_id=entry_id,
-        guard=req.guard,
-        manual_job=req.manual_job,
-        scheduled_job=req.scheduled_job,
-        run_mode=req.run_mode,
-        max_ticks=req.max_ticks,
-        timeout_seconds=req.timeout_seconds,
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
+    try:
+        status = _runtime_framework.tick(
+            entry=entry,
+            entry_id=entry_id,
+            task_type=req.task_type,
+            payload=req.payload,
+            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+            manual_job_path=_data_annotation_manual_job_state_path(),
+            runtime_state_path=_data_annotation_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_source = {
+        "cmd": "submit_task_tick",
+        "entry_id": entry_id,
+        "task_type": req.task_type,
+        "payload": req.payload,
+    }
+    if source:
+        log_source["source"] = source
     status = _record_runtime_cell_log(
         status,
-        title=f"服务提交 tick：{req.run_mode}",
-        source={
-            "cmd": "framework.tick",
-            "entry_id": entry_id,
-            "source": "service",
-            "policy": {
-                "guard": req.guard,
-                "manual_job": req.manual_job,
-                "scheduled_job": req.scheduled_job,
-                "run_mode": req.run_mode,
-                "max_ticks": req.max_ticks,
-                "timeout_seconds": req.timeout_seconds,
-            },
-        },
+        title=f"{'服务任务' if source == 'service' else '兼容任务'} tick：{req.task_type}",
+        source=log_source,
         before_keys=before_keys,
     )
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
@@ -5476,33 +5552,7 @@ def tick_fanxiu_data_annotation_runtime_task(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
-    try:
-        status = _runtime_framework.tick(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=req.task_type,
-            payload=req.payload,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    status = _record_runtime_cell_log(
-        status,
-        title=f"兼容任务 tick：{req.task_type}",
-        source={
-            "cmd": "submit_task_tick",
-            "entry_id": entry_id,
-            "task_type": req.task_type,
-            "payload": req.payload,
-        },
-        before_keys=before_keys,
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _tick_fanxiu_data_annotation_runtime_task(entry, entry_id, req)
 
 
 @status_router.post(
@@ -5516,34 +5566,7 @@ def tick_fanxiu_data_annotation_runtime_service_task(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
-    try:
-        status = _runtime_framework.tick(
-            entry=entry,
-            entry_id=entry_id,
-            task_type=req.task_type,
-            payload=req.payload,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            manual_job_path=_data_annotation_manual_job_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    status = _record_runtime_cell_log(
-        status,
-        title=f"服务任务 tick：{req.task_type}",
-        source={
-            "cmd": "submit_task_tick",
-            "entry_id": entry_id,
-            "source": "service",
-            "task_type": req.task_type,
-            "payload": req.payload,
-        },
-        before_keys=before_keys,
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _tick_fanxiu_data_annotation_runtime_task(entry, entry_id, req, source="service")
 
 
 @status_router.get("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
@@ -5847,13 +5870,28 @@ def get_fanxiu_data_annotation_world_facts(
     )
 
 
+def _doctor_watch_latest_payload_for_frontend() -> dict[str, Any]:
+    payload = _runtime_control.read_doctor_watch_latest()
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict) or "auto_run_due" not in snapshot:
+        return payload
+    # The runtime page only consumes the summary fields, not the full auto-run trace.
+    return {
+        **payload,
+        "snapshot": {
+            **snapshot,
+            "auto_run_due": None,
+        },
+    }
+
+
 @status_router.get("/data-annotation/runtime/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
 def get_fanxiu_data_annotation_doctor_watch_latest(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return FanxiuDataAnnotationDoctorWatchLatestResponse.model_validate(_runtime_control.read_doctor_watch_latest())
+    return FanxiuDataAnnotationDoctorWatchLatestResponse.model_validate(_doctor_watch_latest_payload_for_frontend())
 
 
 @status_router.post("/data-annotation/runtime/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
@@ -5984,15 +6022,11 @@ def put_fanxiu_data_annotation_scheduler_settings(
     )
 
 
-@status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuDataAnnotationRuntimeStatus)
-def run_now_fanxiu_data_annotation_scheduler_task(
+def _run_now_fanxiu_data_annotation_scheduler_task(
+    entry: Any,
+    entry_id: str,
     req: FanxiuDataAnnotationSchedulerRunNowRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    entry = _get_user_device_or_404(session, current_user, req.entry_id)
-    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+) -> FanxiuDataAnnotationRuntimeStatus:
     _sync_data_annotation_runtime_runner_to_core()
     try:
         status = _runtime_control.run_now_scheduler_task(
@@ -6008,10 +6042,40 @@ def run_now_fanxiu_data_annotation_scheduler_task(
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+def _run_due_fanxiu_data_annotation_scheduler_tasks(
+    entry: Any,
+    entry_id: str,
+) -> FanxiuDataAnnotationRuntimeStatus:
+    _sync_data_annotation_runtime_runner_to_core()
+    status = _runtime_control.run_due_scheduler_tasks(
+        entry=entry,
+        entry_id=entry_id,
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_data_annotation_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+        manual_job_path=_data_annotation_manual_job_state_path(),
+        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+    )
+    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+
+
+@status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuDataAnnotationRuntimeStatus)
+def run_now_fanxiu_data_annotation_scheduler_task(
+    req: FanxiuDataAnnotationSchedulerRunNowRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
 
 
 @status_router.post(
@@ -6025,25 +6089,7 @@ def run_now_fanxiu_data_annotation_scheduler_service_task(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    try:
-        status = _runtime_control.run_now_scheduler_task(
-            entry=entry,
-            entry_id=entry_id,
-            task_id=req.task_id,
-            payload_override=req.payload,
-            interrupt_same_group=req.interrupt_same_group,
-            scheduler_state_path=_data_annotation_scheduler_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-            manual_job_path=_data_annotation_manual_job_state_path(),
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
 
 
 @status_router.post("/data-annotation/scheduler/run-due", response_model=FanxiuDataAnnotationRuntimeStatus)
@@ -6055,18 +6101,7 @@ def run_due_fanxiu_data_annotation_scheduler_tasks(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_control.run_due_scheduler_tasks(
-        entry=entry,
-        entry_id=entry_id,
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _run_due_fanxiu_data_annotation_scheduler_tasks(entry, entry_id)
 
 
 @status_router.post(
@@ -6080,18 +6115,7 @@ def run_due_fanxiu_data_annotation_scheduler_service_tasks(
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_control.run_due_scheduler_tasks(
-        entry=entry,
-        entry_id=entry_id,
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-        manual_job_path=_data_annotation_manual_job_state_path(),
-        asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-    )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return _run_due_fanxiu_data_annotation_scheduler_tasks(entry, entry_id)
 
 
 @status_router.post("/data-annotation/ocr-frame", response_model=FanxiuDataAnnotationOcrFrameResponse)
@@ -6478,6 +6502,54 @@ def get_fanxiu_wardrobe_hall():
     return FanxiuWardrobeHallSnapshot.model_validate(payload)
 
 
+def _sync_fanxiu_hall_note_refs(
+    session: Session,
+    fanxiu_user: User,
+    normalized_payload: dict[str, Any],
+    *,
+    note_kind: str,
+    sync_note_fields: Callable[[NoteNode, dict[str, Any]], None],
+) -> bool:
+    touched_existing_note = False
+    for items in normalized_payload.values():
+        if not isinstance(items, list):
+            continue
+        touched_existing_note = (
+            _sync_fanxiu_item_note_refs(
+                session,
+                fanxiu_user,
+                items,
+                note_kind=note_kind,
+                sync_note_fields=sync_note_fields,
+            )
+            or touched_existing_note
+        )
+    return touched_existing_note
+
+
+def _sync_fanxiu_item_note_refs(
+    session: Session,
+    fanxiu_user: User,
+    items: list[Any],
+    *,
+    note_kind: str,
+    sync_note_fields: Callable[[NoteNode, dict[str, Any]], None],
+) -> bool:
+    touched_existing_note = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), note_kind)
+        if db_note:
+            sync_note_fields(db_note, item)
+            item["note_id"] = note_public_id(db_note)
+            session.add(db_note)
+            touched_existing_note = True
+        elif item.get("note_id"):
+            item.pop("note_id", None)
+    return touched_existing_note
+
+
 @inventory_router.put("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)
 def update_fanxiu_wardrobe_hall(
     payload: FanxiuWardrobeHallSnapshot,
@@ -6487,22 +6559,13 @@ def update_fanxiu_wardrobe_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = False
-
-    for items in normalized_payload.values():
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_WARDROBE_KIND)
-            if db_note:
-                sync_wardrobe_note_fields(db_note, item)
-                item["note_id"] = note_public_id(db_note)
-                session.add(db_note)
-                touched_existing_note = True
-            elif item.get("note_id"):
-                item.pop("note_id", None)
+    touched_existing_note = _sync_fanxiu_hall_note_refs(
+        session,
+        fanxiu_user,
+        normalized_payload,
+        note_kind=FANXIU_WARDROBE_KIND,
+        sync_note_fields=sync_wardrobe_note_fields,
+    )
 
     if touched_existing_note:
         session.commit()
@@ -6534,22 +6597,13 @@ def update_fanxiu_spirit_beast_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = False
-
-    for items in normalized_payload.values():
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_SPIRIT_BEAST_KIND)
-            if db_note:
-                sync_wardrobe_note_fields(db_note, item)
-                item["note_id"] = note_public_id(db_note)
-                session.add(db_note)
-                touched_existing_note = True
-            elif item.get("note_id"):
-                item.pop("note_id", None)
+    touched_existing_note = _sync_fanxiu_hall_note_refs(
+        session,
+        fanxiu_user,
+        normalized_payload,
+        note_kind=FANXIU_SPIRIT_BEAST_KIND,
+        sync_note_fields=sync_wardrobe_note_fields,
+    )
 
     if touched_existing_note:
         session.commit()
@@ -6581,22 +6635,13 @@ def update_fanxiu_magic_treasure_hall(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_payload = payload.model_dump(mode="json")
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = False
-
-    for items in normalized_payload.values():
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_MAGIC_TREASURE_KIND)
-            if db_note:
-                sync_wardrobe_note_fields(db_note, item)
-                item["note_id"] = note_public_id(db_note)
-                session.add(db_note)
-                touched_existing_note = True
-            elif item.get("note_id"):
-                item.pop("note_id", None)
+    touched_existing_note = _sync_fanxiu_hall_note_refs(
+        session,
+        fanxiu_user,
+        normalized_payload,
+        note_kind=FANXIU_MAGIC_TREASURE_KIND,
+        sync_note_fields=sync_wardrobe_note_fields,
+    )
 
     if touched_existing_note:
         session.commit()
@@ -6752,19 +6797,13 @@ def update_fanxiu_activity_list(
     ensure_fanxiu_write_permission(current_user, session)
     normalized_items = payload.model_dump(mode="json")["items"]
     fanxiu_user = get_fanxiu_user(session)
-    touched_existing_note = False
-
-    for item in normalized_items:
-        if not isinstance(item, dict):
-            continue
-        db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_ACTIVITY_KIND)
-        if db_note:
-            sync_activity_note_fields(db_note, item)
-            item["note_id"] = note_public_id(db_note)
-            session.add(db_note)
-            touched_existing_note = True
-        elif item.get("note_id"):
-            item.pop("note_id", None)
+    touched_existing_note = _sync_fanxiu_item_note_refs(
+        session,
+        fanxiu_user,
+        normalized_items,
+        note_kind=FANXIU_ACTIVITY_KIND,
+        sync_note_fields=sync_activity_note_fields,
+    )
 
     if touched_existing_note:
         session.commit()
@@ -7040,6 +7079,169 @@ def read_fanxiu_wardrobe_note(
     return serialize_fanxiu_note_read(db_note, current_user)
 
 
+def _prepare_fanxiu_note_update_semantics(
+    note_in: NoteUpdate,
+    *,
+    note_kind: str,
+    fallback_type: str,
+) -> tuple[list[dict[str, Any]], str | None, str, dict[str, Any]]:
+    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=fallback_type)
+    normalized_note_color = normalize_note_color(note_in.color)
+    if normalized_note_color and (
+        not note_in.note_types
+        or (
+            len(normalized_note_types) == 1
+            and normalized_note_types[0].get("key") == fallback_type
+            and int(normalized_note_types[0].get("weight", 0)) == 100
+        )
+    ):
+        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
+        if legacy_color_type_key:
+            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
+    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=fallback_type)
+    taxonomy = derive_note_taxonomy_from_legacy(
+        normalized_note_types,
+        node_type=primary_node_type,
+        note_kind=note_kind,
+        node_status=note_in.node_status,
+    )
+    return normalized_note_types, normalized_note_color, primary_node_type, taxonomy
+
+
+def _refresh_existing_fanxiu_note_semantics(
+    db_note: NoteNode,
+    note_in: NoteUpdate,
+    *,
+    normalized_note_types: list[dict[str, Any]],
+    normalized_note_color: str | None,
+    primary_node_type: str,
+    note_kind: str,
+    fallback_type: str,
+) -> None:
+    if note_in.note_types is not None:
+        db_note.note_types = normalized_note_types
+        db_note.node_type = primary_node_type
+    elif not db_note.note_types:
+        db_note.note_types = normalized_note_types
+        db_note.node_type = primary_node_type
+    if "color" in note_in.model_fields_set:
+        db_note.color = normalized_note_color
+    elif db_note.color:
+        existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or fallback_type)
+        normalized_existing_color = normalize_note_color(db_note.color)
+        if normalized_existing_color and len(existing_note_types) == 1:
+            only_type = existing_note_types[0]
+            existing_fallback_type = db_note.node_type or fallback_type
+            if only_type.get("key") == existing_fallback_type and int(only_type.get("weight", 0)) == 100:
+                legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
+                if legacy_color_type_key:
+                    db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
+                    db_note.node_type = legacy_color_type_key
+
+    refreshed_taxonomy = derive_note_taxonomy_from_legacy(
+        db_note.note_types,
+        node_type=db_note.node_type or fallback_type,
+        note_kind=note_kind,
+        node_status=db_note.node_status,
+    )
+    db_note.note_categories = refreshed_taxonomy["note_categories"]
+    db_note.primary_category = refreshed_taxonomy["primary_category"]
+    db_note.note_form = refreshed_taxonomy["note_form"]
+    db_note.note_scene = refreshed_taxonomy["note_scene"]
+    db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
+
+
+def _upsert_fanxiu_inventory_item_note(
+    session: Session,
+    fanxiu_user: User,
+    item: dict[str, Any],
+    note_in: NoteUpdate,
+    *,
+    note_kind: str,
+    fallback_type: str,
+    item_weight: int | None = None,
+    item_start_at: float | None = None,
+    title_error_message: str = "请先填写条目名称，再编辑文档。",
+    sync_weight: bool = True,
+) -> NoteNode:
+    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), note_kind)
+
+    current_time = time.time()
+    normalized_note_types, normalized_note_color, primary_node_type, taxonomy = _prepare_fanxiu_note_update_semantics(
+        note_in,
+        note_kind=note_kind,
+        fallback_type=fallback_type,
+    )
+
+    item_title = str(item.get("name") or "").strip()
+    resolved_item_weight = int(item.get("rank") or 0) if item_weight is None else item_weight
+    resolved_item_start_at = wardrobe_item_date_to_timestamp(item.get("date")) if item_start_at is None else item_start_at
+    if not item_title:
+        raise HTTPException(status_code=400, detail=title_error_message)
+
+    if not db_note:
+        note_identity = allocate_new_note_identity(session)
+        db_note = NoteNode(
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
+            user_id=fanxiu_user.id,
+            title=item_title,
+            content=note_in.content or "",
+            weight=resolved_item_weight,
+            node_type=primary_node_type,
+            note_types=normalized_note_types,
+            note_categories=taxonomy["note_categories"],
+            primary_category=taxonomy["primary_category"],
+            note_form=taxonomy["note_form"],
+            note_kind=note_kind,
+            note_scene=taxonomy["note_scene"],
+            node_status=note_in.node_status,
+            lifecycle_stage=taxonomy["lifecycle_stage"],
+            color=normalized_note_color,
+            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
+            created_at=current_time,
+            updated_at=current_time,
+            start_at=resolved_item_start_at,
+            history=[],
+            custom_fields=[],
+        )
+        session.add(db_note)
+    else:
+        if note_in.content is not None:
+            db_note.content = note_in.content
+        if db_note.note_kind != note_kind:
+            db_note.note_kind = note_kind
+        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
+            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
+        if note_in.node_status is not None:
+            db_note.node_status = note_in.node_status
+        _refresh_existing_fanxiu_note_semantics(
+            db_note,
+            note_in,
+            normalized_note_types=normalized_note_types,
+            normalized_note_color=normalized_note_color,
+            primary_node_type=primary_node_type,
+            note_kind=note_kind,
+            fallback_type=fallback_type,
+        )
+        if note_in.custom_fields is not None:
+            db_note.custom_fields = note_in.custom_fields
+        elif not isinstance(db_note.custom_fields, list):
+            db_note.custom_fields = []
+        db_note.updated_at = current_time
+        session.add(db_note)
+
+    db_note.title = item_title
+    if sync_weight:
+        db_note.weight = resolved_item_weight
+    db_note.start_at = resolved_item_start_at
+
+    session.commit()
+    session.refresh(db_note)
+    return db_note
+
+
 @inventory_router.put("/inventory/wardrobe-notes/{item_id}", response_model=NoteRead)
 def update_fanxiu_wardrobe_note(
     item_id: str,
@@ -7054,118 +7256,14 @@ def update_fanxiu_wardrobe_note(
         raise HTTPException(status_code=404, detail="Wardrobe item not found")
 
     fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_WARDROBE_KIND)
-
-    current_time = time.time()
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=FANXIU_WARDROBE_TYPE)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == FANXIU_WARDROBE_TYPE
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_WARDROBE_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
+    db_note = _upsert_fanxiu_inventory_item_note(
+        session,
+        fanxiu_user,
+        item,
+        note_in,
         note_kind=FANXIU_WARDROBE_KIND,
-        node_status=note_in.node_status,
+        fallback_type=FANXIU_WARDROBE_TYPE,
     )
-
-    item_title = str(item.get("name") or "").strip()
-    item_weight = int(item.get("rank") or 0)
-    item_start_at = wardrobe_item_date_to_timestamp(item.get("date"))
-    if not item_title:
-        raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=item_title,
-            content=note_in.content or "",
-            weight=item_weight,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=FANXIU_WARDROBE_KIND,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=item_start_at,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if note_in.note_types is not None:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        elif not db_note.note_types:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        if "color" in note_in.model_fields_set:
-            db_note.color = normalized_note_color
-        elif db_note.color:
-            existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or FANXIU_WARDROBE_TYPE)
-            normalized_existing_color = normalize_note_color(db_note.color)
-            if normalized_existing_color and len(existing_note_types) == 1:
-                only_type = existing_note_types[0]
-                fallback_type = db_note.node_type or FANXIU_WARDROBE_TYPE
-                if only_type.get("key") == fallback_type and int(only_type.get("weight", 0)) == 100:
-                    legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                    if legacy_color_type_key:
-                        db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                        db_note.node_type = legacy_color_type_key
-        if db_note.note_kind != FANXIU_WARDROBE_KIND:
-            db_note.note_kind = FANXIU_WARDROBE_KIND
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        if note_in.custom_fields is not None:
-            db_note.custom_fields = note_in.custom_fields
-        elif not isinstance(db_note.custom_fields, list):
-            db_note.custom_fields = []
-
-        refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-            db_note.note_types,
-            node_type=db_note.node_type or FANXIU_WARDROBE_TYPE,
-            note_kind=FANXIU_WARDROBE_KIND,
-            node_status=db_note.node_status,
-        )
-        db_note.note_categories = refreshed_taxonomy["note_categories"]
-        db_note.primary_category = refreshed_taxonomy["primary_category"]
-        db_note.note_form = refreshed_taxonomy["note_form"]
-        db_note.note_scene = refreshed_taxonomy["note_scene"]
-        db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    db_note.title = item_title
-    db_note.weight = item_weight
-    db_note.start_at = item_start_at
-
-    session.commit()
-    session.refresh(db_note)
-
     item["note_id"] = note_public_id(db_note)
     try:
         save_wardrobe_hall(wardrobe_hall)
@@ -7208,118 +7306,14 @@ def update_fanxiu_spirit_beast_note(
         raise HTTPException(status_code=404, detail="Spirit beast item not found")
 
     fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_SPIRIT_BEAST_KIND)
-
-    current_time = time.time()
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=FANXIU_SPIRIT_BEAST_TYPE)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == FANXIU_SPIRIT_BEAST_TYPE
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_SPIRIT_BEAST_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
+    db_note = _upsert_fanxiu_inventory_item_note(
+        session,
+        fanxiu_user,
+        item,
+        note_in,
         note_kind=FANXIU_SPIRIT_BEAST_KIND,
-        node_status=note_in.node_status,
+        fallback_type=FANXIU_SPIRIT_BEAST_TYPE,
     )
-
-    item_title = str(item.get("name") or "").strip()
-    item_weight = int(item.get("rank") or 0)
-    item_start_at = wardrobe_item_date_to_timestamp(item.get("date"))
-    if not item_title:
-        raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=item_title,
-            content=note_in.content or "",
-            weight=item_weight,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=FANXIU_SPIRIT_BEAST_KIND,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=item_start_at,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if note_in.note_types is not None:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        elif not db_note.note_types:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        if "color" in note_in.model_fields_set:
-            db_note.color = normalized_note_color
-        elif db_note.color:
-            existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or FANXIU_SPIRIT_BEAST_TYPE)
-            normalized_existing_color = normalize_note_color(db_note.color)
-            if normalized_existing_color and len(existing_note_types) == 1:
-                only_type = existing_note_types[0]
-                fallback_type = db_note.node_type or FANXIU_SPIRIT_BEAST_TYPE
-                if only_type.get("key") == fallback_type and int(only_type.get("weight", 0)) == 100:
-                    legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                    if legacy_color_type_key:
-                        db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                        db_note.node_type = legacy_color_type_key
-        if db_note.note_kind != FANXIU_SPIRIT_BEAST_KIND:
-            db_note.note_kind = FANXIU_SPIRIT_BEAST_KIND
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        if note_in.custom_fields is not None:
-            db_note.custom_fields = note_in.custom_fields
-        elif not isinstance(db_note.custom_fields, list):
-            db_note.custom_fields = []
-
-        refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-            db_note.note_types,
-            node_type=db_note.node_type or FANXIU_SPIRIT_BEAST_TYPE,
-            note_kind=FANXIU_SPIRIT_BEAST_KIND,
-            node_status=db_note.node_status,
-        )
-        db_note.note_categories = refreshed_taxonomy["note_categories"]
-        db_note.primary_category = refreshed_taxonomy["primary_category"]
-        db_note.note_form = refreshed_taxonomy["note_form"]
-        db_note.note_scene = refreshed_taxonomy["note_scene"]
-        db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    db_note.title = item_title
-    db_note.weight = item_weight
-    db_note.start_at = item_start_at
-
-    session.commit()
-    session.refresh(db_note)
-
     item["note_id"] = note_public_id(db_note)
     try:
         save_spirit_beast_hall(spirit_beast_hall)
@@ -7362,117 +7356,14 @@ def update_fanxiu_magic_treasure_note(
         raise HTTPException(status_code=404, detail="Magic treasure item not found")
 
     fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_MAGIC_TREASURE_KIND)
-
-    current_time = time.time()
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=FANXIU_MAGIC_TREASURE_TYPE)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == FANXIU_MAGIC_TREASURE_TYPE
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_MAGIC_TREASURE_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
+    db_note = _upsert_fanxiu_inventory_item_note(
+        session,
+        fanxiu_user,
+        item,
+        note_in,
         note_kind=FANXIU_MAGIC_TREASURE_KIND,
-        node_status=note_in.node_status,
+        fallback_type=FANXIU_MAGIC_TREASURE_TYPE,
     )
-
-    item_title = str(item.get("name") or "").strip()
-    item_weight = int(item.get("rank") or 0)
-    item_start_at = wardrobe_item_date_to_timestamp(item.get("date"))
-    if not item_title:
-        raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=item_title,
-            content=note_in.content or "",
-            weight=item_weight,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=FANXIU_MAGIC_TREASURE_KIND,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=item_start_at,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if note_in.note_types is not None:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        elif not db_note.note_types:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        if "color" in note_in.model_fields_set:
-            db_note.color = normalized_note_color
-        elif db_note.color:
-            existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or FANXIU_MAGIC_TREASURE_TYPE)
-            normalized_existing_color = normalize_note_color(db_note.color)
-            if normalized_existing_color and len(existing_note_types) == 1:
-                only_type = existing_note_types[0]
-                fallback_type = db_note.node_type or FANXIU_MAGIC_TREASURE_TYPE
-                if only_type.get("key") == fallback_type and int(only_type.get("weight", 0)) == 100:
-                    legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                    if legacy_color_type_key:
-                        db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                        db_note.node_type = legacy_color_type_key
-        if db_note.note_kind != FANXIU_MAGIC_TREASURE_KIND:
-            db_note.note_kind = FANXIU_MAGIC_TREASURE_KIND
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        if note_in.custom_fields is not None:
-            db_note.custom_fields = note_in.custom_fields
-        elif not isinstance(db_note.custom_fields, list):
-            db_note.custom_fields = []
-
-        refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-            db_note.note_types,
-            node_type=db_note.node_type or FANXIU_MAGIC_TREASURE_TYPE,
-            note_kind=FANXIU_MAGIC_TREASURE_KIND,
-            node_status=db_note.node_status,
-        )
-        db_note.note_categories = refreshed_taxonomy["note_categories"]
-        db_note.primary_category = refreshed_taxonomy["primary_category"]
-        db_note.note_form = refreshed_taxonomy["note_form"]
-        db_note.note_scene = refreshed_taxonomy["note_scene"]
-        db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    db_note.title = item_title
-    db_note.weight = item_weight
-    db_note.start_at = item_start_at
-
-    session.commit()
-    session.refresh(db_note)
 
     item["note_id"] = note_public_id(db_note)
     try:
@@ -7516,115 +7407,18 @@ def update_fanxiu_activity_note(
         raise HTTPException(status_code=404, detail="活动条目不存在")
 
     fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_ACTIVITY_KIND)
-
-    current_time = time.time()
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=FANXIU_ACTIVITY_TYPE)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == FANXIU_ACTIVITY_TYPE
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_ACTIVITY_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
+    db_note = _upsert_fanxiu_inventory_item_note(
+        session,
+        fanxiu_user,
+        item,
+        note_in,
         note_kind=FANXIU_ACTIVITY_KIND,
-        node_status=note_in.node_status,
+        fallback_type=FANXIU_ACTIVITY_TYPE,
+        item_weight=0,
+        item_start_at=activity_item_start_to_timestamp(item.get("start_date")),
+        title_error_message="请先填写活动名称，再编辑文档。",
+        sync_weight=False,
     )
-
-    item_title = str(item.get("name") or "").strip()
-    item_start_at = activity_item_start_to_timestamp(item.get("start_date"))
-    if not item_title:
-        raise HTTPException(status_code=400, detail="请先填写活动名称，再编辑文档。")
-
-    if not db_note:
-        note_identity = allocate_new_note_identity(session)
-        db_note = NoteNode(
-            id=note_identity.primary_id,
-            numeric_id=note_identity.numeric_id,
-            legacy_id=note_identity.legacy_id,
-            user_id=fanxiu_user.id,
-            title=item_title,
-            content=note_in.content or "",
-            weight=0,
-            node_type=primary_node_type,
-            note_types=normalized_note_types,
-            note_categories=taxonomy["note_categories"],
-            primary_category=taxonomy["primary_category"],
-            note_form=taxonomy["note_form"],
-            note_kind=FANXIU_ACTIVITY_KIND,
-            note_scene=taxonomy["note_scene"],
-            node_status=note_in.node_status,
-            lifecycle_stage=taxonomy["lifecycle_stage"],
-            color=normalized_note_color,
-            weight_mode=NOTE_WEIGHT_MODE_LINEAR,
-            created_at=current_time,
-            updated_at=current_time,
-            start_at=item_start_at,
-            history=[],
-            custom_fields=[],
-        )
-        session.add(db_note)
-    else:
-        if note_in.content is not None:
-            db_note.content = note_in.content
-        if note_in.note_types is not None:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        elif not db_note.note_types:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        if "color" in note_in.model_fields_set:
-            db_note.color = normalized_note_color
-        elif db_note.color:
-            existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or FANXIU_ACTIVITY_TYPE)
-            normalized_existing_color = normalize_note_color(db_note.color)
-            if normalized_existing_color and len(existing_note_types) == 1:
-                only_type = existing_note_types[0]
-                fallback_type = db_note.node_type or FANXIU_ACTIVITY_TYPE
-                if only_type.get("key") == fallback_type and int(only_type.get("weight", 0)) == 100:
-                    legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                    if legacy_color_type_key:
-                        db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                        db_note.node_type = legacy_color_type_key
-        if db_note.note_kind != FANXIU_ACTIVITY_KIND:
-            db_note.note_kind = FANXIU_ACTIVITY_KIND
-        if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
-            db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
-        if note_in.node_status is not None:
-            db_note.node_status = note_in.node_status
-        if note_in.custom_fields is not None:
-            db_note.custom_fields = note_in.custom_fields
-        elif not isinstance(db_note.custom_fields, list):
-            db_note.custom_fields = []
-
-        refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-            db_note.note_types,
-            node_type=db_note.node_type or FANXIU_ACTIVITY_TYPE,
-            note_kind=FANXIU_ACTIVITY_KIND,
-            node_status=db_note.node_status,
-        )
-        db_note.note_categories = refreshed_taxonomy["note_categories"]
-        db_note.primary_category = refreshed_taxonomy["primary_category"]
-        db_note.note_form = refreshed_taxonomy["note_form"]
-        db_note.note_scene = refreshed_taxonomy["note_scene"]
-        db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
-        db_note.updated_at = current_time
-        session.add(db_note)
-
-    db_note.title = item_title
-    db_note.start_at = item_start_at
-
-    session.commit()
-    session.refresh(db_note)
 
     item["note_id"] = note_public_id(db_note)
     try:
@@ -7680,56 +7474,30 @@ def read_char(
         
     return serialize_fanxiu_note_read(note, current_user)
 
-@chars_router.put("/chars/{char_name}", response_model=NoteRead)
-def update_char(
+
+def _upsert_fanxiu_char_note(
+    session: Session,
+    fanxiu_user: User,
     char_name: str,
     note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Update or create character data.
-    Restricted to specific users.
-    """
-    # STRICT PERMISSION: Only 'fanxiu_official' itself can edit.
-    # Even 'code4101' cannot edit directly via this API unless logged in as 'fanxiu_official'.
-    # This enforces data ownership isolation.
-    
-    ensure_fanxiu_write_permission(current_user, session)
-    fanxiu_user = get_fanxiu_user(session)
+) -> NoteNode:
     db_note = get_or_migrate_fanxiu_char_note(session, fanxiu_user, char_name)
-    
+
     current_time = time.time()
-    normalized_note_types = normalize_note_types(note_in.note_types, fallback_type=FANXIU_CHAR_TYPE)
-    normalized_note_color = normalize_note_color(note_in.color)
-    if normalized_note_color and (
-        not note_in.note_types
-        or (
-            len(normalized_note_types) == 1
-            and normalized_note_types[0].get("key") == FANXIU_CHAR_TYPE
-            and int(normalized_note_types[0].get("weight", 0)) == 100
-        )
-    ):
-        legacy_color_type_key = build_legacy_color_type_key(normalized_note_color)
-        if legacy_color_type_key:
-            normalized_note_types = [{"key": legacy_color_type_key, "weight": 100}]
-    primary_node_type = derive_primary_node_type(normalized_note_types, fallback_type=FANXIU_CHAR_TYPE)
-    taxonomy = derive_note_taxonomy_from_legacy(
-        normalized_note_types,
-        node_type=primary_node_type,
+    normalized_note_types, normalized_note_color, primary_node_type, taxonomy = _prepare_fanxiu_note_update_semantics(
+        note_in,
         note_kind=FANXIU_CHAR_KIND,
-        node_status=note_in.node_status,
+        fallback_type=FANXIU_CHAR_TYPE,
     )
-    
+
     if not db_note:
-        # Create new
         note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
             id=note_identity.primary_id,
             numeric_id=note_identity.numeric_id,
             legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
-            title=char_name, 
+            title=char_name,
             content=note_in.content or "",
             weight=note_in.weight if note_in.weight is not None else 0,
             node_type=primary_node_type,
@@ -7751,56 +7519,54 @@ def update_char(
         )
         session.add(db_note)
     else:
-        # Update existing
         if note_in.content is not None:
             db_note.content = note_in.content
         if note_in.weight is not None:
             db_note.weight = note_in.weight
         if note_in.start_at is not None:
             db_note.start_at = note_in.start_at
-        if note_in.note_types is not None:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        elif not db_note.note_types:
-            db_note.note_types = normalized_note_types
-            db_note.node_type = primary_node_type
-        if "color" in note_in.model_fields_set:
-            db_note.color = normalized_note_color
-        elif db_note.color:
-            existing_note_types = normalize_note_types(db_note.note_types, fallback_type=db_note.node_type or FANXIU_CHAR_TYPE)
-            normalized_existing_color = normalize_note_color(db_note.color)
-            if normalized_existing_color and len(existing_note_types) == 1:
-                only_type = existing_note_types[0]
-                fallback_type = db_note.node_type or FANXIU_CHAR_TYPE
-                if only_type.get("key") == fallback_type and int(only_type.get("weight", 0)) == 100:
-                    legacy_color_type_key = build_legacy_color_type_key(normalized_existing_color)
-                    if legacy_color_type_key:
-                        db_note.note_types = [{"key": legacy_color_type_key, "weight": 100}]
-                        db_note.node_type = legacy_color_type_key
         if db_note.note_kind != FANXIU_CHAR_KIND:
             db_note.note_kind = FANXIU_CHAR_KIND
         if db_note.weight_mode != NOTE_WEIGHT_MODE_LINEAR:
             db_note.weight_mode = NOTE_WEIGHT_MODE_LINEAR
         if note_in.node_status is not None:
             db_note.node_status = note_in.node_status
-
-        refreshed_taxonomy = derive_note_taxonomy_from_legacy(
-            db_note.note_types,
-            node_type=db_note.node_type or FANXIU_CHAR_TYPE,
+        _refresh_existing_fanxiu_note_semantics(
+            db_note,
+            note_in,
+            normalized_note_types=normalized_note_types,
+            normalized_note_color=normalized_note_color,
+            primary_node_type=primary_node_type,
             note_kind=FANXIU_CHAR_KIND,
-            node_status=db_note.node_status,
+            fallback_type=FANXIU_CHAR_TYPE,
         )
-        db_note.note_categories = refreshed_taxonomy["note_categories"]
-        db_note.primary_category = refreshed_taxonomy["primary_category"]
-        db_note.note_form = refreshed_taxonomy["note_form"]
-        db_note.note_scene = refreshed_taxonomy["note_scene"]
-        db_note.lifecycle_stage = refreshed_taxonomy["lifecycle_stage"]
 
         db_note.updated_at = current_time
         session.add(db_note)
-        
+
     session.commit()
     session.refresh(db_note)
+    return db_note
+
+
+@chars_router.put("/chars/{char_name}", response_model=NoteRead)
+def update_char(
+    char_name: str,
+    note_in: NoteUpdate,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Update or create character data.
+    Restricted to specific users.
+    """
+    # STRICT PERMISSION: Only 'fanxiu_official' itself can edit.
+    # Even 'code4101' cannot edit directly via this API unless logged in as 'fanxiu_official'.
+    # This enforces data ownership isolation.
+    
+    ensure_fanxiu_write_permission(current_user, session)
+    fanxiu_user = get_fanxiu_user(session)
+    db_note = _upsert_fanxiu_char_note(session, fanxiu_user, char_name, note_in)
     return serialize_fanxiu_note_read(db_note, current_user)
 
 

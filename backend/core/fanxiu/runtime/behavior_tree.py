@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -47,11 +48,14 @@ from backend.core.fanxiu.data_annotation.runner import (
     get_fanxiu_runtime_runner_class,
     register_fanxiu_runtime_runner_class,
 )
-from backend.core.settings import get_settings
+from backend.core.runtime.process_launcher import popen_python_script_service
+from backend.core.settings import ROOT_DIR, get_settings
 
 
 DEFAULT_FANXIU_ENTRY_ID = "30b82d72-8a76-4a74-be4b-4fc1591c6ce2"
 _RUNTIME_RUNNER: Any | None = None
+FANXIU_EMBEDDED_SERVICE_ENV = "CODEYUN_FANXIU_EMBEDDED_BEHAVIOR_TREE_SERVICE"
+FANXIU_EXTERNAL_SERVICE_ENV = "CODEYUN_FANXIU_EXTERNAL_BEHAVIOR_TREE_SERVICE"
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,10 @@ def _fanxiu_process_exists(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
+    try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
@@ -228,14 +236,22 @@ def _fanxiu_process_matches_service_owner(pid: int) -> bool:
         return False
     if "python" not in name and "uv" not in name:
         return False
-    return (
-        ("fanxiu_bt.py" in command and "service" in command)
-        or ("fanxiu_bt.py" in command and "watch-doctor" in command)
-        or ("fanxiu_bt.py" in command and "ensure-watch-doctor" in command)
-        or ("uvicorn" in command and "backend.app:app" in command)
-        or "backend.core.runtime.uvicorn_hidden" in command
-        or "dev.py" in command
-    )
+    return "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command) is not None
+
+
+def _fanxiu_service_processes() -> list[dict[str, Any]]:
+    processes: list[dict[str, Any]] = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            pid = int(proc.info.get("pid") or 0)
+            name = str(proc.info.get("name") or "")
+            cmdline = [str(part) for part in (proc.info.get("cmdline") or [])]
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError, TypeError, ValueError):
+            continue
+        command = " ".join(cmdline).lower().replace("/", "\\")
+        if pid != os.getpid() and "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command):
+            processes.append({"pid": pid, "name": name, "cmdline": cmdline})
+    return processes
 
 
 def request_fanxiu_behavior_tree_stop(
@@ -272,6 +288,23 @@ def request_fanxiu_behavior_tree_wake(
     )
 
 
+def request_fanxiu_behavior_tree_service_shutdown(
+    *,
+    entry_id: str = "",
+    reason: str = "service_migration",
+    path: Path | None = None,
+) -> dict[str, Any]:
+    control_path = path or fanxiu_behavior_tree_control_path()
+    return write_json_command(
+        control_path,
+        command="shutdown_service",
+        request_id=uuid.uuid4().hex,
+        created_at=time.time(),
+        entry_id=str(entry_id or ""),
+        reason=str(reason or "service_migration"),
+    )
+
+
 def read_fanxiu_behavior_tree_service_owner(
     path: Path | None = None,
     *,
@@ -304,6 +337,69 @@ def read_fanxiu_behavior_tree_service_owner(
     return status
 
 
+def _current_process_is_fanxiu_service_host() -> bool:
+    if str(os.environ.get(FANXIU_EMBEDDED_SERVICE_ENV) or "").strip() in {"1", "true", "True"}:
+        return True
+    command = " ".join(str(part) for part in sys.argv).lower().replace("/", "\\")
+    return "fanxiu_bt.py" in command and re.search(r"(^|\s)service(\s|$)", command) is not None
+
+
+def _external_behavior_tree_service_enabled() -> bool:
+    value = str(os.environ.get(FANXIU_EXTERNAL_SERVICE_ENV) or "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _start_external_fanxiu_behavior_tree_service(
+    entry_id: str,
+    *,
+    tick_seconds: float = 1.0,
+    wait_seconds: float = 5.0,
+) -> dict[str, Any]:
+    if not _external_behavior_tree_service_enabled():
+        return {"started": False, "reason": "external_service_disabled"}
+    script_path = ROOT_DIR / "scripts" / "fanxiu_bt.py"
+    if not script_path.is_file():
+        return {"started": False, "reason": f"service_script_missing:{script_path}"}
+    before = read_fanxiu_behavior_tree_service_owner()
+    if bool(before.get("active")) and not bool(before.get("stale")):
+        return {"started": False, "reason": "owner_already_active", "owner": before}
+    existing_services = _fanxiu_service_processes()
+    if existing_services:
+        return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": before}
+    if bool(before.get("exists")) and before.get("pid"):
+        request_fanxiu_behavior_tree_service_shutdown(entry_id=entry_id, reason="external_service_takeover")
+        time.sleep(1.0)
+        existing_services = _fanxiu_service_processes()
+        if existing_services:
+            return {"started": False, "reason": "service_process_already_running", "process": existing_services[0], "owner": read_fanxiu_behavior_tree_service_owner()}
+    env = os.environ.copy()
+    env[FANXIU_EMBEDDED_SERVICE_ENV] = "1"
+    process = popen_python_script_service(
+        script_path,
+        "--entry-id",
+        str(entry_id or DEFAULT_FANXIU_ENTRY_ID),
+        "service",
+        "--tick-seconds",
+        str(max(0.2, float(tick_seconds or 1.0))),
+        preferred_root=ROOT_DIR,
+        executable=sys.executable,
+        cwd=os.fspath(ROOT_DIR),
+        env=env,
+    )
+    deadline = time.time() + max(0.1, float(wait_seconds or 5.0))
+    owner: dict[str, Any] = {}
+    while time.time() < deadline:
+        owner = read_fanxiu_behavior_tree_service_owner()
+        if bool(owner.get("active")) and not bool(owner.get("stale")):
+            break
+        time.sleep(0.2)
+    return {
+        "started": True,
+        "pid": process.pid,
+        "owner": owner,
+    }
+
+
 
 def fanxiu_job_group_isolated(path: Path | None = None) -> bool:
     isolation_path = path or fanxiu_job_group_isolation_path()
@@ -333,6 +429,7 @@ def acquire_fanxiu_job_group_isolation(
     *,
     reason: str,
     ttl_seconds: float = 300.0,
+    token: str | None = None,
     path: Path | None = None,
 ) -> str:
     isolation_path = path or fanxiu_job_group_isolation_path()
@@ -340,7 +437,7 @@ def acquire_fanxiu_job_group_isolation(
         isolation_path,
         reason=str(reason or "local_run"),
         ttl_seconds=max(5.0, float(ttl_seconds or 300.0)),
-        token=uuid.uuid4().hex,
+        token=str(token or uuid.uuid4().hex),
         now=time.time(),
         extra={"pid": os.getpid()},
     )
@@ -784,8 +881,14 @@ def ensure_fanxiu_behavior_tree_service(
     tick_seconds: float = 1.0,
 ) -> dict[str, Any]:
     ensure_fanxiu_runtime_jobs_registered()
-    runner = get_fanxiu_runtime_runner()
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or DEFAULT_FANXIU_ENTRY_ID)
+    if not _current_process_is_fanxiu_service_host():
+        owner = read_fanxiu_behavior_tree_service_owner()
+        if bool(owner.get("active")) and not bool(owner.get("stale")):
+            return fanxiu_data_annotation_runtime_status()
+        _start_external_fanxiu_behavior_tree_service(resolved_entry_id, tick_seconds=tick_seconds)
+        return fanxiu_data_annotation_runtime_status()
+    runner = get_fanxiu_runtime_runner()
     status = runner.ensure_service(
         entry=entry,
         entry_id=resolved_entry_id,
@@ -846,6 +949,12 @@ def enqueue_fanxiu_local_manual_job(request: FanxiuLocalEnqueueRequest) -> dict[
     ensure_fanxiu_runtime_jobs_registered()
     entry = resolve_fanxiu_entry(request.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or request.entry_id or DEFAULT_FANXIU_ENTRY_ID)
+    asset_tree_path = data_annotation_asset_tree_path(entry_id)
+    ensure_fanxiu_behavior_tree_service(
+        entry,
+        entry_id,
+        asset_tree_path=asset_tree_path,
+    )
     payload = dict(request.payload or {})
     if request.isolate_jobs:
         token = acquire_fanxiu_job_group_isolation(
@@ -860,7 +969,7 @@ def enqueue_fanxiu_local_manual_job(request: FanxiuLocalEnqueueRequest) -> dict[
         payload=payload,
         label=str(request.label or ""),
         interruptible=request.interruptible,
-        asset_tree_path=data_annotation_asset_tree_path(entry_id),
+        asset_tree_path=asset_tree_path,
         manual_job_path=fanxiu_data_annotation_manual_job_state_path(),
         runtime_state_path=fanxiu_data_annotation_runtime_state_path(),
         world_facts_path=fanxiu_data_annotation_world_facts_path(),

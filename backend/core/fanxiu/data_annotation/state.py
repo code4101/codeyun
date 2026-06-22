@@ -88,8 +88,6 @@ def normalize_data_annotation_runtime_display(status: dict[str, Any]) -> None:
 def _runtime_state_label(status: dict[str, Any]) -> str:
     if str(status.get("phase") or "") == "service_owned_by_other":
         return "后台接管"
-    if not bool(status.get("behavior_tree_enabled", True)):
-        return "已暂停"
     if bool(status.get("running")):
         return "执行中"
     if str(status.get("status") or "") == "stopping":
@@ -111,8 +109,7 @@ def data_annotation_runtime_layer_status(status: dict[str, Any]) -> dict[str, di
     guard_items = status.get("guard_items") if isinstance(status.get("guard_items"), dict) else {}
     guard_enabled_count = sum(1 for item in guard_items.values() if isinstance(item, dict) and bool(item.get("enabled")))
     service_owned_by_other = phase == "service_owned_by_other"
-    kernel_enabled = bool(status.get("behavior_tree_enabled", True))
-    scheduler_enabled = bool(status.get("job_group_enabled", True))
+    scheduler_enabled = bool(status.get("behavior_tree_enabled", True)) and bool(status.get("job_group_enabled", True))
     framework_status = {
         "label": "执行中" if bool(status.get("running")) else "空闲",
         "phase": data_annotation_runtime_phase_label(phase) if phase else "",
@@ -125,7 +122,7 @@ def data_annotation_runtime_layer_status(status: dict[str, Any]) -> dict[str, di
     return {
         "kernel_status": {
             "label": _runtime_state_label(status),
-            "enabled": kernel_enabled,
+            "enabled": True,
             "running": bool(status.get("service_running")) or service_owned_by_other,
             "busy": bool(status.get("running")),
             "current_scene": current_scene,
@@ -262,7 +259,7 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
     facts = read_data_annotation_world_facts(path)
     task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
     existing_fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
-    task_facts[task_id] = {
+    fact = {
         **existing_fact,
         "id": task_id,
         "task_type": str(task.get("task_type") or ""),
@@ -275,6 +272,17 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
         "retry_after": task.get("retry_after") if task.get("retry_after") else None,
         "updated_at": time.time(),
     }
+    if result == "success":
+        fact.pop("discovered_retry_after", None)
+        fact["retry_after"] = None
+        if task.get("next_time"):
+            fact["discovered_next_time"] = task.get("next_time")
+    elif result in {"error", "stopped", "skipped", "unsupported"}:
+        fact.pop("discovered_next_time", None)
+        fact["next_time"] = None
+        if task.get("retry_after"):
+            fact["discovered_retry_after"] = task.get("retry_after")
+    task_facts[task_id] = fact
     append_data_annotation_world_fact_event(
         facts,
         "scheduler_task",

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
+from backend.api import fanxiu as fanxiu_api
 from backend.core.fanxiu.runtime import behavior_tree as bt
 from backend.core.fanxiu.data_annotation import runtime_control as runtime_control
 from backend.core.fanxiu.data_annotation import runtime_runner as runtime_runner_core
@@ -67,6 +69,132 @@ def test_core_runtime_paths_live_under_data_annotation_runtime(monkeypatch, tmp_
     assert bt.fanxiu_job_group_isolation_path() == runtime_dir / "job_group_isolation.json"
     assert bt.fanxiu_behavior_tree_service_owner_path() == runtime_dir / "behavior_tree_service_owner.json"
     assert bt.fanxiu_behavior_tree_control_path() == runtime_dir / "behavior_tree_control.json"
+
+
+def test_ensure_behavior_tree_service_launches_external_process_outside_service_host(monkeypatch):
+    launched: list[tuple[str, float]] = []
+
+    monkeypatch.setattr(bt, "_current_process_is_fanxiu_service_host", lambda: False)
+    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", lambda: {"active": False, "stale": True})
+    monkeypatch.setattr(
+        bt,
+        "_start_external_fanxiu_behavior_tree_service",
+        lambda entry_id, *, tick_seconds=1.0, wait_seconds=5.0: launched.append((entry_id, tick_seconds)) or {"started": True},
+    )
+    monkeypatch.setattr(
+        bt,
+        "get_fanxiu_runtime_runner",
+        lambda: (_ for _ in ()).throw(AssertionError("non-service callers must not host resident threads")),
+    )
+    monkeypatch.setattr(
+        bt,
+        "fanxiu_data_annotation_runtime_status",
+        lambda: {"service_running": True, "phase": "service_owned_by_other"},
+    )
+
+    status = bt.ensure_fanxiu_behavior_tree_service(object(), "entry-1", tick_seconds=0.5)
+
+    assert launched == [("entry-1", 0.5)]
+    assert status["service_running"] is True
+    assert status["phase"] == "service_owned_by_other"
+
+
+def test_ensure_behavior_tree_service_hosts_threads_inside_service_process(monkeypatch, tmp_path):
+    calls: list[tuple[str, float]] = []
+
+    class FakeRunner:
+        def ensure_service(self, *, entry, entry_id, asset_tree_path, tick_seconds):
+            calls.append((entry_id, tick_seconds))
+            return {"service_running": True, "entry_id": entry_id, "logs": []}
+
+    monkeypatch.setattr(bt, "_current_process_is_fanxiu_service_host", lambda: True)
+    monkeypatch.setattr(bt, "get_fanxiu_runtime_runner", lambda: FakeRunner())
+    monkeypatch.setattr(bt, "persist_fanxiu_runtime_status", lambda status: None)
+
+    status = bt.ensure_fanxiu_behavior_tree_service(object(), "entry-1", asset_tree_path=tmp_path / "entry.json", tick_seconds=0.5)
+
+    assert calls == [("entry-1", 0.5)]
+    assert status["service_running"] is True
+
+
+def test_external_behavior_tree_service_requests_shutdown_for_stale_foreign_owner(monkeypatch, tmp_path):
+    calls: list[dict] = []
+
+    class FakeProcess:
+        pid = 4321
+
+    owners = [
+        {"exists": True, "active": False, "stale": True, "pid": 1234},
+        {"exists": True, "active": False, "stale": True, "pid": 1234},
+        {"exists": True, "active": True, "stale": False, "pid": 4321},
+    ]
+
+    def fake_owner():
+        return owners.pop(0) if owners else {"exists": True, "active": True, "stale": False, "pid": 4321}
+
+    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", fake_owner)
+    monkeypatch.setattr(bt, "_fanxiu_service_processes", lambda: [])
+    monkeypatch.setattr(bt, "request_fanxiu_behavior_tree_service_shutdown", lambda **kwargs: calls.append({"shutdown": kwargs}))
+    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args, "kwargs": kwargs}) or FakeProcess())
+    monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(bt, "ROOT_DIR", tmp_path)
+    script = tmp_path / "scripts" / "fanxiu_bt.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+
+    result = bt._start_external_fanxiu_behavior_tree_service("entry-1", tick_seconds=0.5, wait_seconds=1.0)
+
+    assert calls[0]["shutdown"]["entry_id"] == "entry-1"
+    assert calls[0]["shutdown"]["reason"] == "external_service_takeover"
+    assert calls[1]["popen"][1:5] == ("--entry-id", "entry-1", "service", "--tick-seconds")
+    assert result["started"] is True
+    assert result["pid"] == 4321
+
+
+def test_external_behavior_tree_service_does_not_duplicate_existing_service_process(monkeypatch, tmp_path):
+    calls: list[dict] = []
+
+    monkeypatch.setattr(bt, "ROOT_DIR", tmp_path)
+    script = tmp_path / "scripts" / "fanxiu_bt.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bt, "read_fanxiu_behavior_tree_service_owner", lambda: {"exists": True, "active": False, "stale": True, "pid": 1234})
+    monkeypatch.setattr(bt, "_fanxiu_service_processes", lambda: [{"pid": 4321, "cmdline": ["fanxiu_bt.py", "service"]}])
+    monkeypatch.setattr(bt, "popen_python_script_service", lambda *args, **kwargs: calls.append({"popen": args}) or object())
+
+    result = bt._start_external_fanxiu_behavior_tree_service("entry-1")
+
+    assert result["started"] is False
+    assert result["reason"] == "service_process_already_running"
+    assert calls == []
+
+
+def test_local_enqueue_ensures_behavior_tree_service_before_queue(monkeypatch, tmp_path):
+    events: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(bt, "resolve_fanxiu_entry", lambda entry_id: type("Entry", (), {"entry_id": entry_id})())
+    monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_manual_job_state_path", lambda: tmp_path / "manual_jobs.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_runtime_state_path", lambda: tmp_path / "runtime_state.json")
+    monkeypatch.setattr(bt, "fanxiu_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
+    monkeypatch.setattr(bt, "acquire_fanxiu_job_group_isolation", lambda **_kwargs: "token")
+    monkeypatch.setattr(
+        bt,
+        "ensure_fanxiu_behavior_tree_service",
+        lambda _entry, entry_id, **_kwargs: events.append(("ensure", entry_id)) or {"service_running": True},
+    )
+    monkeypatch.setattr(
+        runtime_control,
+        "submit_manual_job",
+        lambda **kwargs: events.append(("submit", kwargs["entry_id"])) or {"queued_job": {"task_type": kwargs["task_type"]}},
+    )
+
+    status = bt.enqueue_fanxiu_local_manual_job(
+        bt.FanxiuLocalEnqueueRequest(task_type="manual_tick", entry_id="entry-1")
+    )
+
+    assert events == [("ensure", "entry-1"), ("submit", "entry-1")]
+    assert status["queued_job"]["task_type"] == "manual_tick"
 
 
 def test_runtime_control_reads_doctor_watch_latest_snapshot(monkeypatch, tmp_path):
@@ -207,6 +335,36 @@ def test_runtime_control_prefers_active_heartbeat_latest_sidecar(monkeypatch, tm
     assert loaded["path"] == str(active_sidecar_path)
     assert loaded["snapshot"]["severity"] == "blocked"
     assert loaded["heartbeat"]["active"] is True
+
+
+def test_doctor_watch_latest_payload_for_frontend_omits_large_auto_run_due(monkeypatch):
+    monkeypatch.setattr(
+        fanxiu_api._runtime_control,
+        "read_doctor_watch_latest",
+        lambda: {
+            "ok": True,
+            "exists": True,
+            "path": "doctor-watch.latest.json",
+            "message": "巡检摘要",
+            "heartbeat": {"active": True},
+            "snapshot": {
+                "summary": "巡检摘要",
+                "severity": "attention",
+                "action_required": ["查看人工复核"],
+                "auto_run_due": {
+                    "runs": [{"message": "x" * 4096}],
+                    "blocking_overlays": [{"message": "y" * 4096}],
+                },
+            },
+        },
+    )
+
+    payload = fanxiu_api._doctor_watch_latest_payload_for_frontend()
+
+    assert payload["snapshot"]["summary"] == "巡检摘要"
+    assert payload["snapshot"]["severity"] == "attention"
+    assert payload["snapshot"]["action_required"] == ["查看人工复核"]
+    assert payload["snapshot"]["auto_run_due"] is None
 
 
 def test_runtime_control_ensure_doctor_watch_skips_recent_capable_heartbeat(monkeypatch, tmp_path):
@@ -392,6 +550,23 @@ def test_core_wake_request_writes_control_file(monkeypatch, tmp_path):
     }
 
 
+def test_core_shutdown_service_request_writes_control_file(monkeypatch, tmp_path):
+    control_path = tmp_path / "behavior_tree_control.json"
+    monkeypatch.setattr(bt.uuid, "uuid4", lambda: type("FakeUuid", (), {"hex": "shutdown-id"})())
+    monkeypatch.setattr(bt.time, "time", lambda: 789.0)
+
+    request = bt.request_fanxiu_behavior_tree_service_shutdown(entry_id="entry", reason="takeover", path=control_path)
+
+    assert request["path"] == str(control_path)
+    assert json.loads(control_path.read_text(encoding="utf-8")) == {
+        "id": "shutdown-id",
+        "command": "shutdown_service",
+        "entry_id": "entry",
+        "reason": "takeover",
+        "created_at": 789.0,
+    }
+
+
 def test_core_service_owner_diagnostics(monkeypatch, tmp_path):
     owner_path = tmp_path / "behavior_tree_service_owner.json"
 
@@ -468,7 +643,12 @@ def test_runtime_runner_owner_acquire_ignores_dead_pid_before_ttl(monkeypatch, t
     assert acquired is True
     assert message == ""
     owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    assert owner["resource"] == "fanxiu-behavior-tree-kernel"
+    assert owner["owner_kind"] == "process"
+    assert owner["owner_id"] == f"pid:{bt.os.getpid()}"
     assert owner["pid"] == bt.os.getpid()
+    assert owner["lease_token"] == owner["token"]
+    assert owner["heartbeat_at"] == owner["updated_at"]
     runner._release_service_owner()
 
 
@@ -562,6 +742,7 @@ def test_core_default_runtime_jobs_register_without_api(monkeypatch):
         "go_scene",
         "hide_floating_window",
         "daily_signup",
+        "daily_audit",
         "mail_cleanup",
     ):
         assert get_fanxiu_data_annotation_manual_job_definition(task_type) is not None
@@ -584,6 +765,8 @@ def test_core_manual_job_catalog_initializes_default_jobs(monkeypatch):
     assert by_type["go_scene"]["label"]
     assert by_type["go_scene"]["has_payload_normalizer"] is True
     assert by_type["mail_cleanup"]["scheduler_supported"] is True
+    assert by_type["daily_audit"]["label"] == "日常_复核"
+    assert by_type["daily_audit"]["scheduler_supported"] is False
     assert "mail_claim_check_v2" not in by_type
 
 
@@ -838,6 +1021,8 @@ def test_local_behavior_tree_service_starts_and_stops_runner(tmp_path, monkeypat
     calls = []
 
     class FakeRunner:
+        guard_definitions = {}
+
         def ensure_service(self, **kwargs):
             calls.append(("ensure_service", kwargs))
             return {"status": "idle", "service_running": True}
@@ -845,6 +1030,10 @@ def test_local_behavior_tree_service_starts_and_stops_runner(tmp_path, monkeypat
         def stop_service(self, **kwargs):
             calls.append(("stop_service", kwargs))
             return {"status": "idle", "service_running": False}
+
+        def status(self):
+            calls.append(("status",))
+            return {"status": "idle", "service_running": True}
 
     entry = UserDevice(
         entry_id="entry",
@@ -860,6 +1049,7 @@ def test_local_behavior_tree_service_starts_and_stops_runner(tmp_path, monkeypat
     monkeypatch.setattr(bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
     monkeypatch.setattr(bt, "ensure_fanxiu_runtime_jobs_registered", lambda: calls.append(("register",)))
     monkeypatch.setattr(bt, "persist_fanxiu_runtime_status", lambda status: calls.append(("persist", status)))
+    monkeypatch.setattr(bt, "_current_process_is_fanxiu_service_host", lambda: True)
     monkeypatch.setattr(bt.time, "sleep", lambda _seconds: None)
 
     status = bt.run_fanxiu_local_service(
@@ -1268,6 +1458,38 @@ def test_fanxiu_bt_auto_queued_task_waits_when_requested(monkeypatch):
     assert waits[0][1] == 42.0
 
 
+def test_fanxiu_bt_direct_task_uses_wait_timeout_as_runtime_budget(monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    calls = []
+
+    def fake_run(request):
+        calls.append(request)
+        return {"status": "success", "message": "ok"}
+
+    monkeypatch.setattr(fanxiu_bt, "fanxiu_local_task_should_enqueue", lambda _mode: False)
+    monkeypatch.setattr(fanxiu_bt, "run_fanxiu_local_task", fake_run)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "--entry-id",
+            "entry",
+            "task",
+            "daily_assistant",
+            "--run-mode",
+            "auto",
+            "--wait",
+            "--wait-timeout-seconds",
+            "900",
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    assert calls[0].payload["timeout_seconds"] == 900.0
+
+
 def test_fanxiu_bt_doctor_json_reports_runtime_scheduler_and_logs(monkeypatch, capsys):
     import scripts.fanxiu_bt as fanxiu_bt
 
@@ -1309,6 +1531,53 @@ def test_fanxiu_bt_doctor_json_reports_runtime_scheduler_and_logs(monkeypatch, c
     assert output["relevant_logs"][0]["item_id"] == "legacy-daily-youli"
     assert output["maintenance"]["severity"] == "attention"
     assert output["maintenance"]["due_task_ids"] == ["legacy-daily-youli"]
+
+
+def test_fanxiu_bt_idle_runtime_annotation_error_does_not_block_other_due_tasks():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "runtime": {
+            "service_running": False,
+            "running": False,
+            "status": "idle",
+            "phase": "idle_tick",
+            "current_task": "",
+            "error": "场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：目标场景=#34；当前/点击前场景=#237；动作 shape=确定",
+        },
+        "scheduler": {
+            "next_action": "job_group_disabled",
+            "message": "作业组已关闭，到期作业暂不自动执行",
+            "due_tasks": [
+                {"id": "legacy-daily-jianling", "label": "日常_剑灵"},
+                {"id": "xianfu-visit-partner", "label": "仙府_寻访仙侣"},
+            ],
+            "enabled_tasks": [
+                {
+                    "id": "legacy-daily-jianling",
+                    "label": "日常_剑灵",
+                    "enabled": True,
+                    "next_time": "2026-06-21 05:00:00",
+                    "last_result": "",
+                },
+                {
+                    "id": "xianfu-visit-partner",
+                    "label": "仙府_寻访仙侣",
+                    "enabled": True,
+                    "next_time": "2026-06-21 06:30:00",
+                    "last_result": "",
+                },
+            ],
+        },
+    }
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["severity"] == "attention"
+    assert maintenance["automation_safe"] is True
+    assert maintenance["needs_human_annotation"] is False
+    assert maintenance["blocked_due_count"] == 0
+    assert "AI 保底调度应接管" in maintenance["action_required"][0]
 
 
 def test_fanxiu_bt_doctor_summary_reports_blocked_action_and_exit_code(monkeypatch, capsys):
@@ -1486,10 +1755,10 @@ def test_fanxiu_bt_watch_doctor_writes_ndjson_and_returns_blocked(monkeypatch, t
     assert event["blocked_due_count"] == 13
     assert event["blocked_due_ids"] == ["legacy-daily-youli"]
     assert event["needs_human_annotation"] is True
-    assert event["annotation_targets"][0]["acceptable_shapes"] == ["关闭", "空白", "返回", "退出"]
+    assert event["annotation_targets"][0]["acceptable_shapes"] == ["关闭公告"]
     assert event["annotation_targets"][0]["all_shapes"] == ["公告"]
-    assert event["annotation_targets"][0]["missing_shapes"] == ["关闭", "空白", "返回", "退出"]
-    assert event["annotation_targets"][0]["required_shapes"] == ["关闭", "空白", "返回", "退出"]
+    assert event["annotation_targets"][0]["missing_shapes"] == ["关闭公告"]
+    assert event["annotation_targets"][0]["required_shapes"] == ["关闭公告"]
     output = capsys.readouterr().out
     assert "path=" in output
     assert "latest=" in output
@@ -1549,7 +1818,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_safe(monkeypatch, tmp_path):
     reports = [
         {
             "checked_at": "2026-06-15 06:20:00",
-            "owner": {"active": True, "pid": 123, "step": "scheduler_poll", "entry_id": "entry"},
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "scheduler_poll", "current_scene": 34},
             "scheduler": {"next_action": "run_due", "due_tasks": [{"id": "legacy-daily-youli"}]},
             "maintenance": {
@@ -1568,7 +1837,7 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_safe(monkeypatch, tmp_path):
         },
         {
             "checked_at": "2026-06-15 06:20:01",
-            "owner": {"active": True, "pid": 123, "step": "scheduler_poll", "entry_id": "entry"},
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "scheduler_poll", "current_scene": 34},
             "scheduler": {"next_action": "idle", "due_tasks": []},
             "maintenance": {
@@ -1619,6 +1888,412 @@ def test_fanxiu_bt_watch_doctor_auto_runs_due_when_safe(monkeypatch, tmp_path):
     assert event["auto_run_due_enabled"] is True
     assert event["auto_run_due"]["triggered"] is True
     assert event["auto_run_due"]["phase"] == "scheduler_run_due"
+    assert run_due_calls[0]["ignore_job_group_disabled"] is True
+
+
+def test_fanxiu_bt_watch_doctor_auto_runs_due_when_job_group_disabled(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    output_path = tmp_path / "watch-job-group-disabled.ndjson"
+    heartbeat_path = tmp_path / "doctor_watch_heartbeat.json"
+    reports = [
+        {
+            "checked_at": "2026-06-20 05:01:00",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_job_group_disabled", "current_scene": 34},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [{"id": "legacy-daily-signup", "label": "日常_报名"}],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "1 个任务已到期，但被作业组关闭挡住",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 1,
+                "due_task_ids": ["legacy-daily-signup"],
+                "stale_due_count": 1,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+        {
+            "checked_at": "2026-06-20 05:01:02",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
+            "scheduler": {"next_action": "idle", "job_group_enabled": False, "due_tasks": []},
+            "maintenance": {
+                "severity": "ok",
+                "summary": "巡检未发现阻断",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 0,
+                "due_task_ids": [],
+                "stale_due_count": 0,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前没有到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+    ]
+    run_due_calls = []
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: reports.pop(0))
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "run_due_scheduler_tasks",
+        lambda **kwargs: run_due_calls.append(kwargs) or {
+            "status": "idle",
+            "phase": "scheduler_due_queued",
+            "message": "AI保底已接管作业组关闭下的到期任务：日常_报名",
+            "job_group_override": True,
+        },
+    )
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "watch-doctor",
+            "--max-iterations",
+            "1",
+            "--auto-run-due",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert len(run_due_calls) == 1
+    assert run_due_calls[0]["entry_id"] == "entry"
+    assert run_due_calls[0]["ignore_job_group_disabled"] is True
+    assert event["severity"] == "ok"
+    assert event["auto_run_due"]["triggered"] is True
+    assert event["auto_run_due"]["message"].startswith("AI保底已接管作业组关闭下的到期任务")
+
+
+def test_fanxiu_bt_watch_doctor_auto_runs_all_due_tasks_when_job_group_disabled(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    output_path = tmp_path / "watch-job-group-disabled-batch.ndjson"
+    heartbeat_path = tmp_path / "doctor_watch_heartbeat.json"
+    reports = [
+        {
+            "checked_at": "2026-06-20 05:00:01",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_job_group_disabled", "current_scene": 34},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [
+                    {"id": "legacy-daily-signup", "label": "日常_报名"},
+                    {"id": "legacy-daily-offer", "label": "日常_供奉"},
+                ],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "2 个任务已到期，但被作业组关闭挡住",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 2,
+                "due_task_ids": ["legacy-daily-signup", "legacy-daily-offer"],
+                "stale_due_count": 2,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+        {
+            "checked_at": "2026-06-20 05:00:03",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [{"id": "legacy-daily-offer", "label": "日常_供奉"}],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "1 个任务已到期，但被作业组关闭挡住",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 1,
+                "due_task_ids": ["legacy-daily-offer"],
+                "stale_due_count": 1,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前有到期任务但工程作业组已关闭；AI 保底调度应接管并串行执行到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+        {
+            "checked_at": "2026-06-20 05:00:05",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
+            "scheduler": {"next_action": "idle", "job_group_enabled": False, "due_tasks": []},
+            "maintenance": {
+                "severity": "ok",
+                "summary": "巡检未发现阻断",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 0,
+                "due_task_ids": [],
+                "stale_due_count": 0,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前没有到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+    ]
+    run_due_calls = []
+
+    def fake_run_due_scheduler_tasks(**kwargs):
+        run_due_calls.append(kwargs)
+        label = "日常_报名" if len(run_due_calls) == 1 else "日常_供奉"
+        return {
+            "status": "idle",
+            "phase": "scheduler_due_queued",
+            "message": f"AI保底已接管作业组关闭下的到期任务：{label}",
+            "job_group_override": True,
+        }
+
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: reports.pop(0))
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(fanxiu_bt, "run_due_scheduler_tasks", fake_run_due_scheduler_tasks)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "watch-doctor",
+            "--max-iterations",
+            "1",
+            "--auto-run-due",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert len(run_due_calls) == 2
+    assert all(call["entry_id"] == "entry" for call in run_due_calls)
+    assert all(call["ignore_job_group_disabled"] is True for call in run_due_calls)
+    assert event["severity"] == "ok"
+    assert event["due_task_count"] == 0
+    assert event["auto_run_due"]["triggered"] is True
+    assert event["auto_run_due"]["run_count"] == 2
+    assert len(event["auto_run_due"]["runs"]) == 2
+    assert event["auto_run_due"]["runs"][0]["message"].endswith("日常_报名")
+    assert event["auto_run_due"]["runs"][1]["message"].endswith("日常_供奉")
+
+
+def test_fanxiu_bt_watch_doctor_waits_for_queued_auto_run_due_job(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    output_path = tmp_path / "watch-auto-run-wait.ndjson"
+    heartbeat_path = tmp_path / "doctor_watch_heartbeat.json"
+    reports = [
+        {
+            "checked_at": "2026-06-20 05:00:00",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "", "current_scene": 34},
+            "manual_jobs": [],
+            "isolation": {"active": False},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [{"id": "legacy-daily-assistant", "label": "日常_助手"}],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "1 个任务已到期",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 1,
+                "due_task_ids": ["legacy-daily-assistant"],
+                "stale_due_count": 1,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": [],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+        {
+            "checked_at": "2026-06-20 05:00:05",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
+            "manual_jobs": [],
+            "isolation": {"active": False},
+            "scheduler": {"next_action": "idle", "job_group_enabled": False, "due_tasks": []},
+            "maintenance": {
+                "severity": "ok",
+                "summary": "巡检未发现阻断",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 0,
+                "due_task_ids": [],
+                "stale_due_count": 0,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": ["当前没有到期任务"],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+    ]
+    wait_calls = []
+
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: reports.pop(0))
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "run_due_scheduler_tasks",
+        lambda **kwargs: {
+            "status": "idle",
+            "phase": "scheduler_due_queued",
+            "message": "AI保底已接管作业组关闭下的到期任务：日常_助手",
+            "queued_job": {"id": "manual-1", "task_type": "daily_assistant"},
+        },
+    )
+
+    def fake_wait(status, *, entry_id, timeout_seconds):
+        wait_calls.append((status, entry_id, timeout_seconds))
+        return {"waited": True, "job_id": "manual-1", "done": True, "result": "error"}
+
+    monkeypatch.setattr(fanxiu_bt, "_watch_wait_for_queued_job", fake_wait)
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "watch-doctor",
+            "--max-iterations",
+            "1",
+            "--auto-run-due",
+            "--auto-run-due-wait-timeout-seconds",
+            "12",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert fanxiu_bt.main() == 0
+    event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert len(wait_calls) == 1
+    assert wait_calls[0][1] == "entry"
+    assert wait_calls[0][2] == 12
+    assert event["auto_run_due"]["queued_job"]["id"] == "manual-1"
+    assert event["auto_run_due"]["wait_result"] == {
+        "waited": True,
+        "job_id": "manual-1",
+        "done": True,
+        "result": "error",
+    }
+
+
+def test_fanxiu_bt_watch_wait_keeps_service_alive_when_job_not_done(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    start_calls = []
+    stop_calls = []
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "start_fanxiu_local_service",
+        lambda request: start_calls.append(request) or {"service_running": True},
+    )
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "wait_fanxiu_local_manual_job",
+        lambda job_id, timeout_seconds, poll_seconds: {"done": False, "result": "timeout", "runtime_status": {}},
+    )
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "stop_fanxiu_local_service",
+        lambda **kwargs: stop_calls.append(kwargs),
+    )
+
+    result = fanxiu_bt._watch_wait_for_queued_job(
+        {"queued_job": {"id": "manual-1"}},
+        entry_id="entry",
+        timeout_seconds=1,
+    )
+
+    assert result["done"] is False
+    assert result["result"] == "timeout"
+    assert len(start_calls) == 1
+    assert stop_calls == []
+
+
+def test_fanxiu_bt_watch_doctor_does_not_auto_run_when_manual_job_pending(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    output_path = tmp_path / "watch-manual-job-pending.ndjson"
+    heartbeat_path = tmp_path / "doctor_watch_heartbeat.json"
+    report = {
+        "checked_at": "2026-06-20 12:00:20",
+        "owner": {"active": False, "entry_id": "entry"},
+        "runtime": {"status": "idle", "phase": "scheduler_due_queued", "current_scene": 34},
+        "manual_jobs": [{"id": "manual-1", "task_type": "daily_assistant", "status": "pending"}],
+        "isolation": {"active": False},
+        "scheduler": {
+            "next_action": "job_group_disabled",
+            "job_group_enabled": False,
+            "due_tasks": [{"id": "legacy-daily-assistant", "label": "日常_助手"}],
+        },
+        "maintenance": {
+            "severity": "attention",
+            "summary": "1 个任务已到期，但被作业组关闭挡住",
+            "automation_safe": True,
+            "needs_human_annotation": False,
+            "due_task_count": 1,
+            "due_task_ids": ["legacy-daily-assistant"],
+            "stale_due_count": 1,
+            "stale_due_success_count": 0,
+            "blocked_due_count": 0,
+            "action_required": ["等待手动作业队列串行执行"],
+            "retry_condition": "无需特殊条件",
+        },
+    }
+    run_due_calls = []
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: report)
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(fanxiu_bt, "run_due_scheduler_tasks", lambda **kwargs: run_due_calls.append(kwargs))
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "watch-doctor",
+            "--max-iterations",
+            "1",
+            "--auto-run-due",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert fanxiu_bt.main() == 1
+    event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert run_due_calls == []
+    assert event["due_task_count"] == 1
+    assert event["auto_run_due"] == {}
 
 
 def test_fanxiu_bt_watch_doctor_wakes_early_when_blocked_annotation_changes(monkeypatch, tmp_path):
@@ -1629,7 +2304,7 @@ def test_fanxiu_bt_watch_doctor_wakes_early_when_blocked_annotation_changes(monk
     reports = [
         {
             "checked_at": "2026-06-15 06:24:00",
-            "owner": {"active": True, "pid": 123, "step": "scheduler_poll", "entry_id": "entry"},
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
             "runtime": {"status": "idle", "phase": "scheduler_blocked", "current_scene": None},
             "scheduler": {"next_action": "blocked", "due_tasks": [{"id": "legacy-daily-youli"}]},
             "maintenance": {
@@ -1735,15 +2410,16 @@ def test_fanxiu_bt_watch_doctor_wakes_early_when_blocked_annotation_changes(monk
         ],
     )
 
-    assert fanxiu_bt.main() == 2
+    assert fanxiu_bt.main() == 1
     events = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
 
     assert len(events) == 2
     assert events[0]["severity"] == "blocked"
-    assert events[1]["severity"] == "ok"
+    assert events[1]["severity"] == "attention"
+    assert events[1]["scheduler_next_action"] == "run_due"
+    assert events[1]["auto_run_due"] == {}
     assert sleep_calls == [2.0]
-    assert len(run_due_calls) == 1
-    assert run_due_calls[0]["entry_id"] == "entry"
+    assert run_due_calls == []
 
 
 def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_blocked(monkeypatch, tmp_path):
@@ -1799,6 +2475,110 @@ def test_fanxiu_bt_watch_doctor_does_not_auto_run_due_when_blocked(monkeypatch, 
     assert event["severity"] == "blocked"
     assert event["auto_run_due_enabled"] is True
     assert event["auto_run_due"] == {}
+
+
+def test_fanxiu_bt_watch_doctor_promotes_auto_run_blocker(monkeypatch, tmp_path):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    output_path = tmp_path / "watch-auto-run-blocker.ndjson"
+    heartbeat_path = tmp_path / "doctor_watch_heartbeat.json"
+    reports = [
+        {
+            "checked_at": "2026-06-20 14:00:00",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "", "current_scene": None},
+            "manual_jobs": [],
+            "isolation": {"active": False},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [{"id": "legacy-daily-yihuo", "label": "日常_异火"}],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "1 个任务已到期",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 1,
+                "due_task_ids": ["legacy-daily-yihuo"],
+                "stale_due_count": 1,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 0,
+                "action_required": [],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+        {
+            "checked_at": "2026-06-20 14:00:02",
+            "owner": {"active": False, "pid": None, "step": "", "entry_id": "entry"},
+            "runtime": {"status": "idle", "phase": "scheduler_blocked", "current_scene": None},
+            "manual_jobs": [],
+            "isolation": {"active": False},
+            "scheduler": {
+                "next_action": "job_group_disabled",
+                "job_group_enabled": False,
+                "due_tasks": [{"id": "legacy-daily-yihuo", "label": "日常_异火"}],
+            },
+            "maintenance": {
+                "severity": "attention",
+                "summary": "1 个任务已到期，但被作业组关闭挡住",
+                "automation_safe": True,
+                "needs_human_annotation": False,
+                "due_task_count": 1,
+                "due_task_ids": ["legacy-daily-yihuo"],
+                "stale_due_count": 1,
+                "stale_due_success_count": 0,
+                "blocked_due_count": 1,
+                "blocked_due_ids": ["legacy-daily-yihuo"],
+                "action_required": [],
+                "retry_condition": "无需特殊条件",
+            },
+        },
+    ]
+    blocker = {
+        "scene_id": 224,
+        "title": "购买破界符",
+        "blocking": True,
+        "all_shapes": ["购买并使用", "限购次数标识"],
+        "message": "检测到 #224「购买破界符」弹窗；资产树缺少 #225「空白」，自动作业无法按 #224 连续购买到 #225 后回退",
+    }
+
+    monkeypatch.setattr(fanxiu_bt, "_build_doctor_report", lambda **kwargs: reports.pop(0))
+    monkeypatch.setattr(fanxiu_bt, "_doctor_watch_heartbeat_path", lambda: heartbeat_path)
+    monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda entry_id: {"id": entry_id})
+    monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda entry_id: tmp_path / f"{entry_id}.json")
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "run_due_scheduler_tasks",
+        lambda **kwargs: {
+            "status": "idle",
+            "phase": "scheduler_blocked",
+            "message": blocker["message"],
+            "blocking_overlays": [blocker],
+        },
+    )
+    monkeypatch.setattr(
+        fanxiu_bt.sys,
+        "argv",
+        [
+            "fanxiu_bt.py",
+            "watch-doctor",
+            "--max-iterations",
+            "1",
+            "--auto-run-due",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert fanxiu_bt.main() == 1
+    event = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert event["severity"] == "blocked"
+    assert event["needs_human_annotation"] is True
+    assert event["blocked_by"] == [blocker]
+    assert event["annotation_targets"][0]["title"] == "购买破界符"
+    assert event["auto_run_due"]["blocking_overlays"] == [blocker]
 
 
 def test_fanxiu_bt_watch_doctor_forces_screenshot_when_blocked(monkeypatch, tmp_path):
@@ -1963,6 +2743,9 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_recent_heartbeat_lacks_auto_r
     class FakeProcess:
         pid = 654
 
+        def poll(self):
+            return None
+
     popen_calls = []
 
     def fake_popen(command, **kwargs):
@@ -1991,7 +2774,9 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_recent_heartbeat_lacks_auto_r
     assert result["started"] is True
     assert result["pid"] == 654
     assert result["previous_heartbeat"].get("auto_run_due_enabled") in {None, False}
-    assert "--auto-run-due" in popen_calls[0]["command"]
+    watch_commands = [call["command"] for call in popen_calls if "watch-doctor" in call["command"]]
+    assert watch_commands
+    assert "--auto-run-due" in watch_commands[-1]
 
 
 def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, tmp_path, capsys):
@@ -2003,6 +2788,9 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, 
 
     class FakeProcess:
         pid = 456
+
+        def poll(self):
+            return None
 
     popen_calls = []
 
@@ -2044,8 +2832,9 @@ def test_fanxiu_bt_ensure_watch_doctor_starts_when_heartbeat_stale(monkeypatch, 
     assert result["started"] is True
     assert result["pid"] == 456
     assert result["reason"] == "heartbeat_missing_or_stale"
-    assert len(popen_calls) == 1
-    command = popen_calls[0]["command"]
+    watch_commands = [call["command"] for call in popen_calls if "watch-doctor" in call["command"]]
+    assert len(watch_commands) == 1
+    command = watch_commands[0]
     assert "watch-doctor" in command
     assert "--interval-seconds" in command
     assert "30.0" in command
@@ -2106,6 +2895,167 @@ def test_fanxiu_bt_doctor_maintenance_reports_blocking_annotation_action():
     assert summary["annotation_targets"][0]["missing_shapes"] == ["关闭公告"]
     assert summary["annotation_targets"][0]["required_shapes"] == ["关闭公告"]
     assert "安全处理动作标注" in summary["retry_condition"]
+
+
+def test_fanxiu_bt_doctor_maintenance_blocks_runtime_annotation_error():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    error = (
+        "日常_灵塔：当前不在可识别的世界或日常页，且无法通过场景图恢复到 #69："
+        "场景跳转缺少可靠标注，已中断，请人工补标/修标后重试："
+        "目标场景=#69；当前/点击前场景=#237；动作 shape=确定"
+    )
+    report = {
+        "runtime": {"status": "idle", "phase": "idle_guard", "error": error},
+        "scheduler": {
+            "next_action": "job_group_disabled",
+            "due_tasks": [{"id": "legacy-daily-lingta"}],
+            "enabled_tasks": [
+                {
+                    "id": "legacy-daily-lingta",
+                    "label": "日常_灵塔",
+                    "last_result": "error",
+                }
+            ],
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "blocked"
+    assert summary["automation_safe"] is False
+    assert summary["needs_human_annotation"] is True
+    assert summary["blocked_by"][0]["title"] == "场景跳转标注缺失"
+    assert "请人工补标/修标" in summary["action_required"][0]
+    assert summary["blocked_due_ids"] == ["legacy-daily-lingta"]
+
+
+def test_fanxiu_bt_doctor_runtime_annotation_error_only_blocks_matching_due_task():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    error = (
+        "日常_助手：无法通过场景图跳转到 #69；需要补当前场景到日常页的路由/返回/离开标注："
+        "场景跳转缺少可靠标注，已中断，请人工补标/修标后重试："
+        "目标场景=#69；当前/点击前场景=unknown；动作 shape=unknown"
+    )
+    report = {
+        "runtime": {"status": "idle", "phase": "error", "current_scene": 69, "error": error},
+        "scheduler": {
+            "next_action": "job_group_disabled",
+            "due_tasks": [
+                {"id": "daily-boss", "label": "日常_首领"},
+                {"id": "legacy-daily-assistant", "label": "日常_助手"},
+            ],
+            "enabled_tasks": [
+                {
+                    "id": "daily-boss",
+                    "label": "日常_首领",
+                    "last_result": "queued",
+                },
+                {
+                    "id": "legacy-daily-assistant",
+                    "label": "日常_助手",
+                    "last_result": "error",
+                },
+            ],
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "attention"
+    assert summary["automation_safe"] is True
+    assert summary["needs_human_annotation"] is False
+    assert summary["blocked_by"] == []
+    assert summary["blocked_due_ids"] == ["legacy-daily-assistant"]
+
+
+def test_fanxiu_bt_doctor_maintenance_reports_daily_audit_visual_incomplete():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "runtime": {"status": "idle", "phase": "scheduler_poll", "message": "idle"},
+        "scheduler": {
+            "next_action": "idle",
+            "message": "当前没有到期任务",
+            "due_tasks": [],
+            "enabled_tasks": [
+                {
+                    "id": "legacy-daily-jianling",
+                    "task_type": "daily_jianling",
+                    "label": "日常_剑灵",
+                    "enabled": True,
+                    "next_time": "2026-06-21 05:00:00",
+                    "last_run_at": "2026-06-20 05:10:00",
+                    "last_result": "success",
+                }
+            ],
+            "daily_audit": {
+                "mapped_incomplete": [
+                    {
+                        "task_id": "legacy-daily-jianling",
+                        "task_type": "daily_jianling",
+                        "title": "淬剑试炼",
+                        "progress": {"current": 0, "total": 1},
+                    }
+                ],
+                "unmapped_incomplete": [
+                    {
+                        "title": "寻道历练1次",
+                        "progress": {"current": 0, "total": 4},
+                    }
+                ],
+            },
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["severity"] == "attention"
+    assert summary["visual_incomplete_count"] == 1
+    assert summary["visual_incomplete_ids"] == ["legacy-daily-jianling"]
+    assert summary["visual_unmapped_incomplete_count"] == 1
+    assert "日常页复核" in summary["action_required"][0]
+
+
+def test_fanxiu_bt_doctor_maintenance_ignores_stale_daily_audit_visual_incomplete():
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    report = {
+        "runtime": {"status": "idle", "phase": "scheduler_poll", "message": "idle"},
+        "scheduler": {
+            "next_action": "idle",
+            "message": "当前没有到期任务",
+            "due_tasks": [],
+            "enabled_tasks": [
+                {
+                    "id": "legacy-daily-lingta",
+                    "task_type": "daily_lingta",
+                    "label": "日常_灵塔",
+                    "enabled": True,
+                    "next_time": "2026-06-21 05:00:00",
+                    "last_run_at": "2026-06-20 20:08:44",
+                    "last_result": "success",
+                }
+            ],
+            "daily_audit": {
+                "updated_at": datetime(2026, 6, 20, 15, 7, 28).timestamp(),
+                "mapped_incomplete": [
+                    {
+                        "task_id": "legacy-daily-lingta",
+                        "task_type": "daily_lingta",
+                        "title": "挑战或扫荡混沌灵塔",
+                        "progress": {"current": 0, "total": 1},
+                    }
+                ],
+            },
+        },
+    }
+
+    summary = fanxiu_bt._build_maintenance_summary(report)
+
+    assert summary["visual_incomplete_count"] == 0
+    assert summary["visual_incomplete_ids"] == []
 
 
 def test_fanxiu_bt_doctor_maintenance_distinguishes_blocked_due_from_old_success():
@@ -2224,6 +3174,59 @@ def test_fanxiu_bt_doctor_reports_game_announcement_blocker(tmp_path, monkeypatc
     }]
 
 
+def test_fanxiu_bt_doctor_reports_dungeon_purchase_blocker(tmp_path, monkeypatch):
+    import scripts.fanxiu_bt as fanxiu_bt
+
+    class FakeRunner:
+        def _ocr_lines(self, frame):
+            return [{"text": "破界符 剩余限购次数：1 价格：200 购买并使用"}]
+
+        def _ocr_text(self, lines):
+            return "".join(item["text"] for item in lines)
+
+        def _load_asset_tree(self, path):
+            return []
+
+        def _index_images(self, tree):
+            return {
+                224: {
+                    "title": "购买破界符",
+                    "shapes": [
+                        {"title": "购买并使用"},
+                        {"title": "限购次数标识"},
+                    ],
+                }
+            }
+
+        def _find_asset_image_by_title(self, ctx, title):
+            return None
+
+        def _find_shape(self, image, title):
+            if not isinstance(image, dict):
+                return None
+            for shape in image.get("shapes") or []:
+                if shape.get("title") == title:
+                    return shape
+            return None
+
+    screenshot = tmp_path / "frame.png"
+    screenshot.write_bytes(b"fake-png")
+
+    monkeypatch.setattr(fanxiu_bt, "create_fanxiu_runtime_runner", lambda: FakeRunner())
+
+    blockers = fanxiu_bt._doctor_blocking_overlays({"path": str(screenshot)})
+
+    assert blockers == [{
+        "scene_id": 224,
+        "title": "购买破界符",
+        "keywords": ["破界符", "购买并使用", "剩余限购次数", "价格"],
+        "all_shapes": ["购买并使用", "限购次数标识"],
+        "action_shapes": ["购买并使用"],
+        "blocking": True,
+        "message": "检测到 #224「购买破界符」弹窗；资产树缺少 #225「空白」，自动作业无法按 #224 连续购买到 #225 后回退",
+    }]
+
+
 def test_fanxiu_bt_doctor_does_not_infer_game_announcement_action_from_jump_target(tmp_path, monkeypatch):
     import scripts.fanxiu_bt as fanxiu_bt
 
@@ -2271,7 +3274,7 @@ def test_fanxiu_bt_doctor_does_not_infer_game_announcement_action_from_jump_targ
 
 
 def test_runtime_management_does_not_import_fanxiu_api_directly():
-    source = Path("backend/core/runtime_management.py").read_text(encoding="utf-8")
+    source = Path("backend/core/runtime/management.py").read_text(encoding="utf-8")
 
     assert "from backend.api.fanxiu import" not in source
     assert "backend.api.fanxiu" not in source
@@ -2327,14 +3330,14 @@ def test_core_runtime_control_does_not_import_fanxiu_api_directly():
     assert "from backend.api import fanxiu" not in source
     assert "backend.api.fanxiu" not in source
     assert "fanxiu.data_annotation import runtime_control as _runtime_control" in api_source
-    assert "_runtime_control.ensure_runtime_service(" in api_source
+    assert "_runtime_control.prepare_runtime_for_scheduler_task(" in api_source
     assert "_runtime_control.start_runtime_task(" in api_source
-    assert "_runtime_control.stop_current_task(" in api_source
+    assert "_runtime_framework.interrupt_current_cell(" in api_source
     assert "_runtime_control.read_scheduler_tasks(" in api_source
     assert "_runtime_control.update_scheduler_tasks(" in api_source
     assert "_runtime_control.submit_manual_job(" in api_source
-    assert "_runtime_control.set_runtime_guard(" in api_source
-    assert "_runtime_control.submit_tick_task(" in api_source
+    assert "_runtime_framework.set_guard_item_enabled(" in api_source
+    assert "_runtime_framework.set_guard_group_enabled(" in api_source
     assert "_core_data_annotation_runtime_status(" in api_source
     assert "_core_data_annotation_runtime_logs(" in api_source
     assert "_core_clear_data_annotation_runtime_logs(" in api_source

@@ -369,14 +369,24 @@ class DailyResourceTaskMixin:
             {
                 "purchase": runtime.shape_visible(229, "购买并使用"),
                 "empty": runtime.shape_visible(233, "空白"),
+                "empty_text": runtime.ocr_matches(
+                    self._daily_youli_text_is_purchase_empty,
+                    label=f"{task_label}：购买次数不足 OCR",
+                    preview_chars=120,
+                ),
                 "home": runtime.view_visible(228, threshold=95.0),
+                "home_text": runtime.ocr_matches(
+                    self._daily_youli_text_is_home,
+                    label=f"{task_label}：购买后修仙传游历 OCR",
+                    preview_chars=120,
+                ),
             },
             settle_seconds=float(payload.get("purchase_click_settle_seconds") or 2.0),
             label=f"{task_label}：等待购买体力结果",
         )
-        if result == "empty":
+        if result in {"empty", "empty_text"}:
             return (yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label))
-        if result == "home":
+        if result in {"home", "home_text"}:
             self._log("warning", f"{task_label}：点击购买后仍在 #228，停止购买流程")
             return "success"
         return (yield from self._click_daily_youli_purchase_uses(ctx, stop_event, payload, image229, image233, task_label=task_label))
@@ -407,14 +417,14 @@ class DailyResourceTaskMixin:
         normalized = _sanitize_ocr_text(text)
         if "修仙传" not in normalized:
             return False
-        if any(token in normalized for token in ("道祖逸闻", "幻境", "供奉", "机缘", "寻找机缘")):
+        if any(token in normalized for token in ("道祖鸿蒙", "幻境", "供奉", "机缘", "寻找机缘")):
             return False
         return (
-            "游历" in normalized
-            or "人界" in normalized
+            "人界" in normalized
             or "灵界" in normalized
             or "魔界" in normalized
             or "仙界" in normalized
+            or "北寒蛮荒" in normalized
             or "探索完成" in normalized
         )
 
@@ -422,26 +432,16 @@ class DailyResourceTaskMixin:
         normalized = _sanitize_ocr_text(text)
         if "探索进度" in normalized and ("快速游历" in normalized or "消耗体力" in normalized):
             return True
-        if (
-            "修仙传" in normalized
-            and "游历" in normalized
-            and "道祖逸闻" in normalized
-            and "北寒蛮荒" in normalized
-            and "探索完成" in normalized
-            and "挑战" not in normalized
-        ):
+        if "背景介绍" in normalized and "挑战奖励" in normalized and "当前模式" in normalized and "今日可挑战次数" in normalized:
             return True
         return False
 
     def _daily_youli_text_is_region_completed(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         compact = re.sub(r"\s+", "", normalized)
-        return (
-            "修仙传" in compact
-            and "探索完成" in compact
-            and ("游历" in compact or "道祖逸闻" in compact or "北寒蛮荒" in compact)
-            and "挑战" not in compact
-        )
+        if "已完成所有挑战" in compact and re.search(r"今日可挑战次数[:：]?0[/／]3", compact):
+            return True
+        return False
 
     def _daily_youli_text_is_quick_result(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
@@ -526,6 +526,33 @@ class DailyResourceTaskMixin:
             timeout=timeout,
             label=label,
         )
+        if int(target_scene_id) == 228 and _result != "text":
+            frame = runtime.cur_frame(update=True)
+            text = runtime.ocr_text(frame)
+            if not text_predicate(text):
+                images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+                image228 = images.get(228)
+                if not isinstance(image228, dict):
+                    raise RuntimeError(f"{label}：已匹配 #228，但 OCR 未确认游历页，且缺少 #228「菜单」标注")
+                yield from self._select_daily_youli_tab_from_menu_if_visible(
+                    ctx,
+                    stop_event,
+                    {},
+                    image228,
+                    task_label="日常_游历",
+                )
+                yield from runtime.wait_any(
+                    {
+                        "text": runtime.ocr_matches(
+                            text_predicate,
+                            label=f"{label} OCR确认",
+                            preview_chars=120,
+                        )
+                    },
+                    timeout=timeout,
+                    label=f"{label}：确认游历菜单已选中",
+                )
+                scene_id, score, _frame = runtime.current_scene([target_scene_id], update=True)
         self._log("success", f"{label}：已到达 #{target_scene_id} {score:.0f}%")
         return scene_id, score
 
@@ -543,6 +570,23 @@ class DailyResourceTaskMixin:
         yield from runtime.wait_click(233, "空白", label=f"{task_label}：关闭购买次数不足提示")
         yield from runtime.wait_action_settle(1.0)
         self._log("success", f"{task_label}：已关闭购买次数不足提示")
+        return "success"
+
+    def _close_daily_youli_purchase_empty_and_wait_home(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        image233: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label)
+        yield from self._wait_daily_youli_home(
+            ctx,
+            stop_event,
+            timeout=18.0,
+            label=f"{task_label}：等待购买次数不足关闭后回到 #228",
+        )
         return "success"
 
     def _close_daily_youli_purchase_dialog(
@@ -571,19 +615,46 @@ class DailyResourceTaskMixin:
         *,
         task_label: str,
     ):
+        if not isinstance(image233, dict):
+            raise RuntimeError(f"{task_label}：缺少 #233「游历购买次数不足」标注，无法确认购买终止态")
+        if self._find_shape(image233, "空白") is None:
+            raise RuntimeError(f"{task_label}：缺少 #233「空白」标注，无法关闭购买终止弹窗")
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_count = int(payload.get("purchase_uses") or payload.get("buy_uses") or 99)
         clicked = 0
         while clicked < max_count:
-            yield from runtime.wait_view_or_ocr(
-                229,
-                self._daily_youli_text_is_purchase,
-                timeout=float(payload.get("purchase_timeout") or 10.0),
-                label=f"{task_label}：等待购买体力 #229",
-            )
+            frame = runtime.cur_frame(update=True)
+            text = runtime.ocr_text(frame)
+            if self._daily_youli_text_is_purchase_empty(text):
+                yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
+                self._log("success", f"{task_label}：购买终止于 #233，已回到 #228")
+                return "success"
+            if not self._daily_youli_text_is_purchase(text):
+                result = yield from runtime.wait_any(
+                    {
+                        "purchase": runtime.ocr_matches(
+                            self._daily_youli_text_is_purchase,
+                            label=f"{task_label}：等待购买体力 #229 OCR",
+                            preview_chars=120,
+                        ),
+                        "empty": runtime.ocr_matches(
+                            self._daily_youli_text_is_purchase_empty,
+                            label=f"{task_label}：等待购买次数不足 OCR",
+                            preview_chars=120,
+                        ),
+                    },
+                    timeout=float(payload.get("purchase_timeout") or 10.0),
+                    interval=float(payload.get("purchase_wait_interval_seconds") or 0.25),
+                    label=f"{task_label}：等待购买弹窗结果",
+                )
+                frame = runtime.cur_frame(update=True)
+                text = runtime.ocr_text(frame)
+                if result == "empty" or self._daily_youli_text_is_purchase_empty(text):
+                    yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
+                    self._log("success", f"{task_label}：购买终止于 #233，已回到 #228")
+                    return "success"
             remaining: int | None = None
-            text = ""
             read_start = time.monotonic()
             read_timeout = float(payload.get("purchase_remaining_timeout") or 5.0)
             while True:
@@ -596,14 +667,8 @@ class DailyResourceTaskMixin:
                     break
                 yield from runtime.wait_action_settle(0.5)
             if remaining is None:
-                self._log("warning", f"{task_label}：未识别到剩余限购次数，停止购买，OCR={text[:120]}")
-                yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
-                break
-            if remaining <= 0:
-                self._log("success", f"{task_label}：剩余限购次数为 0，停止购买")
-                yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
-                break
-            target_count = min(max_count, clicked + remaining)
+                self._log("warning", f"{task_label}：未识别到剩余限购次数，继续购买直到 #233 终止态，OCR={text[:120]}")
+            target_count = min(max_count, clicked + max(1, remaining or 1))
             yield from runtime.wait_click(229, "购买并使用")
             clicked += 1
             yield from runtime.wait_action_settle(float(payload.get("purchase_click_settle_seconds") or 1.2))
@@ -611,15 +676,18 @@ class DailyResourceTaskMixin:
             text = runtime.ocr_text(frame)
             self._log("detail", f"{task_label}：购买并使用 {clicked}/{target_count} 后 OCR={text[:120]}")
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
-                yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label)
-                break
+                yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
+                self._log("success", f"{task_label}：购买并使用完成 {clicked}，已到 #233 并回到 #228")
+                return "success"
             if scene_id != 229 and not self._daily_youli_text_is_purchase(text):
                 self._log("success", f"{task_label}：购买弹窗已关闭，停止购买")
-                break
+                return "success"
         if clicked > 0:
             scene_id, _score, frame = runtime.current_scene([229, 228, 233], update=True)
             text = runtime.ocr_text(frame)
-            if scene_id == 229 or self._daily_youli_text_is_purchase(text):
+            if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
+                yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
+            elif scene_id == 229 or self._daily_youli_text_is_purchase(text):
                 yield from self._close_daily_youli_purchase_dialog(ctx, stop_event, image229, task_label=task_label)
         self._log("success", f"{task_label}：购买并使用完成 {clicked}")
         return "success"
@@ -637,23 +705,31 @@ class DailyResourceTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from self._wait_daily_youli_home(
-            ctx,
-            stop_event,
-            label="日常_游历：等待修仙传游历 #228",
-        )
-        candidates = runtime.ocr_row_clicks_in_shape(228, "检索区域", include=())
+        scene_id, _score, frame = runtime.current_scene([236, 228], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
+            self._log("success", f"{task_label}：当前已在游历区域详情，直接执行快速游历")
+            quick_status = yield from self._click_daily_youli_quick_travel(ctx, stop_event, payload, image236, image237, task_label=task_label)
+            if quick_status == "success":
+                return (yield from self._return_daily_youli_to_world(ctx, stop_event, image228, image236, task_label=task_label))
+            if quick_status == "completed":
+                self._log("warning", f"{task_label}：当前区域已完成，不能按今日游历完成处理，返回 #228 继续查找其他区域")
+                yield from self._return_daily_youli_region_to_home(ctx, stop_event, payload, image236, task_label=task_label)
+            else:
+                return quick_status
+        yield from self._wait_daily_youli_home(ctx, stop_event, label="日常_游历：等待修仙传游历 #228")
+        candidates = runtime.ocr_centers_in_shape(228, "检索区域", include=())
         if not candidates:
             raise RuntimeError("日常_游历：#228「检索区域」内未识别到可点击 OCR 文本")
         x, y, text = candidates[-1]
         with self._lock:
             self._set_status_locked(
                 "running",
-                f"{task_label}：点击检索区域最后文本「{text}」",
-                phase="daily_youli_click_last_region",
+                f"{task_label}：点击检索区域最后一个文本「{text}」",
+                phase="daily_youli_click_region",
                 current_scene=228,
             )
-            self._log_locked("action", f"{task_label}：点击 #228 检索区域最后 OCR「{text}」")
+            self._log_locked("action", f"{task_label}：点击 #228 检索区域最后一个 OCR「{text}」")
         runtime.click_frame_point(228, x, y)
         yield from runtime.wait_action_settle(float(payload.get("region_click_settle_seconds") or 2.0))
         yield from self._wait_daily_youli_region_detail(
@@ -661,8 +737,15 @@ class DailyResourceTaskMixin:
             stop_event,
             label=f"{task_label}：等待游历区域详情 #236",
         )
-        yield from self._click_daily_youli_quick_travel(ctx, stop_event, payload, image236, image237, task_label=task_label)
-        return (yield from self._return_daily_youli_to_world(ctx, stop_event, image228, image236, task_label=task_label))
+        quick_status = yield from self._click_daily_youli_quick_travel(ctx, stop_event, payload, image236, image237, task_label=task_label)
+        if quick_status != "completed":
+            return (yield from self._return_daily_youli_to_world(ctx, stop_event, image228, image236, task_label=task_label))
+        with self._lock:
+            self._log_locked("action", f"{task_label}：最后区域「{text}」已探索完成，不能改点其他区域")
+        yield from self._return_daily_youli_region_to_home(ctx, stop_event, payload, image236, task_label=task_label)
+        raise RuntimeError(
+            f"{task_label}：检索区域最后一个候选「{text}」只显示探索完成，未出现游历结果，不能按完成处理"
+        )
 
     def _click_daily_youli_quick_travel(
         self,
@@ -696,14 +779,79 @@ class DailyResourceTaskMixin:
                     label=f"{task_label}：等待游历区域已完成 OCR",
                     preview_chars=120,
                 ),
+                "resource_empty": runtime.ocr_matches(
+                    self._daily_youli_text_is_purchase_empty,
+                    label=f"{task_label}：等待快速游历资源不足 OCR",
+                    preview_chars=120,
+                ),
             },
             timeout=float(payload.get("quick_result_timeout") or self._daily_default_wait_condition_timeout),
             label=f"{task_label}：等待游历结果或已完成",
         )
         if result == "completed":
-            self._log("success", f"{task_label}：游历区域已显示探索完成，按幂等完成处理")
-            return "success"
+            return "completed"
+        if result == "resource_empty":
+            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+            image233 = images.get(233)
+            yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label)
+            raise RuntimeError(f"{task_label}：快速游历未触发结果，游历符/体力不足，已关闭提示并等待后续重试")
         return (yield from self._confirm_daily_youli_quick_result(ctx, stop_event, payload, image237, task_label=task_label))
+
+    def _return_daily_youli_region_to_home(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        image236: dict[str, Any],
+        *,
+        task_label: str,
+    ):
+        del image236
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        image34 = images.get(34)
+        image71 = images.get(71)
+        image228 = images.get(228)
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from runtime.wait_click(236, "返回")
+        result = yield from runtime.wait_any(
+            {
+                "home": runtime.ocr_matches(
+                    self._daily_youli_text_is_home,
+                    label=f"{task_label}：等待返回修仙传游历 #228 OCR",
+                    preview_chars=120,
+                ),
+                "world_scene": runtime.view_visible(34),
+                "world_text": runtime.ocr_matches(
+                    self._daily_lingta_text_is_world_like,
+                    label=f"{task_label}：等待返回世界 OCR",
+                    preview_chars=120,
+                ),
+            },
+            timeout=18.0,
+            label=f"{task_label}：等待返回修仙传或世界",
+        )
+        if result == "home":
+            return "success"
+        if not isinstance(image34, dict) or not isinstance(image228, dict):
+            raise RuntimeError(f"{task_label}：区域返回落到世界，但缺少 #34/#228 标注，无法重新进入游历")
+        entered = yield from self._try_enter_daily_youli_from_world_mainline(
+            ctx,
+            runtime,
+            stop_event,
+            payload,
+            image34,
+            image228,
+            task_label=task_label,
+        )
+        if not entered:
+            raise RuntimeError(f"{task_label}：区域返回落到世界，主线快路径未能重新进入游历")
+        scene_id, _score, _frame = runtime.current_scene([71, 228], update=True)
+        if scene_id == 71:
+            yield from self._select_daily_youli_from_xiuxianzhuan_menu(ctx, stop_event, payload, image71, task_label=task_label)
+        yield from self._wait_daily_youli_home(ctx, stop_event, timeout=18.0, label=f"{task_label}：等待重新进入修仙传游历 #228")
+        return "success"
 
     def _confirm_daily_youli_quick_result(
         self,
@@ -746,32 +894,12 @@ class DailyResourceTaskMixin:
             return "success"
         if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
             yield from runtime.wait_click(236, "返回")
-            result = yield from runtime.wait_any(
-                {
-                    "home": runtime.ocr_matches(
-                        self._daily_youli_text_is_home,
-                        label=f"{task_label}：等待修仙传游历 #228 OCR",
-                        preview_chars=120,
-                    ),
-                    "world_scene": runtime.view_visible(34),
-                    "world_text": runtime.ocr_matches(
-                        self._daily_lingta_text_is_world_like,
-                        label=f"{task_label}：等待世界 OCR",
-                        preview_chars=120,
-                    ),
-                },
+            yield from self._wait_daily_youli_home(
+                ctx,
+                stop_event,
                 timeout=18.0,
-                label=f"{task_label}：等待返回修仙传或世界",
+                label=f"{task_label}：等待 #236 返回到修仙传游历 #228",
             )
-            if result in {"world_scene", "world_text"}:
-                self._record_daily_entry_done(
-                    {},
-                    task_id="legacy-daily-youli",
-                    task_type="daily_youli",
-                    label=task_label,
-                    message="游历已完成并回到世界",
-                )
-                return "success"
         else:
             yield from self._wait_daily_youli_home(ctx, stop_event, label=f"{task_label}：等待修仙传游历 #228")
 
@@ -809,14 +937,9 @@ class DailyResourceTaskMixin:
             yield from runtime.wait_click(69, "退出")
             yield from runtime.wait_action_settle(1.5)
         yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
-        self._record_daily_entry_done(
-            {},
-            task_id="legacy-daily-youli",
-            task_type="daily_youli",
-            label=task_label,
-            message="游历已完成并从奖励找回页回到世界",
-        )
-        return "success"
+        message = f"{task_label}：奖励找回页退出只证明已完成清理，不是游历完成证据，稍后重试"
+        self._log("skip", message)
+        return {"result": "skipped", "message": message}
 
     def _execute_daily_xianshi_task(
         self,
@@ -837,12 +960,23 @@ class DailyResourceTaskMixin:
 
         task_label = "日常_仙市"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([34], update=True)
+        scene_id, _score, frame = runtime.current_scene([34, 69], update=True)
         text = runtime.ocr_text(frame)
         if not self._daily_xianshi_text_is_coin_list(text) and not self._daily_xianshi_text_is_box_detail(text):
             if scene_id != 34 and not self._daily_lingta_text_is_world_like(text):
-                raise RuntimeError(f"{task_label}：当前不在可识别的世界或仙市页，无法开始")
-            if scene_id != 34:
+                scene_id = yield from self._enter_daily_from_world_like(
+                    ctx,
+                    runtime,
+                    stop_event,
+                    frame,
+                    scene_id,
+                    text,
+                    label=task_label,
+                )
+                if scene_id == 69:
+                    yield from runtime.goto_view(34)
+                    yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+            elif scene_id != 34:
                 yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
             yield from self._open_daily_xianshi_coin_list(ctx, stop_event, payload, image34, image247, image248, task_label=task_label)
 

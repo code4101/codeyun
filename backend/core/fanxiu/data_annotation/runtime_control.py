@@ -344,8 +344,10 @@ def enqueue_manual_job(
     payload: dict[str, Any] | None = None,
     *,
     label: str = "",
+    group: str = "manual_job",
     interruptible: bool | None = None,
     manual_job_path: Path | None = None,
+    created_at: float | None = None,
 ) -> dict[str, Any]:
     task_type = _canonical_runtime_task_type(task_type or "detect_scene") or "detect_scene"
     ensure_fanxiu_runtime_jobs_registered()
@@ -354,15 +356,27 @@ def enqueue_manual_job(
         task_type,
         payload,
         label=label,
+        group=group,
         interruptible=interruptible,
         definition=definition,
         task_label=fanxiu_runtime_task_label,
-        now=time.time(),
+        now=created_at if created_at is not None else time.time(),
     )
     jobs = read_manual_jobs(manual_job_path)
     jobs.append(job)
     write_manual_jobs(jobs, manual_job_path)
     return job
+
+
+def pending_scheduler_manual_job(task_id: str, *, manual_job_path: Path | None = None) -> dict[str, Any] | None:
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        return None
+    for job in read_manual_jobs(manual_job_path):
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        if str(payload.get("__scheduler_task_id") or "").strip() == task_id:
+            return job
+    return None
 
 
 def pop_next_manual_job(path: Path | None = None) -> dict[str, Any] | None:
@@ -381,9 +395,10 @@ def repair_orphaned_scheduler_runs(
     now_ts: float | None = None,
     running: bool | None = None,
 ) -> bool:
-    pending_scheduler_ids = job_payload_values(read_manual_jobs(manual_job_path), "__scheduler_task_id")
+    jobs = read_manual_jobs(manual_job_path)
     current_ts = time.time() if now_ts is None else now_ts
-    if fanxiu_runtime_runner_running() if running is None else running:
+    runner_running = fanxiu_runtime_runner_running() if running is None else running
+    if runner_running:
         return False
     persisted_status = read_runtime_status()
     if bool(persisted_status.get("running")):
@@ -393,6 +408,26 @@ def repair_orphaned_scheduler_runs(
             updated_at = 0.0
         if updated_at > 0 and current_ts - updated_at < 120:
             return False
+    kept_jobs: list[dict[str, Any]] = []
+    removed_stale_scheduler_job = False
+    for job in jobs:
+        payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        scheduler_task_id = str(payload.get("__scheduler_task_id") or "")
+        if str(job.get("status") or "") != "running" or not scheduler_task_id:
+            kept_jobs.append(job)
+            continue
+        try:
+            job_updated_at = float(job.get("updated_at") or job.get("created_at") or 0)
+        except (TypeError, ValueError):
+            job_updated_at = 0.0
+        if job_updated_at > 0 and current_ts - job_updated_at < 60:
+            kept_jobs.append(job)
+            continue
+        removed_stale_scheduler_job = True
+    if removed_stale_scheduler_job:
+        write_manual_jobs(kept_jobs, manual_job_path)
+        return True
+    pending_scheduler_ids = job_payload_values(kept_jobs, "__scheduler_task_id")
     changed = repair_orphaned_scheduled_runs(
         tasks,
         pending_task_ids=pending_scheduler_ids,
@@ -451,6 +486,96 @@ def write_scheduler_tasks(tasks: list[dict[str, Any]], *, scheduler_state_path: 
     )
 
 
+def reset_scheduler_task_runs(
+    *,
+    task_ids: list[str] | None = None,
+    include_disabled: bool = False,
+    include_manual: bool = False,
+    clear_next_time: bool = True,
+    scheduler_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    tasks = read_scheduler_tasks(
+        scheduler_state_path=scheduler_state_path,
+        world_facts_path=world_facts_path,
+    )
+    selected_ids = {str(item).strip() for item in (task_ids or []) if str(item).strip()}
+    target_tasks: list[dict[str, Any]] = []
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        if selected_ids and task_id not in selected_ids:
+            continue
+        if not include_disabled and not bool(task.get("enabled")):
+            continue
+        if not include_manual and str(task.get("schedule_kind") or "") == "manual":
+            continue
+        target_tasks.append(task)
+
+    reset_ids = [str(task.get("id") or "") for task in target_tasks if str(task.get("id") or "")]
+    facts = read_world_facts(world_facts_path)
+    discoveries = facts.get("discoveries") if isinstance(facts.get("discoveries"), dict) else {}
+    task_facts = discoveries.get("task") if isinstance(discoveries.get("task"), dict) else {}
+    backup_dir = codeyun_temp_root("fanxiu-scheduler-reset")
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"scheduler_reset_{stamp}.json"
+    write_data_annotation_json(
+        backup_path,
+        {
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "scheduler_state_path": str(scheduler_state_path or fanxiu_data_annotation_scheduler_state_path()),
+            "world_facts_path": str(world_facts_path or fanxiu_data_annotation_world_facts_path()),
+            "reset_ids": reset_ids,
+            "tasks": [dict(task) for task in target_tasks],
+            "task_facts": {
+                task_id: dict(task_facts.get(task_id) or {})
+                for task_id in reset_ids
+                if isinstance(task_facts.get(task_id), dict)
+            },
+        },
+    )
+
+    reset_fields = (
+        "last_run_at",
+        "last_result",
+        "last_message",
+        "retry_after",
+        "checkpoint",
+        "queued_at",
+        "started_at",
+        "finished_at",
+        "world_fact_synced_at",
+        "world_fact_updated_at",
+    )
+    reset_set = set(reset_ids)
+    for task in tasks:
+        if str(task.get("id") or "") not in reset_set:
+            continue
+        for key in reset_fields:
+            task[key] = None
+        if clear_next_time:
+            task["next_time"] = None
+    write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+
+    if reset_ids and isinstance(task_facts, dict):
+        changed = False
+        for task_id in reset_ids:
+            if task_id in task_facts:
+                task_facts.pop(task_id, None)
+                changed = True
+        if changed:
+            write_world_facts(facts, world_facts_path)
+
+    return {
+        "reset_count": len(reset_ids),
+        "reset_ids": reset_ids,
+        "backup_path": str(backup_path),
+        "include_disabled": include_disabled,
+        "include_manual": include_manual,
+        "clear_next_time": clear_next_time,
+    }
+
+
 def read_scheduler_settings(*, scheduler_settings_path: Path | None = None) -> dict[str, Any]:
     path = scheduler_settings_path or fanxiu_data_annotation_scheduler_settings_path()
     return normalize_data_annotation_scheduler_settings(read_data_annotation_json(path, None))
@@ -492,10 +617,7 @@ def _behavior_tree_disabled_status(
     status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
     status.update({
         "behavior_tree_enabled": False,
-        "service_running": False,
         "running": False,
-        "guard_running": False,
-        "guard_group_running": False,
         "entry_id": entry_id or str(status.get("entry_id") or ""),
         "task_type": "",
         "current_task": "",
@@ -524,19 +646,16 @@ def set_behavior_tree_enabled(
     write_scheduler_settings(settings, scheduler_settings_path=scheduler_settings_path)
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
     if not enabled:
-        try:
-            stop_fanxiu_behavior_tree_current_task(resolved_entry_id)
-        except Exception:
-            pass
-        try:
-            stop_behavior_tree_service()
-        except Exception:
-            pass
-        status = _behavior_tree_disabled_status(
+        status = ensure_runtime_service(
+            entry=entry,
             entry_id=resolved_entry_id,
+            asset_tree_path=asset_tree_path,
+            scheduler_settings_path=scheduler_settings_path,
             runtime_state_path=runtime_state_path,
             world_facts_path=world_facts_path,
         )
+        status["behavior_tree_enabled"] = False
+        status["message"] = "行为树内核服务保持运行，自动调度已关闭"
         append_runtime_log_once(status, "stop", "行为树已关闭")
         persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         return status
@@ -629,15 +748,7 @@ def runtime_status(
             status["status"] = "idle"
             status["message"] = "后端已重载，行为树服务待恢复"
             append_runtime_log_once(status, "stop", "后端已重载，行为树服务待恢复")
-    enabled = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
-    status["behavior_tree_enabled"] = enabled
-    if not enabled:
-        status["service_running"] = False
-        status["running"] = False
-        status["guard_running"] = False
-        status["guard_group_running"] = False
-        status["phase"] = "behavior_tree_disabled"
-        status["message"] = "行为树已关闭"
+    status["behavior_tree_enabled"] = behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path)
     normalize_runtime_guard_items(status)
     normalize_data_annotation_runtime_display(status)
     status.pop("priority", None)
@@ -657,12 +768,6 @@ def ensure_runtime_service(
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
     resolved_entry_id = str(entry_id or getattr(entry, "entry_id", None) or "")
-    if not behavior_tree_enabled(scheduler_settings_path=scheduler_settings_path):
-        return _behavior_tree_disabled_status(
-            entry_id=resolved_entry_id,
-            runtime_state_path=runtime_state_path,
-            world_facts_path=world_facts_path,
-        )
     status = ensure_fanxiu_behavior_tree_service(
         entry,
         resolved_entry_id,
@@ -896,21 +1001,24 @@ def queue_manual_job_status(
     task_type: str,
     payload: dict[str, Any] | None = None,
     label: str = "",
+    group: str = "manual_job",
     interruptible: bool | None = None,
+    created_at: float | None = None,
     asset_tree_path: Path | None = None,
     manual_job_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> dict[str, Any]:
-    if not behavior_tree_enabled():
-        return _behavior_tree_disabled_status(
-            entry_id=entry_id,
-            runtime_state_path=runtime_state_path,
-            world_facts_path=world_facts_path,
-            message="行为树已关闭，无法触发作业",
-        )
     ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
-    job = enqueue_manual_job(task_type, payload, label=label, interruptible=interruptible, manual_job_path=manual_job_path)
+    job = enqueue_manual_job(
+        task_type,
+        payload,
+        label=label,
+        group=group,
+        interruptible=interruptible,
+        manual_job_path=manual_job_path,
+        created_at=created_at,
+    )
     fanxiu_runtime_runner_wake()
     status = fanxiu_runtime_runner_status()
     status.update({
@@ -921,6 +1029,7 @@ def queue_manual_job_status(
             "id": job.get("id"),
             "task_type": job.get("task_type"),
             "label": job.get("label"),
+            "group": job.get("group"),
             "status": job.get("status"),
             "created_at": job.get("created_at"),
         },
@@ -946,7 +1055,9 @@ def submit_manual_job(
     task_type: str,
     payload: dict[str, Any] | None = None,
     label: str = "",
+    group: str = "manual_job",
     interruptible: bool | None = None,
+    created_at: float | None = None,
     asset_tree_path: Path | None = None,
     manual_job_path: Path | None = None,
     runtime_state_path: Path | None = None,
@@ -962,7 +1073,9 @@ def submit_manual_job(
         task_type=task_type,
         payload=payload,
         label=label,
+        group=group,
         interruptible=interruptible if interruptible is not None else definition.interruptible,
+        created_at=created_at,
         asset_tree_path=asset_tree_path,
         manual_job_path=manual_job_path,
         runtime_state_path=runtime_state_path,
@@ -1047,13 +1160,13 @@ def build_scheduler_plan(
     plan["job_group_enabled"] = bool(settings.get("job_group_enabled", True))
     if not plan["job_group_enabled"]:
         plan["next_action"] = "job_group_disabled"
-        plan["message"] = "作业组已关闭，到期作业暂不自动执行"
-    blockers = scheduler_blocking_overlays(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
-    if blockers:
-        plan["blocking_overlays"] = blockers
-        if any(bool(item.get("blocking")) for item in blockers):
-            plan["message"] = str(blockers[0].get("message") or plan.get("message") or "")
-            if plan.get("next_action") == "run_due" and bool(plan.get("job_group_enabled", True)):
+        plan["message"] = "工程作业组已关闭，工程自主入口不提交到期作业；等待 AI 保底接管"
+    if plan.get("next_action") == "run_due" and bool(plan.get("job_group_enabled", True)):
+        blockers = scheduler_blocking_overlays(entry=entry, entry_id=entry_id, asset_tree_path=asset_tree_path)
+        if blockers:
+            plan["blocking_overlays"] = blockers
+            if any(bool(item.get("blocking")) for item in blockers):
+                plan["message"] = str(blockers[0].get("message") or plan.get("message") or "")
                 plan["next_action"] = "blocked"
     return plan
 
@@ -1128,6 +1241,11 @@ def task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
 
 def next_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
     return next_data_annotation_scheduler_time(task, now if now is not None else datetime.now())
+
+
+def scheduler_task_queue_timestamp(task: dict[str, Any]) -> float | None:
+    value = data_annotation_scheduler_time_order_key(task)[1]
+    return value if value != float("inf") else None
 
 
 def prepare_runtime_for_scheduler_task(
@@ -1243,6 +1361,7 @@ def run_due_scheduler_tasks(
     *,
     entry: Any,
     entry_id: str,
+    ignore_job_group_disabled: bool = False,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
     runtime_state_path: Path | None = None,
@@ -1251,18 +1370,22 @@ def run_due_scheduler_tasks(
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
     settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
-    if not bool(settings.get("behavior_tree_enabled", True)):
-        return _behavior_tree_disabled_status(
-            entry_id=entry_id,
+    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
+    behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
+    job_group_enabled = bool(settings.get("job_group_enabled", True))
+    if not behavior_enabled or (not job_group_enabled and not bool(ignore_job_group_disabled)):
+        status = runtime_status(
+            scheduler_settings_path=scheduler_settings_path,
             runtime_state_path=runtime_state_path,
             world_facts_path=world_facts_path,
-            message="行为树已关闭，到期作业暂不自动执行",
         )
-    ensure_fanxiu_behavior_tree_service(entry, entry_id, asset_tree_path=asset_tree_path or data_annotation_asset_tree_path(entry_id))
-    if not bool(settings.get("job_group_enabled", True)):
-        status = runtime_status(runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        disabled_reason = (
+            "自动调度已关闭，到期作业暂不自动执行"
+            if not behavior_enabled
+            else "作业组已关闭，工程自主入口不提交到期作业；等待 AI 保底接管"
+        )
         status.update({
-            "message": "作业组已关闭，到期作业暂不自动执行",
+            "message": disabled_reason,
             "phase": "scheduler_job_group_disabled",
             "updated_at": time.time(),
         })
@@ -1311,6 +1434,64 @@ def run_due_scheduler_tasks(
             time_text=datetime.now().strftime("%H:%M:%S"),
             update_timestamp=False,
         )
+        persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        return status
+    if not job_group_enabled and bool(ignore_job_group_disabled):
+        due_task = due_tasks[0]
+        queued_job = pending_scheduler_manual_job(str(due_task.get("id") or ""), manual_job_path=manual_job_path)
+        if queued_job is None:
+            due_task["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            due_task["last_result"] = "queued"
+            write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+            status = submit_manual_job(
+                entry=entry,
+                entry_id=entry_id,
+                task_type=str(due_task.get("task_type") or ""),
+                payload=task_payload_with_meta(due_task),
+                label=f"AI保底接管到期任务：{due_task.get('label') or due_task.get('id') or due_task.get('task_type')}",
+                group="job",
+                interruptible=bool(due_task.get("interruptible", True)),
+                created_at=scheduler_task_queue_timestamp(due_task),
+                asset_tree_path=asset_tree_path,
+                manual_job_path=manual_job_path,
+                runtime_state_path=runtime_state_path,
+                world_facts_path=world_facts_path,
+            )
+        else:
+            status = fanxiu_runtime_runner_status()
+            status.update({
+                "entry_id": entry_id,
+                "phase": "scheduler_due_queued",
+                "message": f"到期任务已在作业队列等待：{due_task.get('label') or due_task.get('id')}",
+                "queued_job": {
+                    "id": queued_job.get("id"),
+                    "task_type": queued_job.get("task_type"),
+                    "label": queued_job.get("label"),
+                    "group": queued_job.get("group"),
+                    "status": queued_job.get("status"),
+                    "created_at": queued_job.get("created_at"),
+                },
+                "updated_at": time.time(),
+            })
+            persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+            if str(due_task.get("last_result") or "") != "queued":
+                due_task["last_result"] = "queued"
+                write_scheduler_tasks(tasks, scheduler_state_path=scheduler_state_path)
+        if bool(status.get("running")):
+            status.update({
+                "message": f"到期任务已排队，等待当前作业完成：{due_task.get('label') or due_task.get('id')}",
+                "updated_at": time.time(),
+            })
+            persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
+        status.update({
+            "phase": "scheduler_due_queued",
+            "message": status.get("message")
+            if bool(status.get("running"))
+            else f"AI保底已接管作业组关闭下的到期任务：{due_task.get('label') or due_task.get('id')}",
+            "job_group_enabled": False,
+            "job_group_override": True,
+            "updated_at": time.time(),
+        })
         persist_runtime_status(status, runtime_state_path=runtime_state_path, world_facts_path=world_facts_path)
         return status
     blocked_status = prepare_runtime_for_scheduler_task(

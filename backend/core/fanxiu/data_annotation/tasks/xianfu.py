@@ -28,6 +28,41 @@ from backend.core.fanxiu.data_annotation.runtime_runner import (
 
 
 class XianfuTaskMixin:
+    _XIANFU_INTERNAL_SCENES = {171, 172, 173, 174, 175, 176, 177, 185}
+
+    def _fallback_xianfu_scene_from_status(
+        self,
+        scene_id: int | None,
+        current_text: str,
+        *,
+        task_label: str,
+    ) -> int | None:
+        if scene_id is not None:
+            return scene_id
+        if not self._xianfu_home_text_is_scene(current_text):
+            return None
+        with self._lock:
+            raw_scene = self._status.get("current_scene")
+        try:
+            status_scene = int(raw_scene)
+        except (TypeError, ValueError):
+            return None
+        if status_scene in self._XIANFU_INTERNAL_SCENES:
+            self._log("warning", f"{task_label}：即时识别 unknown，沿用 Runtime 当前仙府场景 #{status_scene}")
+            return status_scene
+        return None
+
+    def _advance_xianfu_cutscene_to_home(self, runtime: FanxiuRuntime, *, task_label: str):
+        view185 = runtime.get_view(185)
+        skip_shape = view185.get_shape("跳过") if isinstance(view185, View) else None
+        if skip_shape is None:
+            raise RuntimeError(f"{task_label}：缺少 #185「跳过」标注，无法跳过仙府过场")
+        with self._lock:
+            self._set_status_locked("running", f"{task_label}：跳过仙府过场", phase="xianfu_cutscene_skip", current_scene=185)
+            self._log_locked("action", f"{task_label}：点击 #185「跳过」")
+        skip_shape.click(runtime)
+        yield from runtime.wait_view(171, timeout=30.0, label=f"{task_label}：等待仙府主页 #171")
+
     def _execute_xianfu_visit_partner_task(
         self,
         ctx: dict[str, Any],
@@ -41,13 +76,19 @@ class XianfuTaskMixin:
         raw_max_continue = payload.get("max_continue", 20)
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, _frame = runtime.current_scene([177, 176, 175, 174, 173, 172, 171, 34], update=True)
+        scene_id, score, _frame = runtime.current_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True)
         current_text = runtime.ocr_text(_frame)
         if scene_id is None:
             if self._xianfu_visit_text_is_continue_popup(current_text):
                 scene_id = 175
             elif self._xianfu_visit_text_is_juepin(current_text):
                 scene_id = 174
+            elif self._xianfu_home_text_is_scene(current_text):
+                scene_id = 171
+        elif scene_id == 34 and self._xianfu_home_text_is_scene(current_text):
+            self._log("warning", "仙府_寻访仙侣：当前画面 OCR 命中仙府主页，覆盖 #34 误识别为 #171")
+            scene_id = 171
+        scene_id = self._fallback_xianfu_scene_from_status(scene_id, current_text, task_label="仙府_寻访仙侣")
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
@@ -66,12 +107,23 @@ class XianfuTaskMixin:
             yield from self._return_xianfu_learn_skill_to_world(runtime)
             scene_id = 34
 
+        if scene_id == 185:
+            yield from self._advance_xianfu_cutscene_to_home(runtime, task_label="仙府_寻访仙侣")
+            scene_id = 171
+
+        if scene_id == 69:
+            raise RuntimeError("仙府_寻访仙侣：当前停在日常页 #69，禁止把日常页退出路径作为仙府寻访入口；请先由日常作业收尾回世界 #34 后再重试")
+
         if scene_id == 175:
             yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=max_continue)
             scene_id = 174
 
         if scene_id != 174:
             if scene_id not in {171, 172, 173}:
+                if scene_id == 34:
+                    tree = ctx.get("asset_tree")
+                    if isinstance(tree, list) and self._find_scene_route(tree, 34, 171) is None:
+                        raise RuntimeError("仙府_寻访仙侣：缺少 #34「仙府」入口标注或 sceneJumpTarget=171，无法从世界进入仙府主页 #171")
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：进入仙府主页 #171", phase="xianfu_visit_go_home")
                     self._log_locked("action", "仙府_寻访仙侣：按场景图跳转到 #171")
@@ -210,10 +262,21 @@ class XianfuTaskMixin:
         close_shape = view175.get_shape("关闭")
         if close_shape is None:
             raise RuntimeError("缺少 #175「关闭」标注，无法关闭寻访结果弹窗")
-        with self._lock:
-            self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
-            self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
-        close_shape.click(runtime)
+        for close_attempt in range(3):
+            with self._lock:
+                self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
+                self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
+            close_shape.click(runtime)
+            yield from runtime.wait_action_settle(1.0)
+            scene_id, _score, frame = runtime.current_scene([174, 175], update=True)
+            text = runtime.ocr_text(frame)
+            if scene_id == 174 or self._xianfu_visit_text_is_juepin(text):
+                return "success"
+            if scene_id == 175 or self._xianfu_visit_text_is_continue_popup(text):
+                if close_attempt < 2:
+                    self._log("warning", "仙府_寻访仙侣：关闭后仍停在继续寻访弹窗，重试关闭")
+                    continue
+            break
         yield from self._wait_xianfu_visit_juepin(runtime, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
         return "success"
 
@@ -335,8 +398,15 @@ class XianfuTaskMixin:
             self._log("skip", "仙府_领悟绝技：缺少 #176「绝技」页面标注，暂不自动点击")
             return "skipped"
         runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        preferred = [177, 176, 172, 171, 34]
+        preferred = [177, 176, 172, 185, 171, 34]
         scene_id, score, _frame = runtime.current_scene(preferred, update=True)
+        current_text = runtime.ocr_text(_frame)
+        if scene_id == 34 and self._xianfu_home_text_is_scene(current_text):
+            self._log("warning", "仙府_领悟绝技：当前画面 OCR 命中仙府主页，覆盖 #34 误识别为 #171")
+            scene_id = 171
+        elif scene_id is None and self._xianfu_home_text_is_scene(current_text):
+            scene_id = 171
+        scene_id = self._fallback_xianfu_scene_from_status(scene_id, current_text, task_label="仙府_领悟绝技")
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
@@ -344,6 +414,10 @@ class XianfuTaskMixin:
         if scene_id == 177:
             yield from self._handle_xianfu_learn_skill_result_popup(runtime)
             scene_id = 176
+
+        if scene_id == 185:
+            yield from self._advance_xianfu_cutscene_to_home(runtime, task_label="仙府_领悟绝技")
+            scene_id = 171
 
         if scene_id != 176:
             if scene_id not in {171, 172}:
@@ -396,12 +470,12 @@ class XianfuTaskMixin:
         if cd_seconds > 0:
             next_time = (_runtime_runner._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
-            self._record_scheduler_task_discovered_next_time(
+            self._record_scheduler_task_discovered_retry_after(
                 scheduler_task_id,
                 next_time,
                 task_type="xianfu_learn_skill",
                 label="仙府_领悟绝技",
-                last_result="success",
+                last_result="skipped",
             )
             with self._lock:
                 self._set_status_locked(
@@ -412,7 +486,7 @@ class XianfuTaskMixin:
                 )
                 self._log_locked("skip", self._status["message"])
             yield from self._return_xianfu_learn_skill_to_world(runtime)
-            return "success"
+            return "skipped"
 
         if not isinstance(images.get(177), dict):
             self._log("skip", "仙府_领悟绝技：当前可免费领悟，但缺少 #177「领悟绝技」结果弹窗标注，暂不自动点击")

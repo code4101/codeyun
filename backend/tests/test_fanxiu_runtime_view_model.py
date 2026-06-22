@@ -1098,6 +1098,9 @@ def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatc
     ocr_values = iter(["50半价", "100半价"])
 
     class FakeRuntime:
+        def __init__(self):
+            self.scene_id = 174
+
         def get_view(self, view_id):
             if view_id == 175:
                 return View(image175)
@@ -1114,6 +1117,18 @@ def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatc
         def cur_frame(self, update=False):
             del update
             return "frame"
+
+        def current_scene(self, view_ids=None, **kwargs):
+            del view_ids, kwargs
+            return self.scene_id, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            return "绝品仙侣 免费抽取"
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "settled"
 
         def click_shape(self, _view, shape):
             clicked.append(shape.title)
@@ -1133,4 +1148,71 @@ def test_xianfu_continue_visit_popup_continues_half_price_then_closes(monkeypatc
 
     assert result == "success"
     assert clicked == ["继续", "关闭"]
+
+
+def test_xianfu_continue_visit_popup_retries_close_when_popup_remains(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image175 = {
+        "type": "image",
+        "title": "继续寻访",
+        "filename": "0175.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "close", "kind": "shape", "title": "关闭", "x": 0.2, "y": 0.8, "w": 0.1, "h": 0.03},
+            {"id": "half", "kind": "shape", "title": "半价", "x": 0.5, "y": 0.75, "w": 0.1, "h": 0.03},
+        ],
+    }
+    image174 = {"type": "image", "title": "绝品仙侣", "filename": "0174.png", "width": 900, "height": 1600, "shapes": []}
+    clicked: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self):
+            self.close_count = 0
+
+        def get_view(self, view_id):
+            if view_id == 175:
+                return View(image175)
+            if view_id == 174:
+                return View(image174)
+            return None
+
+        def wait_view(self, *views, timeout=None, label=""):
+            del timeout, label
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return self.get_view(int(views[0]))
+
+        def cur_frame(self, update=False):
+            del update
+            return "frame"
+
+        def current_scene(self, view_ids=None, **kwargs):
+            del view_ids, kwargs
+            scene_id = 175 if self.close_count < 2 else 174
+            return scene_id, 100.0, "frame"
+
+        def ocr_text(self, _frame):
+            return "马师叔100关闭继续寻访" if self.close_count < 2 else "绝品仙侣 免费抽取"
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+            return "settled"
+
+        def click_shape(self, _view, shape):
+            clicked.append(shape.title)
+            if shape.title == "关闭":
+                self.close_count += 1
+
+    monkeypatch.setattr(runner, "_ocr_lines_in_shapes", lambda *_args, **_kwargs: [{"text": "100半价"}])
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._handle_xianfu_continue_visit_popup(FakeRuntime(), max_continue=20),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert clicked == ["关闭", "关闭"]
 

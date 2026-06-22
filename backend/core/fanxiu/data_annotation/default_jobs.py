@@ -33,6 +33,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_dungeon",
     "daily_assistant",
     "daily_shuangxiu",
+    "daily_audit",
     "mail_cleanup",
     "xianfu_visit_partner",
     "xianfu_learn_skill",
@@ -277,6 +278,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_shuangxiu_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_audit", "日常_复核", scheduler_supported=False)
+    def _run_data_annotation_daily_audit_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_audit_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("mail_cleanup", "邮件_清理", scheduler_supported=True)
     def _run_data_annotation_mail_cleanup_manual_job(

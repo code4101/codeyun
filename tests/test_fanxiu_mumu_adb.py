@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pytest
 import time
+import io
+
+from PIL import Image
 
 from backend.core.fanxiu.runtime import mumu_control as rotate
 
@@ -24,6 +27,15 @@ def teardown_function() -> None:
     rotate._MUMU_ADB_SESSION.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mumu_adb_candidates(monkeypatch):
+    for key in rotate.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(rotate.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
+    monkeypatch.setenv(rotate.MUMU_ADB_PORT_PROBE_TIMEOUT_ENV, "0.15")
+    monkeypatch.setattr(rotate, "_mumu_manager_adb_serial_candidates", lambda: [])
+
+
 def test_mumu_adb_port_probe_caches_all_ports_unavailable(monkeypatch):
     attempts: list[tuple[tuple[str, int], float]] = []
 
@@ -33,6 +45,7 @@ def test_mumu_adb_port_probe_caches_all_ports_unavailable(monkeypatch):
 
     monkeypatch.setattr(rotate.socket, "create_connection", fail_connect)
     monkeypatch.setattr(rotate.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(rotate, "_recover_mumu_adb_ports", lambda: False)
 
     with pytest.raises(RuntimeError, match="ADB 端口不可用"):
         rotate._ensure_mumu_adb_port_available()
@@ -43,7 +56,7 @@ def test_mumu_adb_port_probe_caches_all_ports_unavailable(monkeypatch):
     with pytest.raises(RuntimeError, match="ADB 端口不可用"):
         rotate._ensure_mumu_adb_port_available()
 
-    assert attempts == []
+    assert attempts == [(("127.0.0.1", port), 0.15) for port in rotate.MUMU_ADB_PORTS]
 
 
 def test_mumu_adb_port_probe_returns_when_any_port_is_open(monkeypatch):
@@ -123,4 +136,41 @@ def test_screencap_success_clears_cached_adb_failure(monkeypatch):
     assert data == png
     assert meta == {"input": "test"}
     assert rotate._get_mumu_adb_failure_cache() is None
+
+
+def _png_bytes(color: tuple[int, int, int]) -> bytes:
+    image = Image.new("RGB", (90, 160), color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_mumu_adb_black_frame_summary_detects_uniform_black():
+    summary = rotate._mumu_adb_png_black_frame_summary(_png_bytes((0, 0, 0)))
+
+    assert summary["black"] is True
+    assert summary["near_dark_ratio"] == 1.0
+
+
+def test_mumu_adb_black_frame_summary_keeps_normal_frame():
+    summary = rotate._mumu_adb_png_black_frame_summary(_png_bytes((120, 90, 60)))
+
+    assert summary["black"] is False
+
+
+def test_black_frame_failure_triggers_recovery(monkeypatch):
+    recovered: list[dict[str, object]] = []
+
+    monkeypatch.setattr(rotate, "mumu_device_health_check", lambda **_kwargs: {"status": "healthy"})
+
+    def fake_recover_mumu_device(**kwargs):
+        recovered.append(dict(kwargs))
+        return {"status": "healthy", "recovered": True}
+
+    monkeypatch.setattr(rotate, "recover_mumu_device", fake_recover_mumu_device)
+
+    state = rotate.record_mumu_adb_failure("MuMu ADB截图疑似黑屏，需重建模拟器画面链路", recover=True)
+
+    assert state["recovered"] is True
+    assert recovered == [{"vmindex": "1", "reason": "adb_failure:MuMu ADB截图疑似黑屏，需重建模拟器画面链路", "force_restart": True}]
 

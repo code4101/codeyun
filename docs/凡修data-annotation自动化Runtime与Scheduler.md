@@ -1,6 +1,6 @@
 # 数据标注自动化 Runtime 与 Scheduler
 
-本文档记录新版 `数据标注` 正式自动化框架的职责边界，避免继续把任务状态机写回前端步进器。
+本文档记录新版 `数据标注` 正式自动化框架的职责边界，避免继续把任务状态机写回旧前端任务执行入口。
 
 ## 核心原则
 
@@ -70,9 +70,11 @@ Runtime 状态包含：
 - 日志、错误、开始/更新时间
 - 行为树总开关、守护开关状态
 
-行为树是 Runtime 的常驻后端服务，并有独立的用户总开关。总开关开启时，页面进入当前 `entry_id` 后会确保服务 loop 存在；总开关关闭时，后端应停止当前行为树服务，并阻止状态轮询、手动作业、到期作业或守护把服务自动拉起。
+行为树是 Runtime 的常驻内核服务，不应由 CodeYun 页面或 Scheduler 生命周期拥有。页面进入当前 `entry_id`、本地脚本提交任务、后端调度到期时都可以确保服务 loop 存在；关闭工程作业组或暂停自动调度只阻止 CodeYun 常驻 Scheduler 自主提交到期作业，不停止内核服务，也不阻止手动作业或 AI 保底调度继续串行提交任务。
 
-守护不是独立线程。守护开关只是常驻行为树里的前置检查节点配置：开启后每轮空闲 tick 或业务任务 tick 都会先检查守护，关闭后该节点直接跳过。没有任务时，常驻服务可以按守护间隔做低频空转识别和弹窗处理；这仍属于同一个行为树 loop，不是另起一个守护服务。
+守护不是独立线程。守护开关只是常驻行为树里的前置检查节点配置：开启后每轮空闲 tick 或业务任务 tick 都会先检查守护，关闭后该节点直接跳过。没有任务时，常驻服务可以做低频空闲复原；这仍属于同一个行为树 loop，不是另起一个守护服务。
+
+空闲复原是行为树内建自维护：当没有运行任务、没有手动作业、没有到期自动作业时，resident loop 最多每 5 分钟运行一次完整但有上限的 recovery。该 recovery 复用 `device_health` 和 `close_popups` 两个守护项，先处理设备健康，再多轮关闭已标注弹窗，直到守护跳过或达到上限；它不启动业务作业，也不新增独立设备心跳。
 
 守护 tick 的职责边界：
 
@@ -86,6 +88,43 @@ Runtime 状态包含：
 ## Scheduler
 
 Scheduler 不直接点击游戏，只负责维护作业配置、到期判断和只读计划。真正执行由常驻行为树在空闲 tick 中读取 Scheduler 结果后串行提交给 Runtime 业务节点。
+
+### 工程 Scheduler 与 AI 保底调度
+
+凡修每日任务当前有两个触发主体，语义必须分开：
+
+- 工程 Scheduler：CodeYun 后端常驻 loop 根据 Scheduler 计划自主提交到期作业。`job_group_enabled=false` 只关闭这一条工程自主入口，用来避免后端在用户或 AI 正在操作时自行启动作业，造成行为树并发冲突。
+- AI 保底调度：Codex/AI 定时巡检 `doctor` 结果，发现已有启用且到期的作业时，作为人工代理按顺序提交一个作业。AI 保底不应把 `job_group_enabled=false` 理解为“不运行”；它应理解为“工程入口已让出调度权，由 AI 串行接管”。
+
+因此，作业组关闭时：
+
+- `scheduler.plan.next_action=job_group_disabled` 仍可以保留，用来说明工程 Scheduler 不会自主拉起任务。
+- AI 保底若看到 `due_tasks` 非空、`maintenance.automation_safe=true`、没有 `needs_human_annotation`、没有 `blocked_by`、没有 Runtime/owner/manual_jobs 正在运行，应继续按 `due_tasks` 顺序执行第一个作业。
+- AI 保底执行时不能修改 `job_group_enabled`、不能改写启用状态、不能手工推进 `next_time`。它只能通过 Runtime/行为树公开入口提交具体 `task_type`，让任务成功/失败后按正常 Scheduler 状态回写 `last_run_at`、`last_result`、`next_time` 或 `retry_after`。
+- AI 保底和工程 Scheduler 一样必须遵守行为树串行约束：一次只运行一个任务；若已有 owner、Runtime 任务、manual_jobs 或隔离锁正在占用，应等待/跳过本轮并报告串行互斥，不得并行启动。
+- 标注缺失、阻断浮层、Runtime 错误、ADB/MuMu 基础设施异常仍是真阻断。AI 可以修基础设施，但不能靠猜坐标、降阈值、自动补资产树来强行执行。
+
+AI 心跳的首选入口是：
+
+```bash
+uv run python scripts/fanxiu_bt.py watch-doctor --max-iterations 1 --auto-run-due
+```
+
+该入口内部会先 doctor，确认安全后以 `ignore_job_group_disabled=true` 接管到期作业；每提交一个作业后重新 doctor，继续处理下一个安全到期作业，直到 `due_tasks` 清空或出现真实阻塞。心跳提示词不应再把 `job_group_disabled` 写成跳过条件，也不应绕过该入口手工篡改 Scheduler 数据。
+
+### AI 保底成功判据
+
+AI 保底调度不能只用 Scheduler 的 `last_result=success` 或 Runtime 任务结束作为用户汇报的唯一成功证据。凡修日常任务必须区分三层结果：
+
+- 调度成功：AI/工程入口按时提交了某个 Scheduler task。
+- 行为闭环成功：Runtime 找到对应页面、点击了标注动作，并处理了已知弹窗或结果页。
+- 业务完成成功：真实游戏画面中的任务计数、剩余次数、奖励状态或目标场景已经符合该作业的业务完成条件。
+
+其中只有第三层才能对用户说“今天这个作业完成了”。`日常_助手` 的小助手项闭环细则是二级专项规则，见 [凡修data-annotation闭环与浮动模板案例](./凡修data-annotation闭环与浮动模板案例.md)；这里只强调它不能替代 `日常_游历`、`日常_灵塔`、`日常_每日副本`、`日常_双修` 等独立日常作业。
+
+当用户截图显示日常页仍有 `0/x` 计数时，应以真实画面为准，反查对应 Scheduler task 是否启用、是否到期、是否被误报成功；不得用“日志里 success”否定游戏画面。
+
+AI 保底和人工复盘可使用只读作业 `daily_audit` 做日常总账复核：Runtime 先进入 `#69 日常`，只遍历已标注的 `滚动窗口`，读取每个任务块的标题和最后一个 `当前/总次数`，再把可确定的条目映射回 Scheduler task。该复核只作为“未完成反证”：如果复核时间晚于某个 Scheduler task 的 `last_run_at`，且日常页显示该任务次数未满，Scheduler plan 应重新把该任务视为到期候选；如果复核时间早于任务最后运行时间，则不能用旧画面否定新结果。未能映射的未完成条目应作为 `unmapped_incomplete` 报告，等待补 Scheduler 能力或映射规则，不能强行归到相似任务上。
 
 Scheduler 任务字段：
 
@@ -130,6 +169,7 @@ Scheduler 读取任务清单时会同步 `WorldFacts.discoveries.task` 里的时
 - 常驻行为树每轮按 `守护 -> 手动作业 -> 自动作业` 的顺序检查。
 - 手动作业来自用户调试/API 临时提交，例如 `/data-annotation/runtime/task/start` 或单步识别；它们进入 `manual_job` 队列，不代表启动行为树服务。
 - 自动作业只拉取非 `schedule_kind=manual` 的到期任务，避免用户手动任务被空转 loop 反复执行。
+- 工程自动作业受 `job_group_enabled` 约束；AI 保底调度在确认串行安全后可以接管这些已到期任务，但仍要把执行记录落回对应 Scheduler task。
 - Runtime 空闲时，常驻服务可以启动下一个任务。
 - Runtime 正在运行时，Scheduler 不抢占当前任务，也不把同组新任务标记为 `queued`；这些任务只作为候选保留，等当前任务完成并释放控制权后，由下一轮 tick 重新读取最新计划并选择一个任务启动。
 - 每轮自动作业调度只启动一个到期任务。即使同时有多个任务到期，也必须等当前任务 `SUCCESS / FAILURE / STOP` 后，下一轮再判断下一个任务，避免在业务层形成“一心二用”的隐式队列。
@@ -251,7 +291,7 @@ def task(ctx):
 - `GET /api/fanxiu/data-annotation/runtime/world-facts` 只读暴露事实文件，任务调试台可直接查看。
 - `GET /api/fanxiu/data-annotation/scheduler/plan` 只读暴露 Scheduler 规划结果。
 - Scheduler 可从 `WorldFacts.discoveries.task` 回写动态任务 `next_time` 和任务 `retry_after`。
-- 前端“任务调试台”替代正式步进器入口。
+- 前端“任务调试台”替代旧正式任务执行入口。
 - 当前框架验收入口包含 `gift_code_redeem`、通用 `go_scene` 场景移动、`hide_floating_window`。
 - 旧版动态任务和每日任务目录接入 Scheduler。
 - 旧版任务当前使用 `legacy_daily_task` / `legacy_dynamic_task` 占位，不进入 Runtime 执行入口。
@@ -310,3 +350,4 @@ def task(ctx):
 - 2026-06-04 移除旧直启入口和无调用 `_run` 后真实验收：通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，resident service 消费 `manual-1780529858028-ce12bf62`，最终 `success/done/current_scene=34`，耗时约 31.1 秒，`manual_jobs.json=[]`，真实截图 `07_final_screencap.png` 保存在 `.codex_tmp/fanxiu_resident_after_entry_cleanup_20260604/`。
 - 2026-06-04 `task/stop` 语义收窄后真实验收：先调用 `/data-annotation/runtime/task/stop`，返回 `idle/当前没有正在运行的任务/service_running=true`，证明 stop 不关闭 resident service；随后通过 `/data-annotation/runtime/task/tick` 提交 `manual_tick`，最终 `success/done/current_scene=34`，耗时约 8.4 秒，`manual_jobs.json=[]`，真实截图 `06_final_screencap.png` 保存在 `.codex_tmp/fanxiu_stop_current_task_semantics_20260604/`。
 - 2026-06-04 相关回归：`uv run pytest backend\tests\test_fanxiu_data_annotation_runtime_guard.py tests\test_fanxiu_data_annotation_scheduler.py -q` 为 `71 passed`；`npm run typecheck --prefix frontend` 通过。
+

@@ -17,6 +17,7 @@ import {
   restartFanxiuDataAnnotationRuntimeKernel,
   setFanxiuDataAnnotationRuntimeGuard,
   setFanxiuDataAnnotationRuntimeGuardGroup,
+  setFanxiuDataAnnotationRuntimeIsolation,
   stopFanxiuDataAnnotationRuntimeCurrentTask,
   tickFanxiuDataAnnotationRuntimeFramework,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
@@ -45,7 +46,6 @@ const actionLoading = ref('');
 const tickGuardEnabled = ref(true);
 const tickManualJobEnabled = ref(true);
 const tickScheduledJobEnabled = ref(true);
-const schedulerKind = ref<'timer' | 'ai'>('timer');
 const cellRunMode = ref<'tick_once' | 'until_idle' | 'current_job'>('tick_once');
 const contextMenu = ref({
   visible: false,
@@ -61,6 +61,8 @@ let pollTick = 0;
 let polling = false;
 const CELL_LOG_LIMIT = 24;
 const CELL_LOG_ENTRY_LIMIT = 1200;
+const HUMAN_ISOLATION_TOKEN_KEY = 'fanxiuHumanRuntimeIsolationToken';
+const HUMAN_ISOLATION_TTL_SECONDS = 21600;
 
 const devices = computed(() => taskStore.devices);
 const behaviorTreeEnabled = computed(() => runtimeStatus.value?.behavior_tree_enabled ?? true);
@@ -68,6 +70,15 @@ const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enable
 const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
 const machineName = 'codepc_mf';
+const isolation = computed(() => runtimeStatus.value?.isolation || {});
+const isolationReason = computed(() => String(isolation.value.reason || ''));
+const isolationActive = computed(() => Boolean(isolation.value.active));
+const humanIsolationActive = computed(() => (
+  isolationActive.value
+  && (isolationReason.value === 'human_using_runtime' || isolationReason.value.startsWith('human_using_runtime:'))
+));
+const nonHumanIsolationActive = computed(() => isolationActive.value && !humanIsolationActive.value);
+const isolationToken = computed(() => String(isolation.value.token || ''));
 const serviceRunning = computed(() => Boolean(runtimeStatus.value?.service_running));
 const serviceStateText = computed(() => {
   if (!runtimeStatus.value) return '未连接';
@@ -128,27 +139,23 @@ const kernelLabelText = computed(() => {
 });
 const kernelSceneText = computed(() => statusText('kernel_status', 'current_scene', currentSceneText.value));
 const kernelMessageText = computed(() => statusText('kernel_status', 'message', runtimeMessage.value));
+const runtimeSecondaryMessage = computed(() => {
+  const message = runtimeMessage.value.trim();
+  if (!message || message === '-') return '';
+  return message === kernelMessageText.value.trim() ? '' : message;
+});
 const frameworkLabelText = computed(() => statusText('framework_status', 'label', runtimeStateText.value));
 const frameworkPhaseText = computed(() => statusText('framework_status', 'phase', runtimePhaseText.value));
 const frameworkTaskText = computed(() => statusText('framework_status', 'current_task', '无'));
 const frameworkProgressText = computed(() => statusText('framework_status', 'progress', taskProgressText.value || '-'));
 const tickGroupSelected = computed(() => tickGuardEnabled.value || tickManualJobEnabled.value || tickScheduledJobEnabled.value);
-const schedulerKindOptions = [
-  { label: '定时调度器', value: 'timer' },
-  { label: 'AI调度器', value: 'ai' },
-];
-const cellRunModeOptions = [
-  { label: '单步', value: 'tick_once' },
-  { label: '到空闲', value: 'until_idle' },
-  { label: '本作业', value: 'current_job' },
-];
 const cellSubmitActionText = computed(() => {
   const labels: Record<string, string> = {
-    tick_once: 'AI提交单步',
-    until_idle: 'AI提交到空闲',
-    current_job: 'AI提交本作业',
+    tick_once: '手动单步',
+    until_idle: '手动到空闲',
+    current_job: '手动本作业',
   };
-  return labels[cellRunMode.value] || 'AI提交 cell';
+  return labels[cellRunMode.value] || '手动提交';
 });
 const frameworkTickText = computed(() => {
   const tick = runtimeStatus.value?.framework_tick || runtimeStatus.value?.engine_tick || {};
@@ -174,7 +181,27 @@ const frameworkTickText = computed(() => {
   }
   return '';
 });
-const schedulerLabelText = computed(() => statusText('scheduler_status', 'label', schedulerJobGroupEnabled.value ? '运行中' : '已暂停'));
+const schedulerOwnerText = computed(() => {
+  if (humanIsolationActive.value) return '人使用';
+  if (nonHumanIsolationActive.value) return '隔离中';
+  return schedulerJobGroupEnabled.value ? '工程使用' : 'AI使用';
+});
+const schedulerOwnerKey = computed<'engineering' | 'ai' | 'human' | 'isolated'>(() => {
+  if (humanIsolationActive.value) return 'human';
+  if (nonHumanIsolationActive.value) return 'isolated';
+  return schedulerJobGroupEnabled.value ? 'engineering' : 'ai';
+});
+const schedulerOwnerOptions = [
+  { label: '工程使用', value: 'engineering' },
+  { label: 'AI使用', value: 'ai' },
+  { label: '人使用', value: 'human' },
+];
+const schedulerOwnerTitle = computed(() => {
+  if (humanIsolationActive.value) return '人工正在操作模拟器；工程自动作业和 AI 保底都应等待';
+  if (nonHumanIsolationActive.value) return `已有隔离锁：${isolationReason.value || 'unknown'}`;
+  if (schedulerJobGroupEnabled.value) return '工程 Scheduler 自主提交到期作业';
+  return '工程自主入口关闭；到期作业由 AI 保底在确认空闲后接管';
+});
 const orchestrationGuardText = computed(() => {
   const enabled = statusText('orchestration_status', 'guard_enabled_count', '0');
   const total = statusText('orchestration_status', 'guard_count', '0');
@@ -212,7 +239,7 @@ const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
 
 const shouldShowBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (!isBusinessTask(task)) return false;
-  return task.supported !== false || task.enabled;
+  return task.supported !== false || task.enabled || ['daily', 'dynamic'].includes(task.schedule_kind || '');
 };
 
 const businessTasks = computed(() => schedulerTasks.value
@@ -223,11 +250,6 @@ const businessTasks = computed(() => schedulerTasks.value
     || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
   )));
 
-const jobGroupTitle = computed(() => (
-  schedulerJobGroupEnabled.value
-    ? '自动作业组已开启；到期作业会由常驻行为树执行'
-    : '自动作业组已关闭；每个作业配置和下次触发仍保留，但到期时不自动执行'
-));
 const schedulerBlockingMessage = computed(() => {
   const blockers = schedulerPlan.value?.blocking_overlays || [];
   const blocker = blockers.find((item) => Boolean(item.blocking));
@@ -340,19 +362,15 @@ const formatRuntimeTime = (value: string) => {
 };
 
 const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (task.retry_after) return `重试 ${formatRuntimeTime(task.retry_after)}`;
+  if (task.retry_after) return formatRuntimeTime(task.retry_after);
   if (task.next_time) return formatRuntimeTime(task.next_time);
-  const scheduleTimes = (task.schedule_times || []).filter(Boolean);
-  if (scheduleTimes.length) return scheduleTimes.join(' / ');
-  if (task.schedule_kind === 'dynamic') return task.enabled ? '立即' : '待检测';
   return '';
 };
 
 const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (task.retry_after || task.next_time) return task.retry_after || task.next_time || '';
-  const scheduleTimes = (task.schedule_times || []).filter(Boolean);
-  if (scheduleTimes.length) return `每日 ${scheduleTimes.join(' / ')}`;
-  if (task.schedule_kind === 'dynamic') return '动态作业未记录下次时间，当前视为立即到期';
+  if (task.retry_after) return `重试时间 ${task.retry_after}`;
+  if (task.next_time) return task.next_time || '';
+  if (task.schedule_kind === 'dynamic') return '动态作业未记录下次时间';
   return '';
 };
 
@@ -477,8 +495,28 @@ const openDoctorAnnotationTarget = () => {
   });
 };
 
+const getStoredHumanIsolationToken = () => localStorage.getItem(HUMAN_ISOLATION_TOKEN_KEY) || '';
+
+const ensureHumanIsolationToken = () => {
+  const stored = getStoredHumanIsolationToken();
+  if (stored) return stored;
+  const token = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  localStorage.setItem(HUMAN_ISOLATION_TOKEN_KEY, token);
+  return token;
+};
+
 const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
   runtimeStatus.value = status;
+  const nextIsolation = status.isolation || {};
+  const reason = String(nextIsolation.reason || '');
+  const active = Boolean(nextIsolation.active);
+  const token = String(nextIsolation.token || '');
+  const isHuman = reason === 'human_using_runtime' || reason.startsWith('human_using_runtime:');
+  if (active && isHuman && token) {
+    localStorage.setItem(HUMAN_ISOLATION_TOKEN_KEY, token);
+  } else if (!active) {
+    localStorage.removeItem(HUMAN_ISOLATION_TOKEN_KEY);
+  }
 };
 
 const refreshStatus = async () => {
@@ -548,6 +586,38 @@ const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntim
 
 const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
 
+const setHumanIsolation = (enabled: boolean) => {
+  const token = enabled ? ensureHumanIsolationToken() : (isolationToken.value || getStoredHumanIsolationToken());
+  return setFanxiuDataAnnotationRuntimeIsolation(entryId.value, enabled, token, HUMAN_ISOLATION_TTL_SECONDS);
+};
+
+const changeSchedulerOwner = async (value: string) => {
+  if (!['engineering', 'ai', 'human'].includes(value)) return;
+  if (value === schedulerOwnerKey.value) return;
+  const owner = value as 'engineering' | 'ai' | 'human';
+  actionLoading.value = 'scheduler-owner';
+  try {
+    let status: FanxiuDataAnnotationRuntimeStatus | null = null;
+    if (humanIsolationActive.value && owner !== 'human') {
+      status = await setHumanIsolation(false);
+      applyStatus(status);
+    }
+    if (owner === 'human') {
+      status = await setHumanIsolation(true);
+      applyStatus(status);
+    } else {
+      const response = await setFanxiuDataAnnotationSchedulerSettings(owner === 'engineering');
+      schedulerTasks.value = response.tasks || [];
+      schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
+    }
+    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
 const restartKernel = () => runAction('kernel-restart', () => restartFanxiuDataAnnotationRuntimeKernel(entryId.value, 5));
 
 const stopCurrentCell = () => runAction('cell-stop', () => stopFanxiuDataAnnotationRuntimeCurrentTask(entryId.value));
@@ -580,21 +650,6 @@ const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) =>
     const response = await saveFanxiuDataAnnotationSchedulerTasks(tasks);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
-  } finally {
-    actionLoading.value = '';
-  }
-};
-
-const toggleJobGroupEnabled = async () => {
-  const willEnable = !schedulerJobGroupEnabled.value;
-  actionLoading.value = 'job-group';
-  try {
-    const response = await setFanxiuDataAnnotationSchedulerSettings(willEnable);
-    schedulerTasks.value = response.tasks || [];
-    schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
     await Promise.all([refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
@@ -710,53 +765,34 @@ onUnmounted(() => {
           <div class="runtime-layer">
             <div class="runtime-layer-head">
               <strong>调度器</strong>
-              <span>{{ schedulerLabelText }}</span>
             </div>
-            <el-radio-group v-model="schedulerKind" class="scheduler-kind-tabs" size="small">
-              <el-radio-button
-                v-for="option in schedulerKindOptions"
+            <el-select
+              class="scheduler-owner-select"
+              size="small"
+              :model-value="schedulerOwnerKey"
+              :disabled="nonHumanIsolationActive || actionLoading === 'scheduler-owner'"
+              :loading="actionLoading === 'scheduler-owner'"
+              :title="schedulerOwnerTitle"
+              @change="changeSchedulerOwner"
+            >
+              <el-option
+                v-if="nonHumanIsolationActive"
+                label="隔离中"
+                value="isolated"
+                disabled
+              />
+              <el-option
+                v-for="option in schedulerOwnerOptions"
                 :key="option.value"
-                :label="option.value"
-              >
-                {{ option.label }}
-              </el-radio-button>
-            </el-radio-group>
-            <div v-if="schedulerKind === 'timer'" class="runtime-facts">
-              <span>自动作业 {{ schedulerJobGroupEnabled ? '启用' : '暂停' }}</span>
-              <span>到期 {{ dueTaskCount }}</span>
-            </div>
-            <div v-else class="runtime-facts">
-              <span>本次手动提交</span>
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <div class="runtime-facts">
               <span>到期 {{ dueTaskCount }}</span>
             </div>
             <div class="runtime-actions">
-              <template v-if="schedulerKind === 'ai'">
-                <div class="scheduler-control-row">
-                  <span class="runtime-inline-label">执行方式</span>
-                  <el-radio-group v-model="cellRunMode" size="small">
-                    <el-radio-button
-                      v-for="option in cellRunModeOptions"
-                      :key="option.value"
-                      :label="option.value"
-                    >
-                      {{ option.label }}
-                    </el-radio-button>
-                  </el-radio-group>
-                </div>
-                <div class="scheduler-control-row">
-                  <span class="runtime-inline-label">参与分组</span>
-                  <div class="tick-groups">
-                    <el-checkbox v-model="tickGuardEnabled" size="small">守护</el-checkbox>
-                    <el-checkbox v-model="tickManualJobEnabled" size="small">手动</el-checkbox>
-                    <el-checkbox v-model="tickScheduledJobEnabled" size="small">普通</el-checkbox>
-                  </div>
-                </div>
-                <el-button size="small" :disabled="!tickGroupSelected" :loading="actionLoading === 'scheduler-submit'" @click="submitSchedulerCell">{{ cellSubmitActionText }}</el-button>
-              </template>
-              <div v-else class="scheduler-control-row">
-                <span class="runtime-inline-label">时间规则</span>
-                <el-button size="small" :loading="actionLoading === 'job-group'" @click="toggleJobGroupEnabled">{{ schedulerJobGroupEnabled ? '暂停定时' : '恢复定时' }}</el-button>
-              </div>
+              <el-button size="small" :disabled="!tickGroupSelected" :loading="actionLoading === 'scheduler-submit'" @click="submitSchedulerCell">{{ cellSubmitActionText }}</el-button>
             </div>
           </div>
           <div class="runtime-layer">
@@ -766,10 +802,8 @@ onUnmounted(() => {
             </div>
             <div class="runtime-facts">
               <span>守护 {{ orchestrationGuardText }}</span>
-              <span>守护组 {{ guardGroupEnabled ? '启用' : '暂停' }}</span>
             </div>
             <div class="runtime-actions">
-              <el-button size="small" :loading="actionLoading === 'guard-group'" @click="toggleGuardGroupEnabled">{{ guardGroupEnabled ? '暂停守护' : '恢复守护' }}</el-button>
               <el-button size="small" @click="openRuntimeLogs">查看日志</el-button>
             </div>
           </div>
@@ -799,18 +833,18 @@ onUnmounted(() => {
             打开补标
           </el-button>
         </div>
-        <div class="runtime-message" :title="runtimeMessage">{{ runtimeMessage }}</div>
+        <div v-if="runtimeSecondaryMessage" class="runtime-message" :title="runtimeSecondaryMessage">{{ runtimeSecondaryMessage }}</div>
       </section>
 
       <section class="runtime-section">
         <div class="section-title group-section-title">
           <h3>守护</h3>
           <div class="section-actions">
-            <span>自动执行</span>
             <button
               class="enable-dot group-enable-dot"
               :class="{ enabled: guardGroupEnabled }"
               type="button"
+              aria-label="切换守护组启用状态"
               :disabled="actionLoading === 'guard-group'"
               :title="guardGroupTitle"
               @click="toggleGuardGroupEnabled"
@@ -861,17 +895,6 @@ onUnmounted(() => {
       <section class="runtime-section">
         <div class="section-title group-section-title">
           <h3>作业</h3>
-          <div class="section-actions">
-            <span>自动执行</span>
-            <button
-              class="enable-dot group-enable-dot"
-              :class="{ enabled: schedulerJobGroupEnabled }"
-              type="button"
-              :disabled="actionLoading === 'job-group'"
-              :title="jobGroupTitle"
-              @click="toggleJobGroupEnabled"
-            />
-          </div>
         </div>
         <div class="runtime-table">
           <table class="runtime-native-table is-job-table">
@@ -886,7 +909,7 @@ onUnmounted(() => {
               <tr>
                 <th>序号</th>
                 <th>名称</th>
-                <th>备注</th>
+                <th>类型</th>
                 <th>启用</th>
                 <th>下次触发</th>
               </tr>
@@ -956,7 +979,7 @@ onUnmounted(() => {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
-      <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">立即触发</button>
+      <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">触发一次</button>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>
@@ -1056,7 +1079,7 @@ onUnmounted(() => {
 
 .runtime-layer-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   gap: 10px;
 }
 
@@ -1102,6 +1125,11 @@ onUnmounted(() => {
 }
 
 .scheduler-kind-tabs {
+  margin-top: 8px;
+}
+
+.scheduler-owner-select {
+  width: 126px;
   margin-top: 8px;
 }
 

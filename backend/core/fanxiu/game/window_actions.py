@@ -10,6 +10,7 @@ import requests
 from fastapi import HTTPException
 from fastapi.responses import Response
 
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.fanxiu.runtime.mumu_control import (
     capture_mumu_window_frame,
     click_mumu_window_processed_point,
@@ -22,8 +23,6 @@ from backend.core.fanxiu.runtime.mumu_control import (
     text_mumu_adb,
 )
 from backend.models import UserDevice
-
-REMOTE_DEVICE_DIRECT_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
 
 
 def remote_entry_base_url(entry: UserDevice) -> str:
