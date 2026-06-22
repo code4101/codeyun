@@ -47,7 +47,12 @@ from backend.core.ocr.preview import (
 )
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.runtime.process_launcher import popen_service, python_service_command, run_quiet
-from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.runtime.long_tasks import (
+    LongTaskContext,
+    LongTaskManager,
+    LongTaskNotFoundError,
+    make_long_task_progress_heartbeat,
+)
 from backend.db import engine, get_session
 from backend.models import DeviceFile
 
@@ -3152,6 +3157,38 @@ def _probe_video_metadata(path: Path, ffprobe_bin: str) -> tuple[int | None, int
     return duration_ms, width_px, height_px
 
 
+def _apply_media_metadata_fields(
+    entry: dict,
+    *,
+    duration_ms: int | None = None,
+    width_px: int | None = None,
+    height_px: int | None = None,
+    weight: int = 0,
+    content_hash: str | None = None,
+    hash_algorithm: str = "sha256",
+    visual_hash: str | None = None,
+    visual_hash_algorithm: str | None = None,
+    include_visual_hash: bool = False,
+    preserve_existing_optional: bool = False,
+) -> None:
+    fields = {
+        "duration_ms": duration_ms,
+        "width": width_px,
+        "height": height_px,
+        "aspect_ratio": (width_px / height_px) if width_px and height_px else None,
+        "content_hash": content_hash,
+        "hash_algorithm": hash_algorithm,
+        "visual_hash": visual_hash if include_visual_hash else None,
+        "visual_hash_algorithm": visual_hash_algorithm if include_visual_hash else None,
+    }
+    for key, value in fields.items():
+        if preserve_existing_optional:
+            entry.setdefault(key, value)
+        else:
+            entry[key] = value
+    entry["weight"] = weight
+
+
 def _attach_cached_media_metadata(
     entries: list[dict],
     session: Session | None = None,
@@ -3256,15 +3293,18 @@ def _attach_cached_media_metadata(
                 width_px = probed_width if probed_width is not None else width_px
                 height_px = probed_height if probed_height is not None else height_px
 
-        entry["duration_ms"] = duration_ms
-        entry["width"] = width_px
-        entry["height"] = height_px
-        entry["aspect_ratio"] = (width_px / height_px) if width_px and height_px else None
-        entry["weight"] = cached_record.weight if cached_record else 0
-        entry["content_hash"] = content_hash
-        entry["hash_algorithm"] = hash_algorithm
-        entry["visual_hash"] = visual_hash if include_visual_hash else None
-        entry["visual_hash_algorithm"] = visual_hash_algorithm if include_visual_hash else None
+        _apply_media_metadata_fields(
+            entry,
+            duration_ms=duration_ms,
+            width_px=width_px,
+            height_px=height_px,
+            weight=cached_record.weight if cached_record else 0,
+            content_hash=content_hash,
+            hash_algorithm=hash_algorithm,
+            visual_hash=visual_hash,
+            visual_hash_algorithm=visual_hash_algorithm,
+            include_visual_hash=include_visual_hash,
+        )
         if (
             entry.get("kind") == "image"
             and include_visual_hash
@@ -3424,29 +3464,22 @@ def _attach_lightweight_cached_media_metadata(
             if matches_cached_file and _normalize_optional_hash(cached_record.visual_hash):
                 indexed_count += 1
 
-        entry["weight"] = cached_record.weight if cached_record else 0
         if matches_cached_file and cached_record is not None:
-            entry["duration_ms"] = cached_record.duration_ms
-            entry["width"] = cached_record.width_px
-            entry["height"] = cached_record.height_px
-            entry["aspect_ratio"] = (
-                cached_record.width_px / cached_record.height_px
-                if cached_record.width_px and cached_record.height_px
-                else None
+            _apply_media_metadata_fields(
+                entry,
+                duration_ms=cached_record.duration_ms,
+                width_px=cached_record.width_px,
+                height_px=cached_record.height_px,
+                weight=cached_record.weight,
+                content_hash=_normalize_optional_hash(cached_record.content_hash),
+                hash_algorithm=cached_record.hash_algorithm or "sha256",
             )
-            entry["content_hash"] = _normalize_optional_hash(cached_record.content_hash)
-            entry["hash_algorithm"] = cached_record.hash_algorithm or "sha256"
-            entry["visual_hash"] = None
-            entry["visual_hash_algorithm"] = None
         else:
-            entry.setdefault("duration_ms", None)
-            entry.setdefault("width", None)
-            entry.setdefault("height", None)
-            entry.setdefault("aspect_ratio", None)
-            entry.setdefault("content_hash", None)
-            entry.setdefault("hash_algorithm", "sha256")
-            entry.setdefault("visual_hash", None)
-            entry.setdefault("visual_hash_algorithm", None)
+            _apply_media_metadata_fields(
+                entry,
+                weight=cached_record.weight if cached_record else 0,
+                preserve_existing_optional=True,
+            )
 
     return _build_visual_hash_status(
         include_visual_hash=False,
@@ -4227,6 +4260,26 @@ def _build_database_media_page(
     }
 
 
+def _emit_media_listing_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    *,
+    stage: str,
+    message: str,
+    current: int,
+    total: int,
+) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(
+        {
+            "stage": stage,
+            "message": message,
+            "progress_current": current,
+            "progress_total": total,
+        }
+    )
+
+
 def _list_supported_entries(
     root_key: Optional[str] = None,
     rel_path: str = "",
@@ -4349,15 +4402,13 @@ def _list_supported_entries(
             return database_page
 
     entries = []
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "stage": "scanning",
-                "message": "正在扫描媒体文件",
-                "progress_current": 0,
-                "progress_total": normalized_scan_limit,
-            }
-        )
+    _emit_media_listing_progress(
+        progress_callback,
+        stage="scanning",
+        message="正在扫描媒体文件",
+        current=0,
+        total=normalized_scan_limit,
+    )
 
     def _append_supported_file(file_path: Path) -> None:
         entry = _build_supported_media_entry(
@@ -4379,24 +4430,21 @@ def _list_supported_entries(
         scanned_count += 1
         _append_supported_file(file_path)
         if progress_callback is not None and (scanned_count == 1 or scanned_count % 100 == 0):
-            progress_callback(
-                {
-                    "stage": "scanning",
-                    "message": f"正在扫描媒体文件，已检查 {scanned_count} 个文件",
-                    "progress_current": scanned_count,
-                    "progress_total": normalized_scan_limit,
-                }
+            _emit_media_listing_progress(
+                progress_callback,
+                stage="scanning",
+                message=f"正在扫描媒体文件，已检查 {scanned_count} 个文件",
+                current=scanned_count,
+                total=normalized_scan_limit,
             )
 
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "stage": "indexing",
-                "message": f"正在整理 {len(entries)} 个媒体文件",
-                "progress_current": scanned_count,
-                "progress_total": normalized_scan_limit,
-            }
-        )
+    _emit_media_listing_progress(
+        progress_callback,
+        stage="indexing",
+        message=f"正在整理 {len(entries)} 个媒体文件",
+        current=scanned_count,
+        total=normalized_scan_limit,
+    )
     if _media_sort_rules_need_full_metadata(normalized_rules):
         visual_hash_status = _attach_cached_media_metadata(
             entries,
@@ -4426,15 +4474,13 @@ def _list_supported_entries(
         total_duration_ms=total_duration_ms,
         visual_hash_status=visual_hash_status,
     )
-    if progress_callback is not None:
-        progress_callback(
-            {
-                "stage": "responding",
-                "message": f"正在生成媒体列表，共 {len(entries)} 项",
-                "progress_current": len(entries),
-                "progress_total": len(entries),
-            }
-        )
+    _emit_media_listing_progress(
+        progress_callback,
+        stage="responding",
+        message=f"正在生成媒体列表，共 {len(entries)} 项",
+        current=len(entries),
+        total=len(entries),
+    )
     return _build_media_listing_response(
         root=resolved["root"],
         path=resolved["path"],
@@ -4618,11 +4664,15 @@ def read_records(state_path):
     path = pathlib.Path(state_path)
     if not path.exists():
         return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    for attempt in range(5):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            if attempt == 4:
+                return {}
+            time.sleep(0.02)
+    return {}
 
 
 def write_records(state_path, records):
@@ -4635,7 +4685,10 @@ def write_records(state_path, records):
 
 def update_record(state_path, task_id, updates):
     records = read_records(state_path)
-    record = dict(records.get(task_id) or {})
+    record = dict(records.get(task_id) or {"id": task_id, "task_id": task_id, "name": "filesystem_delete"})
+    record.setdefault("id", task_id)
+    record.setdefault("task_id", task_id)
+    record.setdefault("name", "filesystem_delete")
     updates["updated_at"] = time.time()
     record.update(updates)
     records[task_id] = record
@@ -4869,6 +4922,15 @@ def _refresh_delete_task_record(record: dict[str, Any]) -> dict[str, Any]:
 
     finished_at = latest.get("finished_at") or time.time()
     if _target_path_exists(latest):
+        if int(latest.get("skipped_count") or 0) > 0 or str(latest.get("error_message") or "").startswith("Skipped "):
+            return _update_delete_task_record(
+                task_id,
+                {
+                    "status": "partial_failed",
+                    "finished_at": finished_at,
+                    "return_code": latest.get("return_code") if latest.get("return_code") is not None else 2,
+                },
+            )
         return _update_delete_task_record(
             task_id,
             {
@@ -5026,15 +5088,26 @@ def enqueue_delete_scoped_entry(
     with _filesystem_delete_task_lock:
         _filesystem_delete_processes[task_id] = process
     pid_started_at = _process_create_time(process.pid)
-    _update_delete_task_record(
-        task_id,
-        {
-            "status": "running",
-            "started_at": time.time(),
-            "pid": process.pid,
-            "pid_started_at": pid_started_at,
-        },
-    )
+    current_record = _read_delete_task_records().get(task_id) or {}
+    current_status = str(current_record.get("status") or "pending")
+    if current_status in {"pending", "running"}:
+        _update_delete_task_record(
+            task_id,
+            {
+                "status": "running",
+                "started_at": time.time(),
+                "pid": process.pid,
+                "pid_started_at": pid_started_at,
+            },
+        )
+    else:
+        _update_delete_task_record(
+            task_id,
+            {
+                "pid": process.pid,
+                "pid_started_at": pid_started_at,
+            },
+        )
     return {
         "ok": True,
         "queued": True,
@@ -5626,21 +5699,14 @@ def update_device_file_weight_for_request(
     }
 
 
-def scan_device_file_records(
-    req: DeviceFileScanRequest,
-    session: Session,
+def _collect_device_file_scan_items(
+    scanned_paths: list[Path],
     *,
-    device_id: str,
-) -> dict:
-    target_path, resolved = resolve_request_path(req.root, req.path, absolute_path=req.absolute_path)
-    if not target_path.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
-
-    scanned_paths = _iter_scan_files(target_path, recursive=req.recursive)
-    root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
-    is_directory = target_path.is_dir()
-    scope_prefix = os.fspath(target_path.resolve(strict=False))
-
+    target_path: Path,
+    root_path: Path | None,
+    is_absolute_request: bool,
+    is_directory: bool,
+) -> tuple[list[dict], list[str], set[int]]:
     items: list[dict] = []
     identity_paths: list[str] = []
     file_sizes: set[int] = set()
@@ -5651,11 +5717,12 @@ def scan_device_file_records(
             continue
 
         identity_path = os.fspath(file_path.resolve(strict=False))
-        request_path = (
-            os.fspath(file_path)
-            if resolved["is_absolute"]
-            else os.fspath(file_path.relative_to(root_path)).replace("\\", "/")
-        )
+        if is_absolute_request:
+            request_path = os.fspath(file_path)
+        else:
+            if root_path is None:
+                raise ValueError("root_path is required for scoped device file scans")
+            request_path = os.fspath(file_path.relative_to(root_path)).replace("\\", "/")
         if is_directory:
             relative_path = os.fspath(file_path.relative_to(target_path)).replace("\\", "/")
         else:
@@ -5667,7 +5734,7 @@ def scan_device_file_records(
             {
                 "name": file_path.name,
                 "path": request_path,
-                "absolute_path": os.fspath(file_path) if resolved["is_absolute"] else "",
+                "absolute_path": os.fspath(file_path) if is_absolute_request else "",
                 "relative_path": relative_path,
                 "folder_path": "" if folder_path == "." else folder_path,
                 "size": stat_result.st_size,
@@ -5679,7 +5746,17 @@ def scan_device_file_records(
         )
         identity_paths.append(identity_path)
         file_sizes.add(stat_result.st_size)
+    return items, identity_paths, file_sizes
 
+
+def _load_device_file_scan_context(
+    session: Session,
+    *,
+    device_id: str,
+    identity_paths: list[str],
+    file_sizes: set[int],
+    scope_prefix: str,
+) -> tuple[dict[str, DeviceFile], set[str], set[int], set[int]]:
     active_by_path = {}
     if identity_paths:
         active_by_path = {
@@ -5733,6 +5810,40 @@ def scan_device_file_records(
         and _path_matches_scope_prefix(record.absolute_path, scope_prefix)
         and record.file_size is not None
     }
+
+    return active_by_path, dangling_paths, dangling_sizes, unseen_active_sizes
+
+
+def scan_device_file_records(
+    req: DeviceFileScanRequest,
+    session: Session,
+    *,
+    device_id: str,
+) -> dict:
+    target_path, resolved = resolve_request_path(req.root, req.path, absolute_path=req.absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    scanned_paths = _iter_scan_files(target_path, recursive=req.recursive)
+    root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+    is_directory = target_path.is_dir()
+    scope_prefix = os.fspath(target_path.resolve(strict=False))
+
+    items, identity_paths, file_sizes = _collect_device_file_scan_items(
+        scanned_paths,
+        target_path=target_path,
+        root_path=root_path,
+        is_absolute_request=bool(resolved["is_absolute"]),
+        is_directory=is_directory,
+    )
+
+    active_by_path, dangling_paths, dangling_sizes, unseen_active_sizes = _load_device_file_scan_context(
+        session,
+        device_id=device_id,
+        identity_paths=identity_paths,
+        file_sizes=file_sizes,
+        scope_prefix=scope_prefix,
+    )
 
     hashed_count = 0
     snapshots: list[DeviceFileSyncSnapshot] = []
@@ -5900,13 +6011,7 @@ def list_media(req: MediaListRequest, session: Session = Depends(get_session)):
 
 
 def _run_media_list_task(req: MediaListRequest, context: LongTaskContext) -> dict:
-    def heartbeat(progress: dict[str, Any]) -> None:
-        context.heartbeat(
-            stage=str(progress.get("stage") or "running"),
-            message=str(progress.get("message") or "运行中"),
-            progress_current=progress.get("progress_current"),
-            progress_total=progress.get("progress_total"),
-        )
+    heartbeat = make_long_task_progress_heartbeat(context)
 
     with Session(engine) as task_session:
         return list_media_entries(

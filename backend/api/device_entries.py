@@ -110,7 +110,6 @@ from backend.core.codex.sessions import (
 from backend.core.devices.codex_summary import (
     CODEX_REMOTE_READ_TIMEOUT_SECONDS,
     CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS,
-    REMOTE_DEVICE_DIRECT_PROXIES,
     build_multi_codex_summary_identity,
     codex_summary_entry_label,
     collect_multi_codex_daily_summary_source,
@@ -119,6 +118,7 @@ from backend.core.devices.codex_summary import (
     snapshot_codex_summary_entries,
 )
 from backend.core.devices.device import BaseDevice, device_manager, get_device_id
+from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.access.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.runtime.management import (
     add_builtin_runtime_job,
@@ -170,7 +170,12 @@ from backend.core.ai.git_tools import (
     create_git_commit,
     inspect_git_repository,
 )
-from backend.core.runtime.long_tasks import LongTaskContext, LongTaskManager, LongTaskNotFoundError
+from backend.core.runtime.long_tasks import (
+    LongTaskContext,
+    LongTaskManager,
+    LongTaskNotFoundError,
+    make_long_task_progress_heartbeat,
+)
 from backend.core.ai.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
@@ -734,15 +739,7 @@ def _index_device_media_payload(
 
 
 def _media_task_progress_callback(context: LongTaskContext):
-    def heartbeat(progress: dict[str, Any]) -> None:
-        context.heartbeat(
-            stage=str(progress.get("stage") or "running"),
-            message=str(progress.get("message") or "运行中"),
-            progress_current=progress.get("progress_current"),
-            progress_total=progress.get("progress_total"),
-        )
-
-    return heartbeat
+    return make_long_task_progress_heartbeat(context)
 
 
 def _run_local_media_list_task(entry_id: str, req: MediaListRequest, context: LongTaskContext) -> dict:

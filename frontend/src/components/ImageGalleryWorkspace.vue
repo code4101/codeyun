@@ -547,6 +547,17 @@ import {
   type GallerySortProgram,
   useImageGalleryState,
 } from '@/utils/imageGallery';
+import {
+  createEmptyMasonryColumnHeights,
+  createEmptyMasonryColumnIds,
+  estimateMasonryColumnCount,
+  estimateMasonryColumnWidth,
+  estimateMasonryItemHeight as estimateMasonryItemHeightBase,
+  estimateMasonryReferenceWidth,
+  getKnownMasonryAspectRatio,
+  getMasonryBatchSize as getMasonryBatchSizeBase,
+  isMasonryRenderable,
+} from '@/utils/imageGalleryMasonry';
 
 const props = withDefaults(
   defineProps<{
@@ -834,26 +845,10 @@ const handleAdjustImageWeight = async (imageId: string, delta: number) => {
   }
 };
 
-const isMasonryRenderable = (image: GalleryImage) =>
-  isPdf(image)
-  || Boolean(image.url && (image.urlVariant === 'thumbnail' || image.urlVariant === 'full'))
-  || image.thumbnailFailed;
-
-const getKnownAspectRatio = (image: GalleryImage) => {
-  if (isPdf(image)) {
-    return 4 / 3;
-  }
-  if (!image.width || !image.height || image.width <= 0 || image.height <= 0) {
-    return null;
-  }
-
-  return Math.min(2.4, Math.max(0.45, image.width / image.height));
-};
-
 const estimateMasonryAspectRatio = () => {
   const samples = visibleImages.value
     .slice(0, 60)
-    .map((image) => getKnownAspectRatio(image))
+    .map((image) => getKnownMasonryAspectRatio(image))
     .filter((ratio): ratio is number => ratio !== null)
     .sort((left, right) => left - right);
 
@@ -864,47 +859,39 @@ const estimateMasonryAspectRatio = () => {
   return samples[Math.floor(samples.length / 2)] ?? 1;
 };
 
-const masonryReferenceWidth = computed(() => {
-  const ratioFactor = Math.min(1.25, Math.max(0.85, Math.sqrt(masonryAspectRatioHint.value || 1)));
-  return Math.max(1, Math.round(thumbnailWidth.value * ratioFactor));
-});
+const masonryReferenceWidth = computed(() =>
+  estimateMasonryReferenceWidth(thumbnailWidth.value, masonryAspectRatioHint.value)
+);
 
 const masonryColumnCount = computed(() => {
   const width = galleryWidth.value || galleryScrollRef.value?.clientWidth || 0;
-  if (!width) {
-    return 1;
-  }
-  return Math.max(1, Math.floor(width / Math.max(masonryReferenceWidth.value, 1)));
+  return estimateMasonryColumnCount(width, masonryReferenceWidth.value);
 });
 
 const masonryColumnWidth = computed(() => {
   const width = galleryWidth.value || galleryScrollRef.value?.clientWidth || 0;
-  if (!width) {
-    return Math.max(1, thumbnailWidth.value);
-  }
-  return Math.max(1, Math.floor(width / Math.max(1, masonryColumnCount.value)));
+  return estimateMasonryColumnWidth(width, masonryColumnCount.value, thumbnailWidth.value);
 });
 
-const getMasonryBatchSize = (rowCount: number) => Math.max(1, masonryColumnCount.value * rowCount);
+const getMasonryBatchSize = (rowCount: number) =>
+  getMasonryBatchSizeBase(masonryColumnCount.value, rowCount);
 
-const estimateMasonryItemHeight = (image: GalleryImage) => {
-  const ratio = (getKnownAspectRatio(image) ?? masonryAspectRatioHint.value) || 1;
-  return Math.max(1, masonryColumnWidth.value / Math.max(0.2, ratio));
-};
+const estimateMasonryItemHeight = (image: GalleryImage) =>
+  estimateMasonryItemHeightBase(image, masonryColumnWidth.value, masonryAspectRatioHint.value);
 
-const createEmptyMasonryColumnIds = (columnCount = masonryColumnCount.value) =>
-  Array.from({ length: Math.max(1, columnCount) }, () => [] as string[]);
+const createCurrentEmptyMasonryColumnIds = (columnCount = masonryColumnCount.value) =>
+  createEmptyMasonryColumnIds(columnCount);
 
-const createEmptyMasonryColumnHeights = (columnCount = masonryColumnCount.value) =>
-  Array.from({ length: Math.max(1, columnCount) }, () => 0);
+const createCurrentEmptyMasonryColumnHeights = (columnCount = masonryColumnCount.value) =>
+  createEmptyMasonryColumnHeights(columnCount);
 
 const ensureMasonryColumnState = (columnCount = masonryColumnCount.value) => {
   const normalizedColumnCount = Math.max(1, columnCount);
   if (masonryRenderedColumnIds.value.length !== normalizedColumnCount) {
-    masonryRenderedColumnIds.value = createEmptyMasonryColumnIds(normalizedColumnCount);
+    masonryRenderedColumnIds.value = createCurrentEmptyMasonryColumnIds(normalizedColumnCount);
   }
   if (masonryRenderedColumnHeights.value.length !== normalizedColumnCount) {
-    masonryRenderedColumnHeights.value = createEmptyMasonryColumnHeights(normalizedColumnCount);
+    masonryRenderedColumnHeights.value = createCurrentEmptyMasonryColumnHeights(normalizedColumnCount);
   }
 };
 
@@ -929,7 +916,7 @@ const renderedMasonryColumns = computed(() => {
       .map((imageId) => candidateById.get(imageId) ?? null)
       .filter((image): image is GalleryImage => Boolean(image))
   );
-  return columns.length ? columns : createEmptyMasonryColumnIds();
+  return columns.length ? columns : createCurrentEmptyMasonryColumnIds();
 });
 
 const syncRenderedMasonryColumns = () => {
@@ -943,8 +930,8 @@ const syncRenderedMasonryColumns = () => {
 
 const resetMasonryState = () => {
   masonryBatchSession += 1;
-  masonryRenderedColumnIds.value = createEmptyMasonryColumnIds();
-  masonryRenderedColumnHeights.value = createEmptyMasonryColumnHeights();
+  masonryRenderedColumnIds.value = createCurrentEmptyMasonryColumnIds();
+  masonryRenderedColumnHeights.value = createCurrentEmptyMasonryColumnHeights();
   masonryAspectRatioHint.value = estimateMasonryAspectRatio();
   masonryTargetCount.value = Math.min(visibleImages.value.length, getMasonryBatchSize(MASONRY_INITIAL_ROW_COUNT));
   masonryLoadedSourceCount.value = 0;

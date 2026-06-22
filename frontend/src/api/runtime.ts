@@ -11,6 +11,11 @@ export interface SchedulePolicy {
   outcome?: Record<string, any>;
 }
 
+export interface ScheduleStatus {
+  next_run_at?: string | null;
+  configured?: boolean;
+}
+
 export interface RuntimeGroup {
   id: string;
   kind: RuntimeKind;
@@ -34,6 +39,7 @@ export interface RuntimeItem {
   schedule?: string | null;
   schedule_policy?: SchedulePolicy | null;
   schedule_state?: Record<string, any> | null;
+  schedule_status?: ScheduleStatus | null;
   schedule_label?: string;
   next_run_at?: string | null;
   timeout?: number | null;

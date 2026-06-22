@@ -721,6 +721,13 @@ import {
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';
+import {
+  formatPathInput as formatSharedPathInput,
+  isAbsolutePath,
+  isDeviceRootPath as isSharedDeviceRootPath,
+  isSameOrSubPath,
+  normalizePathInput as normalizeSharedPathInput,
+} from '../shared/pathConstraints';
 
 const props = withDefaults(defineProps<{
   fixedDeviceId?: string;
@@ -1026,8 +1033,7 @@ let stageResizeObserver: ResizeObserver | null = null;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const isAbsolutePath = (value: string) => /^(?:[a-zA-Z]:[\\/]|\\\\|\/|~(?:[\\/]|$))/.test((value || '').trim());
-const isDeviceRootPath = (value: string) => (value || '').trim() === DEVICE_ROOT_SENTINEL;
+const isDeviceRootPath = (value: string) => isSharedDeviceRootPath(value, DEVICE_ROOT_SENTINEL);
 
 const getPathStorageKey = (entryId: string) => `${DEVICE_PATH_STORAGE_PREFIX}:${entryId || 'default'}`;
 const getScanLimitStorageKey = (storageKey: string) => `${storageKey}${DEVICE_SCAN_LIMIT_STORAGE_SUFFIX}`;
@@ -1045,30 +1051,9 @@ const normalizeMediaScanLimit = (value: unknown) => {
 const clampNumber = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
-const formatPathInput = (value: string) => (isDeviceRootPath(value) ? DEVICE_ROOT_LABEL : value);
+const formatPathInput = (value: string) => formatSharedPathInput(value, DEVICE_ROOT_SENTINEL, DEVICE_ROOT_LABEL);
 
-const normalizePathInput = (value: string) => {
-  const trimmed = (value || '').trim();
-  if (!trimmed || trimmed === DEVICE_ROOT_LABEL || trimmed === DEVICE_ROOT_SENTINEL) {
-    return DEVICE_ROOT_SENTINEL;
-  }
-  return isAbsolutePath(trimmed) ? trimmed : '';
-};
-
-const normalizeComparablePath = (value: string) => {
-  let normalized = (value || '').trim().replace(/\//g, '\\').replace(/\\+/g, '\\');
-  if (/^[a-zA-Z]:\\?$/.test(normalized)) {
-    return `${normalized.slice(0, 2)}\\`.toLowerCase();
-  }
-  normalized = normalized.replace(/\\+$/, '');
-  return normalized.toLowerCase();
-};
-
-const isSameOrSubPath = (candidate: string, root: string) => {
-  const normalizedCandidate = normalizeComparablePath(candidate);
-  const normalizedRoot = normalizeComparablePath(root);
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}\\`);
-};
+const normalizePathInput = (value: string) => normalizeSharedPathInput(value, DEVICE_ROOT_SENTINEL, DEVICE_ROOT_LABEL);
 
 const normalizedFixedRootPath = computed(() => {
   const normalized = normalizePathInput(props.fixedRootPath);

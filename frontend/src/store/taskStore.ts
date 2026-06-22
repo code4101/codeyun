@@ -13,6 +13,10 @@ export interface Task {
   schedule?: string;
   schedule_policy?: Record<string, any> | null;
   schedule_state?: Record<string, any> | null;
+  schedule_status?: {
+    next_run_at?: string | null;
+    configured?: boolean;
+  } | null;
   next_run_at?: string | null;
   timeout?: number;
   status: {

@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import stat
@@ -15,6 +16,7 @@ from sqlalchemy.orm import object_session
 from sqlmodel import SQLModel, Session, create_engine, select
 
 from backend.api import device_entries as device_entries_api
+from backend.api import filesystem as filesystem_api
 from backend.api.filesystem import DEVICE_ROOT_SENTINEL, FILESYSTEM_DELETE_TASKS_STATE_FILE, delete_scoped_entry
 from backend.app import app
 from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
@@ -379,16 +381,23 @@ def test_local_entry_proxy_delete_task_skips_locked_files(client, auth_user, tes
 
         latest_task = None
         deadline = time.time() + 10
+        failed_seen_at = None
         while time.time() < deadline:
             status_resp = client.get(f"/api/device-entries/{entry_id}/files/delete-tasks/{task_id}")
             assert status_resp.status_code == 200
             latest_task = status_resp.json()
-            if latest_task["status"] in {"completed", "partial_failed", "failed"}:
+            if latest_task["status"] in {"completed", "partial_failed"}:
                 break
+            if latest_task["status"] == "failed":
+                failed_seen_at = failed_seen_at or time.time()
+                if time.time() - failed_seen_at > 0.5:
+                    break
+            else:
+                failed_seen_at = None
             time.sleep(0.02)
 
         assert latest_task is not None
-        assert latest_task["status"] == "partial_failed"
+        assert latest_task["status"] == "partial_failed", latest_task
         assert latest_task["skipped_count"] >= 1
         assert any(str(locked_file) == item["path"] for item in latest_task["skipped_paths"])
         assert locked_file.exists()
@@ -883,8 +892,9 @@ def test_local_entry_proxy_lists_device_media_duration_ms(client, auth_user, tes
     video_path = attachments_dir / "proxy-device-duration.mp4"
     video_path.write_bytes(b"fake-video")
 
-    def fake_run(command, capture_output, check, timeout, text):
+    def fake_run(command, capture_output, check, timeout, text, **kwargs):
         assert command[0] == "ffprobe"
+        assert kwargs.get("shell") is False
 
         class Result:
             stdout = '{"streams":[{"width":1920,"height":1080}],"format":{"duration":"21.18"}}'
@@ -1280,6 +1290,86 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     assert rows[0].numeric_id == third_payload["items"][0]["id"]
 
 
+def test_scan_device_file_records_auto_reuses_same_path_hash_without_rehash(test_device, session, tmp_path):
+    scan_dir = tmp_path / "scan-root"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    file_path = scan_dir / "a.txt"
+    file_path.write_text("alpha", encoding="utf-8")
+    stat_result = file_path.stat()
+    absolute_path = str(file_path.resolve(strict=False))
+    existing_hash = "existing-hash-alpha"
+    session.add(
+        DeviceFile(
+            device_id=test_device["id"],
+            absolute_path=absolute_path,
+            last_known_path=absolute_path,
+            file_size=stat_result.st_size,
+            modified_at_ms=int(stat_result.st_mtime * 1000),
+            content_hash=existing_hash,
+            hash_algorithm="sha256",
+            match_status="matched",
+        )
+    )
+    session.commit()
+
+    payload = filesystem_api.scan_device_file_records(
+        filesystem_api.DeviceFileScanRequest(absolute_path=str(scan_dir), hash_mode="auto"),
+        session,
+        device_id=test_device["id"],
+    )
+
+    assert payload["processed_count"] == 1
+    assert payload["hashed_count"] == 0
+    assert payload["updated_count"] == 1
+    assert payload["created_count"] == 0
+    assert payload["rebound_count"] == 0
+    assert payload["items"][0]["content_hash"] == existing_hash
+    assert payload["items"][0]["hashed"] is False
+    assert isinstance(payload["items"][0]["id"], int)
+
+
+def test_scan_device_file_records_auto_hashes_when_dangling_same_size_exists(test_device, session, tmp_path):
+    scan_dir = tmp_path / "scan-root"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    file_path = scan_dir / "renamed.txt"
+    file_path.write_text("alpha", encoding="utf-8")
+    stat_result = file_path.stat()
+    content_hash = hashlib.sha256(b"alpha").hexdigest()
+    old_path = str((scan_dir / "old.txt").resolve(strict=False))
+    session.add(
+        DeviceFile(
+            device_id=test_device["id"],
+            absolute_path=None,
+            last_known_path=old_path,
+            file_size=stat_result.st_size,
+            modified_at_ms=int(stat_result.st_mtime * 1000),
+            content_hash=content_hash,
+            hash_algorithm="sha256",
+            match_status="dangling",
+        )
+    )
+    session.commit()
+
+    payload = filesystem_api.scan_device_file_records(
+        filesystem_api.DeviceFileScanRequest(absolute_path=str(scan_dir), hash_mode="auto"),
+        session,
+        device_id=test_device["id"],
+    )
+
+    assert payload["processed_count"] == 1
+    assert payload["hashed_count"] == 1
+    assert payload["updated_count"] == 0
+    assert payload["created_count"] == 0
+    assert payload["rebound_count"] == 1
+    assert payload["items"][0]["content_hash"] == content_hash
+    assert payload["items"][0]["hashed"] is True
+    rebound = session.exec(
+        select(DeviceFile).where(DeviceFile.device_id == test_device["id"])
+    ).one()
+    assert rebound.absolute_path == str(file_path.resolve(strict=False))
+    assert rebound.match_status == "matched"
+
+
 def test_local_entry_proxy_scan_merges_weight_when_directory_rename_left_zero_weight_duplicate(
     client,
     auth_user,
@@ -1417,9 +1507,10 @@ def test_local_entry_proxy_serves_video_thumbnail_with_ffmpeg(client, auth_user,
     output = BytesIO()
     Image.new("RGB", (320, 180), color=(120, 50, 160)).save(output, format="JPEG")
 
-    def fake_run(command, capture_output, check, timeout):
+    def fake_run(command, capture_output, check, timeout, **kwargs):
         assert command[0] == "ffmpeg"
         assert command[-1] == "pipe:1"
+        assert kwargs.get("shell") is False
 
         class Result:
             stdout = output.getvalue()
@@ -1935,7 +2026,7 @@ def test_remote_entry_proxy_forwards_media_request(client, session, auth_user, m
     assert captured["json"] == {"root": "attachments", "path": ""}
     assert captured["headers"]["Authorization"] == "Bearer remote-token"
     assert captured["headers"]["X-Device-Token"] == "remote-token"
-    assert captured["timeout"] == 10
+    assert captured["timeout"] == device_entries_api.REMOTE_MEDIA_LIST_TIMEOUT_SECONDS
 
 
 def test_local_entry_proxy_reveals_file_in_folder(client, auth_user, test_device, monkeypatch):
