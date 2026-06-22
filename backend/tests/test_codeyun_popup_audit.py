@@ -220,7 +220,7 @@ def test_generic_terminal_prefers_external_codex_evidence_over_nearby_codeyun_se
     assert is_codeyun_workspace_event(event, Path("D:/home/chenkunze/slns/codeyun")) is True
 
 
-def test_generic_terminal_with_only_uvicorn_worker_nearby_is_not_counted():
+def test_external_codex_terminal_with_uvicorn_worker_nearby_is_workspace_event():
     event = {
         "title": "Terminal",
         "class": "CASCADIA_HOSTING_WINDOW_CLASS",
@@ -232,6 +232,21 @@ def test_generic_terminal_with_only_uvicorn_worker_nearby_is_not_counted():
             }
         ],
         "nearby_processes": [
+            {
+                "name": "powershell.exe",
+                "cmdline": [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | ConvertTo-Json",
+                ],
+                "cwd": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.0\\app",
+                "parent": {
+                    "name": "Codex.exe",
+                    "cmdline": ["C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.0\\app\\Codex.exe"],
+                    "cwd": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.0\\app",
+                },
+            },
             {
                 "name": "pythonw.exe",
                 "cmdline": [
@@ -255,7 +270,7 @@ def test_generic_terminal_with_only_uvicorn_worker_nearby_is_not_counted():
     }
 
     assert is_codeyun_event(event, Path("D:/home/chenkunze/slns/codeyun")) is False
-    assert is_codeyun_workspace_event(event, Path("D:/home/chenkunze/slns/codeyun")) is False
+    assert is_codeyun_workspace_event(event, Path("D:/home/chenkunze/slns/codeyun")) is True
 
 
 def test_terminal_with_codeyun_cmd_cwd_is_workspace_event():

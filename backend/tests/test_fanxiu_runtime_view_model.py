@@ -970,12 +970,12 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
     monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
 
-    def fake_load(_shape, runtime, *_args, **_kwargs):
-        runtime.attrs["load_new"] = False
+    def fake_scroll(self, *_args, **_kwargs):
         if False:
             yield None
+        return False
 
-    monkeypatch.setattr(Shape, "load", fake_load)
+    monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
 
     class FakeStopEvent:
         def is_set(self):
@@ -992,6 +992,65 @@ def test_mail_cleanup_deletes_read_only_after_scanned_to_end(monkeypatch, tmp_pa
 
     assert result == "success"
     assert clicked == [("邮件", "一键删除")]
+
+
+def test_mail_cleanup_uses_runtime_default_scroll_parameters(monkeypatch, tmp_path):
+    runner = create_fanxiu_runtime_runner()
+    image121 = {
+        "type": "image",
+        "title": "邮件",
+        "filename": "0121.png",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"id": "list", "kind": "rect", "title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6, "contentDirection": "down"},
+            {"id": "delete-read", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.08},
+        ],
+    }
+    ctx = {
+        "entry": object(),
+        "asset_tree_path": tmp_path / "asset_tree.json",
+        "images": {121: image121},
+    }
+    scroll_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    monkeypatch.setattr("backend.core.fanxiu.data_annotation.runtime_runner.ensure_fanxiu_mail_table", lambda: None)
+
+    def fake_open_entry(_runtime):
+        if False:
+            yield None
+        return "success"
+
+    def fake_scroll(self, *args, **kwargs):
+        scroll_calls.append((args, kwargs))
+        if False:
+            yield None
+        return False
+
+    monkeypatch.setattr(runner, "_open_mail_cleanup_entry", fake_open_entry)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_runtime_mail_rows_from_frame", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda _runtime: False)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
+    monkeypatch.setattr(Shape, "click", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._execute_mail_cleanup_task(ctx, FakeStopEvent(), {"max_actions": 5}),
+        stop_event=FakeStopEvent(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert len(scroll_calls) == 1
+    assert scroll_calls[0][1] == {}
 
 
 def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
@@ -1027,12 +1086,12 @@ def test_mail_cleanup_deletes_read_after_scroll_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (121, 95.0))
     monkeypatch.setattr(Shape, "click", lambda shape, _runtime: clicked.append((shape.parent_view.raw["title"], shape.title)))
 
-    def fake_load(_shape, runtime, *_args, **_kwargs):
-        runtime.attrs["load_new"] = True
+    def fake_scroll(self, *_args, **_kwargs):
         if False:
             yield None
+        return True
 
-    monkeypatch.setattr(Shape, "load", fake_load)
+    monkeypatch.setattr(FanxiuRuntime, "scroll_shape_content", fake_scroll)
 
     class FakeStopEvent:
         def is_set(self):

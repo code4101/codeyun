@@ -395,6 +395,7 @@ class FanxiuGameWindow2ServiceScreenshotPreLabelSaveRequest(BaseModel):
 
 class FanxiuDataAnnotationOcrFrameRequest(BaseModel):
     image_data_url: str
+    options: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuDataAnnotationOcrFrameLine(BaseModel):
@@ -405,8 +406,18 @@ class FanxiuDataAnnotationOcrFrameLine(BaseModel):
     h: float
 
 
+class FanxiuDataAnnotationOcrFrameWord(BaseModel):
+    text: str
+    x: float
+    y: float
+    w: float
+    h: float
+    line_index: int | None = None
+
+
 class FanxiuDataAnnotationOcrFrameResponse(BaseModel):
     lines: list[FanxiuDataAnnotationOcrFrameLine] = Field(default_factory=list)
+    words: list[FanxiuDataAnnotationOcrFrameWord] = Field(default_factory=list)
 
 
 class FanxiuDataAnnotationRemoveBackgroundRequest(BaseModel):

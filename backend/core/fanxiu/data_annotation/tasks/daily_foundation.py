@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
@@ -2691,6 +2691,312 @@ class DailyFoundationTaskMixin:
             f"当前 {'#' + str(scene_id) if scene_id else 'unknown'} {score:.0f}%，OCR={after_text[:120]}。"
             f"{missing_assets_message}"
         )
+
+    def _baiye_payload_target(self, payload: dict[str, Any]) -> str:
+        args = payload.get("args")
+        if isinstance(args, list) and args:
+            text = str(args[0] or "").strip()
+            if text:
+                return text
+        return str(payload.get("target") or payload.get("law") or "魔道").strip() or "魔道"
+
+    def _baiye_text_is_rule_map(self, text: Any) -> bool:
+        compact = _sanitize_ocr_text(text)
+        return bool(("拜谒排行" in compact and ("大道" in compact or "跨法则" in compact)) or "跨法则" in compact)
+
+    def _baiye_text_is_lord_map(self, text: Any) -> bool:
+        compact = _sanitize_ocr_text(text)
+        return bool(
+            "法则之主" in compact
+            and any(marker in compact for marker in ("可旋转", "进行拜谒", "魔道", "洗灵", "仙弈", "幻虚", "魔道"))
+        )
+
+    def _baiye_text_is_completed(self, text: Any) -> bool:
+        compact = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+        return bool("已拜谒" in compact or re.search(r"剩余次数[:：]?0/1", compact))
+
+    def _execute_daily_baiye_task(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        payload = dict(payload or {})
+        asset_tree_path = ctx.get("asset_tree_path")
+        if not isinstance(asset_tree_path, Path):
+            raise RuntimeError("缺少日常_拜谒资产树路径，无法执行作业")
+        target = self._baiye_payload_target(payload)
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = runtime.current_scene([265, 264, 69, 34], update=True)
+        text = runtime.ocr_text(frame)
+        if scene_id != 265 and not self._baiye_text_is_lord_map(text):
+            if scene_id != 264 and not self._baiye_text_is_rule_map(text):
+                if scene_id != 69:
+                    scene_id = yield from self._enter_daily_from_world_like(
+                        ctx,
+                        runtime,
+                        stop_event,
+                        frame,
+                        scene_id,
+                        text,
+                        label="日常_拜谒",
+                    )
+                status = yield from self._open_daily_entry_from_daily(
+                    ctx,
+                    stop_event,
+                    payload,
+                    task_label="日常_拜谒",
+                    title_pattern=r"拜\s*谒",
+                    progress_can_mark_done=False,
+                )
+                if status == "done":
+                    raise RuntimeError("日常_拜谒：日常列表进度不能作为拜谒完成证据")
+                if status == "not_found":
+                    raise RuntimeError("日常_拜谒：#69 日常列表未找到「拜谒」入口")
+                yield from runtime.wait_any(
+                    {
+                        "scene": runtime.view_visible(264),
+                        "text": runtime.ocr_matches(self._baiye_text_is_rule_map, label="日常_拜谒：三千大道 OCR"),
+                    },
+                    timeout=20.0,
+                    label="日常_拜谒：等待三千大道 #264",
+                )
+            yield from self._open_baiye_cross_rule(ctx, stop_event, payload, keyword=str(payload.get("cross_keyword") or "16"))
+        return (yield from self._select_baiye_law_lord(ctx, stop_event, payload, target=target))
+
+    def _open_baiye_cross_rule(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        *,
+        keyword: str,
+    ):
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        view264 = runtime.view(264)
+        list_shape = runtime.shape(view264, "识别区")
+        max_scrolls = self._payload_int(payload, "baiye_rule_max_scrolls", "max_scrolls", default=30)
+        reverse_scrolls = self._payload_int(payload, "baiye_rule_reverse_scrolls", "reverse_scrolls", default=max_scrolls)
+        for direction, scroll_count in (("down", max_scrolls), ("up", reverse_scrolls)):
+            for scroll_index in range(max(0, int(scroll_count)) + 1):
+                self._raise_if_stopped(stop_event)
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"日常_拜谒：在 #264 查找包含 {keyword} 的法则 {direction} {scroll_index}/{scroll_count}",
+                        phase="daily_baiye_find_rule",
+                        current_scene=264,
+                    )
+                frame = runtime.cur_frame(update=True)
+                lines = runtime.ocr_lines_in_shapes(264, ["识别区"], frame_data_url=frame)
+                matches = [line for line in lines if keyword in _sanitize_ocr_text(line.get("text"))]
+                if matches:
+                    line = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
+                    target_box = self._ocr_match_resolved_box(line, keyword, "contains") or line
+                    x = float(target_box.get("x") or 0) + float(target_box.get("w") or 0) / 2
+                    y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
+                    text = _sanitize_ocr_text(line.get("text"))
+                    self._log("action", f"日常_拜谒：点击 #264 OCR「{text}」")
+                    runtime.click_frame_point(264, x, y)
+                    yield from runtime.wait_any(
+                        {
+                            "scene": runtime.view_visible(265),
+                            "text": runtime.ocr_matches(self._baiye_text_is_lord_map, label="日常_拜谒：法则之主 OCR"),
+                        },
+                        timeout=20.0,
+                        label="日常_拜谒：等待法则之主 #265",
+                    )
+                    return "open"
+                if scroll_index >= int(scroll_count):
+                    break
+                self._log("action", f"日常_拜谒：#264 未找到 {keyword}，{direction} 滚动 {scroll_index + 1}")
+                changed = yield from runtime.scroll_shape_content(view264, list_shape, direction=direction)
+                if not changed:
+                    break
+        raise RuntimeError(f"日常_拜谒：#264 识别区未找到包含 {keyword} 的法则")
+
+    def _baiye_target_box_from_words(self, words: list[dict[str, Any]], target: str) -> dict[str, float] | None:
+        def resolved_sub_box(x: float, y: float, w: float, h: float, text: str, start: int, length: int) -> dict[str, float]:
+            raw_width = max(1.0, w / max(1, len(text)))
+            glyph_width = min(raw_width, max(1.0, h * 1.4))
+            if raw_width > h * 2.0 and start + length >= len(text):
+                left = x + w - glyph_width * length
+            else:
+                left = x + glyph_width * start
+            return {"x": left, "y": y, "w": glyph_width * length, "h": h}
+
+        fragments: list[dict[str, Any]] = []
+        for word in sorted(words, key=lambda item: (int(item.get("line_index") or 0), float(item.get("y") or 0), float(item.get("x") or 0))):
+            text = _sanitize_ocr_text(word.get("text"))
+            if not text:
+                continue
+            if "法则" in text:
+                continue
+            x = float(word.get("x") or 0)
+            y = float(word.get("y") or 0)
+            w = float(word.get("w") or 0)
+            h = float(word.get("h") or 0)
+            if target in text:
+                start = text.index(target)
+                return resolved_sub_box(x, y, w, h, text, start, len(target))
+            fragments.append({"text": text, "x": x, "y": y, "w": w, "h": h})
+        joined = "".join(fragment["text"] for fragment in fragments)
+        start = joined.find(target)
+        if start < 0:
+            return None
+        end = start + len(target)
+        cursor = 0
+        boxes: list[dict[str, float]] = []
+        for fragment in fragments:
+            text = str(fragment["text"])
+            next_cursor = cursor + len(text)
+            if next_cursor <= start:
+                cursor = next_cursor
+                continue
+            if cursor >= end:
+                break
+            local_start = max(0, start - cursor)
+            local_end = min(len(text), end - cursor)
+            boxes.append(resolved_sub_box(
+                float(fragment["x"]),
+                float(fragment["y"]),
+                float(fragment["w"]),
+                float(fragment["h"]),
+                text,
+                local_start,
+                max(1, local_end - local_start),
+            ))
+            cursor = next_cursor
+        if not boxes:
+            return None
+        left = min(box["x"] for box in boxes)
+        top = min(box["y"] for box in boxes)
+        right = max(box["x"] + box["w"] for box in boxes)
+        bottom = max(box["y"] + box["h"] for box in boxes)
+        return {"x": left, "y": top, "w": max(1.0, right - left), "h": max(1.0, bottom - top)}
+
+    def _baiye_target_box_from_lines(self, lines: list[dict[str, Any]], target: str) -> tuple[dict[str, float], str] | None:
+        for line in lines:
+            text = _sanitize_ocr_text(line.get("text"))
+            if "法则" in text:
+                continue
+            if target not in text:
+                continue
+            box = self._ocr_match_resolved_box(line, target, "contains")
+            if box is not None:
+                return box, text
+        return None
+
+    def _baiye_lord_click_point_from_box(
+        self,
+        box: Mapping[str, Any],
+        payload: Mapping[str, Any] | None = None,
+    ) -> tuple[float, float]:
+        options = payload or {}
+        x = float(box.get("x") or 0)
+        y = float(box.get("y") or 0)
+        w = max(1.0, float(box.get("w") or 0))
+        h = max(1.0, float(box.get("h") or 0))
+        x_ratio = float(options.get("baiye_lord_icon_x_ratio") or 0.5)
+        y_offset_ratio = float(options.get("baiye_lord_icon_y_offset_ratio") or 1.35)
+        click_x = x + w * max(0.0, min(1.0, x_ratio))
+        click_y = y - h * max(0.0, y_offset_ratio)
+        return click_x, click_y
+
+    def _select_baiye_law_lord(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        *,
+        target: str,
+    ) -> str:
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        timeout = float(payload.get("baiye_lord_timeout") or 120.0)
+        start = time.monotonic()
+        last_text = ""
+        while True:
+            self._raise_if_stopped(stop_event)
+            if time.monotonic() - start >= timeout:
+                self._log("warning", f"日常_拜谒：{timeout:.0f}s 未找到「{target}」，点击返回本次失败")
+                runtime.click_shape_center(265, "返回")
+                yield from runtime.wait_any(
+                    {
+                        "scene": runtime.view_visible(264),
+                        "text": runtime.ocr_matches(self._baiye_text_is_rule_map, label="日常_拜谒：返回三千大道 OCR"),
+                    },
+                    timeout=20.0,
+                    label="日常_拜谒：等待返回 #264",
+                )
+                return "skipped"
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"日常_拜谒：在 #265 查找「{target}」",
+                    phase="daily_baiye_find_lord",
+                    current_scene=265,
+                )
+            frame = runtime.cur_frame(update=True)
+            current_text = runtime.ocr_text(frame)
+            if self._baiye_text_is_completed(current_text):
+                self._log("success", f"日常_拜谒：当前已是完成态，OCR={current_text[:120]}")
+                return "success"
+            words = runtime.ocr_words_in_shapes(
+                265,
+                ["识别区"],
+                frame_data_url=frame,
+                options={
+                    "text_det_thresh": float(payload.get("baiye_text_det_thresh") or 0.25),
+                    "text_det_box_thresh": float(payload.get("baiye_text_det_box_thresh") or 0.45),
+                    "text_det_unclip_ratio": float(payload.get("baiye_text_det_unclip_ratio") or 1.2),
+                },
+            )
+            target_box = self._baiye_target_box_from_words(words, target)
+            source_text = "".join(_sanitize_ocr_text(word.get("text")) for word in words)
+            if target_box is None:
+                lines = runtime.ocr_lines_in_shapes(265, ["识别区"], frame_data_url=frame)
+                line_match = self._baiye_target_box_from_lines(lines, target)
+                if line_match is not None:
+                    target_box, source_text = line_match
+                elif lines:
+                    source_text = "".join(_sanitize_ocr_text(line.get("text")) for line in lines)
+            last_text = source_text or last_text
+            if target_box is not None:
+                click_x, click_y = self._baiye_lord_click_point_from_box(target_box, payload)
+                self._log(
+                    "action",
+                    f"日常_拜谒：OCR 命中「{target}」({source_text[:40]})，词框=({float(target_box.get('x') or 0):.1f},"
+                    f"{float(target_box.get('y') or 0):.1f},{float(target_box.get('w') or 0):.1f},"
+                    f"{float(target_box.get('h') or 0):.1f})，点击图标估算点 ({click_x:.1f},{click_y:.1f})",
+                )
+                if bool(payload.get("baiye_lord_probe_only") or payload.get("probe_only")):
+                    self._log("success", f"日常_拜谒：probe 已在 #265 OCR 命中「{target}」，未点击选择目标")
+                    if bool(payload.get("baiye_lord_probe_return", True)):
+                        runtime.click_shape_center(265, "返回")
+                        yield from runtime.wait_any(
+                            {
+                                "scene": runtime.view_visible(264),
+                                "text": runtime.ocr_matches(self._baiye_text_is_rule_map, label="日常_拜谒：probe 返回三千大道 OCR"),
+                            },
+                            timeout=20.0,
+                            label="日常_拜谒：probe 等待返回 #264",
+                        )
+                    return "skipped"
+                runtime.click_frame_point(265, click_x, click_y)
+                yield from runtime.wait_action_settle(1.0)
+                after_text = runtime.ocr_text(update=True)
+                if self._baiye_text_is_completed(after_text):
+                    self._log("success", f"日常_拜谒：已点击「{target}」，完成态 OCR={after_text[:120]}")
+                    return "success"
+                if self._baiye_text_is_lord_map(after_text):
+                    self._log("skip", f"日常_拜谒：已点击「{target}」，但仍停留在法则之主选择页，后续确认态未闭环，OCR={after_text[:120]}")
+                    return "skipped"
+                self._log("success", f"日常_拜谒：已点击「{target}」，点击后 OCR={after_text[:120]}")
+                return "success"
+            self._log("detail", f"日常_拜谒：暂未命中「{target}」，OCR={last_text[:80]}")
+            yield from runtime.wait_action_settle(float(payload.get("baiye_lord_poll_seconds") or 0.75))
 
     def _daily_youli_current_state(self, runtime: Any, *, update: bool = False) -> tuple[int | None, float, str, str]:
         scene_id, score, frame = runtime.current_scene([237, 236, 233, 229, 228, 71, 69, 34], update=update)

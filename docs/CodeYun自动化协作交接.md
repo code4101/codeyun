@@ -29,7 +29,33 @@
 
 ## 待代码健康优化接手
 
-暂无。
+### UI-HANDOFF-20260623-002
+
+- 状态：open
+- 来源自动化：CodeYun 前端设计巡检 / 凡修自动化复盘
+- 来源报告：`docs/凡修拜谒与行为树基础设施任务清单.md`
+- 触发范围：`/fanxiu/data-annotation`、`/fanxiu/data-annotation/runtime`、凡修 Runtime 业务节点
+- 表层症状：滚动查找、候选复位、点击后等待目标场景、OCR 精细点击这些通用动作已经反复出现，但业务实现仍容易临时覆盖滚动比例、手写等待、或把 OCR line 级结果当成可点击对象。
+- 非前端根因判断：这不是单纯页面提示或文案问题，而是 Runtime/标注数据/API 之间的行为模型还不够正交。业务层需要的其实是“在某识别区滚动查找候选”“点击 shape 并等待声明落点”“按词/字级 OCR 计算动作落点”等通用能力；如果接口只暴露底层滚动、OCR 行和点击原语，前端标注页与业务节点都会重复解释同一套规则。
+- 涉及对象：`backend/core/fanxiu/data_annotation/runtime_runner.py`、`backend/core/fanxiu/data_annotation/tasks/*`、`backend/core/ocr/preview.py`、`frontend/src/standard/fanxiu/data-annotation/page.vue`、`docs/凡修行为树业务能力约定.md`
+- 已做前端止血：无前端止血。本轮已在 Runtime 层补默认滚动常量、`wait_click_then_view()` 和 `ocr_words_in_shapes()`，但仍缺少一次面向“业务节点是否还能绕过通用接口”的只读审计。
+- 建议接手动作：只读模型审计，盘点凡修业务节点里直接调用底层滚动/OCR/点击的残留；将可复用模式归并为小型 Runtime helper 或标注协议字段；先产出候选清单，不直接大规模重构。
+- 验证建议：`rg -n "scroll_shape_content\\(|drag|ocr_in_shape|ocr_words_in_shapes|wait_click_then_view|wait_click\\(" backend/core/fanxiu/data_annotation/tasks backend/core/fanxiu/data_annotation/runtime_runner.py -S`，再按候选运行对应 focused pytest；涉及真实动作的修改必须另走凡修 Runtime 真实自检。
+- 风险和停手条件：如果候选涉及真实 MuMu/ADB 点击、缺少标注、或需要重新定义拜谒/邮件/日常任务完成态，不在代码健康自动化里直接改；只输出审计和拆分任务，等待人工确认或业务专项继续。
+
+### UI-HANDOFF-20260623-001
+
+- 状态：open
+- 来源自动化：CodeYun 前端设计巡检
+- 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md`
+- 触发范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35` / `/fanxiu/data-annotation/runtime`
+- 表层症状：`作业` 表的一级 `下次触发` 列仍出现 `动态作业未记录下次时间` 这类解释型文案，把时间事实和规则/缺数说明揉进同一单元格。
+- 非前端根因判断：行为树调度接口缺少面向一级状态表的稳定投影。前端当前只能把“没有有效下次时间 / 需要先求值”的后端缺口翻译成解释句，而不是渲染纯状态事实。
+- 涉及对象：`backend/api/fanxiu.py`、`backend/core/fanxiu/data_annotation/*`、`frontend/src/standard/fanxiu/data-annotation-runtime/page.vue`
+- 已做前端止血：无。本轮只在 `task-system` 健康条做了减法收敛，未继续扩散到需要调度语义判断的作业表。
+- 建议接手动作：只读模型审计，判断是否应新增稳定状态投影，例如“有效下次时间 / 是否待求值 / 阻塞原因”，再由前端恢复一级列表的纯时间语义。
+- 验证建议：`uv run pytest tests/test_fanxiu_data_annotation_scheduler.py tests/backend/test_fanxiu_runtime_view_model.py`，并打开 `http://127.0.0.1:5173/fanxiu/data-annotation/runtime` 复核动态作业行是否回到稳定状态表。
+- 风险和停手条件：如果 `动态作业未记录下次时间` 背后其实承载多个不同业务阶段，不能只换文案或前端硬编码；需要先由人工或后端明确“缺时间”和“应执行”的正式状态边界。
 
 新增条目模板：
 

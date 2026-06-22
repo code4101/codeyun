@@ -742,6 +742,7 @@ def test_core_default_runtime_jobs_register_without_api(monkeypatch):
         "go_scene",
         "hide_floating_window",
         "daily_signup",
+        "daily_baiye",
         "daily_audit",
         "mail_cleanup",
     ):

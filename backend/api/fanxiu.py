@@ -6128,7 +6128,7 @@ def recognize_fanxiu_data_annotation_ocr_frame(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _log_data_annotation_ocr_frame_request(request, req, current_user)
     try:
-        return _recognize_data_annotation_ocr_frame(req.image_data_url)
+        return _recognize_data_annotation_ocr_frame(req.image_data_url, options=req.options)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

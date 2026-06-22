@@ -180,6 +180,47 @@ def test_run_paddle_ocr_preview_accepts_json_string_payload(
     ocr_preview.ocr_service_manager.reset()
 
 
+def test_run_paddle_ocr_preview_passes_safe_predict_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ocr_preview.ocr_service_manager.reset()
+    image_path = tmp_path / "ocr-source.png"
+    Image.new("RGB", (40, 20), color=(255, 255, 255)).save(image_path)
+    observed: dict[str, object] = {}
+
+    class _FakeResult:
+        res = {
+            "rec_boxes": [[1, 2, 10, 8]],
+            "rec_texts": ["魔道"],
+            "rec_scores": [0.8],
+            "rec_word_texts": [["魔", "道"]],
+            "rec_word_boxes": [[[[1, 2, 5, 8], [5, 2, 10, 8]]]],
+        }
+
+    class _FakeOcr:
+        def predict(self, _input: str, **kwargs: object) -> list[object]:
+            observed.update(kwargs)
+            return [_FakeResult()]
+
+    monkeypatch.setattr(ocr_preview, "_get_ocr_instance", lambda _config=None: _FakeOcr())
+
+    preview = ocr_preview.run_paddle_ocr_preview(
+        image_path,
+        shape_type="rectangle",
+        options={
+            "return_word_box": True,
+            "text_det_thresh": 0.2,
+            "unknown_option": "ignored",
+        },
+    )
+
+    assert observed == {"return_word_box": True, "text_det_thresh": 0.2}
+    assert preview["document"]["flags"]["paddleocr_payload"]["rec_texts"] == ["魔道"]
+    assert "unknown_option" not in observed
+    ocr_preview.ocr_service_manager.reset()
+
+
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

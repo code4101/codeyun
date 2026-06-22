@@ -1,3 +1,8 @@
+import os
+import tempfile
+
+os.environ["CODEYUN_DATA_DIR"] = os.path.join(tempfile.gettempdir(), "codeyun", "pytest_fanxiu_runtime_guard")
+
 import json
 import threading
 import time
@@ -76,6 +81,56 @@ def _assert_daily_assistant_unverified_error(exc_info, *expected_fragments: str)
     assert "日常_助手：不能把未确认执行结果标记为成功" in message
     for fragment in expected_fragments:
         assert fragment in message
+
+
+@pytest.fixture(autouse=True)
+def _isolate_fanxiu_runtime_state_paths(tmp_path, monkeypatch):
+    runtime_dir = tmp_path / "fanxiu" / "data-annotation" / "runtime"
+    asset_tree_dir = tmp_path / "fanxiu" / "data-annotation" / "asset-trees"
+
+    def runtime_file(name: str) -> Path:
+        return runtime_dir / name
+
+    def asset_tree_path(entry_id: str) -> Path:
+        return asset_tree_dir / f"{entry_id}.json"
+
+    monkeypatch.setattr(fanxiu_api, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_fanxiu_runtime_runner())
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
+    monkeypatch.setattr(fanxiu_api, "_data_annotation_asset_tree_path", asset_tree_path)
+
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
+    monkeypatch.setattr(runtime_runner_core, "_data_annotation_asset_tree_path", asset_tree_path)
+    monkeypatch.setattr(runtime_runner_core, "_behavior_tree_control_path", lambda: runtime_file("behavior_tree_control.json"))
+
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
+    monkeypatch.setattr(runtime_control_core, "fanxiu_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "_RUNTIME_RUNNER", None)
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_runtime_state_path", lambda: runtime_file("runtime_state.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_world_facts_path", lambda: runtime_file("world_facts.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_scheduler_state_path", lambda: runtime_file("scheduler_tasks.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_scheduler_settings_path", lambda: runtime_file("scheduler_settings.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_manual_job_state_path", lambda: runtime_file("manual_jobs.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_data_annotation_mail_scan_state_path", lambda: runtime_file("mail_scan_state.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "data_annotation_asset_tree_path", asset_tree_path)
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_job_group_isolation_path", lambda: runtime_file("job_group_isolation.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_behavior_tree_service_owner_path", lambda: runtime_file("behavior_tree_service_owner.json"))
+    monkeypatch.setattr(fanxiu_behavior_tree_core, "fanxiu_behavior_tree_control_path", lambda: runtime_file("behavior_tree_control.json"))
 
 
 def test_runtime_wait_click_then_shape_closes_click_with_target_probe(monkeypatch):
@@ -218,6 +273,101 @@ def test_runtime_wait_click_then_any_closes_click_with_branch_probe(monkeypatch)
         ("settle", 1.5),
         ("wait_any", conditions, {"timeout": 9, "label": "等待购买体力结果"}),
     ]
+
+
+def test_runtime_wait_click_then_view_infers_scene_jump_target(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [{"title": "拜谒", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1, "sceneJumpTarget": "264"}])
+    image264 = _image("拜谒", "0264.png", [])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {69: image69, 264: image264}, "asset_tree": [image69, image264]},
+        stop_event=threading.Event(),
+    )
+    actions: list[tuple] = []
+
+    def fake_wait_click(frame, shape, **kwargs):
+        actions.append(("wait_click", getattr(frame, "id", frame), getattr(shape, "title", shape), kwargs))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(seconds=1.0):
+        actions.append(("settle", seconds))
+        if False:
+            yield None
+        return None
+
+    def fake_wait_view(*views, **kwargs):
+        actions.append(("wait_view", views, kwargs))
+        if False:
+            yield None
+        return runtime.view(264)
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+
+    result = _drain_generator(runtime.wait_click_then_view(69, "拜谒", timeout=12.0, settle_seconds=1.25))
+
+    assert result.id == 264
+    assert actions == [
+        ("wait_click", 69, "拜谒", {}),
+        ("settle", 1.25),
+        ("wait_view", (264,), {"timeout": 12.0, "label": "点击后等待目标场景 #264"}),
+    ]
+
+
+def test_runtime_wait_click_then_view_requires_target_or_jump_target():
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [{"title": "无目标", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1}])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {69: image69}, "asset_tree": [image69]},
+        stop_event=threading.Event(),
+    )
+
+    with pytest.raises(RuntimeError, match="缺少目标场景"):
+        _drain_generator(runtime.wait_click_then_view(69, "无目标"))
+
+
+def test_runtime_wait_click_then_view_timeout_reports_source_and_declared_target(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image69 = _image("日常", "0069.png", [{"title": "拜谒", "x": 0.2, "y": 0.3, "w": 0.2, "h": 0.1, "sceneJumpTarget": "264"}])
+    runtime = runtime_runner_core.FanxiuRuntime(
+        runner,
+        {"images": {69: image69}, "asset_tree": [image69]},
+        stop_event=threading.Event(),
+    )
+
+    def fake_wait_click(*_args, **_kwargs):
+        if False:
+            yield None
+        return None
+
+    def fake_wait_action_settle(*_args, **_kwargs):
+        if False:
+            yield None
+        return None
+
+    def fake_wait_view(*_args, **_kwargs):
+        if False:
+            yield None
+        raise TimeoutError("未检测到 #264，最后 unknown 0%")
+
+    monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
+    monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
+    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
+
+    with pytest.raises(TimeoutError) as exc_info:
+        _drain_generator(runtime.wait_click_then_view(69, "拜谒", timeout=3.0))
+
+    message = str(exc_info.value)
+    assert "源场景=#69" in message
+    assert "shape=[拜谒]" in message
+    assert "期望目标=#264" in message
+    assert "sceneJumpTarget=264" in message
+    assert "unknown 0%" in message
 
 
 def test_runtime_ocr_matches_wraps_predicate(monkeypatch):
@@ -2607,6 +2757,138 @@ def test_debug_eval_readonly_blocks_actions():
         assert "readonly" in str(exc)
     else:
         raise AssertionError("debug_eval readonly action should fail")
+
+
+def test_debug_eval_context_shape_score_is_readonly_probe():
+    from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
+
+    image = _image("法则之主", "0265.png", [{"title": "返回", "x": 0.1, "y": 0.8, "w": 0.1, "h": 0.1}])
+
+    class FakeRunner:
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+        def _find_shape(self, image, title, *, contains=False):
+            return next(shape for shape in image["shapes"] if shape["title"] == title)
+
+        def _shape_score(self, ctx, image, shape, frame):
+            return 79.0
+
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), {"images": {265: image}}, threading.Event())
+
+    assert ctx.shape_score(265, "返回", frame=_png_data_url()) == 79.0
+
+
+def test_debug_eval_context_exposes_ocr_words_in_shapes():
+    from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
+
+    calls: list[tuple] = []
+
+    class FakeRuntime:
+        def ocr_words_in_shapes(self, scene, shape_titles, *, frame_data_url=None, padding=0, options=None):
+            calls.append((scene, shape_titles, frame_data_url, padding, options))
+            return [{"text": "魔道", "x": 700.0, "y": 760.0, "w": 60.0, "h": 32.0}]
+
+    class FakeRunner:
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+        def _fanxiu_runtime(self, _ctx, *, stop_event=None):
+            return FakeRuntime()
+
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), {}, threading.Event())
+    frame = _png_data_url()
+    result = ctx.ocr_words_in_shapes(
+        265,
+        ["识别区"],
+        frame=frame,
+        padding=4,
+        options={"return_word_box": True},
+    )
+
+    assert result == [{"text": "魔道", "x": 700.0, "y": 760.0, "w": 60.0, "h": 32.0}]
+    assert calls == [(265, ("识别区",), frame, 4, {"return_word_box": True})]
+
+
+def test_debug_eval_context_shape_probe_reports_score_and_shape_metadata():
+    from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
+
+    calls: list[int] = []
+    image = _image("法则之主", "0265.png", [{
+        "title": "返回",
+        "x": 0.1,
+        "y": 0.8,
+        "w": 0.1,
+        "h": 0.1,
+        "sceneJumpTarget": "",
+        "imageMatchRole": "required",
+        "ocrMatchRole": "off",
+        "pixelTolerance": 5,
+    }])
+
+    class FakeRunner:
+        overlay_threshold = 80.0
+        scene_threshold = 80.0
+
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+        def _find_shape(self, image, title, *, contains=False):
+            return next(shape for shape in image["shapes"] if shape["title"] == title)
+
+        def _shape_match_conditions(self, shape):
+            return ["image"]
+
+        def _match_shape(self, ctx, image, shape, frame, *, condition="auto"):
+            calls.append(int(shape.get("pixelTolerance") or 0))
+            similarity = 81.0 if int(shape.get("pixelTolerance") or 0) >= 10 else 79.0
+            return {"similarity": similarity, "matched": similarity >= self.scene_threshold}
+
+        def _shape_score(self, ctx, image, shape, frame):
+            return 79.0
+
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), {"images": {265: image}}, threading.Event())
+
+    result = ctx.shape_probe(265, "返回", frame=_png_data_url())
+    override_result = ctx.shape_probe(265, "返回", frame=_png_data_url(), overrides={"pixelTolerance": 10})
+
+    assert result["score"] == 79.0
+    assert result["scene_threshold"] == 80.0
+    assert result["overlay_threshold"] == 80.0
+    assert result["matched"] is False
+    assert result["conditions"] == [{"condition": "image", "similarity": 79.0, "matched": False, "ocr_text": ""}]
+    assert result["shape"]["imageMatchRole"] == "required"
+    assert result["shape"]["pixelTolerance"] == 5
+    assert override_result["score"] == 81.0
+    assert override_result["matched"] is True
+    assert override_result["shape"]["pixelTolerance"] == 10
+    assert image["shapes"][0]["pixelTolerance"] == 5
+    assert calls == [5, 10]
+
+
+def test_debug_eval_context_exposes_wait_click_then_view():
+    from backend.core.fanxiu.data_annotation.debug_eval import DataAnnotationRuntimeDebugContext
+
+    calls: list[tuple[tuple, dict]] = []
+
+    class FakeRuntime:
+        def wait_click_then_view(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            yield BehaviorTreeStatus.RUNNING
+            return "ok"
+
+    class FakeRunner:
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+        def _fanxiu_runtime(self, _ctx, *, stop_event=None):
+            return FakeRuntime()
+
+    ctx = DataAnnotationRuntimeDebugContext(FakeRunner(), {}, threading.Event(), readonly=False)
+    result = _drain_generator(ctx.wait_click_then_view(265, "返回", 264, timeout=20.0, label="probe"))
+
+    assert result == "ok"
+    assert calls == [((265, "返回", 264), {"timeout": 20.0, "label": "probe"})]
 
 
 def test_manual_job_pop_ignores_stale_running_until_requeued(tmp_path, monkeypatch):
@@ -7336,6 +7618,242 @@ def test_scroll_shape_content_uses_half_page_slow_drag(monkeypatch):
     assert ey == 560
     assert duration_ms == 1500
     assert waits == [1.0]
+
+
+def test_scroll_shape_content_can_limit_signature_to_recognition_shape(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("滚动页", "0121.png", [
+        {"title": "滚动窗口", "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8},
+        {"title": "识别区", "x": 0.15, "y": 0.3, "w": 0.7, "h": 0.4},
+    ])
+    ctx = {"images": {121: image}, "asset_tree": [image]}
+    drags: list[tuple[float, float, float, float, int]] = []
+    signatures: list[str] = []
+    waits: list[float] = []
+
+    monkeypatch.setattr(
+        runner,
+        "_drag_frame_point",
+        lambda _ctx, _image, sx, sy, ex, ey, *, duration_ms=300: drags.append((sx, sy, ex, ey, duration_ms)),
+    )
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, seconds=2.0, **_kwargs: waits.append(seconds) or iter(()))
+
+    runtime = runtime_runner_core.FanxiuRuntime(runner, ctx, stop_event=threading.Event())
+
+    def fake_signature(view_or_shape, shape=None, **_kwargs):
+        target = view_or_shape if shape is None else runtime.shape(view_or_shape, shape)
+        signatures.append(str(getattr(target, "raw", {}).get("title") or ""))
+        return bytes([0 if len(signatures) == 1 else 255]) * 1024
+
+    monkeypatch.setattr(runtime, "image_signature_bytes_in_shape", fake_signature)
+    changed = runner._run_direct_runtime_action(
+        lambda: runtime.scroll_shape_content(121, "滚动窗口", recognition_shape="识别区"),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert changed is True
+    assert signatures == ["识别区", "识别区"]
+    assert len(drags) == 1
+    sx, sy, ex, ey, duration_ms = drags[0]
+    assert sx == ex == 450
+    assert sy == 1120
+    assert ey == 480
+    assert duration_ms == 1500
+    assert waits == [1.0]
+
+
+def test_nudge_shape_content_for_box_only_drags_when_candidate_near_edge(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    image = _image("邮件", "0121.png", [
+        {"title": "邮件清单2", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.6},
+    ])
+    ctx = {"images": {121: image}, "asset_tree": [image]}
+    drags: list[tuple[float, float, float, float, int]] = []
+    waits: list[float] = []
+    monkeypatch.setattr(
+        runner,
+        "_drag_frame_point",
+        lambda _ctx, _image, sx, sy, ex, ey, *, duration_ms=300: drags.append((sx, sy, ex, ey, duration_ms)),
+    )
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", lambda *_args, seconds=2.0, **_kwargs: waits.append(seconds) or iter(()))
+
+    runtime = runtime_runner_core.FanxiuRuntime(runner, ctx, stop_event=threading.Event())
+    direction = runner._run_direct_runtime_action(
+        lambda: runtime.nudge_shape_content_for_box(121, "邮件清单2", {"x": 120, "y": 1180, "w": 80, "h": 40}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert direction == "down"
+    assert len(drags) == 1
+    sx, sy, ex, ey, duration_ms = drags[0]
+    assert sx == ex == 450
+    assert sy == 872
+    assert ey == 728
+    assert duration_ms == 1500
+    assert waits == [1.0]
+
+    center_direction = runner._run_direct_runtime_action(
+        lambda: runtime.nudge_shape_content_for_box(121, "邮件清单2", {"x": 120, "y": 760, "w": 80, "h": 40}),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert center_direction is None
+    assert len(drags) == 1
+    assert waits == [1.0]
+
+
+def test_baiye_target_box_splits_merged_lord_text():
+    runner = create_fanxiu_runtime_runner()
+
+    box = runner._baiye_target_box_from_words(
+        [
+            {"text": "魔道仙弈", "x": 700.0, "y": 760.0, "w": 120.0, "h": 32.0, "line_index": 0},
+        ],
+        "魔道",
+    )
+
+    assert box == {"x": 700.0, "y": 760.0, "w": 60.0, "h": 32.0}
+
+
+def test_baiye_target_box_right_anchors_wide_merged_lord_text():
+    runner = create_fanxiu_runtime_runner()
+
+    box = runner._baiye_target_box_from_words(
+        [
+            {"text": "剑魔道", "x": 309.3, "y": 742.0, "w": 590.7, "h": 46.0, "line_index": 0},
+        ],
+        "魔道",
+    )
+
+    assert box == pytest.approx({"x": 771.2, "y": 742.0, "w": 128.8, "h": 46.0})
+
+
+def test_baiye_target_box_ignores_rule_text():
+    runner = create_fanxiu_runtime_runner()
+
+    box = runner._baiye_target_box_from_words(
+        [
+            {"text": "魔道法则", "x": 340.0, "y": 512.0, "w": 79.5, "h": 132.0, "line_index": 0},
+            {"text": "魔道", "x": 840.0, "y": 746.0, "w": 56.0, "h": 39.0, "line_index": 1},
+        ],
+        "魔道",
+    )
+    line_box = runner._baiye_target_box_from_lines(
+        [{"text": "魔道跨法则仙魁", "x": 300.0, "y": 510.0, "w": 250.0, "h": 60.0}],
+        "魔道",
+    )
+
+    assert box == {"x": 840.0, "y": 746.0, "w": 56.0, "h": 39.0}
+    assert line_box is None
+
+
+def test_baiye_lord_click_point_uses_icon_center_above_text():
+    runner = create_fanxiu_runtime_runner()
+
+    click_x, click_y = runner._baiye_lord_click_point_from_box(
+        {"x": 700.0, "y": 760.0, "w": 60.0, "h": 32.0},
+        {},
+    )
+
+    assert click_x == pytest.approx(730.0)
+    assert click_y == pytest.approx(716.8)
+
+
+def test_baiye_lord_probe_only_does_not_click_target(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            actions.append(("cur_frame", update))
+            return "frame"
+
+        def ocr_text(self, *_args, **_kwargs):
+            return ""
+
+        def ocr_words_in_shapes(self, *_args, **_kwargs):
+            return [{"text": "魔道", "x": 700.0, "y": 760.0, "w": 60.0, "h": 32.0, "line_index": 0}]
+
+        def click_frame_point(self, *_args):
+            actions.append(("click_frame_point", _args))
+
+        def click_shape_center(self, *_args):
+            actions.append(("click_shape_center", _args))
+
+        def wait_any(self, *_args, **_kwargs):
+            actions.append(("wait_any", _kwargs.get("label")))
+            if False:
+                yield None
+            return "returned"
+
+        def view_visible(self, *_args):
+            return lambda *_a, **_k: True
+
+        def ocr_matches(self, *_args, **_kwargs):
+            return lambda *_a, **_k: True
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._select_baiye_law_lord(
+            {"asset_tree_path": Path("asset.json")},
+            threading.Event(),
+            {"baiye_lord_probe_only": True},
+            target="魔道",
+        )
+    )
+
+    assert result == "skipped"
+    assert not any(action[0] == "click_frame_point" for action in actions)
+    assert ("click_shape_center", (265, "返回")) in actions
+    assert ("wait_any", "日常_拜谒：probe 等待返回 #264") in actions
+
+
+def test_baiye_completed_text_wins_over_lord_map_text():
+    runner = create_fanxiu_runtime_runner()
+    text = "历史记录 魔道法则之主 法则效果 虚位以待 剩余次数：0/1 已拜谒 本次拜谒可获得：天雷竹*1100"
+
+    assert runner._baiye_text_is_completed(text) is True
+    assert runner._baiye_text_is_lord_map(text) is True
+
+
+def test_baiye_lord_selection_short_circuits_when_already_completed(monkeypatch):
+    runner = create_fanxiu_runtime_runner()
+    actions: list[tuple] = []
+
+    class FakeRuntime:
+        def cur_frame(self, *, update: bool = False):
+            actions.append(("cur_frame", update))
+            return "frame"
+
+        def ocr_text(self, *_args, **_kwargs):
+            return "历史记录 魔道法则之主 剩余次数：0/1 已拜谒"
+
+        def ocr_words_in_shapes(self, *_args, **_kwargs):
+            actions.append(("ocr_words_in_shapes",))
+            return []
+
+        def click_frame_point(self, *_args):
+            actions.append(("click_frame_point", _args))
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+
+    result = _drain_generator(
+        runner._select_baiye_law_lord(
+            {"asset_tree_path": Path("asset.json")},
+            threading.Event(),
+            {},
+            target="魔道",
+        )
+    )
+
+    assert result == "success"
+    assert ("cur_frame", True) in actions
+    assert not any(action[0] == "ocr_words_in_shapes" for action in actions)
+    assert not any(action[0] == "click_frame_point" for action in actions)
 
 
 def test_runtime_open_daily_entry_clicks_ocr_matched_row(monkeypatch):

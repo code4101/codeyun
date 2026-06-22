@@ -904,7 +904,25 @@ class DailyResourceTaskMixin:
             yield from self._wait_daily_youli_home(ctx, stop_event, label=f"{task_label}：等待修仙传游历 #228")
 
         yield from runtime.wait_click(228, "返回")
-        yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+        result = yield from runtime.wait_any(
+            {
+                "world_scene": runtime.view_visible(34),
+                "world_text": runtime.ocr_matches(
+                    self._daily_lingta_text_is_world_like,
+                    label=f"{task_label}：等待 #228 返回后世界 OCR",
+                    preview_chars=120,
+                ),
+                "daily_text": runtime.ocr_matches(
+                    self._daily_youli_text_is_daily_page,
+                    label=f"{task_label}：等待 #228 返回后日常 OCR",
+                    preview_chars=120,
+                ),
+            },
+            timeout=18.0,
+            label=f"{task_label}：等待 #228 返回到日常或世界",
+        )
+        if result == "daily_text":
+            yield from self._exit_daily_youli_daily_page_to_world(ctx, stop_event, task_label=task_label)
         self._record_daily_entry_done(
             {},
             task_id="legacy-daily-youli",
@@ -913,6 +931,44 @@ class DailyResourceTaskMixin:
             message="游历已完成并回到世界",
         )
         return "success"
+
+    def _exit_daily_youli_daily_page_to_world(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        task_label: str,
+    ):
+        asset_tree_path = ctx.get("asset_tree_path")
+        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        result = "daily_text"
+        for attempt in range(2):
+            with self._lock:
+                self._set_status_locked("running", f"{task_label}：从日常页退出到世界", phase="daily_youli_daily_exit")
+                suffix = "" if attempt == 0 else f"重试 {attempt + 1}/2，"
+                self._log_locked("action", f"{task_label}：{suffix}点击 #69「退出」返回世界")
+            runtime.click_shape_center(69, "退出")
+            yield from runtime.wait_action_settle(1.5)
+            result = yield from runtime.wait_any(
+                {
+                    "world_scene": runtime.view_visible(34),
+                    "world_text": runtime.ocr_matches(
+                        self._daily_lingta_text_is_world_like,
+                        label=f"{task_label}：等待日常退出后世界 OCR",
+                        preview_chars=120,
+                    ),
+                    "daily_text": runtime.ocr_matches(
+                        self._daily_youli_text_is_daily_page,
+                        label=f"{task_label}：检查日常退出是否仍停留",
+                        preview_chars=120,
+                    ),
+                },
+                timeout=8.0,
+                label=f"{task_label}：等待日常退出到世界",
+            )
+            if result != "daily_text":
+                return "success"
+        raise RuntimeError(f"{task_label}：点击 #69「退出」后仍停留在日常页，无法回到世界")
 
     def _return_daily_youli_reward_recovery_to_world(
         self,
@@ -923,20 +979,44 @@ class DailyResourceTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        frame = runtime.cur_frame(update=True)
+        text = runtime.ocr_text(frame)
+        if not self._daily_youli_text_is_reward_recovery(text):
+            yield from runtime.wait_any(
+                {
+                    "reward_recovery": runtime.ocr_matches(
+                        self._daily_youli_text_is_reward_recovery,
+                        label=f"{task_label}：等待奖励找回页 OCR",
+                        preview_chars=120,
+                    )
+                },
+                timeout=8.0,
+                label=f"{task_label}：确认奖励找回页",
+            )
         with self._lock:
             self._set_status_locked("running", f"{task_label}：从奖励找回页退出到世界", phase="daily_youli_reward_recovery_exit")
-            self._log_locked("action", f"{task_label}：点击 #69「退出」关闭奖励找回页")
-        yield from runtime.wait_click(69, "退出")
+            self._log_locked("action", f"{task_label}：奖励找回 OCR 已确认，点击 #69「退出」关闭奖励找回页")
+        runtime.click_shape_center(69, "退出")
         yield from runtime.wait_action_settle(1.5)
-        scene_id, _score, frame = runtime.current_scene([34, 69], update=True)
-        text = runtime.ocr_text(frame)
-        if scene_id == 69 or self._daily_youli_text_is_daily_page(text):
-            with self._lock:
-                self._set_status_locked("running", f"{task_label}：从日常页退出到世界", phase="daily_youli_daily_exit")
-                self._log_locked("action", f"{task_label}：奖励找回已关闭，点击 #69「退出」返回世界")
-            yield from runtime.wait_click(69, "退出")
-            yield from runtime.wait_action_settle(1.5)
-        yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+        result = yield from runtime.wait_any(
+            {
+                "world_scene": runtime.view_visible(34),
+                "world_text": runtime.ocr_matches(
+                    self._daily_lingta_text_is_world_like,
+                    label=f"{task_label}：等待奖励找回关闭后世界 OCR",
+                    preview_chars=120,
+                ),
+                "daily_text": runtime.ocr_matches(
+                    self._daily_youli_text_is_daily_page,
+                    label=f"{task_label}：等待奖励找回关闭后日常 OCR",
+                    preview_chars=120,
+                ),
+            },
+            timeout=12.0,
+            label=f"{task_label}：等待奖励找回关闭后回到日常或世界",
+        )
+        if result == "daily_text":
+            yield from self._exit_daily_youli_daily_page_to_world(ctx, stop_event, task_label=task_label)
         message = f"{task_label}：奖励找回页退出只证明已完成清理，不是游历完成证据，稍后重试"
         self._log("skip", message)
         return {"result": "skipped", "message": message}

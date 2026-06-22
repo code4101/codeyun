@@ -1,6 +1,6 @@
 # 数据标注自动化 Runtime 与 Scheduler
 
-本文档记录新版 `数据标注` 正式自动化框架的职责边界，避免继续把任务状态机写回旧前端任务执行入口。
+本文档记录凡修 `数据标注` Runtime、Scheduler 与行为树的职责边界。
 
 ## 核心原则
 
@@ -38,6 +38,11 @@ Runtime 识别场景时应优先使用帧树内已有帧和 shape。只有缺少
 
 ### 滚动签名与遮挡区域
 
+- 滚动窗口的默认动作由 Runtime 统一提供：手势比例 `50%`，拖拽 `duration=1.5s`，滚动后等待 `1s` 再重新截图/OCR/签名。业务任务默认只声明滚动容器、方向和目标，不应在单个任务里临时覆盖 `ratio/duration/settle_seconds`。
+- 如果某个窗口确实需要专项滚动参数，必须有标注备注、用户明确要求或真实运行证据支撑；否则应回到 Runtime 默认滚动入口。邮件、日常列表、拜谒、活动列表等都按同一默认口径理解。
+- 对存在固定遮挡、半透明提示、顶部/底部浮层的滚动窗口，调用 `scroll_shape_content(..., recognition_shape="识别区")`。手势仍作用在滚动容器上，但滚动前后的签名和变更判断只看指定识别区，避免遮挡区域污染“是否滚动成功”的判断。
+- 命中目标但靠近边缘、遮挡区或点击不安全时，应先把它当候选，再通过小幅复位、重新截图和候选复核处理；不要用改变通用滚动比例或缩短拖拽时间来绕过这个问题。
+- 候选框已经命中但靠近识别区边缘时，调用 `nudge_shape_content_for_box(...)` 做小比例复位。该动作是候选后处理，不替代默认滚动查找；复位后必须重新截图/OCR 复核目标仍是同一个业务对象。
 - 列表滚动后不要立即对当前帧计算签名；先固定等待 1 秒，让拖拽惯性和复位动画结束。这里不再做“等待到稳定”的递归判断，避免稳定判断本身依赖哈希而形成循环。
 - 滚动到底的主要判据是：一次滚动并等待后，可见列表签名与上一轮滚动后的签名相同。连续空滚动次数只能作为异常兜底，不应作为正常完成逻辑。
 - 帧树里的「遮挡标记」分组表示固定排除区域，不表示固定遮挡内容。这些区域经常出现不同通知文字、公告条或临时浮层，因此其中 OCR/图像内容不能进入列表哈希或滚动签名。
@@ -50,6 +55,13 @@ Runtime 识别场景时应优先使用帧树内已有帧和 shape。只有缺少
 - 场景身份只使用稳定页头、外框或固定控件；滚动窗口内容不能作为场景锚点。
 - 运行时先确认当前场景，再在滚动容器中用 OCR 找父标题，最后用模板里的子控件相对偏移计算点击点。
 - 点击后必须等待明确结果帧、无事项帧或原场景超时保底；只发出点击不能算闭环。
+
+### OCR 结果层级
+
+- Runtime 默认 OCR helper 返回 line 级结果，适合场景文本判断、列表标题查找、进度读取和普通按钮定位。
+- 需要按单个词或字计算点击点时，使用 `ocr_words_in_shapes(view, shape_titles, options=...)`。该 helper 会在指定 shape 裁剪区内启用 `return_word_box`，并把裁剪坐标恢复到整屏坐标。
+- `return_word_box`、`text_det_thresh`、`text_det_box_thresh`、`text_det_unclip_ratio` 等 PaddleOCR 参数只能通过 OCR 服务白名单逐次透传；不要全局修改 OCR 默认配置。
+- 任务代码应先限制识别区，再启用精细 OCR。没有 word box 或目标未拆开时，可以退回 line 级子串估算，但必须在日志里保留原始 OCR 文本和计算出的点击点，方便复盘合并误差。
 
 ## Runtime
 
@@ -212,7 +224,10 @@ for code in codes:
 
 - 默认 `mode=readonly`，允许截图、场景识别、OCR、读取标注和记录日志。
 - 需要点击、拖拽等真实动作时必须显式传 `mode=act`。
-- 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.image()`、`ctx.shape()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
+- 代码里自动注入 `ctx`，常用能力包括 `ctx.frame()`、`ctx.scene()`、`ctx.ocr()`、`ctx.ocr_words_in_shapes()`、`ctx.image()`、`ctx.shape()`、`ctx.shape_score()`、`ctx.shape_probe()`、`ctx.wait_click()`、`ctx.wait_click_then_view()`、`ctx.tap_shape()`、`ctx.tap()`、`ctx.drag()`、`ctx.log()`。
+- `ctx.ocr_words_in_shapes(scene, shape_titles, options=...)` 是只读 word box OCR 探针，用于在指定标注区域内启用 `return_word_box` 等 per-call 参数，验证精细点击所需的词框坐标。
+- `ctx.shape_score(scene, shape)` 是只读相似度探针；`ctx.shape_probe(scene, shape)` 会按点击前匹配口径返回每个 condition 的 `similarity/matched`、`scene_threshold/overlay_threshold` 和关键 shape 配置。它们适合在真实当前帧上复查某个 shape 是否满足点击前匹配条件；分数不足时应修标或调参，不应在 `debug_eval` 中改成固定坐标硬点。
+- `ctx.wait_click_then_view(source, shape, *targets)` 是动作模式能力，用于通过公开手动作业入口验证局部转场 helper；它仍会尊重 `wait_click` 的点击前匹配条件。
 - 支持两种写法：直接执行短代码，或定义 `def task(ctx): ...`，系统会自动调用；`task` 返回生成器时继续沿用现有 yield/tick 机制。
 - 调用入口仍使用现有 Runtime 手动作业提交接口，例如 `task_type=debug_eval`、`payload.code=...`；不要新建第二套调度或后台线程。
 
@@ -276,9 +291,9 @@ def task(ctx):
 
 - 前端长流程任务状态机
 - 前端循环等待并决策下一步
-- 前端持久化 stepper task storage 作为正式任务源
+- 前端持久化任务执行状态作为正式任务源
 
-旧接口 `/api/fanxiu/data-annotation/stepper/logs` 和 `/api/fanxiu/data-annotation/gift-code-task/*` 已移除。新代码统一使用 `/runtime/*` 和 `/scheduler/*`。
+旧前端任务执行日志接口和 `/api/fanxiu/data-annotation/gift-code-task/*` 已移除。新代码统一使用 `/runtime/*` 和 `/scheduler/*`。
 
 ## 当前落地状态
 
@@ -291,13 +306,13 @@ def task(ctx):
 - `GET /api/fanxiu/data-annotation/runtime/world-facts` 只读暴露事实文件，任务调试台可直接查看。
 - `GET /api/fanxiu/data-annotation/scheduler/plan` 只读暴露 Scheduler 规划结果。
 - Scheduler 可从 `WorldFacts.discoveries.task` 回写动态任务 `next_time` 和任务 `retry_after`。
-- 前端“任务调试台”替代旧正式任务执行入口。
+- 前端“任务调试台”只负责提交、查看和调试行为树任务，不承载正式任务状态机。
 - 当前框架验收入口包含 `gift_code_redeem`、通用 `go_scene` 场景移动、`hide_floating_window`。
 - 旧版动态任务和每日任务目录接入 Scheduler。
 - 旧版任务当前使用 `legacy_daily_task` / `legacy_dynamic_task` 占位，不进入 Runtime 执行入口。
 - 未验收任务即使被外部状态写成 `enabled=true`，读取任务清单时也会强制改回 `enabled=false` 并标记 `last_result=unsupported`。
 - 未验收的日常/报名/游历执行函数已从 Runtime 中移除，避免误认为已迁移。
-- 前端正式 stepper 状态机和旧 stepper 日志接口已移除。
+- 前端正式长流程任务状态机和旧任务执行日志接口已移除。
 
 尚未完成：
 

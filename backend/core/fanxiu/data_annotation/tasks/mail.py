@@ -259,12 +259,7 @@ class MailTaskMixin:
                 continue
 
             scroll_started_at = time.monotonic()
-            runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(
-                list_shape,
-                ratio=0.5,
-                duration=0.9,
-                settle_seconds=0.35,
-            )
+            runtime.attrs["load_new"] = yield from runtime.scroll_shape_content(list_shape)
             scroll_elapsed = time.monotonic() - scroll_started_at
             self._log("detail", f"邮件_清理：翻页 {scroll_count + 1} 耗时 {scroll_elapsed:.1f}s，load_new={bool(runtime.attrs.get('load_new'))}")
             if not runtime.attrs.get("load_new"):

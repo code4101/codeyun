@@ -178,6 +178,10 @@ def _default_status(
 
 def get_game_window_service_status() -> dict[str, Any]:
     processes = list_game_window_service_processes()
+    host = get_game_window_service_host()
+    port = get_game_window_service_port()
+    if not processes and not _is_tcp_port_open(host, port, timeout=0.1):
+        return _default_status(processes=processes, state="stopped", last_error="")
     try:
         response = requests.get(_endpoint("/api/services/game-window/status"), timeout=_request_timeout())
         response.raise_for_status()
@@ -196,8 +200,8 @@ def get_game_window_service_status() -> dict[str, Any]:
         **service,
         "running": True,
         "url": get_game_window_service_base_url(),
-        "host": get_game_window_service_host(),
-        "port": get_game_window_service_port(),
+        "host": host,
+        "port": port,
         "log_path": os.fspath(get_game_window_service_log_path()),
         "process_count": len(processes),
         "processes": processes,

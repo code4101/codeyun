@@ -276,6 +276,15 @@ def _is_uvicorn_multiprocessing_worker_text(text: str) -> bool:
     return "from multiprocessing.spawn import spawn_main" in text and "backend.core.runtime.uvicorn_hidden" in text
 
 
+def _has_uvicorn_multiprocessing_worker_evidence(event: dict[str, Any]) -> bool:
+    for proc in event.get("nearby_processes") or []:
+        if not isinstance(proc, dict):
+            continue
+        if _is_uvicorn_multiprocessing_worker_text(_proc_text(proc)):
+            return True
+    return False
+
+
 def is_codeyun_event(event: dict[str, Any], root_dir: Path = ROOT_DIR) -> bool:
     direct_text = _event_direct_text(event)
     root = os.fspath(root_dir).lower().replace("\\", "/")
@@ -328,6 +337,8 @@ def is_codeyun_workspace_event(event: dict[str, Any], root_dir: Path = ROOT_DIR)
             name = str(proc.get("name") or "").lower()
             if name != title_exe and name not in {"cmd.exe", "powershell.exe", "pwsh.exe", "git.exe"}:
                 continue
+        return True
+    if _has_external_codex_console_evidence(event) and _has_uvicorn_multiprocessing_worker_evidence(event):
         return True
     return False
 

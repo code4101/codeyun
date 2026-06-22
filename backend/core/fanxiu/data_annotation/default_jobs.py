@@ -27,6 +27,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "daily_yaowang",
     "daily_yaozu",
     "daily_youli",
+    "daily_baiye",
     "daily_yihuo",
     "daily_gongfeng",
     "daily_xianshi",
@@ -210,6 +211,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         return runner._execute_daily_youli_task(ctx, stop_event, payload)
+
+    @register_fanxiu_data_annotation_manual_job("daily_baiye", "日常_拜谒", scheduler_supported=True)
+    def _run_data_annotation_daily_baiye_manual_job(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        return runner._execute_daily_baiye_task(ctx, stop_event, payload)
 
     @register_fanxiu_data_annotation_manual_job("daily_yihuo", "日常_异火", scheduler_supported=True)
     def _run_data_annotation_daily_yihuo_manual_job(
